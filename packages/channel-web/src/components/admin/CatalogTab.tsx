@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Trash2, Pencil, Plus } from 'lucide-react';
+import { Trash2, Pencil, Plus, FileCode } from 'lucide-react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import {
@@ -19,22 +19,37 @@ import {
 } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import {
   listSkills,
+  getSkill,
   deleteSkill,
   checkSkillForUpdates,
   refreshSkillFromSource,
+  setSkillDefaultAttached,
   type CheckUpdateResult,
+  type CatalogSkillSummary,
 } from '@/lib/skills';
-import type { SkillSummary } from '@ax/skills';
+import { BundleFileView } from './BundleFileView';
+import { reconstructSkillMd } from '@/lib/bundle-diff';
 import { SkillEditor } from './SkillEditor';
 
-export function SkillsTab() {
-  const [skills, setSkills] = useState<SkillSummary[] | null>(null);
+export function CatalogTab() {
+  const [skills, setSkills] = useState<CatalogSkillSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
+  const [viewingFiles, setViewingFiles] = useState<{
+    id: string;
+    files: { path: string; contents: string }[];
+  } | null>(null);
   const [updateInfo, setUpdateInfo] = useState<
     Record<string, CheckUpdateResult>
   >({});
@@ -93,6 +108,30 @@ export function SkillsTab() {
     }
   }
 
+  async function handleViewFiles(skillId: string) {
+    try {
+      const detail = await getSkill(skillId);
+      setViewingFiles({
+        id: skillId,
+        files: [
+          { path: 'SKILL.md', contents: reconstructSkillMd(detail.manifestYaml, detail.bodyMd) },
+          ...detail.files,
+        ],
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleToggleDefault(skillId: string, next: boolean) {
+    try {
+      await setSkillDefaultAttached(skillId, next);
+      await refresh();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
   async function handleUpdate(skillId: string) {
     setRefreshingId(skillId);
     try {
@@ -116,7 +155,7 @@ export function SkillsTab() {
   return (
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
-        <CardTitle>Skills</CardTitle>
+        <CardTitle>Catalog</CardTitle>
         <Dialog open={showNew} onOpenChange={setShowNew}>
           <DialogTrigger asChild>
             <Button size="sm">
@@ -156,10 +195,12 @@ export function SkillsTab() {
               <TableRow>
                 <TableHead>ID</TableHead>
                 <TableHead>Description</TableHead>
+                <TableHead>Tier</TableHead>
+                <TableHead>Default</TableHead>
                 <TableHead>Hosts</TableHead>
                 <TableHead>Slots</TableHead>
                 <TableHead>Updated</TableHead>
-                <TableHead className="w-[120px]"></TableHead>
+                <TableHead className="w-[160px]"></TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -170,11 +211,6 @@ export function SkillsTab() {
                 <TableRow key={s.id}>
                   <TableCell className="font-mono text-xs">
                     {s.id}
-                    {s.defaultAttached && (
-                      <Badge variant="outline" className="ml-2 text-[10px]">
-                        default
-                      </Badge>
-                    )}
                     {updateAvailable && (
                       <Badge variant="secondary" className="ml-2 text-xs">
                         Update available: v{update?.latestVersion}
@@ -182,6 +218,41 @@ export function SkillsTab() {
                     )}
                   </TableCell>
                   <TableCell className="text-sm">{s.description}</TableCell>
+                  <TableCell>
+                    {s.tier ? (
+                      <Badge variant="outline" className="text-[10px] capitalize">
+                        {s.tier}
+                      </Badge>
+                    ) : (
+                      <span className="text-xs text-muted-foreground">—</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    {s.capabilities.credentials.length > 0 ? (
+                      <TooltipProvider>
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <span className="inline-flex">
+                              <Checkbox
+                                checked={s.defaultAttached}
+                                disabled
+                                aria-label={`Default for ${s.id}`}
+                              />
+                            </span>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            Capability-bearing skills must be attached per agent.
+                          </TooltipContent>
+                        </Tooltip>
+                      </TooltipProvider>
+                    ) : (
+                      <Checkbox
+                        checked={s.defaultAttached}
+                        onCheckedChange={(v) => void handleToggleDefault(s.id, v === true)}
+                        aria-label={`Default for ${s.id}`}
+                      />
+                    )}
+                  </TableCell>
                   <TableCell>
                     {s.capabilities.allowedHosts.length === 0 ? (
                       <span className="text-xs text-muted-foreground">—</span>
@@ -230,6 +301,14 @@ export function SkillsTab() {
                     <Button
                       variant="ghost"
                       size="sm"
+                      onClick={() => void handleViewFiles(s.id)}
+                      aria-label={`View files for ${s.id}`}
+                    >
+                      <FileCode className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => setEditingId(s.id)}
                       aria-label={`Edit ${s.id}`}
                     >
@@ -270,6 +349,22 @@ export function SkillsTab() {
                 }}
                 onCancel={() => setEditingId(null)}
               />
+            </DialogContent>
+          </Dialog>
+        )}
+
+        {viewingFiles !== null && (
+          <Dialog
+            open
+            onOpenChange={(o) => {
+              if (!o) setViewingFiles(null);
+            }}
+          >
+            <DialogContent className="max-w-4xl">
+              <DialogHeader>
+                <DialogTitle>Bundle files: {viewingFiles.id}</DialogTitle>
+              </DialogHeader>
+              <BundleFileView files={viewingFiles.files} />
             </DialogContent>
           </Dialog>
         )}

@@ -25,6 +25,20 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
+  // CatalogTab (listSkills → /admin/skills) and AdmitQueueTab
+  // (listCatalogRequests → /admin/catalog/requests) fetch on mount.
+  if (/\/admin\/skills(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ skills: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  if (/\/admin\/catalog\/requests(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ requests: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
   return new Response(JSON.stringify({ providers: [], agents: [], teams: [], servers: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -94,5 +108,25 @@ describe('AdminShell', () => {
     renderShell(onClose);
     fireEvent.click(screen.getByRole('button', { name: /chat/i }));
     expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it('shows the Catalog and Admit queue nav items for admins', () => {
+    renderShell();
+    expect(screen.getByRole('button', { name: 'Catalog' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Admit queue' })).toBeTruthy();
+  });
+
+  it('clicking Catalog makes it the active tab', () => {
+    renderShell();
+    fireEvent.click(screen.getByRole('button', { name: 'Catalog' }));
+    expect(
+      screen.getByRole('button', { name: 'Catalog' }).getAttribute('data-active'),
+    ).toBeTruthy();
+  });
+
+  it('hides Catalog and Admit queue when isAdmin is false', () => {
+    renderShell(vi.fn(), false);
+    expect(screen.queryByRole('button', { name: 'Catalog' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Admit queue' })).toBeNull();
   });
 });

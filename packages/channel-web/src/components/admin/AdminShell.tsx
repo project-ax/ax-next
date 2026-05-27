@@ -8,7 +8,8 @@ import { AuthProvidersTab } from './AuthProvidersTab';
 import { AgentForm } from './AgentForm';
 import { McpServerForm } from './McpServerForm';
 import { TeamList } from './TeamList';
-import { SkillsTab } from './SkillsTab';
+import { CatalogTab } from './CatalogTab';
+import { AdmitQueueTab } from './AdmitQueueTab';
 import { ConnectionsTab } from '../settings/ConnectionsTab';
 import { KeysTab } from '../settings/KeysTab';
 
@@ -35,7 +36,8 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   'model-config': { eyebrow: 'Admin', title: 'Model config' },
   'auth-providers': { eyebrow: 'Admin', title: 'Auth providers' },
   agents: { eyebrow: 'Admin', title: 'Agents' },
-  skills: { eyebrow: 'Admin', title: 'Skills' },
+  catalog: { eyebrow: 'Admin', title: 'Catalog' },
+  'admit-queue': { eyebrow: 'Admin', title: 'Admit queue' },
   'mcp-servers': { eyebrow: 'Admin', title: 'MCP servers' },
   teams: { eyebrow: 'Admin', title: 'Teams' },
 };
@@ -61,7 +63,8 @@ export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
         {activeTab === 'model-config' && <ModelConfigTab />}
         {activeTab === 'auth-providers' && <AuthProvidersTab />}
         {activeTab === 'agents' && <AgentForm />}
-        {activeTab === 'skills' && <SkillsTab />}
+        {activeTab === 'catalog' && <CatalogTab />}
+        {activeTab === 'admit-queue' && <AdmitQueueTab />}
         {activeTab === 'mcp-servers' && <McpServerForm />}
         {activeTab === 'teams' && <TeamList />}
       </AdminPane>

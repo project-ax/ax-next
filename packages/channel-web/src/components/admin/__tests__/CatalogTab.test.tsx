@@ -1,14 +1,16 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { SkillsTab } from '../SkillsTab';
+import { CatalogTab } from '../CatalogTab';
 import type { SkillSummary } from '@ax/skills';
 
 // Mock the wire clients
 vi.mock('@/lib/skills', () => ({
   listSkills: vi.fn(),
+  getSkill: vi.fn(),
   deleteSkill: vi.fn(),
   checkSkillForUpdates: vi.fn(),
   refreshSkillFromSource: vi.fn(),
+  setSkillDefaultAttached: vi.fn(),
 }));
 
 // Mock SkillEditor so tests don't depend on its internals
@@ -22,15 +24,19 @@ vi.mock('../SkillEditor', () => ({
 
 import {
   listSkills,
+  getSkill,
   deleteSkill,
   checkSkillForUpdates,
   refreshSkillFromSource,
+  setSkillDefaultAttached,
 } from '@/lib/skills';
 
 const mockListSkills = vi.mocked(listSkills);
+const mockGetSkill = vi.mocked(getSkill);
 const mockDeleteSkill = vi.mocked(deleteSkill);
 const mockCheckSkillForUpdates = vi.mocked(checkSkillForUpdates);
 const mockRefreshSkillFromSource = vi.mocked(refreshSkillFromSource);
+const mockSetDefault = vi.mocked(setSkillDefaultAttached);
 
 const SKILL_A: SkillSummary = {
   id: 'github-api',
@@ -74,10 +80,10 @@ beforeEach(() => {
   mockRefreshSkillFromSource.mockResolvedValue({ updated: true });
 });
 
-describe('SkillsTab', () => {
+describe('CatalogTab', () => {
   it('renders a list of skills', async () => {
     mockListSkills.mockResolvedValueOnce([SKILL_A, SKILL_B]);
-    render(<SkillsTab />);
+    render(<CatalogTab />);
 
     await waitFor(() => {
       expect(screen.getByText('github-api')).toBeTruthy();
@@ -92,7 +98,7 @@ describe('SkillsTab', () => {
 
   it('shows empty state when no skills are installed', async () => {
     mockListSkills.mockResolvedValueOnce([]);
-    render(<SkillsTab />);
+    render(<CatalogTab />);
 
     await waitFor(() => {
       expect(screen.getByText(/No skills installed/)).toBeTruthy();
@@ -102,14 +108,14 @@ describe('SkillsTab', () => {
   it('shows loading state before promise resolves', () => {
     // Never resolve so we can observe the loading state
     mockListSkills.mockReturnValueOnce(new Promise(() => {}));
-    render(<SkillsTab />);
+    render(<CatalogTab />);
 
     expect(screen.getByText('Loading…')).toBeTruthy();
   });
 
   it('shows error alert when fetch fails', async () => {
     mockListSkills.mockRejectedValueOnce(new Error('Network error'));
-    render(<SkillsTab />);
+    render(<CatalogTab />);
 
     await waitFor(() => {
       expect(screen.getByText('Network error')).toBeTruthy();
@@ -118,7 +124,7 @@ describe('SkillsTab', () => {
 
   it('clicking "New skill" opens the editor dialog', async () => {
     mockListSkills.mockResolvedValueOnce([]);
-    render(<SkillsTab />);
+    render(<CatalogTab />);
 
     await waitFor(() => {
       expect(screen.getByText(/No skills installed/)).toBeTruthy();
@@ -134,7 +140,7 @@ describe('SkillsTab', () => {
 
   it('clicking edit button on a row opens the editor with that skill', async () => {
     mockListSkills.mockResolvedValueOnce([SKILL_A]);
-    render(<SkillsTab />);
+    render(<CatalogTab />);
 
     await waitFor(() => {
       expect(screen.getByText('github-api')).toBeTruthy();
@@ -150,7 +156,7 @@ describe('SkillsTab', () => {
 
   it('clicking delete button shows confirmation dialog; clicking Delete calls deleteSkill', async () => {
     mockListSkills.mockResolvedValue([SKILL_A]);
-    render(<SkillsTab />);
+    render(<CatalogTab />);
 
     await waitFor(() => {
       expect(screen.getByText('github-api')).toBeTruthy();
@@ -172,7 +178,7 @@ describe('SkillsTab', () => {
   it('server-side delete error surfaces in the alert', async () => {
     mockListSkills.mockResolvedValue([SKILL_A]);
     mockDeleteSkill.mockRejectedValueOnce(new Error('skill is still attached'));
-    render(<SkillsTab />);
+    render(<CatalogTab />);
 
     await waitFor(() => {
       expect(screen.getByText('github-api')).toBeTruthy();
@@ -190,7 +196,7 @@ describe('SkillsTab', () => {
     });
   });
 
-  it('renders a "default" badge for default-attached skills', async () => {
+  it('reflects default-attached state in the inline Default toggle', async () => {
     mockListSkills.mockResolvedValueOnce([
       {
         id: 'heartbeat',
@@ -201,27 +207,56 @@ describe('SkillsTab', () => {
         defaultAttached: true,
         updatedAt: '2026-05-19T00:00:00.000Z',
       },
-      {
-        id: 'github',
-        description: 'GitHub API.',
-        version: 1,
-        scope: 'global' as const,
-        capabilities: { allowedHosts: ['api.github.com'], credentials: [{ slot: 'X', kind: 'api-key' }], mcpServers: [], packages: { npm: [], pypi: [] } },
-        defaultAttached: false,
-        updatedAt: '2026-05-19T00:00:00.000Z',
-      },
     ]);
 
-    render(<SkillsTab />);
+    render(<CatalogTab />);
 
-    // The default-attached row should expose the badge text.
-    const heartbeatCell = await screen.findByText('heartbeat');
-    const heartbeatRow = heartbeatCell.closest('tr')!;
-    expect(heartbeatRow.textContent).toMatch(/default/i);
+    // The default-attached row's toggle is checked.
+    const toggle = await screen.findByRole('checkbox', { name: /default for heartbeat/i });
+    expect(toggle.getAttribute('data-state')).toBe('checked');
+  });
 
-    // The non-default row should not.
-    const githubRow = screen.getByText('github').closest('tr')!;
-    expect(githubRow.textContent).not.toMatch(/default/i);
+  // --- Task 11: tier badge --------------------------------------------------
+  it("renders each skill's tier badge", async () => {
+    mockListSkills.mockResolvedValueOnce([{ ...SKILL_A, tier: 'bounded' as const }]);
+    render(<CatalogTab />);
+    expect(await screen.findByText('bounded')).toBeTruthy();
+  });
+
+  // --- Task 12: read-only bundle file-view ---------------------------------
+  it('opens a read-only bundle file-view for a skill', async () => {
+    mockListSkills.mockResolvedValueOnce([{ ...SKILL_A, tier: 'bounded' as const }]);
+    mockGetSkill.mockResolvedValue({
+      ...SKILL_A,
+      manifestYaml: 'name: github-api\ndescription: x\nversion: 1\n',
+      bodyMd: '# gh\n',
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+    });
+    render(<CatalogTab />);
+    fireEvent.click(await screen.findByRole('button', { name: /view files for github-api/i }));
+    expect(await screen.findByRole('button', { name: 'SKILL.md' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'scripts/run.py' })).toBeTruthy();
+  });
+
+  // --- Task 13: inline org-default toggle ----------------------------------
+  it('marks a skill as an org default via the inline toggle', async () => {
+    // SKILL_B has no credentials → eligible to be a default.
+    mockListSkills.mockResolvedValue([{ ...SKILL_B, tier: 'inert' as const, defaultAttached: false }]);
+    mockSetDefault.mockResolvedValue(undefined);
+    render(<CatalogTab />);
+    const toggle = await screen.findByRole('checkbox', { name: /default for slack-notify/i });
+    fireEvent.click(toggle);
+    await waitFor(() => expect(mockSetDefault).toHaveBeenCalledWith('slack-notify', true));
+  });
+
+  it('disables the default toggle for a credential-bearing skill', async () => {
+    // SKILL_A declares GITHUB_TOKEN → cannot be a default.
+    mockListSkills.mockResolvedValueOnce([{ ...SKILL_A, tier: 'bounded' as const }]);
+    render(<CatalogTab />);
+    const toggle = (await screen.findByRole('checkbox', {
+      name: /default for github-api/i,
+    })) as HTMLButtonElement;
+    expect(toggle.disabled || toggle.getAttribute('data-disabled') !== null).toBeTruthy();
   });
 
   describe('source-url update flow', () => {
@@ -244,7 +279,7 @@ describe('SkillsTab', () => {
     it('does NOT call checkSkillForUpdates and shows no badge when sourceUrl is unset', async () => {
       // SKILL_A has no sourceUrl.
       mockListSkills.mockResolvedValueOnce([SKILL_A]);
-      render(<SkillsTab />);
+      render(<CatalogTab />);
 
       await waitFor(() => {
         expect(screen.getByText('github-api')).toBeTruthy();
@@ -266,7 +301,7 @@ describe('SkillsTab', () => {
         latestSkillMd: '---\nname: github-api\n---\nbody',
       });
 
-      render(<SkillsTab />);
+      render(<CatalogTab />);
 
       await waitFor(() => {
         expect(screen.getByText('github-api')).toBeTruthy();
@@ -308,7 +343,7 @@ describe('SkillsTab', () => {
         newVersion: 2,
       });
 
-      render(<SkillsTab />);
+      render(<CatalogTab />);
 
       // Wait for the badge to appear.
       await waitFor(() => {
@@ -335,7 +370,7 @@ describe('SkillsTab', () => {
         new Error('skill-source-fetch-failed'),
       );
 
-      render(<SkillsTab />);
+      render(<CatalogTab />);
 
       await waitFor(() => {
         expect(screen.getByText('github-api')).toBeTruthy();

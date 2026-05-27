@@ -7,7 +7,8 @@ import {
   Server,
   UsersRound,
   ShieldCheck,
-  Wrench,
+  Library,
+  Inbox,
   Plug,
   Key,
 } from 'lucide-react';
@@ -25,7 +26,8 @@ export type AdminTabId =
   | 'model-config'
   | 'auth-providers'
   | 'agents'
-  | 'skills'
+  | 'catalog'
+  | 'admit-queue'
   | 'mcp-servers'
   | 'teams';
 
@@ -41,7 +43,8 @@ const ADMIN_NAV: NavItem[] = [
   { id: 'model-config', label: 'Model config', icon: Cpu },
   { id: 'auth-providers', label: 'Auth providers', icon: ShieldCheck },
   { id: 'agents', label: 'Agents', icon: User },
-  { id: 'skills', label: 'Skills', icon: Wrench },
+  { id: 'catalog', label: 'Catalog', icon: Library },
+  { id: 'admit-queue', label: 'Admit queue', icon: Inbox },
   { id: 'mcp-servers', label: 'MCP servers', icon: Server },
   { id: 'teams', label: 'Teams', icon: UsersRound },
 ];

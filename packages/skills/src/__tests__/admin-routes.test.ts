@@ -7,7 +7,7 @@ import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { PluginError } from '@ax/core';
 import { createSkillsPlugin } from '../plugin.js';
-import { createAdminSkillsHandlers } from '../admin-routes.js';
+import { createAdminSkillsHandlers, writeServiceError } from '../admin-routes.js';
 import type { RouteRequest, RouteResponse } from '../admin-routes.js';
 
 // ---------------------------------------------------------------------------
@@ -642,6 +642,153 @@ version: 1
       expect(detail.bodyMd).toContain('body v2');
     } finally {
       fetchSpy.mockRestore();
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-45: derived tier, bundle-preserving PATCH, PUT file preservation.
+  // -------------------------------------------------------------------------
+
+  it('list annotates each skill with a derived tier', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    // A 'bounded' skill (declares an allowed host, no packages).
+    await h.bus.call('skills:upsert', h.ctx(), {
+      manifestYaml:
+        'name: gh\ndescription: GitHub.\nversion: 1\ncapabilities:\n  allowedHosts:\n    - api.github.com\n',
+      bodyMd: '# gh\n',
+      scope: 'global',
+    });
+
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.list(mkReq({}), res);
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as { skills: Array<{ id: string; tier: string }> };
+    expect(body.skills.find((s) => s.id === 'gh')?.tier).toBe('bounded');
+  });
+
+  it('PATCH flips defaultAttached and preserves the bundle extra files', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    // Seed a bundled skill (extra file) with defaultAttached false. Bundles
+    // can't be created via the POST route (SKILL.md-only), so seed via the bus.
+    await h.bus.call('skills:upsert', h.ctx(), {
+      manifestYaml: 'name: helper\ndescription: A helper.\nversion: 1\n',
+      bodyMd: '# helper\n',
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+      scope: 'global',
+    });
+
+    const { res, statusOf } = mkRes();
+    await handlers.setDefaultAttached(
+      mkReq({ params: { id: 'helper' }, body: { defaultAttached: true } }),
+      res,
+    );
+    expect(statusOf()).toBe(200);
+
+    const detail = await h.bus.call<
+      { skillId: string; scope: 'global' },
+      { defaultAttached: boolean; files: Array<{ path: string; contents: string }> }
+    >('skills:get', h.ctx(), { skillId: 'helper', scope: 'global' });
+    expect(detail.defaultAttached).toBe(true);
+    expect(detail.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
+  });
+
+  it('PATCH on a credential-bearing skill is rejected 400 (cannot be default)', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+    await h.bus.call('skills:upsert', h.ctx(), {
+      manifestYaml:
+        'name: gh\ndescription: GitHub.\nversion: 1\ncapabilities:\n  credentials:\n    - slot: GITHUB_TOKEN\n      kind: api-key\n',
+      bodyMd: '# gh\n',
+      scope: 'global',
+    });
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.setDefaultAttached(
+      mkReq({ params: { id: 'gh' }, body: { defaultAttached: true } }),
+      res,
+    );
+    expect(statusOf()).toBe(400);
+    expect((bodyOf() as { code?: string }).code).toBe('default-attached-requires-no-credentials');
+  });
+
+  it('PATCH on an unknown id is 404', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+    const { res, statusOf } = mkRes();
+    await handlers.setDefaultAttached(
+      mkReq({ params: { id: 'nope' }, body: { defaultAttached: true } }),
+      res,
+    );
+    expect(statusOf()).toBe(404);
+  });
+
+  it("PUT preserves a bundle's extra files when only SKILL.md is edited", async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    await h.bus.call('skills:upsert', h.ctx(), {
+      manifestYaml: 'name: helper\ndescription: A helper.\nversion: 1\n',
+      bodyMd: '# helper\n',
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+      scope: 'global',
+    });
+
+    const editedSkillMd =
+      '---\nname: helper\ndescription: A helper (edited).\nversion: 2\n---\n# helper edited\n';
+    const { res, statusOf } = mkRes();
+    await handlers.update(mkReq({ params: { id: 'helper' }, body: { skillMd: editedSkillMd } }), res);
+    expect(statusOf()).toBe(200);
+
+    const detail = await h.bus.call<
+      { skillId: string; scope: 'global' },
+      { description: string; files: Array<{ path: string; contents: string }> }
+    >('skills:get', h.ctx(), { skillId: 'helper', scope: 'global' });
+    expect(detail.description).toBe('A helper (edited).');
+    expect(detail.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]); // NOT wiped
+  });
+
+  it('PUT with a name not matching the path id is 400 and copies no files', async () => {
+    // A manifest whose `name` differs from the path id must be rejected and
+    // must NOT promote/copy the path id's bundle onto the parsed id. (Regression
+    // for the metadata-only-save / name-mismatch file-copy edge.)
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+    await h.bus.call('skills:upsert', h.ctx(), {
+      manifestYaml: 'name: helper\ndescription: A helper.\nversion: 1\n',
+      bodyMd: '# helper\n',
+      files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+      scope: 'global',
+    });
+
+    const { res, statusOf, bodyOf } = mkRes();
+    const mismatched = '---\nname: somethingelse\ndescription: x\nversion: 2\n---\n# x\n';
+    await handlers.update(mkReq({ params: { id: 'helper' }, body: { skillMd: mismatched } }), res);
+    expect(statusOf()).toBe(400);
+    expect((bodyOf() as { error?: string }).error).toMatch(/does not match/i);
+    // The would-be target id must not have been created (no file copy).
+    await expect(
+      h.bus.call('skills:get', h.ctx(), { skillId: 'somethingelse', scope: 'global' }),
+    ).rejects.toThrow();
+  });
+
+  it('maps catalog admit error codes to HTTP statuses', () => {
+    const cases: Array<[string, number]> = [
+      ['request-not-found', 404],
+      ['request-already-decided', 409],
+      ['cold-start-not-promotable', 400],
+      ['invalid-bundle-file', 400],
+    ];
+    for (const [code, status] of cases) {
+      const { res, statusOf } = mkRes();
+      const handled = writeServiceError(
+        res,
+        new PluginError({ code, plugin: '@ax/skills', message: 'x' }),
+      );
+      expect(handled).toBe(true);
+      expect(statusOf()).toBe(status);
     }
   });
 });

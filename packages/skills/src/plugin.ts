@@ -23,6 +23,7 @@ import { validateAttachmentBindings } from './attachment-validation.js';
 import { mergeUserWins, compareById } from './_merge.js';
 import { registerAdminSkillsRoutes } from './admin-routes.js';
 import { registerSettingsSkillsRoutes } from './settings-routes.js';
+import { registerCatalogRoutes } from './catalog-routes.js';
 import {
   SkillsCheckForUpdatesOutputSchema,
   SkillsDeleteOutputSchema,
@@ -909,6 +910,8 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
         routeUnregisters.push(...adminUnregisters);
         const settingsUnregisters = await registerSettingsSkillsRoutes(bus, initCtx);
         routeUnregisters.push(...settingsUnregisters);
+        const catalogUnregisters = await registerCatalogRoutes(bus, initCtx);
+        routeUnregisters.push(...catalogUnregisters);
       } catch (err) {
         while (routeUnregisters.length > 0) {
           const fn = routeUnregisters.pop();

@@ -17,7 +17,13 @@
  * convenience; the gate is on the server.
  */
 
-import type { SkillDetail, SkillSummary } from '@ax/skills';
+import type { SkillDetail, SkillSummary, SkillTier } from '@ax/skills';
+
+/** A catalog row as the admin Catalog tab sees it: a summary plus the
+ * server-derived risk tier (the set the broker proposes from). `tier` is
+ * computed server-side via classifyTier — never re-derived on the client.
+ * Typed optional so existing fixtures stay valid; the server always sets it. */
+export type CatalogSkillSummary = SkillSummary & { tier?: SkillTier };
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -35,9 +41,9 @@ async function handleResponse(res: Response): Promise<unknown> {
   return res.json();
 }
 
-export async function listSkills(): Promise<SkillSummary[]> {
+export async function listSkills(): Promise<CatalogSkillSummary[]> {
   const res = await fetch('/admin/skills', { credentials: 'include' });
-  const body = (await handleResponse(res)) as { skills: SkillSummary[] };
+  const body = (await handleResponse(res)) as { skills: CatalogSkillSummary[] };
   return body.skills;
 }
 
@@ -46,6 +52,31 @@ export async function getSkill(skillId: string): Promise<SkillDetail> {
     credentials: 'include',
   });
   return (await handleResponse(res)) as SkillDetail;
+}
+
+/** Like getSkill, but returns null on 404 (used by the admit review's diff:
+ * a share request for a brand-new id has no existing catalog version). */
+export async function getSkillOrNull(skillId: string): Promise<SkillDetail | null> {
+  const res = await fetch(`/admin/skills/${encodeURIComponent(skillId)}`, {
+    credentials: 'include',
+  });
+  if (res.status === 404) return null;
+  return (await handleResponse(res)) as SkillDetail;
+}
+
+/** Flip a catalog skill's org-default flag without re-sending SKILL.md.
+ * Server re-upserts preserving the bundle (PATCH route, bundle-safe). */
+export async function setSkillDefaultAttached(
+  skillId: string,
+  defaultAttached: boolean,
+): Promise<void> {
+  const res = await fetch(`/admin/skills/${encodeURIComponent(skillId)}`, {
+    method: 'PATCH',
+    headers: writeHeaders,
+    credentials: 'include',
+    body: JSON.stringify({ defaultAttached }),
+  });
+  await handleResponse(res);
 }
 
 /**

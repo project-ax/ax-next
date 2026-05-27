@@ -5,13 +5,16 @@ import type {
   SkillsGetOutput,
   SkillsUpsertInput,
   SkillsUpsertOutput,
+  SkillTier,
 } from './types.js';
+import { classifyTier } from './catalog-tier.js';
 import {
   requireAdmin,
   parseRequestBody,
   writeServiceError,
   splitSkillMd,
   upsertBodySchema,
+  patchDefaultBodySchema,
   type RouteRequest,
   type RouteResponse,
 } from './_routes-shared.js';
@@ -64,6 +67,7 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
   destroy: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   checkUpdate: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   refresh: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  setDefaultAttached: (req: RouteRequest, res: RouteResponse) => Promise<void>;
 } {
   const ctx = makeAgentContext({
     sessionId: 'skills-admin',
@@ -84,7 +88,15 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
           ctx,
           { scope: 'global' },
         );
-        res.status(200).json(out);
+        // Annotate each summary with its server-derived supply-chain tier
+        // (classifyTier is the single source of truth — never a stored column,
+        // never re-derived on the client). This is the set the broker proposes
+        // from (design §3).
+        const skills = out.skills.map((s) => ({
+          ...s,
+          tier: classifyTier(s.capabilities) satisfies SkillTier,
+        }));
+        res.status(200).json({ skills });
       } catch (err) {
         if (writeServiceError(res, err)) return;
         throw err;
@@ -212,6 +224,13 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         return;
       }
 
+      // Preserve a bundle's extra files on a SKILL.md-only edit by OMITTING
+      // `files` entirely: skills:upsert treats an absent `files` key as "leave
+      // the current bundle unchanged" (store.upsert only rewrites the tree when
+      // `files !== undefined`). Re-reading + re-sending the existing files would
+      // be redundant AND unsafe — a stale read could clobber a concurrent file
+      // change, and on a name-mismatch (caught only after the upsert below) it
+      // would copy this id's files onto the wrong parsed id before the 400.
       try {
         const out = await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
           'skills:upsert',
@@ -314,6 +333,58 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         throw err;
       }
     },
+
+    /** PATCH /admin/skills/:id — partial update: flip defaultAttached only.
+     * Re-upserts with the existing manifest/body (skills:upsert needs them) but
+     * OMITS `files`: an absent `files` key leaves the current bundle untouched
+     * (store.upsert only rewrites the tree when `files !== undefined`). Omitting
+     * is both the bundle-preserving AND the race-safe choice for the bundle —
+     * re-sending a stale `detail.files` read could clobber a concurrent file
+     * change.
+     *
+     * KNOWN LIMITATION (same class as plugin.ts's credential-purge race): the
+     * manifest/body are still read-then-written here because the store exposes
+     * only a full `upsert`, no flag-only setter. If a SKILL.md edit lands
+     * between this read and write, that edit is lost. The window is small and
+     * a default-flag toggle is rare; a proper fix needs a store-level atomic
+     * partial-update (or optimistic version check) primitive that doesn't yet
+     * exist — tracked as a follow-up. */
+    async setDefaultAttached(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireAdmin(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      const { id } = req.params;
+      if (!id) {
+        res.status(400).json({ error: 'missing skill id' });
+        return;
+      }
+      const parsedBody = parseRequestBody(req.body);
+      if (!parsedBody.ok) {
+        res.status(parsedBody.status).json({ error: parsedBody.message });
+        return;
+      }
+      const zr = patchDefaultBodySchema.safeParse(parsedBody.value);
+      if (!zr.success) {
+        res.status(400).json({ error: 'invalid-payload' });
+        return;
+      }
+      try {
+        const detail = await deps.bus.call<{ skillId: string; scope: 'global' }, SkillsGetOutput>(
+          'skills:get',
+          ctx,
+          { skillId: id, scope: 'global' },
+        );
+        await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', ctx, {
+          manifestYaml: detail.manifestYaml,
+          bodyMd: detail.bodyMd,
+          defaultAttached: zr.data.defaultAttached,
+          scope: 'global',
+        });
+        res.status(200).json({ skillId: id, defaultAttached: zr.data.defaultAttached });
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
   };
 }
 
@@ -327,7 +398,7 @@ export async function registerAdminSkillsRoutes(
 ): Promise<Array<() => void>> {
   const handlers = createAdminSkillsHandlers({ bus });
   const routes: Array<{
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     path: string;
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
@@ -335,6 +406,7 @@ export async function registerAdminSkillsRoutes(
     { method: 'GET', path: '/admin/skills/:id', handler: handlers.get },
     { method: 'POST', path: '/admin/skills', handler: handlers.create },
     { method: 'PUT', path: '/admin/skills/:id', handler: handlers.update },
+    { method: 'PATCH', path: '/admin/skills/:id', handler: handlers.setDefaultAttached },
     { method: 'DELETE', path: '/admin/skills/:id', handler: handlers.destroy },
     { method: 'POST', path: '/admin/skills/:id/check-update', handler: handlers.checkUpdate },
     { method: 'POST', path: '/admin/skills/:id/refresh-from-source', handler: handlers.refresh },
