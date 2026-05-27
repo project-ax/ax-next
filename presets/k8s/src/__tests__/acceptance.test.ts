@@ -1730,7 +1730,17 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         manifest: {
           name: AGENTS_STUB_NAME,
           version: '0.0.0',
-          registers: ['agents:resolve', 'agents:list-for-user'],
+          // Channel-web declares the Settings Connections skills hooks (TASK-42)
+          // as hard calls; the real preset loads @ax/skills, but this canary
+          // boots a stub set, so register no-op producers here to satisfy the
+          // bootstrap verifyCalls walk.
+          registers: [
+            'agents:resolve',
+            'agents:list-for-user',
+            'skills:list',
+            'skills:list-user-attachments',
+            'skills:detach-for-user',
+          ],
           calls: [],
           subscribes: [],
         },
@@ -1770,6 +1780,17 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             AGENTS_STUB_NAME,
             async () => ({ agents: [] as Array<unknown> }),
           );
+          bus.registerService('skills:list', AGENTS_STUB_NAME, async () => ({
+            skills: [] as Array<unknown>,
+          }));
+          bus.registerService(
+            'skills:list-user-attachments',
+            AGENTS_STUB_NAME,
+            async () => ({ attachments: [] as Array<unknown> }),
+          );
+          bus.registerService('skills:detach-for-user', AGENTS_STUB_NAME, async () => ({
+            removed: false,
+          }));
         },
       };
 
@@ -2164,7 +2185,17 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         manifest: {
           name: AGENTS_STUB_NAME,
           version: '0.0.0',
-          registers: ['agents:resolve', 'agents:list-for-user'],
+          // Channel-web declares the Settings Connections skills hooks (TASK-42)
+          // as hard calls; the real preset loads @ax/skills, but this canary
+          // boots a stub set, so register no-op producers here to satisfy the
+          // bootstrap verifyCalls walk.
+          registers: [
+            'agents:resolve',
+            'agents:list-for-user',
+            'skills:list',
+            'skills:list-user-attachments',
+            'skills:detach-for-user',
+          ],
           calls: [],
           subscribes: [],
         },
@@ -2202,6 +2233,17 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             AGENTS_STUB_NAME,
             async () => ({ agents: [] as Array<unknown> }),
           );
+          bus.registerService('skills:list', AGENTS_STUB_NAME, async () => ({
+            skills: [] as Array<unknown>,
+          }));
+          bus.registerService(
+            'skills:list-user-attachments',
+            AGENTS_STUB_NAME,
+            async () => ({ attachments: [] as Array<unknown> }),
+          );
+          bus.registerService('skills:detach-for-user', AGENTS_STUB_NAME, async () => ({
+            removed: false,
+          }));
         },
       };
 
