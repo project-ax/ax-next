@@ -107,6 +107,19 @@ describe('BundleReviewDialog', () => {
     expect(await screen.findByText('__proto__')).toBeTruthy();
   });
 
+  it('wires aria-describedby to a description (no Radix a11y warning)', async () => {
+    mockGetOrNull.mockResolvedValue(null);
+    render(<BundleReviewDialog request={SHARE_REQ} onClose={vi.fn()} onDecided={vi.fn()} />);
+    const dialog = await screen.findByRole('dialog');
+    const describedBy = dialog.getAttribute('aria-describedby');
+    expect(describedBy).toBeTruthy();
+    // The referenced element exists and carries the request description, so AT
+    // users get a real description rather than the warning being silenced.
+    const desc = document.getElementById(describedBy!);
+    expect(desc).not.toBeNull();
+    expect(desc?.textContent).toContain('Linear.');
+  });
+
   it('renders untrusted submitted contents as escaped text (no HTML injection)', async () => {
     mockGetOrNull.mockResolvedValue(null);
     render(

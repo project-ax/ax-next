@@ -84,6 +84,7 @@ function mkRes(): {
 function mkReq(opts: {
   body?: unknown;
   params?: Record<string, string>;
+  query?: Record<string, string>;
 }): RouteRequest {
   return {
     headers: {},
@@ -92,7 +93,7 @@ function mkReq(opts: {
         ? Buffer.alloc(0)
         : Buffer.from(JSON.stringify(opts.body)),
     cookies: {},
-    query: {},
+    query: opts.query ?? {},
     params: opts.params ?? {},
     signedCookie: () => null,
   };
@@ -282,6 +283,43 @@ describe('/admin/skills handlers', () => {
     const { res, statusOf } = mkRes();
     await handlers.get(mkReq({ params: { id: 'nonexistent' } }), res);
     expect(statusOf()).toBe(404);
+  });
+
+  // 9b. GET /admin/skills/nonexistent?missingOk=1 → 200 { skill: null }
+  // The Admit-queue diff probe asks "is there a current catalog version?" for a
+  // net-new share request. Without ?missingOk=1 the route 404s (correct REST),
+  // and the browser auto-logs that expected 404 as a console error. With the
+  // opt-in param the missing case is a clean 200 so the probe makes no noise.
+  it('GET /admin/skills/nonexistent?missingOk=1 returns 200 { skill: null }', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.get(
+      mkReq({ params: { id: 'nonexistent' }, query: { missingok: '1' } }),
+      res,
+    );
+    expect(statusOf()).toBe(200);
+    expect(bodyOf()).toEqual({ skill: null });
+  });
+
+  // 9c. GET /admin/skills/:id?missingOk=1 on an EXISTING skill → 200 { skill: <detail> }
+  it('GET /admin/skills/:id?missingOk=1 wraps an existing skill as { skill: detail }', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    const { res: r1 } = mkRes();
+    await handlers.create(mkReq({ body: { skillMd: SAMPLE_SKILL_MD } }), r1);
+
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.get(
+      mkReq({ params: { id: 'github' }, query: { missingok: '1' } }),
+      res,
+    );
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as { skill: { id: string; bodyMd: string } | null };
+    expect(body.skill).not.toBeNull();
+    expect(body.skill?.id).toBe('github');
+    expect(body.skill?.bodyMd).toContain('GitHub skill body');
   });
 
   // 10. DELETE /admin/skills/:id (no attachments) → 204
