@@ -88,6 +88,21 @@ describe('buildSystemPrompt', () => {
       expect(note).toContain('do not narrate');
       expect(note).toContain('re-ask');
     });
+
+    // TASK-56 (design §13): when a needed capability isn't in the catalog yet,
+    // the broker has filed an admit request — the agent should narrate
+    // "I've asked your admin to add it" (approval-pending), NOT surface an error.
+    it('the note narrates cold-start as an admin request, not an error', () => {
+      const note = capabilityHandoffNote().toLowerCase();
+      expect(note).toContain('asked your admin');
+      expect(note).toContain('not an error');
+    });
+
+    it('carries the cold-start narration on the empty-prompt preset append', () => {
+      const out = buildSystemPrompt('', WS, undefined);
+      const text = typeof out === 'string' ? out : (out.append ?? '');
+      expect(text.toLowerCase()).toContain('asked your admin');
+    });
   });
 
   describe('python venv note', () => {

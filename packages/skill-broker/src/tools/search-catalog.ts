@@ -8,7 +8,11 @@ export const SEARCH_CATALOG_DESCRIPTOR: ToolDescriptor = {
   description:
     'Search the capability catalog for skills that match what you are trying to do ' +
     '(e.g. "read my Linear issues"). Returns candidate skills, the hosts each reaches, ' +
-    'and any credential slots it needs. Call this before request_capability.',
+    'and any credential slots it needs. Call this before request_capability. ' +
+    'If the result is empty ({ skills: [] }), the catalog has nothing for that need yet ' +
+    'and a request to add it is filed for the administrator automatically — tell the user ' +
+    'you have asked your admin to add it and that you will be able to help once it is approved. ' +
+    'That is the expected outcome, not an error.',
   executesIn: 'host',
   inputSchema: {
     type: 'object',

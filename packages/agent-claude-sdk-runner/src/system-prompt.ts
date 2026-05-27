@@ -84,14 +84,24 @@ export function pythonVenvNote(): string {
 }
 
 /**
- * JIT capability-handoff note (design §7). When the agent connects a new
- * capability mid-conversation (via a connect/approval tool like
- * `request_capability`), the conversation re-spawns + resumes after the user
- * approves — so the agent should NOT narrate the mechanics, restate keys, or
- * ask the user to repeat their request; it should just answer the original
- * ask once it continues. Fixed runner-authored prose for the LLM — no
- * untrusted input. Harmless when no connect tool exists, so it's always
- * present (the open-mode happy path reads as one continuous answer).
+ * JIT capability-handoff note (design §7 + §13). Two cases, both fixed
+ * runner-authored prose for the LLM (no untrusted input):
+ *
+ *  1. CONNECT (§7): when the agent connects a new capability mid-conversation
+ *     (via a connect/approval tool like `request_capability`), the conversation
+ *     re-spawns + resumes after the user approves — so the agent should NOT
+ *     narrate the mechanics, restate keys, or ask the user to repeat their
+ *     request; it just answers the original ask once it continues.
+ *
+ *  2. COLD-START (§13): when a capability the agent needs isn't in the catalog
+ *     yet, the broker has already filed a request for the admin to add it. The
+ *     agent should narrate that as in-progress — "I've asked your admin to add
+ *     X; I'll be able to do this once it's approved" — and NOT surface it as an
+ *     error. (The broker fires this request automatically on a `search_catalog`
+ *     miss / `request_capability` not-found — TASK-53.)
+ *
+ * Harmless when no connect tool / catalog exists, so it's always present (the
+ * open-mode happy path reads as one continuous answer).
  */
 export function capabilityHandoffNote(): string {
   return [
@@ -100,6 +110,11 @@ export function capabilityHandoffNote(): string {
     `not restate any keys. Once the user approves, the conversation will continue`,
     `automatically — so do not ask the user to re-ask or repeat their request; just`,
     `answer their original request with the newly connected capability.`,
+    `If a capability you need isn't available yet (a catalog search or capability`,
+    `request comes back empty or not-found), a request to add it is filed for your`,
+    `administrator automatically — so tell the user you've asked your admin to add it`,
+    `and that you'll be able to help once it's approved. That is the expected outcome,`,
+    `not an error: say it warmly and don't report a failure.`,
   ].join(' ');
 }
 

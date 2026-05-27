@@ -13,7 +13,11 @@ export const REQUEST_CAPABILITY_DESCRIPTOR: ToolDescriptor = {
     'search_catalog results. The user will be asked to approve the hosts it reaches and ' +
     'enter any required keys. Do not narrate this step or restate any keys — the approval ' +
     'surface handles it. Once the user approves, the conversation will continue ' +
-    'automatically; do not ask the user to repeat their request.',
+    'automatically; do not ask the user to repeat their request. ' +
+    'If the result is { status: "not-found" }, the capability is not in the catalog yet ' +
+    'and a request to add it is filed for the administrator automatically — tell the user ' +
+    'you have asked your admin to add it and that you will be able to help once it is approved. ' +
+    'That is the expected outcome, not an error.',
   executesIn: 'host',
   inputSchema: {
     type: 'object',
