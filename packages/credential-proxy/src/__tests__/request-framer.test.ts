@@ -161,12 +161,46 @@ describe('RequestFramer', () => {
     expect(out.toString('latin1')).toContain('z'.repeat(50)); // flushed verbatim
   });
 
-  it('runs verbatim substitution on body bytes (Bearer-in-body keeps working)', () => {
+  it('substitutes placeholders in the head but leaves the body verbatim (header-only)', () => {
+    // Substitution is HEADER-ONLY. A placeholder in an auth header is resolved;
+    // the same placeholder leaked into the body is left as the inert fake token.
     const f = new RequestFramer(replacer, []);
     const body = `{"token":"${PH2}"}`;
-    const post = `POST /api HTTP/1.1\r\nHost: x\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+    const post =
+      `POST /api HTTP/1.1\r\nHost: x\r\n` +
+      `Authorization: Bearer ${PH}\r\n` +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
     const { out } = f.process(Buffer.from(post, 'latin1'));
-    expect(out.toString('latin1')).toContain(`"token":"${REAL2}"`);
+    const wire = out.toString('latin1');
+    expect(wire).toContain(`Bearer ${REAL}`); // header placeholder substituted
+    expect(wire).toContain(`"token":"${PH2}"`); // body placeholder LEFT VERBATIM
+    expect(wire).not.toContain(REAL2); // real secret never written into the body
+  });
+
+  it('leaves a body placeholder verbatim so Content-Length stays exact (Anthropic 400 regression)', () => {
+    // Regression for the production outage: a credential placeholder that leaked
+    // into the request BODY (e.g. the model dumped its env into the transcript)
+    // must NOT be substituted there. Substituting `ax-cred:<32hex>` for the real
+    // secret would change the body's byte length while the already-forwarded
+    // Content-Length stayed put, so the upstream reads the wrong number of body
+    // bytes and rejects with "request body is not valid JSON: unexpected end of
+    // data". It persists (placeholder stays in the transcript) and the reported
+    // column grows (the transcript grows each turn).
+    const f = new RequestFramer(replacer, []);
+    const body = `{"messages":[{"role":"user","content":"my key is ${PH}"}]}`;
+    const declared = Buffer.byteLength(body);
+    const post =
+      `POST /v1/messages HTTP/1.1\r\nHost: api.anthropic.com\r\n` +
+      `Content-Length: ${declared}\r\n\r\n${body}`;
+    const { out } = f.process(Buffer.from(post, 'latin1'));
+    const wire = out.toString('latin1');
+    const actualBody = wire.slice(wire.indexOf('\r\n\r\n') + 4);
+    // Body is byte-identical to what the client sent, and Content-Length still
+    // describes it exactly — the upstream sees a well-framed request.
+    expect(Buffer.byteLength(actualBody, 'latin1')).toBe(declared);
+    const m = wire.match(/Content-Length: (\d+)\r\n/i)!;
+    expect(Number(m[1])).toBe(Buffer.byteLength(actualBody, 'latin1'));
+    expect(wire).not.toContain(REAL); // real secret never written into the body
   });
 
   it('flags a canary in a Basic blob and stops at the head', () => {
@@ -232,6 +266,17 @@ describe('RequestFramer', () => {
       const { out, injected } = f.process(Buffer.from(wire, 'latin1'));
       expect(injected).toBe(true);
       expect(decodeAuth(out.toString('latin1'))).toBe(`oauth2:${REAL}`);
+    });
+
+    it('reports injected=false when a placeholder is only in the body (header-only substitution)', () => {
+      // A placeholder in the body is never substituted, so it must not count as
+      // an injection — credentialInjected must reflect header substitution only.
+      const f = new RequestFramer(replacer, []);
+      const body = `{"leaked":"${PH}"}`;
+      const post = `POST /api HTTP/1.1\r\nHost: x\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`;
+      const { injected, out } = f.process(Buffer.from(post, 'latin1'));
+      expect(injected).toBe(false);
+      expect(out.toString('latin1')).toContain(PH); // body placeholder left verbatim
     });
 
     it('reports injected=false when no placeholder is present, even though bytes are reframed', () => {

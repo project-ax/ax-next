@@ -2,8 +2,10 @@
  * MITM CONNECT path tests — Task 8.
  *
  * Three behaviors:
- *  (a) credential placeholders in client request bodies/headers are replaced
- *      with real values before the upstream sees them;
+ *  (a) credential placeholders in client request HEADERS are replaced with real
+ *      values before the upstream sees them — substitution is header-only; a
+ *      placeholder that leaked into the BODY is forwarded verbatim (see the
+ *      Anthropic-400 regression test);
  *  (b) a canary token in the decrypted body trips a 403 and the upstream
  *      never receives the request;
  *  (c) hostnames in `bypassMITM` skip the MITM path entirely and fall through
@@ -305,6 +307,64 @@ describe('proxy listener — HTTPS CONNECT (MITM)', () => {
     // The upstream MUST see the substituted real value, not the placeholder.
     expect(upInfo.captured.authorization).toBe('Bearer sk-real-secret-xyz');
     expect(upInfo.captured.authorization).not.toContain('ax-cred:');
+  });
+
+  it('forwards a body placeholder verbatim — no substitution, no truncation (Anthropic 400 regression)', async () => {
+    // End-to-end mirror of the production outage. The `ax-cred:<hex>` placeholder
+    // leaked into the conversation transcript (e.g. the model dumped its env), so
+    // it rides in the request BODY. Substituting it there would (1) grow the body
+    // past the already-sent Content-Length so the upstream rejects the request as
+    // "request body is not valid JSON: unexpected end of data", and (2) write a
+    // real secret into outbound message content. Substitution is header-only: the
+    // x-api-key/Authorization header is resolved; the body is byte-exact.
+    const ca = mintCA();
+    const upInfo = await startCapturingUpstream(ca);
+
+    const credMap = new CredentialPlaceholderMap();
+    // Real value deliberately LONGER than the 40-byte ax-cred:<hex> placeholder,
+    // matching a real Anthropic key — the exact case that overran Content-Length.
+    const realKey = 'sk-ant-' + 'x'.repeat(96);
+    const placeholder = credMap.register('ANTHROPIC_API_KEY', realKey);
+
+    const registry = new SharedCredentialRegistry();
+    registry.register('s1', credMap);
+
+    listener = await startProxyListener({
+      listen: { kind: 'tcp', host: '127.0.0.1', port: 0 },
+      registry,
+      ca,
+      sessions: new Map([
+        ['s1', { allowlist: new Set(['127.0.0.1']), allowedIPs: new Set(['127.0.0.1']) }],
+      ]),
+    });
+
+    const dispatcher = new ProxyAgent({
+      uri: `http://127.0.0.1:${listener.port}`,
+      requestTls: { ca: ca.cert },
+    });
+
+    // Placeholder in the BODY (the leak); the real key still travels in a header.
+    const body = JSON.stringify({
+      messages: [{ role: 'user', content: `my key is ${placeholder}` }],
+    });
+    const res = await fetch(`https://127.0.0.1:${upInfo.port}/v1/messages`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${placeholder}`, 'content-type': 'application/json' },
+      body,
+      dispatcher,
+    } as RequestInit);
+    expect(res.status).toBe(200);
+
+    await upInfo.gotRequest;
+    // Header credential IS substituted — the legitimate path still works.
+    expect(upInfo.captured.authorization).toBe(`Bearer ${realKey}`);
+    // Body is byte-for-byte identical to what the client sent. Equality proves
+    // Content-Length still described the body exactly (the upstream reads exactly
+    // Content-Length body bytes), i.e. no truncation; and the leaked placeholder
+    // stayed an inert token — the real secret was never written into the body.
+    expect(upInfo.captured.body).toBe(body);
+    expect(upInfo.captured.body).toContain(placeholder);
+    expect(upInfo.captured.body).not.toContain(realKey);
   });
 
   it('blocks request with 403 and never forwards to upstream when canary token present', async () => {

@@ -106,12 +106,26 @@ function parseBodyFraming(head: Buffer): BodyFraming {
  * Frames the decrypted client→upstream byte stream of one MITM connection into
  * HTTP/1.1 requests so each request head can be Basic-auth-transformed.
  *
- * - HEAD phase: buffer until `\r\n\r\n`, transform Basic auth, then route by framing.
+ * - HEAD phase: buffer until `\r\n\r\n`, transform Basic auth + verbatim
+ *   placeholder substitution over the head (headers only), then route by framing.
  * - Content-Length body: forward verbatim, count down, re-arm to HEAD (catches the
  *   next pipelined/keep-alive request — e.g. git's POST after the info/refs GET).
  * - Transfer-Encoding: chunked, or an oversized head: forward verbatim and stay in
- *   passthrough for the rest of the connection (git's chunked POST is terminal). I1:
- *   bodies are never rewritten beyond the existing verbatim placeholder substitution.
+ *   passthrough for the rest of the connection (git's chunked POST is terminal).
+ *
+ * CREDENTIAL SUBSTITUTION IS HEADER-ONLY. Bodies are forwarded byte-for-byte and
+ * never run through the replacer. Two reasons, both load-bearing:
+ *   1. Framing integrity — substituting a placeholder (`ax-cred:<32hex>`, 40 B)
+ *      for a real secret changes the body's byte length, but `Content-Length`
+ *      was already forwarded in the head. The upstream then reads the wrong
+ *      number of body bytes and rejects the request ("unexpected end of data").
+ *   2. Leak containment — every real credential path positions its secret in a
+ *      HEADER (Anthropic `x-api-key`, git `Authorization: Basic`, Bash `curl -H`).
+ *      A placeholder appearing in a BODY only happens when it leaked into the
+ *      conversation transcript (e.g. the model dumped its env). Resolving it
+ *      there would write the real secret into outbound message content — to the
+ *      intended host AND any other allowlisted host. Leaving bodies verbatim
+ *      keeps a leaked placeholder an inert fake token wherever it travels.
  */
 export class RequestFramer {
   private phase: Phase = 'head';
@@ -130,12 +144,14 @@ export class RequestFramer {
   process(chunk: Buffer): FramerOutput {
     const parts: Buffer[] = [];
     let injected = false;
-    // Verbatim substitution that also tracks whether anything was actually
+    // HEAD-ONLY substitution that also tracks whether anything was actually
     // replaced. `replaceAllBuffer` returns the input buffer by identity when no
     // placeholder is present, so `!==` is a precise "a credential was injected"
     // signal — unlike comparing final output to the input chunk (reframing alone
-    // changes the bytes without injecting anything).
-    const sub = (b: Buffer): Buffer => {
+    // changes the bytes without injecting anything). Bodies are NEVER passed
+    // through this — see the class docstring (framing integrity + leak
+    // containment).
+    const subHead = (b: Buffer): Buffer => {
       const r = this.replacer.replaceAllBuffer(b);
       if (r !== b) injected = true;
       return r;
@@ -143,12 +159,16 @@ export class RequestFramer {
     let working = chunk;
     for (;;) {
       if (this.phase === 'passthrough') {
-        if (working.length) parts.push(sub(working));
+        // Body bytes (chunked / oversized-head tail) forwarded verbatim — no
+        // substitution, so chunk-size framing and content stay byte-exact.
+        if (working.length) parts.push(working);
         break;
       }
       if (this.phase === 'body-counted') {
         const take = Math.min(working.length, this.bodyRemaining);
-        if (take > 0) parts.push(sub(working.subarray(0, take)));
+        // Verbatim: forward the exact body bytes the client sent so the
+        // already-forwarded Content-Length still describes them precisely.
+        if (take > 0) parts.push(working.subarray(0, take));
         this.bodyRemaining -= take;
         working = working.subarray(take);
         if (this.bodyRemaining > 0) break; // need more body bytes
@@ -162,7 +182,8 @@ export class RequestFramer {
       const idx = indexOfCrlfCrlf(this.headBuf);
       if (idx < 0) {
         if (this.headBuf.length > this.maxHead) {
-          parts.push(sub(this.headBuf));
+          // Oversized head = pre-terminator header bytes → header substitution.
+          parts.push(subHead(this.headBuf));
           this.headBuf = Buffer.alloc(0);
           this.phase = 'passthrough';
           this.opts.onOversizedHead?.();
@@ -178,14 +199,16 @@ export class RequestFramer {
       if (t.head !== head) injected = true; // a Basic placeholder was substituted
       // Verbatim substitution over the Basic-transformed head too, so a
       // placeholder carried verbatim in a non-Basic header (e.g. `Authorization:
-      // Bearer ax-cred:…`) is still replaced — matching the pre-framer behavior
-      // that ran `replaceAllBuffer` over the whole chunk. The Basic line already
-      // holds the re-encoded real value, so this can't double-substitute it.
-      parts.push(sub(t.head));
+      // Bearer ax-cred:…`) is still replaced. Scoped to the HEAD (headers only):
+      // the Basic line already holds the re-encoded real value, so this can't
+      // double-substitute it, and body bytes never reach the replacer.
+      parts.push(subHead(t.head));
       const framing = parseBodyFraming(head);
       if (framing.chunked) {
         this.phase = 'passthrough';
-        if (rest.length) parts.push(sub(rest));
+        // `rest` is the start of the chunked BODY — forward verbatim (no
+        // substitution) so chunk-size framing stays byte-exact.
+        if (rest.length) parts.push(rest);
         break;
       }
       if (framing.contentLength > 0) {
