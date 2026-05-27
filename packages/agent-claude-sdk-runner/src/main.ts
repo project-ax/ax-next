@@ -39,6 +39,7 @@ import { createLocalDispatcher } from './local-dispatcher.js';
 import { buildToolCacheEnv } from './tool-cache-env.js';
 import { buildHomeBinEnv } from './home-bin-env.js';
 import { buildTtyHintEnv } from './tty-hint-env.js';
+import { buildTelemetryEnv } from './telemetry-env.js';
 import { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
@@ -758,6 +759,13 @@ export async function main(): Promise<number> {
           // minimization, I5 — see tty-hint-env.ts / SECURITY.md).
           ...buildTtyHintEnv(),
           ...proxyStartup.anthropicEnv,
+          // TASK-55: kill the SDK CLI's telemetry / error-reporting phone-home
+          // (notably the datadoghq.com egress that otherwise raised a phantom
+          // reactive-wall card every JIT session). Spread AFTER anthropicEnv so
+          // these are a non-negotiable security FLOOR that wins on any conflict
+          // — unlike the tty-hints above, which are overridable defaults. See
+          // telemetry-env.ts for the verified gate chain and ordering contract.
+          ...buildTelemetryEnv(),
           HOME: env.workspaceRoot,
           // Redirect npx/uvx fetch caches onto the ephemeral tier so they
           // don't land in HOME=/permanent and get bundled to the host each

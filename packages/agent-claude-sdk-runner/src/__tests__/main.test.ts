@@ -476,6 +476,9 @@ describe('main()', () => {
           LINES?: string;
           FORCE_COLOR?: string;
           CI?: string;
+          CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC?: string;
+          DISABLE_TELEMETRY?: string;
+          DISABLE_ERROR_REPORTING?: string;
         };
       };
     };
@@ -550,6 +553,20 @@ describe('main()', () => {
     expect(queryArg.options.env.TERM?.length).toBeGreaterThan(0);
     expect(queryArg.options.env.COLUMNS).toBeDefined();
     expect(queryArg.options.env.LINES).toBeDefined();
+
+    // TASK-55: the runner MUST spawn the SDK with telemetry / error-reporting
+    // disabled so the vendored claude CLI never phones home to datadoghq.com
+    // (which otherwise raised a phantom reactive egress-wall card every JIT
+    // session). These flags are spread AFTER ...proxyStartup.anthropicEnv as a
+    // non-negotiable security floor; none are in proxy-startup's ENV_ALLOWLIST,
+    // so a forwarded value can't override them — assert the exact '1'. A
+    // regression that drops the buildTelemetryEnv() spread (re-enabling the
+    // egress) fails here.
+    expect(
+      queryArg.options.env.CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC,
+    ).toBe('1');
+    expect(queryArg.options.env.DISABLE_TELEMETRY).toBe('1');
+    expect(queryArg.options.env.DISABLE_ERROR_REPORTING).toBe('1');
 
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });
