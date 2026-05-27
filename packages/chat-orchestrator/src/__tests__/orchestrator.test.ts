@@ -11,6 +11,7 @@ import {
 } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createChatOrchestratorPlugin } from '../index.js';
+import { withBrokerDefaults } from '../orchestrator.js';
 
 // Default agent stub — every test gets its own copy via spread to avoid
 // accidental mutation. Mirrors @ax/agents' AgentRecord shape (the
@@ -1053,10 +1054,167 @@ describe('chat-orchestrator', () => {
     expect(last.owner.agentId).toBe('a-resolved');
     expect(last.owner.agentConfig).toEqual({
       systemPrompt: 'you are a poet',
-      allowedTools: ['file.read', 'bash.exec'],
+      // TASK-51: this agent is non-wildcard (explicit tools + mcpConfigIds), so
+      // the two always-on broker tools are locked into the frozen allowedTools
+      // at session-open. The agent's own tools come first, broker tools appended.
+      allowedTools: ['file.read', 'bash.exec', 'search_catalog', 'request_capability'],
       mcpConfigIds: ['mcp-1'],
       model: 'claude-opus-4-7',
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // TASK-51 (JIT §P4) — the always-on broker tools (search_catalog +
+  // request_capability) are locked into every MULTI-TENANT (non-wildcard)
+  // agent's effective allowedTools at session-open, while the empty-empty
+  // wildcard sentinel is preserved. We assert on the frozen agentConfig that
+  // flows into sandbox:open-session (lastSandboxInput.owner.agentConfig).
+  // -------------------------------------------------------------------------
+
+  // Replace sandbox:open-session with a happy-path version that records the
+  // input and fires chat:end, so the orchestrator returns `complete`. Returns
+  // a getter for the frozen agentConfig the orchestrator passed through.
+  function withRecordingOpenSession(
+    mocks: MockBundle,
+    getBus: () => HookBus | null,
+  ): () => { allowedTools: string[]; mcpConfigIds: string[] } {
+    mocks.services['sandbox:open-session'] = async (ctx, input: unknown) => {
+      mocks.calls.sandboxOpen += 1;
+      mocks.calls.lastSandboxInput = input;
+      const sessionId = (input as { sessionId: string }).sessionId;
+      const originatingReqId = ctx.reqId;
+      setImmediate(() => {
+        void getBus()!.fire(
+          'chat:end',
+          makeAgentContext({
+            sessionId,
+            agentId: 'a-resolved',
+            userId: 'test-user',
+            reqId: originatingReqId,
+            logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+          }),
+          { outcome: { kind: 'complete', messages: [] } },
+        );
+      });
+      return {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+      };
+    };
+    return () => {
+      const last = mocks.calls.lastSandboxInput as {
+        owner: { agentConfig: { allowedTools: string[]; mcpConfigIds: string[] } };
+      };
+      return last.owner.agentConfig;
+    };
+  }
+
+  it('TASK-51: locks broker tools into a non-wildcard agent (allowedTools-based scope)', async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: { ...TEST_AGENT, id: 'a-resolved', allowedTools: ['file.read'], mcpConfigIds: [] },
+      }),
+    });
+    let busRef: HookBus | null = null;
+    const getConfig = withRecordingOpenSession(mocks, () => busRef);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/x', chatTimeoutMs: 5_000 })],
+    });
+    busRef = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('s1'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    // Agent's own tool first, broker tools appended (order-stable).
+    expect(getConfig().allowedTools).toEqual([
+      'file.read',
+      'search_catalog',
+      'request_capability',
+    ]);
+  });
+
+  it('TASK-51: PRESERVES the empty-empty wildcard sentinel (no broker injection)', async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: { ...TEST_AGENT, id: 'a-resolved', allowedTools: [], mcpConfigIds: [] },
+      }),
+    });
+    let busRef: HookBus | null = null;
+    const getConfig = withRecordingOpenSession(mocks, () => busRef);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/x', chatTimeoutMs: 5_000 })],
+    });
+    busRef = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('s2'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    // Wildcard agent already sees the whole catalog (incl. broker) via
+    // filterByAgentScope — injecting would SHRINK it to broker-only. Untouched.
+    expect(getConfig().allowedTools).toEqual([]);
+  });
+
+  it('TASK-51: locks broker tools into an mcpConfig-only (non-wildcard) agent', async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: { ...TEST_AGENT, id: 'a-resolved', allowedTools: [], mcpConfigIds: ['mcp-1'] },
+      }),
+    });
+    let busRef: HookBus | null = null;
+    const getConfig = withRecordingOpenSession(mocks, () => busRef);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/x', chatTimeoutMs: 5_000 })],
+    });
+    busRef = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('s3'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    // Non-wildcard via mcpConfigIds → allowedTools was [] but gets the broker
+    // tools (the agent's mcp tools still come through the mcpConfigIds path).
+    expect(getConfig().allowedTools).toEqual(['search_catalog', 'request_capability']);
+    expect(getConfig().mcpConfigIds).toEqual(['mcp-1']);
+  });
+
+  it('TASK-51: does not duplicate a broker tool the agent already lists', async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          id: 'a-resolved',
+          allowedTools: ['search_catalog', 'file.read'],
+          mcpConfigIds: [],
+        },
+      }),
+    });
+    let busRef: HookBus | null = null;
+    const getConfig = withRecordingOpenSession(mocks, () => busRef);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/x', chatTimeoutMs: 5_000 })],
+    });
+    busRef = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('s4'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    // search_catalog already present → not duplicated; request_capability added.
+    expect(getConfig().allowedTools).toEqual([
+      'search_catalog',
+      'file.read',
+      'request_capability',
+    ]);
   });
 
   it('agents:resolve throwing a non-PluginError → terminated outcome with the bus-wrapped code', async () => {
@@ -3584,5 +3742,44 @@ describe('chat-orchestrator — reactive egress wall (TASK-37)', () => {
     await fire('other.example.com'); // distinct host → new card
     expect(cards).toHaveLength(2);
     await settle();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// withBrokerDefaults — pure unit tests for the TASK-51 smart-defaults helper.
+// The integration tests above prove it's wired into session-open; these pin
+// the helper's contract directly (wildcard preservation, append-only, dedup).
+// ---------------------------------------------------------------------------
+describe('withBrokerDefaults', () => {
+  const BROKER = ['search_catalog', 'request_capability'];
+
+  it('returns the empty-empty wildcard unchanged', () => {
+    expect(withBrokerDefaults([], [])).toEqual([]);
+  });
+
+  it('appends both broker tools to a non-wildcard allowedTools (order-stable)', () => {
+    expect(withBrokerDefaults(['file.read'], [])).toEqual(['file.read', ...BROKER]);
+  });
+
+  it('treats an mcpConfigIds-only scope as non-wildcard', () => {
+    expect(withBrokerDefaults([], ['mcp-1'])).toEqual([...BROKER]);
+  });
+
+  it('dedups a broker tool the agent already lists', () => {
+    expect(withBrokerDefaults(['request_capability'], [])).toEqual([
+      'request_capability',
+      'search_catalog',
+    ]);
+  });
+
+  it('is idempotent — re-applying does not duplicate', () => {
+    const once = withBrokerDefaults(['file.read'], []);
+    expect(withBrokerDefaults(once, [])).toEqual(once);
+  });
+
+  it('does not mutate the input array', () => {
+    const input = ['file.read'];
+    withBrokerDefaults(input, []);
+    expect(input).toEqual(['file.read']);
   });
 });
