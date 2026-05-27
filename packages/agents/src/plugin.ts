@@ -392,6 +392,10 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           //    write time). skills:upsert's parseSkillManifest is the single
           //    authority that validates host/slot SHAPES (invalid-host/-slot).
           const slots = input.slots.map((s) => ({ slot: s, kind: 'api-key' as const }));
+          const reqPackages = {
+            npm: input.packages?.npm ?? [],
+            pypi: input.packages?.pypi ?? [],
+          };
           const manifestYaml = buildSkillManifestYaml({
             id: bundle.id,
             description: bundle.description,
@@ -400,7 +404,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
               allowedHosts: input.hosts,
               credentials: slots,
               mcpServers: [],
-              packages: { npm: [], pypi: [] },
+              packages: reqPackages,
             },
           });
 
@@ -469,7 +473,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             }
           }
 
-          return { description: bundle.description, hosts: input.hosts, slots };
+          return { description: bundle.description, hosts: input.hosts, slots, packages: reqPackages };
         },
         { returns: AgentsInstallAuthoredSkillOutputSchema },
       );

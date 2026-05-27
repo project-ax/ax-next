@@ -12,7 +12,7 @@
  * workspace is a SINGLE shared store keyed only on optimistic-concurrency
  * `parent`, so each test seeds + retires by chaining the version.
  */
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -150,6 +150,30 @@ function ctx(agentId: string) {
   return makeAgentContext({ sessionId: 's', agentId, userId: 'user-1', conversationId: 'cnv-1' });
 }
 
+/**
+ * Spy on `bus.call` to capture the `manifestYaml` passed to `skills:upsert`,
+ * while still delegating every call (including the upsert) to the real
+ * implementation. Returns the captured YAML getter + a restore() to undo the spy.
+ */
+function captureSkillsUpsertYaml(h: TestHarness): {
+  getYaml: () => string | undefined;
+  restore: () => void;
+} {
+  // eslint-disable-next-line @typescript-eslint/unbound-method
+  const originalCall = h.bus.call.bind(h.bus);
+  let captured: string | undefined;
+  const spy = vi
+    .spyOn(h.bus, 'call')
+    .mockImplementation(async (hookName: string, ctx2: unknown, input: unknown) => {
+      if (hookName === 'skills:upsert') {
+        captured = (input as { manifestYaml: string }).manifestYaml;
+      }
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      return originalCall(hookName as any, ctx2 as any, input as any);
+    });
+  return { getYaml: () => captured, restore: () => spy.mockRestore() };
+}
+
 describe('agents:install-authored-skill', () => {
   it('upserts a user-scoped skill with the bundle files + requested caps, then retires the draft', async () => {
     const h = await makeHarness();
@@ -180,6 +204,7 @@ describe('agents:install-authored-skill', () => {
       description: 'Take notes',
       hosts: ['api.example.com'],
       slots: [{ slot: 'API_KEY', kind: 'api-key' }],
+      packages: { npm: [], pypi: [] },
     });
 
     // The user-scoped skill now exists WITH the helper file + the requested caps.
@@ -254,5 +279,71 @@ describe('agents:install-authored-skill', () => {
 
     const paths = await listWorkspace(h, 'user-1', agentId);
     expect(paths.some((p) => p.startsWith('.ax/skills/solo/'))).toBe(false);
+  });
+
+  it('threads requested packages into the promoted manifest; mcpServers stays empty', async () => {
+    const h = await makeHarness();
+    const agentId = await createPersonalAgent(h, 'user-1');
+    await seedFile(
+      h,
+      '.ax/skills/pkgskill/SKILL.md',
+      '---\nname: pkgskill\ndescription: Package skill\nversion: 1\n---\nBody',
+      'user-1',
+      agentId,
+      null,
+    );
+
+    const capture = captureSkillsUpsertYaml(h);
+
+    const out = await h.bus.call<
+      AgentsInstallAuthoredSkillInput,
+      AgentsInstallAuthoredSkillOutput
+    >('agents:install-authored-skill', ctx(agentId), {
+      agentId,
+      skillId: 'pkgskill',
+      hosts: [],
+      slots: [],
+      packages: { npm: ['cowsay'], pypi: [] },
+    });
+
+    capture.restore();
+    const capturedManifestYaml = capture.getYaml() ?? '';
+    expect(out.packages).toEqual({ npm: ['cowsay'], pypi: [] });
+    expect(capturedManifestYaml).toMatch(/^\s*packages:/m);
+    expect(capturedManifestYaml).toContain('cowsay');
+    expect(capturedManifestYaml).not.toMatch(/^\s*mcpServers:/m);
+  });
+
+  it('omits packages from the manifest when none requested (back-compat)', async () => {
+    const h = await makeHarness();
+    const agentId = await createPersonalAgent(h, 'user-1');
+    await seedFile(
+      h,
+      '.ax/skills/nopkg/SKILL.md',
+      '---\nname: nopkg\ndescription: No packages skill\nversion: 1\n---\nBody',
+      'user-1',
+      agentId,
+      null,
+    );
+
+    const capture = captureSkillsUpsertYaml(h);
+
+    const out = await h.bus.call<
+      AgentsInstallAuthoredSkillInput,
+      AgentsInstallAuthoredSkillOutput
+    >('agents:install-authored-skill', ctx(agentId), {
+      agentId,
+      skillId: 'nopkg',
+      hosts: [],
+      slots: [],
+      // No packages field — tests back-compat with callers that don't pass it.
+    });
+
+    capture.restore();
+    const capturedManifestYaml = capture.getYaml() ?? '';
+    expect(out.packages).toEqual({ npm: [], pypi: [] });
+    // The YAML key 'packages:' must be absent (the description may contain the word "packages").
+    expect(capturedManifestYaml).not.toMatch(/^\s*packages:/m);
+    expect(capturedManifestYaml).not.toMatch(/^\s*mcpServers:/m);
   });
 });

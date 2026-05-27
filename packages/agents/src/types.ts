@@ -313,18 +313,22 @@ export interface AgentsInstallAuthoredSkillInput {
   hosts: string[];
   /** Credential slot names the skill needs (user-approved on the card). */
   slots: string[];
+  /** Package ecosystems the skill needs (user-approved on the card). Optional; default none. */
+  packages?: { npm?: string[]; pypi?: string[] };
 }
 export interface AgentsInstallAuthoredSkillOutput {
   /** From the authored SKILL.md — shown on the card. */
   description: string;
   hosts: string[];
   slots: { slot: string; kind: 'api-key' }[];
+  packages: { npm: string[]; pypi: string[] };
 }
 
 export const AgentsInstallAuthoredSkillOutputSchema = z.object({
   description: z.string(),
   hosts: z.array(z.string()),
   slots: z.array(z.object({ slot: z.string(), kind: z.literal('api-key') })),
+  packages: z.object({ npm: z.array(z.string()), pypi: z.array(z.string()) }),
 }) as unknown as ZodType<AgentsInstallAuthoredSkillOutput>;
 
 // --- Plugin config -----------------------------------------------------------
