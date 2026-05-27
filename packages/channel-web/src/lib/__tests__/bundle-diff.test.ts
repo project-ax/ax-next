@@ -66,4 +66,23 @@ describe('compareBundles', () => {
     // sorted by path
     expect(entries.map((e) => e.path)).toEqual(['SKILL.md', 'gone.txt', 'new.txt', 'scripts/a.py']);
   });
+
+  it('does NOT drop a file whose path is a magic key like __proto__', () => {
+    // `__proto__` is a VALID bundle path (lowercase + underscores pass the
+    // server PATH_RE and it is not reserved), and catalog:admit promotes it
+    // verbatim. A plain {} map would treat map['__proto__'] = ... as the
+    // prototype setter, so Object.keys would omit it from the review diff —
+    // a file admitted but never shown. Null-prototype maps keep it visible.
+    const before = Object.create(null) as Record<string, string>;
+    const after = Object.create(null) as Record<string, string>;
+    after['__proto__'] = 'evil contents';
+    after['constructor'] = 'also tricky';
+    const entries = compareBundles(before, after);
+    const paths = entries.map((e) => e.path);
+    expect(paths).toContain('__proto__');
+    expect(paths).toContain('constructor');
+    const proto = entries.find((e) => e.path === '__proto__')!;
+    expect(proto.status).toBe('added');
+    expect(proto.after).toBe('evil contents');
+  });
 });

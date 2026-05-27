@@ -89,6 +89,24 @@ describe('BundleReviewDialog', () => {
     );
   });
 
+  it('shows a submitted file even when its path is a magic key (__proto__)', async () => {
+    // `__proto__` is a valid bundle path that catalog:admit promotes verbatim;
+    // it must appear in the review diff, not be silently hidden by a plain-{}
+    // prototype setter. (Regression for the null-prototype-map fix.)
+    mockGetOrNull.mockResolvedValue(null);
+    render(
+      <BundleReviewDialog
+        request={{
+          ...SHARE_REQ,
+          files: [{ path: '__proto__', contents: 'sneaky payload' }],
+        }}
+        onClose={vi.fn()}
+        onDecided={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText('__proto__')).toBeTruthy();
+  });
+
   it('renders untrusted submitted contents as escaped text (no HTML injection)', async () => {
     mockGetOrNull.mockResolvedValue(null);
     render(

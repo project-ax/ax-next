@@ -14,9 +14,17 @@ export interface BundleReviewDialogProps {
   onDecided: () => void;
 }
 
-/** Build a path→contents map from a request's snapshot (SKILL.md first). */
+/** Build a path→contents map from a request's snapshot (SKILL.md first).
+ *
+ * Uses a NULL-PROTOTYPE map: a submitted bundle path is untrusted and `__proto__`
+ * / `constructor` / `prototype` are all VALID bundle paths (lowercase + the
+ * server PATH_RE accepts them) that catalog:admit promotes verbatim. On a plain
+ * `{}` map, `map['__proto__'] = ...` hits the prototype setter instead of
+ * creating an own key, so `Object.keys` (used by compareBundles) would silently
+ * drop that file from the review diff — admitted but never shown to the
+ * reviewer. `Object.create(null)` makes every path a plain own key. */
 function submittedFiles(req: CatalogRequest): Record<string, string> {
-  const map: Record<string, string> = {};
+  const map = Object.create(null) as Record<string, string>;
   if (req.manifestYaml !== null && req.bodyMd !== null) {
     map['SKILL.md'] = reconstructSkillMd(req.manifestYaml, req.bodyMd);
   }
@@ -42,7 +50,8 @@ export function BundleReviewDialog({ request, onClose, onDecided }: BundleReview
         // Diff the submitted bundle against the current catalog version (if any).
         const current = await getSkillOrNull(request.skillId);
         if (cancelled) return;
-        const before: Record<string, string> = {};
+        // Null-prototype for the same magic-key reason as submittedFiles().
+        const before = Object.create(null) as Record<string, string>;
         if (current !== null) {
           before['SKILL.md'] = reconstructSkillMd(current.manifestYaml, current.bodyMd);
           for (const f of current.files) before[f.path] = f.contents;
