@@ -1,4 +1,5 @@
 import { makeAgentContext, PluginError, type HookBus, type ToolDescriptor } from '@ax/core';
+import { fireColdStartSubmit } from './coldstart.js';
 
 const PLUGIN_NAME = '@ax/skill-broker';
 // Re-validated independently at this trust boundary (I2/I5) — the broker never
@@ -104,6 +105,16 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
         );
       } catch (err) {
         if (err instanceof PluginError && err.code === 'skill-not-found') {
+          // Cold-start (design §13): the requested capability isn't in the
+          // catalog, so file a deduped admit-queue request — "a user needed X" —
+          // for the admin to source. The skillId is already SKILL_ID_RE-validated
+          // above, so it doubles as the dedup slug; the description is a fixed
+          // host template (no free model text on this path). Best-effort: a
+          // failed/absent submit never changes this not-found result.
+          await fireColdStartSubmit(bus, toolCtx, {
+            skillId,
+            description: `A user requested the '${skillId}' capability, which isn't in the catalog yet.`,
+          });
           return { status: 'not-found', skillId };
         }
         throw err;

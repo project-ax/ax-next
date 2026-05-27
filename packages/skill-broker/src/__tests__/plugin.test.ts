@@ -18,10 +18,21 @@ function busWithStubs(
     linearCredentials?: Array<{ slot: string; kind: 'api-key'; account?: string }>;
     /** when true, register a credentials:list stub seeded with `vaultRefs`. */
     withVault?: boolean;
+    /** when false, do NOT register the catalog:submit stub (degrade path). default true. */
+    withCatalogSubmit?: boolean;
+    /** when true, skills:search-catalog returns [] for ANY intent (force a miss). */
+    searchAlwaysEmpty?: boolean;
   } = {},
 ) {
   const bus = new HookBus();
   const registered: string[] = [];
+  // Cold-start admit-queue submissions captured for assertions (TASK-53).
+  const coldStarts: Array<{
+    kind: string;
+    skillId: string;
+    requestedByUserId: string;
+    description: string;
+  }> = [];
   const linearCredentials = opts.linearCredentials ?? [{ slot: 'api_key', kind: 'api-key' }];
   // The user's existing vault entries (account:<service> refs). A closure the
   // test flips via setVault before invoking the tool.
@@ -36,17 +47,18 @@ function busWithStubs(
   bus.registerService('skills:search-catalog', 'skills', async (_c, input: unknown) => {
     const intent = ((input as { intent?: string }).intent ?? '').trim();
     return {
-      skills: intent
-        ? [
-            {
-              id: 'linear',
-              description: 'Linear',
-              tier: 'bounded',
-              hosts: ['api.linear.app'],
-              slots: ['API_KEY'],
-            },
-          ]
-        : [],
+      skills:
+        intent && opts.searchAlwaysEmpty !== true
+          ? [
+              {
+                id: 'linear',
+                description: 'Linear',
+                tier: 'bounded',
+                hosts: ['api.linear.app'],
+                slots: ['API_KEY'],
+              },
+            ]
+          : [],
     };
   });
   bus.registerService('skills:get', 'skills', async (_c, input: unknown) => {
@@ -76,7 +88,15 @@ function busWithStubs(
       })),
     }));
   }
-  return { bus, registered, setVault };
+  if (opts.withCatalogSubmit !== false) {
+    // The admit-queue submit hook (owned by @ax/skills in production). The
+    // broker fires kind:'cold-start' on a search/request miss (TASK-53, §13).
+    bus.registerService('catalog:submit', 'skills', async (_c, input: unknown) => {
+      coldStarts.push(input as never);
+      return { requestId: 'req_stub', created: true, status: 'pending' };
+    });
+  }
+  return { bus, registered, setVault, coldStarts };
 }
 
 describe('createSkillBrokerPlugin — search_catalog', () => {
@@ -103,6 +123,62 @@ describe('createSkillBrokerPlugin — search_catalog', () => {
       input: { intent: 'linear issues' },
     });
     expect((out as { skills: Array<{ id: string }> }).skills[0]?.id).toBe('linear');
+  });
+});
+
+// TASK-53 (design §13) — a search_catalog MISS (no candidates) also files a
+// cold-start admit-queue request, carrying the untrusted free-text intent as the
+// (clamped) description and a locally-derived dedup slug as the skillId. The
+// returned (empty) result is unchanged.
+describe('search_catalog — cold-start admit-queue trigger (TASK-53)', () => {
+  it('files a cold-start catalog:submit when the catalog returns no candidates', async () => {
+    // searchAlwaysEmpty forces the catalog stub to miss for any intent.
+    const { bus, coldStarts } = busWithStubs({ searchAlwaysEmpty: true });
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const out = await bus.call('tool:execute:search_catalog', ctx, {
+      name: 'search_catalog',
+      input: { intent: 'Read my Notion pages' },
+    });
+    expect(out).toEqual({ skills: [] });
+    expect(coldStarts).toEqual([
+      {
+        kind: 'cold-start',
+        skillId: 'read-my-notion-pages',
+        requestedByUserId: 'u',
+        description: 'Read my Notion pages',
+      },
+    ]);
+  });
+
+  it('files NO cold-start when the catalog returns at least one candidate', async () => {
+    const { bus, coldStarts } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    await bus.call('tool:execute:search_catalog', ctx, {
+      name: 'search_catalog',
+      input: { intent: 'linear issues' },
+    });
+    expect(coldStarts).toEqual([]);
+  });
+
+  it('files NO cold-start for an empty/whitespace intent (no signal to file)', async () => {
+    const { bus, coldStarts } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    // The default stub returns [] for an empty intent.
+    await bus.call('tool:execute:search_catalog', ctx, {
+      name: 'search_catalog',
+      input: { intent: '   ' },
+    });
+    expect(coldStarts).toEqual([]);
+  });
+
+  it('still returns the empty result when catalog:submit is unavailable (degrade)', async () => {
+    const { bus } = busWithStubs({ withCatalogSubmit: false, searchAlwaysEmpty: true });
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const out = await bus.call('tool:execute:search_catalog', ctx, {
+      name: 'search_catalog',
+      input: { intent: 'something the catalog lacks' },
+    });
+    expect(out).toEqual({ skills: [] });
   });
 });
 
@@ -154,6 +230,62 @@ describe('createSkillBrokerPlugin — request_capability', () => {
         input: { skillId: '../evil' },
       }),
     ).rejects.toThrow(/valid catalog/i);
+  });
+});
+
+// TASK-53 (design §13) — a request_capability MISS files a cold-start admit-queue
+// request so the unmet need reaches the admin. The model-facing return is
+// unchanged (still {status:'not-found'}); the submit is a best-effort side-effect.
+describe('request_capability — cold-start admit-queue trigger (TASK-53)', () => {
+  it('files a cold-start catalog:submit on a not-found miss (return unchanged)', async () => {
+    const { bus, coldStarts } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const out = await bus.call('tool:execute:request_capability', ctx, {
+      name: 'request_capability',
+      input: { skillId: 'ghost' },
+    });
+    expect(out).toEqual({ status: 'not-found', skillId: 'ghost' });
+    expect(coldStarts).toEqual([
+      {
+        kind: 'cold-start',
+        skillId: 'ghost',
+        // requestedByUserId comes from the authenticated ctx, never model input.
+        requestedByUserId: 'u',
+        description: expect.stringContaining("'ghost'") as unknown as string,
+      },
+    ]);
+  });
+
+  it('files NO cold-start when the skill IS in the catalog', async () => {
+    const { bus, coldStarts } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    await bus.call('tool:execute:request_capability', ctx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(coldStarts).toEqual([]);
+  });
+
+  it('files NO cold-start for a malformed skillId (throws before the catalog)', async () => {
+    const { bus, coldStarts } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    await expect(
+      bus.call('tool:execute:request_capability', ctx, {
+        name: 'request_capability',
+        input: { skillId: '../evil' },
+      }),
+    ).rejects.toThrow(/valid catalog/i);
+    expect(coldStarts).toEqual([]);
+  });
+
+  it('still returns not-found cleanly when catalog:submit is unavailable (degrade)', async () => {
+    const { bus } = busWithStubs({ withCatalogSubmit: false });
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const out = await bus.call('tool:execute:request_capability', ctx, {
+      name: 'request_capability',
+      input: { skillId: 'ghost' },
+    });
+    expect(out).toEqual({ status: 'not-found', skillId: 'ghost' });
   });
 });
 
