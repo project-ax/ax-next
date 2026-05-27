@@ -86,4 +86,69 @@ describe('buildSkillManifestYaml', () => {
     if (!result.ok) return;
     expect(result.value.version).toBe(5);
   });
+
+  it('serializes capabilities.packages when non-empty (round-trips)', () => {
+    const yaml = buildSkillManifestYaml({
+      id: 'demo',
+      description: 'd',
+      version: 1,
+      capabilities: {
+        allowedHosts: [],
+        credentials: [],
+        mcpServers: [],
+        packages: { npm: ['cowsay'], pypi: [] },
+      },
+    });
+    const parsed = parseSkillManifest(yaml);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.capabilities.packages.npm).toEqual(['cowsay']);
+  });
+
+  it('serializes pypi-only packages and suppresses the empty npm sub-key', () => {
+    const yaml = buildSkillManifestYaml({
+      id: 'demo',
+      description: 'd',
+      version: 1,
+      capabilities: {
+        allowedHosts: [],
+        credentials: [],
+        mcpServers: [],
+        packages: { npm: [], pypi: ['requests'] },
+      },
+    });
+    expect(yaml).not.toContain('npm:');
+    const parsed = parseSkillManifest(yaml);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.capabilities.packages.pypi).toEqual(['requests']);
+    expect(parsed.value.capabilities.packages.npm).toEqual([]);
+  });
+
+  it('serializes both npm and pypi packages when both are non-empty', () => {
+    const yaml = buildSkillManifestYaml({
+      id: 'demo',
+      description: 'd',
+      version: 1,
+      capabilities: {
+        allowedHosts: [],
+        credentials: [],
+        mcpServers: [],
+        packages: { npm: ['cowsay'], pypi: ['requests'] },
+      },
+    });
+    const parsed = parseSkillManifest(yaml);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.capabilities.packages.npm).toEqual(['cowsay']);
+    expect(parsed.value.capabilities.packages.pypi).toEqual(['requests']);
+  });
+
+  it('omits capabilities entirely when all kinds (incl packages) are empty', () => {
+    const yaml = buildSkillManifestYaml({
+      id: 'demo', description: 'd', version: 1,
+      capabilities: { allowedHosts: [], credentials: [], mcpServers: [],
+        packages: { npm: [], pypi: [] } },
+    });
+    expect(yaml).not.toContain('capabilities');
+  });
 });
