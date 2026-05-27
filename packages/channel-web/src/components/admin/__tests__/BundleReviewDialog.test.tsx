@@ -1,0 +1,87 @@
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { BundleReviewDialog } from '../BundleReviewDialog';
+import type { CatalogRequest } from '@ax/skills';
+
+vi.mock('@/lib/catalog', () => ({ decideCatalogRequest: vi.fn() }));
+vi.mock('@/lib/skills', () => ({ getSkillOrNull: vi.fn() }));
+import { decideCatalogRequest } from '@/lib/catalog';
+import { getSkillOrNull } from '@/lib/skills';
+const mockDecide = vi.mocked(decideCatalogRequest);
+const mockGetOrNull = vi.mocked(getSkillOrNull);
+
+const SHARE_REQ: CatalogRequest = {
+  requestId: 'r1',
+  kind: 'share',
+  skillId: 'linear',
+  requestedByUserId: 'u1',
+  sourceOwnerUserId: 'u1',
+  status: 'pending',
+  description: 'Linear.',
+  createdAt: '2026-05-26T00:00:00.000Z',
+  manifestYaml: 'name: linear\ndescription: Linear.\nversion: 1\n',
+  bodyMd: '# linear v2\n',
+  files: [{ path: 'scripts/q.py', contents: 'print(2)' }],
+};
+
+const COLD_REQ: CatalogRequest = {
+  requestId: 'r2',
+  kind: 'cold-start',
+  skillId: 'jira',
+  requestedByUserId: 'u2',
+  sourceOwnerUserId: null,
+  status: 'pending',
+  description: 'I needed Jira.',
+  createdAt: '2026-05-26T00:00:00.000Z',
+  manifestYaml: null,
+  bodyMd: null,
+  files: [],
+};
+
+describe('BundleReviewDialog', () => {
+  beforeEach(() => vi.resetAllMocks());
+
+  it('shows a new-skill share bundle (no existing catalog version)', async () => {
+    mockGetOrNull.mockResolvedValue(null);
+    render(<BundleReviewDialog request={SHARE_REQ} onClose={vi.fn()} onDecided={vi.fn()} />);
+    expect(await screen.findByText('scripts/q.py')).toBeTruthy();
+    // a brand-new file is marked "added"
+    expect(screen.getAllByText(/added/i).length).toBeGreaterThan(0);
+  });
+
+  it('admits a share request', async () => {
+    mockGetOrNull.mockResolvedValue(null);
+    mockDecide.mockResolvedValue({ admitted: true, skillId: 'linear' });
+    const onDecided = vi.fn();
+    render(<BundleReviewDialog request={SHARE_REQ} onClose={vi.fn()} onDecided={onDecided} />);
+    fireEvent.click(await screen.findByRole('button', { name: /^admit$/i }));
+    await waitFor(() => expect(mockDecide).toHaveBeenCalledWith('r1', 'admit'));
+    await waitFor(() => expect(onDecided).toHaveBeenCalled());
+  });
+
+  it('disables Admit for a cold-start request (nothing to promote)', async () => {
+    render(<BundleReviewDialog request={COLD_REQ} onClose={vi.fn()} onDecided={vi.fn()} />);
+    const admit = (await screen.findByRole('button', { name: /^admit$/i })) as HTMLButtonElement;
+    expect(admit.disabled).toBe(true);
+    // reject is available
+    expect((screen.getByRole('button', { name: /^reject$/i }) as HTMLButtonElement).disabled).toBe(
+      false,
+    );
+  });
+
+  it('renders untrusted submitted contents as escaped text (no HTML injection)', async () => {
+    mockGetOrNull.mockResolvedValue(null);
+    render(
+      <BundleReviewDialog
+        request={{
+          ...SHARE_REQ,
+          files: [{ path: 'evil.txt', contents: '<img src=x onerror=alert(1)>' }],
+        }}
+        onClose={vi.fn()}
+        onDecided={vi.fn()}
+      />,
+    );
+    expect(await screen.findByText(/<img src=x onerror=alert\(1\)>/)).toBeTruthy();
+    expect(document.querySelector('img')).toBeNull();
+  });
+});
