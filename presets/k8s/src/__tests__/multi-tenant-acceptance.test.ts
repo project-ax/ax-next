@@ -156,6 +156,12 @@ const PLUGINS_TO_DROP = new Set<string>([
   // 'skills:get'] satisfied only by @ax/skills, which we just dropped — drop
   // it too or bootstrap's verifyCalls fails. Not on this ACL canary's path.
   '@ax/skill-broker',
+  // Host grants (TASK-44): postgres-backed (calls database:get-instance in
+  // init). The chat-orchestrator soft-couples via bus.hasService('host-
+  // grants:list') — when absent, the persisted-host-union step is skipped
+  // (exactly like the dropped @ax/skills). Not on this ACL canary's path;
+  // static wiring is pinned in preset.test.ts.
+  '@ax/host-grants',
 ]);
 
 // Stub producer for the dispatcher's REQUIRED dep this canary drops.

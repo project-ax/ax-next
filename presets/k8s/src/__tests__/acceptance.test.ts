@@ -207,6 +207,13 @@ const PLUGINS_TO_DROP = new Set<string>([
   // exercised by the chat-path canaries; the static wiring + reachability are
   // pinned in preset.test.ts and the @ax/skills install canary.
   '@ax/skill-broker',
+  // Host grants (TASK-44): postgres-backed (calls database:get-instance in
+  // init). The chat-orchestrator soft-couples via bus.hasService('host-
+  // grants:list') — absent here, the persisted-host union is skipped (like the
+  // dropped @ax/skills). Not on the chat-path canaries; static wiring +
+  // grant→list→revoke reachability are pinned in preset.test.ts + the
+  // @ax/host-grants package canary.
+  '@ax/host-grants',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-

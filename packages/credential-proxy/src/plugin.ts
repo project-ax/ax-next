@@ -594,7 +594,12 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
             });
           }
           sess.allowlist.add(host);
-          return { added: true, agentId: sess.agentId };
+          // Return the session's agentId (the authoritative grant key for
+          // TASK-44) only when present — omit the key rather than emit an
+          // explicit `undefined` (exactOptionalPropertyTypes).
+          return sess.agentId !== undefined
+            ? { added: true, agentId: sess.agentId }
+            : { added: true };
         },
       );
     },
