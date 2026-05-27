@@ -509,6 +509,65 @@ function newDeferred<T>(): Deferred<T> {
 export const PLUGIN_NAME = '@ax/chat-orchestrator';
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
 
+// ---------------------------------------------------------------------------
+// JIT smart-defaults (Part II §P4, TASK-51) — the always-on broker host-tools.
+//
+// `search_catalog` (read-only catalog search) + `request_capability`
+// (shape-validated, human-in-the-loop capability request) ship in
+// `@ax/skill-broker` (TASK-34/35) and are wired into presets/k8s. To make
+// just-in-time capability acquisition a real DEFAULT, we lock them into every
+// MULTI-TENANT agent's effective `allowedTools` at session-open below.
+//
+// I2 (no cross-plugin imports): the orchestrator deps are only `@ax/core` +
+// `@ax/sandbox-protocol`, so these are a LOCAL mirror of the broker's
+// `SEARCH_CATALOG_DESCRIPTOR.name` / `REQUEST_CAPABILITY_DESCRIPTOR.name`
+// (the source of truth) — duplicated structurally with this comment, the
+// same posture TASK-34 used to mirror the candidate shape. `install_authored_
+// skill` (the broker's open-mode 3rd tool, gated behind allow_user_installed_
+// skills) is intentionally EXCLUDED — only the two always-on tools.
+const ALWAYS_ON_BROKER_TOOLS = ['search_catalog', 'request_capability'] as const;
+
+/**
+ * "default+locked" broker tools, computed at session-open (TASK-51).
+ *
+ * Returns the agent's `allowedTools` with the always-on broker tools unioned
+ * in (append-only, order-stable, deduped) — UNLESS the agent's scope is the
+ * empty-empty WILDCARD (`allowedTools` AND `mcpConfigIds` both empty), which
+ * the tool-dispatcher scope filter (`@ax/mcp-client` `filterByAgentScope`)
+ * already reads as "expose the entire catalog" (incl. the broker tools). For
+ * a wildcard agent we return `allowedTools` UNCHANGED — injecting the names
+ * would flip "see everything" into "see only the two broker tools", shrinking
+ * the dev/single-tenant loop's reachable catalog (a regression).
+ *
+ * So: inject iff the scope is already non-wildcard. That is exactly the gap —
+ * a multi-tenant agent that carries any explicit tool or MCP config currently
+ * can't see the broker; a wildcard agent already can.
+ *
+ * "locked" falls out of this being a session-open UNION (not a stored value):
+ * a tenant editing the agent row (e.g. PATCH /admin/agents removing a broker
+ * tool) is overridden here at the next open. It does NOT imply a UI list entry
+ * (TASK-46 — surfacing org-defaults as skill-list rows — was closed).
+ */
+export function withBrokerDefaults(
+  allowedTools: readonly string[],
+  mcpConfigIds: readonly string[],
+): string[] {
+  // Wildcard sentinel — leave it alone (see above). Mirrors the empty-empty
+  // check in `@ax/mcp-client` `filterByAgentScope`.
+  if (allowedTools.length === 0 && mcpConfigIds.length === 0) {
+    return [...allowedTools];
+  }
+  const out = [...allowedTools];
+  const present = new Set(allowedTools);
+  for (const tool of ALWAYS_ON_BROKER_TOOLS) {
+    if (!present.has(tool)) {
+      out.push(tool);
+      present.add(tool);
+    }
+  }
+  return out;
+}
+
 export function createOrchestrator(
   bus: HookBus,
   config: ChatOrchestratorConfig,
@@ -843,7 +902,11 @@ export function createOrchestrator(
     //    do not affect in-flight sessions.
     const agentConfig: AgentConfig = {
       systemPrompt: agent.systemPrompt,
-      allowedTools: agent.allowedTools,
+      // TASK-51 (JIT §P4): lock the always-on broker tools into every
+      // multi-tenant agent's effective allowedTools (default+locked). For a
+      // wildcard agent (empty allowedTools+mcpConfigIds) this is a no-op — it
+      // already sees the whole catalog. See withBrokerDefaults.
+      allowedTools: withBrokerDefaults(agent.allowedTools, agent.mcpConfigIds),
       mcpConfigIds: agent.mcpConfigIds,
       model: agent.model,
     };
