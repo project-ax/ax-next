@@ -39,6 +39,14 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
+  // ConnectionsTab (the default tab) lists agents via /api/chat/agents (a bare
+  // array). An empty list keeps the nav assertions hermetic.
+  if (/\/api\/chat\/agents(\?|$)/.test(url)) {
+    return new Response(JSON.stringify([]), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
   return new Response(JSON.stringify({ providers: [], agents: [], teams: [], servers: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -48,7 +56,7 @@ function emptyResponse(url: string): Response {
 function renderShell(onClose: () => void = () => {}) {
   return render(
     <UserProvider value={mockUser}>
-      <AdminShell onClose={onClose} />
+      <AdminShell isAdmin onClose={onClose} />
     </UserProvider>,
   );
 }
@@ -64,15 +72,24 @@ beforeEach(() => {
 });
 
 describe('AdminShell', () => {
-  it('default tab is providers — ProvidersPanel is rendered, not AgentForm', async () => {
+  it('default tab is Connections (TASK-42) — AgentForm is NOT rendered', async () => {
     renderShell();
-    // The "Providers" nav button should be present and active (data-active attr).
-    const providersBtn = screen.getByRole('button', { name: /^providers$/i });
-    expect(providersBtn).toBeTruthy();
-    expect(providersBtn.getAttribute('data-active')).toBe('true');
-    // Wait for ProvidersPanel to settle (it fetches on mount).
+    // Connections is the default active tab for every user (admins included).
+    const connectionsBtn = screen.getByRole('button', { name: /^connections$/i });
+    expect(connectionsBtn).toBeTruthy();
+    expect(connectionsBtn.getAttribute('data-active')).toBe('true');
+    // AgentForm ("+ New agent") must NOT be present on the default tab.
     await waitFor(() => {
-      // AgentForm renders a "+ New agent" button — it must NOT be present.
+      expect(screen.queryByText(/New agent/i)).toBeNull();
+    });
+  });
+
+  it('admin can navigate to Providers (ProvidersPanel)', async () => {
+    renderShell();
+    const providersBtn = screen.getByRole('button', { name: /^providers$/i });
+    fireEvent.click(providersBtn);
+    expect(providersBtn.getAttribute('data-active')).toBe('true');
+    await waitFor(() => {
       expect(screen.queryByText(/New agent/i)).toBeNull();
     });
   });

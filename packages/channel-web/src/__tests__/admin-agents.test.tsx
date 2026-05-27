@@ -210,13 +210,18 @@ describe('AdminSettings — agents tab', () => {
       if (/\/admin\/credentials(\?|$)/.test(url) || /\/settings\/credentials(\?|$)/.test(url)) {
         return Promise.resolve(jsonOk({ credentials: [] }));
       }
+      // ConnectionsTab (the default tab) lists agents via /api/chat/agents,
+      // which returns a bare array.
+      if (/\/api\/chat\/agents(\?|$)/.test(url)) {
+        return Promise.resolve(jsonOk([]));
+      }
       return Promise.resolve(jsonOk({ providers: [] }));
     });
 
     const onClose = vi.fn();
     render(
       <UserProvider value={mockUser}>
-        <AdminShell onClose={onClose} />
+        <AdminShell isAdmin onClose={onClose} />
       </UserProvider>,
     );
     // AdminSidebar's back button has text "chat" (with a ChevronLeft icon).
