@@ -159,7 +159,6 @@ function captureSkillsUpsertYaml(h: TestHarness): {
   getYaml: () => string | undefined;
   restore: () => void;
 } {
-  // eslint-disable-next-line @typescript-eslint/unbound-method
   const originalCall = h.bus.call.bind(h.bus);
   let captured: string | undefined;
   const spy = vi
