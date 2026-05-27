@@ -120,12 +120,20 @@ export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
         return;
       }
 
+      // Forward `files` only when supplied — see the admin-routes create
+      // handler for the omit-vs-replace semantics (absent = preserve current
+      // bundle; present array, even `[]`, = replace). The host gate
+      // (validateBundleFiles inside skills:upsert) is the source of truth.
+      const filesPatch =
+        zodResult.data.files !== undefined ? { files: zodResult.data.files } : {};
+
       try {
         const out = await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
           'skills:upsert',
           ctx,
           {
             ...split,
+            ...filesPatch,
             defaultAttached: zodResult.data.defaultAttached ?? false,
             scope: 'user',
             ownerUserId: actor.id,
@@ -188,12 +196,17 @@ export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
         return;
       }
 
+      // See admin-routes.ts update handler for the omit-vs-replace `files`
+      // semantics. Forward verbatim only when present.
+      const filesPatch =
+        zodResult.data.files !== undefined ? { files: zodResult.data.files } : {};
       try {
         const out = await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
           'skills:upsert',
           ctx,
           {
             ...split,
+            ...filesPatch,
             defaultAttached: zodResult.data.defaultAttached ?? false,
             scope: 'user',
             ownerUserId: actor.id,

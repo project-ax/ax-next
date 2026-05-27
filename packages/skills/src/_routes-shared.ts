@@ -147,10 +147,36 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
 
 export const SKILL_MD_MAX = 32 * 1024;
 
+// Bundle extra-file shape at the HTTP boundary. These bounds mirror the caps in
+// `validateBundleFiles` (MAX_FILES=16, MAX_PATH_LEN=256, MAX_FILE_BYTES=256 KiB)
+// so a grossly-malformed body 400s at the schema before the round-trip. The
+// canonical path-safety + veto-list + total-byte rules stay in
+// `validateBundleFiles` (the host-side gate inside skills:upsert), which is also
+// re-run at the wire schema and both runner extract boundaries
+// (validateMcpEntry defense-in-depth, invariant I2) — this schema is only the
+// cheap early reject, never the source of truth.
+export const BUNDLE_FILE_CONTENTS_MAX = 256 * 1024;
+export const bundleFilesSchema = z
+  .array(
+    z
+      .object({
+        path: z.string().min(1).max(256),
+        contents: z.string().max(BUNDLE_FILE_CONTENTS_MAX),
+      })
+      .strict(),
+  )
+  .max(16);
+
+// `files` is OPTIONAL and the absence is load-bearing: an absent `files` key
+// means "leave the current bundle unchanged" (skills:upsert only rewrites the
+// tree when `files !== undefined`). A present array — even `[]` — REPLACES the
+// bundle. The metadata-only callers (PATCH default-attached, refresh-from-source)
+// send no `files`; the multi-file editor sends the full intended set.
 export const upsertBodySchema = z
   .object({
     skillMd: z.string().min(1).max(SKILL_MD_MAX),
     defaultAttached: z.boolean().optional(),
+    files: bundleFilesSchema.optional(),
   })
   .strict();
 

@@ -245,6 +245,140 @@ describe('/admin/skills handlers', () => {
     expect((b3() as { bodyMd: string }).bodyMd).toContain('Updated body.');
   });
 
+  // 5b. POST with `files` persists the bundle; GET returns the extra files.
+  it('POST /admin/skills with files persists the bundle and GET returns them', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    const { res: r1, statusOf: s1 } = mkRes();
+    await handlers.create(
+      mkReq({
+        body: {
+          skillMd: SAMPLE_SKILL_MD,
+          files: [
+            { path: 'scripts/run.py', contents: 'print("hi")\n' },
+            { path: 'reference.md', contents: '# Reference\n' },
+          ],
+        },
+      }),
+      r1,
+    );
+    expect(s1()).toBe(201);
+
+    const { res: r2, statusOf: s2, bodyOf: b2 } = mkRes();
+    await handlers.get(mkReq({ params: { id: 'github' } }), r2);
+    expect(s2()).toBe(200);
+    const detail = b2() as { files: { path: string; contents: string }[] };
+    expect(detail.files).toHaveLength(2);
+    expect(detail.files.map((f) => f.path).sort()).toEqual([
+      'reference.md',
+      'scripts/run.py',
+    ]);
+    expect(
+      detail.files.find((f) => f.path === 'scripts/run.py')?.contents,
+    ).toBe('print("hi")\n');
+  });
+
+  // 5c. PUT WITHOUT `files` leaves an existing bundle's extra files unchanged.
+  it('PUT /admin/skills/:id without files preserves the existing bundle', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    // Create with files.
+    const { res: r1 } = mkRes();
+    await handlers.create(
+      mkReq({
+        body: {
+          skillMd: SAMPLE_SKILL_MD,
+          files: [{ path: 'helper.md', contents: 'help\n' }],
+        },
+      }),
+      r1,
+    );
+
+    // SKILL.md-only update (no `files` key) — bundle must survive.
+    const updatedSkillMd = SAMPLE_SKILL_MD.replace(
+      'GitHub skill body.',
+      'Edited body only.',
+    );
+    const { res: r2, statusOf: s2 } = mkRes();
+    await handlers.update(
+      mkReq({ body: { skillMd: updatedSkillMd }, params: { id: 'github' } }),
+      r2,
+    );
+    expect(s2()).toBe(200);
+
+    const { res: r3, bodyOf: b3 } = mkRes();
+    await handlers.get(mkReq({ params: { id: 'github' } }), r3);
+    const detail = b3() as {
+      bodyMd: string;
+      files: { path: string }[];
+    };
+    expect(detail.bodyMd).toContain('Edited body only.');
+    expect(detail.files.map((f) => f.path)).toEqual(['helper.md']);
+  });
+
+  // 5d. PUT WITH `files: []` clears an existing bundle's extra files.
+  it('PUT /admin/skills/:id with files:[] clears the existing bundle', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+
+    const { res: r1 } = mkRes();
+    await handlers.create(
+      mkReq({
+        body: {
+          skillMd: SAMPLE_SKILL_MD,
+          files: [{ path: 'helper.md', contents: 'help\n' }],
+        },
+      }),
+      r1,
+    );
+
+    const { res: r2, statusOf: s2 } = mkRes();
+    await handlers.update(
+      mkReq({ body: { skillMd: SAMPLE_SKILL_MD, files: [] }, params: { id: 'github' } }),
+      r2,
+    );
+    expect(s2()).toBe(200);
+
+    const { res: r3, bodyOf: b3 } = mkRes();
+    await handlers.get(mkReq({ params: { id: 'github' } }), r3);
+    expect((b3() as { files: unknown[] }).files).toEqual([]);
+  });
+
+  // 5e. A malformed `files` shape 400s at the body schema (before the hook).
+  it('POST /admin/skills with malformed files shape returns 400', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+    const { res, statusOf } = mkRes();
+    await handlers.create(
+      mkReq({
+        body: { skillMd: SAMPLE_SKILL_MD, files: [{ path: 'ok.md' }] }, // missing contents
+      }),
+      res,
+    );
+    expect(statusOf()).toBe(400);
+  });
+
+  // 5f. A path that passes the schema but violates validateBundleFiles
+  // (e.g. a `..` traversal) surfaces the host gate's invalid-bundle-file 400.
+  it('POST /admin/skills with a path-traversal file returns 400 invalid-bundle-file', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminSkillsHandlers({ bus: h.bus });
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.create(
+      mkReq({
+        body: {
+          skillMd: SAMPLE_SKILL_MD,
+          files: [{ path: '../escape.md', contents: 'nope\n' }],
+        },
+      }),
+      res,
+    );
+    expect(statusOf()).toBe(400);
+    expect((bodyOf() as { code?: string }).code).toBe('invalid-bundle-file');
+  });
+
   // 6. PUT where path id != manifest name → 400
   it('PUT /admin/skills/:id where path id != manifest name returns 400', async () => {
     const h = await makeHarness();
