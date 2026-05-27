@@ -16,6 +16,16 @@ export type {
   SkillsResolveOutput,
   SkillsListDefaultsInput,
   SkillsListDefaultsOutput,
+  SkillTier,
+  BundleFile,
+  CatalogRequest,
+  CatalogSubmitInput,
+  CatalogSubmitOutput,
+  CatalogListRequestsInput,
+  CatalogListRequestsOutput,
+  CatalogAdmitInput,
+  CatalogAdmitOutput,
+  CatalogCandidate,
 } from './types.js';
 
 export { parseSkillManifest } from './manifest.js';

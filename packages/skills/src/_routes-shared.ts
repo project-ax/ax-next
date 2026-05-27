@@ -107,6 +107,14 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
       res.status(409).json({ error: err.message, code: 'skill-in-use' });
       return true;
     }
+    if (err.code === 'request-not-found') {
+      res.status(404).json({ error: err.message });
+      return true;
+    }
+    if (err.code === 'request-already-decided') {
+      res.status(409).json({ error: err.message, code: 'request-already-decided' });
+      return true;
+    }
     const badRequestCodes = new Set([
       'invalid-name',
       'invalid-description',
@@ -122,6 +130,8 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
       'invalid-mcp-transport',
       'invalid-payload',
       'default-attached-requires-no-credentials',
+      'cold-start-not-promotable',
+      'invalid-bundle-file',
     ]);
     if (badRequestCodes.has(err.code)) {
       res.status(400).json({ error: err.message, code: err.code });
@@ -142,6 +152,10 @@ export const upsertBodySchema = z
     skillMd: z.string().min(1).max(SKILL_MD_MAX),
     defaultAttached: z.boolean().optional(),
   })
+  .strict();
+
+export const patchDefaultBodySchema = z
+  .object({ defaultAttached: z.boolean() })
   .strict();
 
 // ---------------------------------------------------------------------------

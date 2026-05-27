@@ -1,17 +1,21 @@
-import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
+import { makeAgentContext, PluginError, type AgentContext, type HookBus } from '@ax/core';
 import type {
   SkillsCheckForUpdatesOutput,
   SkillsListOutput,
   SkillsGetOutput,
   SkillsUpsertInput,
   SkillsUpsertOutput,
+  SkillTier,
+  BundleFile,
 } from './types.js';
+import { classifyTier } from './catalog-tier.js';
 import {
   requireAdmin,
   parseRequestBody,
   writeServiceError,
   splitSkillMd,
   upsertBodySchema,
+  patchDefaultBodySchema,
   type RouteRequest,
   type RouteResponse,
 } from './_routes-shared.js';
@@ -64,6 +68,7 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
   destroy: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   checkUpdate: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   refresh: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  setDefaultAttached: (req: RouteRequest, res: RouteResponse) => Promise<void>;
 } {
   const ctx = makeAgentContext({
     sessionId: 'skills-admin',
@@ -84,7 +89,15 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
           ctx,
           { scope: 'global' },
         );
-        res.status(200).json(out);
+        // Annotate each summary with its server-derived supply-chain tier
+        // (classifyTier is the single source of truth — never a stored column,
+        // never re-derived on the client). This is the set the broker proposes
+        // from (design §3).
+        const skills = out.skills.map((s) => ({
+          ...s,
+          tier: classifyTier(s.capabilities) satisfies SkillTier,
+        }));
+        res.status(200).json({ skills });
       } catch (err) {
         if (writeServiceError(res, err)) return;
         throw err;
@@ -212,11 +225,30 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         return;
       }
 
+      // Preserve a bundle's extra files. Post-bundles, skills:upsert replaces
+      // the file set with `input.files ?? []`, so a SKILL.md-only edit (the
+      // shape the PUT route + SkillEditor send) would otherwise silently WIPE
+      // every extra file. Fetch the current bundle and thread its files back
+      // through the upsert. PUT may also create — tolerate a not-yet-existing
+      // skill (skill-not-found → nothing to preserve); any other error
+      // propagates into the catch below.
+      let existingFiles: BundleFile[] = [];
+      try {
+        const existing = await deps.bus.call<{ skillId: string; scope: 'global' }, SkillsGetOutput>(
+          'skills:get',
+          ctx,
+          { skillId: id, scope: 'global' },
+        );
+        existingFiles = existing.files;
+      } catch (err) {
+        if (!(err instanceof PluginError && err.code === 'skill-not-found')) throw err;
+      }
+
       try {
         const out = await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
           'skills:upsert',
           ctx,
-          { ...split, defaultAttached: zodResult.data.defaultAttached ?? false },
+          { ...split, files: existingFiles, defaultAttached: zodResult.data.defaultAttached ?? false },
         );
 
         // Double-check after the parse in case our quick regex missed something.
@@ -314,6 +346,49 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
         throw err;
       }
     },
+
+    /** PATCH /admin/skills/:id — partial update: flip defaultAttached only.
+     * Re-upserts with the existing manifest/body/files so a bundle's extra
+     * files are NEVER dropped by a default-flag toggle (the SKILL.md-only
+     * round-trip would otherwise wipe them — same hazard the update handler
+     * fixes). */
+    async setDefaultAttached(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireAdmin(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      const { id } = req.params;
+      if (!id) {
+        res.status(400).json({ error: 'missing skill id' });
+        return;
+      }
+      const parsedBody = parseRequestBody(req.body);
+      if (!parsedBody.ok) {
+        res.status(parsedBody.status).json({ error: parsedBody.message });
+        return;
+      }
+      const zr = patchDefaultBodySchema.safeParse(parsedBody.value);
+      if (!zr.success) {
+        res.status(400).json({ error: 'invalid-payload' });
+        return;
+      }
+      try {
+        const detail = await deps.bus.call<{ skillId: string; scope: 'global' }, SkillsGetOutput>(
+          'skills:get',
+          ctx,
+          { skillId: id, scope: 'global' },
+        );
+        await deps.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', ctx, {
+          manifestYaml: detail.manifestYaml,
+          bodyMd: detail.bodyMd,
+          files: detail.files,
+          defaultAttached: zr.data.defaultAttached,
+          scope: 'global',
+        });
+        res.status(200).json({ skillId: id, defaultAttached: zr.data.defaultAttached });
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
   };
 }
 
@@ -327,7 +402,7 @@ export async function registerAdminSkillsRoutes(
 ): Promise<Array<() => void>> {
   const handlers = createAdminSkillsHandlers({ bus });
   const routes: Array<{
-    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
+    method: 'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
     path: string;
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
@@ -335,6 +410,7 @@ export async function registerAdminSkillsRoutes(
     { method: 'GET', path: '/admin/skills/:id', handler: handlers.get },
     { method: 'POST', path: '/admin/skills', handler: handlers.create },
     { method: 'PUT', path: '/admin/skills/:id', handler: handlers.update },
+    { method: 'PATCH', path: '/admin/skills/:id', handler: handlers.setDefaultAttached },
     { method: 'DELETE', path: '/admin/skills/:id', handler: handlers.destroy },
     { method: 'POST', path: '/admin/skills/:id/check-update', handler: handlers.checkUpdate },
     { method: 'POST', path: '/admin/skills/:id/refresh-from-source', handler: handlers.refresh },
