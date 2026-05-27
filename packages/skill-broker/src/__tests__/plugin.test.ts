@@ -457,10 +457,12 @@ function busForAuthoring() {
   const cards: unknown[] = [];
   bus.registerService('agents:install-authored-skill', 'agents', async (_c, input: unknown) => {
     grants.push(input);
+    const inp = input as { packages?: { npm?: string[]; pypi?: string[] } };
     return {
       description: 'Take notes',
       hosts: ['api.example.com'],
       slots: [{ slot: 'API_KEY', kind: 'api-key' }],
+      packages: inp.packages ?? { npm: [], pypi: [] },
     };
   });
   bus.subscribe('chat:permission-request', 'test/card', async (_c, payload) => {
@@ -490,7 +492,7 @@ describe('install_authored_skill tool', () => {
     });
     expect(out).toEqual({ status: 'requested', skillId: 'notes' });
     expect(grants).toEqual([
-      { agentId: 'agent-1', skillId: 'notes', hosts: ['api.example.com'], slots: ['API_KEY'] },
+      { agentId: 'agent-1', skillId: 'notes', hosts: ['api.example.com'], slots: ['API_KEY'], packages: { npm: [], pypi: [] } },
     ]);
     expect(cards).toEqual([
       {
@@ -499,6 +501,7 @@ describe('install_authored_skill tool', () => {
         description: 'Take notes',
         hosts: ['api.example.com'],
         slots: [{ slot: 'API_KEY', kind: 'api-key' }],
+        packages: { npm: [], pypi: [] },
         authored: true,
       },
     ]);
@@ -534,6 +537,7 @@ describe('install_authored_skill tool', () => {
       skillId: 'notes',
       hosts: ['ok.example.com'],
       slots: ['API_KEY'],
+      packages: { npm: [], pypi: [] },
     });
   });
 
@@ -547,5 +551,65 @@ describe('install_authored_skill tool', () => {
         input: { skillId: 'notes', hosts: [], slots: [] },
       }),
     ).rejects.toThrow(/not available in this deployment/i);
+  });
+
+  it('forwards validated packages to the promote and the approval card', async () => {
+    // Override the agents stub to echo back packages and record input.
+    const bus = new HookBus();
+    const registered: string[] = [];
+    bus.registerService('tool:register', 'disp', async (_c, d: unknown) => {
+      registered.push((d as { name: string }).name);
+      return { ok: true };
+    });
+    let promoteInput: Record<string, unknown> = {};
+    bus.registerService('agents:install-authored-skill', 'agents', async (_c, input: unknown) => {
+      promoteInput = input as Record<string, unknown>;
+      const inp = input as { packages?: { npm?: string[]; pypi?: string[] } };
+      return {
+        description: 'Cowsay skill',
+        hosts: [],
+        slots: [],
+        packages: inp.packages ?? { npm: [], pypi: [] },
+      };
+    });
+    const firedCards: unknown[] = [];
+    bus.subscribe('chat:permission-request', 'test/card', async (_c, payload) => {
+      firedCards.push(payload);
+      return undefined;
+    });
+
+    await registerInstallAuthoredSkill(bus);
+    expect(registered).toEqual(['install_authored_skill']);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      // '@anthropic-ai/sdk' is a scoped npm name and MUST survive the filter;
+      // 'BAD NAME' (space) must be dropped at the trust boundary.
+      input: {
+        skillId: 'demo',
+        hosts: [],
+        slots: [],
+        packages: { npm: ['cowsay', '@anthropic-ai/sdk', 'BAD NAME'], pypi: [] },
+      },
+    });
+
+    const firedCard = firedCards[0] as Record<string, unknown>;
+    const pkgIn = promoteInput.packages as { npm: string[]; pypi: string[] };
+    expect(pkgIn.npm).toEqual(['cowsay', '@anthropic-ai/sdk']);
+    expect(pkgIn.pypi).toEqual([]);
+    expect((firedCard.packages as { npm: string[] }).npm).toEqual(['cowsay', '@anthropic-ai/sdk']);
+  });
+
+  it('omits packages (empty) when none provided', async () => {
+    const { bus, grants, cards } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'notes', hosts: [], slots: [] },
+    });
+    const grant = grants[0] as Record<string, unknown>;
+    const card = cards[0] as Record<string, unknown>;
+    // When packages is not provided, it should default to { npm: [], pypi: [] }.
+    expect(grant.packages).toEqual({ npm: [], pypi: [] });
+    expect(card.packages).toEqual({ npm: [], pypi: [] });
   });
 });

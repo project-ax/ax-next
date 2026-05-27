@@ -14,6 +14,10 @@ const HOST_RE = /^[a-z0-9]([a-z0-9.-]{0,253}[a-z0-9])?$/i;
 // reject is filtered out here so the agent gets a clean card, not an upsert
 // error referencing a slot it never sees.
 const SLOT_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+// npm names may carry a @scope/ prefix; pypi names never use @ or /.
+// No spaces, no path-traversal, no mid-name @ or unscoped /. parseSkillManifest
+// (downstream) is the authority; this is the early trust-boundary filter.
+const PKG_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,213}$/;
 
 export const INSTALL_AUTHORED_SKILL_DESCRIPTOR: ToolDescriptor = {
   name: 'install_authored_skill',
@@ -24,7 +28,10 @@ export const INSTALL_AUTHORED_SKILL_DESCRIPTOR: ToolDescriptor = {
     'needs (slot names are SCREAMING_SNAKE, e.g. API_KEY). The user is shown one approval card ' +
     'listing exactly those hosts/keys before anything runs — do not narrate this step or ' +
     'restate any keys. Once the user approves, the conversation continues automatically; do ' +
-    'not ask the user to repeat their request.',
+    'not ask the user to repeat their request. ' +
+    'If the skill installs npm or PyPI packages at runtime (via npx/uvx/pip), declare them ' +
+    'here in the packages argument (npm and/or pypi arrays) — never in the SKILL.md frontmatter. ' +
+    'The user sees and approves all declared registry egress on the same card.',
   executesIn: 'host',
   inputSchema: {
     type: 'object',
@@ -39,6 +46,23 @@ export const INSTALL_AUTHORED_SKILL_DESCRIPTOR: ToolDescriptor = {
         type: 'array',
         items: { type: 'string' },
         description: 'Credential slot names the skill needs, e.g. API_KEY. May be empty.',
+      },
+      packages: {
+        type: 'object',
+        description:
+          'Package ecosystems the skill installs at runtime. Declared here so the user approves registry egress. Never put this in SKILL.md frontmatter.',
+        properties: {
+          npm: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'npm package names the skill installs via npx. May be empty.',
+          },
+          pypi: {
+            type: 'array',
+            items: { type: 'string' },
+            description: 'PyPI package names the skill installs via uvx or pip. May be empty.',
+          },
+        },
       },
     },
     required: ['skillId'],
@@ -57,6 +81,7 @@ interface PermissionRequestEvent {
   description: string;
   hosts: string[];
   slots: { slot: string; kind: 'api-key' }[];
+  packages: { npm: string[]; pypi: string[] };
   /** TASK-39: "⚠ This is a new skill your assistant just wrote." */
   authored: true;
 }
@@ -74,7 +99,12 @@ export async function registerInstallAuthoredSkill(bus: HookBus): Promise<void> 
     'tool:execute:install_authored_skill',
     PLUGIN_NAME,
     async (toolCtx, call) => {
-      const input = (call?.input ?? {}) as { skillId?: unknown; hosts?: unknown; slots?: unknown };
+      const input = (call?.input ?? {}) as {
+        skillId?: unknown;
+        hosts?: unknown;
+        slots?: unknown;
+        packages?: unknown;
+      };
       const skillId = typeof input.skillId === 'string' ? input.skillId.trim() : '';
       if (skillId.length === 0 || !SKILL_ID_RE.test(skillId)) {
         throw new PluginError({
@@ -90,6 +120,14 @@ export async function registerInstallAuthoredSkill(bus: HookBus): Promise<void> 
       const slots = Array.isArray(input.slots)
         ? input.slots.filter((s): s is string => typeof s === 'string' && SLOT_RE.test(s))
         : [];
+      const pkgIn = (input.packages ?? {}) as { npm?: unknown; pypi?: unknown };
+      const npm = Array.isArray(pkgIn.npm)
+        ? pkgIn.npm.filter((p): p is string => typeof p === 'string' && PKG_RE.test(p))
+        : [];
+      const pypi = Array.isArray(pkgIn.pypi)
+        ? pkgIn.pypi.filter((p): p is string => typeof p === 'string' && PKG_RE.test(p))
+        : [];
+      const packages = { npm, pypi };
 
       // Open-mode authoring requires @ax/agents (gated soft dep). Clear tool
       // error (not a boot crash) on a hypothetical agents-less open-mode preset.
@@ -109,13 +147,14 @@ export async function registerInstallAuthoredSkill(bus: HookBus): Promise<void> 
       // (invalid-host / invalid-slot / authored-skill-not-found / invalid-
       // bundle-file) propagate to the model as a structured tool error.
       const out = await bus.call<
-        { agentId: string; skillId: string; hosts: string[]; slots: string[] },
-        { description: string; hosts: string[]; slots: { slot: string; kind: 'api-key' }[] }
+        { agentId: string; skillId: string; hosts: string[]; slots: string[]; packages: { npm: string[]; pypi: string[] } },
+        { description: string; hosts: string[]; slots: { slot: string; kind: 'api-key' }[]; packages: { npm: string[]; pypi: string[] } }
       >('agents:install-authored-skill', toolCtx, {
         agentId: toolCtx.agentId,
         skillId,
         hosts,
         slots,
+        packages,
       });
 
       // Surface the ONE bundled approval card with the open-mode banner
@@ -126,6 +165,8 @@ export async function registerInstallAuthoredSkill(bus: HookBus): Promise<void> 
         description: out.description,
         hosts: out.hosts,
         slots: out.slots,
+        // Guard a pre-Task-2 backend that returns no packages (shape violation).
+        packages: out.packages ?? { npm: [], pypi: [] },
         authored: true,
       };
       await bus.fire('chat:permission-request', toolCtx, card);
