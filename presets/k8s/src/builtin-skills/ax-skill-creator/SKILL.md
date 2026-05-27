@@ -1,14 +1,10 @@
 ---
 name: ax-skill-creator
 description: >-
-  Use when the user wants to create, author, build, or modify a skill,
-  capability, or integration for this assistant — e.g. "make a skill for
-  Linear", "add a Jira integration", "turn this workflow into a reusable
-  skill", or "update the X skill". Walks authoring a SKILL.md bundle under
-  .ax/skills/ and installing it with install_authored_skill so the user can
-  approve the hosts, credentials, and package registries it needs. Use this
-  whenever a new capability or integration is requested, even if the user does
-  not say the word "skill".
+  Use when the user wants to create, author, build, or modify a skill or
+  integration — e.g. "make a skill for Linear", "add a Jira integration",
+  "turn this into a skill". Guides writing a SKILL.md bundle and installing
+  it with user approval.
 ---
 
 # Authoring a skill for this assistant

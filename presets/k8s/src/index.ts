@@ -1,4 +1,5 @@
 import { createRequire } from 'node:module';
+import { loadBuiltinSkills } from './builtin-skills/index.js';
 import { PluginError, type Plugin } from '@ax/core';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createStoragePostgresPlugin } from '@ax/storage-postgres';
@@ -671,6 +672,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   };
   if (config.chat?.oneShot !== undefined) {
     orchestratorCfg.oneShot = config.chat.oneShot;
+  }
+  if (config.allowUserInstalledSkills) {
+    orchestratorCfg.builtinSkills = loadBuiltinSkills();
   }
   plugins.push(createChatOrchestratorPlugin(orchestratorCfg));
 
