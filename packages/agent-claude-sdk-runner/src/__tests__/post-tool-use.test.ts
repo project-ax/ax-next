@@ -16,6 +16,9 @@ function mkClient(
     callGet: async () => {
       throw new Error('callGet not expected');
     },
+    callBinary: async () => {
+      throw new Error('callBinary not expected');
+    },
     event: async (name, payload) => {
       events.push({ name, payload });
       if (eventImpl) await eventImpl(name, payload);

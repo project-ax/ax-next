@@ -458,6 +458,15 @@ function requestOnceBinaryToFile(opts: {
       }
 
       // 2xx: stream the raw bytes to the temp file with backpressure + cap.
+      // Capture the declared length so a truncated transfer (host killed
+      // mid-send) is caught here as a RETRYABLE fault rather than slipping
+      // through as a short-but-nonzero file that `git clone` later rejects with
+      // an opaque, non-retryable bootstrap error.
+      const declaredLength = res.headers['content-length'];
+      const expectedBytes =
+        typeof declaredLength === 'string' && declaredLength.length > 0
+          ? Number(declaredLength)
+          : undefined;
       ws = createWriteStream(opts.filePath);
       let written = 0;
       res.on('data', (chunk: Buffer) => {
@@ -488,6 +497,25 @@ function requestOnceBinaryToFile(opts: {
         }
       });
       res.on('end', () => {
+        // Truncation guard: if the host declared a Content-Length and we drained
+        // fewer bytes, the transfer was cut short (host crash / connection
+        // reset that still emitted 'end'). Treat as a RETRYABLE fault so the
+        // runner re-fetches the full body, rather than handing a partial bundle
+        // to `git clone`. ws is destroyed (not end()ed) so the partial file
+        // isn't presented as complete.
+        if (expectedBytes !== undefined && Number.isFinite(expectedBytes) && written !== expectedBytes) {
+          ws?.destroy();
+          settle(() =>
+            reject(
+              new HostUnavailableError(
+                `truncated response body: drained ${written} of ${expectedBytes} declared bytes`,
+                undefined,
+                { retryable: true },
+              ),
+            ),
+          );
+          return;
+        }
         // Flush the write stream before resolving so the file is complete on
         // disk by the time the caller clones from it.
         ws!.end(() => {
@@ -506,11 +534,16 @@ function requestOnceBinaryToFile(opts: {
       });
       ws.on('error', (err) => {
         res.destroy();
+        // A write-to-disk failure (ENOSPC, EROFS, EACCES on the runner's tmp)
+        // is DETERMINISTIC — re-streaming the same bytes hits the identical
+        // error. Mark non-retryable so we fail fast instead of re-transferring
+        // the whole bundle for the full 2-min retry window.
         settle(() =>
           reject(
             new HostUnavailableError(
               `write to temp file failed: ${(err as Error).message}`,
               err,
+              { retryable: false },
             ),
           ),
         );

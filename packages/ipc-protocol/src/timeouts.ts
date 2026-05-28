@@ -13,11 +13,15 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   'tool.execute-host': 30_000,
   'tool.list': 5_000,
   'workspace.commit-notify': 30_000,
-  // Phase 3: session-start materialize fires once at boot. The host
-  // builds a baseline bundle by walking workspace:list + workspace:read,
-  // so the cost scales with workspace size. 30 s gives even chunky
-  // workspaces room without forcing per-file streaming on the wire.
-  'workspace.materialize': 30_000,
+  // Session-start materialize fires once at boot. The host streams the whole
+  // workspace bundle as a raw octet-stream body and the runner drains it to a
+  // temp file (BUG-W3). This is a single in-flight transfer whose duration
+  // scales with workspace size, so the per-attempt ceiling must cover streaming
+  // a large (aged) bundle to disk — NOT just a quick request. 120 s matches the
+  // client's default 2-min retry-series budget so one boot gets a full window to
+  // stream; capping this at the old 30 s would just relocate the BUG-W3 boot
+  // crash from "response too large" to "timeout" on a sufficiently large bundle.
+  'workspace.materialize': 120_000,
   'session.next-message': 30_000,
   // Runner-boot config fetch. Synchronous, small payload (a few KiB at
   // most). 5 s is generous; if the host can't answer this fast something
