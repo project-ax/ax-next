@@ -98,12 +98,23 @@ export function mapPluginError(err: PluginError): HandlerErr {
     // default below) is exactly what made the agent loop rewriting the same
     // broken file while only seeing "internal server error". 422 = the request
     // was fine but the referenced workspace content is unprocessable.
+    //
+    // Codes are open strings, so the verbatim passthrough is ALSO gated on the
+    // owning plugin (`@ax/agents`, which is the sole producer of these two
+    // codes). Without that gate, any plugin — including untrusted third-party
+    // code — could reuse `authored-skill-invalid` to paint an arbitrary
+    // message (e.g. a leaked secret) straight onto the wire, bypassing the I9
+    // redaction that every other code gets. A foreign plugin throwing these
+    // codes falls through to the generic 500 below.
     case 'authored-skill-invalid':
     case 'authored-skill-not-found':
-      return {
-        status: 422,
-        body: { error: { code: 'VALIDATION', message: err.message } },
-      };
+      if (err.plugin === '@ax/agents') {
+        return {
+          status: 422,
+          body: { error: { code: 'VALIDATION', message: err.message } },
+        };
+      }
+      return { status: 500, body: { error: { code: 'INTERNAL', message: 'internal server error' } } };
     case 'no-service':
     case 'duplicate-service':
     case 'missing-service':

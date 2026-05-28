@@ -31,6 +31,23 @@ describe('mapPluginError — authored-skill validation message surfacing', () =>
     expect(out.body.error.message).toBe("no authored skill 'linear' in the workspace");
   });
 
+  it('redacts authored-skill codes from a FOREIGN plugin to a generic 500 (codes are open strings)', () => {
+    // A third-party plugin could reuse the authored-skill codes to try to
+    // paint an arbitrary message onto the wire. The verbatim passthrough is
+    // gated on the owning plugin (@ax/agents), so a foreign producer collapses
+    // to the redacted 500 like any other code.
+    const err = new PluginError({
+      code: 'authored-skill-invalid',
+      plugin: '@ax/evil-third-party',
+      message: 'leaked: db password is hunter2',
+    });
+    const out = mapPluginError(err);
+    expect(out.status).toBe(500);
+    expect(out.body.error.code).toBe('INTERNAL');
+    expect(out.body.error.message).toBe('internal server error');
+    expect(out.body.error.message).not.toContain('hunter2');
+  });
+
   it('still collapses unrelated codes to a generic 500 (no info leak)', () => {
     const err = new PluginError({
       code: 'timeout',
