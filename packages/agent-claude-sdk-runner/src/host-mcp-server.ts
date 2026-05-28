@@ -33,6 +33,7 @@ import {
   type ToolDescriptor,
 } from '@ax/ipc-protocol';
 import { z } from 'zod';
+import type { FlushOutcome } from './commit-notify-resync.js';
 import { MCP_HOST_SERVER_NAME } from './tool-names.js';
 
 export interface CreateHostMcpServerOptions {
@@ -41,6 +42,14 @@ export interface CreateHostMcpServerOptions {
   tools: ToolDescriptor[];
   /** Test seam: override the per-call id generator. */
   idGen?: () => string;
+  /**
+   * Flush the live workspace (commit + push to the host mirror) before
+   * forwarding a host tool whose descriptor declares
+   * `flushWorkspaceBeforeCall`, returning the flush outcome. Omitted in
+   * deployments without a workspace (the flag then simply has no effect).
+   * See the precondition gate in the per-tool handler below.
+   */
+  flushWorkspace?: () => Promise<FlushOutcome>;
 }
 
 /**
@@ -104,6 +113,7 @@ export function buildHostToolEntries(
   client: IpcClient,
   tools: ToolDescriptor[],
   idGen: () => string = () => randomUUID(),
+  flushWorkspace?: () => Promise<FlushOutcome>,
 ): Array<SdkMcpToolDefinition> {
   const hostTools = tools.filter((t) => t.executesIn === 'host');
   return hostTools.map((t) =>
@@ -113,6 +123,50 @@ export function buildHostToolEntries(
       shapeFromInputSchema(t.inputSchema),
       async (args) => {
         try {
+          // Flush the live workspace BEFORE forwarding when this host tool
+          // declares it reads workspace files the agent may have written this
+          // turn. Under runner-owned sessions the host reads the committed +
+          // pushed mirror, which lags the live tree until a turn-boundary
+          // commit — without the flush the host read misses a just-written
+          // file (e.g. install_authored_skill's `.ax/skills/<id>/SKILL.md`,
+          // BUG-W2).
+          //
+          // The flush is a PRECONDITION, not best-effort: we forward ONLY when
+          // it actually synced the mirror. `accepted` = pushed; `noop` =
+          // nothing staged because it was already committed+pushed on a prior
+          // turn (mirror already current). Anything else means the host would
+          // read a stale-or-worse state, so we DON'T forward:
+          //   - `kept` (host unreachable / 5xx): committed locally but never
+          //     pushed → host read would 404.
+          //   - `rolled-back` (workspace veto / resync exhausted): the live
+          //     tree was reset to baseline, so the just-authored file is GONE
+          //     and the mirror still lacks it — forwarding could even install
+          //     an OLDER committed draft with the freshly-requested grants.
+          //   - thrown: git/IPC error mid-flush.
+          // In those cases we surface a clear, retryable tool error instead of
+          // forwarding into a stale read (BUG-W2 follow-up; Codex review).
+          if (t.flushWorkspaceBeforeCall === true && flushWorkspace !== undefined) {
+            let outcome: FlushOutcome | 'error';
+            try {
+              outcome = await flushWorkspace();
+            } catch (flushErr) {
+              process.stderr.write(
+                `runner: workspace flush before '${t.name}' failed: ${flushErr instanceof Error ? flushErr.message : String(flushErr)}\n`,
+              );
+              outcome = 'error';
+            }
+            if (outcome !== 'accepted' && outcome !== 'noop') {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Could not sync your just-authored workspace files to the host before '${t.name}' (flush outcome: ${outcome}). The files are not visible to the installer yet — please try again.`,
+                  },
+                ],
+                isError: true,
+              };
+            }
+          }
           const raw = await client.call('tool.execute-host', {
             call: { id: idGen(), name: t.name, input: args },
           });
@@ -139,6 +193,11 @@ export function createHostMcpServer(
   return createSdkMcpServer({
     name: MCP_HOST_SERVER_NAME,
     version: '0.0.0',
-    tools: buildHostToolEntries(opts.client, opts.tools, opts.idGen),
+    tools: buildHostToolEntries(
+      opts.client,
+      opts.tools,
+      opts.idGen,
+      opts.flushWorkspace,
+    ),
   });
 }

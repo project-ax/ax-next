@@ -17,11 +17,21 @@ const PLUGIN_NAME = '@ax/tool-dispatcher';
 // The dynamic `tool:execute:${name}` hooks return `{ output: unknown }` and are
 // deliberately left unvalidated — the payload is opaque tool output.
 // ---------------------------------------------------------------------------
+// NOTE: this is a return-validation schema for the `tool:list` SERVICE hook,
+// and it must stay field-compatible with the `ToolDescriptor` type in
+// `@ax/core` and the wire `ToolDescriptorSchema` in `@ax/ipc-protocol`. A
+// `z.object` strips keys it doesn't declare, so any ToolDescriptor field
+// omitted here is silently dropped from `tool:list` output BEFORE it reaches
+// the IPC wire — which is exactly how `flushWorkspaceBeforeCall` got dropped
+// (BUG-W2: the runner never saw the flag, so the pre-call workspace flush
+// never fired). When you add a ToolDescriptor field, add it in all three
+// places.
 const ToolDescriptorSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   inputSchema: z.record(z.unknown()),
   executesIn: z.union([z.literal('sandbox'), z.literal('host')]),
+  flushWorkspaceBeforeCall: z.boolean().optional(),
 });
 
 export const ToolRegisterOutputSchema = z.object({

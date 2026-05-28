@@ -66,6 +66,14 @@ export const ToolDescriptorSchema = z.object({
    * - `'host'`: the agent sends `tool.execute-host` and waits for the host.
    */
   executesIn: z.enum(['sandbox', 'host']),
+  /**
+   * When `true`, the runner flushes its live workspace (commit + push to the
+   * host mirror) before forwarding this host tool's `tool.execute-host` call,
+   * so a host tool that reads workspace files the agent wrote earlier in the
+   * SAME turn sees them. See `@ax/core`'s `ToolDescriptor` for the rationale.
+   * Storage-agnostic: "workspace" is the abstraction, not git/sqlite/k8s.
+   */
+  flushWorkspaceBeforeCall: z.boolean().optional(),
 });
 export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
 
