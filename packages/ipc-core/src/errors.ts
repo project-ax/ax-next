@@ -88,6 +88,22 @@ export function mapPluginError(err: PluginError): HandlerErr {
     // on the client side.
     case 'conflict':
       return hookRejected('conflict');
+    // Agent-authored-skill validation (`install_authored_skill`, BUG-W2
+    // follow-up). Unlike every other code, we surface `err.message` verbatim:
+    // it describes what's wrong with the AGENT'S OWN authored SKILL.md
+    // ("description must be ≤240 chars", "name must be a slug", "missing
+    // frontmatter", or "no authored skill 'X'"). That text carries no secret
+    // or host-internal detail and is the whole point — the agent reads it,
+    // fixes the file, and retries. Collapsing it to the generic 500 (the
+    // default below) is exactly what made the agent loop rewriting the same
+    // broken file while only seeing "internal server error". 422 = the request
+    // was fine but the referenced workspace content is unprocessable.
+    case 'authored-skill-invalid':
+    case 'authored-skill-not-found':
+      return {
+        status: 422,
+        body: { error: { code: 'VALIDATION', message: err.message } },
+      };
     case 'no-service':
     case 'duplicate-service':
     case 'missing-service':
