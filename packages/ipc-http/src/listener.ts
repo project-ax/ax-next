@@ -23,11 +23,20 @@ import { makeAgentContext, type HookBus } from '@ax/core';
 //   5. Body size    — enforced by the dispatcher's body reader (MAX_FRAME).
 //                     Over → 413; bad JSON → 400.
 //
-// I12: idle-timeout 60 s — matches the unix listener so 30 s long-polls
-// aren't killed by a future Node default change.
+// Idle-timeout — matches the unix listener. It must EXCEED the longest
+// per-action client budget so the client's own timeout is always the binding
+// one and the server never resets an in-flight request:
+//   - session.next-message: a 30 s long-poll held open with no data.
+//   - workspace.materialize (BUG-W3): the host may spend up to the client's
+//     120 s materialize budget building/streaming a large aged bundle; before
+//     the first response byte the socket is IDLE (request received, response
+//     not started), so a 60 s idle timeout would destroy the socket mid-build
+//     → ECONNRESET → retry → rebuild → loop → boot crash, relocating the very
+//     crash BUG-W3 fixes. 130 s sits just above the 120 s client budget so the
+//     client times out first (clean) instead of the server resetting.
 // ---------------------------------------------------------------------------
 
-const IDLE_TIMEOUT_MS = 60_000;
+const IDLE_TIMEOUT_MS = 130_000;
 
 export interface HttpListener {
   close(): Promise<void>;
@@ -148,7 +157,9 @@ export async function createHttpListener(
     await dispatch(req, res, ctx, opts.bus);
   };
 
-  // I12: bump idle timeout so 30 s long-polls aren't killed.
+  // Idle socket timeout (see IDLE_TIMEOUT_MS). Must outlast the longest
+  // client-side per-action budget (materialize 120 s; long-poll 30 s) so the
+  // server never resets an in-flight request before the client gives up.
   server.setTimeout(IDLE_TIMEOUT_MS);
 
   await new Promise<void>((resolve, reject) => {
