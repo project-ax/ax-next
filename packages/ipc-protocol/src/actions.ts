@@ -206,14 +206,20 @@ export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
     z.object({
       accepted: z.literal(false),
       reason: z.string(),
-      // Re-sync envelope (optional; present only on a parent-mismatch rejection):
-      // the storage tier's current head + a baseline bundle at that head, so the
-      // runner can rebase its turn onto it and retry. Opaque to the runner.
-      // `baselineBundleBytes` reuses the canonical-base64 validator (same as the
-      // request `bundleBytes`) so a malformed payload fails at the protocol
-      // boundary rather than later in the runner's `git fetch`.
+      // Re-sync signal (optional; present only on a parent-mismatch rejection):
+      // the storage tier's current head. When set, the runner fetches the
+      // baseline bundle AT this head out-of-band via the binary
+      // `workspace.export-baseline-bundle` action (octet-stream, uncapped),
+      // rebases its turn onto it, and retries. Opaque to the runner.
+      //
+      // The baseline bundle is NO LONGER inlined here (BUG: same class as the
+      // materialize BUG-W3). An aged workspace's baseline bundle (~MiB) base64-
+      // encoded into this JSON body exceeded the runner ipc-client's 4 MiB
+      // MAX_RESPONSE_BYTES cap → `response body too large` → the turn never
+      // synced → 120 s agent:invoke timeout → terminate → unknown-token loop.
+      // The bytes now stream over `workspace.export-baseline-bundle` (the
+      // uncapped binary path) instead of riding in this JSON response.
       actualParent: z.string().optional(),
-      baselineBundleBytes: BundleBytesSchema.optional(),
     }),
   ],
 );
@@ -267,6 +273,58 @@ export type WorkspaceCommitNotifyResponse = z.infer<
 export const WorkspaceMaterializeRequestSchema = z.object({}).strict();
 export type WorkspaceMaterializeRequest = z.infer<
   typeof WorkspaceMaterializeRequestSchema
+>;
+
+// ---------------------------------------------------------------------------
+// workspace.export-baseline-bundle
+//
+// Sandbox -> Host RPC fired ON THE COMMIT-NOTIFY RE-SYNC PATH only. When a
+// concurrent writer advanced the workspace head past the runner's parent
+// version, `workspace.commit-notify` returns `{accepted:false, actualParent}`
+// (a small JSON signal — NO bundle bytes). The runner then calls THIS action
+// with `{ version: actualParent }` to fetch the baseline git bundle AT that
+// head, rebases its turn onto it, and retries the commit-notify.
+//
+// Why a raw binary body (same bug class as materialize's BUG-W3): the baseline
+// bundle grows unbounded with workspace age (one commit per turn). Inlining it
+// base64-in-JSON in the commit-notify re-sync response (the OLD shape) inflated
+// it ~33% AND had to be buffered whole in memory on both ends under the 4 MiB
+// `MAX_RESPONSE_BYTES` cap. An aged workspace blew the cap, the re-sync never
+// completed, the turn timed out, and the session entered an unknown-token loop.
+// Streaming the raw bytes here (`Content-Type: application/octet-stream`, drained
+// straight to a temp file) drops the base64 tax and the in-memory cap wall — the
+// runner clones/fetches from the file under the same disk-bounded ceiling
+// materialize uses.
+//
+// `git bundle` is git-vocabulary on the wire — by Invariant I1 that's allowed
+// here for the same reason as materialize: this is the sandbox-host transport
+// axis, not a subscriber-visible hook payload. No `workspace:*` bus hook ever
+// sees these bundle bytes; on this INBOUND direction they go straight into the
+// runner's `git fetch` for the rebase. The host produces them by calling the
+// existing `workspace:export-baseline-bundle` SERVICE hook (registered by the
+// bundle-aware backends) and decoding its base64 output at this wire edge.
+//
+// No response SCHEMA: the body is opaque binary, so there's no Zod-parsed JSON
+// response (cf. the dispatch table in `ipc-client.ts`, which omits this action
+// alongside materialize). The REQUEST stays JSON, validated below.
+//
+// `version` is the opaque workspace head the runner must rebase onto — it's the
+// `actualParent` it received from the commit-notify re-sync signal. It's a
+// REQUIRED string here: the re-sync path always has a concrete head to fetch
+// (a `null` version would be the materialize path, which has its own action).
+// ---------------------------------------------------------------------------
+
+export const WorkspaceExportBaselineBundleRequestSchema = z
+  .object({
+    // The storage-tier head to bundle. Opaque to the runner — it round-trips
+    // the `actualParent` from the commit-notify re-sync signal. Min length 1:
+    // an empty version is a protocol misuse (the re-sync path always carries a
+    // concrete head; the empty-baseline case is materialize's job).
+    version: z.string().min(1),
+  })
+  .strict();
+export type WorkspaceExportBaselineBundleRequest = z.infer<
+  typeof WorkspaceExportBaselineBundleRequestSchema
 >;
 
 // ---------------------------------------------------------------------------

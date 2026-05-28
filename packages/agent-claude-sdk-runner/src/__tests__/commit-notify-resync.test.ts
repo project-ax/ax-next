@@ -40,8 +40,17 @@ import {
   MAX_RESYNC_ATTEMPTS,
 } from '../commit-notify-resync.js';
 
-function fakeClient(call: Mock): { call: Mock } {
-  return { call };
+// The re-sync path now fetches the baseline bundle out-of-band via
+// client.callBinary('workspace.export-baseline-bundle', { version }). The
+// default mock returns a fake temp-file handle; resync-branch tests assert on
+// its call args.
+function fakeClient(call: Mock, callBinary?: Mock): { call: Mock; callBinary: Mock } {
+  return {
+    call,
+    callBinary:
+      callBinary ??
+      vi.fn().mockResolvedValue({ path: '/tmp/fetched-baseline.bundle', bytes: 42 }),
+  };
 }
 
 const ROOT = '/tmp/workspace';
@@ -85,30 +94,41 @@ describe('commitNotifyWithResync', () => {
     expect(result).toEqual({ parentVersion: 'v2', outcome: 'accepted' });
   });
 
-  it('concurrent-writer envelope → resync + re-bundle + retry → accepted', async () => {
+  it('concurrent-writer signal → binary-fetch baseline + resync + re-bundle + retry → accepted', async () => {
+    // The re-sync response carries ONLY actualParent (no inline bundle bytes —
+    // they blew the 4 MiB JSON cap on aged workspaces). The runner fetches the
+    // baseline bundle for actualParent out-of-band via callBinary.
     const call = vi
       .fn()
       .mockResolvedValueOnce({
         accepted: false,
         actualParent: 'v2',
-        baselineBundleBytes: 'BBBB',
       })
       .mockResolvedValueOnce({ accepted: true, version: 'v3' });
+    const callBinary = vi
+      .fn()
+      .mockResolvedValue({ path: '/tmp/v2-baseline.bundle', bytes: 99 });
     commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_REBASED');
 
     const result = await commitNotifyWithResync({
-      client: fakeClient(call),
+      client: fakeClient(call, callBinary),
       root: ROOT,
       bundleBytes: 'BUNDLE_FIRST',
       parentVersion: 'v1',
       reason: 'turn',
     });
 
-    // Resync used the original parent as oldBaseline, the new head as newBaseline.
+    // The baseline bundle was fetched out-of-band for the advanced head.
+    expect(callBinary).toHaveBeenCalledTimes(1);
+    expect(callBinary).toHaveBeenCalledWith('workspace.export-baseline-bundle', {
+      version: 'v2',
+    });
+    // Resync used the fetched bundle FILE, the original parent as oldBaseline,
+    // and the new head as newBaseline.
     expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
     expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
       root: ROOT,
-      baselineBundleBytes: 'BBBB',
+      bundlePath: '/tmp/v2-baseline.bundle',
       oldBaseline: 'v1',
       newBaseline: 'v2',
     });
@@ -133,7 +153,6 @@ describe('commitNotifyWithResync', () => {
     const call = vi.fn().mockResolvedValueOnce({
       accepted: false,
       actualParent: 'v2',
-      baselineBundleBytes: 'BBBB',
     });
     // Re-bundle after resync produces nothing new.
     commitTurnAndBundleMock.mockResolvedValueOnce(null);
@@ -198,7 +217,6 @@ describe('commitNotifyWithResync', () => {
     const call = vi.fn().mockResolvedValue({
       accepted: false,
       actualParent: 'vN',
-      baselineBundleBytes: 'BBBB',
     });
     commitTurnAndBundleMock.mockResolvedValue('BUNDLE_REBASED');
 
@@ -220,11 +238,102 @@ describe('commitNotifyWithResync', () => {
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
   });
 
-  it('envelope with parentVersion=null → cannot resync → rollback (resync needs the old baseline OID)', async () => {
+  it('baseline-bundle fetch fails (head moved again) → re-enters loop with same parent+bundle → accepted', async () => {
+    // Double-writer race: commit-notify returns actualParent=v2, but ANOTHER
+    // writer advances the head to v3 before the runner fetches the v2 baseline
+    // bundle. The backend throws parent-mismatch → handler maps it to a
+    // NON-retryable 409 (P2b) → callBinary rejects PROMPTLY (no 5xx retry
+    // storm). This catch is status-agnostic — ANY thrown fetch error re-enters
+    // the loop. The fetch failure must NOT be terminal 'kept'; instead the
+    // helper re-calls commit-notify (same parentVersion=v1, same original
+    // bundle) which now returns the fresher actualParent=v3, whose bundle fetch
+    // succeeds, and the turn is ultimately accepted.
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce({ accepted: false, actualParent: 'v2' })
+      .mockResolvedValueOnce({ accepted: false, actualParent: 'v3' })
+      .mockResolvedValueOnce({ accepted: true, version: 'v4' });
+    const callBinary = vi
+      .fn()
+      // First fetch (for v2) fails — head moved again.
+      .mockRejectedValueOnce(new Error('500'))
+      // Second fetch (for v3) succeeds.
+      .mockResolvedValueOnce({ path: '/tmp/v3-baseline.bundle', bytes: 77 });
+    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_REBASED');
+
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call, callBinary),
+      root: ROOT,
+      bundleBytes: 'BUNDLE_FIRST',
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+
+    // Three commit-notify calls: initial → fetch-fail re-enter → resync retry.
+    expect(call).toHaveBeenCalledTimes(3);
+    // The fetch-fail re-entry uses the ORIGINAL parent+bundle (no resync ran).
+    expect(call.mock.calls[0]?.[1]).toEqual({
+      parentVersion: 'v1',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_FIRST',
+    });
+    expect(call.mock.calls[1]?.[1]).toEqual({
+      parentVersion: 'v1',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_FIRST',
+    });
+    // The successful resync retry uses the fresher head + the re-bundle.
+    expect(call.mock.calls[2]?.[1]).toEqual({
+      parentVersion: 'v3',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_REBASED',
+    });
+    expect(callBinary).toHaveBeenCalledTimes(2);
+    expect(callBinary.mock.calls[0]?.[1]).toEqual({ version: 'v2' });
+    expect(callBinary.mock.calls[1]?.[1]).toEqual({ version: 'v3' });
+    // Resync ran exactly once (only on the second, successful fetch).
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
+      root: ROOT,
+      bundlePath: '/tmp/v3-baseline.bundle',
+      oldBaseline: 'v1',
+      newBaseline: 'v3',
+    });
+    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ parentVersion: 'v4', outcome: 'accepted' });
+  });
+
+  it('baseline-bundle fetch fails on every attempt → terminates (rolled-back) without spinning', async () => {
+    // Pathological writer storm: the head moves on every fetch, so every
+    // export-baseline-bundle 500s. The bounded loop must terminate after
+    // MAX_RESYNC_ATTEMPTS rather than spin forever — falling back to rollback.
+    const call = vi.fn().mockResolvedValue({ accepted: false, actualParent: 'vN' });
+    const callBinary = vi.fn().mockRejectedValue(new Error('500'));
+
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call, callBinary),
+      root: ROOT,
+      bundleBytes: 'BUNDLE_FIRST',
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+
+    // The fetch is attempted exactly MAX_RESYNC_ATTEMPTS times (each increments
+    // the attempt counter so a storm can't spin). commit-notify is called once
+    // more than that: the initial + one re-entry per failed fetch, then the
+    // budget is exhausted on the final loop.
+    expect(callBinary).toHaveBeenCalledTimes(MAX_RESYNC_ATTEMPTS);
+    expect(call).toHaveBeenCalledTimes(MAX_RESYNC_ATTEMPTS + 1);
+    expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
+    expect(advanceBaselineMock).not.toHaveBeenCalled();
+    expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+  });
+
+  it('signal with parentVersion=null → cannot resync → rollback (resync needs the old baseline OID)', async () => {
     const call = vi.fn().mockResolvedValue({
       accepted: false,
       actualParent: 'v2',
-      baselineBundleBytes: 'BBBB',
     });
 
     const result = await commitNotifyWithResync({

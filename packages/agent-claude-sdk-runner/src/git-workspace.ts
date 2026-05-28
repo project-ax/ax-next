@@ -492,10 +492,14 @@ export async function rollbackToBaseline(root: string): Promise<void> {
  * `oldBaseline`. Fetch the new baseline and replay our turn commit(s) onto it
  * so the next `commit-notify` ships `newBaseline..HEAD`.
  *
- * The `baselineBundleBytes` are the base64-encoded git bundle of the advanced
- * storage state (shipped by the host in the `accepted:false` response). Fetching
- * this bundle brings `newBaseline` into the local object store so
- * `git rebase --onto newBaseline` can resolve it.
+ * `bundlePath` points at the git bundle of the advanced storage state, already
+ * on local disk. The IPC client's `callBinary('workspace.export-baseline-bundle')`
+ * drained the raw `application/octet-stream` response body straight to this temp
+ * file (no in-memory base64/JSON round-trip — so an aged workspace's MiB-scale
+ * baseline bundle never hits the 4 MiB JSON response cap that previously broke
+ * the re-sync). Fetching this bundle brings `newBaseline` into the local object
+ * store so `git rebase --onto newBaseline` can resolve it. This function TAKES
+ * OWNERSHIP of the file: it deletes it when done (success or failure).
  *
  * Disjoint paths (concurrent writer's file vs our turn's file) ⇒ clean rebase.
  * A real conflict (same path touched by both) ⇒ the rebase is aborted (leaving
@@ -510,20 +514,12 @@ export async function rollbackToBaseline(root: string): Promise<void> {
  */
 export async function resyncBaselineAndReplay(input: {
   root: string;
-  baselineBundleBytes: string;
+  bundlePath: string;
   oldBaseline: string;
   newBaseline: string;
 }): Promise<void> {
-  const { root, baselineBundleBytes, oldBaseline, newBaseline } = input;
+  const { root, bundlePath, oldBaseline, newBaseline } = input;
 
-  // Write the host-provided bundle to a temp file. Matches the same temp-bundle
-  // pattern used by materializeWorkspace: place in os.tmpdir() (always writable
-  // in both k8s and subprocess sandboxes; the parent of `root` may be read-only).
-  const bundlePath = path.join(
-    os.tmpdir(),
-    `ax-resync-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.bundle`,
-  );
-  await fs.writeFile(bundlePath, Buffer.from(baselineBundleBytes, 'base64'));
   try {
     // Fetch the bundle into the runner's local repo so the `newBaseline`
     // object is reachable. `git fetch <bundle> main` writes FETCH_HEAD only

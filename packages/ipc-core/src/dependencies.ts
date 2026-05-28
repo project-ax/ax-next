@@ -99,7 +99,7 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
     {
       hook: 'workspace:export-baseline-bundle',
       degradation:
-        'workspace.materialize / workspace.commit-notify treat the backend as non-bundle: materialize reconstructs the baseline from workspace:list + workspace:read, and commit-notify rejects bundle-wire writes (read-only / probe path).',
+        'workspace.materialize / workspace.commit-notify treat the backend as non-bundle: materialize reconstructs the baseline from workspace:list + workspace:read, and commit-notify rejects bundle-wire writes (read-only / probe path). workspace.export-baseline-bundle (the commit-notify re-sync fetch) returns 500 — unreachable when the backend never enters the bundle re-sync path.',
     },
     {
       hook: 'workspace:apply-bundle',

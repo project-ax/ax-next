@@ -124,14 +124,27 @@ async function fetchBundleAdvance(mirrorDir: string, bundleB64: string): Promise
 }
 
 /** Full bundle of the mirror's current main (the host's resync baselineBundleBytes). */
-async function bundleMirrorMain(mirrorDir: string): Promise<string> {
-  const f = path.join(scratch, `base-${Date.now()}-${Math.random().toString(36).slice(2)}.bundle`);
-  await expectOk(await git(['-C', mirrorDir, 'bundle', 'create', f, 'main']), 'mirror bundle main');
-  try {
-    return (await fs.readFile(f)).toString('base64');
-  } finally {
-    await fs.rm(f, { force: true });
-  }
+/**
+ * Bundle the mirror's `main` to a temp file and return its PATH — matching how
+ * the runner now receives the baseline bundle on the re-sync path: the IPC
+ * client's `callBinary('workspace.export-baseline-bundle')` streams the host's
+ * raw octet-stream body straight to a temp file (NO base64-in-JSON). The runner
+ * (resyncBaselineAndReplay) takes ownership of the file and deletes it, so we
+ * place it OUTSIDE the per-test `scratch` dir (in tmpdir) to avoid double-free.
+ */
+async function bundleMirrorMainToFile(
+  mirrorDir: string,
+): Promise<{ path: string; bytes: number }> {
+  const f = path.join(
+    tmpdir(),
+    `ax-e2e-baseline-${Date.now()}-${Math.random().toString(36).slice(2)}.bundle`,
+  );
+  await expectOk(
+    await git(['-C', mirrorDir, 'bundle', 'create', f, 'main']),
+    'mirror bundle main',
+  );
+  const stat = await fs.stat(f);
+  return { path: f, bytes: stat.size };
 }
 
 /** Simulate the host-side retire (workspace:apply delete) by committing a deletion onto the mirror's main. */
@@ -151,10 +164,12 @@ async function hostRetire(mirrorDir: string, relPath: string): Promise<string> {
  * A real-git IpcClient stand-in. `workspace.commit-notify` is parent-aware
  * (what the real git-server does): it applies the thin bundle only when the
  * caller's parent matches the mirror head, otherwise it returns the
- * concurrent-writer envelope (`accepted:false` + `actualParent` +
- * `baselineBundleBytes`) so the runner's resync path engages. `tool.execute-host`
- * for install_authored_skill reads the mirror for the authored file. No mocking
- * of the workspace layer — both sides are real git.
+ * concurrent-writer signal (`accepted:false` + `actualParent`, head only — the
+ * baseline bundle is fetched out-of-band) so the runner's resync path engages.
+ * The runner then calls `callBinary('workspace.export-baseline-bundle', {version})`
+ * to stream the baseline bundle to a temp file. `tool.execute-host` for
+ * install_authored_skill reads the mirror for the authored file. No mocking of
+ * the workspace layer — both sides are real git.
  */
 function makeHostClient(mirrorDir: string): IpcClient {
   const norm = (h: string | null | undefined): string | null => (h && h.length ? h : null);
@@ -173,7 +188,6 @@ function makeHostClient(mirrorDir: string): IpcClient {
         return {
           accepted: false,
           actualParent: head,
-          baselineBundleBytes: await bundleMirrorMain(mirrorDir),
           reason: 'parent-mismatch',
         };
       }
@@ -195,8 +209,17 @@ function makeHostClient(mirrorDir: string): IpcClient {
     callGet: async () => {
       throw new Error('callGet not expected');
     },
-    callBinary: async () => {
-      throw new Error('callBinary not expected');
+    callBinary: async (action: string, payload: unknown) => {
+      // The re-sync path fetches the baseline bundle out-of-band as a binary
+      // octet-stream (NOT inline in the commit-notify JSON response). Stream the
+      // mirror's main bundle to a temp file and hand back its path, exactly as
+      // the real host-side workspace.export-baseline-bundle handler does.
+      if (action === 'workspace.export-baseline-bundle') {
+        const { version } = payload as { version: string };
+        expect(version).toBe(await mirrorMain(mirrorDir));
+        return bundleMirrorMainToFile(mirrorDir);
+      }
+      throw new Error(`unexpected binary IPC action: ${action}`);
     },
     event: async () => {
       throw new Error('event not expected');

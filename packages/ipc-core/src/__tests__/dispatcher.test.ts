@@ -26,6 +26,12 @@ import type {
 // @ax/ipc-core. Tests are exempt from cross-plugin import lint rules
 // (eslint.config.mjs allowlists `packages/*/src/__tests__/**`).
 import { createListener, type Listener } from '@ax/ipc-server';
+import type { Plugin } from '@ax/core';
+import type {
+  WorkspaceExportBaselineBundleInput,
+  WorkspaceExportBaselineBundleOutput,
+} from '@ax/workspace-bundle-protocol';
+import { buildBaselineBundle } from '../handlers/workspace-materialize.js';
 
 // ---------------------------------------------------------------------------
 // Dispatcher tests
@@ -448,6 +454,56 @@ describe('dispatcher', () => {
     const head = res.body.toString('utf8', 0, 16);
     expect(head).toMatch(/^# v\d git bundle/);
     // It is NOT a JSON envelope.
+    expect(() => JSON.parse(res.body.toString('utf8'))).toThrow();
+  });
+
+  // -------------------------------------------------------------------------
+  // /workspace.export-baseline-bundle — binary octet-stream response (the
+  // commit-notify re-sync fetch; same bug class as materialize BUG-W3)
+  // -------------------------------------------------------------------------
+
+  it('POST /workspace.export-baseline-bundle — streams a raw git-bundle octet-stream body', async () => {
+    // The re-sync baseline bundle rides the binary octet-stream body (NOT a
+    // base64-in-JSON field that blew the runner's 4 MiB response cap). Drive
+    // the dispatcher's binary write path end-to-end over a real socket with a
+    // backend that produces a real bundle for the requested version.
+    const bundleB64 = await buildBaselineBundle({
+      paths: ['.ax/CLAUDE.md'],
+      read: async () => Buffer.from('# memory at the advanced head'),
+    });
+    const probe: Plugin = {
+      manifest: {
+        name: '@ax/test-dispatcher-ebb-backend',
+        version: '0.0.0',
+        registers: ['workspace:export-baseline-bundle'],
+        calls: [],
+        subscribes: [],
+      },
+      init({ bus }) {
+        bus.registerService<
+          WorkspaceExportBaselineBundleInput,
+          WorkspaceExportBaselineBundleOutput
+        >(
+          'workspace:export-baseline-bundle',
+          '@ax/test-dispatcher-ebb-backend',
+          async () => ({ bundleBytes: bundleB64 }),
+        );
+      },
+    };
+    const s = await setup({ plugins: [probe] });
+    setups.push(s);
+    const res = await doRequestRaw(
+      s.socketPath,
+      'POST',
+      '/workspace.export-baseline-bundle',
+      s.token,
+      JSON.stringify({ version: 'newhead' }),
+    );
+    expect(res.status).toBe(200);
+    expect(res.contentType).toBe('application/octet-stream');
+    expect(res.body.length).toBeGreaterThan(0);
+    const head = res.body.toString('utf8', 0, 16);
+    expect(head).toMatch(/^# v\d git bundle/);
     expect(() => JSON.parse(res.body.toString('utf8'))).toThrow();
   });
 

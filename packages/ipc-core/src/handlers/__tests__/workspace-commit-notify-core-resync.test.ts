@@ -1,16 +1,21 @@
 // ---------------------------------------------------------------------------
 // Integration regression (F-1): the apply-bundle parent-mismatch catch in the
-// commit-notify handler must forward a FULL re-sync envelope — not a bare veto
-// — when the workspace runs on the SINGLE-REPLICA backend (@ax/workspace-git-
-// core).
+// commit-notify handler must forward the re-sync HEAD signal (`actualParent`) —
+// not a bare veto — when the workspace runs on the SINGLE-REPLICA backend
+// (@ax/workspace-git-core). The baseline bundle itself is NO LONGER inlined in
+// the response (the runner fetches it out-of-band via the binary
+// workspace.export-baseline-bundle action — inlining blew the runner's 4 MiB
+// JSON cap on aged workspaces, same bug class as materialize BUG-W3). This test
+// additionally drives that out-of-band fetch end-to-end via the real
+// export-baseline-bundle handler so the full re-sync path stays covered.
 //
 // Why this is distinct from `workspace-commit-notify.test.ts`'s "parent-mismatch
 // from export-baseline-bundle" case:
 //
 //   - On the MULTI-replica backend (@ax/workspace-git-server) a concurrent
 //     writer surfaces EARLY — at `workspace:export-baseline-bundle(V1)` — which
-//     already throws PluginError{cause:{actualParent, baselineBundleBytes}}.
-//     The handler's EXPORT catch forwards that. (Covered by the server-side
+//     already throws PluginError{cause:{actualParent, ...}}. The handler's
+//     EXPORT catch forwards `actualParent`. (Covered by the server-side
 //     regression + the probe test in workspace-commit-notify.test.ts.)
 //
 //   - On the SINGLE-replica backend (@ax/workspace-git-core) the export of a
@@ -18,17 +23,17 @@
 //     V1. The mismatch is only detected LATER, by the parent-CAS inside
 //     `workspace:apply-bundle` (impl.ts Site 1: head V2 ≠ requested parent V1).
 //     Pre-fix that throw carried NO actualParent, so the handler's apply-bundle
-//     catch returned a BARE veto (no actualParent / no baselineBundleBytes) and
-//     the runner had no head to rebase onto → permanent stuck-loop / lost turn.
+//     catch returned a BARE veto and the runner had no head to rebase onto →
+//     permanent stuck-loop / lost turn.
 //
-// This test drives the REAL handler against the REAL workspace-git-core backend
+// This test drives the REAL handlers against the REAL workspace-git-core backend
 // (no mocked services) through the exact production sequence:
 //   turn-1 (empty baseline) → V1, concurrent out-of-band attachment apply → V2,
 //   turn-2 with parentVersion=V1.
 //
-// Pre-fix RED: turn-2 returns accepted:false but actualParent/baselineBundleBytes
-// are undefined (bare veto). Post-fix GREEN: actualParent===V2 and
-// baselineBundleBytes is a real git bundle at V2.
+// Post-fix GREEN: turn-2 returns accepted:false with actualParent===V2 and NO
+// inline baselineBundleBytes; then export-baseline-bundle(V2) streams a real git
+// bundle at V2 (the bytes the runner rebases onto).
 // ---------------------------------------------------------------------------
 
 import { spawn } from 'node:child_process';
@@ -47,6 +52,7 @@ import {
 } from '@ax/core';
 import { registerWorkspaceGitHooks } from '@ax/workspace-git-core';
 import { workspaceCommitNotifyHandler } from '../workspace-commit-notify.js';
+import { workspaceExportBaselineBundleHandler } from '../workspace-export-baseline-bundle.js';
 
 // ---------------------------------------------------------------------------
 // Raw-git helpers (copied from
@@ -270,7 +276,7 @@ function mkTmp(label: string): string {
 
 describe('workspace.commit-notify handler — single-replica concurrent-writer re-sync (F-1)', () => {
   it(
-    'apply-bundle parent-mismatch forwards actualParent + baselineBundleBytes (not a bare veto)',
+    'apply-bundle parent-mismatch forwards actualParent (not a bare veto); bundle fetched out-of-band via the binary action',
     async () => {
       const { bus, ctx } = await makeEnv();
 
@@ -340,8 +346,8 @@ describe('workspace.commit-notify handler — single-replica concurrent-writer r
       );
 
       // The apply-bundle parent-CAS (impl.ts Site 1) detects head V2 ≠ parent
-      // V1 and throws parent-mismatch. The handler must forward the FULL
-      // re-sync envelope, not a bare veto.
+      // V1 and throws parent-mismatch. The handler must forward the head signal
+      // (actualParent), not a bare veto — and must NOT inline the bundle bytes.
       expect(r3.status).toBe(200);
       const b3 = r3.body as {
         accepted: false;
@@ -351,11 +357,26 @@ describe('workspace.commit-notify handler — single-replica concurrent-writer r
       };
       expect(b3.accepted).toBe(false);
 
-      // The decisive assertions — pre-fix these are `undefined` (bare veto).
+      // The decisive assertion — pre-fix this is `undefined` (bare veto).
       expect(b3.actualParent).toBe(v2);
-      expect(typeof b3.baselineBundleBytes).toBe('string');
-      const bundle = Buffer.from(b3.baselineBundleBytes!, 'base64');
-      const header = bundle.slice(0, 20).toString('ascii');
+      // The bundle is NOT inlined anymore (it blew the runner's 4 MiB JSON cap
+      // on aged workspaces — same class as materialize BUG-W3).
+      expect(b3.baselineBundleBytes).toBeUndefined();
+
+      // --- out-of-band fetch: the runner now binary-fetches the baseline bundle
+      //     for actualParent (V2) via the dedicated octet-stream action. Drive
+      //     the REAL handler and verify it streams a real git bundle at V2 — the
+      //     bytes the runner rebases its turn onto.
+      const fetched = await workspaceExportBaselineBundleHandler(
+        { version: b3.actualParent },
+        ctx,
+        bus,
+      );
+      expect(fetched.status).toBe(200);
+      expect('binary' in fetched).toBe(true);
+      const fb = fetched as { binary: Buffer; contentType: string };
+      expect(fb.contentType).toBe('application/octet-stream');
+      const header = fb.binary.slice(0, 20).toString('ascii');
       expect(header).toMatch(/^# v[23] git bundle/);
     },
     30_000,

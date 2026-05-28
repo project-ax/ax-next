@@ -702,6 +702,50 @@ describe('createIpcClient', () => {
       expect((err as IpcRequestError).status).toBe(404);
     });
 
+    it('drains a >4 MiB workspace.export-baseline-bundle body to a temp file (the commit-notify re-sync fix)', async () => {
+      // Bug Fix Policy regression: the commit-notify re-sync baseline bundle used
+      // to ride base64-in-JSON in the response, capped at 4 MiB MAX_RESPONSE_BYTES.
+      // An aged workspace's bundle blew the cap → `response body too large` → the
+      // turn never synced → 120s timeout → terminate → unknown-token loop. The fix
+      // routes the bundle over the SAME uncapped binary path materialize uses, via
+      // the dedicated workspace.export-baseline-bundle action. This proves a
+      // >4 MiB body drains cleanly (would throw on the old JSON path).
+      const size = 5 * 1024 * 1024;
+      const payload = Buffer.alloc(size);
+      for (let i = 0; i < size; i++) payload[i] = (i * 31 + 7) & 0xff;
+
+      const server = await startFakeServer();
+      servers.push(server);
+      let seenPath = '';
+      server.setHandler((req, res) => {
+        seenPath = req.url ?? '';
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(payload.length),
+        });
+        res.end(payload);
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        maxRetries: 0,
+      });
+
+      const result = await client.callBinary('workspace.export-baseline-bundle', {
+        version: 'newhead',
+      });
+      created.push(result.path);
+
+      // POSTed to the right action endpoint.
+      expect(seenPath).toBe('/workspace.export-baseline-bundle');
+      // The full >4 MiB body round-tripped to disk intact (not truncated, not
+      // capped, not re-encoded).
+      expect(result.bytes).toBe(size);
+      const onDisk = await fsp.readFile(result.path);
+      expect(onDisk.length).toBe(size);
+      expect(onDisk.equals(payload)).toBe(true);
+    });
+
     it('retries a transient 5xx then drains the binary body on success', async () => {
       // Proves the binary path reuses the shared retry loop: first attempt 503,
       // second attempt 200 with the bundle.
@@ -730,6 +774,46 @@ describe('createIpcClient', () => {
       expect(attempts).toBe(2);
       const onDisk = await fsp.readFile(result.path);
       expect(onDisk.equals(payload)).toBe(true);
+    });
+
+    it('does NOT retry a 409 export-baseline-bundle (P2b — stale parent-mismatch fails fast)', async () => {
+      // P2b regression: a stale-baseline export-baseline-bundle fetch (the head
+      // moved AGAIN after commit-notify returned actualParent) is mapped by the
+      // host handler to a NON-retryable 409. callBinary must treat 4xx as
+      // non-retryable and surface it on the FIRST attempt — NOT reissue the same
+      // stale fetch under the 5xx retry cap (which would rebuild the large bundle
+      // on the git-server backend several times before the runner re-asks
+      // commit-notify for the fresher head). Contrast the 5xx test above, which
+      // DOES retry. The runner's bounded re-sync loop catches this prompt failure
+      // and re-calls commit-notify.
+      let attempts = 0;
+      const server = await startFakeServer();
+      servers.push(server);
+      server.setHandler((_req, res) => {
+        attempts += 1;
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({ error: { code: 'HOOK_REJECTED', message: 'conflict' } }),
+        );
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        retryBackoff: () => 0, // no real wait — would expose any spurious retry
+      });
+
+      const err = await client
+        .callBinary('workspace.export-baseline-bundle', { version: 'staleHead' })
+        .then(
+          () => {
+            throw new Error('expected rejection');
+          },
+          (e: unknown) => e,
+        );
+      expect(err).toBeInstanceOf(IpcRequestError);
+      expect((err as IpcRequestError).status).toBe(409);
+      // The crux: exactly ONE attempt — no internal 5xx-style retry storm.
+      expect(attempts).toBe(1);
     });
   });
 });

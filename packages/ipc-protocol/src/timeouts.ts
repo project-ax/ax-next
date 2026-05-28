@@ -22,6 +22,15 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   // stream; capping this at the old 30 s would just relocate the BUG-W3 boot
   // crash from "response too large" to "timeout" on a sufficiently large bundle.
   'workspace.materialize': 120_000,
+  // Commit-notify re-sync: the runner fetches the baseline bundle AT the
+  // storage tier's advanced head (the `actualParent` from a parent-mismatch
+  // re-sync signal) as a raw octet-stream body and drains it to a temp file,
+  // then rebases its turn onto it (same binary path as materialize). Like
+  // materialize, this is a single in-flight transfer whose duration scales with
+  // workspace size, so it shares the 120 s ceiling — capping it lower would
+  // relocate the very "response too large"-class failure this action fixes into
+  // a timeout on a sufficiently large/aged baseline bundle.
+  'workspace.export-baseline-bundle': 120_000,
   'session.next-message': 30_000,
   // Runner-boot config fetch. Synchronous, small payload (a few KiB at
   // most). 5 s is generous; if the host can't answer this fast something
