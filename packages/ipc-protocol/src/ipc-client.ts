@@ -65,12 +65,13 @@ import {
 // not import the kernel (sandbox-side), so we redeclare the same ceiling here.
 // We may unify if that boundary shifts.
 //
-// The ONE exception is `workspace.materialize` (BUG-W3): its body is a raw
-// `git bundle` (octet-stream, not JSON) that grows unbounded with workspace
-// age. It does NOT go through the Buffer-capped JSON path — `callBinary`
-// streams it straight to a temp file under the far larger, disk-bounded
-// MAX_BINARY_RESPONSE_BYTES. Hence materialize is absent from RESPONSE_SCHEMAS
-// below (there's no JSON body to Zod-parse).
+// Two actions are exceptions: `workspace.materialize` (BUG-W3) and
+// `workspace.export-baseline-bundle` (the commit-notify re-sync fetch). Both
+// bodies are a raw `git bundle` (octet-stream, not JSON) that grows unbounded
+// with workspace age. They do NOT go through the Buffer-capped JSON path —
+// `callBinary` streams each straight to a temp file under the far larger,
+// disk-bounded MAX_BINARY_RESPONSE_BYTES. Hence both are absent from
+// RESPONSE_SCHEMAS below (there's no JSON body to Zod-parse).
 // ---------------------------------------------------------------------------
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
@@ -85,8 +86,9 @@ const MAX_BINARY_RESPONSE_BYTES = 512 * 1024 * 1024;
 
 // Dispatch table: action → Zod schema for the successful response body.
 // Event endpoints have no response body (just {accepted: true} on 202) and
-// are handled separately in `event()`. `workspace.materialize` is absent —
-// its response is raw binary (see callBinary), not a Zod-parsed JSON body.
+// are handled separately in `event()`. `workspace.materialize` and
+// `workspace.export-baseline-bundle` are absent — their responses are raw
+// binary (see callBinary), not a Zod-parsed JSON body.
 const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   'tool.pre-call': ToolPreCallResponseSchema,
   'tool.execute-host': ToolExecuteHostResponseSchema,
@@ -171,13 +173,16 @@ export interface IpcClient {
 
   /**
    * POST a JSON request and drain the RAW octet-stream response body to a temp
-   * file, returning its path. For the one binary action (`workspace.materialize`,
-   * a git bundle that grows unbounded with workspace age — BUG-W3): bypasses the
-   * 4 MiB JSON Buffer cap by streaming to disk under MAX_BINARY_RESPONSE_BYTES.
-   * The CALLER owns the returned file and must delete it. On any error the temp
-   * file is cleaned up before the error propagates.
+   * file, returning its path. For the binary actions — `workspace.materialize`
+   * (session-start clone) and `workspace.export-baseline-bundle` (commit-notify
+   * re-sync fetch) — each a git bundle that grows unbounded with workspace age:
+   * bypasses the 4 MiB JSON Buffer cap by streaming to disk under
+   * MAX_BINARY_RESPONSE_BYTES. The CALLER owns the returned file and must delete
+   * it. On any error the temp file is cleaned up before the error propagates.
    */
-  callBinary<Action extends 'workspace.materialize'>(
+  callBinary<
+    Action extends 'workspace.materialize' | 'workspace.export-baseline-bundle',
+  >(
     action: Action,
     payload: unknown,
   ): Promise<{ path: string; bytes: number }>;
@@ -716,9 +721,10 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
   const parseSuccessBody = (action: IpcActionName, body: Buffer): unknown => {
     const schema = RESPONSE_SCHEMAS[action];
     if (schema === undefined) {
-      // The only action without a JSON schema is workspace.materialize, which
-      // is served via callBinary — reaching here means a JSON `call()` was made
-      // for it by mistake. Surface loudly rather than silently mis-parsing.
+      // The actions without a JSON schema (workspace.materialize,
+      // workspace.export-baseline-bundle) are served via callBinary — reaching
+      // here means a JSON `call()` was made for one by mistake. Surface loudly
+      // rather than silently mis-parsing.
       throw new IpcRequestError(
         'INTERNAL',
         0,
@@ -819,7 +825,9 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     );
   };
 
-  const callBinary = async <Action extends 'workspace.materialize'>(
+  const callBinary = async <
+    Action extends 'workspace.materialize' | 'workspace.export-baseline-bundle',
+  >(
     action: Action,
     payload: unknown,
   ): Promise<{ path: string; bytes: number }> => {

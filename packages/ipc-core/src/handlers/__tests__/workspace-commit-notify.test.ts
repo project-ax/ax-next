@@ -164,16 +164,17 @@ describe('workspace.commit-notify handler — backend gate', () => {
     expect(result.status).toBe(500);
   });
 
-  it('returns accepted:false + actualParent + baselineBundleBytes on parent-mismatch from export-baseline-bundle', async () => {
+  it('returns accepted:false + actualParent (NO inline bundle) on parent-mismatch from export-baseline-bundle', async () => {
     // Simulate the concurrent-writer race: the export-baseline-bundle service
     // throws a PluginError{code:'parent-mismatch'} because the mirror advanced
     // past the runner's parent version. The handler must:
     //   - NOT return a 500
     //   - Return status 200 with accepted:false
-    //   - Propagate actualParent and baselineBundleBytes from err.cause
-    //
-    // This mirrors the EXISTING apply-bundle parent-mismatch handling
-    // (lines ~258-274 in workspace-commit-notify.ts).
+    //   - Forward actualParent from err.cause
+    //   - NOT inline any baseline bundle bytes — the runner fetches them
+    //     out-of-band via the binary workspace.export-baseline-bundle action.
+    //     (Inlining blew the runner's 4 MiB JSON cap on aged workspaces — same
+    //     bug class as materialize BUG-W3. This test guards against regressing.)
     const { PluginError: PE } = await import('@ax/core');
     const probe: Plugin = {
       manifest: {
@@ -230,11 +231,13 @@ describe('workspace.commit-notify handler — backend gate', () => {
     const body = result.body as {
       accepted: false;
       actualParent: string;
-      baselineBundleBytes: string;
+      baselineBundleBytes?: string;
     };
     expect(body.accepted).toBe(false);
     expect(body.actualParent).toBe('newhead');
-    expect(body.baselineBundleBytes).toBe('AAAA');
+    // The bundle bytes from err.cause must NOT leak into the JSON response —
+    // they travel over the dedicated binary action now.
+    expect(body.baselineBundleBytes).toBeUndefined();
   });
 
   it('proceeds past the gate when both Phase 3 hooks are registered', async () => {

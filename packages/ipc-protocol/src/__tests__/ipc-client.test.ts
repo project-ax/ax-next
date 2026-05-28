@@ -702,6 +702,50 @@ describe('createIpcClient', () => {
       expect((err as IpcRequestError).status).toBe(404);
     });
 
+    it('drains a >4 MiB workspace.export-baseline-bundle body to a temp file (the commit-notify re-sync fix)', async () => {
+      // Bug Fix Policy regression: the commit-notify re-sync baseline bundle used
+      // to ride base64-in-JSON in the response, capped at 4 MiB MAX_RESPONSE_BYTES.
+      // An aged workspace's bundle blew the cap → `response body too large` → the
+      // turn never synced → 120s timeout → terminate → unknown-token loop. The fix
+      // routes the bundle over the SAME uncapped binary path materialize uses, via
+      // the dedicated workspace.export-baseline-bundle action. This proves a
+      // >4 MiB body drains cleanly (would throw on the old JSON path).
+      const size = 5 * 1024 * 1024;
+      const payload = Buffer.alloc(size);
+      for (let i = 0; i < size; i++) payload[i] = (i * 31 + 7) & 0xff;
+
+      const server = await startFakeServer();
+      servers.push(server);
+      let seenPath = '';
+      server.setHandler((req, res) => {
+        seenPath = req.url ?? '';
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(payload.length),
+        });
+        res.end(payload);
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        maxRetries: 0,
+      });
+
+      const result = await client.callBinary('workspace.export-baseline-bundle', {
+        version: 'newhead',
+      });
+      created.push(result.path);
+
+      // POSTed to the right action endpoint.
+      expect(seenPath).toBe('/workspace.export-baseline-bundle');
+      // The full >4 MiB body round-tripped to disk intact (not truncated, not
+      // capped, not re-encoded).
+      expect(result.bytes).toBe(size);
+      const onDisk = await fsp.readFile(result.path);
+      expect(onDisk.length).toBe(size);
+      expect(onDisk.equals(payload)).toBe(true);
+    });
+
     it('retries a transient 5xx then drains the binary body on success', async () => {
       // Proves the binary path reuses the shared retry loop: first attempt 503,
       // second attempt 200 with the bundle.

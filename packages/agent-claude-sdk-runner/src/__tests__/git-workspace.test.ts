@@ -686,15 +686,19 @@ describe('rollbackToBaseline', () => {
  * objects). That's fine: the fetch target already has B0, so git is
  * happy to fetch even a fat bundle.
  *
- * Returns { bundleBase64, newHead } where newHead is the OID of the
- * tip commit that represents the concurrent writer's advance.
+ * Returns { bundlePath, newHead } where bundlePath is a temp file holding the
+ * advanced-mirror bundle (matching how the runner now receives it — the IPC
+ * client's callBinary streams the host's octet-stream body to a temp file, NOT
+ * a base64 string in JSON) and newHead is the OID of the tip commit that
+ * represents the concurrent writer's advance. resyncBaselineAndReplay takes
+ * ownership of the file and deletes it.
  */
 async function makeAdvancedMirrorBundle(
   b0Oid: string,
   baseRoot: string,
   advancedFile: string,
   advancedContent: string,
-): Promise<{ bundleBase64: string; newHead: string }> {
+): Promise<{ bundlePath: string; newHead: string }> {
   // Build the "advanced mirror" in a separate temp dir. The mirror starts
   // from a clone of the runner's workspace, but then resets to B0 so
   // the concurrent writer's commit is a sibling of T1 (both children of
@@ -727,7 +731,16 @@ async function makeAdvancedMirrorBundle(
     const bundleFile = path.join(mirrorDir, 'mirror.bundle');
     await git(['-C', mirrorDir, 'bundle', 'create', bundleFile, 'main']);
     const bytes = await fs.readFile(bundleFile);
-    return { bundleBase64: bytes.toString('base64'), newHead };
+    // Land the bundle bytes in a temp file OUTSIDE mirrorDir (which this
+    // function's finally clause wipes) so resyncBaselineAndReplay can read +
+    // own it. Mirrors the runner's real path: the IPC client streams the
+    // host's binary bundle response straight to a temp file.
+    const bundlePath = path.join(
+      tmpdir(),
+      `ax-test-resync-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.bundle`,
+    );
+    await fs.writeFile(bundlePath, bytes);
+    return { bundlePath, newHead };
   } finally {
     await fs.rm(mirrorDir, { recursive: true, force: true });
   }
@@ -753,15 +766,16 @@ describe('resyncBaselineAndReplay', () => {
     expect(headAfterTurn).not.toBe(b0Oid);
 
     // Step 2: Build the advanced mirror — concurrent writer added att/file.txt
-    // on top of B0. This simulates what the host returns as
-    // { accepted: false, actualParent: B1, baselineBundleBytes: <B1 bundle> }.
-    const { bundleBase64: baselineBundleBytes, newHead: b1Oid } =
+    // on top of B0. This simulates what the host head is at after a concurrent
+    // advance ({ accepted: false, actualParent: B1 }); the runner fetches the
+    // B1 bundle to a temp file out-of-band and passes the PATH to resync.
+    const { bundlePath, newHead: b1Oid } =
       await makeAdvancedMirrorBundle(b0Oid, root, 'att/file.txt', 'attachment\n');
 
     // Step 3: Call resyncBaselineAndReplay.
     await resyncBaselineAndReplay({
       root,
-      baselineBundleBytes,
+      bundlePath,
       oldBaseline: b0Oid,
       newBaseline: b1Oid,
     });
@@ -819,13 +833,13 @@ describe('resyncBaselineAndReplay', () => {
     await fs.appendFile(path.join(root, 'a.jsonl'), '{"turn":1,"more":true}\n');
 
     // Advanced mirror — concurrent writer added att/file.txt on top of B0.
-    const { bundleBase64: baselineBundleBytes, newHead: b1Oid } =
+    const { bundlePath, newHead: b1Oid } =
       await makeAdvancedMirrorBundle(b0Oid, root, 'att/file.txt', 'attachment\n');
 
     // Must NOT throw even though the working tree is dirty.
     await resyncBaselineAndReplay({
       root,
-      baselineBundleBytes,
+      bundlePath,
       oldBaseline: b0Oid,
       newBaseline: b1Oid,
     });
@@ -870,14 +884,14 @@ describe('resyncBaselineAndReplay', () => {
     await commitTurnAndBundle({ root, reason: 'turn 1' });
 
     // Concurrent writer also modifies shared.txt differently.
-    const { bundleBase64: baselineBundleBytes, newHead: b1Oid } =
+    const { bundlePath, newHead: b1Oid } =
       await makeAdvancedMirrorBundle(b0Oid, root, 'shared.txt', 'concurrent-edit\n');
 
     // Must throw.
     await expect(
       resyncBaselineAndReplay({
         root,
-        baselineBundleBytes,
+        bundlePath,
         oldBaseline: b0Oid,
         newBaseline: b1Oid,
       }),

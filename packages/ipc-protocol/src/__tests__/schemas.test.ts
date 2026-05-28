@@ -630,13 +630,14 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the nine expected keys (Phase 2 adds workspace.read)', () => {
+  it('IPC_TIMEOUTS_MS has the ten expected keys (adds workspace.export-baseline-bundle for the commit-notify re-sync binary fetch)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
       'tool.list',
       'workspace.commit-notify',
       'workspace.materialize',
+      'workspace.export-baseline-bundle',
       'workspace.read',
       'session.next-message',
       'session.get-config',

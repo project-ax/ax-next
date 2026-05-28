@@ -167,11 +167,19 @@ function buildFakeClient(overrides: Partial<FakeClient> = {}): FakeClient {
   const client: FakeClient = {
     call: vi.fn(),
     callGet: vi.fn(),
-    // workspace.materialize streams a binary bundle to a temp file (BUG-W3).
-    // materializeWorkspace is mocked in this suite, so the path value is inert;
-    // we just need callBinary to resolve with the {path,bytes} shape main()
-    // forwards to it.
-    callBinary: vi.fn().mockResolvedValue({ path: '/tmp/fake-materialize.bundle', bytes: 0 }),
+    // Two actions stream a binary bundle to a temp file: workspace.materialize
+    // (session-start clone, BUG-W3) and workspace.export-baseline-bundle (the
+    // commit-notify re-sync fetch). materializeWorkspace / resyncBaselineAndReplay
+    // are mocked in this suite, so the path values are inert; we just need
+    // callBinary to resolve with the {path,bytes} shape and return a distinct,
+    // recognizable path per action so the resync assertions can pin which file
+    // the runner fetched.
+    callBinary: vi.fn().mockImplementation(async (action: string) => {
+      if (action === 'workspace.export-baseline-bundle') {
+        return { path: '/tmp/fake-resync-baseline.bundle', bytes: 64 };
+      }
+      return { path: '/tmp/fake-materialize.bundle', bytes: 0 };
+    }),
     event: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -3258,11 +3266,12 @@ describe('main()', () => {
 
   it('Phase 3 turn end: concurrent-writer advance → resync + retry → host accepts second attempt', async () => {
     // Regression for the stuck-loop bug: when workspace.commit-notify returns
-    // accepted:false with actualParent+baselineBundleBytes (the concurrent-writer
-    // advance case), the runner should call resyncBaselineAndReplay, re-bundle,
-    // and retry the commit-notify with the new parentVersion. On accept it
-    // advances baseline. True veto (no actualParent) and network errors are
-    // unchanged.
+    // accepted:false with actualParent (the concurrent-writer advance case, NO
+    // inline bundle — it's fetched out-of-band), the runner should binary-fetch
+    // the baseline bundle for actualParent, call resyncBaselineAndReplay with
+    // the FETCHED FILE, re-bundle, and retry the commit-notify with the new
+    // parentVersion. On accept it advances baseline. True veto (no actualParent)
+    // and network errors are unchanged.
     setEnv(COMPLETE_ENV);
 
     // First commitTurnAndBundle returns the initial bundle; after resync it
@@ -3293,11 +3302,11 @@ describe('main()', () => {
       if (action === 'workspace.commit-notify') {
         commitNotifyCallCount++;
         if (commitNotifyCallCount === 1) {
-          // Concurrent writer advanced the mirror: resync path
+          // Concurrent writer advanced the mirror: resync path. Only the head
+          // signal is returned; the runner fetches the bundle out-of-band.
           return {
             accepted: false,
             actualParent: 'newhead',
-            baselineBundleBytes: 'BBBB',
           };
         }
         // Second attempt: accept
@@ -3323,12 +3332,19 @@ describe('main()', () => {
     const rc = await main();
     expect(rc).toBe(0);
 
-    // resyncBaselineAndReplay was called once with the original parentVersion
-    // as oldBaseline and 'newhead' as newBaseline.
+    // The baseline bundle for the advanced head was fetched out-of-band via the
+    // binary action (NOT inline in the commit-notify JSON response).
+    expect(fakeClient.callBinary).toHaveBeenCalledWith(
+      'workspace.export-baseline-bundle',
+      { version: 'newhead' },
+    );
+
+    // resyncBaselineAndReplay was called once with the FETCHED bundle file, the
+    // original parentVersion as oldBaseline, and 'newhead' as newBaseline.
     expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
     expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
       root: '/tmp/workspace',
-      baselineBundleBytes: 'BBBB',
+      bundlePath: '/tmp/fake-resync-baseline.bundle',
       oldBaseline: 'mock-baseline-oid',
       newBaseline: 'newhead',
     });
@@ -3394,11 +3410,11 @@ describe('main()', () => {
       if (action === 'workspace.commit-notify') {
         commitNotifyCallCount++;
         if (commitNotifyCallCount === 1) {
-          // Turn 1: concurrent writer advanced the mirror → resync envelope.
+          // Turn 1: concurrent writer advanced the mirror → resync signal
+          // (head only; bundle fetched out-of-band).
           return {
             accepted: false,
             actualParent: 'newhead',
-            baselineBundleBytes: 'BBBB',
           };
         }
         // Turn 2's commit-notify accepts.
@@ -3427,11 +3443,15 @@ describe('main()', () => {
     const rc = await main();
     expect(rc).toBe(0);
 
-    // Resync ran once for turn 1.
+    // Resync ran once for turn 1, using the out-of-band-fetched bundle file.
+    expect(fakeClient.callBinary).toHaveBeenCalledWith(
+      'workspace.export-baseline-bundle',
+      { version: 'newhead' },
+    );
     expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
     expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
       root: '/tmp/workspace',
-      baselineBundleBytes: 'BBBB',
+      bundlePath: '/tmp/fake-resync-baseline.bundle',
       oldBaseline: 'mock-baseline-oid',
       newBaseline: 'newhead',
     });
@@ -3557,11 +3577,11 @@ describe('main()', () => {
       if (action === 'workspace.commit-notify') {
         commitNotifyCallCount++;
         if (commitNotifyCallCount === 1) {
-          // Concurrent writer advanced the mirror under the final commit.
+          // Concurrent writer advanced the mirror under the final commit
+          // (head-only signal; bundle fetched out-of-band).
           return {
             accepted: false,
             actualParent: 'v2',
-            baselineBundleBytes: 'BBBB',
           };
         }
         return { accepted: true, version: 'v2' };
@@ -3585,11 +3605,16 @@ describe('main()', () => {
     const { main } = await import('../main.js');
     expect(await main()).toBe(0);
 
-    // The FINAL commit re-synced exactly once, against the materialize baseline.
+    // The FINAL commit re-synced exactly once, against the materialize baseline,
+    // using the out-of-band-fetched bundle file.
+    expect(fakeClient.callBinary).toHaveBeenCalledWith(
+      'workspace.export-baseline-bundle',
+      { version: 'v2' },
+    );
     expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
     expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
       root: '/tmp/workspace',
-      baselineBundleBytes: 'BBBB',
+      bundlePath: '/tmp/fake-resync-baseline.bundle',
       oldBaseline: 'mock-baseline-oid',
       newBaseline: 'v2',
     });

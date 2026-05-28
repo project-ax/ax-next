@@ -40,8 +40,17 @@ import {
   MAX_RESYNC_ATTEMPTS,
 } from '../commit-notify-resync.js';
 
-function fakeClient(call: Mock): { call: Mock } {
-  return { call };
+// The re-sync path now fetches the baseline bundle out-of-band via
+// client.callBinary('workspace.export-baseline-bundle', { version }). The
+// default mock returns a fake temp-file handle; resync-branch tests assert on
+// its call args.
+function fakeClient(call: Mock, callBinary?: Mock): { call: Mock; callBinary: Mock } {
+  return {
+    call,
+    callBinary:
+      callBinary ??
+      vi.fn().mockResolvedValue({ path: '/tmp/fetched-baseline.bundle', bytes: 42 }),
+  };
 }
 
 const ROOT = '/tmp/workspace';
@@ -85,30 +94,41 @@ describe('commitNotifyWithResync', () => {
     expect(result).toEqual({ parentVersion: 'v2', outcome: 'accepted' });
   });
 
-  it('concurrent-writer envelope → resync + re-bundle + retry → accepted', async () => {
+  it('concurrent-writer signal → binary-fetch baseline + resync + re-bundle + retry → accepted', async () => {
+    // The re-sync response carries ONLY actualParent (no inline bundle bytes —
+    // they blew the 4 MiB JSON cap on aged workspaces). The runner fetches the
+    // baseline bundle for actualParent out-of-band via callBinary.
     const call = vi
       .fn()
       .mockResolvedValueOnce({
         accepted: false,
         actualParent: 'v2',
-        baselineBundleBytes: 'BBBB',
       })
       .mockResolvedValueOnce({ accepted: true, version: 'v3' });
+    const callBinary = vi
+      .fn()
+      .mockResolvedValue({ path: '/tmp/v2-baseline.bundle', bytes: 99 });
     commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_REBASED');
 
     const result = await commitNotifyWithResync({
-      client: fakeClient(call),
+      client: fakeClient(call, callBinary),
       root: ROOT,
       bundleBytes: 'BUNDLE_FIRST',
       parentVersion: 'v1',
       reason: 'turn',
     });
 
-    // Resync used the original parent as oldBaseline, the new head as newBaseline.
+    // The baseline bundle was fetched out-of-band for the advanced head.
+    expect(callBinary).toHaveBeenCalledTimes(1);
+    expect(callBinary).toHaveBeenCalledWith('workspace.export-baseline-bundle', {
+      version: 'v2',
+    });
+    // Resync used the fetched bundle FILE, the original parent as oldBaseline,
+    // and the new head as newBaseline.
     expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
     expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
       root: ROOT,
-      baselineBundleBytes: 'BBBB',
+      bundlePath: '/tmp/v2-baseline.bundle',
       oldBaseline: 'v1',
       newBaseline: 'v2',
     });
@@ -133,7 +153,6 @@ describe('commitNotifyWithResync', () => {
     const call = vi.fn().mockResolvedValueOnce({
       accepted: false,
       actualParent: 'v2',
-      baselineBundleBytes: 'BBBB',
     });
     // Re-bundle after resync produces nothing new.
     commitTurnAndBundleMock.mockResolvedValueOnce(null);
@@ -198,7 +217,6 @@ describe('commitNotifyWithResync', () => {
     const call = vi.fn().mockResolvedValue({
       accepted: false,
       actualParent: 'vN',
-      baselineBundleBytes: 'BBBB',
     });
     commitTurnAndBundleMock.mockResolvedValue('BUNDLE_REBASED');
 
@@ -220,11 +238,10 @@ describe('commitNotifyWithResync', () => {
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
   });
 
-  it('envelope with parentVersion=null → cannot resync → rollback (resync needs the old baseline OID)', async () => {
+  it('signal with parentVersion=null → cannot resync → rollback (resync needs the old baseline OID)', async () => {
     const call = vi.fn().mockResolvedValue({
       accepted: false,
       actualParent: 'v2',
-      baselineBundleBytes: 'BBBB',
     });
 
     const result = await commitNotifyWithResync({

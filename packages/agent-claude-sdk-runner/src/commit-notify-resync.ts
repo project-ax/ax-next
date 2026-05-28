@@ -38,7 +38,12 @@ export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
  *  - network/5xx/resync-fail→ keep the working tree ('kept'); parentVersion unchanged.
  */
 export async function commitNotifyWithResync(input: {
-  client: Pick<IpcClient, 'call'>;
+  // Needs `callBinary` too: on the re-sync path the runner fetches the baseline
+  // bundle for `actualParent` out-of-band via the binary
+  // `workspace.export-baseline-bundle` action (octet-stream, uncapped) instead
+  // of reading it inline from the JSON response — the inline bytes blew the
+  // 4 MiB response cap on aged workspaces (same bug class as materialize BUG-W3).
+  client: Pick<IpcClient, 'call' | 'callBinary'>;
   root: string;
   bundleBytes: string;
   parentVersion: string | null;
@@ -63,7 +68,7 @@ export async function commitNotifyWithResync(input: {
         bundleBytes: bundleB64,
       })) as WorkspaceCommitNotifyResponse;
       commitTrace(
-        `[commit-trace] ← commit-notify resp accepted=${resp.accepted} version=${(resp as { version?: string }).version ?? '-'} actualParent=${(resp as { actualParent?: string }).actualParent ?? '-'} hasBundle=${(resp as { baselineBundleBytes?: string }).baselineBundleBytes !== undefined} reason=${(resp as { reason?: string }).reason ?? '-'}\n`,
+        `[commit-trace] ← commit-notify resp accepted=${resp.accepted} version=${(resp as { version?: string }).version ?? '-'} actualParent=${(resp as { actualParent?: string }).actualParent ?? '-'} reason=${(resp as { reason?: string }).reason ?? '-'}\n`,
       );
     } catch (err) {
       // Network / 5xx / timeout: keep the working tree intact so the next
@@ -86,18 +91,30 @@ export async function commitNotifyWithResync(input: {
     // compute the rebase upstream.
     if (
       resp.actualParent &&
-      resp.baselineBundleBytes &&
       currentParentVersion !== null &&
       attempt < MAX_RESYNC_ATTEMPTS
     ) {
       attempt++;
       commitTrace(
-        `[commit-trace] concurrent-writer: parent=${currentParentVersion} actualParent=${resp.actualParent} → resync+replay (attempt=${attempt})\n`,
+        `[commit-trace] concurrent-writer: parent=${currentParentVersion} actualParent=${resp.actualParent} → fetch baseline + resync+replay (attempt=${attempt})\n`,
       );
       try {
+        // Fetch the baseline bundle for `actualParent` OUT-OF-BAND via the binary
+        // octet-stream action — NOT from the JSON response (which no longer
+        // carries it). callBinary streams the raw bundle straight to a temp file
+        // under the disk-bounded cap, so an aged workspace's MiB-scale bundle
+        // never hits the 4 MiB JSON response cap that previously broke re-sync.
+        // resyncBaselineAndReplay TAKES OWNERSHIP of the file (deletes it).
+        const fetched = await client.callBinary(
+          'workspace.export-baseline-bundle',
+          { version: resp.actualParent },
+        );
+        commitTrace(
+          `[commit-trace]   fetched baseline bundle ${fetched.bytes}B → ${fetched.path}\n`,
+        );
         await resyncBaselineAndReplay({
           root,
-          baselineBundleBytes: resp.baselineBundleBytes,
+          bundlePath: fetched.path,
           oldBaseline: currentParentVersion,
           newBaseline: resp.actualParent,
         });
@@ -175,7 +192,7 @@ export async function commitNotifyWithResync(input: {
 export type FlushOutcome = 'accepted' | 'noop' | CommitNotifyOutcome;
 
 export async function flushWorkspaceToHost(input: {
-  client: Pick<IpcClient, 'call'>;
+  client: Pick<IpcClient, 'call' | 'callBinary'>;
   root: string;
   parentVersion: string | null;
   reason: string;
