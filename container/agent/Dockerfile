@@ -86,6 +86,14 @@ COPY . .
 # separate command. Without it, the static-files plugin's `dir` would
 # resolve to a missing path at runtime.
 #
+# `pnpm --filter @ax/preset-k8s build` is the SAME story for a different
+# asset: its build script runs tsc THEN a cpSync that copies the built-in
+# SKILL.md assets (ax-skill-creator) into dist/builtin-skills/. The cli's
+# transitive tsc-build emits the preset's .js but never runs that copy step,
+# so without this line loadBuiltinSkills() hits ENOENT and the host crashes
+# at boot whenever open mode is on (`skills.allowUserInstalled: true`, the
+# chart default). Enforced by presets/k8s image-asset-packaging.test.ts.
+#
 # `pnpm deploy --prod --legacy /tmp/deploy` stamps a self-contained tree
 # with only the prod deps of @ax/cli resolved + copied in. channel-web's
 # `files: ["dist", "dist-web"]` brings the SPA bundle along. The --legacy
@@ -96,6 +104,7 @@ COPY . .
 RUN pnpm install --frozen-lockfile \
  && pnpm --filter @ax/cli build \
  && pnpm --filter @ax/channel-web build \
+ && pnpm --filter @ax/preset-k8s build \
  && pnpm --filter @ax/cli deploy --prod --legacy /tmp/deploy
 
 # -----------------------------------------------------------------------------
