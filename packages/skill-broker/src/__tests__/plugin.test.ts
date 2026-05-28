@@ -624,8 +624,7 @@ describe('request_capability — packages on approval card (FIX B)', () => {
   it('card carries packages from the catalog skill manifest', async () => {
     // Override the skills:get stub to return a skill with packages capability.
     const bus = new HookBus();
-    bus.registerService('tool:register', 'disp', async (_c, d: unknown) => {
-      (d as { name: string }).name;
+    bus.registerService('tool:register', 'disp', async () => {
       return { ok: true };
     });
     bus.registerService('skills:search-catalog', 'skills', async () => ({ skills: [] }));
