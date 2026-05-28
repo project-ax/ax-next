@@ -162,20 +162,29 @@ export async function commitNotifyWithResync(input: {
  * turn-end commit. Returns the advanced `parentVersion` so the caller threads
  * it into the subsequent turn-end commit (the commit chain stays coherent).
  *
- * Returns `parentVersion` unchanged when there is nothing staged to flush
- * (the file was already committed on a prior turn — a post-commit retry).
+ * Returns `outcome: 'noop'` when there is nothing staged to flush (the file was
+ * already committed+pushed on a prior turn — a post-commit retry; the host
+ * mirror is already current). Otherwise returns the underlying
+ * `commitNotifyWithResync` outcome. The caller MUST treat anything other than
+ * `accepted`/`noop` as "not synced": on `kept` the commit landed locally but
+ * never reached the host mirror, and on `rolled-back` the live tree was reset
+ * to baseline (the just-authored file is GONE) — forwarding a host read in
+ * either case reads a stale (or, post-rollback, an older committed) state. See
+ * the precondition gate in host-mcp-server.ts.
  */
+export type FlushOutcome = 'accepted' | 'noop' | CommitNotifyOutcome;
+
 export async function flushWorkspaceToHost(input: {
   client: Pick<IpcClient, 'call'>;
   root: string;
   parentVersion: string | null;
   reason: string;
-}): Promise<{ parentVersion: string | null }> {
+}): Promise<{ parentVersion: string | null; outcome: FlushOutcome }> {
   const { client, root, parentVersion, reason } = input;
   const bundleB64 = await commitTurnAndBundle({ root, reason });
   if (bundleB64 === null) {
     commitTrace(`[commit-trace] flushWorkspaceToHost: nothing staged (no-op)\n`);
-    return { parentVersion };
+    return { parentVersion, outcome: 'noop' };
   }
   const result = await commitNotifyWithResync({
     client,
@@ -184,5 +193,5 @@ export async function flushWorkspaceToHost(input: {
     parentVersion,
     reason,
   });
-  return { parentVersion: result.parentVersion };
+  return { parentVersion: result.parentVersion, outcome: result.outcome };
 }

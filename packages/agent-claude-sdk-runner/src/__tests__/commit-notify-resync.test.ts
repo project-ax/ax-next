@@ -242,7 +242,7 @@ describe('commitNotifyWithResync', () => {
 });
 
 describe('flushWorkspaceToHost', () => {
-  it('nothing staged (commitTurnAndBundle → null) → no commit-notify, parentVersion unchanged', async () => {
+  it('nothing staged (commitTurnAndBundle → null) → no commit-notify, outcome "noop"', async () => {
     commitTurnAndBundleMock.mockResolvedValueOnce(null);
     const call = vi.fn();
     const result = await flushWorkspaceToHost({
@@ -251,15 +251,16 @@ describe('flushWorkspaceToHost', () => {
       parentVersion: 'v1',
       reason: 'turn',
     });
-    // A post-commit retry (the file was already committed on a prior turn)
-    // has nothing to flush — we must NOT hit the host and must leave the
-    // version untouched.
+    // A post-commit retry (the file was already committed+pushed on a prior
+    // turn) has nothing to flush — we must NOT hit the host, must leave the
+    // version untouched, and must report "noop" (mirror already current) so the
+    // forwarder still forwards.
     expect(call).not.toHaveBeenCalled();
     expect(advanceBaselineMock).not.toHaveBeenCalled();
-    expect(result).toEqual({ parentVersion: 'v1' });
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'noop' });
   });
 
-  it('staged bundle → commit-notify accepted → returns the advanced parentVersion', async () => {
+  it('staged bundle → commit-notify accepted → advanced parentVersion + outcome "accepted"', async () => {
     commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_MIDTURN');
     const call = vi.fn().mockResolvedValue({ accepted: true, version: 'v2' });
     const result = await flushWorkspaceToHost({
@@ -275,7 +276,36 @@ describe('flushWorkspaceToHost', () => {
       bundleBytes: 'BUNDLE_MIDTURN',
     });
     expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
-    // The advanced version threads into the caller so the turn-end commit chains.
-    expect(result).toEqual({ parentVersion: 'v2' });
+    expect(result).toEqual({ parentVersion: 'v2', outcome: 'accepted' });
+  });
+
+  it('staged bundle → commit-notify network error → outcome "kept" (caller must NOT forward)', async () => {
+    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_MIDTURN');
+    const call = vi.fn().mockRejectedValue(new Error('ECONNRESET'));
+    const result = await flushWorkspaceToHost({
+      client: fakeClient(call),
+      root: ROOT,
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    // Committed locally but never pushed — the host mirror is stale. The
+    // outcome surfaces so the forwarder gates on it instead of forwarding a 404.
+    expect(advanceBaselineMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'kept' });
+  });
+
+  it('staged bundle → workspace veto → outcome "rolled-back" (caller must NOT forward)', async () => {
+    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_MIDTURN');
+    const call = vi.fn().mockResolvedValue({ accepted: false, reason: 'security veto' });
+    const result = await flushWorkspaceToHost({
+      client: fakeClient(call),
+      root: ROOT,
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    // The live tree was reset to baseline (the just-authored file is gone), so
+    // the forwarder must surface an error rather than install an older draft.
+    expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
   });
 });

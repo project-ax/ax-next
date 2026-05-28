@@ -5,7 +5,8 @@ import * as path from 'node:path';
 import type { IpcClient } from '@ax/ipc-protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildHostToolEntries } from '../host-mcp-server.js';
-import { flushWorkspaceToHost } from '../commit-notify-resync.js';
+import { commitNotifyWithResync, flushWorkspaceToHost } from '../commit-notify-resync.js';
+import { commitTurnAndBundle } from '../git-workspace.js';
 
 // ---------------------------------------------------------------------------
 // BUG-W2 real-path regression: install_authored_skill returns
@@ -101,40 +102,80 @@ async function setupWorkspace(): Promise<{
   return { runnerRoot, mirrorDir, baselineOid: rev.stdout.trim() };
 }
 
-/** Apply a base64 thin bundle to the bare mirror (the host's commit-notify). */
-async function applyBundleToMirror(
-  mirrorDir: string,
-  bundleB64: string,
-): Promise<string> {
-  const bundleFile = path.join(scratch, `in-${Date.now()}.bundle`);
+/** Current refs/heads/main of the bare mirror, or null when it has no commits. */
+async function mirrorMain(mirrorDir: string): Promise<string | null> {
+  const r = await git(['-C', mirrorDir, 'rev-parse', '--quiet', '--verify', 'refs/heads/main']);
+  return r.code === 0 && r.stdout.trim().length > 0 ? r.stdout.trim() : null;
+}
+
+/** Fetch a base64 thin bundle into the bare mirror, advancing refs/heads/main. */
+async function fetchBundleAdvance(mirrorDir: string, bundleB64: string): Promise<string> {
+  const bundleFile = path.join(scratch, `in-${Date.now()}-${Math.random().toString(36).slice(2)}.bundle`);
   await fs.writeFile(bundleFile, Buffer.from(bundleB64, 'base64'));
   try {
     await expectOk(
       await git(['-C', mirrorDir, 'fetch', bundleFile, '+refs/heads/main:refs/heads/main']),
       'mirror fetch bundle',
     );
-    const head = await git(['-C', mirrorDir, 'rev-parse', 'refs/heads/main']);
-    await expectOk(head, 'mirror rev-parse main');
-    return head.stdout.trim();
+    return (await mirrorMain(mirrorDir))!;
   } finally {
     await fs.rm(bundleFile, { force: true });
   }
 }
 
+/** Full bundle of the mirror's current main (the host's resync baselineBundleBytes). */
+async function bundleMirrorMain(mirrorDir: string): Promise<string> {
+  const f = path.join(scratch, `base-${Date.now()}-${Math.random().toString(36).slice(2)}.bundle`);
+  await expectOk(await git(['-C', mirrorDir, 'bundle', 'create', f, 'main']), 'mirror bundle main');
+  try {
+    return (await fs.readFile(f)).toString('base64');
+  } finally {
+    await fs.rm(f, { force: true });
+  }
+}
+
+/** Simulate the host-side retire (workspace:apply delete) by committing a deletion onto the mirror's main. */
+async function hostRetire(mirrorDir: string, relPath: string): Promise<string> {
+  const wt = path.join(scratch, `host-retire-${Date.now()}`);
+  await expectOk(await git(['clone', mirrorDir, wt]), 'host-retire clone');
+  await expectOk(await git(['-C', wt, 'config', 'user.email', 'h@e.x']), 'host-retire cfg email');
+  await expectOk(await git(['-C', wt, 'config', 'user.name', 'host']), 'host-retire cfg name');
+  await fs.rm(path.join(wt, relPath), { force: true });
+  await expectOk(await git(['-C', wt, 'add', '-A']), 'host-retire add');
+  await expectOk(await git(['-C', wt, 'commit', '-m', 'retire draft']), 'host-retire commit');
+  await expectOk(await git(['-C', wt, 'push', mirrorDir, 'HEAD:refs/heads/main']), 'host-retire push');
+  return (await mirrorMain(mirrorDir))!;
+}
+
 /**
- * A real-git IpcClient stand-in: `workspace.commit-notify` applies the thin
- * bundle to the bare mirror (what the host does); `tool.execute-host` for
- * install_authored_skill reads the just-pushed mirror for the authored file
- * (what readAuthoredBundle ultimately resolves to over the git-protocol
- * backend). No mocking of the workspace layer — both sides are real git.
+ * A real-git IpcClient stand-in. `workspace.commit-notify` is parent-aware
+ * (what the real git-server does): it applies the thin bundle only when the
+ * caller's parent matches the mirror head, otherwise it returns the
+ * concurrent-writer envelope (`accepted:false` + `actualParent` +
+ * `baselineBundleBytes`) so the runner's resync path engages. `tool.execute-host`
+ * for install_authored_skill reads the mirror for the authored file. No mocking
+ * of the workspace layer — both sides are real git.
  */
 function makeHostClient(mirrorDir: string): IpcClient {
+  const norm = (h: string | null | undefined): string | null => (h && h.length ? h : null);
   return {
     call: async (action: string, payload: unknown) => {
       if (action === 'workspace.commit-notify') {
-        const { bundleBytes } = payload as { bundleBytes: string };
-        const version = await applyBundleToMirror(mirrorDir, bundleBytes);
-        return { accepted: true, version };
+        const { parentVersion, bundleBytes } = payload as {
+          parentVersion: string | null;
+          bundleBytes: string;
+        };
+        const head = await mirrorMain(mirrorDir);
+        if (norm(parentVersion) === norm(head)) {
+          const version = await fetchBundleAdvance(mirrorDir, bundleBytes);
+          return { accepted: true, version };
+        }
+        return {
+          accepted: false,
+          actualParent: head,
+          baselineBundleBytes: await bundleMirrorMain(mirrorDir),
+          reason: 'parent-mismatch',
+        };
       }
       if (action === 'tool.execute-host') {
         const found =
@@ -209,7 +250,7 @@ describe('install_authored_skill flush (BUG-W2 real path)', () => {
 
     const client = makeHostClient(mirrorDir);
     let parentVersion: string | null = baselineOid;
-    const flushWorkspace = async (): Promise<void> => {
+    const flushWorkspace = async () => {
       const r = await flushWorkspaceToHost({
         client,
         root: runnerRoot,
@@ -217,6 +258,7 @@ describe('install_authored_skill flush (BUG-W2 real path)', () => {
         reason: 'turn',
       });
       parentVersion = r.parentVersion;
+      return r.outcome;
     };
     const entries = buildHostToolEntries(client, [INSTALL_TOOL], () => 'id-1', flushWorkspace);
     const result = await (entries[0] as ToolEntry).handler({ skillId: 'foo' }, {});
@@ -226,5 +268,62 @@ describe('install_authored_skill flush (BUG-W2 real path)', () => {
     // commit chains from the pushed state, not the stale baseline).
     expect(parentVersion).not.toBeNull();
     expect(parentVersion).not.toBe(baselineOid);
+  });
+
+  // Codex review SHOULD-FIX: the host-side retire (delete the draft via
+  // workspace:apply after upsert) must not be undone by the next runner commit,
+  // and must not wedge the turn. Exercises the full real-git sequence:
+  // flush -> host retire -> next runner turn commit -> concurrent-writer resync.
+  it('host-side retire after the flush sticks and the next runner commit resyncs cleanly', async () => {
+    const { runnerRoot, mirrorDir, baselineOid } = await setupWorkspace();
+    await fs.mkdir(path.join(runnerRoot, '.ax', 'skills', 'foo'), { recursive: true });
+    await fs.writeFile(path.join(runnerRoot, '.ax', 'skills', 'foo', 'SKILL.md'), SKILL_MD);
+
+    const client = makeHostClient(mirrorDir);
+    let parentVersion: string | null = baselineOid;
+    const flushWorkspace = async () => {
+      const r = await flushWorkspaceToHost({ client, root: runnerRoot, parentVersion, reason: 'turn' });
+      parentVersion = r.parentVersion;
+      return r.outcome;
+    };
+    const entries = buildHostToolEntries(client, [INSTALL_TOOL], () => 'id-1', flushWorkspace);
+
+    // 1. Author + install: flush pushes the draft, host reads it.
+    const r1 = await (entries[0] as ToolEntry).handler({ skillId: 'foo' }, {});
+    expect(hostFound(r1)).toBe(true);
+
+    // 2. Host retires the draft on the mirror (advances the mirror head).
+    await hostRetire(mirrorDir, '.ax/skills/foo/SKILL.md');
+
+    // 3. Next runner turn writes a normal file (disjoint path) and commits.
+    //    The runner's baseline is the pre-retire tip, so commit-notify hits a
+    //    concurrent-writer mismatch and must resync onto the retire commit.
+    await fs.mkdir(path.join(runnerRoot, '.claude', 'projects'), { recursive: true });
+    await fs.writeFile(path.join(runnerRoot, '.claude', 'projects', 'sess.jsonl'), '{"turn":1}\n');
+    const bundle = await commitTurnAndBundle({ root: runnerRoot, reason: 'turn' });
+    expect(bundle).not.toBeNull();
+    const res = await commitNotifyWithResync({
+      client,
+      root: runnerRoot,
+      bundleBytes: bundle!,
+      parentVersion,
+      reason: 'turn',
+    });
+    // No wedge: the resync rebased the turn onto the retire commit and landed.
+    expect(res.outcome).toBe('accepted');
+
+    // 4a. Retire stuck: the draft is gone from the mirror...
+    const skillInMirror =
+      (await git(['-C', mirrorDir, 'cat-file', '-e', 'refs/heads/main:.ax/skills/foo/SKILL.md'])).code === 0;
+    expect(skillInMirror).toBe(false);
+    // 4b. ...the turn's file survived...
+    const jsonlInMirror =
+      (await git(['-C', mirrorDir, 'cat-file', '-e', 'refs/heads/main:.claude/projects/sess.jsonl'])).code === 0;
+    expect(jsonlInMirror).toBe(true);
+    // 4c. ...and the runner's live tree no longer carries the retired draft.
+    const skillInRunnerTree = await fs
+      .access(path.join(runnerRoot, '.ax', 'skills', 'foo', 'SKILL.md'))
+      .then(() => true, () => false);
+    expect(skillInRunnerTree).toBe(false);
   });
 });

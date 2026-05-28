@@ -35,6 +35,9 @@ export const INSTALL_AUTHORED_SKILL_DESCRIPTOR: ToolDescriptor = {
     'listing exactly those hosts/keys before anything runs — do not narrate this step or ' +
     'restate any keys. Once the user approves, the conversation continues automatically; do ' +
     'not ask the user to repeat their request. ' +
+    'Call this tool exactly ONCE per skill and wait for its result — do NOT issue it ' +
+    'repeatedly or in parallel. If it returns a transient "could not sync" error, retry once ' +
+    'after a brief pause rather than firing several calls at once. ' +
     'If the skill installs npm or PyPI packages at runtime (via npx/uvx/pip), declare them ' +
     'here in the packages argument (npm and/or pypi arrays) — never in the SKILL.md frontmatter. ' +
     'The user sees and approves all declared registry egress on the same card.',

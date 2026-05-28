@@ -55,4 +55,19 @@ describe('ToolCatalog flushWorkspaceBeforeCall', () => {
       }),
     ).toThrow(PluginError);
   });
+
+  it('rejects flushWorkspaceBeforeCall:true on a sandbox tool (host-only capability)', () => {
+    const catalog = new ToolCatalog();
+    // The flush only runs in the host-tool forwarder, so the flag is
+    // meaningless (and misleading) on a sandbox tool — reject rather than
+    // silently ignore, keeping the capability boundary explicit.
+    expect(() =>
+      catalog.register({
+        name: 'sandbox_tool',
+        inputSchema: { type: 'object' },
+        executesIn: 'sandbox',
+        flushWorkspaceBeforeCall: true,
+      }),
+    ).toThrow(PluginError);
+  });
 });

@@ -159,6 +159,18 @@ function validateDescriptor(input: unknown): ToolDescriptor {
     });
   }
 
+  // The flush only runs in the host-tool forwarder, so the flag is meaningless
+  // on a sandbox tool. Reject it there rather than silently ignoring it, so the
+  // capability boundary ("this HOST tool reads the workspace") stays explicit.
+  if (d.flushWorkspaceBeforeCall === true && d.executesIn !== 'host') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'tool:register',
+      message: `tool '${d.name}': flushWorkspaceBeforeCall is only valid for executesIn:'host' tools`,
+    });
+  }
+
   const descriptor: ToolDescriptor = {
     name: d.name,
     inputSchema: d.inputSchema as Record<string, unknown>,

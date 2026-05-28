@@ -32,7 +32,11 @@ import {
   scaffoldWorkspaceGitignore,
   scaffoldWorkspaceSkillSurface,
 } from './git-workspace.js';
-import { commitNotifyWithResync, flushWorkspaceToHost } from './commit-notify-resync.js';
+import {
+  commitNotifyWithResync,
+  flushWorkspaceToHost,
+  type FlushOutcome,
+} from './commit-notify-resync.js';
 import { commitTrace } from './commit-trace.js';
 import { createLocalDispatcher } from './local-dispatcher.js';
 import { buildToolCacheEnv } from './tool-cache-env.js';
@@ -391,15 +395,34 @@ export async function main(): Promise<number> {
   // /permanent tree to the host mirror BEFORE the host tool runs, so a host
   // read of a file the agent just authored this turn (.ax/skills/<id>/SKILL.md)
   // sees it instead of the stale committed mirror (BUG-W2). Threads the
-  // advanced version back into `parentVersion` so the turn-end commit chains.
-  const flushWorkspaceForHostTool = async (): Promise<void> => {
-    const result = await flushWorkspaceToHost({
-      client,
-      root: env.workspaceRoot,
-      parentVersion,
-      reason: 'turn',
+  // advanced version back into `parentVersion` so the turn-end commit chains,
+  // and returns the flush outcome so the forwarder can gate the call on it.
+  //
+  // Serialized via `flushChain`: `commitTurnAndBundle` runs git ops on the one
+  // /permanent repo and reads+mutates the shared `parentVersion`. If the SDK
+  // ever dispatches two flagged host tools concurrently, unserialized flushes
+  // would race the git index and the parent token; chaining makes the
+  // read-flush-write critical section atomic. The turn-end commit runs at the
+  // `result` boundary (after all tool calls), so it never overlaps a flush.
+  let flushChain: Promise<unknown> = Promise.resolve();
+  const flushWorkspaceForHostTool = (): Promise<FlushOutcome> => {
+    const run = flushChain.then(async () => {
+      const result = await flushWorkspaceToHost({
+        client,
+        root: env.workspaceRoot,
+        parentVersion,
+        reason: 'turn',
+      });
+      parentVersion = result.parentVersion;
+      return result.outcome;
     });
-    parentVersion = result.parentVersion;
+    // Keep the chain alive whether this run resolves or rejects, so one failed
+    // flush doesn't permanently wedge the next.
+    flushChain = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    return run;
   };
 
   const hostMcpServer = createHostMcpServer({

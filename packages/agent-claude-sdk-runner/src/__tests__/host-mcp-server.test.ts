@@ -223,8 +223,9 @@ describe('buildHostToolEntries', () => {
       order.push('forward');
       return { output: 'ok' };
     });
-    const flushWorkspace = async (): Promise<void> => {
+    const flushWorkspace = async (): Promise<'accepted'> => {
       order.push('flush');
+      return 'accepted';
     };
     const entries = buildHostToolEntries(
       client,
@@ -237,11 +238,29 @@ describe('buildHostToolEntries', () => {
     expect(order).toEqual(['flush', 'forward']);
   });
 
+  it('forwards on a no-op flush (already synced on a prior turn)', async () => {
+    const { client, calls } = mkClient(async () => ({ output: 'ok' }));
+    const flushWorkspace = async (): Promise<'noop'> => 'noop';
+    const entries = buildHostToolEntries(
+      client,
+      [HOST_TOOL_FLUSH],
+      () => 'id-1',
+      flushWorkspace,
+    );
+    const result = (await (entries[0] as ToolEntry).handler({}, {})) as {
+      content: Array<{ type: string; text: string }>;
+      isError?: boolean;
+    };
+    expect(calls.map((c) => c.action)).toEqual(['tool.execute-host']);
+    expect(result.isError).toBeUndefined();
+  });
+
   it('does NOT flush for a host tool without flushWorkspaceBeforeCall', async () => {
     let flushed = false;
     const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-    const flushWorkspace = async (): Promise<void> => {
+    const flushWorkspace = async (): Promise<'accepted'> => {
       flushed = true;
+      return 'accepted';
     };
     const entries = buildHostToolEntries(
       client,
@@ -266,13 +285,46 @@ describe('buildHostToolEntries', () => {
     expect(result.content[0]?.text).toBe('ok');
   });
 
-  it('forwards anyway (degrades) when the flush throws', async () => {
+  // BUG-W2 follow-up (Codex review): the flush is a PRECONDITION. A flagged
+  // tool must NOT be forwarded when the flush didn't actually sync the mirror —
+  // forwarding would read a stale (kept) or rolled-back (older committed) state
+  // and, for install_authored_skill, install the wrong body with fresh grants.
+  it.each(['kept', 'rolled-back'] as const)(
+    'does NOT forward and returns isError when the flush is %s',
+    async (outcome) => {
+      const order: string[] = [];
+      const { client } = mkClient(async () => {
+        order.push('forward');
+        return { output: 'host-ok' };
+      });
+      const flushWorkspace = async (): Promise<typeof outcome> => {
+        order.push('flush');
+        return outcome;
+      };
+      const entries = buildHostToolEntries(
+        client,
+        [HOST_TOOL_FLUSH],
+        () => 'id-1',
+        flushWorkspace,
+      );
+      const result = (await (entries[0] as ToolEntry).handler({}, {})) as {
+        content: Array<{ type: string; text: string }>;
+        isError?: boolean;
+      };
+      // Flushed, but did NOT forward — and surfaced a retryable error.
+      expect(order).toEqual(['flush']);
+      expect(result.isError).toBe(true);
+      expect(result.content[0]?.text).toContain(outcome);
+    },
+  );
+
+  it('does NOT forward and returns isError when the flush throws', async () => {
     const order: string[] = [];
     const { client } = mkClient(async () => {
       order.push('forward');
       return { output: 'host-ok' };
     });
-    const flushWorkspace = async (): Promise<void> => {
+    const flushWorkspace = async (): Promise<'accepted'> => {
       order.push('flush-throw');
       throw new Error('commit-notify unreachable');
     };
@@ -286,10 +338,10 @@ describe('buildHostToolEntries', () => {
       content: Array<{ type: string; text: string }>;
       isError?: boolean;
     };
-    // The flush failure must NOT abort the turn — we forward and let the host
-    // tool surface its own outcome (here, success).
-    expect(order).toEqual(['flush-throw', 'forward']);
-    expect(result).toEqual({ content: [{ type: 'text', text: 'host-ok' }] });
+    // A thrown flush is "not synced" — skip the forward, surface a clear error.
+    expect(order).toEqual(['flush-throw']);
+    expect(result.isError).toBe(true);
+    expect(result.content[0]?.text).toContain('error');
   });
 
   it('tolerates a missing description by falling back to empty string', () => {

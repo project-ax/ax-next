@@ -115,11 +115,17 @@ describe('tool.list', () => {
           name: 'http-fetch',
           inputSchema: { type: 'object' },
           executesIn: 'host',
+          // BUG-W2: the runner parses tool.list through this schema, so a
+          // ToolDescriptor field missing here is stripped before the runner
+          // sees it. Keep flushWorkspaceBeforeCall in the populated fixture so
+          // a future drop of the field from the schema fails the round-trip.
+          flushWorkspaceBeforeCall: true,
         },
       ],
     });
     expect(res.tools).toHaveLength(2);
     expect(res.tools[1]?.executesIn).toBe('host');
+    expect(res.tools[1]?.flushWorkspaceBeforeCall).toBe(true);
   });
 
   it('requires executesIn on a descriptor', () => {

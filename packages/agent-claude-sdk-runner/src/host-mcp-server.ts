@@ -33,6 +33,7 @@ import {
   type ToolDescriptor,
 } from '@ax/ipc-protocol';
 import { z } from 'zod';
+import type { FlushOutcome } from './commit-notify-resync.js';
 import { MCP_HOST_SERVER_NAME } from './tool-names.js';
 
 export interface CreateHostMcpServerOptions {
@@ -44,10 +45,11 @@ export interface CreateHostMcpServerOptions {
   /**
    * Flush the live workspace (commit + push to the host mirror) before
    * forwarding a host tool whose descriptor declares
-   * `flushWorkspaceBeforeCall`. Omitted in deployments without a workspace
-   * (the flag then simply has no effect). See the per-tool handler below.
+   * `flushWorkspaceBeforeCall`, returning the flush outcome. Omitted in
+   * deployments without a workspace (the flag then simply has no effect).
+   * See the precondition gate in the per-tool handler below.
    */
-  flushWorkspace?: () => Promise<void>;
+  flushWorkspace?: () => Promise<FlushOutcome>;
 }
 
 /**
@@ -111,7 +113,7 @@ export function buildHostToolEntries(
   client: IpcClient,
   tools: ToolDescriptor[],
   idGen: () => string = () => randomUUID(),
-  flushWorkspace?: () => Promise<void>,
+  flushWorkspace?: () => Promise<FlushOutcome>,
 ): Array<SdkMcpToolDefinition> {
   const hostTools = tools.filter((t) => t.executesIn === 'host');
   return hostTools.map((t) =>
@@ -127,16 +129,42 @@ export function buildHostToolEntries(
           // pushed mirror, which lags the live tree until a turn-boundary
           // commit — without the flush the host read misses a just-written
           // file (e.g. install_authored_skill's `.ax/skills/<id>/SKILL.md`,
-          // BUG-W2). The flush failing is non-fatal here: we forward anyway
-          // and let the host tool surface its own "not found" so a workspace
-          // hiccup degrades to the original error rather than killing the turn.
+          // BUG-W2).
+          //
+          // The flush is a PRECONDITION, not best-effort: we forward ONLY when
+          // it actually synced the mirror. `accepted` = pushed; `noop` =
+          // nothing staged because it was already committed+pushed on a prior
+          // turn (mirror already current). Anything else means the host would
+          // read a stale-or-worse state, so we DON'T forward:
+          //   - `kept` (host unreachable / 5xx): committed locally but never
+          //     pushed → host read would 404.
+          //   - `rolled-back` (workspace veto / resync exhausted): the live
+          //     tree was reset to baseline, so the just-authored file is GONE
+          //     and the mirror still lacks it — forwarding could even install
+          //     an OLDER committed draft with the freshly-requested grants.
+          //   - thrown: git/IPC error mid-flush.
+          // In those cases we surface a clear, retryable tool error instead of
+          // forwarding into a stale read (BUG-W2 follow-up; Codex review).
           if (t.flushWorkspaceBeforeCall === true && flushWorkspace !== undefined) {
+            let outcome: FlushOutcome | 'error';
             try {
-              await flushWorkspace();
+              outcome = await flushWorkspace();
             } catch (flushErr) {
               process.stderr.write(
-                `runner: workspace flush before '${t.name}' failed (forwarding anyway): ${flushErr instanceof Error ? flushErr.message : String(flushErr)}\n`,
+                `runner: workspace flush before '${t.name}' failed: ${flushErr instanceof Error ? flushErr.message : String(flushErr)}\n`,
               );
+              outcome = 'error';
+            }
+            if (outcome !== 'accepted' && outcome !== 'noop') {
+              return {
+                content: [
+                  {
+                    type: 'text',
+                    text: `Could not sync your just-authored workspace files to the host before '${t.name}' (flush outcome: ${outcome}). The files are not visible to the installer yet — please try again.`,
+                  },
+                ],
+                isError: true,
+              };
             }
           }
           const raw = await client.call('tool.execute-host', {
