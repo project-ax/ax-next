@@ -130,13 +130,13 @@ digraph codex_review {
 }
 ```
 
-- **REQUIRED:** Drive the review with the codex plugin's **`codex:review` native reviewer** — the same built-in reviewer behind the `/codex:review` command. Point it at the **whole-branch diff against `main`** (merge-base `main...HEAD`) — the surface CI and a human reviewer see, not just the last task — and run it **foreground (`--wait`)** so it is non-interactive and never stops to ask wait-vs-background (the autonomy contract). Run it from the worktree (cwd = the branch under review):
+- **REQUIRED:** Drive the review with **`scripts/codex-review.sh`** — a thin wrapper over the native `codex review` reviewer (the same engine behind `/codex:review`). Point it at the **whole-branch diff against `main`** (merge-base `main...HEAD`) — the surface CI and a human reviewer see, not just the last task. Run it from the worktree root (cwd = the branch under review), and **give the Bash tool a long timeout (~600000ms)**: a whole-branch review takes minutes (≈3-5; 272s measured on a 4-file diff), and the 120s Bash default will kill a healthy review and look like a hang.
   ```bash
-  # the native reviewer behind /codex:review; --wait = foreground + non-interactive
-  CODEX_ROOT="$(ls -d "$HOME"/.claude/plugins/cache/openai-codex/codex/*/ | sort -V | tail -1)"
-  node "${CODEX_ROOT}scripts/codex-companion.mjs" review --wait --scope branch --base main
+  # native `codex review`, stdin closed so it can't hang on a prompt.
+  # Run with a ~600000ms Bash timeout — the review takes minutes.
+  scripts/codex-review.sh --base main
   ```
-  The native reviewer **manages its own model + reasoning effort** — there is no effort knob to tier, no `--sandbox`/`--skip-git-repo-check` to pre-authorize, and no `AskUserQuestion` to fall through to. It also takes **no custom prompt**: if a diff genuinely needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, drive the sibling reviewer instead — `node "${CODEX_ROOT}scripts/codex-companion.mjs" adversarial-review --wait --scope branch --base main "<focus text>"` — and note the choice in `decisions.md`.
+  The reviewer **manages its own model + reasoning effort** — there's no effort knob to tier, no `--sandbox`/`--skip-git-repo-check` to pre-authorize, and no interactive wait/background prompt to fall through to (the wrapper closes stdin). For a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, pass custom instructions as a trailing arg — `scripts/codex-review.sh --base main "<focus text>"` — and note the choice in `decisions.md`. (Don't call `codex-companion.mjs` directly: it isn't always installed and stops to ask wait-vs-background, which hangs headless.)
 - **When to skip:** docs/comment/config-only or other non-code diffs — the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in `decisions.md`. Any code change gets reviewed.
 - **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in `decisions.md` any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-run the same `review` command** on the updated branch — each run re-reads the current `main...HEAD` diff — until it returns no actionable findings.
 - Codex is a **colleague, not an authority** — treat its claims critically: push back on wrong ones (model names, recent APIs, anything you can verify) rather than blindly deferring.
@@ -203,7 +203,7 @@ reporting), then report the merge. Then you are done.
 | "I'll defer this but it's obvious" | Obvious-to-you ≠ tracked. File a board card (or hand it off) or it's lost. |
 | "CI will probably pass, I'll wrap up" | Not done until `gh pr checks` is actually green. Verify, don't assume. |
 | "I'll skip the codex review, lint+test passed" | The pre-PR gate now *includes* a Codex review. Tests prove behavior; the review catches design/security/convention issues tests don't. |
-| "I'll let codex:review stop and ask me wait-or-background" | Always pass `--wait` so the native reviewer runs foreground + non-interactive. The interactive wait/background prompt breaks the autonomy contract. |
+| "The codex review is hanging, I'll skip it" | It's not hung — a whole-branch review takes ≈3-5 min. Use `scripts/codex-review.sh` (stdin closed, no wait/background prompt) and give the Bash tool a ~600000ms timeout. Don't call `codex-companion.mjs` directly — it isn't always installed and stops to ask wait-vs-background. |
 | "Docs-only tweak, but I'll run the full review to be safe" | Skip `codex:review` for docs/comment/config-only diffs (CodeRabbit/CodeQL/semgrep/gitleaks cover those) and log the skip. The native reviewer picks its own model/effort, so there's no tier to pad — just don't review non-code. |
 | "Codex flagged it but I think it's fine" | Verify each finding (receiving-code-review). Fix real ones; log rejected ones in `decisions.md` with the reason. Silent dismissal isn't allowed. |
 | "I'll review locally after I open the PR" | The review is the gate *before* the PR. Open it only once Codex is clean. |
@@ -220,7 +220,7 @@ reporting), then report the merge. Then you are done.
 | Design | superpowers:writing-plans, ax-conventions, security-checklist |
 | Implement | superpowers:subagent-driven-development, superpowers:test-driven-development |
 | Verify | superpowers:verification-before-completion, superpowers:requesting-code-review |
-| Codex review (pre-PR) | `codex:review` native reviewer (whole branch vs `main`, `--wait`), superpowers:receiving-code-review |
+| Codex review (pre-PR) | `scripts/codex-review.sh --base main` (native `codex review`, whole branch, stdin closed; ~600000ms Bash timeout), superpowers:receiving-code-review |
 | Ship | commit-commands:commit-push-pr, superpowers:systematic-debugging, `gh`, `ScheduleWakeup` |
 | Merge (Phase 7) | `gh pr merge --squash`, `git pull --ff-only` (standalone); hand off to auto-ship (orchestrated) |
 | Progress (every phase) | `append_progress` heartbeat to the card's progress block — auto-ship `references/github-project.md` §6; best-effort, shell-side, own card only |
