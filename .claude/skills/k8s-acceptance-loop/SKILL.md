@@ -136,8 +136,13 @@ If genuinely ambiguous: do one image-rebuild cycle. The fast loop assumes a corr
 Run these once per kind cluster, then again only if you tear it down. Defaults assume the kind canary scenario; substitute scenario-specific helm flags as needed.
 
 ```bash
-# 0. Pick up env (Anthropic key required for any chat-touching scenario)
-export ANTHROPIC_API_KEY=...
+# 0. Pick up env. API keys for the walk live in `.env.walk` at the repo root
+#    (gitignored — never commit it). It holds ANTHROPIC_API_KEY (required for any
+#    chat-touching scenario) plus scenario-specific provider/service keys
+#    (e.g. LINEAR_API_KEY for the agent-authored-skills Linear walk). Source it:
+set -a; . ./.env.walk; set +a
+# Sanity-check the key the install needs is present (don't echo the value):
+[ -n "$ANTHROPIC_API_KEY" ] || { echo "ANTHROPIC_API_KEY missing from .env.walk"; }
 
 # 1. Kind cluster
 kind get clusters | grep -q '^ax-next-dev$' || kind create cluster --name ax-next-dev
