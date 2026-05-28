@@ -132,6 +132,18 @@ export interface AuthoredBundle {
 // unvalidated id into a workspace glob. Mirrors @ax/skill-broker's SKILL_ID_RE.
 const AUTHORED_SKILL_ID_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
+// BUG-W2 follow-up: bounded read-retry for the install read. The agent writes
+// `.ax/skills/<id>/SKILL.md` and the runner flushes (commit + push) it to the
+// host mirror BEFORE this read — but under CONCURRENT installs (the model can
+// fire several `install_authored_skill` calls in one turn) these reads race the
+// just-pushed commit: the file IS in the workspace, yet a given read's mirror
+// view hasn't caught up, so the SKILL.md path is briefly missing from the list.
+// We re-issue `workspace:list` (which re-fetches the mirror) a few times before
+// concluding the skill isn't authored. On the genuine "not authored" path this
+// adds at most (maxAttempts-1)*backoff of latency to an error return — cheap.
+const AUTHORED_READ_MAX_LIST_ATTEMPTS = 5;
+const AUTHORED_READ_LIST_BACKOFF_MS = 150;
+
 /**
  * Read the FULL agent-authored bundle (SKILL.md → manifest+body, plus every
  * helper file) under `.ax/skills/<skillId>/`. Returns null when there is no
@@ -150,6 +162,7 @@ export async function readAuthoredBundle(
   ownerUserId: string,
   agentId: string,
   skillId: string,
+  opts: { maxListAttempts?: number; listBackoffMs?: number } = {},
 ): Promise<AuthoredBundle | null> {
   if (!AUTHORED_SKILL_ID_RE.test(skillId)) {
     throw new Error(`invalid authored skill id: ${JSON.stringify(skillId)}`);
@@ -163,11 +176,24 @@ export async function readAuthoredBundle(
     sessionId: 'authored-bundle-read',
   });
   const dir = `.ax/skills/${skillId}`;
-  const { paths } = await bus.call<{ pathGlob: string }, { paths: string[] }>(
-    'workspace:list',
-    ctx,
-    { pathGlob: `${dir}/**` },
-  );
+  const skillMdPath = `${dir}/SKILL.md`;
+  const maxAttempts = opts.maxListAttempts ?? AUTHORED_READ_MAX_LIST_ATTEMPTS;
+  const backoffMs = opts.listBackoffMs ?? AUTHORED_READ_LIST_BACKOFF_MS;
+
+  // Re-list until the canonical SKILL.md path shows up (or attempts run out).
+  // The presence of `${dir}/SKILL.md` is the authoritative "the flush landed"
+  // signal; once it's in the listing the per-path reads below hit the same
+  // (now-current) mirror snapshot. See AUTHORED_READ_* above for the race.
+  let paths: string[] = [];
+  for (let attempt = 0; ; attempt++) {
+    ({ paths } = await bus.call<{ pathGlob: string }, { paths: string[] }>(
+      'workspace:list',
+      ctx,
+      { pathGlob: `${dir}/**` },
+    ));
+    if (paths.includes(skillMdPath) || attempt >= maxAttempts - 1) break;
+    await new Promise((resolve) => setTimeout(resolve, backoffMs));
+  }
 
   let manifestSeen = false;
   let description = '';
