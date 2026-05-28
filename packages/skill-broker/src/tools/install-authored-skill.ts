@@ -14,10 +14,16 @@ const HOST_RE = /^[a-z0-9]([a-z0-9.-]{0,253}[a-z0-9])?$/i;
 // reject is filtered out here so the agent gets a clean card, not an upsert
 // error referencing a slot it never sees.
 const SLOT_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
-// npm names may carry a @scope/ prefix; pypi names never use @ or /.
-// No spaces, no path-traversal, no mid-name @ or unscoped /. parseSkillManifest
-// (downstream) is the authority; this is the early trust-boundary filter.
-const PKG_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]{0,213}$/;
+// Package name regexes — copied verbatim from skills-parser/src/manifest.ts
+// (parsePackagesCapability). That function is the downstream AUTHORITY; this
+// is the early trust-boundary filter that must MATCH it so a name the model
+// proposes isn't silently dropped here and then rejected there.
+//   npm: optional @scope/ prefix, lowercase only (PEP 503 does NOT apply here).
+//   pypi: PEP 503-ish — MIXED case allowed, NO scope/slash.
+const NPM_NAME_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
+const PYPI_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
+const PACKAGE_NAME_LEN_MAX = 214; // npm hard limit; generous for pypi
+const PACKAGES_PER_ECOSYSTEM_MAX = 32;
 
 export const INSTALL_AUTHORED_SKILL_DESCRIPTOR: ToolDescriptor = {
   name: 'install_authored_skill',
@@ -121,12 +127,28 @@ export async function registerInstallAuthoredSkill(bus: HookBus): Promise<void> 
         ? input.slots.filter((s): s is string => typeof s === 'string' && SLOT_RE.test(s))
         : [];
       const pkgIn = (input.packages ?? {}) as { npm?: unknown; pypi?: unknown };
-      const npm = Array.isArray(pkgIn.npm)
-        ? pkgIn.npm.filter((p): p is string => typeof p === 'string' && PKG_RE.test(p))
-        : [];
-      const pypi = Array.isArray(pkgIn.pypi)
-        ? pkgIn.pypi.filter((p): p is string => typeof p === 'string' && PKG_RE.test(p))
-        : [];
+      const npm = (
+        Array.isArray(pkgIn.npm)
+          ? pkgIn.npm.filter(
+              (p): p is string =>
+                typeof p === 'string' &&
+                p.length > 0 &&
+                p.length <= PACKAGE_NAME_LEN_MAX &&
+                NPM_NAME_RE.test(p),
+            )
+          : []
+      ).slice(0, PACKAGES_PER_ECOSYSTEM_MAX);
+      const pypi = (
+        Array.isArray(pkgIn.pypi)
+          ? pkgIn.pypi.filter(
+              (p): p is string =>
+                typeof p === 'string' &&
+                p.length > 0 &&
+                p.length <= PACKAGE_NAME_LEN_MAX &&
+                PYPI_NAME_RE.test(p),
+            )
+          : []
+      ).slice(0, PACKAGES_PER_ECOSYSTEM_MAX);
       const packages = { npm, pypi };
 
       // Open-mode authoring requires @ax/agents (gated soft dep). Clear tool

@@ -613,3 +613,71 @@ describe('install_authored_skill tool', () => {
     expect(card.packages).toEqual({ npm: [], pypi: [] });
   });
 });
+
+// ---------------------------------------------------------------------------
+// FIX A: npm/pypi grammar split — must mirror skills-parser authority
+// ---------------------------------------------------------------------------
+
+describe('install_authored_skill — package grammar (FIX A)', () => {
+  it('pypi Django (uppercase) SURVIVES (pypi allows mixed case)', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: [], pypi: ['Django'] } },
+    });
+    expect((grants[0] as { packages: { pypi: string[] } }).packages.pypi).toEqual(['Django']);
+  });
+
+  it('pypi @scope/x is DROPPED (pypi does not allow scoped names)', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: [], pypi: ['@scope/x'] } },
+    });
+    expect((grants[0] as { packages: { pypi: string[] } }).packages.pypi).toEqual([]);
+  });
+
+  it('npm @babel/core SURVIVES (scoped npm name)', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: ['@babel/core'], pypi: [] } },
+    });
+    expect((grants[0] as { packages: { npm: string[] } }).packages.npm).toEqual(['@babel/core']);
+  });
+
+  it('npm "BAD NAME" (space) is DROPPED', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: ['BAD NAME'], pypi: [] } },
+    });
+    expect((grants[0] as { packages: { npm: string[] } }).packages.npm).toEqual([]);
+  });
+
+  it('npm list of 40 entries is capped to 32 after filtering', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    const fortyNames = Array.from({ length: 40 }, (_, i) => `pkg-${i}`);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: fortyNames, pypi: [] } },
+    });
+    expect((grants[0] as { packages: { npm: string[] } }).packages.npm).toHaveLength(32);
+  });
+
+  it('a 300-char npm name is DROPPED (exceeds PACKAGE_NAME_LEN_MAX=214)', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    const longName = 'a'.repeat(300);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: [longName], pypi: [] } },
+    });
+    expect((grants[0] as { packages: { npm: string[] } }).packages.npm).toEqual([]);
+  });
+});
