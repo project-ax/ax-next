@@ -598,4 +598,138 @@ describe('createIpcClient', () => {
       expect(clock).toBeLessThan(1_000); // gave up promptly, didn't burn ~2 min
     });
   });
+
+  // -------------------------------------------------------------------------
+  // callBinary — workspace.materialize's raw octet-stream body (BUG-W3).
+  //
+  // The bug: the materialize bundle was base64-in-JSON, drained into a Buffer
+  // capped at 4 MiB. An aged workspace's bundle blew the cap and the runner
+  // crashed on boot (`response body too large`). callBinary streams the raw
+  // body straight to a temp file under a far larger, disk-bounded ceiling.
+  // -------------------------------------------------------------------------
+  describe('callBinary (workspace.materialize binary stream)', () => {
+    const created: string[] = [];
+    afterEach(async () => {
+      for (const p of created) await fsp.rm(p, { force: true }).catch(() => {});
+      created.length = 0;
+    });
+
+    it('drains a >4 MiB octet-stream body to a temp file (the BUG-W3 regression)', async () => {
+      // 5 MiB — comfortably OVER the old 4 MiB MAX_RESPONSE_BYTES JSON cap that
+      // crashed the runner. A deterministic byte pattern so we can verify the
+      // bytes round-trip intact (not truncated, not re-encoded).
+      const size = 5 * 1024 * 1024;
+      const payload = Buffer.alloc(size);
+      for (let i = 0; i < size; i++) payload[i] = i & 0xff;
+
+      const server = await startFakeServer();
+      servers.push(server);
+      server.setHandler((_req, res) => {
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(payload.length),
+        });
+        res.end(payload);
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        maxRetries: 0,
+      });
+
+      const result = await client.callBinary('workspace.materialize', {});
+      created.push(result.path);
+
+      expect(result.bytes).toBe(size);
+      const onDisk = await fsp.readFile(result.path);
+      expect(onDisk.length).toBe(size);
+      expect(onDisk.equals(payload)).toBe(true);
+    });
+
+    it('rejects non-retryably when the body exceeds the disk cap', async () => {
+      // Stream 2 KiB against a 1 KiB injected cap. Over-cap is deterministic →
+      // marked non-retryable (HostUnavailableError.retryable === false) so the
+      // runner doesn't re-transfer the same too-large body for the whole window.
+      const payload = Buffer.alloc(2048, 0x7a);
+      const server = await startFakeServer();
+      servers.push(server);
+      server.setHandler((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.end(payload);
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        maxRetries: 0,
+        __maxBinaryResponseBytes: 1024,
+      });
+
+      const err = await client.callBinary('workspace.materialize', {}).then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(HostUnavailableError);
+      expect((err as HostUnavailableError).message).toContain('exceeded cap');
+      expect((err as HostUnavailableError).retryable).toBe(false);
+    });
+
+    it('parses a non-2xx JSON error envelope into an IpcRequestError', async () => {
+      // A non-2xx response is a small JSON error envelope (not binary) — the
+      // client buffers it in memory and parses it rather than streaming to file.
+      const server = await startFakeServer();
+      servers.push(server);
+      server.setHandler((_req, res) => {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({ error: { code: 'NOT_FOUND', message: 'no workspace' } }),
+        );
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        maxRetries: 0,
+      });
+
+      const err = await client.callBinary('workspace.materialize', {}).then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(IpcRequestError);
+      expect((err as IpcRequestError).status).toBe(404);
+    });
+
+    it('retries a transient 5xx then drains the binary body on success', async () => {
+      // Proves the binary path reuses the shared retry loop: first attempt 503,
+      // second attempt 200 with the bundle.
+      const payload = Buffer.from('PACK-bundle-bytes-here', 'utf8');
+      let attempts = 0;
+      const server = await startFakeServer();
+      servers.push(server);
+      server.setHandler((_req, res) => {
+        attempts += 1;
+        if (attempts === 1) {
+          res.writeHead(503, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: { code: 'INTERNAL', message: 'warming up' } }));
+          return;
+        }
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream' });
+        res.end(payload);
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        retryBackoff: () => 0, // no real wait
+      });
+
+      const result = await client.callBinary('workspace.materialize', {});
+      created.push(result.path);
+      expect(attempts).toBe(2);
+      const onDisk = await fsp.readFile(result.path);
+      expect(onDisk.equals(payload)).toBe(true);
+    });
+  });
 });

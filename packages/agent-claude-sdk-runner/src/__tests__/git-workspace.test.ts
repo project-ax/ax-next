@@ -45,9 +45,13 @@ async function git(
 }
 
 /**
- * Build a baseline bundle containing the given files. Returns the bundle
- * bytes (base64-encoded). Mirrors the host-side `buildBaselineBundle`
- * shape so we can exercise the runner's clone path realistically.
+ * Build a baseline bundle FILE containing the given files; returns its PATH.
+ * Mirrors the host-side `buildBaselineBundle` shape so we exercise the runner's
+ * clone path realistically. The bundle now arrives at materializeWorkspace as a
+ * file on disk (BUG-W3 — the IPC client streams the raw octet-stream body
+ * there), not as a base64 string. The file is written under `scratchRoot`
+ * (cleaned in afterEach) AND materializeWorkspace takes ownership and deletes
+ * it on completion, so callers don't clean it up themselves.
  */
 async function makeBundle(files: Record<string, string>): Promise<string> {
   const tmp = await fs.mkdtemp(path.join(tmpdir(), 'ax-rb-'));
@@ -66,12 +70,18 @@ async function makeBundle(files: Record<string, string>): Promise<string> {
     // --allow-empty so empty `files` produces a bundle with one
     // empty-tree commit (mirrors the host's always-bundle contract).
     await git(['-C', tmp, 'commit', '--allow-empty', '-m', 'baseline']);
-    // Bundle to a tempfile (NOT stdout) — utf8-decoded stdout would
-    // mangle binary bundle bytes.
-    const bundleFile = path.join(tmp, 'b.bundle');
-    await git(['-C', tmp, 'bundle', 'create', bundleFile, 'main']);
-    const bytes = await fs.readFile(bundleFile);
-    return bytes.toString('base64');
+    const built = path.join(tmp, 'b.bundle');
+    await git(['-C', tmp, 'bundle', 'create', built, 'main']);
+    // Copy out to a standalone path (sibling of the eventual clone root, OUTSIDE
+    // it — clone refuses a non-empty target) that survives this helper's tmp
+    // cleanup. materializeWorkspace deletes it; afterEach sweeps scratchRoot for
+    // error-path tests where materialize never ran.
+    const out = path.join(
+      scratchRoot,
+      `bundle-${Math.random().toString(36).slice(2, 10)}.bundle`,
+    );
+    await fs.copyFile(built, out);
+    return out;
   } finally {
     await fs.rm(tmp, { recursive: true, force: true });
   }
@@ -90,26 +100,34 @@ afterEach(async () => {
 });
 
 describe('materializeWorkspace', () => {
-  it('rejects an empty bundleBase64 (Phase 3 always-bundle contract)', async () => {
+  it('rejects an empty or missing bundle file (Phase 3 always-bundle contract)', async () => {
     // Wire contract: workspace.materialize ALWAYS ships a non-empty
     // bundle (one commit on refs/heads/baseline, possibly with an
-    // empty tree for brand-new workspaces). An empty bundle here
-    // means the host is broken or the wire was tampered with —
-    // bootstrap-fatal.
+    // empty tree for brand-new workspaces). A zero-byte streamed file
+    // means the host is broken or the stream truncated — bootstrap-fatal.
     const root = path.join(scratchRoot, 'permanent');
+    const emptyBundle = path.join(scratchRoot, 'empty.bundle');
+    await fs.writeFile(emptyBundle, '');
     await expect(
-      materializeWorkspace({ root, bundleBase64: '' }),
-    ).rejects.toThrow(/empty bundleBase64/);
+      materializeWorkspace({ root, bundlePath: emptyBundle }),
+    ).rejects.toThrow(/empty or missing bundle file/);
+    // A wholly-missing path is the same bootstrap-fatal condition.
+    await expect(
+      materializeWorkspace({
+        root,
+        bundlePath: path.join(scratchRoot, 'does-not-exist.bundle'),
+      }),
+    ).rejects.toThrow(/empty or missing bundle file/);
   });
 
   it('clones from an empty-tree baseline bundle (brand-new workspace)', async () => {
     // The host's empty-workspace materialize ships a baseline bundle
     // with one commit whose tree is the empty tree. Runner clones it,
     // ends up with an empty working tree but a valid baseline ref.
-    const bundleB64 = await makeBundle({});
+    const bundleFile = await makeBundle({});
     const root = path.join(scratchRoot, 'permanent');
 
-    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+    await materializeWorkspace({ root, bundlePath: bundleFile });
 
     // Working tree is empty (no entries other than .git).
     const entries = (await fs.readdir(root)).filter((e) => e !== '.git');
@@ -123,10 +141,10 @@ describe('materializeWorkspace', () => {
   });
 
   it('clones from a non-empty baseline bundle and pins refs/heads/baseline to HEAD', async () => {
-    const bundleB64 = await makeBundle({ '.ax/CLAUDE.md': 'hello\n' });
+    const bundleFile = await makeBundle({ '.ax/CLAUDE.md': 'hello\n' });
     const root = path.join(scratchRoot, 'permanent');
 
-    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+    await materializeWorkspace({ root, bundlePath: bundleFile });
 
     // The file should be on disk.
     expect(
@@ -144,14 +162,14 @@ describe('materializeWorkspace', () => {
   });
 
   it('clones with nested directory contents intact', async () => {
-    const bundleB64 = await makeBundle({
+    const bundleFile = await makeBundle({
       '.ax/CLAUDE.md': '# memory',
       '.ax/skills/foo/SKILL.md': '---\nname: foo\n---\n',
       'src/main.ts': 'export {};\n',
     });
     const root = path.join(scratchRoot, 'permanent');
 
-    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+    await materializeWorkspace({ root, bundlePath: bundleFile });
 
     expect(await fs.readFile(path.join(root, '.ax/CLAUDE.md'), 'utf8')).toBe(
       '# memory',
@@ -164,15 +182,14 @@ describe('materializeWorkspace', () => {
     );
   });
 
-  it('cleans up the temporary .baseline.bundle file after clone', async () => {
-    const bundleB64 = await makeBundle({ 'a.txt': 'a' });
+  it('deletes the host-streamed bundle file after clone (takes ownership)', async () => {
+    const bundleFile = await makeBundle({ 'a.txt': 'a' });
     const root = path.join(scratchRoot, 'permanent');
 
-    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+    // The bundle file lives outside the clone target. materializeWorkspace
+    // takes ownership and must unlink it on success.
+    await materializeWorkspace({ root, bundlePath: bundleFile });
 
-    // The temp file lives at `${root}.baseline.bundle` — outside the clone
-    // target. After successful materialize it must be unlinked.
-    const bundleFile = `${root}.baseline.bundle`;
     let exists = true;
     try {
       await fs.stat(bundleFile);
@@ -182,22 +199,26 @@ describe('materializeWorkspace', () => {
     expect(exists).toBe(false);
   });
 
-  it('throws a useful error when bundleBase64 is invalid', async () => {
+  it('throws a useful error (and still deletes the file) when the bundle is invalid', async () => {
     const root = path.join(scratchRoot, 'permanent');
-    // Garbage that's syntactically base64 but not a valid bundle.
-    const notABundle = Buffer.from('this is not a bundle').toString('base64');
+    // A non-empty file that isn't a valid git bundle — passes the size guard,
+    // then `git clone` rejects it.
+    const notABundle = path.join(scratchRoot, 'garbage.bundle');
+    await fs.writeFile(notABundle, 'this is not a bundle');
     await expect(
-      materializeWorkspace({ root, bundleBase64: notABundle }),
+      materializeWorkspace({ root, bundlePath: notABundle }),
     ).rejects.toThrow(/git clone failed/);
+    // Ownership cleanup runs even on the failure path (finally block).
+    await expect(fs.stat(notABundle)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
   it('runs `git lfs install --local` after clone so LFS smudge is enabled', async () => {
     // Requires git-lfs on PATH. The suite runs on machines that have it
     // (same requirement as the agent container image built in Task 1).
-    const bundleB64 = await makeBundle({});
+    const bundleFile = await makeBundle({});
     const root = path.join(scratchRoot, 'permanent');
 
-    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+    await materializeWorkspace({ root, bundlePath: bundleFile });
 
     // `git lfs install --local` writes [filter "lfs"] into .git/config.
     // Its presence (with clean + smudge entries) is the durable signal
@@ -214,9 +235,9 @@ describe('scaffoldWorkspaceSkillSurface', () => {
     // Realistic shape: clone first (so /permanent is a real git worktree),
     // then scaffold — mirrors the runner main's call order. The scaffold
     // running BEFORE clone is what the regression guard exists for.
-    const bundleB64 = await makeBundle({ 'README.md': 'hello' });
+    const bundleFile = await makeBundle({ 'README.md': 'hello' });
     const root = path.join(scratchRoot, 'permanent');
-    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+    await materializeWorkspace({ root, bundlePath: bundleFile });
 
     await scaffoldWorkspaceSkillSurface(root);
 
@@ -227,9 +248,9 @@ describe('scaffoldWorkspaceSkillSurface', () => {
   });
 
   it('is idempotent — a second call leaves the correct symlink in place', async () => {
-    const bundleB64 = await makeBundle({});
+    const bundleFile = await makeBundle({});
     const root = path.join(scratchRoot, 'permanent');
-    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+    await materializeWorkspace({ root, bundlePath: bundleFile });
 
     await scaffoldWorkspaceSkillSurface(root);
     await scaffoldWorkspaceSkillSurface(root);
@@ -242,9 +263,9 @@ describe('scaffoldWorkspaceSkillSurface', () => {
     // A prior session that exited mid-scaffold could leave a regular
     // directory or file at .claude/skills. The scaffolder treats that as
     // transient and overwrites with the canonical symlink.
-    const bundleB64 = await makeBundle({});
+    const bundleFile = await makeBundle({});
     const root = path.join(scratchRoot, 'permanent');
-    await materializeWorkspace({ root, bundleBase64: bundleB64 });
+    await materializeWorkspace({ root, bundlePath: bundleFile });
     await fs.mkdir(path.join(root, '.claude'), { recursive: true });
     await fs.mkdir(path.join(root, '.claude', 'skills'));
     await fs.writeFile(path.join(root, '.claude', 'skills', 'bogus.md'), 'x');
@@ -259,7 +280,7 @@ describe('scaffoldWorkspaceSkillSurface', () => {
 describe('scaffoldWorkspaceGitignore', () => {
   it('creates a .gitignore with node_modules + python + cache entries when absent', async () => {
     const root = path.join(scratchRoot, 'permanent');
-    await materializeWorkspace({ root, bundleBase64: await makeBundle({}) });
+    await materializeWorkspace({ root, bundlePath: await makeBundle({}) });
 
     await scaffoldWorkspaceGitignore(root);
 
@@ -271,7 +292,7 @@ describe('scaffoldWorkspaceGitignore', () => {
 
   it('is idempotent — a second call adds no duplicate lines', async () => {
     const root = path.join(scratchRoot, 'permanent');
-    await materializeWorkspace({ root, bundleBase64: await makeBundle({}) });
+    await materializeWorkspace({ root, bundlePath: await makeBundle({}) });
 
     await scaffoldWorkspaceGitignore(root);
     await scaffoldWorkspaceGitignore(root);
@@ -286,7 +307,7 @@ describe('scaffoldWorkspaceGitignore', () => {
     // Baseline already ignores node_modules/ and has a user entry.
     await materializeWorkspace({
       root,
-      bundleBase64: await makeBundle({ '.gitignore': 'node_modules/\ndist/\n' }),
+      bundlePath: await makeBundle({ '.gitignore': 'node_modules/\ndist/\n' }),
     });
 
     await scaffoldWorkspaceGitignore(root);
@@ -418,10 +439,10 @@ async function setupMaterializedWorkspace(args: {
 } = {}): Promise<{ root: string; baselineOid: string }> {
   const baselineFiles = args.baselineFiles ?? {};
   const root = path.join(scratchRoot, 'permanent');
-  // makeBundle expects a Record<string, string>; mirrors the wire shape
-  // the host's materialize handler produces.
-  const bundleB64 = await makeBundle(baselineFiles);
-  await materializeWorkspace({ root, bundleBase64: bundleB64 });
+  // makeBundle writes a bundle FILE; materializeWorkspace clones from it and
+  // takes ownership (deletes it) — mirrors the runner's real boot path.
+  const bundleFile = await makeBundle(baselineFiles);
+  await materializeWorkspace({ root, bundlePath: bundleFile });
   // After materialize: refs/heads/baseline pinned, HEAD on `main`
   // (created by checkout -b main during materialize).
   const baselineOid = (

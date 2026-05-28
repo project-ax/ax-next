@@ -77,8 +77,14 @@ async function expectOk(result: SpawnResult, label: string): Promise<void> {
 export interface MaterializeInput {
   /** Filesystem path of the workspace root (typically `/permanent`). */
   root: string;
-  /** Base64 bundle bytes from `workspace.materialize`. Always non-empty. */
-  bundleBase64: string;
+  /**
+   * Path to the host-streamed baseline bundle on local disk. The IPC client's
+   * `callBinary('workspace.materialize')` drains the raw `application/octet-stream`
+   * response body here (no in-memory base64/JSON round-trip — BUG-W3).
+   * materializeWorkspace clones from it and TAKES OWNERSHIP: it deletes the file
+   * when done (success or failure).
+   */
+  bundlePath: string;
 }
 
 /**
@@ -89,6 +95,13 @@ export interface MaterializeInput {
  * a non-empty bundle (one commit on `refs/heads/baseline`, possibly
  * with an empty tree for brand-new workspaces). The runner therefore
  * always clones — no `git init` path. Symmetric with the host side.
+ *
+ * The bundle arrives on disk as a temp file (the IPC client streamed the raw
+ * octet-stream body straight to it — BUG-W3 — so an arbitrarily large bundle
+ * never hits the 4 MiB JSON response cap). We clone directly from that file;
+ * `git clone` refuses a non-empty target, so the file must live OUTSIDE `root`
+ * (the client writes it to `os.tmpdir()`, always writable in both the
+ * subprocess and k8s sandboxes even when `/`'s parent volume is read-only).
  *
  * After clone, `refs/heads/baseline` is pinned locally to HEAD so the
  * next `git bundle baseline..HEAD` is well-defined. Subsequent turns
@@ -102,32 +115,21 @@ export interface MaterializeInput {
 export async function materializeWorkspace(
   input: MaterializeInput,
 ): Promise<{ baselineCommit: string }> {
-  const { root, bundleBase64 } = input;
+  const { root, bundlePath } = input;
 
-  if (bundleBase64 === '') {
-    // Defensive: the wire contract says materialize ALWAYS ships a
-    // non-empty bundle. An empty bundle here means the host bundler is
-    // broken or the wire was tampered with — fail loud rather than
-    // silently producing an unworkable workspace.
-    throw new Error(
-      'materializeWorkspace: empty bundleBase64 (host should always ship a baseline bundle)',
-    );
-  }
-
-  // Two-step: write the bundle bytes to a temp file OUTSIDE the target
-  // dir (clone refuses to clone into a non-empty directory), then clone
-  // from the bundle file.
-  //
-  // We pin the bundle to `os.tmpdir()` rather than `${root}.baseline.bundle`
-  // because the parent of `root` is often a read-only volume root (e.g.
-  // the k8s sandbox mounts /permanent as the workspace dir under
-  // `readOnlyRootFilesystem: true`, so writing `/permanent.baseline.bundle`
-  // at filesystem `/` fails with EROFS). /tmp is always writable in
-  // both subprocess and k8s sandboxes.
-  await fs.mkdir(root, { recursive: true });
-  const bundlePath = path.join(os.tmpdir(), `ax-baseline-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.bundle`);
-  await fs.writeFile(bundlePath, Buffer.from(bundleBase64, 'base64'));
   try {
+    // Defensive: the wire contract says materialize ALWAYS ships a non-empty
+    // bundle (one commit on refs/heads/baseline, possibly an empty tree). A
+    // zero-byte or missing file means the host bundler is broken or the stream
+    // truncated — fail loud rather than silently producing an unworkable
+    // workspace (and before `git clone` emits a less obvious error).
+    const stat = await fs.stat(bundlePath).catch(() => null);
+    if (stat === null || stat.size === 0) {
+      throw new Error(
+        `materializeWorkspace: empty or missing bundle file at ${bundlePath} (host should always ship a baseline bundle)`,
+      );
+    }
+    await fs.mkdir(root, { recursive: true });
     await expectOk(
       await runGit(['clone', '--branch', 'main', bundlePath, root]),
       'git clone',
@@ -171,7 +173,8 @@ export async function materializeWorkspace(
     const baselineCommit = head.stdout.toString('utf8').trim();
     return { baselineCommit };
   } finally {
-    // Best-effort cleanup of the bundle file. If unlink fails (e.g.,
+    // We took ownership of the host-streamed bundle file — delete it once the
+    // clone is done (success or failure). Best-effort: if unlink fails (e.g.,
     // already gone), nothing depends on it.
     await fs.rm(bundlePath, { force: true });
   }

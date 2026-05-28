@@ -15,7 +15,6 @@ import {
   type SessionGetConfigResponse,
   type TextBlock,
   type ToolListResponse,
-  type WorkspaceMaterializeResponse,
   type WorkspaceReadRequest,
   type WorkspaceReadResponse,
 } from '@ax/ipc-protocol';
@@ -217,13 +216,14 @@ export async function main(): Promise<number> {
   // Gates the venv env wiring + system-prompt note below.
   let pythonVenvReady = false;
   try {
-    const matResp = (await client.call(
-      'workspace.materialize',
-      {},
-    )) as WorkspaceMaterializeResponse;
+    // The materialize bundle is streamed as a raw octet-stream body and drained
+    // to a temp file (BUG-W3 — bypasses the 4 MiB JSON response cap that an aged
+    // workspace's bundle would blow). materializeWorkspace clones from the file
+    // and owns its deletion.
+    const mat = await client.callBinary('workspace.materialize', {});
     const out = await materializeWorkspace({
       root: env.workspaceRoot,
-      bundleBase64: matResp.bundleBytes,
+      bundlePath: mat.path,
     });
     initialBaselineCommit = out.baselineCommit;
     // Lay down `.claude/skills` → `../.ax/skills` so the SDK's

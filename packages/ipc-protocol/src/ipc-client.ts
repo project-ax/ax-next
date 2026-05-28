@@ -1,4 +1,8 @@
+import { createWriteStream } from 'node:fs';
+import { unlink } from 'node:fs/promises';
 import * as http from 'node:http';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import { z } from 'zod';
 import {
   ConversationStoreRunnerSessionResponseSchema,
@@ -10,7 +14,6 @@ import {
   ToolListResponseSchema,
   ToolPreCallResponseSchema,
   WorkspaceCommitNotifyResponseSchema,
-  WorkspaceMaterializeResponseSchema,
   WorkspaceReadResponseSchema,
   parseRunnerEndpoint,
   RunnerEndpointError,
@@ -57,23 +60,38 @@ import {
 //   - 400/404/409 → IpcRequestError (don't retry).
 //   - Per-action timeout from IPC_TIMEOUTS_MS (overridable for tests).
 //
-// Response-body cap: we drain into a Buffer capped at MAX_RESPONSE_BYTES.
-// @ax/core has a MAX_FRAME of 4 MiB, but this package must not import the
-// kernel (sandbox-side), so we redeclare the same ceiling here. We may
-// unify if that boundary shifts.
+// Response-body cap (JSON path): we drain into a Buffer capped at
+// MAX_RESPONSE_BYTES. @ax/core has a MAX_FRAME of 4 MiB, but this package must
+// not import the kernel (sandbox-side), so we redeclare the same ceiling here.
+// We may unify if that boundary shifts.
+//
+// The ONE exception is `workspace.materialize` (BUG-W3): its body is a raw
+// `git bundle` (octet-stream, not JSON) that grows unbounded with workspace
+// age. It does NOT go through the Buffer-capped JSON path — `callBinary`
+// streams it straight to a temp file under the far larger, disk-bounded
+// MAX_BINARY_RESPONSE_BYTES. Hence materialize is absent from RESPONSE_SCHEMAS
+// below (there's no JSON body to Zod-parse).
 // ---------------------------------------------------------------------------
 
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 
+// Hard ceiling for a streamed binary response (workspace.materialize). Drains
+// to disk, so the real bound is the runner's /tmp space; this guards against a
+// runaway/broken host shipping unbounded bytes (the host is the trust root, so
+// this is a sanity wall, not an adversary defense). Set far above any realistic
+// pack-compressed workspace bundle — orders of magnitude over the old 4 MiB
+// JSON cap that crashed the runner.
+const MAX_BINARY_RESPONSE_BYTES = 512 * 1024 * 1024;
+
 // Dispatch table: action → Zod schema for the successful response body.
 // Event endpoints have no response body (just {accepted: true} on 202) and
-// are handled separately in `event()`.
-const RESPONSE_SCHEMAS: Record<IpcActionName, z.ZodTypeAny> = {
+// are handled separately in `event()`. `workspace.materialize` is absent —
+// its response is raw binary (see callBinary), not a Zod-parsed JSON body.
+const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   'tool.pre-call': ToolPreCallResponseSchema,
   'tool.execute-host': ToolExecuteHostResponseSchema,
   'tool.list': ToolListResponseSchema,
   'workspace.commit-notify': WorkspaceCommitNotifyResponseSchema,
-  'workspace.materialize': WorkspaceMaterializeResponseSchema,
   'workspace.read': WorkspaceReadResponseSchema,
   'session.next-message': SessionNextMessageResponseSchema,
   'session.get-config': SessionGetConfigResponseSchema,
@@ -131,6 +149,13 @@ export interface IpcClientOptions {
     pathWithQuery: string;
     timeoutMs: number;
   }) => Promise<{ status: number; body: Buffer }>;
+  /**
+   * Test-only override of the binary-response disk cap (MAX_BINARY_RESPONSE_BYTES).
+   * Underscore-prefixed so it stays off the real surface — lets tests exercise
+   * the over-cap path with a tiny ceiling instead of streaming 512 MiB.
+   * Production code never sets it.
+   */
+  __maxBinaryResponseBytes?: number;
 }
 
 export interface IpcClient {
@@ -143,6 +168,19 @@ export interface IpcClient {
     action: Action,
     query: Record<string, string>,
   ): Promise<unknown>;
+
+  /**
+   * POST a JSON request and drain the RAW octet-stream response body to a temp
+   * file, returning its path. For the one binary action (`workspace.materialize`,
+   * a git bundle that grows unbounded with workspace age — BUG-W3): bypasses the
+   * 4 MiB JSON Buffer cap by streaming to disk under MAX_BINARY_RESPONSE_BYTES.
+   * The CALLER owns the returned file and must delete it. On any error the temp
+   * file is cleaned up before the error propagates.
+   */
+  callBinary<Action extends 'workspace.materialize'>(
+    action: Action,
+    payload: unknown,
+  ): Promise<{ path: string; bytes: number }>;
 
   event(eventName: string, payload: unknown): Promise<void>;
 
@@ -314,6 +352,192 @@ function requestOnce(
   });
 }
 
+interface BinaryFileResponse {
+  status: number;
+  /** Bytes streamed to the file on a 2xx; 0 otherwise. */
+  bytesWritten: number;
+  /** On a non-2xx, the (small, in-memory) JSON error envelope; null on 2xx. */
+  errorBody: Buffer | null;
+}
+
+/**
+ * One attempt for a binary action: issues the HTTP request, and on a 2xx
+ * STREAMS the response body to `filePath` (backpressure-aware, capped at
+ * `maxBytes`) instead of buffering it in memory. A non-2xx response is a small
+ * JSON error envelope — drained into memory (capped at the JSON ceiling) so the
+ * caller can parse it. Throws a HostUnavailableError for connection / timeout /
+ * over-cap failures (over-cap is non-retryable: re-fetching the same too-large
+ * body fails identically). Does NOT apply retry policy or clean up the file —
+ * the caller wraps and owns cleanup.
+ */
+function requestOnceBinaryToFile(opts: {
+  target: TransportTarget;
+  pathWithQuery: string;
+  token: string;
+  body: Buffer;
+  timeoutMs: number;
+  filePath: string;
+  maxBytes: number;
+}): Promise<BinaryFileResponse> {
+  return new Promise<BinaryFileResponse>((resolve, reject) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, opts.timeoutMs);
+
+    let settled = false;
+    let ws: ReturnType<typeof createWriteStream> | null = null;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${opts.token}`,
+      'Content-Type': 'application/json',
+      'Content-Length': String(opts.body.length),
+    };
+    const requestOptions: http.RequestOptions =
+      opts.target.kind === 'unix'
+        ? {
+            socketPath: opts.target.socketPath,
+            path: opts.pathWithQuery,
+            method: 'POST',
+            headers,
+            signal: controller.signal,
+          }
+        : {
+            host: opts.target.host,
+            port: opts.target.port,
+            path: opts.pathWithQuery,
+            method: 'POST',
+            headers,
+            signal: controller.signal,
+          };
+
+    const req = http.request(requestOptions, (res) => {
+      const status = res.statusCode ?? 0;
+
+      // Non-2xx: a small JSON error envelope. Buffer in memory (capped) so the
+      // caller can parse it — no temp file is created.
+      if (status < 200 || status >= 300) {
+        const chunks: Buffer[] = [];
+        let total = 0;
+        res.on('data', (chunk: Buffer) => {
+          if (settled) return;
+          total += chunk.length;
+          if (total > MAX_RESPONSE_BYTES) {
+            // Settle deterministically rather than via res.destroy()→'error'
+            // (destroying the socket races a req 'error' that could settle
+            // first with the wrong classification — see the 2xx note below).
+            res.destroy();
+            settle(() =>
+              reject(
+                new HostUnavailableError('error body exceeded cap', undefined, {
+                  retryable: false,
+                }),
+              ),
+            );
+            return;
+          }
+          chunks.push(chunk);
+        });
+        res.on('end', () => {
+          settle(() =>
+            resolve({ status, bytesWritten: 0, errorBody: Buffer.concat(chunks) }),
+          );
+        });
+        res.on('error', (err) => {
+          settle(() =>
+            reject(new HostUnavailableError('response stream error', err)),
+          );
+        });
+        return;
+      }
+
+      // 2xx: stream the raw bytes to the temp file with backpressure + cap.
+      ws = createWriteStream(opts.filePath);
+      let written = 0;
+      res.on('data', (chunk: Buffer) => {
+        if (settled) return;
+        written += chunk.length;
+        if (written > opts.maxBytes) {
+          // Settle the rejection IMMEDIATELY (deterministic), then tear down the
+          // streams. Routing this through res.destroy(err)→'error' instead would
+          // race the socket-reset 'error' on `req` (ECONNRESET, classified
+          // RETRYABLE) — whichever fired first would win the settle latch, so
+          // the over-cap error could wrongly come back retryable and the runner
+          // would re-transfer the same too-large body. Over-cap is DETERMINISTIC,
+          // so we mark it non-retryable here and stop.
+          ws?.destroy();
+          res.destroy();
+          settle(() =>
+            reject(
+              new HostUnavailableError('response body exceeded cap', undefined, {
+                retryable: false,
+              }),
+            ),
+          );
+          return;
+        }
+        if (!ws!.write(chunk)) {
+          res.pause();
+          ws!.once('drain', () => res.resume());
+        }
+      });
+      res.on('end', () => {
+        // Flush the write stream before resolving so the file is complete on
+        // disk by the time the caller clones from it.
+        ws!.end(() => {
+          settle(() =>
+            resolve({ status, bytesWritten: written, errorBody: null }),
+          );
+        });
+      });
+      res.on('error', (err) => {
+        ws?.destroy();
+        // A bare stream error (not the handled over-cap path above) stays
+        // retryable — it could be a transient connection blip.
+        settle(() =>
+          reject(new HostUnavailableError('response stream error', err)),
+        );
+      });
+      ws.on('error', (err) => {
+        res.destroy();
+        settle(() =>
+          reject(
+            new HostUnavailableError(
+              `write to temp file failed: ${(err as Error).message}`,
+              err,
+            ),
+          ),
+        );
+      });
+    });
+
+    req.on('error', (err) => {
+      ws?.destroy();
+      const errno = (err as NodeJS.ErrnoException).code;
+      if ((err as Error).name === 'AbortError' || errno === 'ABORT_ERR') {
+        settle(() => reject(new HostUnavailableError('timeout', err)));
+        return;
+      }
+      if (errno !== undefined && TRANSIENT_ERRNOS.has(errno)) {
+        settle(() => reject(new HostUnavailableError(`connect failed: ${errno}`, err)));
+        return;
+      }
+      settle(() =>
+        reject(new HostUnavailableError(`request failed: ${(err as Error).message}`, err)),
+      );
+    });
+
+    req.write(opts.body);
+    req.end();
+  });
+}
+
 function toQueryString(query: Record<string, string>): string {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(query)) params.append(k, v);
@@ -458,6 +682,16 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
 
   const parseSuccessBody = (action: IpcActionName, body: Buffer): unknown => {
     const schema = RESPONSE_SCHEMAS[action];
+    if (schema === undefined) {
+      // The only action without a JSON schema is workspace.materialize, which
+      // is served via callBinary — reaching here means a JSON `call()` was made
+      // for it by mistake. Surface loudly rather than silently mis-parsing.
+      throw new IpcRequestError(
+        'INTERNAL',
+        0,
+        `no JSON response schema for action '${action}' (binary action?)`,
+      );
+    }
     let json: unknown;
     try {
       json = JSON.parse(body.toString('utf8'));
@@ -552,6 +786,50 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     );
   };
 
+  const callBinary = async <Action extends 'workspace.materialize'>(
+    action: Action,
+    payload: unknown,
+  ): Promise<{ path: string; bytes: number }> => {
+    const body = Buffer.from(JSON.stringify(payload), 'utf8');
+    const timeoutMs = timeoutFor(action);
+    // One temp file for the whole retry series — each attempt truncates it
+    // (createWriteStream defaults to 'w'), so a retry never appends to a partial
+    // body. The caller owns the file on success; we clean it up on failure.
+    const filePath = path.join(
+      os.tmpdir(),
+      `ax-ipc-binary-${Date.now()}-${Math.random().toString(36).slice(2, 10)}.bin`,
+    );
+    try {
+      return await withRetry(
+        classifyRetry,
+        elapsedBudgetFor(action),
+        async () => {
+          const raw = await requestOnceBinaryToFile({
+            target,
+            pathWithQuery: `/${action}`,
+            token: opts.token,
+            body,
+            timeoutMs,
+            filePath,
+            maxBytes: opts.__maxBinaryResponseBytes ?? MAX_BINARY_RESPONSE_BYTES,
+          });
+          if (raw.status >= 200 && raw.status < 300) {
+            return { path: filePath, bytes: raw.bytesWritten };
+          }
+          // Non-2xx → parse the buffered error envelope (small JSON) and throw.
+          throw parseErrorEnvelope(raw.status, raw.errorBody ?? Buffer.alloc(0));
+        },
+      );
+    } catch (err) {
+      // Best-effort cleanup of any partial temp file before propagating — the
+      // caller only owns the file on a successful return.
+      await unlink(filePath).catch(() => {
+        /* never created, or already gone */
+      });
+      throw err;
+    }
+  };
+
   const event = async (eventName: string, payload: unknown): Promise<void> => {
     const body = Buffer.from(JSON.stringify(payload), 'utf8');
     // Events are fire-and-forget on the wire (202). They still need a
@@ -577,5 +855,5 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     // keep-alive agent if we ever need it.
   };
 
-  return { call, callGet, event, close };
+  return { call, callGet, callBinary, event, close };
 }

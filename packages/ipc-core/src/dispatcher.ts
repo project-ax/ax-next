@@ -10,10 +10,11 @@ import {
   readJsonBody,
   TooLargeError,
 } from './body.js';
-import { writeJsonError, writeJsonOk } from './response.js';
+import { writeBinaryOk, writeJsonError, writeJsonOk } from './response.js';
 import type {
   ActionHandler,
   HandlerResult,
+  HandlerBinary,
   HandlerErr,
   HandlerOk,
 } from './handlers/types.js';
@@ -127,6 +128,12 @@ export const DISPATCHER_PATHS: {
   events: [...EVENTS.keys()],
 };
 
+function isBinary(r: HandlerResult): r is HandlerBinary {
+  // The binary variant is the only result carrying a `binary` Buffer (no
+  // `body`). Checked first so it's never misread as a JSON ok/err.
+  return Buffer.isBuffer((r as HandlerBinary).binary);
+}
+
 function isErr(r: HandlerResult): r is HandlerErr {
   // An OK body is whatever the handler returned; the error body has the
   // { error: { code, message } } envelope. We treat any result with that
@@ -170,6 +177,10 @@ async function readBodyOrWriteError(
 }
 
 function writeResult(res: http.ServerResponse, result: HandlerResult): void {
+  if (isBinary(result)) {
+    writeBinaryOk(res, result.status, result.binary, result.contentType);
+    return;
+  }
   if (isErr(result)) {
     writeJsonError(res, result.status, result.body.error.code, result.body.error.message);
     return;

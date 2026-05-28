@@ -218,26 +218,39 @@ export type WorkspaceCommitNotifyResponse = z.infer<
 //
 // Sandbox -> Host RPC fired EXACTLY ONCE at session start, before the SDK's
 // query loop opens. The host produces a `git bundle` over the workspace's
-// current state (or empty bytes when the workspace is brand-new) and returns
-// it base64-encoded. The sandbox-side runner unpacks into `/permanent` so
-// the agent runs against a real git working tree from turn 1.
+// current state (or a deterministic empty-tree baseline when the workspace
+// is brand-new) and streams the RAW bundle bytes back as the HTTP response
+// body — `Content-Type: application/octet-stream`, NOT a JSON envelope. The
+// sandbox-side runner drains the body straight to a temp file and clones
+// `/permanent` from it, so the agent runs against a real git working tree
+// from turn 1.
 //
-// `bundleBytes` is git-vocabulary on the wire — by Invariant I1 that's
-// allowed here because:
-//   1. This is the sandbox-host transport axis, not a subscriber-visible
-//      hook payload. No `workspace:*` bus hook ever sees the bundle bytes.
-//   2. The host bundler decodes the bundle into backend-agnostic
-//      `WorkspaceChange[]` before any subscriber visibility on the OUTBOUND
-//      direction (commit-notify); on the INBOUND direction (materialize)
-//      the bytes never leave the sandbox-host wire — they go straight into
-//      `git clone` on the runner side.
-//   3. The same justification is mirrored on `workspace.commit-notify`'s
-//      `bundleBytes` (Phase 3 wire change).
+// Why a raw binary body (BUG-W3): the bundle is the one IPC payload whose
+// size grows unbounded with workspace age (every turn adds a commit). The
+// old shape base64-encoded it into a JSON field, which (a) inflated it ~33%
+// and (b) had to be buffered whole in memory on both ends under the 4 MiB
+// `MAX_RESPONSE_BYTES` cap. A workspace with ~143 files + many turn commits
+// blew that cap and the runner crashed on boot (`response body too large`).
+// Streaming the raw bytes drops the base64 tax and the in-memory cap wall —
+// the runner drains to disk under a much higher, disk-bounded ceiling. The
+// per-turn `commit-notify` bundle stays JSON+base64 (it's bounded per turn).
 //
-// Empty workspace handling: even a brand-new workspace gets a bundle
-// with one commit (the deterministic empty-tree baseline). The runner
-// always clones; there's no `git init` shortcut. Symmetric on both
-// sides — see `buildBaselineBundle` in the materialize handler.
+// `git bundle` is git-vocabulary on the wire — by Invariant I1 that's
+// allowed here because this is the sandbox-host transport axis, not a
+// subscriber-visible hook payload. No `workspace:*` bus hook ever sees the
+// bundle bytes; on this INBOUND direction they never leave the sandbox-host
+// wire — they go straight into `git clone` on the runner side. (The OUTBOUND
+// `commit-notify` direction is decoded into backend-agnostic
+// `WorkspaceChange[]` before any subscriber visibility.)
+//
+// Empty workspace handling: even a brand-new workspace gets a bundle with
+// one commit (the deterministic empty-tree baseline). The runner always
+// clones; there's no `git init` shortcut. Symmetric on both sides — see
+// `buildBaselineBundle` in the materialize handler.
+//
+// No response SCHEMA: the body is opaque binary, so there's no Zod-parsed
+// JSON response here (cf. the dispatch table in `ipc-client.ts`). The
+// request stays JSON ({}), validated below.
 // ---------------------------------------------------------------------------
 
 // `.strict()` — the request takes no parameters today. The bearer token
@@ -246,18 +259,6 @@ export type WorkspaceCommitNotifyResponse = z.infer<
 export const WorkspaceMaterializeRequestSchema = z.object({}).strict();
 export type WorkspaceMaterializeRequest = z.infer<
   typeof WorkspaceMaterializeRequestSchema
->;
-
-export const WorkspaceMaterializeResponseSchema = z.object({
-  // base64-encoded git bundle bytes. Always non-empty — even an empty
-  // workspace ships a single empty-tree baseline commit so the runner
-  // has a valid `refs/heads/baseline` to bundle from on subsequent
-  // turns. (Validated as canonical base64 — empty allowed by the
-  // shared schema, but materialize never returns empty in practice.)
-  bundleBytes: BundleBytesSchema,
-});
-export type WorkspaceMaterializeResponse = z.infer<
-  typeof WorkspaceMaterializeResponseSchema
 >;
 
 // ---------------------------------------------------------------------------
