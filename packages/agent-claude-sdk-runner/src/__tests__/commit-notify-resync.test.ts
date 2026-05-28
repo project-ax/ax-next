@@ -238,6 +238,96 @@ describe('commitNotifyWithResync', () => {
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
   });
 
+  it('baseline-bundle fetch fails (head moved again) → re-enters loop with same parent+bundle → accepted', async () => {
+    // Double-writer race: commit-notify returns actualParent=v2, but ANOTHER
+    // writer advances the head to v3 before the runner fetches the v2 baseline
+    // bundle. The backend throws parent-mismatch → handler 500 → callBinary
+    // rejects. The fetch failure must NOT be terminal 'kept'; instead the
+    // helper re-calls commit-notify (same parentVersion=v1, same original
+    // bundle) which now returns the fresher actualParent=v3, whose bundle fetch
+    // succeeds, and the turn is ultimately accepted.
+    const call = vi
+      .fn()
+      .mockResolvedValueOnce({ accepted: false, actualParent: 'v2' })
+      .mockResolvedValueOnce({ accepted: false, actualParent: 'v3' })
+      .mockResolvedValueOnce({ accepted: true, version: 'v4' });
+    const callBinary = vi
+      .fn()
+      // First fetch (for v2) fails — head moved again.
+      .mockRejectedValueOnce(new Error('500'))
+      // Second fetch (for v3) succeeds.
+      .mockResolvedValueOnce({ path: '/tmp/v3-baseline.bundle', bytes: 77 });
+    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_REBASED');
+
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call, callBinary),
+      root: ROOT,
+      bundleBytes: 'BUNDLE_FIRST',
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+
+    // Three commit-notify calls: initial → fetch-fail re-enter → resync retry.
+    expect(call).toHaveBeenCalledTimes(3);
+    // The fetch-fail re-entry uses the ORIGINAL parent+bundle (no resync ran).
+    expect(call.mock.calls[0]?.[1]).toEqual({
+      parentVersion: 'v1',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_FIRST',
+    });
+    expect(call.mock.calls[1]?.[1]).toEqual({
+      parentVersion: 'v1',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_FIRST',
+    });
+    // The successful resync retry uses the fresher head + the re-bundle.
+    expect(call.mock.calls[2]?.[1]).toEqual({
+      parentVersion: 'v3',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_REBASED',
+    });
+    expect(callBinary).toHaveBeenCalledTimes(2);
+    expect(callBinary.mock.calls[0]?.[1]).toEqual({ version: 'v2' });
+    expect(callBinary.mock.calls[1]?.[1]).toEqual({ version: 'v3' });
+    // Resync ran exactly once (only on the second, successful fetch).
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledTimes(1);
+    expect(resyncBaselineAndReplayMock).toHaveBeenCalledWith({
+      root: ROOT,
+      bundlePath: '/tmp/v3-baseline.bundle',
+      oldBaseline: 'v1',
+      newBaseline: 'v3',
+    });
+    expect(rollbackToBaselineMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ parentVersion: 'v4', outcome: 'accepted' });
+  });
+
+  it('baseline-bundle fetch fails on every attempt → terminates (rolled-back) without spinning', async () => {
+    // Pathological writer storm: the head moves on every fetch, so every
+    // export-baseline-bundle 500s. The bounded loop must terminate after
+    // MAX_RESYNC_ATTEMPTS rather than spin forever — falling back to rollback.
+    const call = vi.fn().mockResolvedValue({ accepted: false, actualParent: 'vN' });
+    const callBinary = vi.fn().mockRejectedValue(new Error('500'));
+
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call, callBinary),
+      root: ROOT,
+      bundleBytes: 'BUNDLE_FIRST',
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+
+    // The fetch is attempted exactly MAX_RESYNC_ATTEMPTS times (each increments
+    // the attempt counter so a storm can't spin). commit-notify is called once
+    // more than that: the initial + one re-entry per failed fetch, then the
+    // budget is exhausted on the final loop.
+    expect(callBinary).toHaveBeenCalledTimes(MAX_RESYNC_ATTEMPTS);
+    expect(call).toHaveBeenCalledTimes(MAX_RESYNC_ATTEMPTS + 1);
+    expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
+    expect(advanceBaselineMock).not.toHaveBeenCalled();
+    expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+  });
+
   it('signal with parentVersion=null → cannot resync → rollback (resync needs the old baseline OID)', async () => {
     const call = vi.fn().mockResolvedValue({
       accepted: false,

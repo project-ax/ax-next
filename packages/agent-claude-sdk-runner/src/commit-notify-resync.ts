@@ -98,20 +98,49 @@ export async function commitNotifyWithResync(input: {
       commitTrace(
         `[commit-trace] concurrent-writer: parent=${currentParentVersion} actualParent=${resp.actualParent} → fetch baseline + resync+replay (attempt=${attempt})\n`,
       );
+      // STEP 1 — fetch the baseline bundle for `actualParent` OUT-OF-BAND via the
+      // binary octet-stream action (NOT the JSON response, which no longer
+      // carries it). callBinary streams the raw bundle straight to a temp file
+      // under the disk-bounded cap, so an aged workspace's MiB-scale bundle never
+      // hits the 4 MiB JSON response cap that previously broke re-sync.
+      //
+      // A FAILED fetch is NOT terminal: in a double-writer race a THIRD writer can
+      // advance the head past `actualParent` between commit-notify returning it
+      // and this fetch, so the backend throws parent-mismatch → host 500 →
+      // callBinary rejects. That just means "the head moved again" — we must
+      // re-enter the bounded loop with the SAME parentVersion + SAME bundle so the
+      // next commit-notify hands back the NEW (fresher) actualParent and we fetch
+      // that instead. (`attempt` already incremented above, so a pathological
+      // writer storm still terminates at MAX_RESYNC_ATTEMPTS via the
+      // exhausted-rollback path below.) On success, resyncBaselineAndReplay TAKES
+      // OWNERSHIP of the temp file (deletes it). On failure the runner ipc-client
+      // deletes its own partial temp file, so no leak accrues per retry.
+      let fetched: { path: string; bytes: number };
       try {
-        // Fetch the baseline bundle for `actualParent` OUT-OF-BAND via the binary
-        // octet-stream action — NOT from the JSON response (which no longer
-        // carries it). callBinary streams the raw bundle straight to a temp file
-        // under the disk-bounded cap, so an aged workspace's MiB-scale bundle
-        // never hits the 4 MiB JSON response cap that previously broke re-sync.
-        // resyncBaselineAndReplay TAKES OWNERSHIP of the file (deletes it).
-        const fetched = await client.callBinary(
-          'workspace.export-baseline-bundle',
-          { version: resp.actualParent },
+        fetched = await client.callBinary('workspace.export-baseline-bundle', {
+          version: resp.actualParent,
+        });
+      } catch (e) {
+        process.stderr.write(
+          `runner: baseline-bundle fetch failed (${e instanceof Error ? e.message : String(e)}); head moved again — retrying commit-notify (attempt=${attempt})\n`,
         );
         commitTrace(
-          `[commit-trace]   fetched baseline bundle ${fetched.bytes}B → ${fetched.path}\n`,
+          `[commit-trace] baseline-bundle fetch threw (head moved) → re-enter loop with same parent=${currentParentVersion ?? 'null'} (attempt=${attempt})\n`,
         );
+        // Re-enter: do NOT advance currentParentVersion, do NOT re-bundle (no
+        // resync ran). The next iteration re-calls commit-notify with the
+        // unchanged parent + bundle.
+        continue;
+      }
+      commitTrace(
+        `[commit-trace]   fetched baseline bundle ${fetched.bytes}B → ${fetched.path}\n`,
+      );
+      // STEP 2 — rebase the local turn onto the fetched baseline. A failure HERE
+      // (the git rebase/replay itself) IS terminal 'kept': we have the right
+      // baseline but couldn't replay onto it, so keep the working tree intact and
+      // let the next turn flow as one bundle. resyncBaselineAndReplay owns +
+      // deletes the temp file in all cases.
+      try {
         await resyncBaselineAndReplay({
           root,
           bundlePath: fetched.path,
