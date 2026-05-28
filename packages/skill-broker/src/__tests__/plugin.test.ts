@@ -338,6 +338,8 @@ describe('request_capability — bundled approval card (chat:permission-request)
       hosts: ['api.linear.app'],
       // Account-free slot: no `account` key, haveExisting false (never vaulted).
       slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: false }],
+      // The linear stub has no packages; card defaults to empty arrays (FIX B).
+      packages: { npm: [], pypi: [] },
     });
   });
 
@@ -611,6 +613,77 @@ describe('install_authored_skill tool', () => {
     // When packages is not provided, it should default to { npm: [], pypi: [] }.
     expect(grant.packages).toEqual({ npm: [], pypi: [] });
     expect(card.packages).toEqual({ npm: [], pypi: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX B: request_capability card must include packages from skill capabilities
+// ---------------------------------------------------------------------------
+
+describe('request_capability — packages on approval card (FIX B)', () => {
+  it('card carries packages from the catalog skill manifest', async () => {
+    // Override the skills:get stub to return a skill with packages capability.
+    const bus = new HookBus();
+    bus.registerService('tool:register', 'disp', async (_c, d: unknown) => {
+      (d as { name: string }).name;
+      return { ok: true };
+    });
+    bus.registerService('skills:search-catalog', 'skills', async () => ({ skills: [] }));
+    bus.registerService('skills:get', 'skills', async (_c, input: unknown) => {
+      const skillId = (input as { skillId: string }).skillId;
+      if (skillId === 'requests-skill') {
+        return {
+          id: 'requests-skill',
+          description: 'Makes HTTP calls',
+          version: 1,
+          capabilities: {
+            allowedHosts: ['api.example.com'],
+            credentials: [],
+            packages: { npm: [], pypi: ['requests'] },
+          },
+        } as never;
+      }
+      throw new PluginError({ code: 'skill-not-found', plugin: 'skills', message: 'nope' });
+    });
+    bus.registerService('catalog:submit', 'skills', async () => ({
+      requestId: 'r', created: true, status: 'pending',
+    }));
+
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+
+    const cards: Array<Record<string, unknown>> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'requests-skill' },
+    });
+
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!['packages']).toEqual({ npm: [], pypi: ['requests'] });
+  });
+
+  it('card carries empty packages when skill has none', async () => {
+    const { bus } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+
+    const cards: Array<Record<string, unknown>> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+
+    expect(cards).toHaveLength(1);
+    // The linear stub has no packages declared; card defaults to empty.
+    expect(cards[0]!['packages']).toEqual({ npm: [], pypi: [] });
   });
 });
 
