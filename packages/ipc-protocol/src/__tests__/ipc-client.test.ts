@@ -775,5 +775,45 @@ describe('createIpcClient', () => {
       const onDisk = await fsp.readFile(result.path);
       expect(onDisk.equals(payload)).toBe(true);
     });
+
+    it('does NOT retry a 409 export-baseline-bundle (P2b — stale parent-mismatch fails fast)', async () => {
+      // P2b regression: a stale-baseline export-baseline-bundle fetch (the head
+      // moved AGAIN after commit-notify returned actualParent) is mapped by the
+      // host handler to a NON-retryable 409. callBinary must treat 4xx as
+      // non-retryable and surface it on the FIRST attempt — NOT reissue the same
+      // stale fetch under the 5xx retry cap (which would rebuild the large bundle
+      // on the git-server backend several times before the runner re-asks
+      // commit-notify for the fresher head). Contrast the 5xx test above, which
+      // DOES retry. The runner's bounded re-sync loop catches this prompt failure
+      // and re-calls commit-notify.
+      let attempts = 0;
+      const server = await startFakeServer();
+      servers.push(server);
+      server.setHandler((_req, res) => {
+        attempts += 1;
+        res.writeHead(409, { 'Content-Type': 'application/json' });
+        res.end(
+          JSON.stringify({ error: { code: 'HOOK_REJECTED', message: 'conflict' } }),
+        );
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        retryBackoff: () => 0, // no real wait — would expose any spurious retry
+      });
+
+      const err = await client
+        .callBinary('workspace.export-baseline-bundle', { version: 'staleHead' })
+        .then(
+          () => {
+            throw new Error('expected rejection');
+          },
+          (e: unknown) => e,
+        );
+      expect(err).toBeInstanceOf(IpcRequestError);
+      expect((err as IpcRequestError).status).toBe(409);
+      // The crux: exactly ONE attempt — no internal 5xx-style retry storm.
+      expect(attempts).toBe(1);
+    });
   });
 });

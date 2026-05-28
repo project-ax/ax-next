@@ -106,11 +106,14 @@ export async function commitNotifyWithResync(input: {
       //
       // A FAILED fetch is NOT terminal: in a double-writer race a THIRD writer can
       // advance the head past `actualParent` between commit-notify returning it
-      // and this fetch, so the backend throws parent-mismatch → host 500 →
-      // callBinary rejects. That just means "the head moved again" — we must
-      // re-enter the bounded loop with the SAME parentVersion + SAME bundle so the
-      // next commit-notify hands back the NEW (fresher) actualParent and we fetch
-      // that instead. (`attempt` already incremented above, so a pathological
+      // and this fetch, so the backend throws parent-mismatch → host maps it to a
+      // NON-retryable 409 (P2b — a 500 would make callBinary's 5xx retry reissue
+      // the same stale fetch several times, rebuilding the large bundle each time,
+      // before we ever re-ask commit-notify) → callBinary rejects PROMPTLY. We
+      // catch ANY thrown error here (status-agnostic) — that just means "the head
+      // moved again" — and re-enter the bounded loop with the SAME parentVersion +
+      // SAME bundle so the next commit-notify hands back the NEW (fresher)
+      // actualParent and we fetch that instead. (`attempt` already incremented above, so a pathological
       // writer storm still terminates at MAX_RESYNC_ATTEMPTS via the
       // exhausted-rollback path below.) On success, resyncBaselineAndReplay TAKES
       // OWNERSHIP of the temp file (deletes it). On failure the runner ipc-client

@@ -255,10 +255,20 @@ describe('workspace.export-baseline-bundle handler', () => {
     expect(result.status).toBe(500);
   });
 
-  it('sanitizes a backend parent-mismatch to 500 (does not chase the head)', async () => {
-    // Yet another concurrent writer advanced past `version` before this fetch
-    // landed. The handler must NOT leak the fresher head or git stderr — it
-    // returns a sanitized 500 and the runner re-syncs from a fresh materialize.
+  it('sanitizes a backend parent-mismatch to a NON-retryable 409 (P2b — does not trigger callBinary 5xx retry storm)', async () => {
+    // Yet another concurrent writer advanced past `version` between commit-notify
+    // returning `actualParent` and this fetch landing. A 500 here would be
+    // classified RETRYABLE by IpcClient.callBinary, which would reissue the SAME
+    // stale fetch up to MAX_5XX_RETRIES times — each rebuilding the large bundle
+    // on the git-server backend — before the runner's bounded re-sync loop ever
+    // re-asks commit-notify for the fresher head, amplifying the stall.
+    //
+    // Mapping parent-mismatch to 409 (conflict) makes callBinary treat it as
+    // non-retryable: it fails fast and surfaces promptly to commitNotifyWithResync,
+    // which re-enters its loop and re-calls commit-notify for the new head.
+    //
+    // The body stays sanitized — no git stderr / OID / path leak; just a generic
+    // conflict message (the fresher head from cause.actualParent must NOT appear).
     const { bus, ctx } = await makeEnvWith(
       createProbePlugin({ throwParentMismatch: true }),
     );
@@ -267,8 +277,49 @@ describe('workspace.export-baseline-bundle handler', () => {
       ctx,
       bus,
     );
-    expect(result.status).toBe(500);
+    expect(result.status).toBe(409);
     const errBody = result.body as { error: { code: string; message: string } };
     expect(errBody.error.message).not.toContain('evenfresherhead');
+  });
+
+  it('still sanitizes a NON-parent-mismatch backend failure to a (retryable) 500', async () => {
+    // Only `parent-mismatch` (the head-moved-again race) is the fast-fail 409.
+    // Every OTHER backend failure — a real git error, a transient backend hiccup —
+    // stays a 500 so callBinary's bounded 5xx retry can ride out a transient blip.
+    const failingPlugin: Plugin = {
+      manifest: {
+        name: '@ax/test-probe-ebb-backend-fail',
+        version: '0.0.0',
+        registers: ['workspace:export-baseline-bundle'],
+        calls: [],
+        subscribes: [],
+      },
+      init({ bus }) {
+        bus.registerService<
+          WorkspaceExportBaselineBundleInput,
+          WorkspaceExportBaselineBundleOutput
+        >(
+          'workspace:export-baseline-bundle',
+          '@ax/test-probe-ebb-backend-fail',
+          async () => {
+            throw new PluginError({
+              code: 'unknown',
+              plugin: '@ax/test-probe-ebb-backend-fail',
+              message: 'git bundle create exited 128: /tmp/secret-path leaked',
+            });
+          },
+        );
+      },
+    };
+    const { bus, ctx } = await makeEnvWith(failingPlugin);
+    const result = await workspaceExportBaselineBundleHandler(
+      { version: 'newhead' },
+      ctx,
+      bus,
+    );
+    expect(result.status).toBe(500);
+    const errBody = result.body as { error: { code: string; message: string } };
+    // No git stderr / path leak.
+    expect(errBody.error.message).not.toContain('secret-path');
   });
 });

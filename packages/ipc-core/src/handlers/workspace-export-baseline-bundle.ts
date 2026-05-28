@@ -1,10 +1,11 @@
-import { type WorkspaceVersion } from '@ax/core';
+import { PluginError, type WorkspaceVersion } from '@ax/core';
 import type {
   WorkspaceExportBaselineBundleInput,
   WorkspaceExportBaselineBundleOutput,
 } from '@ax/workspace-bundle-protocol';
 import { WorkspaceExportBaselineBundleRequestSchema } from '@ax/ipc-protocol';
 import {
+  hookRejected,
   internalError,
   logInternalError,
   validationError,
@@ -50,11 +51,27 @@ import type { ActionHandler } from './types.js';
 //
 // Error sanitization: the underlying git stderr can echo a temp path or
 // filename, neither of which the sandbox should see in an error envelope. Real
-// diagnostic goes to the host log via `logInternalError`. A `parent-mismatch`
-// from the backend (the requested version is no longer the head — yet another
-// concurrent writer) is sanitized to 500 as well: the runner's retry loop
-// re-materializes from scratch on a `kept` outcome rather than chasing an
-// ever-advancing head here.
+// diagnostic goes to the host log via `logInternalError`. The wire body is
+// always generic.
+//
+// Status mapping matters here for retry behavior (P2b). A `parent-mismatch`
+// from the backend means yet another writer advanced the head past `version`
+// between commit-notify returning `actualParent` and this fetch landing — i.e.
+// the head moved AGAIN. This is a STALE-fetch race, not a transient fault, and
+// it WILL recur identically if retried. The sandbox's `IpcClient.callBinary`
+// classifies 5xx as RETRYABLE (a small finite 5xx retry cap), so a 500 here
+// would make it reissue the SAME stale fetch several times — each rebuilding
+// the large bundle on the git-server backend — before the runner's bounded
+// re-sync loop ever re-asks commit-notify for the fresher head, amplifying the
+// stall this whole change exists to fix. So we map `parent-mismatch` to a
+// sanitized 409 (conflict): callBinary treats 4xx as NON-retryable and fails
+// fast, letting the runner's bounded re-sync loop immediately re-call
+// commit-notify, learn the NEW actualParent, and fetch THAT. The body stays
+// sanitized — no OID / fresher-head / git-path leak, just a generic conflict.
+//
+// Every OTHER failure (no backend, a real git error, a transient backend
+// hiccup) keeps the sanitized 500 so callBinary's bounded 5xx retry can ride
+// out a transient blip.
 // ---------------------------------------------------------------------------
 
 export const workspaceExportBaselineBundleHandler: ActionHandler = async (
@@ -91,10 +108,19 @@ export const workspaceExportBaselineBundleHandler: ActionHandler = async (
     });
     bundleBytes = out.bundleBytes;
   } catch (err) {
-    // Bundle construction / parent-mismatch failures are sanitized to 500 — the
-    // underlying git stderr can echo a temp path or filename, neither of which
-    // the sandbox should see. Real diagnostic goes to the host log.
+    // The real diagnostic (git stderr, fresher head in cause.actualParent, etc.)
+    // always goes to the host log; the wire body is always generic.
     logInternalError(ctx.logger, 'workspace.export-baseline-bundle', err);
+    // A `parent-mismatch` is the head-moved-again race — a STALE fetch that
+    // would recur identically if retried. Map it to a sanitized, NON-retryable
+    // 409 so the sandbox's callBinary fails fast and the runner's re-sync loop
+    // re-asks commit-notify for the fresher head (P2b). The generic
+    // `hookRejected` message carries no OID / head / path.
+    if (err instanceof PluginError && err.code === 'parent-mismatch') {
+      return hookRejected('conflict');
+    }
+    // Every other failure (real git error, transient backend hiccup) stays a
+    // sanitized 500 — callBinary's bounded 5xx retry can ride out a blip.
     return internalError();
   }
 

@@ -241,8 +241,10 @@ describe('commitNotifyWithResync', () => {
   it('baseline-bundle fetch fails (head moved again) → re-enters loop with same parent+bundle → accepted', async () => {
     // Double-writer race: commit-notify returns actualParent=v2, but ANOTHER
     // writer advances the head to v3 before the runner fetches the v2 baseline
-    // bundle. The backend throws parent-mismatch → handler 500 → callBinary
-    // rejects. The fetch failure must NOT be terminal 'kept'; instead the
+    // bundle. The backend throws parent-mismatch → handler maps it to a
+    // NON-retryable 409 (P2b) → callBinary rejects PROMPTLY (no 5xx retry
+    // storm). This catch is status-agnostic — ANY thrown fetch error re-enters
+    // the loop. The fetch failure must NOT be terminal 'kept'; instead the
     // helper re-calls commit-notify (same parentVersion=v1, same original
     // bundle) which now returns the fresher actualParent=v3, whose bundle fetch
     // succeeds, and the turn is ultimately accepted.
