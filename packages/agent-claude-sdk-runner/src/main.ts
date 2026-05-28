@@ -398,27 +398,31 @@ export async function main(): Promise<number> {
   // advanced version back into `parentVersion` so the turn-end commit chains,
   // and returns the flush outcome so the forwarder can gate the call on it.
   //
-  // Serialized via `flushChain`: `commitTurnAndBundle` runs git ops on the one
-  // /permanent repo and reads+mutates the shared `parentVersion`. If the SDK
-  // ever dispatches two flagged host tools concurrently, unserialized flushes
-  // would race the git index and the parent token; chaining makes the
-  // read-flush-write critical section atomic. The turn-end commit runs at the
-  // `result` boundary (after all tool calls), so it never overlaps a flush.
-  let flushChain: Promise<unknown> = Promise.resolve();
-  const flushWorkspaceForHostTool = (): Promise<FlushOutcome> => {
-    const run = flushChain.then(async () => {
-      const result = await flushWorkspaceToHost({
-        client,
-        root: env.workspaceRoot,
-        parentVersion,
-        reason: 'turn',
-      });
-      parentVersion = result.parentVersion;
-      return result.outcome;
+  const flushWorkspaceForHostTool = async (): Promise<FlushOutcome> => {
+    const result = await flushWorkspaceToHost({
+      client,
+      root: env.workspaceRoot,
+      parentVersion,
+      reason: 'turn',
     });
-    // Keep the chain alive whether this run resolves or rejects, so one failed
-    // flush doesn't permanently wedge the next.
-    flushChain = run.then(
+    parentVersion = result.parentVersion;
+    return result.outcome;
+  };
+
+  // Serialize each flagged host tool's flush + host read. The SDK can dispatch
+  // several `install_authored_skill` tool_use blocks in a single turn; without
+  // serialization their host reads run concurrently and race each other against
+  // the just-pushed commit (the read-after-push window), 404ing even though the
+  // flush pushed the file (BUG-W2 concurrent residual). Running flush+read
+  // one-at-a-time makes each call behave like the working single-call case, and
+  // keeps `commitTurnAndBundle`'s git ops + the shared `parentVersion`
+  // read-modify-write atomic. The turn-end commit runs at the `result` boundary
+  // (after all tool calls), so it never overlaps. `then(fn, fn)` runs the next
+  // whether the previous settled or threw, so one failure can't wedge the chain.
+  let flaggedToolChain: Promise<unknown> = Promise.resolve();
+  const serializeFlaggedHostTool = <T>(fn: () => Promise<T>): Promise<T> => {
+    const run = flaggedToolChain.then(fn, fn);
+    flaggedToolChain = run.then(
       () => undefined,
       () => undefined,
     );
@@ -429,6 +433,7 @@ export async function main(): Promise<number> {
     client,
     tools,
     flushWorkspace: flushWorkspaceForHostTool,
+    serializeFlagged: serializeFlaggedHostTool,
   });
 
   // Phase 2: sandbox-MCP bridge. The local-dispatcher holds executors for

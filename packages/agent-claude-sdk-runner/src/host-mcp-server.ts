@@ -50,6 +50,14 @@ export interface CreateHostMcpServerOptions {
    * See the precondition gate in the per-tool handler below.
    */
   flushWorkspace?: () => Promise<FlushOutcome>;
+  /**
+   * Serializer for flagged host tools' flush+forward. When provided, a
+   * `flushWorkspaceBeforeCall` tool's flush + host read runs through this so
+   * concurrent invocations (the SDK can dispatch several in one turn) execute
+   * one-at-a-time, avoiding concurrent host reads racing the just-pushed commit
+   * (BUG-W2 concurrent residual). Omitted ⇒ flagged tools run un-serialized.
+   */
+  serializeFlagged?: <T>(fn: () => Promise<T>) => Promise<T>;
 }
 
 /**
@@ -114,6 +122,7 @@ export function buildHostToolEntries(
   tools: ToolDescriptor[],
   idGen: () => string = () => randomUUID(),
   flushWorkspace?: () => Promise<FlushOutcome>,
+  serializeFlagged?: <T>(fn: () => Promise<T>) => Promise<T>,
 ): Array<SdkMcpToolDefinition> {
   const hostTools = tools.filter((t) => t.executesIn === 'host');
   return hostTools.map((t) =>
@@ -122,7 +131,9 @@ export function buildHostToolEntries(
       t.description ?? '',
       shapeFromInputSchema(t.inputSchema),
       async (args) => {
-        try {
+        // The flush + the forward (host read) for a flagged tool. Returns the
+        // rendered output, or an isError content block on a failed precondition.
+        const flushThenForward = async () => {
           // Flush the live workspace BEFORE forwarding when this host tool
           // declares it reads workspace files the agent may have written this
           // turn. Under runner-owned sessions the host reads the committed +
@@ -159,7 +170,7 @@ export function buildHostToolEntries(
               return {
                 content: [
                   {
-                    type: 'text',
+                    type: 'text' as const,
                     text: `Could not sync your just-authored workspace files to the host before '${t.name}' (flush outcome: ${outcome}). The files are not visible to the installer yet — please try again.`,
                   },
                 ],
@@ -174,6 +185,20 @@ export function buildHostToolEntries(
           // want a narrowed local type + to never trust the shape blindly.
           const parsed = ToolExecuteHostResponseSchema.parse(raw);
           return renderOutput(parsed.output);
+        };
+        try {
+          // Flagged tools (which flush + then read the workspace) run through
+          // `serializeFlagged` so N parallel calls — the SDK can dispatch
+          // several `install_authored_skill` tool_use blocks in one turn —
+          // execute the flush+read ONE AT A TIME. Concurrent host reads
+          // otherwise race each other against the just-pushed commit (the
+          // read-after-push window) and 404 (BUG-W2 concurrent residual);
+          // serializing makes each call behave like the working single-call
+          // case. Unflagged tools (web_search, …) run free — no serialization.
+          if (t.flushWorkspaceBeforeCall === true && serializeFlagged !== undefined) {
+            return await serializeFlagged(flushThenForward);
+          }
+          return await flushThenForward();
         } catch (err) {
           const message =
             err instanceof Error ? err.message : String(err);
@@ -198,6 +223,7 @@ export function createHostMcpServer(
       opts.tools,
       opts.idGen,
       opts.flushWorkspace,
+      opts.serializeFlagged,
     ),
   });
 }

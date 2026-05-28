@@ -344,6 +344,55 @@ describe('buildHostToolEntries', () => {
     expect(result.content[0]?.text).toContain('error');
   });
 
+  // BUG-W2 concurrent residual: the SDK can dispatch several
+  // install_authored_skill tool_use blocks in one turn. Their flush+forward
+  // must run ONE AT A TIME via serializeFlagged, or the concurrent host reads
+  // race the just-pushed commit and 404. This pins that two concurrent flagged
+  // handler invocations don't interleave.
+  it('serializes concurrent flagged-tool calls (flush+forward never interleave)', async () => {
+    const events: string[] = [];
+    const tick = (): Promise<void> => new Promise((r) => setTimeout(r, 5));
+    const { client } = mkClient(async () => {
+      events.push('fwd-start');
+      await tick();
+      events.push('fwd-end');
+      return { output: 'ok' };
+    });
+    const flushWorkspace = async (): Promise<'accepted'> => {
+      events.push('flush-start');
+      await tick();
+      events.push('flush-end');
+      return 'accepted';
+    };
+    // A real serializer chain (same shape as main.ts's serializeFlaggedHostTool).
+    let chain: Promise<unknown> = Promise.resolve();
+    const serializeFlagged = <T>(fn: () => Promise<T>): Promise<T> => {
+      const run = chain.then(fn, fn);
+      chain = run.then(() => undefined, () => undefined);
+      return run;
+    };
+    const entries = buildHostToolEntries(
+      client,
+      [HOST_TOOL_FLUSH],
+      () => 'id-1',
+      flushWorkspace,
+      serializeFlagged,
+    );
+    const handler = (entries[0] as ToolEntry).handler;
+    await Promise.all([handler({}, {}), handler({}, {})]);
+    // Each call's flush+forward completes before the next begins — no interleave.
+    expect(events).toEqual([
+      'flush-start',
+      'flush-end',
+      'fwd-start',
+      'fwd-end',
+      'flush-start',
+      'flush-end',
+      'fwd-start',
+      'fwd-end',
+    ]);
+  });
+
   it('tolerates a missing description by falling back to empty string', () => {
     const toolNoDesc: ToolDescriptor = {
       name: 'no.desc',
