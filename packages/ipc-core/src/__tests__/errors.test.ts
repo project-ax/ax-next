@@ -2,53 +2,58 @@ import { PluginError } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { mapPluginError } from '../errors.js';
 
-// BUG-W2 follow-up: authored-skill validation errors must surface their message
-// to the runner (→ the model), while every other code stays collapsed to the
-// generic 500 (I9: no info leak). These pin both halves.
+// BUG-W2 follow-up + security review: the SKILL.md validation message
+// (`authored-skill-invalid` / `-not-found`) is surfaced to the agent ONLY at
+// the verified single-registrant `install_authored_skill` tool path (see
+// tool-execute-host.ts + its dispatcher tests). The GENERIC `mapPluginError`
+// — reachable from every dispatch path — must NOT special-case these codes:
+// `PluginError.code`/`.plugin` are plugin-supplied (the bus re-throws thrown
+// PluginErrors verbatim), so doing so would let any plugin (incl. untrusted
+// third-party code, invariant #5) forge the codes to bypass I9 redaction.
+// These pin that the generic mapper redacts them like every other code.
 
-describe('mapPluginError — authored-skill validation message surfacing', () => {
-  it('surfaces authored-skill-invalid message verbatim (422 VALIDATION)', () => {
+describe('mapPluginError — authored-skill codes are redacted (surfacing is gated elsewhere)', () => {
+  it('redacts authored-skill-invalid to a generic 500 — even from @ax/agents', () => {
+    // @ax/agents is the genuine producer, but the message must NOT be surfaced
+    // here: the generic mapper can't verify the producer (codes/plugin are
+    // spoofable), so it redacts. Surfacing happens at the tool path instead.
     const err = new PluginError({
       code: 'authored-skill-invalid',
       plugin: '@ax/agents',
-      message: "the authored skill 'linear' at .ax/skills/linear/SKILL.md has invalid frontmatter: \"description\" must be ≤ 240 characters, got 578. Fix the file and call install_authored_skill again.",
+      message: "the authored skill 'linear' has invalid frontmatter: \"description\" must be ≤ 240 characters, got 578.",
     });
     const out = mapPluginError(err);
-    expect(out.status).toBe(422);
-    expect(out.body.error.code).toBe('VALIDATION');
-    expect(out.body.error.message).toContain('≤ 240 characters');
-    expect(out.body.error.message).toContain('install_authored_skill again');
+    expect(out.status).toBe(500);
+    expect(out.body.error.code).toBe('INTERNAL');
+    expect(out.body.error.message).toBe('internal server error');
   });
 
-  it('surfaces authored-skill-not-found message verbatim', () => {
+  it('redacts a FORGED authored-skill-invalid (spoofed plugin + secret message) to 500', () => {
+    // A third-party plugin reusing the code with a spoofed `plugin` field and a
+    // secret in the message must not leak through the generic mapper.
+    const err = new PluginError({
+      code: 'authored-skill-invalid',
+      plugin: '@ax/agents', // spoofed — codes/plugin are plugin-supplied
+      message: 'leaked: db password is hunter2',
+    });
+    const out = mapPluginError(err);
+    expect(out.status).toBe(500);
+    expect(out.body.error.message).toBe('internal server error');
+    expect(out.body.error.message).not.toContain('hunter2');
+  });
+
+  it('redacts authored-skill-not-found to 500', () => {
     const err = new PluginError({
       code: 'authored-skill-not-found',
       plugin: '@ax/agents',
       message: "no authored skill 'linear' in the workspace",
     });
     const out = mapPluginError(err);
-    expect(out.status).toBe(422);
-    expect(out.body.error.message).toBe("no authored skill 'linear' in the workspace");
-  });
-
-  it('redacts authored-skill codes from a FOREIGN plugin to a generic 500 (codes are open strings)', () => {
-    // A third-party plugin could reuse the authored-skill codes to try to
-    // paint an arbitrary message onto the wire. The verbatim passthrough is
-    // gated on the owning plugin (@ax/agents), so a foreign producer collapses
-    // to the redacted 500 like any other code.
-    const err = new PluginError({
-      code: 'authored-skill-invalid',
-      plugin: '@ax/evil-third-party',
-      message: 'leaked: db password is hunter2',
-    });
-    const out = mapPluginError(err);
     expect(out.status).toBe(500);
-    expect(out.body.error.code).toBe('INTERNAL');
     expect(out.body.error.message).toBe('internal server error');
-    expect(out.body.error.message).not.toContain('hunter2');
   });
 
-  it('still collapses unrelated codes to a generic 500 (no info leak)', () => {
+  it('collapses unrelated codes to a generic 500 (no info leak)', () => {
     const err = new PluginError({
       code: 'timeout',
       plugin: '@ax/secret-thing',

@@ -88,33 +88,18 @@ export function mapPluginError(err: PluginError): HandlerErr {
     // on the client side.
     case 'conflict':
       return hookRejected('conflict');
-    // Agent-authored-skill validation (`install_authored_skill`, BUG-W2
-    // follow-up). Unlike every other code, we surface `err.message` verbatim:
-    // it describes what's wrong with the AGENT'S OWN authored SKILL.md
-    // ("description must be ≤240 chars", "name must be a slug", "missing
-    // frontmatter", or "no authored skill 'X'"). That text carries no secret
-    // or host-internal detail and is the whole point — the agent reads it,
-    // fixes the file, and retries. Collapsing it to the generic 500 (the
-    // default below) is exactly what made the agent loop rewriting the same
-    // broken file while only seeing "internal server error". 422 = the request
-    // was fine but the referenced workspace content is unprocessable.
-    //
-    // Codes are open strings, so the verbatim passthrough is ALSO gated on the
-    // owning plugin (`@ax/agents`, which is the sole producer of these two
-    // codes). Without that gate, any plugin — including untrusted third-party
-    // code — could reuse `authored-skill-invalid` to paint an arbitrary
-    // message (e.g. a leaked secret) straight onto the wire, bypassing the I9
-    // redaction that every other code gets. A foreign plugin throwing these
-    // codes falls through to the generic 500 below.
-    case 'authored-skill-invalid':
-    case 'authored-skill-not-found':
-      if (err.plugin === '@ax/agents') {
-        return {
-          status: 422,
-          body: { error: { code: 'VALIDATION', message: err.message } },
-        };
-      }
-      return { status: 500, body: { error: { code: 'INTERNAL', message: 'internal server error' } } };
+    // NOTE: `authored-skill-invalid` / `authored-skill-not-found` are
+    // deliberately NOT special-cased here. They DO carry an agent-facing,
+    // verbatim message (the SKILL.md validation reason), but surfacing it is
+    // gated on the *verified* producer — the single-registrant
+    // `tool:execute:install_authored_skill` hook — inside
+    // `tool-execute-host.ts`, NOT here. `mapPluginError` is a generic mapper
+    // reachable from every dispatch path, and `PluginError.code`/`.plugin` are
+    // plugin-supplied (the hook bus re-throws a thrown PluginError verbatim —
+    // see hook-bus.ts), so keying a message passthrough on them here would let
+    // any plugin (incl. untrusted third-party code, invariant #5) forge these
+    // codes to bypass I9 redaction. Here they collapse to the generic 500
+    // below like every other code.
     case 'no-service':
     case 'duplicate-service':
     case 'missing-service':
