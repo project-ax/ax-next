@@ -522,6 +522,13 @@ export async function openSessionImpl(
     // `SSL certificate problem: unable to get local issuer certificate`.
     // Mirrors the k8s side (pod-spec.ts stamps the fixed /var/run/ax path).
     sessionEnv.GIT_SSL_CAINFO = caPath;
+    // TASK-62: Deno-compiled CLIs the Bash tool spawns (e.g.
+    // `npx @schpet/linear-cli`) use rustls with a bundled Mozilla root store
+    // and read NEITHER NODE_EXTRA_CA_CERTS nor SSL_CERT_FILE — Deno honors only
+    // DENO_CERT. Point it at the same per-session CA file, or the CLI's HTTPS
+    // call over the proxy dies with `invalid peer certificate: UnknownIssuer`.
+    // Mirrors the k8s side (pod-spec.ts stamps the fixed /var/run/ax path).
+    sessionEnv.DENO_CERT = caPath;
     if (input.proxyConfig.endpoint !== undefined) {
       sessionEnv.HTTPS_PROXY = input.proxyConfig.endpoint;
       sessionEnv.HTTP_PROXY = input.proxyConfig.endpoint;

@@ -315,6 +315,18 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
       if (process.env.SSL_CERT_FILE !== undefined) {
         anthropicEnv.SSL_CERT_FILE = process.env.SSL_CERT_FILE;
       }
+      // TASK-62: forward DENO_CERT so a Deno-compiled CLI the model runs via
+      // the Bash tool (e.g. `npx @schpet/linear-cli`) trusts the credential-
+      // proxy's MITM root CA. Deno uses rustls with a bundled Mozilla root
+      // store and ignores NODE_EXTRA_CA_CERTS / SSL_CERT_FILE; only DENO_CERT
+      // adds a PEM to its trust anchors. DENO_CERT is not covered by an
+      // ENV_ALLOWLIST prefix (unlike GIT_*), so it needs an explicit forward
+      // here — the sandbox stamps it on the runner pod env, but the SDK builds
+      // the subprocess env from anthropicEnv, not process.env. Without it the
+      // CLI's HTTPS call dies with `invalid peer certificate: UnknownIssuer`.
+      if (process.env.DENO_CERT !== undefined) {
+        anthropicEnv.DENO_CERT = process.env.DENO_CERT;
+      }
       // Append our --require to any caller-supplied NODE_OPTIONS so
       // operators can still set their own (e.g. --max-old-space-size).
       // Quote the path with JSON.stringify: Node tokenizes NODE_OPTIONS

@@ -399,6 +399,30 @@ describe('buildPodSpec', () => {
       expect(env.find((e) => e.name === 'GIT_SSL_CAINFO')).toBeUndefined();
     });
 
+    it('stamps DENO_CERT at the proxy CA path so Deno-compiled CLIs trust the MITM cert (TASK-62)', () => {
+      // TASK-62 regression: Deno-compiled CLIs (e.g. `npx @schpet/linear-cli`)
+      // use rustls with a bundled Mozilla root store and ignore BOTH
+      // NODE_EXTRA_CA_CERTS and SSL_CERT_FILE. Only DENO_CERT (a PEM path added
+      // to Deno's trust anchors) makes them accept the proxy's MITM leaf cert.
+      // Without this stamp the binary's HTTPS call dies with
+      // `invalid peer certificate: UnknownIssuer` — the "TLS certificate issue"
+      // the agent surfaced when running the linear-cli skill.
+      const spec = buildPodSpec('p', proxyInput, baseResolved());
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+      ).containers[0]!.env;
+      const byName = (n: string) => env.find((e) => e.name === n)?.value;
+      expect(byName('DENO_CERT')).toBe('/var/run/ax/proxy-ca/ca.crt');
+    });
+
+    it('does NOT stamp DENO_CERT when proxyConfig is absent (no MITM, no extra CA)', () => {
+      const spec = buildPodSpec('p', baseInput, baseResolved());
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string }> }> }
+      ).containers[0]!.env;
+      expect(env.find((e) => e.name === 'DENO_CERT')).toBeUndefined();
+    });
+
     it('mounts the proxy socket dir at /var/run/ax via hostPath when proxySocketHostPath is set', () => {
       // The mount is what makes the host pod's Unix socket reachable
       // from the runner pod — without it, the env stamps point at a

@@ -20,6 +20,7 @@ const ENV_KEYS_TO_SAVE = [
   'GITHUB_TOKEN',
   'SOME_REAL_SECRET',
   'GIT_SSL_CAINFO',
+  'DENO_CERT',
 ] as const;
 
 describe('withProxyToken (TASK-52)', () => {
@@ -291,6 +292,29 @@ describe('setupProxy', () => {
     };
     const out = await setupProxy(env);
     expect(out.anthropicEnv.GIT_SSL_CAINFO).toBe('/var/run/ax/proxy-ca/ca.crt');
+  });
+
+  it('forwards DENO_CERT into the SDK subprocess env so Deno-compiled CLIs trust the proxy MITM cert (TASK-62)', async () => {
+    // TASK-62: a Deno-compiled CLI (e.g. `npx @schpet/linear-cli`) the model
+    // runs via the Bash tool inherits the SDK subprocess env, which is built
+    // from anthropicEnv — NOT the runner's process.env. Deno uses rustls with
+    // a bundled Mozilla root store and ignores NODE_EXTRA_CA_CERTS /
+    // SSL_CERT_FILE; only DENO_CERT (a PEM path added to its trust anchors)
+    // makes it accept the proxy's MITM leaf cert. DENO_CERT is not covered by
+    // an ENV_ALLOWLIST prefix, so setupProxy must forward it explicitly (like
+    // NODE_EXTRA_CA_CERTS / SSL_CERT_FILE). Without it the CLI's HTTPS call
+    // dies with `invalid peer certificate: UnknownIssuer`.
+    process.env.ANTHROPIC_API_KEY = 'ax-cred:0123456789abcdef0123456789abcdef';
+    process.env.DENO_CERT = '/var/run/ax/proxy-ca/ca.crt';
+    const env: RunnerEnv = {
+      runnerEndpoint: 'unix:///tmp/x.sock',
+      sessionId: 's',
+      authToken: 'ipc-bearer',
+      workspaceRoot: '/ws',
+      proxyEndpoint: 'http://127.0.0.1:54321',
+    };
+    const out = await setupProxy(env);
+    expect(out.anthropicEnv.DENO_CERT).toBe('/var/run/ax/proxy-ca/ca.crt');
   });
 
   it('throws when both proxyEndpoint and proxyUnixSocket are set (mutually exclusive)', async () => {

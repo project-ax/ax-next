@@ -561,6 +561,12 @@ describe('sandbox:open-session', () => {
     // Node-side vars, or `git clone` over the proxy fails with
     // `SSL certificate problem: unable to get local issuer certificate`.
     expect(parsed.GIT_SSL_CAINFO).toBe(parsed.NODE_EXTRA_CA_CERTS);
+    // TASK-62 regression: Deno-compiled CLIs (e.g. `npx @schpet/linear-cli`)
+    // use rustls with a bundled Mozilla root store and ignore NODE_EXTRA_CA_CERTS
+    // / SSL_CERT_FILE. Only DENO_CERT makes them accept the proxy MITM cert.
+    // Must point at the SAME per-session CA file or the CLI's HTTPS call dies
+    // with `invalid peer certificate: UnknownIssuer`.
+    expect(parsed.DENO_CERT).toBe(parsed.NODE_EXTRA_CA_CERTS);
 
     await result.handle.kill();
     await result.handle.exited;
@@ -636,6 +642,7 @@ describe('sandbox:open-session', () => {
     // No proxy → no MITM cert → git uses its normal trust store. Pinning a
     // nonexistent CA path here would break the non-proxied git path.
     expect(parsed.GIT_SSL_CAINFO).toBeNull();
+    expect(parsed.DENO_CERT).toBeNull();
     expect(parsed.ANTHROPIC_API_KEY).toBeNull();
     await result.handle.kill();
     await result.handle.exited;

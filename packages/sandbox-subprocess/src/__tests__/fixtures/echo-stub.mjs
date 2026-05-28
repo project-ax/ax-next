@@ -48,6 +48,11 @@ const env = {
   // Echoed so open-session.test.ts can assert it points at the per-session
   // CA file whenever proxyConfig is present.
   GIT_SSL_CAINFO: process.env.GIT_SSL_CAINFO ?? null,
+  // TASK-62: Deno-compiled CLIs (rustls + bundled Mozilla roots) ignore
+  // NODE_EXTRA_CA_CERTS / SSL_CERT_FILE and honor only DENO_CERT for the proxy
+  // MITM cert. Echoed so open-session.test.ts can assert it points at the
+  // per-session CA file whenever proxyConfig is present.
+  DENO_CERT: process.env.DENO_CERT ?? null,
   // Test assertion only needs to know the placeholder is `ax-cred:<hex>`
   // shape (Phase 2 substitution) vs. unset. Echo a presence-only marker
   // so a real key — set in process.env by an over-eager test runner or

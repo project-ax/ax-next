@@ -302,6 +302,20 @@ export function buildPodSpec(
       name: 'GIT_SSL_CAINFO',
       value: '/var/run/ax/proxy-ca/ca.crt',
     });
+    // TASK-62: Deno-compiled CLIs the Bash tool spawns (e.g.
+    // `npx @schpet/linear-cli`, which ships a Deno binary) use rustls with a
+    // bundled Mozilla root store and read NEITHER NODE_EXTRA_CA_CERTS nor
+    // SSL_CERT_FILE — Deno honors only DENO_CERT (a PEM path added to its trust
+    // anchors, the analogue of NODE_EXTRA_CA_CERTS). Without this the CLI's
+    // HTTPS call to its API through the MITM proxy dies with
+    // `invalid peer certificate: UnknownIssuer` — the "TLS certificate issue"
+    // surfaced by the linear-cli skill. Stamp the SAME CA path the Node/git
+    // vars use; the runner forwards DENO_CERT into the SDK subprocess
+    // explicitly (see proxy-startup.ts).
+    proxyEnv.push({
+      name: 'DENO_CERT',
+      value: '/var/run/ax/proxy-ca/ca.crt',
+    });
     if (pc.endpoint !== undefined) {
       proxyEnv.push({ name: 'AX_PROXY_ENDPOINT', value: pc.endpoint });
       proxyEnv.push({ name: 'HTTPS_PROXY', value: pc.endpoint });
