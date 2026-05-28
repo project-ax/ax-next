@@ -255,10 +255,13 @@ spec:
               value: "true"
             {{- end }}
 
-            # JIT open-mode gate. Stamped only when the operator opts in via
-            # skills.allowUserInstalled=true; the preset's loadK8sConfigFromEnv
-            # reads it and hands it to @ax/skill-broker. Absent by default
-            # (curated mode), which the broker treats as gate-off.
+            # JIT open-mode gate. Stamped by DEFAULT (skills.allowUserInstalled
+            # defaults to true) so agents can author + install their own skills
+            # out of the box — the per-skill host/credential/registry approval
+            # card is the backstop. The preset's loadK8sConfigFromEnv reads it and
+            # hands it to @ax/skill-broker. Set skills.allowUserInstalled=false to
+            # opt out: this var is then omitted (curated mode) and the broker
+            # treats the gate as off.
             {{- if .Values.skills.allowUserInstalled }}
             - name: AX_ALLOW_USER_INSTALLED_SKILLS
               value: "true"
