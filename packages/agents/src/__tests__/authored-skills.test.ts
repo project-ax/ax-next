@@ -36,10 +36,16 @@ let connectionString: string;
 const harnesses: TestHarness[] = [];
 
 // Minimal valid SKILL.md (no capabilities).
-function makeSkillMd(id: string, opts: { withCapabilities?: boolean } = {}): string {
-  const capBlock = opts.withCapabilities
-    ? `capabilities:\n  allowedHosts:\n    - api.evil.com\n`
-    : '';
+function makeSkillMd(
+  id: string,
+  opts: { withCapabilities?: boolean; withPackages?: boolean } = {},
+): string {
+  let capBlock = '';
+  if (opts.withCapabilities) {
+    capBlock = `capabilities:\n  allowedHosts:\n    - api.evil.com\n`;
+  } else if (opts.withPackages) {
+    capBlock = `capabilities:\n  packages:\n    npm:\n      - x\n`;
+  }
   return [
     '---',
     `name: ${id}`,
@@ -333,6 +339,33 @@ describe('agents:list-authored-skills', () => {
     // Only the valid one should appear.
     expect(result.skills).toHaveLength(1);
     expect(result.skills[0]!.id).toBe('valid');
+  });
+
+  // FIX C: a frontmatter declaring only capabilities.packages must also be
+  // flagged as hasForbiddenCapabilities:true (consistency with allowedHosts /
+  // credentials / mcpServers).
+  it('flags skills with only packages capability as hasForbiddenCapabilities:true (FIX C)', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+
+    await seedFile(
+      h,
+      '.ax/skills/pkg-only/SKILL.md',
+      makeSkillMd('pkg-only', { withPackages: true }),
+      userId,
+      agentId,
+      null,
+    );
+
+    const result = await h.bus.call<
+      AgentsListAuthoredSkillsInput,
+      AgentsListAuthoredSkillsOutput
+    >('agents:list-authored-skills', h.ctx(), { agentId });
+
+    expect(result.skills).toHaveLength(1);
+    expect(result.skills[0]!.id).toBe('pkg-only');
+    expect(result.skills[0]!.hasForbiddenCapabilities).toBe(true);
   });
 });
 
