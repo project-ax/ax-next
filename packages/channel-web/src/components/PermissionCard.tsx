@@ -231,6 +231,17 @@ export function PermissionCard() {
             </div>
           ),
         )}
+        {request.packages != null &&
+          (request.packages.npm.length > 0 || request.packages.pypi.length > 0) && (
+            <p className="text-sm text-muted-foreground" data-testid="permission-packages">
+              {request.packages.npm.length > 0 && (
+                <>Installs npm packages → reaches <code>registry.npmjs.org</code>. </>
+              )}
+              {request.packages.pypi.length > 0 && (
+                <>Installs Python packages → reaches <code>pypi.org</code>, <code>files.pythonhosted.org</code>.</>
+              )}
+            </p>
+          )}
         {error !== null && (
           <Alert variant="destructive">
             <AlertDescription>{error}</AlertDescription>

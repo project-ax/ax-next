@@ -15,7 +15,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc --build",
+    "build": "tsc --build && node -e \"require('node:fs').cpSync('src/builtin-skills','dist/builtin-skills',{recursive:true,filter:(s)=>require('node:fs').statSync(s).isDirectory()||s.endsWith('.md')})\"",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:k8s-e2e": "vitest run --config vitest.config.k8s-e2e.ts"
@@ -52,6 +52,7 @@
     "@ax/session-postgres": "workspace:*",
     "@ax/skill-broker": "workspace:*",
     "@ax/skills": "workspace:*",
+    "@ax/skills-parser": "workspace:*",
     "@ax/static-files": "workspace:*",
     "@ax/storage-postgres": "workspace:*",
     "@ax/teams": "workspace:*",

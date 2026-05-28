@@ -1,6 +1,7 @@
 export { createChatOrchestratorPlugin } from './plugin.js';
 export type {
   ChatOrchestratorConfig,
+  ResolvedSkillForOrch,
   AgentInvokeInput,
   ApplyCapabilityGrantInput,
   ApplyCapabilityGrantOutput,

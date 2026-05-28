@@ -89,7 +89,11 @@ export async function listAuthoredSkills(
     const hasForbiddenCapabilities =
       capabilities.allowedHosts.length > 0 ||
       capabilities.credentials.length > 0 ||
-      capabilities.mcpServers.length > 0;
+      capabilities.mcpServers.length > 0 ||
+      // packages declares registry egress — treat it the same as allowedHosts.
+      // Guard for undefined: older manifest shapes may not include the field.
+      (capabilities.packages?.npm.length ?? 0) > 0 ||
+      (capabilities.packages?.pypi.length ?? 0) > 0;
 
     out.push({ id, description, version, bodyMd: split.bodyMd, hasForbiddenCapabilities });
   }

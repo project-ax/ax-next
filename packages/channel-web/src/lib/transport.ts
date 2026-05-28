@@ -136,6 +136,9 @@ type SseFrame =
             // TASK-39: open-mode banner flag — rides the SSE frame verbatim and
             // is forwarded to the card store (drives the "new skill" warning).
             authored?: boolean;
+            // npm/pypi packages declared by the skill — forwarded verbatim to
+            // the card store (drives the informational registry line).
+            packages?: { npm: string[]; pypi: string[] };
           }
         | { kind: 'host'; host: string; sessionId: string };
     };

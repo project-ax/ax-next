@@ -133,6 +133,13 @@ export type PermissionRequest =
        * + public (no secret); the SSE subscriber forwards it verbatim.
        */
       authored?: boolean;
+      /**
+       * npm/pypi packages the skill declares. Informational — shown on the card
+       * so the user sees which public registries a package-using authored skill
+       * will reach. Optional + public (no secret); forwarded verbatim. Both
+       * arrays are always present when set (never partially absent).
+       */
+      packages?: { npm: string[]; pypi: string[] };
     }
   | { kind: 'host'; host: string; sessionId: string };
 

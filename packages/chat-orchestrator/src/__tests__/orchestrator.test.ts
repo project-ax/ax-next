@@ -3613,6 +3613,131 @@ describe('chat-orchestrator', () => {
     expect(skillMd?.contents).toContain('---\nname: greeter\n');
     expect(skillMd?.contents).toContain('---\n# Greeter');
   });
+
+  // -----------------------------------------------------------------
+  // Task 5 — builtinSkills config: lowest-precedence materialization.
+  // -----------------------------------------------------------------
+
+  it('materializes a config builtin skill into the sandbox at lowest precedence', async () => {
+    const proxy = buildProxyHooks();
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          // No explicit skillAttachments.
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services);
+    // No skills:list-defaults — only the builtin.
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+          builtinSkills: [
+            {
+              id: 'ax-skill-creator',
+              manifestYaml: 'name: ax-skill-creator\ndescription: d\nversion: 1\n',
+              bodyMd: '# body',
+              files: [],
+              capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+            },
+          ],
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('builtin-only-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{ id: string; files: Array<{ path: string; contents: string }> }>;
+    };
+    // Builtin materialized as an installed skill entry.
+    expect(sandboxIn.installedSkills).toHaveLength(1);
+    const entry = sandboxIn.installedSkills![0]!;
+    expect(entry.id).toBe('ax-skill-creator');
+    const skillMd = entry.files.find((f) => f.path === 'SKILL.md');
+    expect(skillMd).toBeTruthy();
+    expect(skillMd!.contents).toContain('name: ax-skill-creator');
+    expect(skillMd!.contents).toContain('# body');
+
+    // Empty capabilities → no egress hosts added from the builtin.
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).not.toContain('registry.npmjs.org');
+    expect(openIn.allowlist).not.toContain('pypi.org');
+  });
+
+  it('a default/explicit skill with the same id wins over the builtin (builtin dropped)', async () => {
+    const proxy = buildProxyHooks();
+    // A default-attached skill with the same id but different bodyMd.
+    const defaultSkill: ResolvedSkill = {
+      id: 'ax-skill-creator',
+      capabilities: { allowedHosts: [], credentials: [] },
+      bodyMd: '# real default body\n',
+      manifestYaml: 'name: ax-skill-creator\ndescription: real\nversion: 2\n',
+    };
+    const defaults = buildDefaultsHook({ skills: [defaultSkill] });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          // No explicit skillAttachments — the default wins over the builtin.
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, defaults.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+          builtinSkills: [
+            {
+              id: 'ax-skill-creator',
+              manifestYaml: 'name: ax-skill-creator\ndescription: builtin\nversion: 1\n',
+              bodyMd: '# builtin body',
+              files: [],
+              capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+            },
+          ],
+        }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('default-wins-over-builtin-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills: Array<{ id: string; files: Array<{ path: string; contents: string }> }>;
+    };
+    // Only ONE entry — the builtin is deduped out.
+    expect(sandboxIn.installedSkills).toHaveLength(1);
+    expect(sandboxIn.installedSkills[0]!.id).toBe('ax-skill-creator');
+    // The default (not the builtin) wins — identified by bodyMd.
+    const skillMd = sandboxIn.installedSkills[0]!.files.find((f) => f.path === 'SKILL.md');
+    expect(skillMd?.contents).toContain('# real default body');
+    expect(skillMd?.contents).not.toContain('# builtin body');
+  });
 });
 
 // ---------------------------------------------------------------------------

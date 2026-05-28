@@ -443,12 +443,26 @@ describeIfHelm('host deployment env vs preset loader', () => {
     expect(env.has('AX_STATIC_FILES_DIR')).toBe(false);
   });
 
-  // Open-mode gate (allow_user_installed_skills) — OFF by default. The chart
-  // stamps AX_ALLOW_USER_INSTALLED_SKILLS only when skills.allowUserInstalled
-  // is true; the preset's loadK8sConfigFromEnv reads it (so when present it's
-  // never an orphan). Default deploys must NOT carry it.
-  it('default render does NOT stamp AX_ALLOW_USER_INSTALLED_SKILLS', () => {
-    const env = envKeysOf(renderHostDeployment());
+  // Open-mode gate (allow_user_installed_skills) — ON by default. The chart
+  // stamps AX_ALLOW_USER_INSTALLED_SKILLS=true unless skills.allowUserInstalled
+  // is explicitly set to false. The preset's loadK8sConfigFromEnv reads it;
+  // the per-skill host/credential approval card is the security backstop.
+  // Deployments that want curated-only mode set skills.allowUserInstalled: false.
+  it('default render stamps AX_ALLOW_USER_INSTALLED_SKILLS=true', () => {
+    const dep = renderHostDeployment();
+    const env = envKeysOf(dep);
+    expect(env.has('AX_ALLOW_USER_INSTALLED_SKILLS')).toBe(true);
+    const spec = dep.spec as {
+      template?: { spec?: { containers?: Array<{ env?: Array<{ name?: string; value?: string }> }> } };
+    };
+    const v = spec.template?.spec?.containers?.[0]?.env?.find(
+      (e) => e.name === 'AX_ALLOW_USER_INSTALLED_SKILLS',
+    )?.value;
+    expect(v).toBe('true');
+  });
+
+  it('skills.allowUserInstalled=false does NOT stamp AX_ALLOW_USER_INSTALLED_SKILLS', () => {
+    const env = envKeysOf(renderHostDeployment(['--set', 'skills.allowUserInstalled=false']));
     expect(env.has('AX_ALLOW_USER_INSTALLED_SKILLS')).toBe(false);
   });
 

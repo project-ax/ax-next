@@ -338,6 +338,8 @@ describe('request_capability — bundled approval card (chat:permission-request)
       hosts: ['api.linear.app'],
       // Account-free slot: no `account` key, haveExisting false (never vaulted).
       slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: false }],
+      // The linear stub has no packages; card defaults to empty arrays (FIX B).
+      packages: { npm: [], pypi: [] },
     });
   });
 
@@ -457,10 +459,12 @@ function busForAuthoring() {
   const cards: unknown[] = [];
   bus.registerService('agents:install-authored-skill', 'agents', async (_c, input: unknown) => {
     grants.push(input);
+    const inp = input as { packages?: { npm?: string[]; pypi?: string[] } };
     return {
       description: 'Take notes',
       hosts: ['api.example.com'],
       slots: [{ slot: 'API_KEY', kind: 'api-key' }],
+      packages: inp.packages ?? { npm: [], pypi: [] },
     };
   });
   bus.subscribe('chat:permission-request', 'test/card', async (_c, payload) => {
@@ -490,7 +494,7 @@ describe('install_authored_skill tool', () => {
     });
     expect(out).toEqual({ status: 'requested', skillId: 'notes' });
     expect(grants).toEqual([
-      { agentId: 'agent-1', skillId: 'notes', hosts: ['api.example.com'], slots: ['API_KEY'] },
+      { agentId: 'agent-1', skillId: 'notes', hosts: ['api.example.com'], slots: ['API_KEY'], packages: { npm: [], pypi: [] } },
     ]);
     expect(cards).toEqual([
       {
@@ -499,6 +503,7 @@ describe('install_authored_skill tool', () => {
         description: 'Take notes',
         hosts: ['api.example.com'],
         slots: [{ slot: 'API_KEY', kind: 'api-key' }],
+        packages: { npm: [], pypi: [] },
         authored: true,
       },
     ]);
@@ -534,6 +539,7 @@ describe('install_authored_skill tool', () => {
       skillId: 'notes',
       hosts: ['ok.example.com'],
       slots: ['API_KEY'],
+      packages: { npm: [], pypi: [] },
     });
   });
 
@@ -547,5 +553,203 @@ describe('install_authored_skill tool', () => {
         input: { skillId: 'notes', hosts: [], slots: [] },
       }),
     ).rejects.toThrow(/not available in this deployment/i);
+  });
+
+  it('forwards validated packages to the promote and the approval card', async () => {
+    // Override the agents stub to echo back packages and record input.
+    const bus = new HookBus();
+    const registered: string[] = [];
+    bus.registerService('tool:register', 'disp', async (_c, d: unknown) => {
+      registered.push((d as { name: string }).name);
+      return { ok: true };
+    });
+    let promoteInput: Record<string, unknown> = {};
+    bus.registerService('agents:install-authored-skill', 'agents', async (_c, input: unknown) => {
+      promoteInput = input as Record<string, unknown>;
+      const inp = input as { packages?: { npm?: string[]; pypi?: string[] } };
+      return {
+        description: 'Cowsay skill',
+        hosts: [],
+        slots: [],
+        packages: inp.packages ?? { npm: [], pypi: [] },
+      };
+    });
+    const firedCards: unknown[] = [];
+    bus.subscribe('chat:permission-request', 'test/card', async (_c, payload) => {
+      firedCards.push(payload);
+      return undefined;
+    });
+
+    await registerInstallAuthoredSkill(bus);
+    expect(registered).toEqual(['install_authored_skill']);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      // '@anthropic-ai/sdk' is a scoped npm name and MUST survive the filter;
+      // 'BAD NAME' (space) must be dropped at the trust boundary.
+      input: {
+        skillId: 'demo',
+        hosts: [],
+        slots: [],
+        packages: { npm: ['cowsay', '@anthropic-ai/sdk', 'BAD NAME'], pypi: [] },
+      },
+    });
+
+    const firedCard = firedCards[0] as Record<string, unknown>;
+    const pkgIn = promoteInput.packages as { npm: string[]; pypi: string[] };
+    expect(pkgIn.npm).toEqual(['cowsay', '@anthropic-ai/sdk']);
+    expect(pkgIn.pypi).toEqual([]);
+    expect((firedCard.packages as { npm: string[] }).npm).toEqual(['cowsay', '@anthropic-ai/sdk']);
+  });
+
+  it('omits packages (empty) when none provided', async () => {
+    const { bus, grants, cards } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'notes', hosts: [], slots: [] },
+    });
+    const grant = grants[0] as Record<string, unknown>;
+    const card = cards[0] as Record<string, unknown>;
+    // When packages is not provided, it should default to { npm: [], pypi: [] }.
+    expect(grant.packages).toEqual({ npm: [], pypi: [] });
+    expect(card.packages).toEqual({ npm: [], pypi: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX B: request_capability card must include packages from skill capabilities
+// ---------------------------------------------------------------------------
+
+describe('request_capability — packages on approval card (FIX B)', () => {
+  it('card carries packages from the catalog skill manifest', async () => {
+    // Override the skills:get stub to return a skill with packages capability.
+    const bus = new HookBus();
+    bus.registerService('tool:register', 'disp', async () => {
+      return { ok: true };
+    });
+    bus.registerService('skills:search-catalog', 'skills', async () => ({ skills: [] }));
+    bus.registerService('skills:get', 'skills', async (_c, input: unknown) => {
+      const skillId = (input as { skillId: string }).skillId;
+      if (skillId === 'requests-skill') {
+        return {
+          id: 'requests-skill',
+          description: 'Makes HTTP calls',
+          version: 1,
+          capabilities: {
+            allowedHosts: ['api.example.com'],
+            credentials: [],
+            packages: { npm: [], pypi: ['requests'] },
+          },
+        } as never;
+      }
+      throw new PluginError({ code: 'skill-not-found', plugin: 'skills', message: 'nope' });
+    });
+    bus.registerService('catalog:submit', 'skills', async () => ({
+      requestId: 'r', created: true, status: 'pending',
+    }));
+
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+
+    const cards: Array<Record<string, unknown>> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'requests-skill' },
+    });
+
+    expect(cards).toHaveLength(1);
+    expect(cards[0]!['packages']).toEqual({ npm: [], pypi: ['requests'] });
+  });
+
+  it('card carries empty packages when skill has none', async () => {
+    const { bus } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+
+    const cards: Array<Record<string, unknown>> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+
+    expect(cards).toHaveLength(1);
+    // The linear stub has no packages declared; card defaults to empty.
+    expect(cards[0]!['packages']).toEqual({ npm: [], pypi: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX A: npm/pypi grammar split — must mirror skills-parser authority
+// ---------------------------------------------------------------------------
+
+describe('install_authored_skill — package grammar (FIX A)', () => {
+  it('pypi Django (uppercase) SURVIVES (pypi allows mixed case)', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: [], pypi: ['Django'] } },
+    });
+    expect((grants[0] as { packages: { pypi: string[] } }).packages.pypi).toEqual(['Django']);
+  });
+
+  it('pypi @scope/x is DROPPED (pypi does not allow scoped names)', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: [], pypi: ['@scope/x'] } },
+    });
+    expect((grants[0] as { packages: { pypi: string[] } }).packages.pypi).toEqual([]);
+  });
+
+  it('npm @babel/core SURVIVES (scoped npm name)', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: ['@babel/core'], pypi: [] } },
+    });
+    expect((grants[0] as { packages: { npm: string[] } }).packages.npm).toEqual(['@babel/core']);
+  });
+
+  it('npm "BAD NAME" (space) is DROPPED', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: ['BAD NAME'], pypi: [] } },
+    });
+    expect((grants[0] as { packages: { npm: string[] } }).packages.npm).toEqual([]);
+  });
+
+  it('npm list of 40 entries is capped to 32 after filtering', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    const fortyNames = Array.from({ length: 40 }, (_, i) => `pkg-${i}`);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: fortyNames, pypi: [] } },
+    });
+    expect((grants[0] as { packages: { npm: string[] } }).packages.npm).toHaveLength(32);
+  });
+
+  it('a 300-char npm name is DROPPED (exceeds PACKAGE_NAME_LEN_MAX=214)', async () => {
+    const { bus, grants } = busForAuthoring();
+    await registerInstallAuthoredSkill(bus);
+    const longName = 'a'.repeat(300);
+    await bus.call('tool:execute:install_authored_skill', toolCtx(), {
+      name: 'install_authored_skill',
+      input: { skillId: 'demo', hosts: [], slots: [], packages: { npm: [longName], pypi: [] } },
+    });
+    expect((grants[0] as { packages: { npm: string[] } }).packages.npm).toEqual([]);
   });
 });

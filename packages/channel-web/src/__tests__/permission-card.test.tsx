@@ -159,6 +159,74 @@ describe('PermissionCard', () => {
     ).toBeNull();
   });
 
+  // TASK packages — authored skills declare npm/pypi packages; the card shows
+  // an informational registry line so the user knows which public registries
+  // the skill will reach.
+  it('shows an npm registry line for a package-using authored skill', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show({
+      kind: 'skill',
+      skillId: 'demo',
+      description: '',
+      hosts: [],
+      slots: [],
+      packages: { npm: ['cowsay'], pypi: [] },
+      authored: true,
+    });
+    expect(
+      await screen.findByText(/registry\.npmjs\.org/),
+    ).toBeInTheDocument();
+  });
+
+  it('shows a pypi registry line for a python authored skill', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show({
+      kind: 'skill',
+      skillId: 'demo',
+      description: '',
+      hosts: [],
+      slots: [],
+      packages: { npm: [], pypi: ['requests'] },
+      authored: true,
+    });
+    expect(
+      await screen.findByText(/pypi\.org/),
+    ).toBeInTheDocument();
+  });
+
+  it('shows no package line when packages are empty (both arrays present, length 0)', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show({
+      kind: 'skill',
+      skillId: 'demo',
+      description: '',
+      hosts: [],
+      slots: [],
+      packages: { npm: [], pypi: [] },
+    });
+    // Wait for the card to render (title should be visible)
+    expect(await screen.findByText('Connect demo')).toBeInTheDocument();
+    expect(screen.queryByTestId('permission-packages')).toBeNull();
+  });
+
+  // Distinct from the empty-arrays case above: `packages` is OPTIONAL on the
+  // (intentionally liberal) SSE-boundary type, so a back-compat payload may omit
+  // it entirely. This exercises the `request.packages != null` guard's
+  // `undefined` branch, which the empty-arrays fixture never reaches.
+  it('shows no package line when packages is absent entirely', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show({
+      kind: 'skill',
+      skillId: 'demo',
+      description: '',
+      hosts: [],
+      slots: [],
+      // packages omitted entirely (undefined)
+    });
+    expect(await screen.findByText('Connect demo')).toBeInTheDocument();
+    expect(screen.queryByTestId('permission-packages')).toBeNull();
+  });
+
   // JIT P2/P7.2 — a slot the user already has vaulted (haveExisting) shows a
   // "use your existing key" hint, renders NO input, counts as filled, and posts
   // NO credential on Connect (the key is already in the vault).

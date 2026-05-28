@@ -47,6 +47,9 @@ interface CatalogSkillDetail {
     // `account` (JIT P2/P7.2): a service slug tagging the slot to the user's
     // shared `account:<service>` vault entry instead of a per-skill ref.
     credentials: { slot: string; kind: 'api-key'; account?: string }[];
+    // Package registry egress declared by the skill manifest. Mirrors
+    // SkillCapabilities.packages (skills-parser). Empty arrays when absent.
+    packages?: { npm: string[]; pypi: string[] };
   };
 }
 
@@ -76,6 +79,10 @@ interface PermissionRequestEvent {
   // so the card offers "use your existing key" instead of prompting. Both are
   // per-request card hints — never persisted on a manifest/store type.
   slots: { slot: string; kind: 'api-key'; account?: string; haveExisting?: boolean }[];
+  // Package registry egress the skill declares — shown to the user so they can
+  // see which registries will be used. Mirrors install_authored_skill's card
+  // for consistency. Empty arrays when the skill has no package deps.
+  packages: { npm: string[]; pypi: string[] };
 }
 
 export async function registerRequestCapability(bus: HookBus): Promise<void> {
@@ -168,6 +175,9 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
           ...(c.account !== undefined ? { account: c.account } : {}),
           haveExisting: c.account !== undefined && vaulted.has(`account:${c.account}`),
         })),
+        // Guard a backend that omits packages (pre-Task-2 shape or catalog skill
+        // whose manifest predates the packages capability). Empty = no registry egress.
+        packages: detail.capabilities.packages ?? { npm: [], pypi: [] },
       };
       await bus.fire('chat:permission-request', toolCtx, card);
 

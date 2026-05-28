@@ -36,6 +36,8 @@ export type PermissionRequest =
       }[];
       /** TASK-39: open-mode banner — the agent just wrote this skill. */
       authored?: boolean;
+      /** npm/pypi packages the skill declares; shown as an informational registry line. */
+      packages?: { npm: string[]; pypi: string[] };
     }
   | { kind: 'host'; host: string; sessionId: string };
 

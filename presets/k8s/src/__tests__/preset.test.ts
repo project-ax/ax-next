@@ -1,5 +1,6 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { SkillBrokerPlugin } from '@ax/skill-broker';
+import * as builtinSkillsModule from '../builtin-skills/index.js';
 import {
   createK8sPlugins,
   loadK8sConfigFromEnv,
@@ -1141,5 +1142,42 @@ describe('@ax/preset-k8s — broker receives the open-mode gate (TASK-38)', () =
       | undefined;
     expect(broker).toBeDefined();
     expect(broker!.allowUserInstalledSkills).toBe(true);
+  });
+});
+
+describe('@ax/preset-k8s — builtin skills gate (TASK-7)', () => {
+  // Note: builtinSkills are passed into createChatOrchestratorPlugin() via closure
+  // and are not exposed on the returned Plugin object — there is no manifest seam
+  // to inspect. We therefore assert the gate at the loader boundary: spy on
+  // loadBuiltinSkills() to verify it is called in open mode and NOT called in
+  // closed mode.
+  it('calls loadBuiltinSkills() when allowUserInstalledSkills is true', () => {
+    const spy = vi.spyOn(builtinSkillsModule, 'loadBuiltinSkills');
+    try {
+      createK8sPlugins({ ...stubConfig, allowUserInstalledSkills: true });
+      expect(spy).toHaveBeenCalledOnce();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('does NOT call loadBuiltinSkills() when allowUserInstalledSkills is false', () => {
+    const spy = vi.spyOn(builtinSkillsModule, 'loadBuiltinSkills');
+    try {
+      createK8sPlugins({ ...stubConfig, allowUserInstalledSkills: false });
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('does NOT call loadBuiltinSkills() when allowUserInstalledSkills is absent', () => {
+    const spy = vi.spyOn(builtinSkillsModule, 'loadBuiltinSkills');
+    try {
+      createK8sPlugins(stubConfig);
+      expect(spy).not.toHaveBeenCalled();
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

@@ -2083,6 +2083,9 @@ importers:
       '@ax/skills':
         specifier: workspace:*
         version: link:../../packages/skills
+      '@ax/skills-parser':
+        specifier: workspace:*
+        version: link:../../packages/skills-parser
       '@ax/static-files':
         specifier: workspace:*
         version: link:../../packages/static-files
