@@ -16,6 +16,9 @@ function mkClient(): { client: IpcClient; calls: Array<unknown> } {
     callGet: async () => {
       throw new Error('callGet not expected');
     },
+    callBinary: async () => {
+      throw new Error('callBinary not expected');
+    },
     event: async () => {
       throw new Error('event not expected');
     },

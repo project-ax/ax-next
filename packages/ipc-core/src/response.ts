@@ -4,11 +4,12 @@ import type { IpcErrorCode } from '@ax/ipc-protocol';
 // ---------------------------------------------------------------------------
 // Response helpers
 //
-// Writers for IpcErrorEnvelope bodies and plain JSON success bodies. The two
-// writers are deliberately thin — we want every response in the dispatcher
-// (Task 4) to look obviously right when read top-to-bottom, not hidden behind
-// a builder. Content-Type is always application/json; the wire protocol has
-// no other media types.
+// Writers for IpcErrorEnvelope bodies, plain JSON success bodies, and the one
+// raw-binary success body (workspace.materialize's git bundle — see
+// writeBinaryOk / HandlerBinary). The writers are deliberately thin — we want
+// every response in the dispatcher to look obviously right when read
+// top-to-bottom, not hidden behind a builder. Every response is JSON except
+// the binary materialize body.
 // ---------------------------------------------------------------------------
 
 export function writeJsonError(
@@ -32,4 +33,19 @@ export function writeJsonOk(
   const serialized = JSON.stringify(body);
   res.writeHead(status, { 'Content-Type': 'application/json' });
   res.end(serialized);
+}
+
+// Raw-bytes success body (workspace.materialize). Content-Length is set so the
+// runner's drain loop knows when the body is complete; no JSON envelope.
+export function writeBinaryOk(
+  res: http.ServerResponse,
+  status: number,
+  bytes: Buffer,
+  contentType: string,
+): void {
+  res.writeHead(status, {
+    'Content-Type': contentType,
+    'Content-Length': String(bytes.length),
+  });
+  res.end(bytes);
 }

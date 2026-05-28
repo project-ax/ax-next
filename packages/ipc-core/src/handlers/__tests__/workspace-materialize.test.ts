@@ -70,16 +70,18 @@ async function git(
 }
 
 /**
- * Decode a base64 bundle, write it to a tempdir, clone from it, and return
- * the resulting working tree's contents.
+ * Write raw bundle bytes to a tempdir, clone from them, and return the
+ * resulting working tree's contents. The handler now returns RAW bytes
+ * (HandlerBinary), so the binary-response tests use this directly; the
+ * buildBaselineBundle (base64) tests go through `unpackBundle`.
  */
-async function unpackBundle(
-  bundleB64: string,
+async function unpackBundleBuffer(
+  bundle: Buffer,
 ): Promise<{ files: Record<string, string>; ref: string }> {
   const tmp = await mkdtemp(join(tmpdir(), 'ax-mat-test-'));
   try {
     const bundlePath = join(tmp, 'b.bundle');
-    await writeFile(bundlePath, Buffer.from(bundleB64, 'base64'));
+    await writeFile(bundlePath, bundle);
     const wt = join(tmp, 'wt');
     const clone = await git(['clone', '--branch', 'main', bundlePath, wt], tmp);
     if (clone.code !== 0) {
@@ -108,6 +110,13 @@ async function unpackBundle(
   } finally {
     await rm(tmp, { recursive: true, force: true });
   }
+}
+
+/** Base64 sibling of unpackBundleBuffer for the buildBaselineBundle tests. */
+async function unpackBundle(
+  bundleB64: string,
+): Promise<{ files: Record<string, string>; ref: string }> {
+  return unpackBundleBuffer(Buffer.from(bundleB64, 'base64'));
 }
 
 describe('buildBaselineBundle (pure helper)', () => {
@@ -239,9 +248,11 @@ describe('workspace.materialize handler', () => {
     const { bus, ctx } = await makeEnv();
     const result = await workspaceMaterializeHandler({}, ctx, bus);
     expect(result.status).toBe(200);
-    const bundleBytes = (result.body as { bundleBytes: string }).bundleBytes;
-    expect(bundleBytes.length).toBeGreaterThan(0);
-    const unpacked = await unpackBundle(bundleBytes);
+    // BUG-W3: the response is now raw bytes (HandlerBinary), not JSON.
+    const binary = (result as { binary: Buffer }).binary;
+    expect((result as { contentType: string }).contentType).toBe('application/octet-stream');
+    expect(binary.length).toBeGreaterThan(0);
+    const unpacked = await unpackBundleBuffer(binary);
     expect(unpacked.files).toEqual({});
     expect(unpacked.ref).toMatch(/^[0-9a-f]{40}$/);
   });
@@ -267,10 +278,10 @@ describe('workspace.materialize handler', () => {
 
     const result = await workspaceMaterializeHandler({}, ctx, bus);
     expect(result.status).toBe(200);
-    const bundleBytes = (result.body as { bundleBytes: string }).bundleBytes;
-    expect(bundleBytes.length).toBeGreaterThan(0);
+    const binary = (result as { binary: Buffer }).binary;
+    expect(binary.length).toBeGreaterThan(0);
 
-    const unpacked = await unpackBundle(bundleBytes);
+    const unpacked = await unpackBundleBuffer(binary);
     expect(unpacked.files).toEqual({
       '.ax/CLAUDE.md': '# memory',
       '.ax/skills/foo/SKILL.md': '---\nname: foo\n---\n',
@@ -387,18 +398,20 @@ describe('workspace.materialize handler — bundle-aware backend', () => {
 
     const result = await workspaceMaterializeHandler({}, ctx, bus);
     expect(result.status).toBe(200);
-    const bundleBytes = (result.body as { bundleBytes: string }).bundleBytes;
+    const binary = (result as { binary: Buffer }).binary;
 
     expect(exportCalls).toBe(1);
     // version: undefined → "current HEAD". Materialize doesn't know the
     // OID, so it leaves the field unset and lets the backend decide.
     expect(lastExportInput?.version).toBeUndefined();
-    expect(bundleBytes).toBe(sentinelBundleB64);
+    // The handler decodes the backend's base64 to raw bytes at the wire edge;
+    // the streamed bytes must equal the decoded sentinel verbatim.
+    expect(binary.equals(Buffer.from(sentinelBundleB64, 'base64'))).toBe(true);
 
     // The sentinel's tree should contain SENTINEL.txt — the
     // deterministic-reconstruction path (which would have produced a
     // bundle with 'a.txt') is NOT invoked.
-    const unpacked = await unpackBundle(bundleBytes);
+    const unpacked = await unpackBundleBuffer(binary);
     expect(unpacked.files).toEqual({ 'SENTINEL.txt': 'sentinel-marker' });
   });
 
@@ -411,9 +424,9 @@ describe('workspace.materialize handler — bundle-aware backend', () => {
     expect(bus.hasService('workspace:export-baseline-bundle')).toBe(false);
     const result = await workspaceMaterializeHandler({}, ctx, bus);
     expect(result.status).toBe(200);
-    const bundleBytes = (result.body as { bundleBytes: string }).bundleBytes;
+    const binary = (result as { binary: Buffer }).binary;
     // Empty MockWorkspace → empty deterministic baseline (clonable, no files).
-    const unpacked = await unpackBundle(bundleBytes);
+    const unpacked = await unpackBundleBuffer(binary);
     expect(unpacked.files).toEqual({});
   });
 });

@@ -11,10 +11,7 @@ import type {
   WorkspaceExportBaselineBundleInput,
   WorkspaceExportBaselineBundleOutput,
 } from '@ax/workspace-bundle-protocol';
-import {
-  WorkspaceMaterializeRequestSchema,
-  WorkspaceMaterializeResponseSchema,
-} from '@ax/ipc-protocol';
+import { WorkspaceMaterializeRequestSchema } from '@ax/ipc-protocol';
 import {
   internalError,
   logInternalError,
@@ -28,9 +25,20 @@ import type { ActionHandler } from './types.js';
 //
 // Sandbox -> Host RPC fired ONCE at session start, before the SDK query
 // loop opens. The handler produces a `git bundle` over the workspace's
-// current state and returns it base64-encoded. The runner unpacks into
-// `/permanent` so the agent runs against a real git working tree from
-// turn 1.
+// current state and streams the RAW bundle bytes back as the HTTP response
+// body (`application/octet-stream`, NOT a JSON envelope — BUG-W3). The runner
+// drains the body to a temp file and clones `/permanent` from it, so the agent
+// runs against a real git working tree from turn 1.
+//
+// Why raw bytes, not base64-in-JSON: the bundle grows unbounded with workspace
+// age (one commit per turn). The old `{ bundleBytes: <base64> }` shape inflated
+// it ~33% and had to be buffered whole in memory on both ends under the 4 MiB
+// response cap; an aged workspace blew the cap and the runner crashed on boot
+// (`response body too large`). The bundle bytes still come from the bundle-aware
+// backend's base64-returning `workspace:export-baseline-bundle` hook (unchanged —
+// commit-notify's resync path depends on that contract); we decode to a Buffer
+// at THIS wire edge and stream it. The base64 round-trip is host-local memory
+// only, never the wire.
 //
 // Implementation strategy: SLOW PATH per Phase 3 plan Q6. The handler
 // reconstructs the bundle by walking `workspace:list` + `workspace:read`
@@ -226,15 +234,9 @@ export const workspaceMaterializeHandler: ActionHandler = async (
     return internalError();
   }
 
-  const body = { bundleBytes };
-  const checked = WorkspaceMaterializeResponseSchema.safeParse(body);
-  if (!checked.success) {
-    logInternalError(
-      ctx.logger,
-      'workspace.materialize',
-      new Error(`response shape drift: ${checked.error.message}`),
-    );
-    return internalError();
-  }
-  return { status: 200, body: checked.data };
+  // Decode the backend's base64 bundle to raw bytes and stream it as the
+  // binary response body (BUG-W3). The base64→Buffer round-trip is host-local
+  // memory only; the wire carries raw bytes (no 33% tax, no JSON-frame cap).
+  const binary = Buffer.from(bundleBytes, 'base64');
+  return { status: 200, binary, contentType: 'application/octet-stream' };
 };

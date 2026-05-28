@@ -144,6 +144,43 @@ function doRequest(
   });
 }
 
+interface RawResponse {
+  status: number;
+  contentType: string | undefined;
+  body: Buffer;
+}
+
+/** Like doRequest but preserves raw bytes + content-type (for binary responses). */
+function doRequestRaw(
+  socketPath: string,
+  method: string,
+  reqPath: string,
+  token: string,
+  body?: string,
+): Promise<RawResponse> {
+  return new Promise<RawResponse>((resolve, reject) => {
+    const headers: Record<string, string> = { Authorization: `Bearer ${token}` };
+    if (method === 'POST') {
+      headers['Content-Type'] = 'application/json';
+      headers['Content-Length'] = String(Buffer.byteLength(body ?? '', 'utf8'));
+    }
+    const req = http.request({ socketPath, path: reqPath, method, headers }, (res) => {
+      const chunks: Buffer[] = [];
+      res.on('data', (chunk: Buffer) => chunks.push(chunk));
+      res.on('end', () => {
+        resolve({
+          status: res.statusCode ?? 0,
+          contentType: res.headers['content-type'],
+          body: Buffer.concat(chunks),
+        });
+      });
+    });
+    req.on('error', reject);
+    if (method === 'POST' && body !== undefined) req.write(body);
+    req.end();
+  });
+}
+
 describe('dispatcher', () => {
   const setups: Setup[] = [];
 
@@ -296,6 +333,37 @@ describe('dispatcher', () => {
     expect(parsed.accepted).toBe(true);
     expect(parsed.version).toBe('v-existing');
     expect(parsed.delta).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // /workspace.materialize — binary octet-stream response (BUG-W3)
+  // -------------------------------------------------------------------------
+
+  it('POST /workspace.materialize — streams a raw git-bundle octet-stream body', async () => {
+    // BUG-W3: the materialize response is no longer JSON {bundleBytes:<base64>}.
+    // The dispatcher writes the raw bundle bytes with Content-Type
+    // application/octet-stream so the runner can stream it straight to disk
+    // (bypassing the 4 MiB JSON response cap that crashed the runner on an aged
+    // workspace). Here we assert the dispatcher's binary write path end-to-end
+    // over a real socket: octet-stream content-type + a real git-bundle body
+    // (the bundle magic header), NOT a JSON envelope.
+    const s = await setup({ plugins: [createMockWorkspacePlugin()] });
+    setups.push(s);
+    const res = await doRequestRaw(
+      s.socketPath,
+      'POST',
+      '/workspace.materialize',
+      s.token,
+      '{}',
+    );
+    expect(res.status).toBe(200);
+    expect(res.contentType).toBe('application/octet-stream');
+    expect(res.body.length).toBeGreaterThan(0);
+    // A git bundle starts with the `# v2 git bundle` / `# v3 git bundle` magic.
+    const head = res.body.toString('utf8', 0, 16);
+    expect(head).toMatch(/^# v\d git bundle/);
+    // It is NOT a JSON envelope.
+    expect(() => JSON.parse(res.body.toString('utf8'))).toThrow();
   });
 
   // -------------------------------------------------------------------------

@@ -35,6 +35,9 @@ function makeMockClient(responses: unknown[]): {
       // is pre-empted by the length check above, so the cast is safe.
       return queue.shift() as unknown;
     },
+    async callBinary() {
+      throw new Error('not used in inbox-loop tests');
+    },
     async event() {
       // no-op for these tests
     },

@@ -25,13 +25,21 @@ import { authenticate, dispatch, writeJsonError } from '@ax/ipc-core';
 // picks a handler by (method, path), reads the body if needed, and writes
 // the response.
 //
-// I12: long-poll timeout is 30 s. Node's default idle socket timeout is 0
-// (disabled for HTTP servers) but we set it to 60 s explicitly so any
-// future change to HTTP server defaults can't silently kill a 30 s
-// long-poll request mid-flight.
+// Idle socket timeout. Node's default for HTTP servers is 0 (disabled); we set
+// it explicitly, and it must EXCEED the longest per-action client budget so the
+// client's own timeout is always the binding one and the server never resets an
+// in-flight request mid-flight:
+//   - session.next-message: a 30 s long-poll held open with no data.
+//   - workspace.materialize (BUG-W3): the host may spend up to the client's
+//     120 s materialize budget building/streaming a large aged bundle; before
+//     the first response byte the socket is IDLE (request received, response
+//     not started), so a 60 s idle timeout would destroy the socket mid-build
+//     → ECONNRESET → retry → rebuild → loop → boot crash, relocating the very
+//     crash BUG-W3 fixes. 130 s sits just above the 120 s client budget so the
+//     client times out first (clean) instead of the server resetting.
 // ---------------------------------------------------------------------------
 
-const IDLE_TIMEOUT_MS = 60_000;
+const IDLE_TIMEOUT_MS = 130_000;
 
 export interface Listener {
   close(): Promise<void>;
@@ -146,7 +154,9 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     await dispatch(req, res, ctx, opts.bus);
   };
 
-  // I12: bump idle timeout so 30 s long-polls (Task 4) aren't killed.
+  // Idle socket timeout (see IDLE_TIMEOUT_MS). Must outlast the longest
+  // client-side per-action budget (materialize 120 s; long-poll 30 s) so the
+  // server never resets an in-flight request before the client gives up.
   server.setTimeout(IDLE_TIMEOUT_MS);
 
   // Best-effort cleanup of a stale socket file from a prior crashed listener.

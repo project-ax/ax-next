@@ -46,6 +46,7 @@ vi.mock('@anthropic-ai/claude-agent-sdk', () => ({
 type FakeClient = {
   call: Mock;
   callGet: Mock;
+  callBinary: Mock;
   event: Mock;
   close: Mock;
 } & IpcClient;
@@ -166,6 +167,11 @@ function buildFakeClient(overrides: Partial<FakeClient> = {}): FakeClient {
   const client: FakeClient = {
     call: vi.fn(),
     callGet: vi.fn(),
+    // workspace.materialize streams a binary bundle to a temp file (BUG-W3).
+    // materializeWorkspace is mocked in this suite, so the path value is inert;
+    // we just need callBinary to resolve with the {path,bytes} shape main()
+    // forwards to it.
+    callBinary: vi.fn().mockResolvedValue({ path: '/tmp/fake-materialize.bundle', bytes: 0 }),
     event: vi.fn().mockResolvedValue(undefined),
     close: vi.fn().mockResolvedValue(undefined),
     ...overrides,
@@ -399,24 +405,29 @@ describe('main()', () => {
 
     expect(rc).toBe(0);
 
-    // Three calls at boot: session.get-config + workspace.materialize +
-    // tool.list. Materialize is Phase 3; the runner clones (or inits)
-    // /permanent before the SDK query opens.
-    expect(fakeClient.call).toHaveBeenCalledTimes(3);
+    // Two JSON calls at boot: session.get-config + tool.list. (Materialize is
+    // NOT a JSON `call` — it streams a binary bundle via `callBinary`, BUG-W3.)
+    expect(fakeClient.call).toHaveBeenCalledTimes(2);
     expect(fakeClient.call).toHaveBeenCalledWith('session.get-config', {});
-    expect(fakeClient.call).toHaveBeenCalledWith('workspace.materialize', {});
     expect(fakeClient.call).toHaveBeenCalledWith('tool.list', {});
-    // Materialize must be called BEFORE tool.list so the workspace exists
-    // by the time the SDK query opens.
-    const callOrder = fakeClient.call.mock.calls.map((c) => c[0]);
-    expect(callOrder.indexOf('workspace.materialize')).toBeLessThan(
-      callOrder.indexOf('tool.list'),
+    // Materialize goes through callBinary (drained to a temp file).
+    expect(fakeClient.callBinary).toHaveBeenCalledTimes(1);
+    expect(fakeClient.callBinary).toHaveBeenCalledWith('workspace.materialize', {});
+    // Materialize must be called BEFORE tool.list so the workspace exists by
+    // the time the SDK query opens. callBinary and call are separate mocks, so
+    // compare invocation order across both.
+    const materializeOrder = fakeClient.callBinary.mock.invocationCallOrder[0];
+    const toolListIdx = fakeClient.call.mock.calls.findIndex(
+      (c) => c[0] === 'tool.list',
     );
-    // Materialize was actually invoked on the workspace root.
+    const toolListOrder = fakeClient.call.mock.invocationCallOrder[toolListIdx];
+    expect(materializeOrder).toBeLessThan(toolListOrder);
+    // Materialize was actually invoked on the workspace root with the streamed
+    // bundle file path callBinary returned.
     expect(materializeMock).toHaveBeenCalledTimes(1);
     expect(materializeMock).toHaveBeenCalledWith({
       root: '/tmp/workspace',
-      bundleBase64: '',
+      bundlePath: '/tmp/fake-materialize.bundle',
     });
     // Empty turns (no file changes accumulated) skip commit-notify; the
     // event.turn-end below is the heartbeat the host keys off (Task 7c).
@@ -926,6 +937,9 @@ describe('main()', () => {
     // than to desync silently from the host's view of the lineage.
     setEnv(COMPLETE_ENV);
     fakeClient = buildFakeClient();
+    // Materialize streams via callBinary now (BUG-W3) — simulate the IPC
+    // failure there (e.g. host bundler error surfaced through the drain).
+    fakeClient.callBinary.mockRejectedValue(new Error('host bundler exploded'));
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
         return {
@@ -940,9 +954,6 @@ describe('main()', () => {
           conversationId: null,
           runnerSessionId: null,
         };
-      }
-      if (action === 'workspace.materialize') {
-        throw new Error('host bundler exploded');
       }
       throw new Error(`unexpected call: ${action}`);
     });
