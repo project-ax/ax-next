@@ -49,6 +49,13 @@ const SANDBOX_TOOL: ToolDescriptor = {
   inputSchema: { type: 'object' },
   executesIn: 'sandbox',
 };
+const HOST_TOOL_FLUSH: ToolDescriptor = {
+  name: 'install_authored_skill',
+  description: 'install an authored skill',
+  inputSchema: { type: 'object' },
+  executesIn: 'host',
+  flushWorkspaceBeforeCall: true,
+};
 
 // Shape of the SDK tool entry we care about in tests. The full type is
 // SdkMcpToolDefinition but we only poke at these fields.
@@ -204,6 +211,85 @@ describe('buildHostToolEntries', () => {
     for (const key of Object.keys(shape)) {
       expect(shape[key]).toHaveProperty('_def');
     }
+  });
+
+  // BUG-W2 regression: a host tool that reads workspace files the agent wrote
+  // earlier in the SAME turn (install_authored_skill → .ax/skills/<id>/SKILL.md)
+  // must have the runner flush its live tree to the host mirror BEFORE the
+  // forward, or the host reads a stale mirror and fails authored-skill-not-found.
+  it('flushes the workspace BEFORE forwarding a flushWorkspaceBeforeCall tool', async () => {
+    const order: string[] = [];
+    const { client } = mkClient(async () => {
+      order.push('forward');
+      return { output: 'ok' };
+    });
+    const flushWorkspace = async (): Promise<void> => {
+      order.push('flush');
+    };
+    const entries = buildHostToolEntries(
+      client,
+      [HOST_TOOL_FLUSH],
+      () => 'id-1',
+      flushWorkspace,
+    );
+    await (entries[0] as ToolEntry).handler({}, {});
+    // Flush must complete before the host call goes out — order is the contract.
+    expect(order).toEqual(['flush', 'forward']);
+  });
+
+  it('does NOT flush for a host tool without flushWorkspaceBeforeCall', async () => {
+    let flushed = false;
+    const { client, calls } = mkClient(async () => ({ output: 'ok' }));
+    const flushWorkspace = async (): Promise<void> => {
+      flushed = true;
+    };
+    const entries = buildHostToolEntries(
+      client,
+      [HOST_TOOL_A],
+      () => 'id-1',
+      flushWorkspace,
+    );
+    await (entries[0] as ToolEntry).handler({}, {});
+    expect(flushed).toBe(false);
+    expect(calls.map((c) => c.action)).toEqual(['tool.execute-host']);
+  });
+
+  it('forwards anyway when a flagged tool has no flushWorkspace wired', async () => {
+    const { client, calls } = mkClient(async () => ({ output: 'ok' }));
+    // No flushWorkspace arg — e.g. a workspace-less deployment. The flag is a
+    // no-op and the call still forwards.
+    const entries = buildHostToolEntries(client, [HOST_TOOL_FLUSH], () => 'id-1');
+    const result = (await (entries[0] as ToolEntry).handler({}, {})) as {
+      content: Array<{ type: string; text: string }>;
+    };
+    expect(calls.map((c) => c.action)).toEqual(['tool.execute-host']);
+    expect(result.content[0]?.text).toBe('ok');
+  });
+
+  it('forwards anyway (degrades) when the flush throws', async () => {
+    const order: string[] = [];
+    const { client } = mkClient(async () => {
+      order.push('forward');
+      return { output: 'host-ok' };
+    });
+    const flushWorkspace = async (): Promise<void> => {
+      order.push('flush-throw');
+      throw new Error('commit-notify unreachable');
+    };
+    const entries = buildHostToolEntries(
+      client,
+      [HOST_TOOL_FLUSH],
+      () => 'id-1',
+      flushWorkspace,
+    );
+    const result = (await (entries[0] as ToolEntry).handler({}, {})) as {
+      content: Array<{ type: string; text: string }>;
+      isError?: boolean;
+    };
+    // The flush failure must NOT abort the turn — we forward and let the host
+    // tool surface its own outcome (here, success).
+    expect(order).toEqual(['flush-throw', 'forward']);
+    expect(result).toEqual({ content: [{ type: 'text', text: 'host-ok' }] });
   });
 
   it('tolerates a missing description by falling back to empty string', () => {

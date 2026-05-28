@@ -48,6 +48,23 @@ export interface ToolDescriptor {
    * `ToolDescriptorSchema` — see that file for the cross-boundary shape.
    */
   executesIn: 'sandbox' | 'host';
+  /**
+   * When `true`, the agent runtime MUST flush its live workspace (commit +
+   * push to the host's workspace mirror) BEFORE forwarding this host tool's
+   * `tool.execute-host` call.
+   *
+   * Only meaningful for `executesIn: 'host'` tools that read workspace files
+   * the agent may have written earlier in the SAME turn. Under runner-owned
+   * sessions the host only sees the committed+pushed workspace mirror, which
+   * lags the runner's live tree until a turn-boundary commit — so without the
+   * flush a host tool reading e.g. `.ax/skills/<id>/SKILL.md` would not yet
+   * see a file the agent just authored. Declarative on purpose: the tool
+   * states its need; the runtime owns the flush mechanism.
+   *
+   * Must match the corresponding field on `@ax/ipc-protocol`'s
+   * `ToolDescriptorSchema`.
+   */
+  flushWorkspaceBeforeCall?: boolean;
 }
 
 export type AgentOutcome =

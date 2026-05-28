@@ -41,6 +41,13 @@ export interface CreateHostMcpServerOptions {
   tools: ToolDescriptor[];
   /** Test seam: override the per-call id generator. */
   idGen?: () => string;
+  /**
+   * Flush the live workspace (commit + push to the host mirror) before
+   * forwarding a host tool whose descriptor declares
+   * `flushWorkspaceBeforeCall`. Omitted in deployments without a workspace
+   * (the flag then simply has no effect). See the per-tool handler below.
+   */
+  flushWorkspace?: () => Promise<void>;
 }
 
 /**
@@ -104,6 +111,7 @@ export function buildHostToolEntries(
   client: IpcClient,
   tools: ToolDescriptor[],
   idGen: () => string = () => randomUUID(),
+  flushWorkspace?: () => Promise<void>,
 ): Array<SdkMcpToolDefinition> {
   const hostTools = tools.filter((t) => t.executesIn === 'host');
   return hostTools.map((t) =>
@@ -113,6 +121,24 @@ export function buildHostToolEntries(
       shapeFromInputSchema(t.inputSchema),
       async (args) => {
         try {
+          // Flush the live workspace BEFORE forwarding when this host tool
+          // declares it reads workspace files the agent may have written this
+          // turn. Under runner-owned sessions the host reads the committed +
+          // pushed mirror, which lags the live tree until a turn-boundary
+          // commit — without the flush the host read misses a just-written
+          // file (e.g. install_authored_skill's `.ax/skills/<id>/SKILL.md`,
+          // BUG-W2). The flush failing is non-fatal here: we forward anyway
+          // and let the host tool surface its own "not found" so a workspace
+          // hiccup degrades to the original error rather than killing the turn.
+          if (t.flushWorkspaceBeforeCall === true && flushWorkspace !== undefined) {
+            try {
+              await flushWorkspace();
+            } catch (flushErr) {
+              process.stderr.write(
+                `runner: workspace flush before '${t.name}' failed (forwarding anyway): ${flushErr instanceof Error ? flushErr.message : String(flushErr)}\n`,
+              );
+            }
+          }
           const raw = await client.call('tool.execute-host', {
             call: { id: idGen(), name: t.name, input: args },
           });
@@ -139,6 +165,11 @@ export function createHostMcpServer(
   return createSdkMcpServer({
     name: MCP_HOST_SERVER_NAME,
     version: '0.0.0',
-    tools: buildHostToolEntries(opts.client, opts.tools, opts.idGen),
+    tools: buildHostToolEntries(
+      opts.client,
+      opts.tools,
+      opts.idGen,
+      opts.flushWorkspace,
+    ),
   });
 }

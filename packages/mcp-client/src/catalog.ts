@@ -147,6 +147,18 @@ function validateDescriptor(input: unknown): ToolDescriptor {
     });
   }
 
+  if (
+    d.flushWorkspaceBeforeCall !== undefined &&
+    typeof d.flushWorkspaceBeforeCall !== 'boolean'
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'tool:register',
+      message: `tool '${d.name}': flushWorkspaceBeforeCall must be a boolean when provided`,
+    });
+  }
+
   const descriptor: ToolDescriptor = {
     name: d.name,
     inputSchema: d.inputSchema as Record<string, unknown>,
@@ -154,6 +166,11 @@ function validateDescriptor(input: unknown): ToolDescriptor {
   };
   if (typeof d.description === 'string') {
     descriptor.description = d.description;
+  }
+  // Carry the flush flag only when explicitly true — the runner treats a
+  // missing/false field as "no flush", so we don't store a redundant false.
+  if (d.flushWorkspaceBeforeCall === true) {
+    descriptor.flushWorkspaceBeforeCall = true;
   }
   return descriptor;
 }

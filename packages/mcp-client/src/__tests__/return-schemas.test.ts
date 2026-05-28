@@ -10,7 +10,14 @@ const descriptor: ToolDescriptor = {
   name: 'github__search',
   description: 'search GitHub',
   inputSchema: { type: 'object', properties: { q: { type: 'string' } }, required: ['q'] },
-  executesIn: 'sandbox',
+  executesIn: 'host',
+  // BUG-W2: this field was missing from the local ToolDescriptorSchema, so the
+  // tool:list return-validation silently dropped it and the runner never saw
+  // it (the pre-call workspace flush never fired). Keep it in the
+  // "fully-populated" descriptor so the round-trip test below would catch the
+  // strip — the bus validates tool:list output against ToolListOutputSchema, so
+  // a field absent from that schema is dropped before it reaches the wire.
+  flushWorkspaceBeforeCall: true,
 };
 
 describe('tool-dispatcher return schemas', () => {

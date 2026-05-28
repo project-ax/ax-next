@@ -36,6 +36,7 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
 
 import {
   commitNotifyWithResync,
+  flushWorkspaceToHost,
   MAX_RESYNC_ATTEMPTS,
 } from '../commit-notify-resync.js';
 
@@ -237,5 +238,44 @@ describe('commitNotifyWithResync', () => {
     expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
     expect(result).toEqual({ parentVersion: null, outcome: 'rolled-back' });
+  });
+});
+
+describe('flushWorkspaceToHost', () => {
+  it('nothing staged (commitTurnAndBundle → null) → no commit-notify, parentVersion unchanged', async () => {
+    commitTurnAndBundleMock.mockResolvedValueOnce(null);
+    const call = vi.fn();
+    const result = await flushWorkspaceToHost({
+      client: fakeClient(call),
+      root: ROOT,
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    // A post-commit retry (the file was already committed on a prior turn)
+    // has nothing to flush — we must NOT hit the host and must leave the
+    // version untouched.
+    expect(call).not.toHaveBeenCalled();
+    expect(advanceBaselineMock).not.toHaveBeenCalled();
+    expect(result).toEqual({ parentVersion: 'v1' });
+  });
+
+  it('staged bundle → commit-notify accepted → returns the advanced parentVersion', async () => {
+    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_MIDTURN');
+    const call = vi.fn().mockResolvedValue({ accepted: true, version: 'v2' });
+    const result = await flushWorkspaceToHost({
+      client: fakeClient(call),
+      root: ROOT,
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(call).toHaveBeenCalledTimes(1);
+    expect(call).toHaveBeenCalledWith('workspace.commit-notify', {
+      parentVersion: 'v1',
+      reason: 'turn',
+      bundleBytes: 'BUNDLE_MIDTURN',
+    });
+    expect(advanceBaselineMock).toHaveBeenCalledTimes(1);
+    // The advanced version threads into the caller so the turn-end commit chains.
+    expect(result).toEqual({ parentVersion: 'v2' });
   });
 });

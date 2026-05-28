@@ -39,6 +39,14 @@ export const INSTALL_AUTHORED_SKILL_DESCRIPTOR: ToolDescriptor = {
     'here in the packages argument (npm and/or pypi arrays) — never in the SKILL.md frontmatter. ' +
     'The user sees and approves all declared registry egress on the same card.',
   executesIn: 'host',
+  // The host handler reads the just-authored `.ax/skills/<id>/` bundle from the
+  // workspace. Under runner-owned sessions the host only sees the committed +
+  // pushed workspace mirror, which lags the runner's live tree until a
+  // turn-boundary commit — and the agent writes the SKILL.md and calls this
+  // tool in the SAME turn. Without a flush the host would read a stale mirror
+  // and fail with `authored-skill-not-found` (BUG-W2). The runner flushes its
+  // live tree before forwarding this call so the host reads the fresh bundle.
+  flushWorkspaceBeforeCall: true,
   inputSchema: {
     type: 'object',
     properties: {

@@ -32,7 +32,7 @@ import {
   scaffoldWorkspaceGitignore,
   scaffoldWorkspaceSkillSurface,
 } from './git-workspace.js';
-import { commitNotifyWithResync } from './commit-notify-resync.js';
+import { commitNotifyWithResync, flushWorkspaceToHost } from './commit-notify-resync.js';
 import { commitTrace } from './commit-trace.js';
 import { createLocalDispatcher } from './local-dispatcher.js';
 import { buildToolCacheEnv } from './tool-cache-env.js';
@@ -377,7 +377,36 @@ export async function main(): Promise<number> {
     tools = tools.filter((t) => allow.has(t.name));
   }
 
-  const hostMcpServer = createHostMcpServer({ client, tools });
+  // Tracks the last accepted workspace version so the host's optimistic-
+  // concurrency check sees a coherent lineage across turns. Initialized
+  // to the materialize-time baseline OID so the FIRST commit-notify of
+  // this session reports a parent that matches what the host's
+  // workspace-export-baseline-bundle hook will reproduce. Declared here
+  // (ahead of the SDK query loop) so the mid-turn host-tool flush below
+  // and the turn-end commit share the same chained `parentVersion`.
+  let parentVersion: string | null = initialBaselineCommit;
+
+  // Mid-turn flush for host tools that declare `flushWorkspaceBeforeCall`
+  // (e.g. install_authored_skill). The runner commits + pushes its live
+  // /permanent tree to the host mirror BEFORE the host tool runs, so a host
+  // read of a file the agent just authored this turn (.ax/skills/<id>/SKILL.md)
+  // sees it instead of the stale committed mirror (BUG-W2). Threads the
+  // advanced version back into `parentVersion` so the turn-end commit chains.
+  const flushWorkspaceForHostTool = async (): Promise<void> => {
+    const result = await flushWorkspaceToHost({
+      client,
+      root: env.workspaceRoot,
+      parentVersion,
+      reason: 'turn',
+    });
+    parentVersion = result.parentVersion;
+  };
+
+  const hostMcpServer = createHostMcpServer({
+    client,
+    tools,
+    flushWorkspace: flushWorkspaceForHostTool,
+  });
 
   // Phase 2: sandbox-MCP bridge. The local-dispatcher holds executors for
   // tools marked `executesIn: 'sandbox'`. Today only `artifact_publish`
@@ -415,14 +444,9 @@ export async function main(): Promise<number> {
   // /permanent (`commitTurnAndBundle` at the SDK `result` boundary).
   // The legacy PostToolUse-based diff accumulator is gone — git status
   // catches ALL writes regardless of tool, including the Bash deletes
-  // and MCP writes the legacy path missed.
-
-  // Tracks the last accepted workspace version so the host's optimistic-
-  // concurrency check sees a coherent lineage across turns. Initialized
-  // to the materialize-time baseline OID so the FIRST commit-notify of
-  // this session reports a parent that matches what the host's
-  // workspace-export-baseline-bundle hook will reproduce.
-  let parentVersion: string | null = initialBaselineCommit;
+  // and MCP writes the legacy path missed. (`parentVersion` is declared
+  // above, before the host-MCP server, so the mid-turn host-tool flush
+  // shares the same chained version.)
 
   // Phase C: bind the SDK's session_id to our conversation row.
   //
