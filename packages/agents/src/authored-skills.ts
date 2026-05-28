@@ -1,6 +1,8 @@
-import { makeAgentContext, type HookBus } from '@ax/core';
+import { makeAgentContext, PluginError, type HookBus } from '@ax/core';
 import { parseSkillManifest, splitSkillMd } from '@ax/skills-parser';
 import type { AuthoredSkillSummary } from './types.js';
+
+const PLUGIN_NAME = '@ax/agents';
 
 /**
  * Scan an agent's workspace for authored SKILL.md files under
@@ -134,9 +136,17 @@ const AUTHORED_SKILL_ID_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
 /**
  * Read the FULL agent-authored bundle (SKILL.md → manifest+body, plus every
- * helper file) under `.ax/skills/<skillId>/`. Returns null when there is no
- * canonical SKILL.md (missing / no frontmatter / malformed YAML) — the caller
- * surfaces a friendly "author it first" message rather than throwing.
+ * helper file) under `.ax/skills/<skillId>/`.
+ *
+ * Returns null ONLY when there is genuinely no SKILL.md under the dir — the
+ * caller surfaces a friendly "author it first" message. When a SKILL.md IS
+ * present but invalid (no frontmatter fence, or `parseSkillManifest` rejects it
+ * — e.g. description > 240 chars, name not a slug), we THROW
+ * `authored-skill-invalid` carrying the specific reason. Conflating the two as
+ * null made the handler report the misleading `authored-skill-not-found`, so
+ * the agent kept rewriting the same broken file with no idea what was wrong
+ * (BUG-W2 follow-up). `mapPluginError` surfaces the message so the agent can
+ * fix it and retry.
  *
  * Same ctx routing as listAuthoredSkills: workspace:list/read key off
  * ctx.userId + ctx.agentId (hashed to a workspace shard), so we root a fresh
@@ -187,11 +197,30 @@ export async function readAuthoredBundle(
     if (rel.length === 0) continue;
 
     if (rel === 'SKILL.md') {
+      // SKILL.md is PRESENT — from here a failure is "found but invalid", which
+      // we surface (not null) so the agent learns the actual reason and fixes it.
       const content = new TextDecoder().decode(read.bytes);
       const split = splitSkillMd(content);
-      if (split === null) return null; // not a canonical SKILL.md
+      if (split === null) {
+        throw new PluginError({
+          code: 'authored-skill-invalid',
+          plugin: PLUGIN_NAME,
+          message:
+            `the authored skill '${skillId}' at ${dir}/SKILL.md is missing its YAML frontmatter — ` +
+            `it must start with a '---' fenced block declaring at least name and description. ` +
+            `Fix the file and call install_authored_skill again.`,
+        });
+      }
       const parsed = parseSkillManifest(split.manifestYaml);
-      if (!parsed.ok) return null; // malformed — let the agent fix it
+      if (!parsed.ok) {
+        throw new PluginError({
+          code: 'authored-skill-invalid',
+          plugin: PLUGIN_NAME,
+          message:
+            `the authored skill '${skillId}' at ${dir}/SKILL.md has invalid frontmatter: ${parsed.message}. ` +
+            `Fix the file and call install_authored_skill again.`,
+        });
+      }
       manifestSeen = true;
       description = parsed.value.description;
       version = parsed.value.version;

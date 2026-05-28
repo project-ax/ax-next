@@ -420,7 +420,10 @@ describe('readAuthoredBundle', () => {
     expect(await readAuthoredBundle(h.bus, userId, agentId, 'empty')).toBeNull();
   });
 
-  it('returns null when the SKILL.md is malformed (no frontmatter)', async () => {
+  // BUG-W2 follow-up: a SKILL.md that IS present but invalid must THROW
+  // authored-skill-invalid with the reason (not return null → the misleading
+  // "authored-skill-not-found"), so the agent learns what to fix.
+  it('throws authored-skill-invalid when the SKILL.md has no frontmatter', async () => {
     const h = await makeHarness();
     const userId = 'u1';
     const agentId = await createPersonalAgent(h, userId);
@@ -428,7 +431,22 @@ describe('readAuthoredBundle', () => {
       h, '.ax/skills/broken/SKILL.md', 'not a valid skill md', userId, agentId, null,
     );
 
-    expect(await readAuthoredBundle(h.bus, userId, agentId, 'broken')).toBeNull();
+    await expect(
+      readAuthoredBundle(h.bus, userId, agentId, 'broken'),
+    ).rejects.toMatchObject({ code: 'authored-skill-invalid' });
+  });
+
+  it('throws authored-skill-invalid (with the reason) when the description is too long', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+    const longDesc = 'x'.repeat(300); // > 240-char limit
+    const md = ['---', 'name: toolong', `description: ${longDesc}`, 'version: 1', '---', '', '# body'].join('\n');
+    await seedFile(h, '.ax/skills/toolong/SKILL.md', md, userId, agentId, null);
+
+    await expect(
+      readAuthoredBundle(h.bus, userId, agentId, 'toolong'),
+    ).rejects.toThrow(/240|description/i);
   });
 
   it('returns null when no workspace backend is loaded', async () => {
