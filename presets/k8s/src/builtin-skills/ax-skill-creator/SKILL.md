@@ -100,6 +100,14 @@ user describes the need without naming the skill. But keep it scoped to what the
 skill actually does; a description that's too greedy hijacks unrelated requests,
 which is just as bad as one that never fires.
 
+**Keep it under 240 characters.** That's a hard limit — the install is rejected
+above it, costing you a round-trip. So spend the budget well: lead with the
+concrete capability, then pack in the highest-signal trigger phrases, and if
+they don't all fit, keep the ones a user is most likely to actually type. One
+trap to avoid: a multi-line folded (`>-`) description still counts *every* line
+once folded, and it's easy to undercount. If you're anywhere near the limit,
+write the description as a single line so its length is obvious at a glance.
+
 ### Writing style for the body
 
 Write in the imperative — you're giving instructions to a capable reader.
@@ -137,6 +145,8 @@ directory.
 These are validated on install. Follow them so a name you choose isn't quietly
 dropped or rejected:
 
+- **Description**: **≤ 240 characters** — a hard limit; the install is rejected
+  above it (see "Writing the description" above for how to spend the budget).
 - **Skill id** (`<id>`): `^[a-z][a-z0-9-]{0,63}$` — the id must start with a
   lowercase letter and contain only lowercase letters, digits, and hyphens (no
   dots or underscores), max 64 characters. (The install tool accepts a slightly
@@ -238,10 +248,8 @@ needs one host and one credential slot.
 name: linear
 description: >-
   Use when the user asks about their Linear issues, cycles, or sprints — e.g.
-  "what's in my current cycle", "list my open Linear issues", "what am I
-  assigned in Linear". Queries the Linear GraphQL API to fetch and summarize
-  issues. Use whenever the user references Linear work items, even without
-  saying "Linear" if the context makes it clear.
+  "what's in my current cycle" or "list my open Linear issues". Queries the
+  Linear GraphQL API and summarizes the results.
 ---
 
 # Linear issues
@@ -268,8 +276,9 @@ query {
 Summarize the result grouped by state (e.g. In Progress, Todo, Done).
 ```
 
-Note the frontmatter is `name` + `description` only — no capabilities block. The
-key is referenced as `$LINEAR_API_KEY`, never written out. Then install:
+Note the frontmatter is `name` + `description` only — no capabilities block, and
+the description stays well under the 240-char cap. The key is referenced as
+`$LINEAR_API_KEY`, never written out. Then install:
 
 ```
 install_authored_skill({
