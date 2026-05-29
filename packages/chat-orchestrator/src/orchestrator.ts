@@ -242,6 +242,16 @@ interface SkillsResolveOutput {
   skills: ResolvedSkillForOrch[];
 }
 
+// agents:resolve-authored-skills — registered by @ax/agents (Phase 3 A2).
+// Returns the agent's own self-authored draft skills (quarantine-filtered,
+// EMPTY capabilities — instruction-only; lazy approval is Phase 4). Duplicated
+// structurally per I2 (no @ax/agents import). Conditionally called via
+// bus.hasService — NOT declared in the manifest, same convention as
+// skills:resolve / skills:list-defaults.
+interface AgentsResolveAuthoredSkillsOutput {
+  skills: ResolvedSkillForOrch[];
+}
+
 // skills:list-user-attachments — registered by @ax/skills (TASK-33).
 // Duplicated structurally per I2 (no @ax/skills import). Conditionally called
 // via bus.hasService — NOT declared in the manifest, same convention as
@@ -1376,6 +1386,28 @@ export function createOrchestrator(
     // + treat as empty; the session still opens. Explicit attachments win
     // on id collision (I-S4) — we filter defaults by ids already present
     // in resolvedSkills.
+    //
+    // Phase 3 — self-authored workspace drafts are the highest-precedence
+    // discovery source (the agent's own current authoring wins over a stale
+    // catalog/default of the same id). Instruction-only here (empty caps; lazy
+    // approval is Phase 4), so a throw FAILS OPEN — fewer skills, never wider
+    // reach (same posture as skills:list-defaults below).
+    let authoredDraftSkills: ResolvedSkillForOrch[] = [];
+    if (bus.hasService('agents:resolve-authored-skills')) {
+      try {
+        const r = await bus.call<
+          { ownerUserId: string; agentId: string },
+          AgentsResolveAuthoredSkillsOutput
+        >('agents:resolve-authored-skills', ctx, { ownerUserId: ctx.userId, agentId: agent.id });
+        authoredDraftSkills = r.skills;
+      } catch (err) {
+        ctx.logger.warn('resolve_authored_skills_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        authoredDraftSkills = [];
+      }
+    }
+
     let defaultSkillsForUnion: ResolvedSkillForOrch[] = [];
     if (bus.hasService('skills:list-defaults')) {
       try {
@@ -1393,9 +1425,14 @@ export function createOrchestrator(
         defaultSkillsForUnion = [];
       }
     }
-    const explicitIds = new Set(resolvedSkills.map((s) => s.id));
+    const authoredIds = new Set(authoredDraftSkills.map((s) => s.id));
+    const withAuthored = [
+      ...authoredDraftSkills,
+      ...resolvedSkills.filter((s) => !authoredIds.has(s.id)),
+    ];
+    const explicitIds = new Set(withAuthored.map((s) => s.id));
     const withDefaults = [
-      ...resolvedSkills,
+      ...withAuthored,
       ...defaultSkillsForUnion.filter((s) => !explicitIds.has(s.id)),
     ];
     const presentIds = new Set(withDefaults.map((s) => s.id));

@@ -3488,6 +3488,90 @@ describe('chat-orchestrator', () => {
     expect(skillMd?.contents).toContain('# explicit body');
   });
 
+  // -----------------------------------------------------------------
+  // Phase 3 A3 — self-authored workspace drafts are the highest-precedence
+  // discovery source (the agent's own current authoring wins over a stale
+  // default/catalog of the same id). Instruction-only here (empty caps);
+  // a throw FAILS OPEN (fewer skills, never wider reach).
+  // -----------------------------------------------------------------
+
+  it('authored drafts win over a default of the same id (highest precedence, de-duped)', async () => {
+    const proxy = buildProxyHooks();
+    // A default-attached skill of id 'linear' carrying a DIFFERENT body.
+    const defaultSameId: ResolvedSkill = {
+      id: 'linear',
+      capabilities: { allowedHosts: [], credentials: [] },
+      bodyMd: 'Default body',
+      manifestYaml: 'name: linear\ndescription: default\n',
+    };
+    const defaults = buildDefaultsHook({ skills: [defaultSameId] });
+    // The agent's own authored draft of id 'linear' — should win.
+    const authoredDraft: ResolvedSkill = {
+      id: 'linear',
+      capabilities: {
+        allowedHosts: [],
+        credentials: [],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      },
+      bodyMd: 'Authored body',
+      manifestYaml: 'name: linear\ndescription: authored\n',
+      files: [],
+    };
+    const authoredCalls = { count: 0, lastInput: undefined as unknown };
+    const authoredServices: Record<string, ServiceHandler> = {
+      'agents:resolve-authored-skills': async (_ctx, input) => {
+        authoredCalls.count += 1;
+        authoredCalls.lastInput = input;
+        return { skills: [authoredDraft] };
+      },
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          // No explicit skillAttachments — 'linear' arrives via default + draft.
+          skillAttachments: [],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, defaults.services, authoredServices);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('authored-wins-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(authoredCalls.count).toBe(1);
+    expect(authoredCalls.lastInput).toEqual({
+      ownerUserId: 'test-user',
+      agentId: TEST_AGENT.id,
+    });
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills: Array<{ id: string; files: Array<{ path: string; contents: string }> }>;
+    };
+    // De-duped: exactly one 'linear' in the projection.
+    const linears = sandboxIn.installedSkills.filter((s) => s.id === 'linear');
+    expect(linears).toHaveLength(1);
+    // The DRAFT body won over the default.
+    const skillMd = linears[0]!.files.find((f) => f.path === 'SKILL.md');
+    expect(skillMd?.contents).toContain('Authored body');
+    expect(skillMd?.contents).not.toContain('Default body');
+  });
+
   it('skips defaults entirely when skills:list-defaults service is not registered', async () => {
     // Stripped-preset compatibility (I-S6).
     const proxy = buildProxyHooks();
