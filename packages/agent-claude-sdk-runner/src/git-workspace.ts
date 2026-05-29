@@ -209,6 +209,13 @@ const WORKSPACE_GITIGNORE_ENTRIES = [
  * baseline content.
  */
 export async function scaffoldWorkspaceGitignore(root: string): Promise<void> {
+  // Ensure the workspace root exists before we append `.gitignore`. In
+  // production materializeWorkspace's `git clone` already created it, but this
+  // scaffolder must not assume an earlier step did so (the same self-
+  // sufficiency scaffoldSdkProjectsSymlink documents) — otherwise it ENOENTs on
+  // a root that nothing else happened to create. Recursive mkdir is a no-op
+  // when the clone already made it.
+  await fs.mkdir(root, { recursive: true });
   const gitignorePath = path.join(root, '.gitignore');
   const existing = await fs.readFile(gitignorePath, 'utf8').catch(() => '');
   const present = new Set(existing.split('\n').map((line) => line.trim()));

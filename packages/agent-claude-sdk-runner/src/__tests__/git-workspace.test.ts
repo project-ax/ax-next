@@ -270,6 +270,19 @@ describe('scaffoldWorkspaceGitignore', () => {
     expect(nodeModulesLines).toHaveLength(1);
   });
 
+  it('creates the workspace root if it does not yet exist (regression: A4 dropped scaffoldWorkspaceSkillSurface, whose recursive mkdir had been incidentally creating the root)', async () => {
+    // No materializeWorkspace here — a root that nothing else created. Before
+    // the self-sufficient mkdir, this ENOENT'd on the .gitignore append (the
+    // CI failure on PR #218). The scaffolder must create its own root.
+    const root = path.join(scratchRoot, 'never-created');
+    await expect(fs.stat(root)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await scaffoldWorkspaceGitignore(root);
+
+    const gi = await fs.readFile(path.join(root, '.gitignore'), 'utf8');
+    expect(gi).toContain('node_modules/');
+  });
+
   it('preserves a baseline .gitignore and appends only the missing entries', async () => {
     const root = path.join(scratchRoot, 'permanent');
     // Baseline already ignores node_modules/ and has a user entry.
