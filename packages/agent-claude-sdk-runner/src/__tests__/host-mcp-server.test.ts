@@ -50,8 +50,8 @@ const SANDBOX_TOOL: ToolDescriptor = {
   executesIn: 'sandbox',
 };
 const HOST_TOOL_FLUSH: ToolDescriptor = {
-  name: 'install_authored_skill',
-  description: 'install an authored skill',
+  name: 'host_reads_workspace',
+  description: 'a host tool that reads files the agent just wrote',
   inputSchema: { type: 'object' },
   executesIn: 'host',
   flushWorkspaceBeforeCall: true,
@@ -214,9 +214,9 @@ describe('buildHostToolEntries', () => {
   });
 
   // BUG-W2 regression: a host tool that reads workspace files the agent wrote
-  // earlier in the SAME turn (install_authored_skill → .ax/draft-skills/<id>/SKILL.md)
-  // must have the runner flush its live tree to the host mirror BEFORE the
-  // forward, or the host reads a stale mirror and fails authored-skill-not-found.
+  // earlier in the SAME turn must have the runner flush its live tree to the
+  // host mirror BEFORE the forward, or the host reads a stale mirror and misses
+  // the just-written file.
   it('flushes the workspace BEFORE forwarding a flushWorkspaceBeforeCall tool', async () => {
     const order: string[] = [];
     const { client } = mkClient(async () => {
@@ -287,8 +287,7 @@ describe('buildHostToolEntries', () => {
 
   // BUG-W2 follow-up (Codex review): the flush is a PRECONDITION. A flagged
   // tool must NOT be forwarded when the flush didn't actually sync the mirror —
-  // forwarding would read a stale (kept) or rolled-back (older committed) state
-  // and, for install_authored_skill, install the wrong body with fresh grants.
+  // forwarding would read a stale (kept) or rolled-back (older committed) state.
   it.each(['kept', 'rolled-back'] as const)(
     'does NOT forward and returns isError when the flush is %s',
     async (outcome) => {

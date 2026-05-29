@@ -128,8 +128,7 @@ export function buildHostToolEntries(
           // turn. Under runner-owned sessions the host reads the committed +
           // pushed mirror, which lags the live tree until a turn-boundary
           // commit — without the flush the host read misses a just-written
-          // file (e.g. install_authored_skill's `.ax/draft-skills/<id>/SKILL.md`,
-          // BUG-W2).
+          // file (BUG-W2).
           //
           // The flush is a PRECONDITION, not best-effort: we forward ONLY when
           // it actually synced the mirror. `accepted` = pushed; `noop` =

@@ -384,11 +384,10 @@ export async function main(): Promise<number> {
   // and the turn-end commit share the same chained `parentVersion`.
   let parentVersion: string | null = initialBaselineCommit;
 
-  // Mid-turn flush for host tools that declare `flushWorkspaceBeforeCall`
-  // (e.g. install_authored_skill). The runner commits + pushes its live
-  // /permanent tree to the host mirror BEFORE the host tool runs, so a host
-  // read of a file the agent just authored this turn (.ax/draft-skills/<id>/SKILL.md)
-  // sees it instead of the stale committed mirror (BUG-W2). Threads the
+  // Mid-turn flush for host tools that declare `flushWorkspaceBeforeCall`.
+  // The runner commits + pushes its live /permanent tree to the host mirror
+  // BEFORE the host tool runs, so a host read of a file the agent just wrote
+  // this turn sees it instead of the stale committed mirror (BUG-W2). Threads the
   // advanced version back into `parentVersion` so the turn-end commit chains,
   // and returns the flush outcome so the forwarder can gate the call on it.
   //

@@ -88,18 +88,13 @@ export function mapPluginError(err: PluginError): HandlerErr {
     // on the client side.
     case 'conflict':
       return hookRejected('conflict');
-    // NOTE: `authored-skill-invalid` / `authored-skill-not-found` are
-    // deliberately NOT special-cased here. They DO carry an agent-facing,
-    // verbatim message (the SKILL.md validation reason), but surfacing it is
-    // gated on the *verified* producer — the single-registrant
-    // `tool:execute:install_authored_skill` hook — inside
-    // `tool-execute-host.ts`, NOT here. `mapPluginError` is a generic mapper
-    // reachable from every dispatch path, and `PluginError.code`/`.plugin` are
-    // plugin-supplied (the hook bus re-throws a thrown PluginError verbatim —
-    // see hook-bus.ts), so keying a message passthrough on them here would let
-    // any plugin (incl. untrusted third-party code, invariant #5) forge these
-    // codes to bypass I9 redaction. Here they collapse to the generic 500
-    // below like every other code.
+    // Every other PluginError code collapses to the generic 500 below. We do
+    // NOT key a verbatim-message passthrough on `PluginError.code`/`.plugin`
+    // here — they are plugin-supplied (the hook bus re-throws a thrown
+    // PluginError verbatim, see hook-bus.ts), so any plugin (incl. untrusted
+    // third-party code, invariant #5) could forge a code to bypass I9
+    // redaction. `mapPluginError` is a generic mapper reachable from every
+    // dispatch path, so it stays conservative.
     case 'no-service':
     case 'duplicate-service':
     case 'missing-service':

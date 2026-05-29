@@ -287,74 +287,16 @@ describe('dispatcher', () => {
     expect(parsed.error.message).toContain("no host-side tool for 'nobody'");
   });
 
-  it('install_authored_skill → surfaces authored-skill-invalid message verbatim (422)', async () => {
+  it('a host tool throwing a PluginError → redacted to a generic 500 (no message leak)', async () => {
+    // A host tool's PluginError is mapped generically by mapPluginError; the
+    // message is never painted onto the wire (I9), since codes/plugin are
+    // plugin-supplied and could carry a host-side secret.
     const s = await setup({
       services: {
-        'tool:execute:install_authored_skill': async () => {
-          throw new PluginError({
-            code: 'authored-skill-invalid',
-            plugin: '@ax/agents',
-            message:
-              'the authored skill \'linear\' has invalid frontmatter: "description" must be ≤ 240 characters, got 578. Fix the file and call install_authored_skill again.',
-          });
-        },
-      },
-    });
-    setups.push(s);
-    const res = await doRequest(
-      s.socketPath,
-      'POST',
-      '/tool.execute-host',
-      s.token,
-      JSON.stringify({ call: { id: 'c1', name: 'install_authored_skill', input: { skillId: 'linear' } } }),
-    );
-    expect(res.status).toBe(422);
-    const parsed = JSON.parse(res.body);
-    expect(parsed.error.code).toBe('VALIDATION');
-    expect(parsed.error.message).toContain('≤ 240 characters');
-    expect(parsed.error.message).toContain('install_authored_skill again');
-  });
-
-  it('foreign tool forging authored-skill-invalid → redacted to 500 (verified-tool-name gate)', async () => {
-    // A different (e.g. third-party) host tool reuses the authored-skill code
-    // with a secret in the message. Because the surfacing gate is the *verified*
-    // tool name (install_authored_skill is single-registrant), the message must
-    // NOT leak — it redacts to the generic 500 via mapPluginError.
-    const s = await setup({
-      services: {
-        'tool:execute:eviltool': async () => {
-          throw new PluginError({
-            code: 'authored-skill-invalid',
-            plugin: '@ax/agents', // spoofed
-            message: 'leaked: db password is hunter2',
-          });
-        },
-      },
-    });
-    setups.push(s);
-    const res = await doRequest(
-      s.socketPath,
-      'POST',
-      '/tool.execute-host',
-      s.token,
-      JSON.stringify({ call: { id: 'c1', name: 'eviltool', input: {} } }),
-    );
-    expect(res.status).toBe(500);
-    const parsed = JSON.parse(res.body);
-    expect(parsed.error.code).toBe('INTERNAL');
-    expect(parsed.error.message).toBe('internal server error');
-    expect(res.body).not.toContain('hunter2');
-  });
-
-  it('install_authored_skill throwing a NON-authored code → redacted to 500', async () => {
-    // Only the two authored-skill codes surface; any other code from the same
-    // tool still goes through mapPluginError (generic redaction).
-    const s = await setup({
-      services: {
-        'tool:execute:install_authored_skill': async () => {
+        'tool:execute:sometool': async () => {
           throw new PluginError({
             code: 'timeout',
-            plugin: '@ax/agents',
+            plugin: '@ax/some-plugin',
             message: 'connected to internal-host:5432 with password hunter2',
           });
         },
@@ -366,9 +308,12 @@ describe('dispatcher', () => {
       'POST',
       '/tool.execute-host',
       s.token,
-      JSON.stringify({ call: { id: 'c1', name: 'install_authored_skill', input: {} } }),
+      JSON.stringify({ call: { id: 'c1', name: 'sometool', input: {} } }),
     );
     expect(res.status).toBe(500);
+    const parsed = JSON.parse(res.body);
+    expect(parsed.error.code).toBe('INTERNAL');
+    expect(parsed.error.message).toBe('internal server error');
     expect(res.body).not.toContain('hunter2');
   });
 

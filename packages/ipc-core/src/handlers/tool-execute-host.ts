@@ -46,27 +46,10 @@ export const toolExecuteHostHandler: ActionHandler = async (rawPayload, ctx, bus
   } catch (err) {
     logInternalError(ctx.logger, 'tool.execute-host', err);
     if (err instanceof PluginError) {
-      // `install_authored_skill` reports SKILL.md validation failures
-      // (`authored-skill-invalid` / `-not-found`) by throwing a PluginError
-      // whose message tells the agent what's wrong with its OWN authored
-      // content ("description must be ≤240 chars", "no authored skill 'X'").
-      // Surface that message verbatim so the agent fixes the file and retries,
-      // instead of the generic 500 ("internal server error") that made it loop.
-      //
-      // This is safe to surface HERE (and is intentionally NOT done in the
-      // generic `mapPluginError`) because the gate is the *verified* tool name:
-      // `tool:execute:install_authored_skill` is single-registrant (skill-broker
-      // — a second registrant is a boot-time collision), so no other plugin can
-      // produce an error under this tool name, and the message is agent-authored
-      // validation feedback returning to the agent's own trust domain (never a
-      // host secret). Any other tool, or these codes from any other dispatch
-      // path, redact to 500 via mapPluginError — see errors.ts.
-      if (
-        call.name === 'install_authored_skill' &&
-        (err.code === 'authored-skill-invalid' || err.code === 'authored-skill-not-found')
-      ) {
-        return { status: 422, body: { error: { code: 'VALIDATION', message: err.message } } };
-      }
+      // Generic redaction: a PluginError thrown by a host tool buckets to a
+      // safe wire status via mapPluginError — its message is never painted onto
+      // the wire (I9), because `PluginError.code`/`.plugin` are plugin-supplied
+      // and a host tool's failure could carry a host-side secret. See errors.ts.
       return mapPluginError(err);
     }
     return internalError();
