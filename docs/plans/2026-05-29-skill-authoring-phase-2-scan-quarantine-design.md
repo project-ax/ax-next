@@ -46,7 +46,7 @@ The error is both **swallowed** and the work is **destroyed** — the worst shap
 | # | Decision | Choice |
 |---|----------|--------|
 | D1 | Quarantine store home | **Fold into `@ax/skills`** (no new package; mirrors the `@ax/host-grants` store shape; already in the k8s preset) |
-| D2 | Runner rollback mode | **`git reset --mixed baseline` for ALL `accepted:false` veto paths** (keep the working tree everywhere) |
+| D2 | Runner rollback mode | **Per-path:** `git reset --mixed baseline` (keep the working tree) by default; **only the SDK-config veto → `--hard`** (clears the escalation so it can't wedge the atomic transcript bundle). Carried by a `recoverable` flag on the commit-notify rejection wire (default `true` → `--mixed`) |
 | D3 | Scan strategy | **Two layers: regex (always, inline) + a fast LLM (Haiku) when regex is clean**, additive union toward quarantine |
 | D4 | LLM cost posture | **Regex-first; LLM only on regex-clean**; content size-capped (~16KB), short timeout (~8s), graceful degrade to regex on any error |
 | D5 | Design-doc deviation | The LLM layer **overrides** the parent design doc's "heuristic-only" stance. This spec records the override + rationale; the parent doc stays as historical record |
@@ -156,28 +156,50 @@ skill_id)`:
 Storage-agnostic hook payloads (invariant #1): `ownerUserId` / `agentId` /
 `skillId` / `reason` are routing + domain identifiers, not backend vocabulary.
 
-### Component 4 — runner rollback → non-destructive (D2)
+### Component 4 — runner rollback → non-destructive, per-path (D2)
 
-`rollbackToBaseline(root)` in `git-workspace.ts` switches
-`git reset --hard baseline` → `git reset --mixed baseline`:
+The turn-end bundle is **atomic** — it carries the agent's files **and** the
+session transcript jsonl, and a veto rejects the whole bundle. So a path that
+keeps a perpetually-vetoed file in the working tree (`--mixed`) would re-bundle +
+re-veto it every turn → the **transcript never persists** (the transcript-loss bug
+class). The SDK-config veto is the one remaining content-independent veto an agent
+can repeatedly trip, so it must **clear** the offending write. Everything else is
+recoverable agent work and must be **preserved**.
 
-- `--mixed`: HEAD/main → baseline, index → baseline, **working tree preserved**
-  (the agent's files survive as uncommitted changes).
-- Baseline ref unchanged; `commitNotifyWithResync` still returns `{parentVersion:
-  input.parentVersion, outcome:'rolled-back'}` → **no baseline desync** (baseline
-  ref and parentVersion both stay at the old accepted version). Next turn
-  `commitTurnAndBundle` re-stages (`add -A`) and re-attempts — coherent.
-- Applies to **all** `accepted:false` veto/rollback paths (SDK-config veto,
-  exhausted-resync, host-internal apply failures). After prong 1 the content veto
-  no longer occurs, but the residual paths all become non-destructive — the whole
-  point.
-- **Security verification (security-checklist):** a vetoed `.claude/**` file
-  surviving in the *current warm* working tree is safe because (a) the warm SDK
-  session does not re-read settingSources mid-session, and (b) a fresh spawn
-  re-materializes the workspace from the host **mirror**, which the veto kept
-  clean (the file never landed). This must be confirmed; if the warm session DOES
-  re-read SDK config live, fall back to a structured `recoverable` flag on the
-  commit-notify rejection (SDK-config → `--hard`, everything else → `--mixed`).
+A `recoverable` flag on the commit-notify rejection wire selects the mode — **no
+kernel change** (the `Rejection`/`reject()` type is untouched); the commit-notify
+**handler** attributes it per rejection site:
+
+| commit-notify rejection site | `recoverable` | runner reset |
+|---|---|---|
+| pre-apply rejected (SDK-config veto — the only pre-apply rejecter after prong 1) | `false` | `--hard` |
+| bundle author-verify failed (tampered/ bypassed-env bundle — discard) | `false` | `--hard` |
+| baseline-drift / prepareScratchRepo failure | unset → `true` | `--mixed` |
+| parent-mismatch (export or apply-bundle) | unset → `true` | `--mixed` (only reached on the runner's *exhausted-resync* rollback) |
+
+- Wire: `WorkspaceCommitNotifyResponseSchema`'s `accepted:false` branch gains
+  `recoverable: z.boolean().optional()`. Absent ⟹ `true` ⟹ `--mixed` (safe default
+  — work is preserved unless a site explicitly opts into `--hard`).
+- Runner: `rollbackToBaseline(root, mode)` where `mode = resp.recoverable === false
+  ? 'hard' : 'mixed'`. `'mixed'` = `git reset --mixed baseline` (HEAD/index →
+  baseline, **working tree preserved**); `'hard'` = today's `git reset --hard
+  baseline`.
+- **No baseline desync:** either mode moves HEAD/main → baseline; the baseline ref
+  + `parentVersion` stay at the old accepted version; `commitNotifyWithResync`
+  still returns `{parentVersion: input.parentVersion, outcome:'rolled-back'}`. Next
+  turn `commitTurnAndBundle` re-stages (`add -A`) the preserved tree and
+  re-attempts — coherent.
+- **Future-proofing (YAGNI now):** today every pre-apply rejection is the
+  SDK-config veto, so the handler can mark the whole pre-apply branch
+  `recoverable:false`. A future *recoverable* pre-apply veto (e.g. a content
+  subscriber that wants in-place fixes) would need the flag plumbed through
+  `Rejection`/`fire` per-subscriber — documented, not built.
+- **Security verification (security-checklist):** a vetoed `.claude/**` file is
+  cleared by `--hard` anyway; for the `--mixed` paths, a preserved file is never
+  an SDK-config path (those go `--hard`), so nothing agent-controllable that the
+  SDK reads survives. Also confirm the warm SDK session does not re-read
+  settingSources mid-session (the projection is frozen per-spawn) — the mirror
+  stays clean regardless.
 
 ### Component 5 — consumer that closes the half-wired window
 
@@ -251,6 +273,17 @@ No change to the `workspace:pre-apply` payload shape (still `{changes, parent,
 reason}`, veto-only) — the scan writes via a *separate* service call, so the
 veto-only contract is preserved.
 
+`recoverable` on `WorkspaceCommitNotifyResponse` (the IPC wire):
+- **Alternate impl:** a per-subscriber `recoverable` on the kernel `Rejection`
+  (the deferred future-proof version). The wire field is the minimal,
+  Phase-2-scoped form.
+- **Leaking field names:** none. `recoverable` is a semantic about the rejection
+  (can the agent fix in place?), not backend vocabulary.
+- **Subscriber risk:** none — it's a response field the runner reads, not a
+  broadcast payload.
+- **Wire surface:** schema in `@ax/ipc-protocol` `actions.ts` (the commit-notify
+  response), the existing home for this action's shape.
+
 ## Test strategy (TDD; B1 regression mandatory)
 
 - **`@ax/validator-skill`:** regex layer (each category hits; clean passes); LLM
@@ -261,10 +294,15 @@ veto-only contract is preserved.
   agent a1 ≠ a2); set overwrites reason; clear idempotent.
 - **`@ax/agents` promote:** quarantined draft → `skill-quarantined` thrown with
   reason; cleared draft → promotes; store absent → promotes (soft-dep).
-- **Runner `git-workspace`:** **B1 regression** — after a veto rollback the
-  working tree is **preserved** (`--mixed`), baseline/parentVersion unchanged, the
-  next `commitTurnAndBundle` re-bundles the surviving files. Assert files survive
-  + a specific reason is surfaced (not "could not sync, try again").
+- **`@ax/ipc-protocol`:** the `recoverable` field round-trips on the
+  `accepted:false` response; absent parses as a valid response (default `--mixed`).
+- **Runner `git-workspace` + `commit-notify-resync`:** **B1 regression** — a
+  *recoverable* (`recoverable !== false`) veto rollback **preserves** the working
+  tree (`--mixed`): the agent's added SKILL.md survives, HEAD → baseline,
+  `baseline..main` count 0, baseline/parentVersion unchanged, next
+  `commitTurnAndBundle` re-bundles the surviving file. An SDK-config veto
+  (`recoverable:false`) still `--hard`-clears (regression-guard the wedge fix).
+  Assert the specific reason is surfaced, not "could not sync, try again".
 - **Canary:** the k8s preset acceptance keeps using real executors (no fire-spy)
   for the scan + promote-refusal path.
 
