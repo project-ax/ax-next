@@ -180,44 +180,6 @@ export async function materializeWorkspace(
   }
 }
 
-/**
- * Lay down the on-disk shape the Claude Agent SDK's `'project'` skill
- * source needs inside the runner's workspace root: `.ax/draft-skills/` (the
- * host-controlled location, empty in Phase 0 — no project-authored
- * skills yet) and a `.claude/skills` symlink that resolves to it.
- *
- * The relative target (`../.ax/draft-skills`) keeps the link stable across
- * bind-mount path renames, matching the subprocess sibling's shape.
- *
- * Must run AFTER `materializeWorkspace` clones the baseline bundle —
- * doing it before clone would leave the target non-empty and `git
- * clone` would refuse it ("destination path '/permanent' already
- * exists and is not an empty directory"). The k8s init container used
- * to do this and broke chat post-Phase-0; lesson learned, scaffold
- * lives here now.
- *
- * Idempotent. A correct symlink already in place is left untouched
- * (so concurrent re-entry doesn't briefly orphan it); anything else at
- * the symlink path (regular file, dangling link, or directory left by
- * an interrupted previous session) is dropped and recreated.
- */
-export async function scaffoldWorkspaceSkillSurface(root: string): Promise<void> {
-  const claudeDir = path.join(root, '.claude');
-  const axSkillsDir = path.join(root, '.ax', 'draft-skills');
-  const skillsLink = path.join(claudeDir, 'skills');
-  await fs.mkdir(claudeDir, { recursive: true, mode: 0o755 });
-  await fs.mkdir(axSkillsDir, { recursive: true, mode: 0o755 });
-  const existing = await fs.readlink(skillsLink).catch(() => null);
-  if (existing === '../.ax/draft-skills') return;
-  await fs.rm(skillsLink, { recursive: true, force: true });
-  try {
-    await fs.symlink('../.ax/draft-skills', skillsLink);
-  } catch (err) {
-    if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-    const raced = await fs.readlink(skillsLink).catch(() => null);
-    if (raced !== '../.ax/draft-skills') throw err;
-  }
-}
 
 const WORKSPACE_GITIGNORE_HEADER = '# ax agent workspace defaults';
 /**
@@ -243,8 +205,8 @@ const WORKSPACE_GITIGNORE_ENTRIES = [
  * Idempotent and non-destructive: each entry (and the header) is only appended
  * if not already present, so re-running never duplicates, and a user-authored
  * `.gitignore` in the baseline is preserved (we only append what's missing).
- * Runs AFTER materializeWorkspace clones the baseline (same ordering rationale
- * as scaffoldWorkspaceSkillSurface) so it can see existing baseline content.
+ * Runs AFTER materializeWorkspace clones the baseline so it can see existing
+ * baseline content.
  */
 export async function scaffoldWorkspaceGitignore(root: string): Promise<void> {
   const gitignorePath = path.join(root, '.gitignore');
@@ -278,18 +240,14 @@ export async function scaffoldWorkspaceGitignore(root: string): Promise<void> {
  *
  * The SDK's `projectsDir = join(configDir, "projects")` is hard-coded
  * (no separable env override), so we redirect the I/O at the filesystem
- * layer instead. This is symmetric with the sibling
- * `scaffoldWorkspaceSkillSurface`: both run AFTER materializeWorkspace
- * clones the baseline bundle into `/permanent` (a pre-clone scaffold
- * would leave the target non-empty and `git clone` would refuse it).
+ * layer instead. Must run AFTER materializeWorkspace clones the baseline
+ * bundle into `/permanent` (a pre-clone scaffold would leave the target
+ * non-empty and `git clone` would refuse it).
  *
- * Symlink target style — IMPORTANT distinction from the sibling: this
- * link lives OUTSIDE the workspace (in `$CLAUDE_CONFIG_DIR`), so the
- * target must be the ABSOLUTE workspace path. The sibling uses a
- * RELATIVE target (`../.ax/draft-skills`) because it lives INSIDE the
- * workspace and a relative link survives bind-mount path renames; there
- * is no equivalent relative path here (the two roots are unrelated
- * filesystem subtrees by design).
+ * Symlink target style: this link lives OUTSIDE the workspace (in
+ * `$CLAUDE_CONFIG_DIR`), so the target must be the ABSOLUTE workspace
+ * path. (A relative target is not possible here — the two roots are
+ * unrelated filesystem subtrees by design.)
  *
  * Idempotent. A correct symlink already in place is left untouched (so
  * concurrent re-entry doesn't briefly orphan it); anything else at the
