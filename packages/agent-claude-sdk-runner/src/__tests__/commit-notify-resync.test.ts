@@ -190,7 +190,7 @@ describe('commitNotifyWithResync', () => {
     expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
     expect(advanceBaselineMock).not.toHaveBeenCalled();
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
-    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT);
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
   });
 
@@ -327,6 +327,7 @@ describe('commitNotifyWithResync', () => {
     expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
     expect(advanceBaselineMock).not.toHaveBeenCalled();
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
   });
 
@@ -346,7 +347,34 @@ describe('commitNotifyWithResync', () => {
 
     expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
     expect(result).toEqual({ parentVersion: null, outcome: 'rolled-back' });
+  });
+
+  it('recoverable:false rejection → hard rollback', async () => {
+    const call = vi.fn().mockResolvedValue({ accepted: false, reason: 'SDK-config', recoverable: false });
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundleBytes: 'B',
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'hard');
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+  });
+
+  it('rejection without recoverable → mixed rollback (preserve work)', async () => {
+    const call = vi.fn().mockResolvedValue({ accepted: false, reason: 'baseline drift' });
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundleBytes: 'B',
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
   });
 });
 
@@ -415,6 +443,7 @@ describe('flushWorkspaceToHost', () => {
     // The live tree was reset to baseline (the just-authored file is gone), so
     // the forwarder must surface an error rather than install an older draft.
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
   });
 });

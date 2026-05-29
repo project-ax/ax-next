@@ -185,9 +185,14 @@ export async function commitNotifyWithResync(input: {
     } else {
       process.stderr.write(`runner: workspace rejected: ${resp.reason}\n`);
     }
-    await rollbackToBaseline(root);
+    // Per-path rollback (Phase 2): preserve the agent's work by default
+    // (`--mixed`), only HARD-reset a non-recoverable rejection (SDK-config veto /
+    // tampered bundle, signaled by `recoverable: false`) so a perpetually-vetoed
+    // write can't wedge the atomic transcript bundle.
+    const mode: 'mixed' | 'hard' = resp.recoverable === false ? 'hard' : 'mixed';
+    await rollbackToBaseline(root, mode);
     commitTrace(
-      `[commit-trace] outcome=rolled-back (actualParent=${resp.actualParent ?? '-'} attempt=${attempt})\n`,
+      `[commit-trace] outcome=rolled-back (actualParent=${resp.actualParent ?? '-'} attempt=${attempt} mode=${mode})\n`,
     );
     return { parentVersion: input.parentVersion, outcome: 'rolled-back' };
   }
