@@ -41,7 +41,7 @@ across passes.
 
 | Thought | Reality |
 |---|---|
-| "Let me peek at the diff to check it" | The agent + CI + Codex already did. You hold a one-line status. |
+| "Let me peek at the diff to check it" | The agent + CI + the reviewer already did. You hold a one-line status. |
 | "I'll remember what I dispatched last pass" | Re-read the board. Cross-pass memory is the trap; the board is truth. |
 | "I'll merge these two at once to be fast" | The merge queue is serialized. One PR at a time, always. |
 | "I'll `item-list` again for that id / body / snapshot" | **One** board read per pass (`item-list` is a heavy GraphQL query); bind `$ITEMS` / `board_snapshot` and reuse it for the ready set, ids, bodies, and snapshot. Re-querying per item exhausted the 5000/hr GraphQL budget and stalled the loop for ~6 min. |
@@ -195,7 +195,7 @@ card). For each:
 Launch all slot-fills in a **SINGLE message** (concurrent). If ready cards exceed
 open slots, dispatch up to the cap and leave the rest — fill a freed slot on the next
 merge. The cap bounds concurrent CI + token burst (each agent is a full `yolo-ship`
-run with its own CI + Codex pass).
+run with its own CI + review pass).
 
 Each agent runs `yolo-ship` on exactly one card in **orchestrated mode** —
 green+mergeable PR, **no self-merge, no board write** (you own board writes) — and
@@ -291,8 +291,8 @@ gate when the user answers and drags it back to To Do.
 The **board is the dashboard** — every state is visible in the GitHub Projects UI,
 now down to a **live per-card heartbeat**: each In-Progress card's body carries the
 delimited progress block (§6) the building agent appends to at every phase boundary
-(`brainstorm done`, `task k/N done`, `codex review clean`, `PR #<n> opened`, `CI green
-✅`), with `⚠`-prefixed exception lines (codex findings, CI red, blocked) and the §7
+(`brainstorm done`, `task k/N done`, `review clean`, `PR #<n> opened`, `CI green
+✅`), with `⚠`-prefixed exception lines (review findings, CI red, blocked) and the §7
 recovery audit trail. Open a card to read its story; the kanban tiles stay clean
 (Projects v2 renders the body only in the detail pane).
 
@@ -324,9 +324,9 @@ in-flight, and any walk-filed follow-ups.
 - `--dry-run` prints the plan (ready set + lane plan + skip-list) and stops — no dispatch, no board writes, no poller.
 - The plan is printed before the first dispatch regardless; a watching human can interrupt.
 - **Cost/throughput dial:** `--max-parallel N` (default 3) bounds concurrent in-flight
-  cards/PRs — each is a full `yolo-ship` run with its own CI + Codex pass. Lower it to
+  cards/PRs — each is a full `yolo-ship` run with its own CI + review pass. Lower it to
   smooth CI/token burst, raise it to drain a wide To Do lane faster. (yolo-ship tiers
-  Codex effort + subagent model to each task's risk/size — see its Phase 3/5 — so
+  its per-task subagent model to each task's risk/size — see its Phase 3 — so
   small cards are already cheaper.)
 - First-ever validation: point auto-ship at a throwaway 2-card To Do (one depending on
   the other) before the real board, and at a deliberately-failing card to confirm the

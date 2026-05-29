@@ -37,11 +37,11 @@ Dispatch via `Agent` with `run_in_background: true`,
 >   yolo-ship phase boundary, append a one-line heartbeat to its progress block —
 >   in a SINGLE Bash call: `source <PROGRESS-HELPER-PATH> && append_progress
 >   "<ITEM-ID>" "<line>"`. Use the per-phase lines in yolo-ship's **Progress
->   reporting** section; prefix exceptions (codex findings, CI red, blocked) with
+>   reporting** section; prefix exceptions (review findings, CI red, blocked) with
 >   `⚠`. Best-effort: a failed progress write must NEVER block the ship. The helper
 >   does the read-modify-write in shell — do not read the card body into your context.
 > - Otherwise follow yolo-ship exactly: worktree, self-answering brainstorm,
->   written plan, subagent-driven TDD, build+test+lint gate, local Codex review,
+>   written plan, subagent-driven TDD, build+test+lint gate, local review,
 >   open PR, drive CI green.
 >
 > Return ONLY this handoff, ≤150 words:
