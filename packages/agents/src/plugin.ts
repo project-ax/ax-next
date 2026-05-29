@@ -8,7 +8,11 @@ import {
 import { sql, type Kysely } from 'kysely';
 import { buildSkillManifestYaml } from '@ax/skills-parser';
 import { checkAccess } from './acl.js';
-import { listAuthoredSkills, readAuthoredBundle } from './authored-skills.js';
+import {
+  describeNearbyAuthoredSkills,
+  listAuthoredSkills,
+  readAuthoredBundle,
+} from './authored-skills.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
 import { runAgentsMigration, type AgentsDatabase } from './migrations.js';
 import {
@@ -377,12 +381,28 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           // 1. Read the writable draft bundle (body + helper files). The
           //    workspace-authored SKILL.md is capability-free (the validator
           //    strips caps at the .ax/skills boundary — I-P1-2, unchanged).
+          //    readAuthoredBundle accepts both the directory form
+          //    `.ax/skills/<id>/SKILL.md` and the flat form `.ax/skills/<id>.md`.
           const bundle = await readAuthoredBundle(bus, ownerUserId, input.agentId, input.skillId);
           if (bundle === null) {
+            // Neither shape exists. Sharpen the message: state BOTH accepted
+            // paths and name any nearby files (a wrong-case dir, a typo'd id)
+            // so the agent fixes the path instead of re-deriving blind — the
+            // old bare "no authored skill" dead-ended the agent (it had
+            // authored the skill, just not where the installer looks).
+            const hint = await describeNearbyAuthoredSkills(
+              bus,
+              ownerUserId,
+              input.agentId,
+              input.skillId,
+            );
             throw new PluginError({
               code: 'authored-skill-not-found',
               plugin: PLUGIN_NAME,
-              message: `no authored skill '${input.skillId}' in the workspace`,
+              message:
+                `no authored skill '${input.skillId}' in the workspace — write it to ` +
+                `.ax/skills/${input.skillId}/SKILL.md (a directory containing SKILL.md) or ` +
+                `.ax/skills/${input.skillId}.md, then call install_authored_skill again.${hint}`,
             });
           }
 
@@ -438,39 +458,35 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             ownerUserId,
           });
 
-          // 4. Retire the writable .ax/skills/<id>/ draft (the §6D cross-domain
-          //    move): the canonical copy is now the user store. Prevents the
-          //    project/user duplicate-id collision after re-spawn AND stops the
-          //    agent editing the skill between request and approval (integrity).
-          //    Best-effort; on a workspace-less preset it no-ops. The upsert
-          //    above wrote to the SKILL STORE, not the workspace, so the
-          //    workspace version is unchanged since readAuthoredBundle — we pass
-          //    that captured version as `parent` to satisfy the backend's
-          //    optimistic-concurrency CAS. `bundle.id` is the validated id
-          //    (readAuthoredBundle threw on a traversal-shaped skillId).
-          if (bus.hasService('workspace:list') && bus.hasService('workspace:apply')) {
+          // 4. Retire the writable draft (the §6D cross-domain move): the
+          //    canonical copy is now the user store. Prevents the project/user
+          //    duplicate-id collision after re-spawn AND stops the agent editing
+          //    the skill between request and approval (integrity). We delete
+          //    exactly `bundle.draftPaths` — the whole `.ax/skills/<id>/`
+          //    directory (SKILL.md + helpers) OR the single flat
+          //    `.ax/skills/<id>.md`, whichever readAuthoredBundle promoted — so
+          //    the retire matches the installed shape. Best-effort; on a
+          //    workspace-less preset readAuthoredBundle would have returned null
+          //    above, so reaching here means the workspace exists. The upsert
+          //    wrote to the SKILL STORE, not the workspace, so the workspace is
+          //    unchanged since the read — we pass `bundle.bundleVersion` as
+          //    `parent` to satisfy the backend's optimistic-concurrency CAS.
+          if (bus.hasService('workspace:apply') && bundle.draftPaths.length > 0) {
             const wsCtx = makeAgentContext({
               userId: ownerUserId,
               agentId: input.agentId,
               sessionId: 'authored-bundle-retire',
             });
-            const { paths } = await bus.call<{ pathGlob: string }, { paths: string[] }>(
-              'workspace:list',
-              wsCtx,
-              { pathGlob: `.ax/skills/${bundle.id}/**` },
-            );
-            if (paths.length > 0) {
-              await bus.call<
-                {
-                  changes: Array<{ path: string; kind: 'delete' }>;
-                  parent: string | null;
-                },
-                unknown
-              >('workspace:apply', wsCtx, {
-                changes: paths.map((p) => ({ path: p, kind: 'delete' as const })),
-                parent: bundle.bundleVersion,
-              });
-            }
+            await bus.call<
+              {
+                changes: Array<{ path: string; kind: 'delete' }>;
+                parent: string | null;
+              },
+              unknown
+            >('workspace:apply', wsCtx, {
+              changes: bundle.draftPaths.map((p) => ({ path: p, kind: 'delete' as const })),
+              parent: bundle.bundleVersion,
+            });
           }
 
           return { description: bundle.description, hosts: input.hosts, slots, packages: reqPackages };

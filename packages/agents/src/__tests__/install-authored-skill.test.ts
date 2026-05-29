@@ -235,6 +235,31 @@ describe('agents:install-authored-skill', () => {
     ).rejects.toThrow(/authored-skill-not-found|no authored skill/i);
   });
 
+  it('sharpens not-found: names both accepted paths and any nearby files', async () => {
+    const h = await makeHarness();
+    const agentId = await createPersonalAgent(h, 'user-1');
+    // Wrong-case directory: the agent wrote .ax/skills/Linear/SKILL.md but
+    // installs 'linear'. The case-sensitive dir glob misses it → not-found.
+    await seedFile(
+      h,
+      '.ax/skills/Linear/SKILL.md',
+      '---\nname: linear\ndescription: X\nversion: 1\n---\nBody',
+      'user-1',
+      agentId,
+      null,
+    );
+    await expect(
+      h.bus.call<AgentsInstallAuthoredSkillInput, AgentsInstallAuthoredSkillOutput>(
+        'agents:install-authored-skill',
+        ctx(agentId),
+        { agentId, skillId: 'linear', hosts: [], slots: [] },
+      ),
+      // Message names the directory form, the flat form, AND the nearby file.
+    ).rejects.toThrow(
+      /\.ax\/skills\/linear\/SKILL\.md[\s\S]*\.ax\/skills\/linear\.md[\s\S]*Linear\/SKILL\.md/,
+    );
+  });
+
   it('rejects authoring on a team agent (no single-owner workspace)', async () => {
     const h = await makeHarness();
     const teamAgentId = await createTeamAgent(h, 'user-1', 't1');
@@ -344,5 +369,83 @@ describe('agents:install-authored-skill', () => {
     // The YAML key 'packages:' must be absent (the description may contain the word "packages").
     expect(capturedManifestYaml).not.toMatch(/^\s*packages:/m);
     expect(capturedManifestYaml).not.toMatch(/^\s*mcpServers:/m);
+  });
+
+  // BUG: agents frequently author a skill as a single FLAT FILE
+  // `.ax/skills/<id>.md` instead of the directory form `.ax/skills/<id>/SKILL.md`.
+  // The installer globbed only `.ax/skills/<id>/**`, which can never match the
+  // flat sibling — so install dead-ended on the misleading `authored-skill-not-
+  // found` ("no authored skill 'linear' in the workspace") even though the agent
+  // HAD authored it. We now accept the flat form as a fallback.
+  it('accepts a flat-file draft (.ax/skills/<id>.md) and retires it', async () => {
+    const h = await makeHarness();
+    const agentId = await createPersonalAgent(h, 'user-1');
+    await seedFile(
+      h,
+      '.ax/skills/flatlinear.md',
+      '---\nname: flatlinear\ndescription: Flat linear skill\nversion: 1\n---\nBody',
+      'user-1',
+      agentId,
+      null,
+    );
+
+    const out = await h.bus.call<
+      AgentsInstallAuthoredSkillInput,
+      AgentsInstallAuthoredSkillOutput
+    >('agents:install-authored-skill', ctx(agentId), {
+      agentId,
+      skillId: 'flatlinear',
+      hosts: ['api.linear.app'],
+      slots: ['LINEAR_API_KEY'],
+    });
+    expect(out.description).toBe('Flat linear skill');
+
+    // Upserted to the user store with no helper files (a flat skill has none).
+    const got = await h.bus.call<
+      { skillId: string; scope: 'user'; ownerUserId: string },
+      { files: Array<{ path: string }> }
+    >('skills:get', ctx(agentId), {
+      skillId: 'flatlinear',
+      scope: 'user',
+      ownerUserId: 'user-1',
+    });
+    expect(got.files).toEqual([]);
+
+    // The flat draft file is retired (the canonical copy is now the user store).
+    const paths = await listWorkspace(h, 'user-1', agentId);
+    expect(paths).not.toContain('.ax/skills/flatlinear.md');
+  });
+
+  it('prefers the directory form when both <id>/SKILL.md and <id>.md exist', async () => {
+    const h = await makeHarness();
+    const agentId = await createPersonalAgent(h, 'user-1');
+    const v1 = await seedFile(
+      h,
+      '.ax/skills/dup/SKILL.md',
+      '---\nname: dup\ndescription: Dir form\nversion: 1\n---\nDir body',
+      'user-1',
+      agentId,
+      null,
+    );
+    await seedFile(
+      h,
+      '.ax/skills/dup.md',
+      '---\nname: dup\ndescription: Flat form\nversion: 1\n---\nFlat body',
+      'user-1',
+      agentId,
+      v1,
+    );
+
+    const out = await h.bus.call<
+      AgentsInstallAuthoredSkillInput,
+      AgentsInstallAuthoredSkillOutput
+    >('agents:install-authored-skill', ctx(agentId), {
+      agentId,
+      skillId: 'dup',
+      hosts: [],
+      slots: [],
+    });
+    // The directory form is canonical; it wins over the flat sibling.
+    expect(out.description).toBe('Dir form');
   });
 });

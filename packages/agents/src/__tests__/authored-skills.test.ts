@@ -367,6 +367,28 @@ describe('agents:list-authored-skills', () => {
     expect(result.skills[0]!.id).toBe('pkg-only');
     expect(result.skills[0]!.hasForbiddenCapabilities).toBe(true);
   });
+
+  // Agents frequently author a skill as a flat `.ax/skills/<id>.md` file rather
+  // than the directory form. The promote/list reader must surface those too, or
+  // they're invisible to the admin promote flow.
+  it('surfaces a flat-file skill (.ax/skills/<id>.md) alongside directory-form skills', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+    const v1 = await seedFile(
+      h, '.ax/skills/dirskill/SKILL.md', makeSkillMd('dirskill'), userId, agentId, null,
+    );
+    await seedFile(
+      h, '.ax/skills/flatskill.md', makeSkillMd('flatskill'), userId, agentId, v1,
+    );
+
+    const result = await h.bus.call<
+      AgentsListAuthoredSkillsInput,
+      AgentsListAuthoredSkillsOutput
+    >('agents:list-authored-skills', h.ctx(), { agentId });
+
+    expect(result.skills.map((s) => s.id).sort()).toEqual(['dirskill', 'flatskill']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -461,5 +483,62 @@ describe('readAuthoredBundle', () => {
     await expect(
       readAuthoredBundle(h.bus, 'u1', agentId, '../evil'),
     ).rejects.toThrow(/invalid/i);
+  });
+
+  // BUG-W2 sibling: the agent wrote the skill as a single flat file
+  // `.ax/skills/<id>.md` instead of `.ax/skills/<id>/SKILL.md`. The dir glob
+  // could never match it → null → misleading authored-skill-not-found. We now
+  // fall back to the flat form (no helper files), and record its draftPath.
+  it('reads the flat-file form (.ax/skills/<id>.md) when the directory form is absent', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+    await seedFile(
+      h,
+      '.ax/skills/flat.md',
+      '---\nname: flat\ndescription: Flat skill\nversion: 3\n---\nFlat body',
+      userId,
+      agentId,
+      null,
+    );
+
+    const bundle = await readAuthoredBundle(h.bus, userId, agentId, 'flat');
+    expect(bundle).not.toBeNull();
+    expect(bundle!.description).toBe('Flat skill');
+    expect(bundle!.version).toBe(3);
+    expect(bundle!.bodyMd).toBe('Flat body');
+    expect(bundle!.files).toEqual([]);
+    expect(bundle!.draftPaths).toEqual(['.ax/skills/flat.md']);
+  });
+
+  // The flat form gets the same "found but invalid → surface the reason" handling
+  // as the directory form (so the agent learns what to fix instead of seeing the
+  // misleading not-found).
+  it('throws authored-skill-invalid when the flat-file form has no frontmatter', async () => {
+    const h = await makeHarness();
+    const agentId = await createPersonalAgent(h, 'u1');
+    await seedFile(h, '.ax/skills/flatbad.md', 'no frontmatter here', 'u1', agentId, null);
+
+    await expect(
+      readAuthoredBundle(h.bus, 'u1', agentId, 'flatbad'),
+    ).rejects.toMatchObject({ code: 'authored-skill-invalid' });
+  });
+
+  it('records the directory-form draftPaths (SKILL.md + helper files) for retirement', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+    const v1 = await seedFile(
+      h, '.ax/skills/multi/SKILL.md',
+      '---\nname: multi\ndescription: Multi\nversion: 1\n---\nBody', userId, agentId, null,
+    );
+    await seedFile(h, '.ax/skills/multi/ref.md', 'ref', userId, agentId, v1);
+
+    const bundle = await readAuthoredBundle(h.bus, userId, agentId, 'multi');
+    expect(bundle).not.toBeNull();
+    expect([...bundle!.draftPaths].sort()).toEqual([
+      '.ax/skills/multi/SKILL.md',
+      '.ax/skills/multi/ref.md',
+    ]);
   });
 });
