@@ -153,6 +153,11 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
           degradation:
             'the .ax/draft-skills/<id>/ draft is not retired after install (leaves a duplicate-id risk if the same id is later attached)',
         },
+        {
+          hook: 'skills:quarantine-get',
+          degradation:
+            'a quarantined authored draft is NOT refused promotion (no skills store) — the Phase-3 projection gate still applies',
+        },
       ],
       subscribes: ['bootstrap:reset-cleanup'],
     });
