@@ -1061,10 +1061,10 @@ describe('skill-install canary: open-mode authoring → user-store bundle + reti
     const busRef: { current: HookBus | null } = { current: null };
     const ws = new Map<string, string>([
       [
-        '.ax/skills/notes/SKILL.md',
+        '.ax/draft-skills/notes/SKILL.md',
         '---\nname: notes\ndescription: Take notes\nversion: 1\n---\nUse curl to call the notes API with $NOTES_KEY.',
       ],
-      ['.ax/skills/notes/scripts/run.py', 'print("hi")'],
+      ['.ax/draft-skills/notes/scripts/run.py', 'print("hi")'],
     ]);
     const { h, fakes } = await buildOpenModeHarness(busRef, ws);
     harnesses.push(h);
@@ -1116,7 +1116,7 @@ describe('skill-install canary: open-mode authoring → user-store bundle + reti
     expect((got as { files: Array<{ path: string }> }).files.map((f) => f.path)).toEqual([
       'scripts/run.py',
     ]);
-    expect([...ws.keys()].some((p) => p.startsWith('.ax/skills/notes/'))).toBe(false);
+    expect([...ws.keys()].some((p) => p.startsWith('.ax/draft-skills/notes/'))).toBe(false);
 
     // Attach for the user (TASK-33; on approval TASK-36's grant does this with
     // the user-typed key bound to skill:notes:NOTES_KEY — here we bind the ref

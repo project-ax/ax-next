@@ -230,7 +230,7 @@ export async function main(): Promise<number> {
       bundlePath: mat.path,
     });
     initialBaselineCommit = out.baselineCommit;
-    // Lay down `.claude/skills` → `../.ax/skills` so the SDK's
+    // Lay down `.claude/skills` → `../.ax/draft-skills` so the SDK's
     // `'project'` skill source resolves. Must run AFTER the clone — see
     // scaffoldWorkspaceSkillSurface's doc for the regression that
     // motivated moving this off the k8s init container.
@@ -393,7 +393,7 @@ export async function main(): Promise<number> {
   // Mid-turn flush for host tools that declare `flushWorkspaceBeforeCall`
   // (e.g. install_authored_skill). The runner commits + pushes its live
   // /permanent tree to the host mirror BEFORE the host tool runs, so a host
-  // read of a file the agent just authored this turn (.ax/skills/<id>/SKILL.md)
+  // read of a file the agent just authored this turn (.ax/draft-skills/<id>/SKILL.md)
   // sees it instead of the stale committed mirror (BUG-W2). Threads the
   // advanced version back into `parentVersion` so the turn-end commit chains,
   // and returns the flush outcome so the forwarder can gate the call on it.
@@ -908,14 +908,14 @@ export async function main(): Promise<number> {
         // settingSources: 'user' is required for the SDK to discover skills
         // under $CLAUDE_CONFIG_DIR/skills/ (host-controlled installed skills);
         // 'project' is required for skills under <workspace>/.claude/skills/
-        // (which is a symlink to .ax/skills/, the agent-authored convention).
+        // (which is a symlink to .ax/draft-skills/, the agent-authored convention).
         //
         // Agent cannot escalate SDK behavior via these sources because:
         //  - the SDK's other user/project files (.claude/settings.json,
         //    CLAUDE.md, .claude/agents/, .claude/commands/, .claude/rules/,
         //    CLAUDE.local.md, .claude/CLAUDE.md) are vetoed at the
         //    workspace:pre-apply boundary by @ax/validator-skill;
-        //  - the workspace symlink points narrowly at `.ax/skills`, not at
+        //  - the workspace symlink points narrowly at `.ax/draft-skills`, not at
         //    the parent `.claude/` directory;
         //  - $HOME is a per-session tempdir/emptyDir, isolated from the
         //    host user's ~/.claude (allocated by sandbox plugins in Tasks 4/5).

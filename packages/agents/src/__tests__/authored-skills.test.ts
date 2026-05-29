@@ -165,10 +165,10 @@ describe('agents:list-authored-skills', () => {
     // Seed two SKILL.md files with no capabilities (alphabetical order: bar, foo)
     // but seed them in reverse order to verify sorting works.
     const v1 = await seedFile(
-      h, '.ax/skills/foo/SKILL.md', makeSkillMd('foo'), userId, agentId, null,
+      h, '.ax/draft-skills/foo/SKILL.md', makeSkillMd('foo'), userId, agentId, null,
     );
     await seedFile(
-      h, '.ax/skills/bar/SKILL.md', makeSkillMd('bar'), userId, agentId, v1,
+      h, '.ax/draft-skills/bar/SKILL.md', makeSkillMd('bar'), userId, agentId, v1,
     );
 
     const result = await h.bus.call<
@@ -193,14 +193,14 @@ describe('agents:list-authored-skills', () => {
 
     const v1 = await seedFile(
       h,
-      '.ax/skills/dangerous/SKILL.md',
+      '.ax/draft-skills/dangerous/SKILL.md',
       makeSkillMd('dangerous', { withCapabilities: true }),
       userId,
       agentId,
       null,
     );
     await seedFile(
-      h, '.ax/skills/safe/SKILL.md', makeSkillMd('safe'), userId, agentId, v1,
+      h, '.ax/draft-skills/safe/SKILL.md', makeSkillMd('safe'), userId, agentId, v1,
     );
 
     const result = await h.bus.call<
@@ -321,14 +321,14 @@ describe('agents:list-authored-skills', () => {
 
     const v1 = await seedFile(
       h,
-      '.ax/skills/broken/SKILL.md',
+      '.ax/draft-skills/broken/SKILL.md',
       'this is not valid SKILL.md format at all',
       userId,
       agentId,
       null,
     );
     await seedFile(
-      h, '.ax/skills/valid/SKILL.md', makeSkillMd('valid'), userId, agentId, v1,
+      h, '.ax/draft-skills/valid/SKILL.md', makeSkillMd('valid'), userId, agentId, v1,
     );
 
     const result = await h.bus.call<
@@ -351,7 +351,7 @@ describe('agents:list-authored-skills', () => {
 
     await seedFile(
       h,
-      '.ax/skills/pkg-only/SKILL.md',
+      '.ax/draft-skills/pkg-only/SKILL.md',
       makeSkillMd('pkg-only', { withPackages: true }),
       userId,
       agentId,
@@ -368,18 +368,18 @@ describe('agents:list-authored-skills', () => {
     expect(result.skills[0]!.hasForbiddenCapabilities).toBe(true);
   });
 
-  // Agents frequently author a skill as a flat `.ax/skills/<id>.md` file rather
+  // Agents frequently author a skill as a flat `.ax/draft-skills/<id>.md` file rather
   // than the directory form. The promote/list reader must surface those too, or
   // they're invisible to the admin promote flow.
-  it('surfaces a flat-file skill (.ax/skills/<id>.md) alongside directory-form skills', async () => {
+  it('surfaces a flat-file skill (.ax/draft-skills/<id>.md) alongside directory-form skills', async () => {
     const h = await makeHarness();
     const userId = 'u1';
     const agentId = await createPersonalAgent(h, userId);
     const v1 = await seedFile(
-      h, '.ax/skills/dirskill/SKILL.md', makeSkillMd('dirskill'), userId, agentId, null,
+      h, '.ax/draft-skills/dirskill/SKILL.md', makeSkillMd('dirskill'), userId, agentId, null,
     );
     await seedFile(
-      h, '.ax/skills/flatskill.md', makeSkillMd('flatskill'), userId, agentId, v1,
+      h, '.ax/draft-skills/flatskill.md', makeSkillMd('flatskill'), userId, agentId, v1,
     );
 
     const result = await h.bus.call<
@@ -401,21 +401,21 @@ describe('readAuthoredBundle', () => {
     const userId = 'u1';
     const agentId = await createPersonalAgent(h, userId);
 
-    // Seed a multi-file draft under .ax/skills/notes/ (note the mock workspace
+    // Seed a multi-file draft under .ax/draft-skills/notes/ (note the mock workspace
     // is a single shared store — chain the parent through each seed).
     const v1 = await seedFile(
       h,
-      '.ax/skills/notes/SKILL.md',
+      '.ax/draft-skills/notes/SKILL.md',
       '---\nname: notes\ndescription: Take notes\nversion: 2\n---\nBody here',
       userId,
       agentId,
       null,
     );
     const v2 = await seedFile(
-      h, '.ax/skills/notes/scripts/run.py', 'print(1)', userId, agentId, v1,
+      h, '.ax/draft-skills/notes/scripts/run.py', 'print(1)', userId, agentId, v1,
     );
     await seedFile(
-      h, '.ax/skills/notes/data/x.json', '{}', userId, agentId, v2,
+      h, '.ax/draft-skills/notes/data/x.json', '{}', userId, agentId, v2,
     );
 
     const bundle = await readAuthoredBundle(h.bus, userId, agentId, 'notes');
@@ -436,7 +436,7 @@ describe('readAuthoredBundle', () => {
     const userId = 'u1';
     const agentId = await createPersonalAgent(h, userId);
     await seedFile(
-      h, '.ax/skills/empty/notes.txt', 'x', userId, agentId, null,
+      h, '.ax/draft-skills/empty/notes.txt', 'x', userId, agentId, null,
     );
 
     expect(await readAuthoredBundle(h.bus, userId, agentId, 'empty')).toBeNull();
@@ -450,7 +450,7 @@ describe('readAuthoredBundle', () => {
     const userId = 'u1';
     const agentId = await createPersonalAgent(h, userId);
     await seedFile(
-      h, '.ax/skills/broken/SKILL.md', 'not a valid skill md', userId, agentId, null,
+      h, '.ax/draft-skills/broken/SKILL.md', 'not a valid skill md', userId, agentId, null,
     );
 
     await expect(
@@ -464,7 +464,7 @@ describe('readAuthoredBundle', () => {
     const agentId = await createPersonalAgent(h, userId);
     const longDesc = 'x'.repeat(300); // > 240-char limit
     const md = ['---', 'name: toolong', `description: ${longDesc}`, 'version: 1', '---', '', '# body'].join('\n');
-    await seedFile(h, '.ax/skills/toolong/SKILL.md', md, userId, agentId, null);
+    await seedFile(h, '.ax/draft-skills/toolong/SKILL.md', md, userId, agentId, null);
 
     await expect(
       readAuthoredBundle(h.bus, userId, agentId, 'toolong'),
@@ -486,16 +486,16 @@ describe('readAuthoredBundle', () => {
   });
 
   // BUG-W2 sibling: the agent wrote the skill as a single flat file
-  // `.ax/skills/<id>.md` instead of `.ax/skills/<id>/SKILL.md`. The dir glob
+  // `.ax/draft-skills/<id>.md` instead of `.ax/draft-skills/<id>/SKILL.md`. The dir glob
   // could never match it → null → misleading authored-skill-not-found. We now
   // fall back to the flat form (no helper files), and record its draftPath.
-  it('reads the flat-file form (.ax/skills/<id>.md) when the directory form is absent', async () => {
+  it('reads the flat-file form (.ax/draft-skills/<id>.md) when the directory form is absent', async () => {
     const h = await makeHarness();
     const userId = 'u1';
     const agentId = await createPersonalAgent(h, userId);
     await seedFile(
       h,
-      '.ax/skills/flat.md',
+      '.ax/draft-skills/flat.md',
       '---\nname: flat\ndescription: Flat skill\nversion: 3\n---\nFlat body',
       userId,
       agentId,
@@ -508,7 +508,7 @@ describe('readAuthoredBundle', () => {
     expect(bundle!.version).toBe(3);
     expect(bundle!.bodyMd).toBe('Flat body');
     expect(bundle!.files).toEqual([]);
-    expect(bundle!.draftPaths).toEqual(['.ax/skills/flat.md']);
+    expect(bundle!.draftPaths).toEqual(['.ax/draft-skills/flat.md']);
   });
 
   // The flat form gets the same "found but invalid → surface the reason" handling
@@ -517,7 +517,7 @@ describe('readAuthoredBundle', () => {
   it('throws authored-skill-invalid when the flat-file form has no frontmatter', async () => {
     const h = await makeHarness();
     const agentId = await createPersonalAgent(h, 'u1');
-    await seedFile(h, '.ax/skills/flatbad.md', 'no frontmatter here', 'u1', agentId, null);
+    await seedFile(h, '.ax/draft-skills/flatbad.md', 'no frontmatter here', 'u1', agentId, null);
 
     await expect(
       readAuthoredBundle(h.bus, 'u1', agentId, 'flatbad'),
@@ -529,16 +529,16 @@ describe('readAuthoredBundle', () => {
     const userId = 'u1';
     const agentId = await createPersonalAgent(h, userId);
     const v1 = await seedFile(
-      h, '.ax/skills/multi/SKILL.md',
+      h, '.ax/draft-skills/multi/SKILL.md',
       '---\nname: multi\ndescription: Multi\nversion: 1\n---\nBody', userId, agentId, null,
     );
-    await seedFile(h, '.ax/skills/multi/ref.md', 'ref', userId, agentId, v1);
+    await seedFile(h, '.ax/draft-skills/multi/ref.md', 'ref', userId, agentId, v1);
 
     const bundle = await readAuthoredBundle(h.bus, userId, agentId, 'multi');
     expect(bundle).not.toBeNull();
     expect([...bundle!.draftPaths].sort()).toEqual([
-      '.ax/skills/multi/SKILL.md',
-      '.ax/skills/multi/ref.md',
+      '.ax/draft-skills/multi/SKILL.md',
+      '.ax/draft-skills/multi/ref.md',
     ]);
   });
 });

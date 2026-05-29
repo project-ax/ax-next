@@ -954,7 +954,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           '---\nname: foo\ndescription: a thing the agent does\n---\n# Body\n';
         const { bundleB64 } = await simulateRunnerTurn({
           baselineFiles: [],
-          turnFiles: { '.ax/skills/foo/SKILL.md': validSkillMd },
+          turnFiles: { '.ax/draft-skills/foo/SKILL.md': validSkillMd },
           parentDir: tmp,
         });
         const result = await workspaceCommitNotifyHandler(
@@ -984,7 +984,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(head.stdout.trim()).toBe(body.version);
         // The file is in the tree.
         const ls = await git(['-C', h.bareRepoPath, 'ls-tree', '-r', 'main']);
-        expect(ls.stdout).toContain('.ax/skills/foo/SKILL.md');
+        expect(ls.stdout).toContain('.ax/draft-skills/foo/SKILL.md');
       } finally {
         await h.teardown();
       }
@@ -1000,7 +1000,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const badSkillMd = '# no frontmatter at all\n';
         const { bundleB64 } = await simulateRunnerTurn({
           baselineFiles: [],
-          turnFiles: { '.ax/skills/bar/SKILL.md': badSkillMd },
+          turnFiles: { '.ax/draft-skills/bar/SKILL.md': badSkillMd },
           parentDir: tmp,
         });
         const result = await workspaceCommitNotifyHandler(
@@ -1015,7 +1015,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(result.status).toBe(200);
         const body = result.body as { accepted: false; reason: string };
         expect(body.accepted).toBe(false);
-        expect(body.reason).toContain('.ax/skills/bar/SKILL.md');
+        expect(body.reason).toContain('.ax/draft-skills/bar/SKILL.md');
         // Storage tier was NOT updated. The bare repo may or may not
         // exist (depending on whether ensureRepoCreated ran before the
         // veto), but if it does, refs/heads/main should not exist

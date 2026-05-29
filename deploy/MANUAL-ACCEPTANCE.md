@@ -248,8 +248,8 @@ path — the install loop (Phase 1+) populates `$CLAUDE_CONFIG_DIR/skills/`
 later. For now we prove the workspace half of that surface is reachable.
 
 1. In the chat UI, ask the agent to write a skill file:
-   - Path: `.ax/skills/canary-skill/SKILL.md` (NOT `.claude/skills/…` — that
-     surface is a host-owned symlink; agents write to `.ax/skills/`).
+   - Path: `.ax/draft-skills/canary-skill/SKILL.md` (NOT `.claude/skills/…` — that
+     surface is a host-owned symlink; agents write to `.ax/draft-skills/`).
    - Frontmatter: `name: canary-skill`, `description: <anything>`.
    - Body: `When asked, mention "canary-skill" by name.`
 
@@ -263,8 +263,8 @@ SDK setting-sources wiring is broken. `kubectl exec` into the runner pod
 (catch it before it terminates — bump the agent's `idleShutdownMs` or
 ask a follow-up message to keep the pod alive) and probe:
 
-- `ls -la /permanent/.claude/skills` — should be a symlink to `../.ax/skills`.
-- `cat /permanent/.ax/skills/canary-skill/SKILL.md` — should be readable.
+- `ls -la /permanent/.claude/skills` — should be a symlink to `../.ax/draft-skills`.
+- `cat /permanent/.ax/draft-skills/canary-skill/SKILL.md` — should be readable.
 - `echo $CLAUDE_CONFIG_DIR` — should be `/home/runner/.ax/session`.
 - `ls -la $CLAUDE_CONFIG_DIR/skills` — should exist. Phase 0 leaves it
   empty; if it's missing entirely, the per-session HOME init isn't running.

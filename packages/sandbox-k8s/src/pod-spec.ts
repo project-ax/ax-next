@@ -487,7 +487,7 @@ export function buildPodSpec(
     // (the tmpfs HOME mount) on purpose: writing into /permanent here
     // collides with the runner's `git clone` of the materialized
     // workspace bundle (clone refuses a non-empty target). The
-    // `.claude/skills → ../.ax/skills` symlink the SDK's `'project'`
+    // `.claude/skills → ../.ax/draft-skills` symlink the SDK's `'project'`
     // source needs is created by the runner main AFTER materialize, in
     // `git-workspace.ts`'s `scaffoldWorkspaceSkillSurface`.
     initContainers: [

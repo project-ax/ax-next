@@ -7,7 +7,7 @@ describe('filterToPolicy', () => {
     const all: FileChange[] = [
       { path: '.ax/CLAUDE.md', kind: 'put', content: new Uint8Array() },
       {
-        path: '.ax/skills/foo/SKILL.md',
+        path: '.ax/draft-skills/foo/SKILL.md',
         kind: 'put',
         content: new TextEncoder().encode('---\nname: foo\n---\n'),
       },
@@ -18,7 +18,7 @@ describe('filterToPolicy', () => {
     const filtered = filterToPolicy(all);
     expect(filtered.map((c) => c.path)).toEqual([
       '.ax/CLAUDE.md',
-      '.ax/skills/foo/SKILL.md',
+      '.ax/draft-skills/foo/SKILL.md',
     ]);
   });
 
@@ -43,7 +43,7 @@ describe('filterToPolicy', () => {
 
   it('passes through both .ax/ and .claude/ in a mixed change set', () => {
     const all: FileChange[] = [
-      { path: '.ax/skills/a/SKILL.md', kind: 'put', content: new Uint8Array() },
+      { path: '.ax/draft-skills/a/SKILL.md', kind: 'put', content: new Uint8Array() },
       {
         path: '.claude/settings.json',
         kind: 'put',
@@ -53,7 +53,7 @@ describe('filterToPolicy', () => {
     ];
     const filtered = filterToPolicy(all);
     expect(filtered.map((c) => c.path).sort()).toEqual([
-      '.ax/skills/a/SKILL.md',
+      '.ax/draft-skills/a/SKILL.md',
       '.claude/settings.json',
     ]);
   });

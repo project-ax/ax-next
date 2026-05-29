@@ -199,7 +199,7 @@ export async function commitNotifyWithResync(input: {
  *
  * Why this exists: a host tool that declares `flushWorkspaceBeforeCall` reads
  * workspace files the agent may have written earlier in the SAME turn (e.g.
- * `install_authored_skill` reads `.ax/skills/<id>/SKILL.md`). The host only
+ * `install_authored_skill` reads `.ax/draft-skills/<id>/SKILL.md`). The host only
  * sees the committed + pushed mirror, which lags the runner's live tree until
  * the turn-end commit. Flushing here makes the just-written file visible to
  * the host read before the tool runs (BUG-W2).

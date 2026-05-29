@@ -31,8 +31,8 @@ function summarizeAuthoredSkill(id: string, content: string): AuthoredSkillSumma
 
 /**
  * Scan an agent's workspace for authored skills in either accepted shape — the
- * directory form `.ax/skills/<id>/SKILL.md` and the flat form
- * `.ax/skills/<id>.md` (see readAuthoredBundle). Returns a summary for each
+ * directory form `.ax/draft-skills/<id>/SKILL.md` and the flat form
+ * `.ax/draft-skills/<id>.md` (see readAuthoredBundle). Returns a summary for each
  * parseable entry, sorted by id for determinism; the directory form wins on a
  * duplicate id.
  *
@@ -76,16 +76,16 @@ export async function listAuthoredSkills(
   // propagate so the caller (admin route) sees a 500 rather than a misleading
   // empty list.
   // Two on-disk shapes (mirrors readAuthoredBundle): the canonical directory
-  // form `.ax/skills/<id>/SKILL.md` and the flat form `.ax/skills/<id>.md` that
+  // form `.ax/draft-skills/<id>/SKILL.md` and the flat form `.ax/draft-skills/<id>.md` that
   // an agent often writes by mistake. List both so the promote flow sees every
   // authored skill regardless of shape. (`*` never crosses `/` in the glob, so
-  // the flat glob matches only top-level `.ax/skills/<id>.md`.)
+  // the flat glob matches only top-level `.ax/draft-skills/<id>.md`.)
   const [dirRes, flatRes] = await Promise.all([
     bus.call<{ pathGlob: string }, { paths: string[] }>('workspace:list', ctx, {
-      pathGlob: '.ax/skills/*/SKILL.md',
+      pathGlob: '.ax/draft-skills/*/SKILL.md',
     }),
     bus.call<{ pathGlob: string }, { paths: string[] }>('workspace:list', ctx, {
-      pathGlob: '.ax/skills/*.md',
+      pathGlob: '.ax/draft-skills/*.md',
     }),
   ]);
 
@@ -96,7 +96,7 @@ export async function listAuthoredSkills(
   for (const path of dirRes.paths) {
     // The glob guarantees the pattern, but re-check defensively so a corrupt
     // entry doesn't crash the loop.
-    const m = /^\.ax\/skills\/([^/]+)\/SKILL\.md$/.exec(path);
+    const m = /^\.ax\/draft-skills\/([^/]+)\/SKILL\.md$/.exec(path);
     if (m === null) continue;
     const id = m[1]!;
     if (seen.has(id)) continue;
@@ -104,7 +104,7 @@ export async function listAuthoredSkills(
     entries.push({ id, path });
   }
   for (const path of flatRes.paths) {
-    const m = /^\.ax\/skills\/([^/]+)\.md$/.exec(path);
+    const m = /^\.ax\/draft-skills\/([^/]+)\.md$/.exec(path);
     if (m === null) continue;
     const id = m[1]!;
     // The sandbox enforces the strict id grammar; skip a flat file whose
@@ -137,7 +137,7 @@ export async function listAuthoredSkills(
 
 /**
  * Best-effort hint for the `authored-skill-not-found` message: when neither
- * accepted shape exists, scan `.ax/skills/` for files whose path mentions the
+ * accepted shape exists, scan `.ax/draft-skills/` for files whose path mentions the
  * skill id (a wrong-case directory, a typo'd id) and name a few back to the
  * agent so it can fix the path rather than re-deriving blind. Never throws —
  * an outage here must not mask the real not-found — and returns '' when there's
@@ -160,7 +160,7 @@ export async function describeNearbyAuthoredSkills(
     const r = await bus.call<{ pathGlob: string }, { paths: string[] }>(
       'workspace:list',
       ctx,
-      { pathGlob: '.ax/skills/**' },
+      { pathGlob: '.ax/draft-skills/**' },
     );
     paths = r.paths;
   } catch {
@@ -178,7 +178,7 @@ export interface AuthoredBundleFile {
   contents: string;
 }
 
-/** A full agent-authored bundle read from `.ax/skills/<id>/`. */
+/** A full agent-authored bundle read from `.ax/draft-skills/<id>/`. */
 export interface AuthoredBundle {
   id: string;
   description: string;
@@ -196,8 +196,8 @@ export interface AuthoredBundle {
   /**
    * The exact workspace paths that make up this draft, so the caller retires
    * precisely what was read. Directory form: every file under
-   * `.ax/skills/<id>/` (SKILL.md + helpers). Flat form: the single
-   * `.ax/skills/<id>.md`. Carried on the bundle (rather than re-globbed at
+   * `.ax/draft-skills/<id>/` (SKILL.md + helpers). Flat form: the single
+   * `.ax/draft-skills/<id>.md`. Carried on the bundle (rather than re-globbed at
    * retire time) so the retire deletes the SAME shape that was promoted —
    * crucial now that two on-disk shapes are accepted.
    */
@@ -250,16 +250,16 @@ function parseAuthoredManifestOrThrow(
 
 /**
  * Read the FULL agent-authored bundle (SKILL.md → manifest+body, plus every
- * helper file) under `.ax/skills/<skillId>/`.
+ * helper file) under `.ax/draft-skills/<skillId>/`.
  *
  * Two on-disk shapes are accepted, because agents frequently author a skill as
  * a single flat file instead of a directory:
- *   - DIRECTORY form (canonical): `.ax/skills/<id>/SKILL.md` (+ helper files).
- *   - FLAT form (fallback): `.ax/skills/<id>.md` — read as the SKILL.md with no
+ *   - DIRECTORY form (canonical): `.ax/draft-skills/<id>/SKILL.md` (+ helper files).
+ *   - FLAT form (fallback): `.ax/draft-skills/<id>.md` — read as the SKILL.md with no
  *     helper files. Tried only when the directory form has no SKILL.md.
- * Without the flat fallback, an agent that wrote `.ax/skills/linear.md` got the
+ * Without the flat fallback, an agent that wrote `.ax/draft-skills/linear.md` got the
  * misleading `authored-skill-not-found` ("no authored skill 'linear' in the
- * workspace") — the dir glob `.ax/skills/linear/**` can't match the flat
+ * workspace") — the dir glob `.ax/draft-skills/linear/**` can't match the flat
  * sibling — and dead-ended, re-writing the same flat file with no idea why.
  *
  * Returns null ONLY when NEITHER shape exists — the caller surfaces a friendly
@@ -298,7 +298,7 @@ export async function readAuthoredBundle(
     agentId,
     sessionId: 'authored-bundle-read',
   });
-  const dir = `.ax/skills/${skillId}`;
+  const dir = `.ax/draft-skills/${skillId}`;
   const { paths } = await bus.call<{ pathGlob: string }, { paths: string[] }>(
     'workspace:list',
     ctx,
@@ -313,7 +313,7 @@ export async function readAuthoredBundle(
   const files: AuthoredBundleFile[] = [];
   const draftPaths: string[] = [];
 
-  // --- Directory form: `.ax/skills/<id>/SKILL.md` (+ helper files). ---
+  // --- Directory form: `.ax/draft-skills/<id>/SKILL.md` (+ helper files). ---
   for (const p of [...paths].sort()) {
     const read = await bus.call<
       { path: string },
@@ -321,7 +321,7 @@ export async function readAuthoredBundle(
     >('workspace:read', ctx, { path: p });
     if (!read.found) continue; // deleted between list and read — skip
     if (read.version !== undefined) bundleVersion = read.version;
-    const rel = p.slice(dir.length + 1); // strip ".ax/skills/<id>/"
+    const rel = p.slice(dir.length + 1); // strip ".ax/draft-skills/<id>/"
     if (rel.length === 0) continue;
     draftPaths.push(p);
 
@@ -347,7 +347,7 @@ export async function readAuthoredBundle(
     return { id: skillId, description, version, bodyMd, files, bundleVersion, draftPaths };
   }
 
-  // --- Flat form fallback: `.ax/skills/<id>.md` (a single markdown file the
+  // --- Flat form fallback: `.ax/draft-skills/<id>.md` (a single markdown file the
   //     agent wrote instead of a directory). No helper files. Same found-but-
   //     invalid surfacing as the directory form. `skillId` is validated, so
   //     `${dir}.md` carries no traversal. ---

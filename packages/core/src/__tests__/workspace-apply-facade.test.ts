@@ -49,7 +49,7 @@ function makeOutput(version: string): WorkspaceApplyOutput {
 }
 
 const policyChange: FileChange = {
-  path: '.ax/skills/foo/SKILL.md',
+  path: '.ax/draft-skills/foo/SKILL.md',
   kind: 'put',
   content: enc.encode('---\nname: foo\n---\n'),
 };
@@ -131,7 +131,7 @@ describe('registerWorkspaceApplyFacade', () => {
       parent: null,
     });
 
-    expect(seen?.map((c) => c.path)).toEqual(['.ax/skills/foo/SKILL.md']);
+    expect(seen?.map((c) => c.path)).toEqual(['.ax/draft-skills/foo/SKILL.md']);
   });
 
   it('(d) internal receives the FULL change set (not the filtered subset)', async () => {
@@ -160,7 +160,7 @@ describe('registerWorkspaceApplyFacade', () => {
     });
 
     expect(internalInput?.changes.map((c) => c.path)).toEqual([
-      '.ax/skills/foo/SKILL.md',
+      '.ax/draft-skills/foo/SKILL.md',
       'src/main.ts',
     ]);
   });

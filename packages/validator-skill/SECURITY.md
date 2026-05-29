@@ -43,7 +43,7 @@ If any of those break, Phase 3's invariants break in a much louder way than this
 
 - **Only flat frontmatter validated.** Nested YAML structures (e.g., `name: { nested: ... }`) would parse fine but our `typeof name !== 'string'` check would reject. That's a feature, not a bug — flat frontmatter is the convention.
 - **`name` and `description` are validated for type + non-empty-ness, NOT semantic content.** A skill named `my-evil-skill` with description `does evil things` passes the validator. That's the right boundary — semantic-content validation is a Phase 4+ concern (skill schema, identity drift detection) and would compose with this plugin, not replace it.
-- **Path matching is exact-prefix.** `.ax/skills/<name>/SKILL.md` is the only shape we recognize. A future relaxation (nested skill packages, alternate file extensions) would update the regex; for now keep it strict so the surface is unambiguous.
+- **Path matching is exact-prefix.** `.ax/draft-skills/<name>/SKILL.md` is the only shape we recognize. A future relaxation (nested skill packages, alternate file extensions) would update the regex; for now keep it strict so the surface is unambiguous.
 
 ## What we don't know yet
 

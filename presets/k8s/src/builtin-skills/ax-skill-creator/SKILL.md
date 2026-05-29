@@ -28,7 +28,7 @@ Four steps, all in this conversation:
 
 1. **Understand what the skill should do** — and, specific to this system, which
    hosts, credentials, and package ecosystems it will need.
-2. **Write the bundle** into your workspace at `.ax/skills/<id>/SKILL.md` (plus
+2. **Write the bundle** into your workspace at `.ax/draft-skills/<id>/SKILL.md` (plus
    any helper files under that same directory).
 3. **Install it** by calling `install_authored_skill({ skillId, hosts, slots,
    packages })`. The user approves one card and enters any API keys.
@@ -68,7 +68,7 @@ a quick "here's what I'm going to build" beats writing the wrong thing.
 A skill is a directory. The only required file is `SKILL.md`:
 
 ```
-.ax/skills/my-skill/
+.ax/draft-skills/my-skill/
 ├── SKILL.md          (required: YAML frontmatter + markdown body)
 └── (optional helper files: scripts, reference docs, templates)
 ```
@@ -137,7 +137,7 @@ stays inert.
 
 ### Where the bundle goes
 
-Write the skill to `.ax/skills/<id>/SKILL.md`. Helper files go under that same
+Write the skill to `.ax/draft-skills/<id>/SKILL.md`. Helper files go under that same
 directory.
 
 ### The grammars
@@ -228,7 +228,7 @@ A few points of discipline around this call:
 After install, exercise the skill with a realistic prompt — the kind of thing
 the user would actually type — and see that it does what you intended.
 
-To change it, edit the bundle in `.ax/skills/<id>/` and call
+To change it, edit the bundle in `.ax/draft-skills/<id>/` and call
 `install_authored_skill` again with the same `skillId`. The re-install goes
 through the same one-card approval. This stays lightweight and human-in-the-loop
 on purpose: write, install, try, adjust.
@@ -241,7 +241,7 @@ The user wants to list the issues in their current Linear cycle. Linear has a
 GraphQL API at `api.linear.app` and authenticates with an API key. So the skill
 needs one host and one credential slot.
 
-`.ax/skills/linear/SKILL.md`:
+`.ax/draft-skills/linear/SKILL.md`:
 
 ```markdown
 ---
@@ -297,7 +297,7 @@ The user wants to pretty-print and lint JSON files using a tool they like. The
 skill runs a PyPI tool via `uvx`, and that's all it needs — no API, no key. The
 only thing to approve is the package registry.
 
-`.ax/skills/json-tidy/SKILL.md`:
+`.ax/draft-skills/json-tidy/SKILL.md`:
 
 ```markdown
 ---

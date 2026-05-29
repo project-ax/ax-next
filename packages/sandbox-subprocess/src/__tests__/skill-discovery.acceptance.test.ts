@@ -14,9 +14,9 @@ import type { OpenSessionResult } from '../open-session.js';
 // This is the "canary" integration test for Phase 0. It exercises the full
 // sandbox-subprocess + env-contract wiring chain by:
 //
-//   1. Writing a workspace-authored skill at `.ax/skills/canary-skill/SKILL.md`
+//   1. Writing a workspace-authored skill at `.ax/draft-skills/canary-skill/SKILL.md`
 //      (the host-owned location).
-//   2. Laying down `<workspace>/.claude/skills → ../.ax/skills` — the
+//   2. Laying down `<workspace>/.claude/skills → ../.ax/draft-skills` — the
 //      shape the runner's `scaffoldWorkspaceSkillSurface` produces after
 //      `materializeWorkspace`. Echo-stub doesn't run materialize, so we
 //      reproduce the runner's post-materialize on-disk shape directly
@@ -176,20 +176,20 @@ describe('Phase 0: SDK skill discovery acceptance', () => {
     // plus the workspace tempdir — destabilizing later tests in the run.
     let result: OpenSessionResult | undefined;
     try {
-      // 1. Author a canary skill at the host-owned `.ax/skills/` location —
+      // 1. Author a canary skill at the host-owned `.ax/draft-skills/` location —
       //    same shape an agent would write through the workspace plugin.
-      const canaryDir = path.join(ws, '.ax', 'skills', 'canary-skill');
+      const canaryDir = path.join(ws, '.ax', 'draft-skills', 'canary-skill');
       await fs.mkdir(canaryDir, { recursive: true });
       await fs.writeFile(path.join(canaryDir, 'SKILL.md'), CANARY_SKILL_BODY);
 
-      // 2. Lay down `.claude/skills → ../.ax/skills`. In production the
+      // 2. Lay down `.claude/skills → ../.ax/draft-skills`. In production the
       //    runner main does this via `scaffoldWorkspaceSkillSurface` right
       //    after `materializeWorkspace` (see PR #99). Echo-stub never
       //    calls materialize, so we reproduce the post-materialize shape
       //    here. The two-line setup is the contract under test: if the
       //    on-disk shape matches, the SDK's `'project'` source resolves.
       await fs.mkdir(path.join(ws, '.claude'), { recursive: true });
-      await fs.symlink('../.ax/skills', path.join(ws, '.claude', 'skills'));
+      await fs.symlink('../.ax/draft-skills', path.join(ws, '.claude', 'skills'));
 
       const h = await makeHarness();
       const ctx = h.ctx();
@@ -215,9 +215,9 @@ describe('Phase 0: SDK skill discovery acceptance', () => {
       expect(probe.workspaceRoot).toBe(ws);
 
       // I-P0-4: the symlink the SDK's 'project' source walks resolves to
-      // `../.ax/skills` (relative target, so it survives a remount).
+      // `../.ax/draft-skills` (relative target, so it survives a remount).
       expect(probe.workspaceSkillsSymlinkTarget.error).toBeNull();
-      expect(probe.workspaceSkillsSymlinkTarget.value).toBe('../.ax/skills');
+      expect(probe.workspaceSkillsSymlinkTarget.value).toBe('../.ax/draft-skills');
 
       // I-P0-5: the workspace-authored SKILL.md is reachable through the
       // symlink — which is the exact path the SDK walks at startup. If this

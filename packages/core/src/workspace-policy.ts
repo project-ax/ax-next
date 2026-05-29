@@ -26,7 +26,7 @@ import type { FileChange } from './workspace.js';
 // own project state — its skills, its memory, its identity files — AND
 // to any path the SDK reads as configuration (`.claude/**`). A model
 // writing `src/main.ts` doesn't trip the validator; a model writing
-// `.claude/settings.json` or `.ax/skills/foo/SKILL.md` does. Keeping the
+// `.claude/settings.json` or `.ax/draft-skills/foo/SKILL.md` does. Keeping the
 // filter at this single chokepoint means future validators (identity,
 // skill schema, SDK-config veto, etc.) all see the same scope and can't
 // accidentally key off paths outside the policy set.

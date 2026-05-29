@@ -203,7 +203,7 @@ describe('buildBaselineBundle (pure helper)', () => {
   it('produces a clonable bundle with nested directories', async () => {
     const files: Record<string, string> = {
       '.ax/CLAUDE.md': '# project memory',
-      '.ax/skills/foo/SKILL.md': '---\nname: foo\n---\n',
+      '.ax/draft-skills/foo/SKILL.md': '---\nname: foo\n---\n',
       'src/main.ts': 'export {};\n',
     };
     const r = await buildBaselineBundle({
@@ -265,7 +265,7 @@ describe('workspace.materialize handler', () => {
     const changes: FileChange[] = [
       { path: '.ax/CLAUDE.md', kind: 'put', content: fileBytes('# memory') },
       {
-        path: '.ax/skills/foo/SKILL.md',
+        path: '.ax/draft-skills/foo/SKILL.md',
         kind: 'put',
         content: fileBytes('---\nname: foo\n---\n'),
       },
@@ -284,7 +284,7 @@ describe('workspace.materialize handler', () => {
     const unpacked = await unpackBundleBuffer(binary);
     expect(unpacked.files).toEqual({
       '.ax/CLAUDE.md': '# memory',
-      '.ax/skills/foo/SKILL.md': '---\nname: foo\n---\n',
+      '.ax/draft-skills/foo/SKILL.md': '---\nname: foo\n---\n',
     });
     expect(unpacked.ref).toMatch(/^[0-9a-f]{40}$/);
   });

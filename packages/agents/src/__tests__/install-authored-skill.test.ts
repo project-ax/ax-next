@@ -3,7 +3,7 @@
  *
  * The hook is the in-chat, user-approved analog of the admin
  * promoteAuthoredSkill flow: it reads the agent-authored draft under
- * `.ax/skills/<id>/` (capability-free — the validator strips caps at write
+ * `.ax/draft-skills/<id>/` (capability-free — the validator strips caps at write
  * time), upserts a USER-scoped skill carrying the user-REQUESTED capabilities
  * (the tool args) WITH the bundle's helper files[], then retires the draft.
  *
@@ -179,13 +179,13 @@ describe('agents:install-authored-skill', () => {
     const agentId = await createPersonalAgent(h, 'user-1');
     const v1 = await seedFile(
       h,
-      '.ax/skills/notes/SKILL.md',
+      '.ax/draft-skills/notes/SKILL.md',
       '---\nname: notes\ndescription: Take notes\nversion: 1\n---\nBody',
       'user-1',
       agentId,
       null,
     );
-    await seedFile(h, '.ax/skills/notes/scripts/run.py', 'print(1)', 'user-1', agentId, v1);
+    await seedFile(h, '.ax/draft-skills/notes/scripts/run.py', 'print(1)', 'user-1', agentId, v1);
 
     const out = await h.bus.call<
       AgentsInstallAuthoredSkillInput,
@@ -218,9 +218,9 @@ describe('agents:install-authored-skill', () => {
     expect(got.capabilities.credentials.map((c) => c.slot)).toEqual(['API_KEY']);
     expect(got.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
 
-    // Draft retired: every .ax/skills/notes/* path is gone from the workspace.
+    // Draft retired: every .ax/draft-skills/notes/* path is gone from the workspace.
     const paths = await listWorkspace(h, 'user-1', agentId);
-    expect(paths.some((p) => p.startsWith('.ax/skills/notes/'))).toBe(false);
+    expect(paths.some((p) => p.startsWith('.ax/draft-skills/notes/'))).toBe(false);
   });
 
   it('throws authored-skill-not-found when no SKILL.md exists for the id', async () => {
@@ -238,11 +238,11 @@ describe('agents:install-authored-skill', () => {
   it('sharpens not-found: names both accepted paths and any nearby files', async () => {
     const h = await makeHarness();
     const agentId = await createPersonalAgent(h, 'user-1');
-    // Wrong-case directory: the agent wrote .ax/skills/Linear/SKILL.md but
+    // Wrong-case directory: the agent wrote .ax/draft-skills/Linear/SKILL.md but
     // installs 'linear'. The case-sensitive dir glob misses it → not-found.
     await seedFile(
       h,
-      '.ax/skills/Linear/SKILL.md',
+      '.ax/draft-skills/Linear/SKILL.md',
       '---\nname: linear\ndescription: X\nversion: 1\n---\nBody',
       'user-1',
       agentId,
@@ -256,7 +256,7 @@ describe('agents:install-authored-skill', () => {
       ),
       // Message names the directory form, the flat form, AND the nearby file.
     ).rejects.toThrow(
-      /\.ax\/skills\/linear\/SKILL\.md[\s\S]*\.ax\/skills\/linear\.md[\s\S]*Linear\/SKILL\.md/,
+      /\.ax\/draft-skills\/linear\/SKILL\.md[\s\S]*\.ax\/draft-skills\/linear\.md[\s\S]*Linear\/SKILL\.md/,
     );
   });
 
@@ -277,7 +277,7 @@ describe('agents:install-authored-skill', () => {
     const agentId = await createPersonalAgent(h, 'user-1');
     await seedFile(
       h,
-      '.ax/skills/solo/SKILL.md',
+      '.ax/draft-skills/solo/SKILL.md',
       '---\nname: solo\ndescription: Solo skill\nversion: 1\n---\nBody',
       'user-1',
       agentId,
@@ -302,7 +302,7 @@ describe('agents:install-authored-skill', () => {
     expect(got.files).toEqual([]);
 
     const paths = await listWorkspace(h, 'user-1', agentId);
-    expect(paths.some((p) => p.startsWith('.ax/skills/solo/'))).toBe(false);
+    expect(paths.some((p) => p.startsWith('.ax/draft-skills/solo/'))).toBe(false);
   });
 
   it('threads requested packages into the promoted manifest; mcpServers stays empty', async () => {
@@ -310,7 +310,7 @@ describe('agents:install-authored-skill', () => {
     const agentId = await createPersonalAgent(h, 'user-1');
     await seedFile(
       h,
-      '.ax/skills/pkgskill/SKILL.md',
+      '.ax/draft-skills/pkgskill/SKILL.md',
       '---\nname: pkgskill\ndescription: Package skill\nversion: 1\n---\nBody',
       'user-1',
       agentId,
@@ -343,7 +343,7 @@ describe('agents:install-authored-skill', () => {
     const agentId = await createPersonalAgent(h, 'user-1');
     await seedFile(
       h,
-      '.ax/skills/nopkg/SKILL.md',
+      '.ax/draft-skills/nopkg/SKILL.md',
       '---\nname: nopkg\ndescription: No packages skill\nversion: 1\n---\nBody',
       'user-1',
       agentId,
@@ -372,17 +372,17 @@ describe('agents:install-authored-skill', () => {
   });
 
   // BUG: agents frequently author a skill as a single FLAT FILE
-  // `.ax/skills/<id>.md` instead of the directory form `.ax/skills/<id>/SKILL.md`.
-  // The installer globbed only `.ax/skills/<id>/**`, which can never match the
+  // `.ax/draft-skills/<id>.md` instead of the directory form `.ax/draft-skills/<id>/SKILL.md`.
+  // The installer globbed only `.ax/draft-skills/<id>/**`, which can never match the
   // flat sibling — so install dead-ended on the misleading `authored-skill-not-
   // found` ("no authored skill 'linear' in the workspace") even though the agent
   // HAD authored it. We now accept the flat form as a fallback.
-  it('accepts a flat-file draft (.ax/skills/<id>.md) and retires it', async () => {
+  it('accepts a flat-file draft (.ax/draft-skills/<id>.md) and retires it', async () => {
     const h = await makeHarness();
     const agentId = await createPersonalAgent(h, 'user-1');
     await seedFile(
       h,
-      '.ax/skills/flatlinear.md',
+      '.ax/draft-skills/flatlinear.md',
       '---\nname: flatlinear\ndescription: Flat linear skill\nversion: 1\n---\nBody',
       'user-1',
       agentId,
@@ -413,7 +413,7 @@ describe('agents:install-authored-skill', () => {
 
     // The flat draft file is retired (the canonical copy is now the user store).
     const paths = await listWorkspace(h, 'user-1', agentId);
-    expect(paths).not.toContain('.ax/skills/flatlinear.md');
+    expect(paths).not.toContain('.ax/draft-skills/flatlinear.md');
   });
 
   it('prefers the directory form when both <id>/SKILL.md and <id>.md exist', async () => {
@@ -421,7 +421,7 @@ describe('agents:install-authored-skill', () => {
     const agentId = await createPersonalAgent(h, 'user-1');
     const v1 = await seedFile(
       h,
-      '.ax/skills/dup/SKILL.md',
+      '.ax/draft-skills/dup/SKILL.md',
       '---\nname: dup\ndescription: Dir form\nversion: 1\n---\nDir body',
       'user-1',
       agentId,
@@ -429,7 +429,7 @@ describe('agents:install-authored-skill', () => {
     );
     await seedFile(
       h,
-      '.ax/skills/dup.md',
+      '.ax/draft-skills/dup.md',
       '---\nname: dup\ndescription: Flat form\nversion: 1\n---\nFlat body',
       'user-1',
       agentId,
