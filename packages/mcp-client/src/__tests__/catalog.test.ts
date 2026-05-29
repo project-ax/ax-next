@@ -5,14 +5,16 @@ import { ToolCatalog } from '../catalog.js';
 // ToolCatalog.validateDescriptor reconstructs each descriptor field-by-field,
 // so any NEW field has to be threaded explicitly or it's silently dropped.
 // flushWorkspaceBeforeCall is the host→runner signal that gates the BUG-W2
-// pre-call workspace flush — if the catalog drops it, the runner never flushes
-// and install_authored_skill regresses. These tests pin that it survives.
+// pre-call workspace flush — a host tool that reads files the agent just wrote
+// in the same turn declares it so the runner flushes its live tree first. If
+// the catalog drops the flag, the runner never flushes and the host reads a
+// stale mirror. These tests pin that it survives.
 
 describe('ToolCatalog flushWorkspaceBeforeCall', () => {
   it('carries flushWorkspaceBeforeCall:true through register → list', () => {
     const catalog = new ToolCatalog();
     catalog.register({
-      name: 'install_authored_skill',
+      name: 'host_reads_workspace',
       inputSchema: { type: 'object' },
       executesIn: 'host',
       flushWorkspaceBeforeCall: true,

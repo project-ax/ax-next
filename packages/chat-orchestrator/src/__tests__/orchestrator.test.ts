@@ -5,6 +5,7 @@ import {
   makeAgentContext,
   createLogger,
   reject,
+  asWorkspaceVersion,
   type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
@@ -4046,5 +4047,321 @@ describe('withBrokerDefaults', () => {
     const input = ['file.read'];
     withBrokerDefaults(input, []);
     expect(input).toEqual(['file.read']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Phase 3 (B3) — session-dirty → next-turn re-spawn on .ax/draft-skills change.
+//
+// Under keepalive a warm session reuses a frozen skill projection. When a turn
+// commits a change under the agent's `.ax/draft-skills/`, the `workspace:applied`
+// subscriber marks the committing session dirty (mark-ONLY — terminating there
+// would wedge the in-flight turn / hang the SSE, the Fault-A class bug). The
+// dirty session is retired at the NEXT turn's routing decision (safely between
+// turns), forcing a fresh spawn that re-derives the projection. A transcript-only
+// commit (`.claude/projects/**`) must NOT trigger a re-spawn — else keepalive is
+// defeated every turn.
+//
+// We drive turns through the bus harness (mirrors keepalive.test.ts) and fire
+// `workspace:applied` through the bus, exercising the real plugin.ts wiring →
+// orchestrator.onWorkspaceApplied → the shared dirty-set the routing reads.
+// ---------------------------------------------------------------------------
+describe('chat-orchestrator session-dirty re-spawn (B3)', () => {
+  function ctxWith(o: { sessionId: string; conversationId?: string; reqId: string }) {
+    return makeAgentContext({
+      sessionId: o.sessionId,
+      agentId: 'test-agent',
+      userId: 'test-user',
+      ...(o.conversationId !== undefined ? { conversationId: o.conversationId } : {}),
+      reqId: o.reqId,
+      logger: createLogger({ reqId: o.reqId, writer: () => undefined }),
+    });
+  }
+
+  // Fire chat:turn-end carrying the originating reqId (the runner stamps it).
+  function fireTurnEnd(bus: HookBus, sessionId: string, reqId: string) {
+    setImmediate(() => {
+      void bus.fire(
+        'chat:turn-end',
+        makeAgentContext({
+          sessionId,
+          agentId: 'a',
+          userId: 'u',
+          reqId: 'ipc-fresh',
+          logger: createLogger({ reqId: 'ipc-fresh', writer: () => undefined }),
+        }),
+        { reason: 'user-message-wait', reqId },
+      );
+    });
+  }
+
+  // A keepalive harness: one conversation, one warm sandbox handle, a
+  // bind-session that marks the bound session alive (so turn 2 routes warm
+  // unless the dirty-set forces a fresh spawn). Tracks open / terminate counts.
+  async function makeKeepaliveHarness() {
+    const conv: Record<string, { activeSessionId: string | null }> = {
+      'conv-1': { activeSessionId: null },
+    };
+    const live = new Set<string>();
+    const counters = { opens: 0, terminates: [] as string[] };
+
+    // Each spawn gets a distinct trivial handle (kill resolves exited).
+    function makeHandle() {
+      let resolveExit!: () => void;
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((res) => {
+        resolveExit = () => res({ code: 0, signal: null });
+      });
+      return { kill: async () => { resolveExit(); }, exited };
+    }
+
+    const services: Record<string, ServiceHandler> = {
+      'agents:resolve': async () => ({ agent: { ...TEST_AGENT } }),
+      'session:queue-work': async () => ({ cursor: 0 }),
+      'session:terminate': async (_c, input: unknown) => {
+        const sid = (input as { sessionId: string }).sessionId;
+        counters.terminates.push(sid);
+        live.delete(sid);
+        conv['conv-1']!.activeSessionId = null;
+        return {};
+      },
+      'session:is-alive': async (_c, input: unknown) => ({
+        alive: live.has((input as { sessionId: string }).sessionId),
+      }),
+      'conversations:get': async (_c, input: unknown) => {
+        const i = input as { conversationId: string; userId: string };
+        return {
+          conversation: {
+            conversationId: i.conversationId,
+            userId: i.userId,
+            agentId: 'test-agent',
+            activeSessionId: conv[i.conversationId]!.activeSessionId,
+            activeReqId: null,
+          },
+        };
+      },
+      'conversations:bind-session': async (_c, input: unknown) => {
+        const i = input as { sessionId: string };
+        conv['conv-1']!.activeSessionId = i.sessionId; // simulate the row write
+        live.add(i.sessionId); // and mark it alive
+        return undefined;
+      },
+      'sandbox:open-session': async () => {
+        counters.opens += 1;
+        return { runnerEndpoint: 'unix:///tmp/m.sock', handle: makeHandle() };
+      },
+      'proxy:open-session': async () => ({
+        proxyEndpoint: 'tcp://127.0.0.1:1',
+        caCertPem: 'CA',
+        envMap: {},
+      }),
+      'proxy:close-session': async () => ({}),
+    };
+
+    const h = await createTestHarness({
+      services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+          keepAlive: true,
+          idleWindowMs: 60_000,
+          idleGraceMs: 1_000,
+        }),
+      ],
+    });
+    return { h, counters };
+  }
+
+  it('re-spawns after a turn that committed a .ax/draft-skills change', async () => {
+    const { h, counters } = await makeKeepaliveHarness();
+
+    // Turn 1 — fresh spawn, binds 's-1' as the conversation's active session.
+    fireTurnEnd(h.bus, 's-1', 'req-1');
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1' }),
+      { message: { role: 'user', content: 'author a skill' } },
+    );
+    expect(counters.opens).toBe(1);
+
+    // The committing session ('s-1') changed its agent's .ax/draft-skills/ this
+    // turn. workspace:applied fires (BEFORE the next turn) → marks 's-1' dirty.
+    await h.bus.fire(
+      'workspace:applied',
+      ctxWith({ sessionId: 's-1', reqId: 'wa-1' }),
+      {
+        before: null,
+        after: asWorkspaceVersion('v2'),
+        author: { userId: 'test-user', agentId: 'test-agent', sessionId: 's-1' },
+        changes: [{ path: '.ax/draft-skills/linear/SKILL.md', kind: 'added' }],
+      },
+    );
+
+    // Turn 2 — same conversation. 's-1' is still alive, BUT it's dirty → routing
+    // must decline warm-reuse, terminate 's-1', and re-spawn (a 2nd open).
+    fireTurnEnd(h.bus, 's-1', 'req-2');
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-2' }),
+      { message: { role: 'user', content: 'use it' } },
+    );
+
+    expect(counters.opens).toBe(2); // re-spawned, did NOT reuse 's-1'
+    expect(counters.terminates).toContain('s-1'); // stale session retired
+  });
+
+  it('reuses the warm session when the turn changed only the transcript (no draft change)', async () => {
+    const { h, counters } = await makeKeepaliveHarness();
+
+    // Turn 1 — fresh spawn, binds 's-1'.
+    fireTurnEnd(h.bus, 's-1', 'req-1');
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1' }),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(counters.opens).toBe(1);
+
+    // Transcript-only commit — must NOT mark 's-1' dirty (keepalive must hold).
+    await h.bus.fire(
+      'workspace:applied',
+      ctxWith({ sessionId: 's-1', reqId: 'wa-1' }),
+      {
+        before: null,
+        after: asWorkspaceVersion('v2'),
+        author: { userId: 'test-user', agentId: 'test-agent', sessionId: 's-1' },
+        changes: [{ path: '.claude/projects/abc.jsonl', kind: 'modified' }],
+      },
+    );
+
+    // Turn 2 — 's-1' alive + clean → routed warm, NO second open.
+    fireTurnEnd(h.bus, 's-1', 'req-2');
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-2' }),
+      { message: { role: 'user', content: 'again' } },
+    );
+
+    expect(counters.opens).toBe(1); // warm reuse — keepalive intact
+    expect(counters.terminates).not.toContain('s-1');
+  });
+
+  it('still re-spawns when session:terminate throws during dirty-session retire (F4 — degraded path)', async () => {
+    // B3 terminate-failure branch (~orchestrator.ts:1022-1029): if the retire
+    // call throws, the orchestrator logs `respawn_terminate_failed` and falls
+    // through to a fresh spawn. This test asserts the throw does NOT block the
+    // spawn — the second agent:invoke must still open a new sandbox.
+
+    // Build a harness where session:terminate throws on the first call (the
+    // retire during dirty-session routing). Mirror makeKeepaliveHarness exactly,
+    // overriding only session:terminate.
+    const conv: Record<string, { activeSessionId: string | null }> = {
+      'conv-1': { activeSessionId: null },
+    };
+    const live = new Set<string>();
+    const counters = { opens: 0, terminateAttempts: 0 };
+
+    function makeHandle() {
+      let resolveExit!: () => void;
+      const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((res) => {
+        resolveExit = () => res({ code: 0, signal: null });
+      });
+      return { kill: async () => { resolveExit(); }, exited };
+    }
+
+    const services: Record<string, ServiceHandler> = {
+      'agents:resolve': async () => ({ agent: { ...TEST_AGENT } }),
+      'session:queue-work': async () => ({ cursor: 0 }),
+      'session:terminate': async () => {
+        counters.terminateAttempts += 1;
+        // Always throw — simulates a transient store failure mid-retire.
+        throw new Error('simulated terminate failure');
+        // (unreachable — live and conv are NOT updated, so 's-1' stays alive
+        // in the mock; the fresh spawn still opens because routedSessionId
+        // remains null after the failed retire.)
+      },
+      'session:is-alive': async (_c, input: unknown) => ({
+        alive: live.has((input as { sessionId: string }).sessionId),
+      }),
+      'conversations:get': async (_c, input: unknown) => {
+        const i = input as { conversationId: string; userId: string };
+        return {
+          conversation: {
+            conversationId: i.conversationId,
+            userId: i.userId,
+            agentId: 'test-agent',
+            activeSessionId: conv[i.conversationId]!.activeSessionId,
+            activeReqId: null,
+          },
+        };
+      },
+      'conversations:bind-session': async (_c, input: unknown) => {
+        const i = input as { sessionId: string };
+        conv['conv-1']!.activeSessionId = i.sessionId;
+        live.add(i.sessionId);
+        return undefined;
+      },
+      'sandbox:open-session': async () => {
+        counters.opens += 1;
+        return { runnerEndpoint: 'unix:///tmp/m.sock', handle: makeHandle() };
+      },
+      'proxy:open-session': async () => ({
+        proxyEndpoint: 'tcp://127.0.0.1:1',
+        caCertPem: 'CA',
+        envMap: {},
+      }),
+      'proxy:close-session': async () => ({}),
+    };
+
+    const h = await createTestHarness({
+      services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+          keepAlive: true,
+          idleWindowMs: 60_000,
+          idleGraceMs: 1_000,
+        }),
+      ],
+    });
+
+    // Turn 1 — fresh spawn, binds 's-1'.
+    fireTurnEnd(h.bus, 's-1', 'req-1');
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-1' }),
+      { message: { role: 'user', content: 'author a skill' } },
+    );
+    expect(counters.opens).toBe(1);
+
+    // Mark 's-1' dirty via a .ax/draft-skills/ commit.
+    await h.bus.fire(
+      'workspace:applied',
+      ctxWith({ sessionId: 's-1', reqId: 'wa-1' }),
+      {
+        before: null,
+        after: asWorkspaceVersion('v2'),
+        author: { userId: 'test-user', agentId: 'test-agent', sessionId: 's-1' },
+        changes: [{ path: '.ax/draft-skills/linear/SKILL.md', kind: 'added' }],
+      },
+    );
+
+    // Turn 2 — dirty-session retire throws. The orchestrator must NOT propagate
+    // the error; it must log and fall through to a fresh spawn.
+    fireTurnEnd(h.bus, 's-1', 'req-2');
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 's-1', conversationId: 'conv-1', reqId: 'req-2' }),
+      { message: { role: 'user', content: 'use it' } },
+    );
+
+    // The throw was attempted (degraded path exercised).
+    expect(counters.terminateAttempts).toBeGreaterThanOrEqual(1);
+    // A fresh sandbox was still opened — the throw did NOT block re-spawn.
+    expect(counters.opens).toBe(2);
+    // The outcome is a normal agent outcome (not a thrown error propagated out).
+    expect(outcome).toBeDefined();
+    expect((outcome as AgentOutcome).kind).toBeDefined();
   });
 });

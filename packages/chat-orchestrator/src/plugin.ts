@@ -100,7 +100,21 @@ export function createChatOrchestratorPlugin(
       // the in-flight turn and fires `chat:permission-request`; it never vetoes
       // the egress audit (the proxy already returned 403) and never affects the
       // allow/deny decision.
-      subscribes: ['chat:end', 'chat:turn-end', 'session:terminate', 'event.http-egress'],
+      //
+      // We listen to `workspace:applied` (Phase 3 / B3) so a turn that committed
+      // a change under the agent's `.ax/draft-skills/` MARKS the committing
+      // session dirty; the next turn's routing declines warm-reuse and
+      // re-spawns so the skill projection re-derives. Mark-only here (the event
+      // fires mid-commit, before chat:turn-end) — the terminate happens at the
+      // next turn's routing, safely between turns. In-memory + single-replica,
+      // matching @ax/routines' existing workspace:applied posture.
+      subscribes: [
+        'chat:end',
+        'chat:turn-end',
+        'session:terminate',
+        'event.http-egress',
+        'workspace:applied',
+      ],
     },
     init({ bus }) {
       const orch = createOrchestrator(bus, config);
@@ -163,6 +177,18 @@ export function createChatOrchestratorPlugin(
         async (ctx, payload) => {
           await orch.onHttpEgress(ctx, payload as never);
           return undefined; // observation-only; never vetoes the egress audit.
+        },
+      );
+
+      bus.subscribe<{
+        author?: { sessionId?: string };
+        changes: Array<{ path: string }>;
+      }>(
+        'workspace:applied',
+        PLUGIN_NAME,
+        async (ctx, delta) => {
+          await orch.onWorkspaceApplied(ctx, delta);
+          return undefined; // mark-only; never vetoes/transforms the commit.
         },
       );
     },

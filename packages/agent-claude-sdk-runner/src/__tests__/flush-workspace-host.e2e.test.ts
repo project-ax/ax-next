@@ -9,11 +9,11 @@ import { commitNotifyWithResync, flushWorkspaceToHost } from '../commit-notify-r
 import { commitTurnAndBundle } from '../git-workspace.js';
 
 // ---------------------------------------------------------------------------
-// BUG-W2 real-path regression: install_authored_skill returns
-// "authored-skill-not-found" because the host reads the committed + pushed
-// workspace mirror, which lags the runner's live tree until a turn-boundary
-// commit — and the agent writes .ax/draft-skills/<id>/SKILL.md and calls the tool in
-// the SAME turn.
+// BUG-W2 real-path regression: a host tool that declares
+// `flushWorkspaceBeforeCall` reads a file the agent wrote earlier in the SAME
+// turn. Without the flush the host reads the committed + pushed workspace
+// mirror, which lags the runner's live tree until a turn-boundary commit — so
+// the read misses the just-written file.
 //
 // The existing host-side canaries MOCK workspace:list/read, so the
 // committed-vs-live divergence never appears and the bug slips through. This
@@ -21,10 +21,10 @@ import { commitTurnAndBundle } from '../git-workspace.js';
 // side), wired through the REAL host-tool forwarder + flush helper, so the
 // divergence is genuine:
 //
-//   - write .ax/draft-skills/foo/SKILL.md to the runner's live tree (uncommitted)
+//   - write .ax/scratch/foo.txt to the runner's live tree (uncommitted)
 //   - WITHOUT the flush, the host read of the mirror finds nothing (the bug)
 //   - WITH the pre-forward flush, the runner commits + pushes the live tree to
-//     the mirror first, so the host read finds the just-authored file (the fix)
+//     the mirror first, so the host read finds the just-written file (the fix)
 // ---------------------------------------------------------------------------
 
 interface GitResult {
@@ -167,9 +167,9 @@ async function hostRetire(mirrorDir: string, relPath: string): Promise<string> {
  * concurrent-writer signal (`accepted:false` + `actualParent`, head only — the
  * baseline bundle is fetched out-of-band) so the runner's resync path engages.
  * The runner then calls `callBinary('workspace.export-baseline-bundle', {version})`
- * to stream the baseline bundle to a temp file. `tool.execute-host` for
- * install_authored_skill reads the mirror for the authored file. No mocking of
- * the workspace layer — both sides are real git.
+ * to stream the baseline bundle to a temp file. `tool.execute-host` reads the
+ * mirror for the just-written file. No mocking of the workspace layer — both
+ * sides are real git.
  */
 function makeHostClient(mirrorDir: string): IpcClient {
   const norm = (h: string | null | undefined): string | null => (h && h.length ? h : null);
@@ -199,7 +199,7 @@ function makeHostClient(mirrorDir: string): IpcClient {
               mirrorDir,
               'cat-file',
               '-e',
-              'refs/heads/main:.ax/draft-skills/foo/SKILL.md',
+              'refs/heads/main:.ax/scratch/foo.txt',
             ])
           ).code === 0;
         return { output: { found } };
@@ -230,11 +230,11 @@ function makeHostClient(mirrorDir: string): IpcClient {
   };
 }
 
-const SKILL_MD = '---\nname: foo\ndescription: a foo skill\n---\n\nDo foo things.\n';
+const SCRATCH_BODY = 'a file the agent just wrote this turn\n';
 
-const INSTALL_TOOL = {
-  name: 'install_authored_skill',
-  description: 'install an authored skill',
+const FLUSH_TOOL = {
+  name: 'host_reads_workspace',
+  description: 'a host tool that reads files the agent just wrote',
   inputSchema: { type: 'object' as const },
   executesIn: 'host' as const,
   flushWorkspaceBeforeCall: true,
@@ -250,26 +250,26 @@ function hostFound(result: unknown): boolean {
   return (JSON.parse(text) as { found?: boolean }).found === true;
 }
 
-describe('install_authored_skill flush (BUG-W2 real path)', () => {
+describe('flushWorkspaceBeforeCall host tool (BUG-W2 real path)', () => {
   it('WITHOUT the flush, the host read of the mirror misses the live file (the bug)', async () => {
     const { runnerRoot, mirrorDir } = await setupWorkspace();
-    // Agent authors the skill into the live tree, uncommitted (mid-turn write).
-    await fs.mkdir(path.join(runnerRoot, '.ax', 'draft-skills', 'foo'), { recursive: true });
-    await fs.writeFile(path.join(runnerRoot, '.ax', 'draft-skills', 'foo', 'SKILL.md'), SKILL_MD);
+    // Agent writes the file into the live tree, uncommitted (mid-turn write).
+    await fs.mkdir(path.join(runnerRoot, '.ax', 'scratch'), { recursive: true });
+    await fs.writeFile(path.join(runnerRoot, '.ax', 'scratch', 'foo.txt'), SCRATCH_BODY);
 
     const client = makeHostClient(mirrorDir);
     // No flushWorkspace wired — the pre-fix behavior. The forward goes straight
     // to the host, which reads the stale mirror.
-    const entries = buildHostToolEntries(client, [INSTALL_TOOL], () => 'id-1');
-    const result = await (entries[0] as ToolEntry).handler({ skillId: 'foo' }, {});
+    const entries = buildHostToolEntries(client, [FLUSH_TOOL], () => 'id-1');
+    const result = await (entries[0] as ToolEntry).handler({ path: 'foo.txt' }, {});
 
     expect(hostFound(result)).toBe(false);
   });
 
-  it('WITH the pre-forward flush, the host read finds the just-authored file (the fix)', async () => {
+  it('WITH the pre-forward flush, the host read finds the just-written file (the fix)', async () => {
     const { runnerRoot, mirrorDir, baselineOid } = await setupWorkspace();
-    await fs.mkdir(path.join(runnerRoot, '.ax', 'draft-skills', 'foo'), { recursive: true });
-    await fs.writeFile(path.join(runnerRoot, '.ax', 'draft-skills', 'foo', 'SKILL.md'), SKILL_MD);
+    await fs.mkdir(path.join(runnerRoot, '.ax', 'scratch'), { recursive: true });
+    await fs.writeFile(path.join(runnerRoot, '.ax', 'scratch', 'foo.txt'), SCRATCH_BODY);
 
     const client = makeHostClient(mirrorDir);
     let parentVersion: string | null = baselineOid;
@@ -283,8 +283,8 @@ describe('install_authored_skill flush (BUG-W2 real path)', () => {
       parentVersion = r.parentVersion;
       return r.outcome;
     };
-    const entries = buildHostToolEntries(client, [INSTALL_TOOL], () => 'id-1', flushWorkspace);
-    const result = await (entries[0] as ToolEntry).handler({ skillId: 'foo' }, {});
+    const entries = buildHostToolEntries(client, [FLUSH_TOOL], () => 'id-1', flushWorkspace);
+    const result = await (entries[0] as ToolEntry).handler({ path: 'foo.txt' }, {});
 
     expect(hostFound(result)).toBe(true);
     // The flush advanced the chained version off the baseline (so the turn-end
@@ -293,14 +293,14 @@ describe('install_authored_skill flush (BUG-W2 real path)', () => {
     expect(parentVersion).not.toBe(baselineOid);
   });
 
-  // Codex review SHOULD-FIX: the host-side retire (delete the draft via
-  // workspace:apply after upsert) must not be undone by the next runner commit,
-  // and must not wedge the turn. Exercises the full real-git sequence:
-  // flush -> host retire -> next runner turn commit -> concurrent-writer resync.
-  it('host-side retire after the flush sticks and the next runner commit resyncs cleanly', async () => {
+  // Codex review SHOULD-FIX: a host-side delete (e.g. workspace:apply after the
+  // tool runs) must not be undone by the next runner commit, and must not wedge
+  // the turn. Exercises the full real-git sequence:
+  // flush -> host delete -> next runner turn commit -> concurrent-writer resync.
+  it('host-side delete after the flush sticks and the next runner commit resyncs cleanly', async () => {
     const { runnerRoot, mirrorDir, baselineOid } = await setupWorkspace();
-    await fs.mkdir(path.join(runnerRoot, '.ax', 'draft-skills', 'foo'), { recursive: true });
-    await fs.writeFile(path.join(runnerRoot, '.ax', 'draft-skills', 'foo', 'SKILL.md'), SKILL_MD);
+    await fs.mkdir(path.join(runnerRoot, '.ax', 'scratch'), { recursive: true });
+    await fs.writeFile(path.join(runnerRoot, '.ax', 'scratch', 'foo.txt'), SCRATCH_BODY);
 
     const client = makeHostClient(mirrorDir);
     let parentVersion: string | null = baselineOid;
@@ -309,14 +309,14 @@ describe('install_authored_skill flush (BUG-W2 real path)', () => {
       parentVersion = r.parentVersion;
       return r.outcome;
     };
-    const entries = buildHostToolEntries(client, [INSTALL_TOOL], () => 'id-1', flushWorkspace);
+    const entries = buildHostToolEntries(client, [FLUSH_TOOL], () => 'id-1', flushWorkspace);
 
-    // 1. Author + install: flush pushes the draft, host reads it.
-    const r1 = await (entries[0] as ToolEntry).handler({ skillId: 'foo' }, {});
+    // 1. Write + read: flush pushes the file, host reads it.
+    const r1 = await (entries[0] as ToolEntry).handler({ path: 'foo.txt' }, {});
     expect(hostFound(r1)).toBe(true);
 
-    // 2. Host retires the draft on the mirror (advances the mirror head).
-    await hostRetire(mirrorDir, '.ax/draft-skills/foo/SKILL.md');
+    // 2. Host deletes the file on the mirror (advances the mirror head).
+    await hostRetire(mirrorDir, '.ax/scratch/foo.txt');
 
     // 3. Next runner turn writes a normal file (disjoint path) and commits.
     //    The runner's baseline is the pre-retire tip, so commit-notify hits a
@@ -335,18 +335,18 @@ describe('install_authored_skill flush (BUG-W2 real path)', () => {
     // No wedge: the resync rebased the turn onto the retire commit and landed.
     expect(res.outcome).toBe('accepted');
 
-    // 4a. Retire stuck: the draft is gone from the mirror...
-    const skillInMirror =
-      (await git(['-C', mirrorDir, 'cat-file', '-e', 'refs/heads/main:.ax/draft-skills/foo/SKILL.md'])).code === 0;
-    expect(skillInMirror).toBe(false);
+    // 4a. Delete stuck: the file is gone from the mirror...
+    const fileInMirror =
+      (await git(['-C', mirrorDir, 'cat-file', '-e', 'refs/heads/main:.ax/scratch/foo.txt'])).code === 0;
+    expect(fileInMirror).toBe(false);
     // 4b. ...the turn's file survived...
     const jsonlInMirror =
       (await git(['-C', mirrorDir, 'cat-file', '-e', 'refs/heads/main:.claude/projects/sess.jsonl'])).code === 0;
     expect(jsonlInMirror).toBe(true);
-    // 4c. ...and the runner's live tree no longer carries the retired draft.
-    const skillInRunnerTree = await fs
-      .access(path.join(runnerRoot, '.ax', 'draft-skills', 'foo', 'SKILL.md'))
+    // 4c. ...and the runner's live tree no longer carries the deleted file.
+    const fileInRunnerTree = await fs
+      .access(path.join(runnerRoot, '.ax', 'scratch', 'foo.txt'))
       .then(() => true, () => false);
-    expect(skillInRunnerTree).toBe(false);
+    expect(fileInRunnerTree).toBe(false);
   });
 });

@@ -80,8 +80,8 @@ interface PermissionRequestEvent {
   // per-request card hints — never persisted on a manifest/store type.
   slots: { slot: string; kind: 'api-key'; account?: string; haveExisting?: boolean }[];
   // Package registry egress the skill declares — shown to the user so they can
-  // see which registries will be used. Mirrors install_authored_skill's card
-  // for consistency. Empty arrays when the skill has no package deps.
+  // see which registries will be used. Empty arrays when the skill has no
+  // package deps.
   packages: { npm: string[]; pypi: string[] };
 }
 
