@@ -311,6 +311,16 @@ interface HttpEgressEventLike {
     | 'request-body-too-large';
 }
 
+// Minimal structural view of @ax/core's `WorkspaceDelta` — the B3
+// workspace:applied subscriber only reads the committing session and the
+// changed paths. Structural (no @ax/core type import) per the file's
+// hook-payload-shape convention; @ax/core's WorkspaceDelta is the canonical
+// shape, validated upstream at the fire site.
+interface WorkspaceAppliedLike {
+  author?: { sessionId?: string };
+  changes: Array<{ path: string }>;
+}
+
 // AgentConfig (sent through sandbox:open-session and persisted on the session
 // row) now comes from @ax/sandbox-protocol (type-only import above). The
 // session-postgres / session-inmemory plugins declare the same shape; drift is
@@ -594,6 +604,7 @@ export function createOrchestrator(
     input: ApplyCapabilityGrantInput,
   ): Promise<ApplyCapabilityGrantOutput>;
   onHttpEgress(ctx: AgentContext, payload: HttpEgressEventLike): Promise<void>;
+  onWorkspaceApplied(ctx: AgentContext, delta: WorkspaceAppliedLike): Promise<void>;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -784,6 +795,30 @@ export function createOrchestrator(
     }
   }
 
+  // Phase 3 (B3) — workspace:applied subscriber. Fires during commit-notify,
+  // which is BEFORE chat:turn-end, so the committing turn is still in flight.
+  // We therefore ONLY MARK the session dirty here — never terminate (that would
+  // kill the session mid-turn and hang the SSE, the Fault-A class bug). The
+  // dirty session is retired at the NEXT turn's routing decision, which runs
+  // safely between turns. Re-spawn is triggered only by a change under the
+  // agent's `.ax/draft-skills/` (a transcript-only commit, `.claude/projects/**`,
+  // must NOT trip it — else keepalive is defeated every turn). The committing
+  // session equals the conversation's activeSessionId at commit time, so keying
+  // the dirty-set by `author.sessionId` lines up with the routing candidate.
+  async function onWorkspaceApplied(
+    _ctx: AgentContext,
+    delta: WorkspaceAppliedLike,
+  ): Promise<void> {
+    const sid = delta.author?.sessionId;
+    if (
+      sid !== undefined &&
+      sid.length > 0 &&
+      delta.changes.some((c) => DRAFT_SKILLS_RE.test(c.path))
+    ) {
+      respawnSessions.add(sid);
+    }
+  }
+
   const chatTimeoutMs = config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
   const oneShot = config.oneShot ?? true;
   const keepAlive = config.keepAlive ?? false;
@@ -850,6 +885,15 @@ export function createOrchestrator(
   // Membership is added after a successful proxy:open-session and removed in
   // the runAgentInvoke finally that fires proxy:close-session.
   const sessionsNeedingRotation = new Set<string>();
+
+  // Phase 3 (B3) — sessions whose agent's draft-skills changed this turn must
+  // re-spawn next turn (the runner reads skills only at spawn, "frozen at
+  // spawn"). Populated by the workspace:applied subscriber (MARK-ONLY — see
+  // onWorkspaceApplied), consumed (terminate + fresh spawn) at the next turn's
+  // routing decision. In-memory + single-replica — same posture as
+  // @ax/routines' workspace:applied use.
+  const respawnSessions = new Set<string>();
+  const DRAFT_SKILLS_RE = /^\.ax\/draft-skills\//;
 
   async function runAgentInvoke(
     ctx: AgentContext,
@@ -968,7 +1012,25 @@ export function createOrchestrator(
             SessionIsAliveOutput
           >('session:is-alive', ctx, { sessionId: candidate });
           if (aliveResult.alive) {
-            routedSessionId = candidate;
+            if (respawnSessions.has(candidate)) {
+              // B3: this session's agent's draft-skills changed since it
+              // spawned (the runner freezes the projection at spawn). Retire it
+              // and fall through to a fresh spawn that re-derives the
+              // projection. Safe HERE (between turns), unlike a mid-commit
+              // terminate in the workspace:applied subscriber.
+              respawnSessions.delete(candidate);
+              try {
+                await bus.call('session:terminate', ctx, { sessionId: candidate });
+              } catch (err) {
+                ctx.logger.warn('respawn_terminate_failed', {
+                  sessionId: candidate,
+                  err: err instanceof Error ? err.message : String(err),
+                });
+              }
+              // routedSessionId stays null → fresh-spawn path below.
+            } else {
+              routedSessionId = candidate;
+            }
           }
           // else: stale pointer (sandbox torn down without clearing the
           // row, or session:terminate subscriber not yet observed). Fall
@@ -2134,6 +2196,7 @@ export function createOrchestrator(
     onSessionTerminate,
     applyCapabilityGrant,
     onHttpEgress,
+    onWorkspaceApplied,
   };
 }
 
