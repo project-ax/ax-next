@@ -117,6 +117,75 @@ body {
       bg-primary. Pure CSS — no observer needed. */
 :root {
   --scrollbar-gutter: 15px;
+  /* Mirrors Tailwind `boxShadow.sm` — appended to the composer halo stack so
+     the field keeps its baseline lift beneath the new accent bloom. */
+  --shadow-sm: 0 1px 2px hsl(0 0% 0% / 0.04), 0 1px 1px hsl(0 0% 0% / 0.03);
+  /* Accent "pool of light" mix strengths — deepened for dark mode below. */
+  --composer-glow-center: 22%;
+  --composer-glow-mid: 9%;
+}
+
+/* Dark mode strengthens the pool. Gate on an explicit dark theme, and on the
+   system preference only when no explicit theme is set — mirrors the token
+   blocks in the @layer base above. */
+:root[data-theme='dark'] {
+  --composer-glow-center: 36%;
+  --composer-glow-mid: 14%;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme='light']) {
+    --composer-glow-center: 36%;
+    --composer-glow-mid: 14%;
+  }
+}
+
+/* Ambient accent "pool of light": a fixed, full-viewport radial glow anchored
+   low-center, just below the fixed composer. It sits behind the UI (z-index 0;
+   the composer is z-20 and the sidebar/header are lifted above it) and never
+   intercepts input. A slow ~14s breath keeps it atmospheric rather than static.
+   We mix the brand `--primary` token — the shadcn `--accent` token is a
+   near-neutral gray here, so it would read as no color at all. */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background: radial-gradient(
+    ellipse 100% 60% at 50% 100%,
+    color-mix(in oklch, hsl(var(--primary)) var(--composer-glow-center), transparent) 0%,
+    color-mix(in oklch, hsl(var(--primary)) var(--composer-glow-mid), transparent) 32%,
+    transparent 64%
+  );
+  animation: composer-glow-breathe 14s ease-in-out infinite;
+}
+@keyframes composer-glow-breathe {
+  0%, 100% { opacity: 0.85; }
+  50%      { opacity: 1; }
+}
+/* Respect reduced-motion: hold the pool steady rather than breathing. */
+@media (prefers-reduced-motion: reduce) {
+  body::before { animation: none; }
+}
+
+/* Composer field halo — a hairline accent ring plus a soft drop + radial bloom
+   layered over the baseline --shadow-sm. Deepens on :focus-within (wider, more
+   saturated ring/blooms + an accent-tinted border). Replaces the prior Tailwind
+   `shadow-sm` and focus ring, which were removed from Composer.tsx. */
+.composer-field {
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, hsl(var(--primary)) 10%, transparent),
+    0 24px 70px -18px color-mix(in oklch, hsl(var(--primary)) 30%, transparent),
+    0 0 60px -10px color-mix(in oklch, hsl(var(--primary)) 18%, transparent),
+    var(--shadow-sm);
+}
+.composer-field:focus-within {
+  box-shadow:
+    0 0 0 4px color-mix(in oklch, hsl(var(--primary)) 16%, transparent),
+    0 24px 70px -18px color-mix(in oklch, hsl(var(--primary)) 45%, transparent),
+    0 0 60px -10px color-mix(in oklch, hsl(var(--primary)) 28%, transparent),
+    var(--shadow-sm);
+  border-color: color-mix(in oklch, hsl(var(--primary)) 50%, hsl(var(--border)));
 }
 .composer-fade {
   background: linear-gradient(
@@ -201,9 +270,26 @@ body {
   to   { opacity: 1; transform: translateY(0); }
 }
 
-/* THREAD residue — paragraph spacing inside Markdown-rendered .msg-body.
+/* THREAD residue — block spacing inside Markdown-rendered .msg-body.
    The Tailwind typography plugin would replace this; not worth pulling
-   in for two rules. */
+   in for a handful of rules. */
 .msg-body p { margin-bottom: 0.6em; }
 .msg-body p:last-child { margin-bottom: 0; }
+
+/* The message body carries `white-space: pre-wrap` so plain-text turns keep
+   their newlines. Inside the Markdown container that backfires: react-markdown
+   emits a literal newline text node between every block element (<p>, <li>, …),
+   and pre-wrap renders each as a blank line — most visibly blowing the gap
+   between <li> items out to a full line-height. The Markdown container already
+   encodes its own structure, so reset it to normal whitespace. (Code blocks are
+   unaffected: <pre> carries its own `white-space: pre`.) */
+.msg-body .aui-md { white-space: normal; }
+
+/* With those blank lines gone, lists fall back to Preflight's zeroed margins
+   (items touching). Restore the same 0.6em rhythm the prose uses so list items
+   match the normal vertical spacing between chat elements. List markers are
+   left as-is — this only touches spacing. */
+.msg-body .aui-md :is(ul, ol) { margin: 0.6em 0; }
+.msg-body .aui-md li { margin-bottom: 0.6em; }
+.msg-body .aui-md li:last-child { margin-bottom: 0; }
 

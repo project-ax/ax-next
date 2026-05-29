@@ -153,12 +153,12 @@ export function Composer() {
             />
           </div>
           <div
+            // The accent halo (base box-shadow + :focus-within deepen + border
+            // tint) lives in index.css under `.composer-field`.
             className="
               composer-field relative flex items-end gap-2.5
               px-3.5 pl-[14px] py-2.5 rounded-lg bg-card
-              border border-border shadow-sm transition-[border-color,box-shadow] duration-150
-              focus-within:border-primary/40
-              focus-within:shadow-[0_0_0_4px_hsl(var(--primary)/0.14),0_1px_2px_hsl(0_0%_0%/0.04)]
+              border border-border transition-[border-color,box-shadow] duration-150
             "
           >
             <AttachMenu />
