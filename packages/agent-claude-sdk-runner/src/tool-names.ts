@@ -29,7 +29,7 @@
 //      flips Skill from "denied at every layer" to "the intended SDK-native
 //      skill-discovery path." Skill is now in `allowedTools` and the SDK
 //      reads skills from $CLAUDE_CONFIG_DIR/skills/ (host-controlled) and
-//      <workspace>/.claude/skills/ (a narrow symlink to .ax/skills,
+//      <workspace>/.claude/skills/ (a narrow symlink to .ax/draft-skills,
 //      gated at workspace:pre-apply by @ax/validator-skill — see commit
 //      521f206c, which vetoes agent writes to .claude/settings.json,
 //      CLAUDE.md, and other SDK-config paths that would let an agent

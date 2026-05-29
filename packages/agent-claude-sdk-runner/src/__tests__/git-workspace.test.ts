@@ -164,7 +164,7 @@ describe('materializeWorkspace', () => {
   it('clones with nested directory contents intact', async () => {
     const bundleFile = await makeBundle({
       '.ax/CLAUDE.md': '# memory',
-      '.ax/skills/foo/SKILL.md': '---\nname: foo\n---\n',
+      '.ax/draft-skills/foo/SKILL.md': '---\nname: foo\n---\n',
       'src/main.ts': 'export {};\n',
     });
     const root = path.join(scratchRoot, 'permanent');
@@ -175,7 +175,7 @@ describe('materializeWorkspace', () => {
       '# memory',
     );
     expect(
-      await fs.readFile(path.join(root, '.ax/skills/foo/SKILL.md'), 'utf8'),
+      await fs.readFile(path.join(root, '.ax/draft-skills/foo/SKILL.md'), 'utf8'),
     ).toBe('---\nname: foo\n---\n');
     expect(await fs.readFile(path.join(root, 'src/main.ts'), 'utf8')).toBe(
       'export {};\n',
@@ -231,7 +231,7 @@ describe('materializeWorkspace', () => {
 });
 
 describe('scaffoldWorkspaceSkillSurface', () => {
-  it('creates .ax/skills and a relative .claude/skills symlink in a materialized workspace', async () => {
+  it('creates .ax/draft-skills and a relative .claude/skills symlink in a materialized workspace', async () => {
     // Realistic shape: clone first (so /permanent is a real git worktree),
     // then scaffold — mirrors the runner main's call order. The scaffold
     // running BEFORE clone is what the regression guard exists for.
@@ -241,10 +241,10 @@ describe('scaffoldWorkspaceSkillSurface', () => {
 
     await scaffoldWorkspaceSkillSurface(root);
 
-    const axSkillsStat = await fs.stat(path.join(root, '.ax', 'skills'));
+    const axSkillsStat = await fs.stat(path.join(root, '.ax', 'draft-skills'));
     expect(axSkillsStat.isDirectory()).toBe(true);
     const linkTarget = await fs.readlink(path.join(root, '.claude', 'skills'));
-    expect(linkTarget).toBe('../.ax/skills');
+    expect(linkTarget).toBe('../.ax/draft-skills');
   });
 
   it('is idempotent — a second call leaves the correct symlink in place', async () => {
@@ -256,7 +256,7 @@ describe('scaffoldWorkspaceSkillSurface', () => {
     await scaffoldWorkspaceSkillSurface(root);
 
     const linkTarget = await fs.readlink(path.join(root, '.claude', 'skills'));
-    expect(linkTarget).toBe('../.ax/skills');
+    expect(linkTarget).toBe('../.ax/draft-skills');
   });
 
   it('replaces a stale non-symlink at .claude/skills with the canonical symlink', async () => {
@@ -273,7 +273,7 @@ describe('scaffoldWorkspaceSkillSurface', () => {
     await scaffoldWorkspaceSkillSurface(root);
 
     const linkTarget = await fs.readlink(path.join(root, '.claude', 'skills'));
-    expect(linkTarget).toBe('../.ax/skills');
+    expect(linkTarget).toBe('../.ax/draft-skills');
   });
 });
 

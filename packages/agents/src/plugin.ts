@@ -134,7 +134,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         {
           hook: 'workspace:apply',
           degradation:
-            'the .ax/skills/<id>/ draft is not retired after install (leaves a duplicate-id risk if the same id is later attached)',
+            'the .ax/draft-skills/<id>/ draft is not retired after install (leaves a duplicate-id risk if the same id is later attached)',
         },
       ],
       subscribes: ['bootstrap:reset-cleanup'],
@@ -331,7 +331,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       );
 
       // Read-side hook for the "promote authored skill" Phase E flow.
-      // Scans the agent's workspace for .ax/skills/*/SKILL.md files and
+      // Scans the agent's workspace for .ax/draft-skills/*/SKILL.md files and
       // returns parsed summaries. Personal agents only: team agents have no
       // single-owner workspace (per-user shards; deferred). workspace:list
       // and workspace:read are soft deps (hasService guards) so this hook is
@@ -355,7 +355,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
 
       // Open-mode authoring (TASK-39, flow C): the in-chat, user-approved
       // analog of the admin promoteAuthoredSkill flow. Reads the agent-authored
-      // draft (.ax/skills/<id>/, capability-free — the validator strips caps at
+      // draft (.ax/draft-skills/<id>/, capability-free — the validator strips caps at
       // write time), upserts a USER-scoped skill carrying the user-REQUESTED
       // capabilities (the tool args, surfaced on the approval card) WITH the
       // bundle's helper files[], then retires the draft. Called host-side by
@@ -380,9 +380,9 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
 
           // 1. Read the writable draft bundle (body + helper files). The
           //    workspace-authored SKILL.md is capability-free (the validator
-          //    strips caps at the .ax/skills boundary — I-P1-2, unchanged).
+          //    strips caps at the .ax/draft-skills boundary — I-P1-2, unchanged).
           //    readAuthoredBundle accepts both the directory form
-          //    `.ax/skills/<id>/SKILL.md` and the flat form `.ax/skills/<id>.md`.
+          //    `.ax/draft-skills/<id>/SKILL.md` and the flat form `.ax/draft-skills/<id>.md`.
           const bundle = await readAuthoredBundle(bus, ownerUserId, input.agentId, input.skillId);
           if (bundle === null) {
             // Neither shape exists. Sharpen the message: state BOTH accepted
@@ -401,8 +401,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
               plugin: PLUGIN_NAME,
               message:
                 `no authored skill '${input.skillId}' in the workspace — write it to ` +
-                `.ax/skills/${input.skillId}/SKILL.md (a directory containing SKILL.md) or ` +
-                `.ax/skills/${input.skillId}.md, then call install_authored_skill again.${hint}`,
+                `.ax/draft-skills/${input.skillId}/SKILL.md (a directory containing SKILL.md) or ` +
+                `.ax/draft-skills/${input.skillId}.md, then call install_authored_skill again.${hint}`,
             });
           }
 
@@ -462,9 +462,9 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           //    canonical copy is now the user store. Prevents the project/user
           //    duplicate-id collision after re-spawn AND stops the agent editing
           //    the skill between request and approval (integrity). We delete
-          //    exactly `bundle.draftPaths` — the whole `.ax/skills/<id>/`
+          //    exactly `bundle.draftPaths` — the whole `.ax/draft-skills/<id>/`
           //    directory (SKILL.md + helpers) OR the single flat
-          //    `.ax/skills/<id>.md`, whichever readAuthoredBundle promoted — so
+          //    `.ax/draft-skills/<id>.md`, whichever readAuthoredBundle promoted — so
           //    the retire matches the installed shape. Best-effort; on a
           //    workspace-less preset readAuthoredBundle would have returned null
           //    above, so reaching here means the workspace exists. The upsert

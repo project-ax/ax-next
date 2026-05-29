@@ -515,7 +515,7 @@ describe('main()', () => {
     expect(queryArg.options.mcpServers).toHaveProperty('ax-host-tools');
     // I-P0-1: 'user' enables $CLAUDE_CONFIG_DIR/skills/ discovery (host-
     // controlled installed skills); 'project' enables <workspace>/.claude/
-    // skills/ discovery (a narrow symlink to .ax/skills, gated by
+    // skills/ discovery (a narrow symlink to .ax/draft-skills, gated by
     // validator-skill against .claude/settings.json / CLAUDE.md / etc.).
     expect(queryArg.options.settingSources).toEqual(['user', 'project']);
     expect(queryArg.options.systemPrompt).toMatchObject({

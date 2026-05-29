@@ -2,12 +2,12 @@
 
 The `workspace:pre-apply` subscriber that vetoes broken skills before they land in the workspace.
 
-When the agent writes a `SKILL.md` file under `.ax/skills/<name>/`, this plugin parses the YAML frontmatter at the top and checks that `name` and `description` are present and non-empty. If they aren't, the apply gets vetoed with a clear reason — the agent sees the rejection in the next turn and (hopefully) tries again with valid frontmatter.
+When the agent writes a `SKILL.md` file under `.ax/draft-skills/<name>/`, this plugin parses the YAML frontmatter at the top and checks that `name` and `description` are present and non-empty. If they aren't, the apply gets vetoed with a clear reason — the agent sees the rejection in the next turn and (hopefully) tries again with valid frontmatter.
 
 ## What it does
 
 - Subscribes to `workspace:pre-apply`.
-- For each `put` change matching `.ax/skills/<name>/SKILL.md`: parse the YAML frontmatter, veto on malformed input.
+- For each `put` change matching `.ax/draft-skills/<name>/SKILL.md`: parse the YAML frontmatter, veto on malformed input.
 - Pass through everything else (other `.ax/` files, deletes, non-SKILL paths).
 
 ## What it doesn't do

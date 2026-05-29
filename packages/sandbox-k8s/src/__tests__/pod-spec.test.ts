@@ -519,7 +519,7 @@ describe('buildPodSpec', () => {
     it('includes an init container that scaffolds the user-source skills dir', () => {
       // The init container creates the empty $CLAUDE_CONFIG_DIR/skills dir
       // the SDK's `'user'` source walks at startup. The matching
-      // `.claude/skills → ../.ax/skills` symlink (`'project'` source)
+      // `.claude/skills → ../.ax/draft-skills` symlink (`'project'` source)
       // is laid down by the runner AFTER `materializeWorkspace` clones
       // the baseline bundle — see
       // `git-workspace.ts#scaffoldWorkspaceSkillSurface`. Doing it here

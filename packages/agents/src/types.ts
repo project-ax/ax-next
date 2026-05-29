@@ -273,7 +273,7 @@ export interface AgentsCreatedEvent {
 // --- agents:list-authored-skills ---------------------------------------------
 
 /**
- * A SKILL.md file found under `.ax/skills/<id>/SKILL.md` in an agent's
+ * A SKILL.md file found under `.ax/draft-skills/<id>/SKILL.md` in an agent's
  * workspace. Returned by `agents:list-authored-skills`.
  *
  * `hasForbiddenCapabilities` is true when the parsed manifest declares any
@@ -300,7 +300,7 @@ export interface AgentsListAuthoredSkillsOutput {
 
 // --- agents:install-authored-skill (TASK-39, open-mode authoring) ------------
 //
-// Promote an agent-authored workspace draft (.ax/skills/<id>/) into a USABLE
+// Promote an agent-authored workspace draft (.ax/draft-skills/<id>/) into a USABLE
 // USER-scoped skill carrying the user-REQUESTED capabilities, then retire the
 // draft. The requested hosts/slots are surfaced on the approval card for the
 // user to approve (design §6C/§10). Storage-agnostic: `hosts`/`slots` are

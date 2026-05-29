@@ -265,7 +265,7 @@ export async function openSessionImpl(
     await fs.mkdir(installedSkillsDir, { recursive: true, mode: 0o755 });
     await fs.mkdir(ephemeralDir, { recursive: true, mode: 0o700 });
 
-    // I-P0-4: the `.claude/skills → ../.ax/skills` symlink that the SDK's
+    // I-P0-4: the `.claude/skills → ../.ax/draft-skills` symlink that the SDK's
     //    `'project'` setting source walks now lives on the RUNNER side
     //    (see @ax/agent-claude-sdk-runner/git-workspace.ts's
     //    `scaffoldWorkspaceSkillSurface`, called after

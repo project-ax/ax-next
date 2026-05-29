@@ -151,7 +151,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         {
           hook: 'workspace:apply',
           degradation:
-            'the .ax/skills/<id>/ draft is not retired after install (leaves a duplicate-id risk if the same id is later attached)',
+            'the .ax/draft-skills/<id>/ draft is not retired after install (leaves a duplicate-id risk if the same id is later attached)',
         },
       ],
       subscribes: ['bootstrap:reset-cleanup'],

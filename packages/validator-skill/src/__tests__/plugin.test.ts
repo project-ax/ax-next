@@ -55,7 +55,7 @@ describe('createValidatorSkillPlugin', () => {
     const decision = await bus.fire('workspace:pre-apply', ctx, {
       changes: [
         {
-          path: '.ax/skills/foo/SKILL.md',
+          path: '.ax/draft-skills/foo/SKILL.md',
           kind: 'put',
           content: enc.encode('# no frontmatter'),
         },
@@ -65,7 +65,7 @@ describe('createValidatorSkillPlugin', () => {
     });
     expect(decision.rejected).toBe(true);
     if (decision.rejected) {
-      expect(decision.reason).toContain('.ax/skills/foo/SKILL.md');
+      expect(decision.reason).toContain('.ax/draft-skills/foo/SKILL.md');
       expect(decision.reason).toContain('frontmatter');
     }
   });
@@ -75,7 +75,7 @@ describe('createValidatorSkillPlugin', () => {
     const decision = await bus.fire('workspace:pre-apply', ctx, {
       changes: [
         {
-          path: '.ax/skills/bar/SKILL.md',
+          path: '.ax/draft-skills/bar/SKILL.md',
           kind: 'put',
           content: enc.encode('---\ndescription: x\n---\n# Body\n'),
         },
@@ -95,7 +95,7 @@ describe('createValidatorSkillPlugin', () => {
     const decision = await bus.fire('workspace:pre-apply', ctx, {
       changes: [
         {
-          path: '.ax/skills/foo/SKILL.md',
+          path: '.ax/draft-skills/foo/SKILL.md',
           kind: 'put',
           content: enc.encode(md),
         },
@@ -109,7 +109,7 @@ describe('createValidatorSkillPlugin', () => {
   it('passes through SKILL.md deletes (no content to validate)', async () => {
     const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
     const decision = await bus.fire('workspace:pre-apply', ctx, {
-      changes: [{ path: '.ax/skills/foo/SKILL.md', kind: 'delete' }],
+      changes: [{ path: '.ax/draft-skills/foo/SKILL.md', kind: 'delete' }],
       parent: null,
       reason: 'turn',
     });
@@ -122,13 +122,13 @@ describe('createValidatorSkillPlugin', () => {
       changes: [
         // Valid SKILL.md.
         {
-          path: '.ax/skills/good/SKILL.md',
+          path: '.ax/draft-skills/good/SKILL.md',
           kind: 'put',
           content: enc.encode('---\nname: good\ndescription: ok\n---\n'),
         },
         // Invalid SKILL.md — should veto the whole batch.
         {
-          path: '.ax/skills/bad/SKILL.md',
+          path: '.ax/draft-skills/bad/SKILL.md',
           kind: 'put',
           content: enc.encode('# no frontmatter\n'),
         },
@@ -144,18 +144,18 @@ describe('createValidatorSkillPlugin', () => {
     });
     expect(decision.rejected).toBe(true);
     if (decision.rejected) {
-      expect(decision.reason).toContain('.ax/skills/bad/SKILL.md');
+      expect(decision.reason).toContain('.ax/draft-skills/bad/SKILL.md');
     }
   });
 
   it('does NOT match files that look like SKILL.md but are at the wrong depth', async () => {
-    // Allowed (not a SKILL.md location): direct .ax/skills/SKILL.md
+    // Allowed (not a SKILL.md location): direct .ax/draft-skills/SKILL.md
     // (no skill-name segment) doesn't match the pattern.
     const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
     const decision = await bus.fire('workspace:pre-apply', ctx, {
       changes: [
         {
-          path: '.ax/skills/SKILL.md', // no skill-name segment
+          path: '.ax/draft-skills/SKILL.md', // no skill-name segment
           kind: 'put',
           content: enc.encode('# not a real SKILL.md location'),
         },
@@ -166,12 +166,12 @@ describe('createValidatorSkillPlugin', () => {
     expect(decision.rejected).toBe(false);
   });
 
-  it('does NOT match files that look like SKILL.md outside .ax/skills/', async () => {
+  it('does NOT match files that look like SKILL.md outside .ax/draft-skills/', async () => {
     const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
     const decision = await bus.fire('workspace:pre-apply', ctx, {
       changes: [
         // Different namespace — pre-apply already filtered to .ax/, but
-        // even within .ax/, only .ax/skills/<name>/SKILL.md matches.
+        // even within .ax/, only .ax/draft-skills/<name>/SKILL.md matches.
         {
           path: '.ax/SKILL.md',
           kind: 'put',
@@ -195,7 +195,7 @@ describe('createValidatorSkillPlugin', () => {
     const decision = await bus.fire('workspace:pre-apply', ctx, {
       changes: [
         {
-          path: '.ax/skills/foo/SKILL.md',
+          path: '.ax/draft-skills/foo/SKILL.md',
           kind: 'put',
           content: new Uint8Array([0xff, 0xfe, 0x00]),
         },
@@ -354,7 +354,7 @@ describe('createValidatorSkillPlugin', () => {
       changes: [
         // Innocent skill write.
         {
-          path: '.ax/skills/good/SKILL.md',
+          path: '.ax/draft-skills/good/SKILL.md',
           kind: 'put',
           content: enc.encode('---\nname: good\ndescription: ok\n---\n'),
         },
@@ -404,7 +404,7 @@ describe('createValidatorSkillPlugin', () => {
     }>('workspace:pre-apply', ctx, {
       changes: [
         {
-          path: '.ax/skills/foo/SKILL.md',
+          path: '.ax/draft-skills/foo/SKILL.md',
           kind: 'put',
           content: enc.encode(src),
         },
@@ -437,7 +437,7 @@ describe('createValidatorSkillPlugin', () => {
       reason: string;
     }>('workspace:pre-apply', ctx, {
       changes: [
-        { path: '.ax/skills/foo/SKILL.md', kind: 'put', content: original },
+        { path: '.ax/draft-skills/foo/SKILL.md', kind: 'put', content: original },
       ],
       parent: null,
       reason: 'turn',
@@ -465,7 +465,7 @@ describe('createValidatorSkillPlugin', () => {
     const decision = await bus.fire('workspace:pre-apply', ctx, {
       changes: [
         {
-          path: '.ax/skills/bad/SKILL.md',
+          path: '.ax/draft-skills/bad/SKILL.md',
           kind: 'put',
           content: enc.encode(src),
         },

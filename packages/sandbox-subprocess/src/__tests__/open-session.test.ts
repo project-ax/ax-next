@@ -906,7 +906,7 @@ describe('sandbox:open-session', () => {
   it('leaves <workspace> empty before the runner spawns (I-P0-4)', async () => {
     // Regression guard for PR #99's k8s fix mirrored on the subprocess side:
     // open-session used to scaffold `<workspace>/.claude/skills →
-    // ../.ax/skills` before spawning the runner. The runner's own
+    // ../.ax/draft-skills` before spawning the runner. The runner's own
     // `materializeWorkspace` then `git clone`s into `<workspace>`, which
     // refuses ANY non-empty target — chat sat on "Starting sandbox…" forever.
     // The scaffold moved to the runner main

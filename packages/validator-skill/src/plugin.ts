@@ -19,7 +19,7 @@
 //   - Veto: SDK-config exact paths and directory prefixes (see lists
 //     below). These reject before any content inspection — the audit
 //     doc justifies each entry.
-//   - Match (frontmatter check): paths under `.ax/skills/<skill>/SKILL.md`
+//   - Match (frontmatter check): paths under `.ax/draft-skills/<skill>/SKILL.md`
 //     (the canonical skill-file shape).
 //   - Action (frontmatter check): parse YAML frontmatter; veto if
 //     name/description missing or YAML is malformed.
@@ -43,12 +43,12 @@ import {
 
 const PLUGIN_NAME = '@ax/validator-skill';
 
-// Match `.ax/skills/<skill-name>/SKILL.md` exactly. The `<skill-name>`
+// Match `.ax/draft-skills/<skill-name>/SKILL.md` exactly. The `<skill-name>`
 // segment is `[^/]+` so subdirectories aren't allowed (skills are flat
-// under .ax/skills/). A future relaxation (e.g., supporting nested
+// under .ax/draft-skills/). A future relaxation (e.g., supporting nested
 // skill packages) would update this regex; for now keep it strict so
 // the validator surface is unambiguous.
-const SKILL_PATH = /^\.ax\/skills\/[^/]+\/SKILL\.md$/;
+const SKILL_PATH = /^\.ax\/draft-skills\/[^/]+\/SKILL\.md$/;
 
 // SDK setting-source paths the Claude Agent SDK reads from project root
 // when `settingSources: ['user', 'project']` is enabled (Phase 0). An

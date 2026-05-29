@@ -249,7 +249,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     // Seed the authored skill (no capabilities in the file).
     await seedFile(
       h,
-      '.ax/skills/foo/SKILL.md',
+      '.ax/draft-skills/foo/SKILL.md',
       makeSkillMd('foo'),
       'alice',
       agentId,
@@ -295,7 +295,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     // Authored file declares allowedHosts: [evil.com].
     await seedFile(
       h,
-      '.ax/skills/foo/SKILL.md',
+      '.ax/draft-skills/foo/SKILL.md',
       makeSkillMd('foo', { allowedHosts: ['api.evil.com'] }),
       'alice',
       agentId,
@@ -359,7 +359,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
 
     await seedFile(
       h,
-      '.ax/skills/foo/SKILL.md',
+      '.ax/draft-skills/foo/SKILL.md',
       makeSkillMd('foo'),
       'alice',
       agentId,
@@ -466,7 +466,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
 
     await seedFile(
       h,
-      '.ax/skills/bar/SKILL.md',
+      '.ax/draft-skills/bar/SKILL.md',
       makeSkillMd('bar'),
       'alice',
       agentId,

@@ -182,11 +182,11 @@ export async function materializeWorkspace(
 
 /**
  * Lay down the on-disk shape the Claude Agent SDK's `'project'` skill
- * source needs inside the runner's workspace root: `.ax/skills/` (the
+ * source needs inside the runner's workspace root: `.ax/draft-skills/` (the
  * host-controlled location, empty in Phase 0 — no project-authored
  * skills yet) and a `.claude/skills` symlink that resolves to it.
  *
- * The relative target (`../.ax/skills`) keeps the link stable across
+ * The relative target (`../.ax/draft-skills`) keeps the link stable across
  * bind-mount path renames, matching the subprocess sibling's shape.
  *
  * Must run AFTER `materializeWorkspace` clones the baseline bundle —
@@ -203,19 +203,19 @@ export async function materializeWorkspace(
  */
 export async function scaffoldWorkspaceSkillSurface(root: string): Promise<void> {
   const claudeDir = path.join(root, '.claude');
-  const axSkillsDir = path.join(root, '.ax', 'skills');
+  const axSkillsDir = path.join(root, '.ax', 'draft-skills');
   const skillsLink = path.join(claudeDir, 'skills');
   await fs.mkdir(claudeDir, { recursive: true, mode: 0o755 });
   await fs.mkdir(axSkillsDir, { recursive: true, mode: 0o755 });
   const existing = await fs.readlink(skillsLink).catch(() => null);
-  if (existing === '../.ax/skills') return;
+  if (existing === '../.ax/draft-skills') return;
   await fs.rm(skillsLink, { recursive: true, force: true });
   try {
-    await fs.symlink('../.ax/skills', skillsLink);
+    await fs.symlink('../.ax/draft-skills', skillsLink);
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     const raced = await fs.readlink(skillsLink).catch(() => null);
-    if (raced !== '../.ax/skills') throw err;
+    if (raced !== '../.ax/draft-skills') throw err;
   }
 }
 
@@ -286,7 +286,7 @@ export async function scaffoldWorkspaceGitignore(root: string): Promise<void> {
  * Symlink target style — IMPORTANT distinction from the sibling: this
  * link lives OUTSIDE the workspace (in `$CLAUDE_CONFIG_DIR`), so the
  * target must be the ABSOLUTE workspace path. The sibling uses a
- * RELATIVE target (`../.ax/skills`) because it lives INSIDE the
+ * RELATIVE target (`../.ax/draft-skills`) because it lives INSIDE the
  * workspace and a relative link survives bind-mount path renames; there
  * is no equivalent relative path here (the two roots are unrelated
  * filesystem subtrees by design).

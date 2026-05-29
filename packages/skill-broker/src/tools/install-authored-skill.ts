@@ -29,7 +29,7 @@ export const INSTALL_AUTHORED_SKILL_DESCRIPTOR: ToolDescriptor = {
   name: 'install_authored_skill',
   description:
     'Install a skill you authored in this workspace so the user can approve and use it. ' +
-    'First write the skill to .ax/skills/<id>/SKILL.md (plus any helper files under that ' +
+    'First write the skill to .ax/draft-skills/<id>/SKILL.md (plus any helper files under that ' +
     'directory), then call this with that id and the hosts + credential slot NAMES the skill ' +
     'needs (slot names are SCREAMING_SNAKE, e.g. API_KEY). The user is shown one approval card ' +
     'listing exactly those hosts/keys before anything runs — do not narrate this step or ' +
@@ -42,7 +42,7 @@ export const INSTALL_AUTHORED_SKILL_DESCRIPTOR: ToolDescriptor = {
     'here in the packages argument (npm and/or pypi arrays) — never in the SKILL.md frontmatter. ' +
     'The user sees and approves all declared registry egress on the same card.',
   executesIn: 'host',
-  // The host handler reads the just-authored `.ax/skills/<id>/` bundle from the
+  // The host handler reads the just-authored `.ax/draft-skills/<id>/` bundle from the
   // workspace. Under runner-owned sessions the host only sees the committed +
   // pushed workspace mirror, which lags the runner's live tree until a
   // turn-boundary commit — and the agent writes the SKILL.md and calls this
@@ -53,7 +53,7 @@ export const INSTALL_AUTHORED_SKILL_DESCRIPTOR: ToolDescriptor = {
   inputSchema: {
     type: 'object',
     properties: {
-      skillId: { type: 'string', description: 'The id you used under .ax/skills/<id>/.' },
+      skillId: { type: 'string', description: 'The id you used under .ax/draft-skills/<id>/.' },
       hosts: {
         type: 'array',
         items: { type: 'string' },
@@ -174,7 +174,7 @@ export async function registerInstallAuthoredSkill(bus: HookBus): Promise<void> 
       }
 
       // Promote the workspace draft → a user-scoped skill carrying the
-      // REQUESTED capabilities; @ax/agents reads .ax/skills/<id>/, upserts to
+      // REQUESTED capabilities; @ax/agents reads .ax/draft-skills/<id>/, upserts to
       // the user store with files[], and retires the draft. Returns the card
       // payload (description from the authored manifest). PluginErrors
       // (invalid-host / invalid-slot / authored-skill-not-found / invalid-

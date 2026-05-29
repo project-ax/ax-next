@@ -214,7 +214,7 @@ describe('buildHostToolEntries', () => {
   });
 
   // BUG-W2 regression: a host tool that reads workspace files the agent wrote
-  // earlier in the SAME turn (install_authored_skill → .ax/skills/<id>/SKILL.md)
+  // earlier in the SAME turn (install_authored_skill → .ax/draft-skills/<id>/SKILL.md)
   // must have the runner flush its live tree to the host mirror BEFORE the
   // forward, or the host reads a stale mirror and fails authored-skill-not-found.
   it('flushes the workspace BEFORE forwarding a flushWorkspaceBeforeCall tool', async () => {

@@ -57,7 +57,7 @@ export interface ToolDescriptor {
    * the agent may have written earlier in the SAME turn. Under runner-owned
    * sessions the host only sees the committed+pushed workspace mirror, which
    * lags the runner's live tree until a turn-boundary commit — so without the
-   * flush a host tool reading e.g. `.ax/skills/<id>/SKILL.md` would not yet
+   * flush a host tool reading e.g. `.ax/draft-skills/<id>/SKILL.md` would not yet
    * see a file the agent just authored. Declarative on purpose: the tool
    * states its need; the runtime owns the flush mechanism.
    *
