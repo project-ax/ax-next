@@ -608,7 +608,14 @@ describe('listAuthoredBundles', () => {
     expect(bundles[1]!.files).toEqual([]);
   });
 
-  it('includes flat-file drafts (.ax/draft-skills/<id>.md) alongside directory-form drafts', async () => {
+  // C1 (review): the discovery projection must surface ONLY the directory form,
+  // because that is the exact shape @ax/validator-skill's commit scanner covers
+  // (its SKILL_PATH matches `.ax/draft-skills/<id>/SKILL.md` only). A flat
+  // `.ax/draft-skills/<id>.md` is NEVER scanned, so projecting it would be a
+  // quarantine-scan bypass — an agent could write a hostile flat draft that the
+  // SDK then discovers unfiltered. (listAuthoredSkills, the human-reviewed
+  // promote reader, keeps flat-form support — only auto-discovery drops it.)
+  it('OMITS flat-file drafts (.ax/draft-skills/<id>.md) because the commit scanner only covers the directory form', async () => {
     const h = await makeHarness();
     const userId = 'u1';
     const agentId = await createPersonalAgent(h, userId);
@@ -632,11 +639,47 @@ describe('listAuthoredBundles', () => {
 
     const bundles = await listAuthoredBundles(h.bus, userId, agentId);
 
-    expect(bundles.map((b) => b.id).sort()).toEqual(['dirskill', 'flatskill']);
-    const flat = bundles.find((b) => b.id === 'flatskill')!;
-    expect(flat.manifestYaml).toContain('name: flatskill');
-    expect(flat.bodyMd).toBe('Flat body');
-    expect(flat.files).toEqual([]);
+    // Only the directory-form draft is projected; the flat-form one is omitted.
+    expect(bundles.map((b) => b.id).sort()).toEqual(['dirskill']);
+    expect(bundles.some((b) => b.id === 'flatskill')).toBe(false);
+  });
+
+  // I2 (review): a draft DIRECTORY whose name is outside the strict sandbox
+  // installed-skill id grammar (/^[a-z][a-z0-9-]{0,63}$/) must be SKIPPED, not
+  // projected. The permissive AUTHORED_SKILL_ID_RE would pass `My_Skill`, but
+  // the sandbox's InstalledSkillSchema would reject it → invalid-payload →
+  // the WHOLE installedSkills batch fails → generic sandbox-open-failed. Skip
+  // it (like a malformed manifest) so one bad id can't break discovery for the
+  // rest. A sibling clean `good` dir IS still returned.
+  it('OMITS a draft dir whose name is outside the strict sandbox id grammar; a clean sibling IS returned', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+
+    // `My_Skill`: valid SKILL.md, but the dir name has an uppercase + underscore
+    // → fails the strict installed-skill grammar.
+    const v1 = await seedFile(
+      h,
+      '.ax/draft-skills/My_Skill/SKILL.md',
+      '---\nname: my-skill\ndescription: Bad id skill\nversion: 1\n---\nBad id body',
+      userId,
+      agentId,
+      null,
+    );
+    await seedFile(
+      h,
+      '.ax/draft-skills/good/SKILL.md',
+      '---\nname: good\ndescription: Good skill\nversion: 1\n---\nGood body',
+      userId,
+      agentId,
+      v1,
+    );
+
+    const bundles = await listAuthoredBundles(h.bus, userId, agentId);
+
+    // The bad-id dir is skipped; only the clean one is projected.
+    expect(bundles.map((b) => b.id)).toEqual(['good']);
+    expect(bundles.some((b) => b.id === 'My_Skill')).toBe(false);
   });
 
   it('returns [] when no workspace backend is loaded (soft-dep)', async () => {

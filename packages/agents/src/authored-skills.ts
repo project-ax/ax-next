@@ -208,6 +208,13 @@ export interface AuthoredBundle {
 // unvalidated id into a workspace glob. Mirrors @ax/skill-broker's SKILL_ID_RE.
 const AUTHORED_SKILL_ID_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
+// The sandbox validates installedSkills ids against this strict grammar
+// (mirror of @ax/sandbox-protocol's ID_RE — kept local per invariant #2; if
+// that grammar changes, update here). A draft dir whose name can't materialize
+// is SKIPPED (like a malformed manifest) so one bad id can't fail the whole
+// installedSkills batch at sandbox:open-session.
+const PROJECTABLE_SKILL_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
+
 /**
  * Parse a SKILL.md's raw content into manifest fields, THROWING
  * `authored-skill-invalid` (with the specific reason) when the frontmatter is
@@ -394,10 +401,21 @@ export interface AuthoredProjectionBundle {
  * discovery-projection source: a malformed SKILL.md is SKIPPED (never thrown)
  * so one bad draft can't break discovery for the rest.
  *
- * Both on-disk shapes are accepted — directory form
- * `.ax/draft-skills/<id>/SKILL.md` (canonical, wins on a duplicate id) and
- * flat form `.ax/draft-skills/<id>.md` (agent shorthand, no helper files). This
- * mirrors the logic in `listAuthoredSkills`.
+ * Surfaces ONLY the directory form `.ax/draft-skills/<id>/SKILL.md`. This is
+ * deliberately narrower than `listAuthoredSkills` (the human-reviewed promote
+ * reader, which also accepts the flat form): the directory form is the EXACT
+ * shape `@ax/validator-skill` scans+quarantines on commit (its `SKILL_PATH` =
+ * `/^\.ax\/draft-skills\/([^/]+)\/SKILL\.md$/`). A flat
+ * `.ax/draft-skills/<id>.md` is NEVER scanned — so it is intentionally NOT
+ * auto-discovered here; projecting it would let an agent write a hostile flat
+ * draft that bypasses the quarantine scan and is then SDK-discoverable. The
+ * projection's accepted shapes MUST stay a subset of the scanner's scanned
+ * shapes (C1).
+ *
+ * Projected ids are ALSO gated to the strict sandbox installed-skill grammar
+ * (PROJECTABLE_SKILL_ID_RE) — a draft dir whose name can't materialize in the
+ * sandbox is SKIPPED, not projected, so it can't fail the whole installedSkills
+ * batch at sandbox:open-session (I2).
  *
  * Capabilities are NOT parsed here — Phase 3 projects drafts with empty caps;
  * Phase 4 adds the approval gate.
@@ -429,29 +447,25 @@ export async function listAuthoredBundles(
     sessionId: 'authored-bundles-projection',
   });
 
-  // Discover ids from both on-disk shapes, exactly as listAuthoredSkills does.
-  // The two parallel list calls are cheap (glob, no content reads).
-  const [dirRes, flatRes] = await Promise.all([
-    bus.call<{ pathGlob: string }, { paths: string[] }>('workspace:list', ctx, {
-      pathGlob: '.ax/draft-skills/*/SKILL.md',
-    }),
-    bus.call<{ pathGlob: string }, { paths: string[] }>('workspace:list', ctx, {
-      pathGlob: '.ax/draft-skills/*.md',
-    }),
-  ]);
+  // Discover ids from the DIRECTORY form ONLY. The flat form
+  // `.ax/draft-skills/<id>.md` is deliberately NOT globbed: it is never scanned
+  // by @ax/validator-skill (SKILL_PATH is dir-form only), so auto-discovering
+  // it would bypass the quarantine scan (C1). The single list call is cheap
+  // (glob, no content reads).
+  const dirRes = await bus.call<{ pathGlob: string }, { paths: string[] }>(
+    'workspace:list',
+    ctx,
+    { pathGlob: '.ax/draft-skills/*/SKILL.md' },
+  );
 
-  // Build the id set. Directory form first so it wins on a duplicate (an agent
-  // that has both `<id>/SKILL.md` and `<id>.md`).
+  // Build the id set from the directory form. Gate each id to the STRICT
+  // sandbox installed-skill grammar — a dir whose name can't materialize in the
+  // sandbox is SKIPPED here (like a malformed manifest below) so it can't fail
+  // the whole installedSkills batch at sandbox:open-session (I2).
   const ids = new Set<string>();
   for (const p of dirRes.paths) {
     const m = /^\.ax\/draft-skills\/([^/]+)\/SKILL\.md$/.exec(p);
-    if (m) ids.add(m[1]!);
-  }
-  for (const p of flatRes.paths) {
-    const m = /^\.ax\/draft-skills\/([^/]+)\.md$/.exec(p);
-    // Apply the same id-grammar gate as listAuthoredSkills so unrelated notes
-    // (e.g. `.ax/draft-skills/README.md`) can't masquerade as promotable skills.
-    if (m && AUTHORED_SKILL_ID_RE.test(m[1]!)) ids.add(m[1]!);
+    if (m && PROJECTABLE_SKILL_ID_RE.test(m[1]!)) ids.add(m[1]!);
   }
 
   const out: AuthoredProjectionBundle[] = [];
@@ -469,7 +483,6 @@ export async function listAuthoredBundles(
     let manifestYaml: string | null = null;
     let bodyMd = '';
     const files: AuthoredBundleFile[] = [];
-    let sawDir = false; // true once we see at least one path under the dir
 
     for (const p of [...paths].sort()) {
       const read = await bus.call<
@@ -479,7 +492,6 @@ export async function listAuthoredBundles(
       if (!read.found) continue; // deleted between list and read — skip
       const rel = p.slice(dir.length + 1); // strip ".ax/draft-skills/<id>/"
       if (rel.length === 0) continue;
-      sawDir = true;
       const text = new TextDecoder().decode(read.bytes);
       if (rel === 'SKILL.md') {
         // Attempt to parse — but NEVER throw. A malformed SKILL.md silently
@@ -493,24 +505,9 @@ export async function listAuthoredBundles(
       }
     }
 
-    if (manifestYaml === null && !sawDir) {
-      // No directory form found — try the flat form `.ax/draft-skills/<id>.md`.
-      // `id` is validated by AUTHORED_SKILL_ID_RE above, so interpolation is safe.
-      const flat = await bus.call<
-        { path: string },
-        { found: true; bytes: Uint8Array } | { found: false }
-      >('workspace:read', ctx, { path: `${dir}.md` });
-      if (flat.found) {
-        const split = splitSkillMd(new TextDecoder().decode(flat.bytes));
-        if (split !== null && parseSkillManifest(split.manifestYaml).ok) {
-          manifestYaml = split.manifestYaml;
-          bodyMd = split.bodyMd;
-          // Flat form has no helper files — files[] stays [].
-        }
-      }
-    }
-
-    // Skip this id entirely if we couldn't parse a valid manifest from either form.
+    // Skip this id entirely if we couldn't parse a valid directory-form
+    // manifest (the flat form is intentionally not auto-discovered — see the
+    // doc comment / C1).
     if (manifestYaml === null) continue;
 
     // Sort helper files by path for determinism (SKILL.md is excluded from files[]).
