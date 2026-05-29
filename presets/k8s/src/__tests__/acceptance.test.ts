@@ -1006,8 +1006,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       try {
         // No injection/exfil/obfuscation patterns → regex clean → LLM absent
         // in this harness (degraded to clean) → NOT a scan hit → commit
-        // ACCEPTED, NOT quarantined. Structural validity is enforced lazily at
-        // promote (agents:install-authored-skill), not at commit time.
+        // ACCEPTED, NOT quarantined. Structural validity is enforced lazily by
+        // the discovery projection (a malformed SKILL.md is skipped), not at
+        // commit time.
         const badSkillMd = '# no frontmatter at all\n';
         const { bundleB64 } = await simulateRunnerTurn({
           baselineFiles: [],

@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { SkillBrokerPlugin } from '@ax/skill-broker';
 import * as builtinSkillsModule from '../builtin-skills/index.js';
 import {
   createK8sPlugins,
@@ -1135,26 +1134,6 @@ describe('@ax/preset-k8s — allow_user_installed_skills flag (TASK-38)', () => 
   it('accepts case-insensitive "TRUE"', () => {
     const cfg = loadK8sConfigFromEnv({ ...baseEnv(), AX_ALLOW_USER_INSTALLED_SKILLS: 'TRUE' });
     expect(cfg.allowUserInstalledSkills).toBe(true);
-  });
-});
-
-describe('@ax/preset-k8s — broker receives the open-mode gate (TASK-38)', () => {
-  it('defaults the broker gate OFF when config omits the flag', () => {
-    const plugins = createK8sPlugins(stubConfig);
-    const broker = plugins.find((p) => p.manifest.name === '@ax/skill-broker') as
-      | SkillBrokerPlugin
-      | undefined;
-    expect(broker).toBeDefined();
-    expect(broker!.allowUserInstalledSkills).toBe(false);
-  });
-
-  it('passes allowUserInstalledSkills:true through to the broker', () => {
-    const plugins = createK8sPlugins({ ...stubConfig, allowUserInstalledSkills: true });
-    const broker = plugins.find((p) => p.manifest.name === '@ax/skill-broker') as
-      | SkillBrokerPlugin
-      | undefined;
-    expect(broker).toBeDefined();
-    expect(broker!.allowUserInstalledSkills).toBe(true);
   });
 });
 

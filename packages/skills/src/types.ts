@@ -443,7 +443,7 @@ export const CatalogAdmitOutputSchema = z.object({
 
 // ---- Quarantine (Phase 2) -------------------------------------------------
 // Per-(user, agent, skill) draft-skill safety status. Set by the validator
-// commit scan; read by agents:install-authored-skill + (Phase 3) the projection.
+// commit scan; read by the host discovery projection (Phase 3) to omit drafts.
 export interface SkillsQuarantineSetInput {
   ownerUserId: string;
   agentId: string;

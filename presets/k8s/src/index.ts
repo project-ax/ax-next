@@ -350,13 +350,11 @@ export interface K8sPresetConfig {
   credentialsAdmin?: boolean;
   /**
    * JIT open-mode gate (design decision #5, §10). When `true`, the deployment
-   * permits the agent to author + install user-scoped skills on the fly.
-   * OFF by default — agent-authoring is opt-in per deployment.
+   * loads the built-in starter skills into the chat orchestrator (lowest-
+   * precedence materialization). OFF by default — opt-in per deployment.
    *
    * Set by `loadK8sConfigFromEnv` from `AX_ALLOW_USER_INSTALLED_SKILLS`
-   * (the chart's `skills.allowUserInstalled=true`). Passed to
-   * @ax/skill-broker. HALF-WIRED in TASK-38 — nothing reads it to change
-   * behavior until TASK-39 (open-mode agent-authored skills).
+   * (the chart's `skills.allowUserInstalled=true`).
    */
   allowUserInstalledSkills?: boolean;
   /**
@@ -726,11 +724,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // (tool:register) + @ax/skills (skills:search-catalog / skills:get); both
   // are loaded above. Pushed unconditionally — it needs no API key (unlike
   // @ax/web-tools), and consumes only untrusted intent text in-memory.
-  plugins.push(
-    createSkillBrokerPlugin({
-      allowUserInstalledSkills: config.allowUserInstalledSkills ?? false,
-    }),
-  );
+  plugins.push(createSkillBrokerPlugin());
 
   // ----- 8a''. host grants ----------------------------------------------
   // @ax/host-grants — the persistent per-(user, agent) "always-allow" egress

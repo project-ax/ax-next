@@ -298,39 +298,6 @@ export interface AgentsListAuthoredSkillsOutput {
   skills: AuthoredSkillSummary[];
 }
 
-// --- agents:install-authored-skill (TASK-39, open-mode authoring) ------------
-//
-// Promote an agent-authored workspace draft (.ax/draft-skills/<id>/) into a USABLE
-// USER-scoped skill carrying the user-REQUESTED capabilities, then retire the
-// draft. The requested hosts/slots are surfaced on the approval card for the
-// user to approve (design §6C/§10). Storage-agnostic: `hosts`/`slots` are
-// public manifest data; no secret, no backend vocabulary. Alternate impl: a
-// non-workspace authoring backend that accepts the bundle inline.
-export interface AgentsInstallAuthoredSkillInput {
-  agentId: string;
-  skillId: string;
-  /** Hostnames the skill needs to reach (user-approved on the card). */
-  hosts: string[];
-  /** Credential slot names the skill needs (user-approved on the card). */
-  slots: string[];
-  /** Package ecosystems the skill needs (user-approved on the card). Optional; default none. */
-  packages?: { npm?: string[]; pypi?: string[] };
-}
-export interface AgentsInstallAuthoredSkillOutput {
-  /** From the authored SKILL.md — shown on the card. */
-  description: string;
-  hosts: string[];
-  slots: { slot: string; kind: 'api-key' }[];
-  packages: { npm: string[]; pypi: string[] };
-}
-
-export const AgentsInstallAuthoredSkillOutputSchema = z.object({
-  description: z.string(),
-  hosts: z.array(z.string()),
-  slots: z.array(z.object({ slot: z.string(), kind: z.literal('api-key') })),
-  packages: z.object({ npm: z.array(z.string()), pypi: z.array(z.string()) }),
-}) as unknown as ZodType<AgentsInstallAuthoredSkillOutput>;
-
 // --- agents:resolve-authored-skills (Phase 3, Task A2) -----------------------
 //
 // Returns the agent's self-authored drafts in the resolved-skill projection

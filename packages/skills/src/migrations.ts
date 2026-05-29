@@ -155,10 +155,10 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
 
   // skills_v1_quarantine — per-(user, agent, skill) draft-skill safety status
   // (Phase 2). Set by the @ax/validator-skill commit scan (accept-but-annotate),
-  // read by agents:install-authored-skill (promote refusal) and, in Phase 3, by
-  // the host discovery projection. `agent_id` is an opaque scoping key — no FK to
-  // agents_v1_agents (cross-plugin FKs are banned; a dangling row to a deleted
-  // agent simply never resolves). Additive-only.
+  // read by the host discovery projection (Phase 3) to OMIT a quarantined draft.
+  // `agent_id` is an opaque scoping key — no FK to agents_v1_agents (cross-plugin
+  // FKs are banned; a dangling row to a deleted agent simply never resolves).
+  // Additive-only.
   await sql`
     CREATE TABLE IF NOT EXISTS skills_v1_quarantine (
       owner_user_id TEXT NOT NULL,
