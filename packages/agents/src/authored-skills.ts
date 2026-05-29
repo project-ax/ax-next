@@ -208,6 +208,13 @@ export interface AuthoredBundle {
 // unvalidated id into a workspace glob. Mirrors @ax/skill-broker's SKILL_ID_RE.
 const AUTHORED_SKILL_ID_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
+// The sandbox validates installedSkills ids against this strict grammar
+// (mirror of @ax/sandbox-protocol's ID_RE — kept local per invariant #2; if
+// that grammar changes, update here). A draft dir whose name can't materialize
+// is SKIPPED (like a malformed manifest) so one bad id can't fail the whole
+// installedSkills batch at sandbox:open-session.
+const PROJECTABLE_SKILL_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
+
 /**
  * Parse a SKILL.md's raw content into manifest fields, THROWING
  * `authored-skill-invalid` (with the specific reason) when the frontmatter is
@@ -374,4 +381,139 @@ export async function readAuthoredBundle(
   }
 
   return null; // neither the directory nor the flat form exists
+}
+
+/** A self-authored draft in projection shape: raw frontmatter + body + helper files. */
+export interface AuthoredProjectionBundle {
+  id: string;
+  /** The raw YAML frontmatter string (between the `---` fences) — the projection
+   * layer stores this verbatim so it can be parsed later without re-reading the
+   * workspace. Does NOT include the `---` delimiters themselves. */
+  manifestYaml: string;
+  bodyMd: string;
+  files: AuthoredBundleFile[];
+}
+
+/**
+ * Read EVERY parseable self-authored draft under `.ax/draft-skills/` as a
+ * projection bundle (raw `manifestYaml` + `bodyMd` + helper files). Unlike
+ * `readAuthoredBundle` (one id, THROWS on malformed) this is the host
+ * discovery-projection source: a malformed SKILL.md is SKIPPED (never thrown)
+ * so one bad draft can't break discovery for the rest.
+ *
+ * Surfaces ONLY the directory form `.ax/draft-skills/<id>/SKILL.md`. This is
+ * deliberately narrower than `listAuthoredSkills` (the human-reviewed promote
+ * reader, which also accepts the flat form): the directory form is the EXACT
+ * shape `@ax/validator-skill` scans+quarantines on commit (its `SKILL_PATH` =
+ * `/^\.ax\/draft-skills\/([^/]+)\/SKILL\.md$/`). A flat
+ * `.ax/draft-skills/<id>.md` is NEVER scanned — so it is intentionally NOT
+ * auto-discovered here; projecting it would let an agent write a hostile flat
+ * draft that bypasses the quarantine scan and is then SDK-discoverable. The
+ * projection's accepted shapes MUST stay a subset of the scanner's scanned
+ * shapes (C1).
+ *
+ * Projected ids are ALSO gated to the strict sandbox installed-skill grammar
+ * (PROJECTABLE_SKILL_ID_RE) — a draft dir whose name can't materialize in the
+ * sandbox is SKIPPED, not projected, so it can't fail the whole installedSkills
+ * batch at sandbox:open-session (I2).
+ *
+ * Capabilities are NOT parsed here — Phase 3 projects drafts with empty caps;
+ * Phase 4 adds the approval gate.
+ *
+ * Same ctx-routing as listAuthoredSkills and readAuthoredBundle: workspace
+ * hooks key off ctx.userId + ctx.agentId. We construct a fresh ctx from the
+ * agent owner's identity so we read THAT agent's workspace, not the caller's.
+ *
+ * Soft-dep: if neither `workspace:list` nor `workspace:read` is loaded (e.g.
+ * a stripped preset without a workspace plugin) we return [] rather than throw,
+ * matching the "no workspace = no authored skills discoverable" semantic.
+ */
+export async function listAuthoredBundles(
+  bus: HookBus,
+  ownerUserId: string,
+  agentId: string,
+): Promise<AuthoredProjectionBundle[]> {
+  // Soft-dep guard — stripped presets omit a workspace backend.
+  if (!bus.hasService('workspace:list') || !bus.hasService('workspace:read')) {
+    return [];
+  }
+
+  // Root the ctx in the agent owner's identity so workspace:list and
+  // workspace:read address the correct workspace shard. Do NOT reuse the
+  // caller's ctx (wrong shard).
+  const ctx = makeAgentContext({
+    userId: ownerUserId,
+    agentId,
+    sessionId: 'authored-bundles-projection',
+  });
+
+  // Discover ids from the DIRECTORY form ONLY. The flat form
+  // `.ax/draft-skills/<id>.md` is deliberately NOT globbed: it is never scanned
+  // by @ax/validator-skill (SKILL_PATH is dir-form only), so auto-discovering
+  // it would bypass the quarantine scan (C1). The single list call is cheap
+  // (glob, no content reads).
+  const dirRes = await bus.call<{ pathGlob: string }, { paths: string[] }>(
+    'workspace:list',
+    ctx,
+    { pathGlob: '.ax/draft-skills/*/SKILL.md' },
+  );
+
+  // Build the id set from the directory form. Gate each id to the STRICT
+  // sandbox installed-skill grammar — a dir whose name can't materialize in the
+  // sandbox is SKIPPED here (like a malformed manifest below) so it can't fail
+  // the whole installedSkills batch at sandbox:open-session (I2).
+  const ids = new Set<string>();
+  for (const p of dirRes.paths) {
+    const m = /^\.ax\/draft-skills\/([^/]+)\/SKILL\.md$/.exec(p);
+    if (m && PROJECTABLE_SKILL_ID_RE.test(m[1]!)) ids.add(m[1]!);
+  }
+
+  const out: AuthoredProjectionBundle[] = [];
+
+  for (const id of [...ids].sort()) {
+    const dir = `.ax/draft-skills/${id}`;
+
+    // --- Directory form: list every path under `.ax/draft-skills/<id>/`. ---
+    const { paths } = await bus.call<{ pathGlob: string }, { paths: string[] }>(
+      'workspace:list',
+      ctx,
+      { pathGlob: `${dir}/**` },
+    );
+
+    let manifestYaml: string | null = null;
+    let bodyMd = '';
+    const files: AuthoredBundleFile[] = [];
+
+    for (const p of [...paths].sort()) {
+      const read = await bus.call<
+        { path: string },
+        { found: true; bytes: Uint8Array } | { found: false }
+      >('workspace:read', ctx, { path: p });
+      if (!read.found) continue; // deleted between list and read — skip
+      const rel = p.slice(dir.length + 1); // strip ".ax/draft-skills/<id>/"
+      if (rel.length === 0) continue;
+      const text = new TextDecoder().decode(read.bytes);
+      if (rel === 'SKILL.md') {
+        // Attempt to parse — but NEVER throw. A malformed SKILL.md silently
+        // skips this whole id so one bad draft doesn't block the rest.
+        const split = splitSkillMd(text);
+        if (split === null || !parseSkillManifest(split.manifestYaml).ok) continue;
+        manifestYaml = split.manifestYaml;
+        bodyMd = split.bodyMd;
+      } else {
+        files.push({ path: rel, contents: text });
+      }
+    }
+
+    // Skip this id entirely if we couldn't parse a valid directory-form
+    // manifest (the flat form is intentionally not auto-discovered — see the
+    // doc comment / C1).
+    if (manifestYaml === null) continue;
+
+    // Sort helper files by path for determinism (SKILL.md is excluded from files[]).
+    files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    out.push({ id, manifestYaml, bodyMd, files });
+  }
+
+  return out; // already sorted by id (we iterated [...ids].sort())
 }

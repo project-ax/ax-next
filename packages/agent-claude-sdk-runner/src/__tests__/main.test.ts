@@ -513,11 +513,12 @@ describe('main()', () => {
     // model invokes a discovered skill.
     expect(queryArg.options.allowedTools).toContain('Skill');
     expect(queryArg.options.mcpServers).toHaveProperty('ax-host-tools');
-    // I-P0-1: 'user' enables $CLAUDE_CONFIG_DIR/skills/ discovery (host-
-    // controlled installed skills); 'project' enables <workspace>/.claude/
-    // skills/ discovery (a narrow symlink to .ax/draft-skills, gated by
-    // validator-skill against .claude/settings.json / CLAUDE.md / etc.).
-    expect(queryArg.options.settingSources).toEqual(['user', 'project']);
+    // Phase 3: 'user' is the SOLE source — $CLAUDE_CONFIG_DIR/skills/ (host-
+    // controlled read-only projection, 0555). 'project' was dropped because
+    // .claude/skills/ is agent-writable and not on the validator's veto list,
+    // so a project-discoverable workspace skills dir would bypass the host
+    // projection + quarantine gate.
+    expect(queryArg.options.settingSources).toEqual(['user']);
     expect(queryArg.options.systemPrompt).toMatchObject({
       type: 'preset',
       preset: 'claude_code',

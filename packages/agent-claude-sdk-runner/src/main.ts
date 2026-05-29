@@ -30,7 +30,6 @@ import {
   materializeWorkspace,
   scaffoldSdkProjectsSymlink,
   scaffoldWorkspaceGitignore,
-  scaffoldWorkspaceSkillSurface,
 } from './git-workspace.js';
 import {
   commitNotifyWithResync,
@@ -230,11 +229,6 @@ export async function main(): Promise<number> {
       bundlePath: mat.path,
     });
     initialBaselineCommit = out.baselineCommit;
-    // Lay down `.claude/skills` → `../.ax/draft-skills` so the SDK's
-    // `'project'` skill source resolves. Must run AFTER the clone — see
-    // scaffoldWorkspaceSkillSurface's doc for the regression that
-    // motivated moving this off the k8s init container.
-    await scaffoldWorkspaceSkillSurface(env.workspaceRoot);
     // Ensure dependency/build artifacts (node_modules, venvs, __pycache__,
     // fetch caches) are git-ignored so agent tooling output isn't committed +
     // bundled back to the host. Must run AFTER the clone for the same reason
@@ -905,23 +899,19 @@ export async function main(): Promise<number> {
           [MCP_HOST_SERVER_NAME]: hostMcpServer,
           [MCP_SANDBOX_SERVER_NAME]: sandboxMcpServer,
         },
-        // settingSources: 'user' is required for the SDK to discover skills
-        // under $CLAUDE_CONFIG_DIR/skills/ (host-controlled installed skills);
-        // 'project' is required for skills under <workspace>/.claude/skills/
-        // (which is a symlink to .ax/draft-skills/, the agent-authored convention).
+        // Phase 3: the read-only `user` projection ($CLAUDE_CONFIG_DIR/skills/,
+        // chmod 0555, written by @ax/installed-skills) is the SOLE skill-
+        // discovery path. 'project' was dropped because .claude/skills/ inside
+        // the workspace is agent-writable and is NOT on @ax/validator-skill's
+        // veto list (it's pass-through). Keeping 'project' would let the agent
+        // write .claude/skills/evil/SKILL.md and have it discovered directly,
+        // bypassing the host projection and the quarantine scan entirely.
         //
-        // Agent cannot escalate SDK behavior via these sources because:
-        //  - the SDK's other user/project files (.claude/settings.json,
-        //    CLAUDE.md, .claude/agents/, .claude/commands/, .claude/rules/,
-        //    CLAUDE.local.md, .claude/CLAUDE.md) are vetoed at the
-        //    workspace:pre-apply boundary by @ax/validator-skill;
-        //  - the workspace symlink points narrowly at `.ax/draft-skills`, not at
-        //    the parent `.claude/` directory;
-        //  - $HOME is a per-session tempdir/emptyDir, isolated from the
-        //    host user's ~/.claude (allocated by sandbox plugins in Tasks 4/5).
+        // $HOME is a per-session tempdir/emptyDir, isolated from the host
+        // user's ~/.claude (allocated by sandbox plugins in Tasks 4/5).
         //
         // I-P0-1 in docs/plans/2026-05-17-skill-install-phase-0-impl.md.
-        settingSources: ['user', 'project'],
+        settingSources: ['user'],
         // Week 9.5: use the frozen agentConfig.systemPrompt the host wrote
         // at session-creation time. An empty string falls back to the SDK
         // preset (the dev-agents-stub seeds a default; production agents

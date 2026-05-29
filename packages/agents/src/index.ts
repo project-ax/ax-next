@@ -32,3 +32,11 @@ export type {
   UpdateInput,
   UpdateOutput,
 } from './types.js';
+// CLI composition root uses listAuthoredBundles + AuthoredProjectionBundle to
+// register agents:resolve-authored-skills in the dev-agents stub (app wiring —
+// not a plugin-to-plugin import — see dev-agents-stub.ts).
+export {
+  listAuthoredBundles,
+  type AuthoredProjectionBundle,
+  type AuthoredBundleFile,
+} from './authored-skills.js';

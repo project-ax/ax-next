@@ -106,7 +106,14 @@ async function lockDirsReadOnly(dir: string): Promise<void> {
 // Translate an McpServerSpec into the Anthropic SDK's `.mcp.json` shape.
 // stdio: { command, args, env }. http: { url, type: 'http' }. The SDK accepts
 // either at top level under the `mcpServers` map; the per-skill dir's
-// `.mcp.json` is auto-loaded by the SDK's `'project'` setting source.
+// `.mcp.json` is discovered alongside its skill via the `'user'` setting
+// source (skills are materialized under $CLAUDE_CONFIG_DIR/skills/<id>/,
+// the SDK's user root — NOT via `'project'`, which walks from cwd and can
+// never reach the user root; Phase 3 also dropped `'project'` from
+// settingSources).
+// NOTE: end-to-end SDK loading of a per-skill `.mcp.json` is not yet covered
+// by an automated test; confirm in the Phase-6 kind walk with a real
+// MCP-bundling skill.
 function toMcpJsonShape(s: {
   transport: 'stdio' | 'http';
   command?: string | undefined;
@@ -265,18 +272,14 @@ export async function openSessionImpl(
     await fs.mkdir(installedSkillsDir, { recursive: true, mode: 0o755 });
     await fs.mkdir(ephemeralDir, { recursive: true, mode: 0o700 });
 
-    // I-P0-4: the `.claude/skills → ../.ax/draft-skills` symlink that the SDK's
-    //    `'project'` setting source walks now lives on the RUNNER side
-    //    (see @ax/agent-claude-sdk-runner/git-workspace.ts's
-    //    `scaffoldWorkspaceSkillSurface`, called after
-    //    `materializeWorkspace`). Doing it here pre-spawn was the bug PR
-    //    #99 fixed for k8s: the runner's `git clone` of the materialized
-    //    workspace bundle refuses a non-empty target with
-    //    `fatal: destination path '<workspace>' already exists and is not
-    //    an empty directory`. Subprocess uses the same runner main and
-    //    the same always-bundle materialize contract, so it has the same
-    //    failure mode — even though the existing test stubs (echo-stub
-    //    short-circuits before materialize) don't surface it.
+    // Phase 3 redesign: skill discovery is now SOLELY via the read-only user
+    // projection ($CLAUDE_CONFIG_DIR/skills/, 0555 — materialized below from
+    // input.installedSkills + the authored-draft union). The workspace
+    // `.claude/skills` symlink and the SDK `'project'` settingSource were both
+    // removed in Phase 3 (scaffoldWorkspaceSkillSurface was deleted and
+    // `'project'` was dropped from settingSources in the runner). The note that
+    // was here (I-P0-4) described the old pre-Phase-3 arrangement; it no longer
+    // applies.
 
     // Phase 1 (skill-install): materialize installed-skill SKILL.md bodies
     // into $CLAUDE_CONFIG_DIR/skills/<id>/SKILL.md. The SDK's 'user' source
@@ -316,10 +319,16 @@ export async function openSessionImpl(
           throw new Error(`installed skill '${skill.id}' is missing SKILL.md`);
         }
         // Phase B — write `.mcp.json` alongside SKILL.md when the skill
-        // bundles MCP servers. The SDK auto-discovers it via its `'project'`
-        // setting source; the file lives in the per-skill dir so each
-        // skill's MCP scope stays isolated. Defaulted-empty arrays from the
-        // schema mean we always have a real array here.
+        // bundles MCP servers. The SDK discovers it alongside the skill via
+        // the `'user'` setting source (skills live under
+        // $CLAUDE_CONFIG_DIR/skills/<id>/, the SDK's user root — NOT via
+        // `'project'`, which walks from cwd; Phase 3 also dropped `'project'`
+        // from settingSources). The file lives in the per-skill dir so each
+        // skill's MCP scope stays isolated.
+        // NOTE: end-to-end SDK loading of a per-skill `.mcp.json` is not yet
+        // covered by an automated test; confirm in the Phase-6 kind walk.
+        // Defaulted-empty arrays from the schema mean we always have a real
+        // array here.
         if (skill.mcpServers.length > 0) {
           const mcpJsonContent = JSON.stringify(
             {

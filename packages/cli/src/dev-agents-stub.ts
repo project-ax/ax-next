@@ -1,4 +1,5 @@
 import type { Plugin } from '@ax/core';
+import { listAuthoredBundles, type AuthoredProjectionBundle } from '@ax/agents';
 
 // ---------------------------------------------------------------------------
 // Dev-mode agents stub
@@ -112,7 +113,7 @@ export function createDevAgentsStubPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['agents:resolve'],
+      registers: ['agents:resolve', 'agents:resolve-authored-skills'],
       calls: [],
       subscribes: [],
     },
@@ -141,6 +142,52 @@ export function createDevAgentsStubPlugin(
               updatedAt: new Date(),
             },
           };
+        },
+      );
+
+      // I1 fix: register agents:resolve-authored-skills so the CLI dev loop
+      // has self-authored draft discovery after Phase 3 dropped the
+      // .claude/skills symlink + 'project' settingSource. Mirrors the real
+      // @ax/agents implementation: listAuthoredBundles is a soft-dep on
+      // workspace:list/workspace:read (returns [] when absent — acceptable for
+      // a stripped dev preset). skills:quarantine-get is also soft-dep here:
+      // the CLI has no skills store so all parseable directory-form drafts are
+      // projected; the scan gate enforces safety in the production k8s path.
+      bus.registerService(
+        'agents:resolve-authored-skills',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const { ownerUserId, agentId: targetAgentId } = input as {
+            ownerUserId: string;
+            agentId: string;
+          };
+          // listAuthoredBundles is a soft-dep: returns [] when workspace:list /
+          // workspace:read are not loaded (stripped dev preset = no workspace
+          // backend). The service still EXISTS so the orchestrator's
+          // bus.hasService('agents:resolve-authored-skills') guard is satisfied.
+          const bundles: AuthoredProjectionBundle[] = await listAuthoredBundles(
+            bus,
+            ownerUserId,
+            targetAgentId,
+          );
+
+          // skills:quarantine-get is absent in the CLI preset (no skills store).
+          // All parseable directory-form drafts are projected as-is — the commit-
+          // scan safety gate runs in the production k8s path. Phase 3 caps are
+          // always empty (instruction-only; approval gate is Phase 4).
+          const skills = bundles.map((b) => ({
+            id: b.id,
+            capabilities: {
+              allowedHosts: [] as string[],
+              credentials: [] as Array<{ slot: string; kind: string }>,
+              mcpServers: [] as never[],
+              packages: { npm: [] as string[], pypi: [] as string[] },
+            },
+            bodyMd: b.bodyMd,
+            manifestYaml: b.manifestYaml,
+            files: b.files,
+          }));
+          return { skills };
         },
       );
     },

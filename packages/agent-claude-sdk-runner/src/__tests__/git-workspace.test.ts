@@ -11,7 +11,6 @@ import {
   rollbackToBaseline,
   scaffoldSdkProjectsSymlink,
   scaffoldWorkspaceGitignore,
-  scaffoldWorkspaceSkillSurface,
 } from '../git-workspace.js';
 
 // ---------------------------------------------------------------------------
@@ -230,50 +229,19 @@ describe('materializeWorkspace', () => {
   });
 });
 
-describe('scaffoldWorkspaceSkillSurface', () => {
-  it('creates .ax/draft-skills and a relative .claude/skills symlink in a materialized workspace', async () => {
-    // Realistic shape: clone first (so /permanent is a real git worktree),
-    // then scaffold — mirrors the runner main's call order. The scaffold
-    // running BEFORE clone is what the regression guard exists for.
+describe('no .claude/skills symlink (Phase 3: project source dropped)', () => {
+  it('does not scaffold a .claude/skills symlink (project source dropped in Phase 3)', async () => {
+    // Phase 3 drops scaffoldWorkspaceSkillSurface entirely. After materialize
+    // (the only workspace-setup step that runs pre-turn), no .claude/skills
+    // entry should exist. The host-controlled read-only user projection at
+    // $CLAUDE_CONFIG_DIR/skills/ (0555) is the sole discovery path.
     const bundleFile = await makeBundle({ 'README.md': 'hello' });
     const root = path.join(scratchRoot, 'permanent');
     await materializeWorkspace({ root, bundlePath: bundleFile });
 
-    await scaffoldWorkspaceSkillSurface(root);
-
-    const axSkillsStat = await fs.stat(path.join(root, '.ax', 'draft-skills'));
-    expect(axSkillsStat.isDirectory()).toBe(true);
-    const linkTarget = await fs.readlink(path.join(root, '.claude', 'skills'));
-    expect(linkTarget).toBe('../.ax/draft-skills');
-  });
-
-  it('is idempotent — a second call leaves the correct symlink in place', async () => {
-    const bundleFile = await makeBundle({});
-    const root = path.join(scratchRoot, 'permanent');
-    await materializeWorkspace({ root, bundlePath: bundleFile });
-
-    await scaffoldWorkspaceSkillSurface(root);
-    await scaffoldWorkspaceSkillSurface(root);
-
-    const linkTarget = await fs.readlink(path.join(root, '.claude', 'skills'));
-    expect(linkTarget).toBe('../.ax/draft-skills');
-  });
-
-  it('replaces a stale non-symlink at .claude/skills with the canonical symlink', async () => {
-    // A prior session that exited mid-scaffold could leave a regular
-    // directory or file at .claude/skills. The scaffolder treats that as
-    // transient and overwrites with the canonical symlink.
-    const bundleFile = await makeBundle({});
-    const root = path.join(scratchRoot, 'permanent');
-    await materializeWorkspace({ root, bundlePath: bundleFile });
-    await fs.mkdir(path.join(root, '.claude'), { recursive: true });
-    await fs.mkdir(path.join(root, '.claude', 'skills'));
-    await fs.writeFile(path.join(root, '.claude', 'skills', 'bogus.md'), 'x');
-
-    await scaffoldWorkspaceSkillSurface(root);
-
-    const linkTarget = await fs.readlink(path.join(root, '.claude', 'skills'));
-    expect(linkTarget).toBe('../.ax/draft-skills');
+    await expect(
+      fs.lstat(path.join(root, '.claude', 'skills')),
+    ).rejects.toMatchObject({ code: 'ENOENT' });
   });
 });
 
@@ -300,6 +268,19 @@ describe('scaffoldWorkspaceGitignore', () => {
     const gi = await fs.readFile(path.join(root, '.gitignore'), 'utf8');
     const nodeModulesLines = gi.split('\n').filter((l) => l.trim() === 'node_modules/');
     expect(nodeModulesLines).toHaveLength(1);
+  });
+
+  it('creates the workspace root if it does not yet exist (regression: A4 dropped scaffoldWorkspaceSkillSurface, whose recursive mkdir had been incidentally creating the root)', async () => {
+    // No materializeWorkspace here — a root that nothing else created. Before
+    // the self-sufficient mkdir, this ENOENT'd on the .gitignore append (the
+    // CI failure on PR #218). The scaffolder must create its own root.
+    const root = path.join(scratchRoot, 'never-created');
+    await expect(fs.stat(root)).rejects.toMatchObject({ code: 'ENOENT' });
+
+    await scaffoldWorkspaceGitignore(root);
+
+    const gi = await fs.readFile(path.join(root, '.gitignore'), 'utf8');
+    expect(gi).toContain('node_modules/');
   });
 
   it('preserves a baseline .gitignore and appends only the missing entries', async () => {
