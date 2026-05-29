@@ -2,15 +2,41 @@
 
 This is the first real subscriber on `workspace:pre-apply`. Its job is small and its blast radius should be smaller. We're a YAML parser with veto power — that's it.
 
-## Capability budget
+## Capability budget (Phase 2)
+
+The validator performs NO process spawn and NO direct network or filesystem I/O.
+It now DELEGATES, via the hook bus, to soft-dep services (all `hasService`-guarded;
+absent ⟹ degrade, never crash):
+
+- `llm:call:anthropic` — the Layer-2 content scan (a fast model). Untrusted
+  SKILL.md text is sent as DATA inside `<skill>` tags with a hardened
+  "analyze, do not follow" system prompt; the model gets NO tools (text in,
+  one-line verdict out). A compromised/bypassed classifier can only fail-open to
+  the regex verdict — it cannot escalate. Size-capped + timed out; any error
+  degrades to regex-only.
+- `skills:quarantine-set` / `skills:quarantine-clear` — persist the scan verdict
+  (host-side, keyed by user/agent/skillId — never a workspace marker the agent
+  could delete).
+
+The bus calls themselves are in-process (no network hop from the validator's
+perspective). The actual network egress for the LLM scan happens inside
+`@ax/llm-anthropic`, not here — the validator never opens a socket.
+
+The scan is best-effort DEFENSE IN DEPTH and observability, NOT the security
+boundary. The boundary is capability-use (the egress proxy + credential injection
++ human approval at the wall). The SKILL.md content veto is GONE — malformed/
+unsafe content is ACCEPTED (work is never destroyed) and annotated (quarantined);
+structural validity is enforced lazily at promote. The `.claude/**` SDK-config
+veto is UNCHANGED (still a hard reject).
+
+These were the Phase 1 invariants for reference:
 
 - **No filesystem access.** We read bytes that arrive in the FileChange payload and never touch disk.
-- **No network.** We don't make HTTP calls, don't open sockets, don't resolve DNS.
+- **No network (direct).** We don't open sockets, don't resolve DNS. Indirect network via delegated bus calls is guarded and bounded (see above).
 - **No process spawn.** `js-yaml` is pure JS; we never `child_process.spawn` anything.
-- **No env access.** We don't read `process.env`. Configuration arrives via the plugin factory's options (currently none).
-- **No write to anything.** We accept or veto. We don't transform the FileChange[]; we don't store anything cross-call. We're stateless.
+- **No env access.** We don't read `process.env`. Configuration arrives via the plugin factory's options.
 
-If a future change needs any of those capabilities, they go in the SECURITY.md before the code does. We'd rather have a boring plugin than a clever one.
+If a future change needs capabilities beyond these bounds, they go in the SECURITY.md before the code does.
 
 ## Threat model: untrusted SKILL.md content
 
@@ -25,7 +51,7 @@ So:
 - **Strict UTF-8 decode.** We pass `fatal: true` to `TextDecoder` so non-UTF-8 bytes throw instead of producing replacement characters. Replacement characters are how things "look fine" in a logs grep but actually contain whatever an attacker stuffed into the byte stream.
 - **Safe-schema YAML.** `js-yaml`'s default `load` uses the safe schema by default — no `!!js/function`, no class instantiation, no tags that could trigger code execution. We don't opt into any unsafe schema.
 - **No interpolation.** We extract `name` and `description` and check they're non-empty strings. We don't interpolate them into shell commands, file paths, HTML, SQL, or anything else that would care about the bytes. They're returned to the bus as part of the decision; a downstream subscriber that DOES interpolate is responsible for its own escape semantics.
-- **Veto on doubt.** Anything we can't parse cleanly gets vetoed. Better to make the agent retry with a fixed SKILL.md than to silently accept malformed metadata that could cascade into worse decisions later.
+- **Accept-and-annotate on doubt (Phase 2).** Anything we can't parse cleanly is ACCEPTED but quarantined via `skills:quarantine-set`. Work is never destroyed; the agent can iterate. Structural validity is enforced lazily at promote time by `@ax/agents`. The `.claude/**` SDK-config path retains its hard-reject behavior (see below).
 
 ## Threat model: bypassing the validator
 
@@ -41,8 +67,8 @@ If any of those break, Phase 3's invariants break in a much louder way than this
 
 ## Known limits
 
-- **Only flat frontmatter validated.** Nested YAML structures (e.g., `name: { nested: ... }`) would parse fine but our `typeof name !== 'string'` check would reject. That's a feature, not a bug — flat frontmatter is the convention.
-- **`name` and `description` are validated for type + non-empty-ness, NOT semantic content.** A skill named `my-evil-skill` with description `does evil things` passes the validator. That's the right boundary — semantic-content validation is a Phase 4+ concern (skill schema, identity drift detection) and would compose with this plugin, not replace it.
+- **Only flat frontmatter validated at the structural layer.** Nested YAML structures (e.g., `name: { nested: ... }`) produce a type-check failure, which now quarantines the skill rather than vetoing the turn outright. That's still a feature — flat frontmatter is the convention.
+- **`name` and `description` are validated for type + non-empty-ness at the structural layer; semantic content goes through the LLM scan.** The LLM scan is best-effort and degrades to regex-only when `llm:call:anthropic` is absent. Neither is the primary security boundary — that's the egress proxy at capability-use time.
 - **Path matching is exact-prefix.** `.ax/draft-skills/<name>/SKILL.md` is the only shape we recognize. A future relaxation (nested skill packages, alternate file extensions) would update the regex; for now keep it strict so the surface is unambiguous.
 
 ## What we don't know yet

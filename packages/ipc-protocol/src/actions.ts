@@ -220,6 +220,12 @@ export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
       // The bytes now stream over `workspace.export-baseline-bundle` (the
       // uncapped binary path) instead of riding in this JSON response.
       actualParent: z.string().optional(),
+      // Phase 2: whether the agent's working tree should be PRESERVED on rollback.
+      // Absent ⟹ recoverable (runner uses `git reset --mixed`, keeping the
+      // agent's files). `false` ⟹ a hard security veto (SDK-config write,
+      // tampered bundle) the runner clears with `git reset --hard` so it can't
+      // wedge the atomic transcript bundle. A semantic, not backend vocabulary.
+      recoverable: z.boolean().optional(),
     }),
   ],
 );

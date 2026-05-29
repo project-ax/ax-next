@@ -213,6 +213,19 @@ describe('@ax/preset-k8s wiring', () => {
     ]);
   });
 
+  it('loads @ax/skills and registers the quarantine services (Phase 2)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const registers = plugins.flatMap((p) => p.manifest.registers);
+    for (const h of [
+      'skills:quarantine-set',
+      'skills:quarantine-clear',
+      'skills:quarantine-get',
+      'skills:quarantine-list',
+    ]) {
+      expect(registers).toContain(h);
+    }
+  });
+
   it('includes @ax/skill-broker and its calls are satisfied (TASK-34)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const names = plugins.map((p) => p.manifest.name);

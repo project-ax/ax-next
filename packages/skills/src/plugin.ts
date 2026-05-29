@@ -19,6 +19,7 @@ import { createSkillsStore } from './store.js';
 import { createUserSkillsStore } from './user-store.js';
 import { createUserAttachmentsStore } from './user-attachments-store.js';
 import { createCatalogRequestsStore } from './catalog-requests-store.js';
+import { createSkillsQuarantineStore } from './quarantine-store.js';
 import { validateAttachmentBindings } from './attachment-validation.js';
 import { mergeUserWins, compareById } from './_merge.js';
 import { registerAdminSkillsRoutes } from './admin-routes.js';
@@ -39,6 +40,10 @@ import {
   CatalogSubmitOutputSchema,
   CatalogListRequestsOutputSchema,
   CatalogAdmitOutputSchema,
+  SkillsQuarantineSetOutputSchema,
+  SkillsQuarantineClearOutputSchema,
+  SkillsQuarantineGetOutputSchema,
+  SkillsQuarantineListOutputSchema,
 } from './types.js';
 import type {
   SkillsCheckForUpdatesInput,
@@ -69,6 +74,14 @@ import type {
   CatalogListRequestsOutput,
   CatalogAdmitInput,
   CatalogAdmitOutput,
+  SkillsQuarantineSetInput,
+  SkillsQuarantineSetOutput,
+  SkillsQuarantineClearInput,
+  SkillsQuarantineClearOutput,
+  SkillsQuarantineGetInput,
+  SkillsQuarantineGetOutput,
+  SkillsQuarantineListInput,
+  SkillsQuarantineListOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/skills';
@@ -194,6 +207,10 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
         'catalog:submit',
         'catalog:list-requests',
         'catalog:admit',
+        'skills:quarantine-set',
+        'skills:quarantine-clear',
+        'skills:quarantine-get',
+        'skills:quarantine-list',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -233,6 +250,7 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
       // snapshot dedups against the source skill's own tree and admit re-derives
       // the SAME tree SHA when it registers the bundle in the global catalog.
       const catalogRequestsStore = createCatalogRequestsStore(db, bundleStore);
+      const quarantineStore = createSkillsQuarantineStore(db);
 
       bus.registerService<SkillsListInput, SkillsListOutput>(
         'skills:list',
@@ -898,6 +916,34 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
           return { skillId: parsed.value.id, admitted: true };
         },
         { returns: CatalogAdmitOutputSchema },
+      );
+
+      bus.registerService<SkillsQuarantineSetInput, SkillsQuarantineSetOutput>(
+        'skills:quarantine-set',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          await quarantineStore.set(input);
+          return {};
+        },
+        { returns: SkillsQuarantineSetOutputSchema },
+      );
+      bus.registerService<SkillsQuarantineClearInput, SkillsQuarantineClearOutput>(
+        'skills:quarantine-clear',
+        PLUGIN_NAME,
+        async (_ctx, input) => quarantineStore.clear(input),
+        { returns: SkillsQuarantineClearOutputSchema },
+      );
+      bus.registerService<SkillsQuarantineGetInput, SkillsQuarantineGetOutput>(
+        'skills:quarantine-get',
+        PLUGIN_NAME,
+        async (_ctx, input) => quarantineStore.get(input),
+        { returns: SkillsQuarantineGetOutputSchema },
+      );
+      bus.registerService<SkillsQuarantineListInput, SkillsQuarantineListOutput>(
+        'skills:quarantine-list',
+        PLUGIN_NAME,
+        async (_ctx, input) => ({ items: await quarantineStore.list(input) }),
+        { returns: SkillsQuarantineListOutputSchema },
       );
 
       // Register admin + settings HTTP routes. Both batches are pushed into

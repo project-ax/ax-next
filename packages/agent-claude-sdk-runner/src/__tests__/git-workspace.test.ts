@@ -627,16 +627,41 @@ describe('advanceBaseline', () => {
 });
 
 describe('rollbackToBaseline', () => {
-  it('wipes the working tree back to baseline (file added on turn disappears)', async () => {
+  it("mixed (recoverable): preserves the agent's added file, undoes the commit", async () => {
+    const { root, baselineOid } = await setupMaterializedWorkspace();
+    await fs.writeFile(path.join(root, 'wip.txt'), 'wip');
+    await commitTurnAndBundle({ root, reason: 'turn' });
+
+    await rollbackToBaseline(root, 'mixed');
+
+    expect(await fs.readFile(path.join(root, 'wip.txt'), 'utf8')).toBe('wip');
+    const head = (await git(['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
+    expect(head).toBe(baselineOid);
+    const count = (
+      await git(['-C', root, 'rev-list', '--count', 'refs/heads/baseline..main'])
+    ).stdout.trim();
+    expect(count).toBe('0');
+  });
+
+  it('B1 regression: a recoverable veto preserves a just-authored SKILL.md', async () => {
+    const { root } = await setupMaterializedWorkspace();
+    const skillPath = path.join(root, '.ax', 'draft-skills', 'linear', 'SKILL.md');
+    await fs.mkdir(path.dirname(skillPath), { recursive: true });
+    await fs.writeFile(skillPath, '---\nname: linear\ndescription: x\n---\n# body\n');
+    await commitTurnAndBundle({ root, reason: 'turn' });
+
+    await rollbackToBaseline(root, 'mixed');
+
+    expect(await fs.readFile(skillPath, 'utf8')).toContain('name: linear');
+  });
+
+  it('hard (SDK-config veto): wipes the working tree back to baseline', async () => {
     const { root } = await setupMaterializedWorkspace();
     await fs.writeFile(path.join(root, 'wip.txt'), 'wip');
     await commitTurnAndBundle({ root, reason: 'turn' });
-    // Confirm the file IS there before rollback.
-    expect(await fs.readFile(path.join(root, 'wip.txt'), 'utf8')).toBe('wip');
 
-    await rollbackToBaseline(root);
+    await rollbackToBaseline(root, 'hard');
 
-    // File is gone post-rollback.
     let exists = true;
     try {
       await fs.stat(path.join(root, 'wip.txt'));
@@ -646,28 +671,24 @@ describe('rollbackToBaseline', () => {
     expect(exists).toBe(false);
   });
 
-  it('restores deleted files when rolled back', async () => {
-    // The agent deleted a baseline file; host vetoed; the file should
-    // come back.
+  it('hard restores a deleted baseline file', async () => {
     const { root } = await setupMaterializedWorkspace({
       baselineFiles: { 'important.txt': 'do not delete' },
     });
     await fs.unlink(path.join(root, 'important.txt'));
     await commitTurnAndBundle({ root, reason: 'turn' });
 
-    await rollbackToBaseline(root);
+    await rollbackToBaseline(root, 'hard');
 
-    expect(
-      await fs.readFile(path.join(root, 'important.txt'), 'utf8'),
-    ).toBe('do not delete');
+    expect(await fs.readFile(path.join(root, 'important.txt'), 'utf8')).toBe('do not delete');
   });
 
-  it('moves HEAD back to baseline after rollback', async () => {
+  it('moves HEAD back to baseline after rollback (mixed)', async () => {
     const { root, baselineOid } = await setupMaterializedWorkspace();
     await fs.writeFile(path.join(root, 'a.txt'), 'A');
     await commitTurnAndBundle({ root, reason: 'turn' });
 
-    await rollbackToBaseline(root);
+    await rollbackToBaseline(root, 'mixed');
 
     const head = (await git(['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
     expect(head).toBe(baselineOid);

@@ -465,24 +465,25 @@ export async function advanceBaseline(root: string): Promise<void> {
 }
 
 /**
- * Roll the working tree + HEAD back to `refs/heads/baseline`. Call this
- * after the host vetoes a turn — the agent's writes for that turn are
- * undone.
+ * Roll HEAD back to `refs/heads/baseline` after the host vetoes a turn.
  *
- * `git reset --hard baseline` does both: moves HEAD/main to baseline,
- * AND wipes the working tree to match. The agent's next turn starts
- * from a clean baseline state.
- *
- * The SDK doesn't see the rollback. Its in-memory view of the
- * conversation continues, but its NEXT tool call to read a file would
- * see the baseline content (not the rolled-back content). Whether that
- * causes confusion is up to the agent / the system prompt; the runner
- * just enforces the host's veto.
+ * - mode 'mixed' (recoverable veto — the default for everything except a hard
+ *   security veto): `git reset --mixed baseline` moves HEAD/main + index to
+ *   baseline but PRESERVES the working tree, so the agent's just-written files
+ *   survive and it can fix them in place (kills the B1 blind-retry loop). The
+ *   baseline ref is untouched, so the next turn re-stages + re-attempts —
+ *   no baseline desync.
+ * - mode 'hard' (SDK-config veto / tampered bundle): `git reset --hard baseline`
+ *   ALSO wipes the working tree, clearing a write that must not persist (else it
+ *   re-vetoes the atomic transcript bundle every turn).
  */
-export async function rollbackToBaseline(root: string): Promise<void> {
+export async function rollbackToBaseline(
+  root: string,
+  mode: 'mixed' | 'hard',
+): Promise<void> {
   await expectOk(
-    await runGit(['-C', root, 'reset', '--hard', 'baseline']),
-    'git reset --hard baseline',
+    await runGit(['-C', root, 'reset', `--${mode}`, 'baseline']),
+    `git reset --${mode} baseline`,
   );
 }
 

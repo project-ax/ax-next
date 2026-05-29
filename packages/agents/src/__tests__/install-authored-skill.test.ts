@@ -59,6 +59,7 @@ afterEach(async () => {
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skill_files');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_quarantine');
   } finally {
     await cleanup.end().catch(() => {});
   }
@@ -447,5 +448,49 @@ describe('agents:install-authored-skill', () => {
     });
     // The directory form is canonical; it wins over the flat sibling.
     expect(out.description).toBe('Dir form');
+  });
+
+  it('refuses to promote a quarantined draft, surfacing the scan reason', async () => {
+    const h = await makeHarness();
+    const agentId = await createPersonalAgent(h, 'user-1');
+    const SKILL_ID = 'quarskill';
+    await seedFile(
+      h,
+      `.ax/draft-skills/${SKILL_ID}/SKILL.md`,
+      `---\nname: ${SKILL_ID}\ndescription: Quarantined skill\nversion: 1\n---\nBody`,
+      'user-1',
+      agentId,
+      null,
+    );
+
+    const REASON =
+      'flagged by content safety scan (instruction-override): suspicious prompt detected';
+    // Quarantine the skill via the real skills:quarantine-set service
+    // (@ax/skills is loaded in the harness and registers this).
+    await h.bus.call<
+      { ownerUserId: string; agentId: string; skillId: string; reason: string },
+      Record<string, never>
+    >('skills:quarantine-set', ctx(agentId), {
+      ownerUserId: 'user-1',
+      agentId,
+      skillId: SKILL_ID,
+      reason: REASON,
+    });
+
+    const promise = h.bus.call<
+      AgentsInstallAuthoredSkillInput,
+      AgentsInstallAuthoredSkillOutput
+    >('agents:install-authored-skill', ctx(agentId), {
+      agentId,
+      skillId: SKILL_ID,
+      hosts: [],
+      slots: [],
+    });
+    await expect(promise).rejects.toMatchObject({ code: 'skill-quarantined' });
+    // End-to-end: the seeded scan reason (set → get → handler message) AND the
+    // revise-and-retry guidance both reach the thrown message — the agent must
+    // learn WHY so it can fix the SKILL.md body in place and re-run.
+    await expect(promise).rejects.toThrow(/instruction-override/);
+    await expect(promise).rejects.toThrow(/call install_authored_skill again/i);
   });
 });

@@ -1,8 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   HookBus,
   bootstrap,
   makeAgentContext,
+  reject,
   type AgentContext,
   type Plugin,
   type WorkspaceVersion,
@@ -28,7 +29,43 @@ import { workspaceCommitNotifyHandler } from '../workspace-commit-notify.js';
 //     workspace:export-baseline-bundle to be registered; otherwise
 //     the handler refuses up front rather than silently mis-handling
 //     subsequent applies).
+//   - pre-apply veto → accepted:false with recoverable:false.
+//   - author-verify failure → accepted:false with recoverable:false.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Module-level mocks for the bundler pipeline.  We hoist the mock functions
+// so they're available inside the vi.mock factory (which is hoisted before
+// imports by vitest). The mocks start as pass-throughs (return valid empty
+// results) and individual tests override them via mockImplementationOnce.
+// ---------------------------------------------------------------------------
+
+const {
+  prepareScratchRepoMock,
+  verifyBundleAuthorMock,
+  walkBundleChangesMock,
+} = vi.hoisted(() => ({
+  prepareScratchRepoMock: vi.fn(),
+  verifyBundleAuthorMock: vi.fn(),
+  walkBundleChangesMock: vi.fn(),
+}));
+
+vi.mock('../../bundler/scratch.js', () => ({
+  prepareScratchRepo: prepareScratchRepoMock,
+}));
+vi.mock('../../bundler/verify.js', () => ({
+  verifyBundleAuthor: verifyBundleAuthorMock,
+}));
+vi.mock('../../bundler/walk.js', () => ({
+  walkBundleChanges: walkBundleChangesMock,
+}));
+
+// Default stub: a scratch repo that succeeds with a temp dir + no-op dispose.
+const DEFAULT_SCRATCH = {
+  repoPath: '/tmp/scratch-test',
+  baselineCommit: 'aaaa0000',
+  dispose: vi.fn().mockResolvedValue(undefined),
+};
 
 interface Env {
   bus: HookBus;
@@ -48,6 +85,43 @@ async function makeEnv(extraPlugins: Plugin[] = []): Promise<Env> {
     userId: 'wcn-user',
   });
   return { bus, ctx };
+}
+
+// A probe plugin that registers both Phase 3 bundle hooks so the handler
+// can proceed past the backend gate. Used by tests that need to reach the
+// bundler/pre-apply stage.
+function makePhase3Probe(name = '@ax/test-bundle-probe'): Plugin {
+  return {
+    manifest: {
+      name,
+      version: '0.0.0',
+      registers: [
+        'workspace:apply-bundle',
+        'workspace:export-baseline-bundle',
+      ],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus: pluginBus }) {
+      pluginBus.registerService(
+        'workspace:export-baseline-bundle',
+        name,
+        async () => ({ bundleBytes: 'UEFDSwAAAAA=' }),
+      );
+      pluginBus.registerService(
+        'workspace:apply-bundle',
+        name,
+        async () => ({
+          version: 'v-probe' as WorkspaceVersion,
+          delta: {
+            before: null,
+            after: 'v-probe' as WorkspaceVersion,
+            changes: [],
+          },
+        }),
+      );
+    },
+  };
 }
 
 describe('workspace.commit-notify handler — empty bundle', () => {
@@ -252,38 +326,12 @@ describe('workspace.commit-notify handler — backend gate', () => {
     // returns accepted:false (NOT a 500), proving the gate let us
     // through and the error surfaced as a normal "baseline drift"
     // outcome.
-    const probe: Plugin = {
-      manifest: {
-        name: '@ax/test-bundle-probe',
-        version: '0.0.0',
-        registers: [
-          'workspace:apply-bundle',
-          'workspace:export-baseline-bundle',
-        ],
-        calls: [],
-        subscribes: [],
-      },
-      init({ bus: pluginBus }) {
-        pluginBus.registerService(
-          'workspace:export-baseline-bundle',
-          '@ax/test-bundle-probe',
-          async () => ({ bundleBytes: 'UEFDSwAAAAA=' }), // garbage; loads will fail
-        );
-        pluginBus.registerService(
-          'workspace:apply-bundle',
-          '@ax/test-bundle-probe',
-          async () => ({
-            version: 'v-probe' as WorkspaceVersion,
-            delta: {
-              before: null,
-              after: 'v-probe' as WorkspaceVersion,
-              changes: [],
-            },
-          }),
-        );
-      },
-    };
-    const { bus, ctx } = await makeEnv([probe]);
+    //
+    // prepareScratchRepo is MOCKED at module level. We override it here
+    // to throw so the handler reaches the "baseline drift" branch.
+    prepareScratchRepoMock.mockRejectedValueOnce(new Error('git bundle verify failed'));
+
+    const { bus, ctx } = await makeEnv([makePhase3Probe()]);
     const result = await workspaceCommitNotifyHandler(
       {
         parentVersion: null,
@@ -299,5 +347,51 @@ describe('workspace.commit-notify handler — backend gate', () => {
     const body = result.body as { accepted: false; reason: string };
     expect(body.accepted).toBe(false);
     expect(body.reason).toMatch(/baseline drift|prerequisite/i);
+  });
+});
+
+describe('workspace.commit-notify handler — pre-apply veto', () => {
+  it('a pre-apply veto returns accepted:false with recoverable:false', async () => {
+    // Set up the bundler mocks to succeed so the handler reaches the
+    // pre-apply stage. The workspace:pre-apply subscriber then rejects,
+    // which must surface as { accepted: false, recoverable: false } —
+    // an SDK-config veto must be CLEARED (hard-reset) not preserved
+    // (--mixed), otherwise the bad key re-vetoes every subsequent turn
+    // and wedges the agent permanently.
+    prepareScratchRepoMock.mockResolvedValueOnce({
+      ...DEFAULT_SCRATCH,
+      dispose: vi.fn().mockResolvedValue(undefined),
+    });
+    verifyBundleAuthorMock.mockResolvedValueOnce(undefined);
+    walkBundleChangesMock.mockResolvedValueOnce([]);
+
+    // Build a probe with Phase 3 hooks and a pre-apply subscriber that rejects.
+    const probe = makePhase3Probe('@ax/test-pre-apply-veto-probe');
+    const bus = new HookBus();
+    await bootstrap({ bus, plugins: [probe], config: {} });
+    // Subscribe directly on the bus after bootstrap so the subscriber
+    // fires when the handler calls bus.fire('workspace:pre-apply', ...).
+    bus.subscribe(
+      'workspace:pre-apply',
+      '@ax/test-pre-apply-veto-subscriber',
+      async () => reject({ reason: 'sdk-config veto: illegal key' }),
+    );
+    const ctx = makeAgentContext({
+      sessionId: 'wcn-test-veto',
+      agentId: 'wcn-agent-veto',
+      userId: 'wcn-user-veto',
+    });
+
+    const result = await workspaceCommitNotifyHandler(
+      {
+        parentVersion: null,
+        reason: 'turn',
+        bundleBytes: 'UEFDSwAAAAA=',
+      },
+      ctx,
+      bus,
+    );
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ accepted: false, recoverable: false });
   });
 });

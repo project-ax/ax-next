@@ -136,6 +136,11 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           degradation:
             'the .ax/draft-skills/<id>/ draft is not retired after install (leaves a duplicate-id risk if the same id is later attached)',
         },
+        {
+          hook: 'skills:quarantine-get',
+          degradation:
+            'a quarantined authored draft is NOT refused promotion (no skills store) — the Phase-3 projection gate still applies',
+        },
       ],
       subscribes: ['bootstrap:reset-cleanup'],
     },
@@ -404,6 +409,33 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
                 `.ax/draft-skills/${input.skillId}/SKILL.md (a directory containing SKILL.md) or ` +
                 `.ax/draft-skills/${input.skillId}.md, then call install_authored_skill again.${hint}`,
             });
+          }
+
+          // Phase 2: refuse to promote a quarantined draft. The validator commit
+          // scan sets the flag; install_authored_skill flushes the workspace
+          // FIRST (so a fresh scan ran on the current SKILL.md), then reaches
+          // here. The agent reads the reason, revises the body in place (the file
+          // is preserved — non-destructive), re-commits (a clean re-scan clears
+          // the flag) and re-runs install. Soft dep: a preset without the skills
+          // store skips this (the Phase-3 projection gate still applies).
+          if (bus.hasService('skills:quarantine-get')) {
+            const q = await bus.call<
+              { ownerUserId: string; agentId: string; skillId: string },
+              { quarantined: boolean; reason?: string }
+            >('skills:quarantine-get', ctx, {
+              ownerUserId,
+              agentId: input.agentId,
+              skillId: input.skillId,
+            });
+            if (q.quarantined) {
+              throw new PluginError({
+                code: 'skill-quarantined',
+                plugin: PLUGIN_NAME,
+                message:
+                  `the skill '${input.skillId}' is quarantined: ${q.reason ?? 'flagged by the content safety scan'} ` +
+                  `— revise the SKILL.md body to remove the flagged content, then call install_authored_skill again.`,
+              });
+            }
           }
 
           // 2. Build the manifest from the user-REQUESTED capabilities (the

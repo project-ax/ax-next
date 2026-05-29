@@ -152,6 +152,23 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
       ON skills_v1_catalog_requests (skill_id)
       WHERE status = 'pending'
   `.execute(db);
+
+  // skills_v1_quarantine — per-(user, agent, skill) draft-skill safety status
+  // (Phase 2). Set by the @ax/validator-skill commit scan (accept-but-annotate),
+  // read by agents:install-authored-skill (promote refusal) and, in Phase 3, by
+  // the host discovery projection. `agent_id` is an opaque scoping key — no FK to
+  // agents_v1_agents (cross-plugin FKs are banned; a dangling row to a deleted
+  // agent simply never resolves). Additive-only.
+  await sql`
+    CREATE TABLE IF NOT EXISTS skills_v1_quarantine (
+      owner_user_id TEXT NOT NULL,
+      agent_id      TEXT NOT NULL,
+      skill_id      TEXT NOT NULL,
+      reason        TEXT NOT NULL,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (owner_user_id, agent_id, skill_id)
+    )
+  `.execute(db);
 }
 
 /**
@@ -247,10 +264,24 @@ export interface CatalogRequestRow {
   decided_by_user_id: string | null;
 }
 
+/**
+ * Per-(user, agent, skill) draft-skill quarantine status. `reason` is the
+ * safety-scan verdict surfaced to the agent + a human. Storage detail only — the
+ * hook surface carries ownerUserId/agentId/skillId/reason, not row vocabulary.
+ */
+export interface QuarantineRow {
+  owner_user_id: string;
+  agent_id: string;
+  skill_id: string;
+  reason: string;
+  created_at: Date;
+}
+
 export interface SkillsDatabase {
   skills_v1_skills: SkillsRow;
   skills_v1_user_skills: UserSkillsRow;
   skills_v1_user_attachments: UserAttachmentRow;
   skills_v1_skill_files: SkillFileRow;
   skills_v1_catalog_requests: CatalogRequestRow;
+  skills_v1_quarantine: QuarantineRow;
 }
