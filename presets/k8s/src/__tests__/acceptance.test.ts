@@ -1486,6 +1486,261 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   );
 
   it(
+    'Phase 3 canary (B4): an EDITED self-authored draft RE-PROJECTS — agents:resolve-authored-skills reflects the current committed HEAD (real executors)',
+    { timeout: 30_000 },
+    async () => {
+      // PHASE-3 PR-B Task B4 — the projection-data half of the re-spawn loop.
+      //
+      // The B3 unit tests
+      // (packages/chat-orchestrator/src/__tests__/orchestrator.test.ts —
+      // "session-dirty re-spawn") already prove the ROUTING: a commit that
+      // touches `.ax/draft-skills/` marks the session dirty so the next turn
+      // gets a FRESH spawn. This canary proves the other half: that the fresh
+      // spawn will see the EDITED draft, because agents:resolve-authored-skills
+      // re-derives from the CURRENT committed workspace HEAD (not a stale cache
+      // of the first version).
+      //
+      // We drive it through REAL executors end-to-end — no fire-spy, no mocked
+      // agents:resolve-authored-skills. Same harness as the quarantine/projection
+      // canary above (real @ax/agents + real @ax/skills + real postgres
+      // testcontainer + git-protocol workspace-git-server). Two turns:
+      //
+      //   Turn 1 (author): commit `.ax/draft-skills/editme/SKILL.md` body
+      //                    "Version one." → projection returns `editme` v1.
+      //   Turn 2 (edit):   commit the SAME path, body "Version two."
+      //                    (parentVersion = turn-1 version) → projection now
+      //                    returns `editme` v2 (NOT the stale v1).
+      //
+      // The workspace read + parse on the projection path are real; nothing on
+      // the path under test is mocked. If turn-2's projection returned v1, that
+      // would be a stale-cache bug — this canary would catch it.
+      const connectionString = await ensurePostgresStarted();
+
+      const serverToken = randomBytes(32).toString('hex');
+      const serverRepoRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase3-reproject-canary-')),
+      );
+      let server: WorkspaceGitServer | null = null;
+      let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+      try {
+        server = await createWorkspaceGitServer({
+          repoRoot: serverRepoRoot,
+          host: '127.0.0.1',
+          port: 0,
+          token: serverToken,
+        });
+        const presetConfig: K8sPresetConfig = {
+          database: { connectionString: 'postgres://stub:5432/stub' },
+          eventbus: { connectionString: 'postgres://stub:5432/stub' },
+          session: { connectionString: 'postgres://stub:5432/stub' },
+          workspace: {
+            backend: 'git-protocol',
+            baseUrl: `http://127.0.0.1:${server.port}`,
+            token: serverToken,
+          },
+          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
+          chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+          http: {
+            host: '127.0.0.1',
+            port: 0,
+            cookieKey: '0'.repeat(64),
+            allowedOrigins: [],
+          },
+        };
+        const presetPlugins = createK8sPlugins(presetConfig);
+        // Same drop set + re-add pattern as the projection canary above:
+        // postgres trio → sqlite/in-memory, k8s sandbox → subprocess,
+        // http/auth chain → no-op stubs, @ax/skills + @ax/agents dropped and
+        // re-added below wired against the real testcontainer.
+        const kept = presetPlugins.filter(
+          (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
+        );
+        const sqlitePath = path.join(tmp, 'phase3-reproject-canary.sqlite');
+        const replacements: Plugin[] = [
+          // Real postgres backs BOTH the skills quarantine store AND the
+          // @ax/agents tables.
+          createDatabasePostgresPlugin({ connectionString }),
+          // @ax/skills: real skills:quarantine-{set,get} store (the projection
+          // soft-couples to skills:quarantine-get — here both drafts are clean).
+          createSkillsPlugin(),
+          // REAL @ax/agents — provides agents:resolve-authored-skills (the
+          // service under test). Its hard http:register-route + auth:require-user
+          // deps are satisfied by the no-op stubs (admin routes are never called
+          // here — we exercise the bus service directly).
+          createAgentsPlugin(),
+          createHttpRegisterRouteStubPlugin(),
+          createAuthRequireUserStubPlugin(),
+          // Storage / session / sandbox / IPC — same as the projection canary.
+          createStorageSqlitePlugin({ databasePath: sqlitePath }),
+          createSessionInmemoryPlugin(),
+          createSandboxSubprocessPlugin(),
+          createIpcServerPlugin(),
+          createTestProxyPlugin({
+            script: { entries: [{ kind: 'finish', reason: 'end_turn' }] },
+          }),
+          // NOTE: no permissive agents stub — the real @ax/agents registers
+          // agents:resolve, so the stub would collide on that service name.
+          createMcpClientPlugin(),
+        ];
+        const plugins: Plugin[] = [...kept, ...replacements];
+        const bus = new HookBus();
+        handle = await bootstrap({ bus, plugins, config: {} });
+
+        const sessionId = 'phase3-reproject';
+        const userId = `phase3-user-${sessionId}`;
+        const agentId = `phase3-agent-${sessionId}`;
+        const ctx = makeAgentContext({
+          sessionId,
+          agentId,
+          userId,
+          workspace: { rootPath: tmp },
+        });
+        const workspaceId = workspaceIdFor({ userId, agentId });
+        const bareRepoPath = path.join(serverRepoRoot, `${workspaceId}.git`);
+
+        const v1SkillMd =
+          '---\nname: editme\ndescription: a clean helper\n---\n# Editme\nVersion one.\n';
+        const v2SkillMd =
+          '---\nname: editme\ndescription: a clean helper\n---\n# Editme\nVersion two.\n';
+
+        // ── Turn 1: author the draft ─────────────────────────────────────
+        const turn1 = await simulateRunnerTurn({
+          baselineFiles: [],
+          turnFiles: { '.ax/draft-skills/editme/SKILL.md': v1SkillMd },
+          parentDir: tmp,
+        });
+        const turn1Result = await workspaceCommitNotifyHandler(
+          {
+            parentVersion: null,
+            reason: 'turn 1: author editme v1',
+            bundleBytes: turn1.bundleB64,
+          },
+          ctx,
+          bus,
+        );
+        expect(turn1Result.status).toBe(200);
+        const turn1Body = turn1Result.body as { accepted: true; version: string };
+        expect(turn1Body.accepted).toBe(true);
+
+        // Projection after turn 1 reflects v1. Real workspace read + parse,
+        // real skills:quarantine-get (editme is clean → not quarantined).
+        const proj1 = await bus.call<
+          { ownerUserId: string; agentId: string },
+          {
+            skills: Array<{
+              id: string;
+              bodyMd: string;
+              manifestYaml: string;
+            }>;
+          }
+        >('agents:resolve-authored-skills', ctx, {
+          ownerUserId: userId,
+          agentId,
+        });
+        const editme1 = proj1.skills.find((s) => s.id === 'editme');
+        expect(editme1).toBeDefined();
+        expect(editme1!.bodyMd).toContain('Version one.');
+        expect(editme1!.bodyMd).not.toContain('Version two.');
+        expect(editme1!.manifestYaml).toContain('name: editme');
+
+        // ── Turn 2: EDIT the same draft (parentVersion = turn-1 version) ──
+        // The runner's local repo persists across turns, so its turn-2 baseline
+        // is the NON-deterministic turn-1 commit OID — not reproducible by
+        // simulateRunnerTurn's deterministic baseline rebuild. Mirror the
+        // bash-delete canary: clone the storage tier (at turn-1 HEAD), edit,
+        // and bundle baseline..main.
+        const turn2Root = await fs.mkdtemp(path.join(tmp, 'reproject-turn2-'));
+        let turn2BundleB64: string;
+        try {
+          const cl = await git(['clone', bareRepoPath, turn2Root]);
+          if (cl.code !== 0) throw new Error(`turn2 clone: ${cl.stderr}`);
+          // Pin baseline to current HEAD = turn-1 tip = runner's local baseline
+          // after turn-1 accept.
+          await git(['-C', turn2Root, 'update-ref', 'refs/heads/baseline', 'HEAD']);
+          await git(['-C', turn2Root, 'config', 'user.name', 'ax-runner']);
+          await git(['-C', turn2Root, 'config', 'user.email', 'ax-runner@example.com']);
+          // The EDIT: overwrite the same path with v2.
+          const editPath = path.join(
+            turn2Root,
+            '.ax/draft-skills/editme/SKILL.md',
+          );
+          await fs.writeFile(editPath, v2SkillMd);
+          await git(['-C', turn2Root, 'add', '-A']);
+          await git(['-C', turn2Root, 'commit', '-m', 'turn 2: edit editme to v2']);
+          const buf = await new Promise<Buffer>((resolve, reject) => {
+            const child = spawn('git', [
+              '-C',
+              turn2Root,
+              'bundle',
+              'create',
+              '-',
+              'baseline..main',
+              'main',
+            ]);
+            const chunks: Buffer[] = [];
+            let stderr = '';
+            child.stdout.on('data', (c: Buffer) => chunks.push(c));
+            child.stderr.on('data', (c: Buffer) => (stderr += c.toString('utf8')));
+            child.once('error', reject);
+            child.once('close', (code) =>
+              code === 0
+                ? resolve(Buffer.concat(chunks))
+                : reject(new Error(`turn2 bundle: ${stderr}`)),
+            );
+          });
+          turn2BundleB64 = buf.toString('base64');
+        } finally {
+          await fs.rm(turn2Root, { recursive: true, force: true });
+        }
+
+        const turn2Result = await workspaceCommitNotifyHandler(
+          {
+            parentVersion: turn1Body.version,
+            reason: 'turn 2: edit editme v2',
+            bundleBytes: turn2BundleB64,
+          },
+          ctx,
+          bus,
+        );
+        expect(turn2Result.status).toBe(200);
+        const turn2Body = turn2Result.body as { accepted: true; version: string };
+        expect(turn2Body.accepted).toBe(true);
+        // The storage tier advanced (the edit is a NEW commit).
+        expect(turn2Body.version).not.toBe(turn1Body.version);
+
+        // ── THE GATE ─────────────────────────────────────────────────────
+        // RE-PROJECTION: agents:resolve-authored-skills re-derives from the
+        // current committed HEAD. The fresh value MUST be v2, NOT the stale v1.
+        const proj2 = await bus.call<
+          { ownerUserId: string; agentId: string },
+          {
+            skills: Array<{
+              id: string;
+              bodyMd: string;
+              manifestYaml: string;
+            }>;
+          }
+        >('agents:resolve-authored-skills', ctx, {
+          ownerUserId: userId,
+          agentId,
+        });
+        const editme2 = proj2.skills.find((s) => s.id === 'editme');
+        expect(editme2).toBeDefined();
+        // The re-projection reflects the EDIT — a re-spawn would pick up v2.
+        expect(editme2!.bodyMd).toContain('Version two.');
+        // And it is NOT the stale first version.
+        expect(editme2!.bodyMd).not.toContain('Version one.');
+        expect(editme2!.manifestYaml).toContain('name: editme');
+      } finally {
+        if (handle !== null) await handle.shutdown();
+        if (server !== null) await server.close();
+        await fs.rm(serverRepoRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it(
     'Phase 3 canary: workspace.commit-notify catches a Bash-deleted file (the gap that motivated Phase 3)',
     { timeout: 30_000 },
     async () => {
