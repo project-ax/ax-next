@@ -10,6 +10,7 @@ import { buildSkillManifestYaml } from '@ax/skills-parser';
 import { checkAccess } from './acl.js';
 import {
   describeNearbyAuthoredSkills,
+  listAuthoredBundles,
   listAuthoredSkills,
   readAuthoredBundle,
 } from './authored-skills.js';
@@ -23,7 +24,11 @@ import {
   type AgentStore,
 } from './store.js';
 import { randomBytes } from 'node:crypto';
-import { AgentsInstallAuthoredSkillOutputSchema, ResolveOutputSchema } from './types.js';
+import {
+  AgentsInstallAuthoredSkillOutputSchema,
+  AgentsResolveAuthoredSkillsOutputSchema,
+  ResolveOutputSchema,
+} from './types.js';
 import type {
   Actor,
   Agent,
@@ -33,8 +38,11 @@ import type {
   AgentsInstallAuthoredSkillOutput,
   AgentsListAuthoredSkillsInput,
   AgentsListAuthoredSkillsOutput,
+  AgentsResolveAuthoredSkillsInput,
+  AgentsResolveAuthoredSkillsOutput,
   AgentsResolvedEvent,
   AgentsWebhookTokenRotatedEvent,
+  AuthoredResolvedSkill,
   CreateInput,
   CreateOutput,
   DeleteInput,
@@ -107,6 +115,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:list-personal-owners',
         'agents:list-authored-skills',
         'agents:install-authored-skill',
+        'agents:resolve-authored-skills',
       ],
       // database:get-instance is hard. http:register-route + auth:require-user
       // are hard NOW because we mount admin routes; the plugin won't boot
@@ -524,6 +533,48 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           return { description: bundle.description, hosts: input.hosts, slots, packages: reqPackages };
         },
         { returns: AgentsInstallAuthoredSkillOutputSchema },
+      );
+
+      // Phase 3 projection source: returns every parseable authored draft for
+      // this agent in the resolved-skill shape with EMPTY capabilities. Caps are
+      // always empty here — Phase 4 adds the approval-gate extraction. Quarantined
+      // drafts are OMITTED so the model never sees their name/description.
+      // skills:quarantine-get is a soft dep (hasService-guarded): a preset without
+      // the skills store projects everything rather than failing to boot.
+      bus.registerService<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
+        'agents:resolve-authored-skills',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const bundles = await listAuthoredBundles(bus, input.ownerUserId, input.agentId);
+          const skills: AuthoredResolvedSkill[] = [];
+          for (const b of bundles) {
+            if (bus.hasService('skills:quarantine-get')) {
+              const q = await bus.call<
+                { ownerUserId: string; agentId: string; skillId: string },
+                { quarantined: boolean; reason?: string }
+              >('skills:quarantine-get', _ctx, {
+                ownerUserId: input.ownerUserId,
+                agentId: input.agentId,
+                skillId: b.id,
+              });
+              if (q.quarantined) continue; // omit — the model never sees its name/description
+            }
+            skills.push({
+              id: b.id,
+              capabilities: {
+                allowedHosts: [],
+                credentials: [],
+                mcpServers: [],
+                packages: { npm: [], pypi: [] },
+              },
+              bodyMd: b.bodyMd,
+              manifestYaml: b.manifestYaml,
+              files: b.files,
+            });
+          }
+          return { skills };
+        },
+        { returns: AgentsResolveAuthoredSkillsOutputSchema },
       );
 
       // Mount /admin/agents[/:id]. Routes are registered LAST so the bus

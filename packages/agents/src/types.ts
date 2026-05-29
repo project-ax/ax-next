@@ -331,6 +331,56 @@ export const AgentsInstallAuthoredSkillOutputSchema = z.object({
   packages: z.object({ npm: z.array(z.string()), pypi: z.array(z.string()) }),
 }) as unknown as ZodType<AgentsInstallAuthoredSkillOutput>;
 
+// --- agents:resolve-authored-skills (Phase 3, Task A2) -----------------------
+//
+// Returns the agent's self-authored drafts in the resolved-skill projection
+// shape with EMPTY capabilities. No @ax/skills import (invariant #2) — the
+// shape is defined structurally here.
+//
+// Phase 3 = empty caps only. Phase 4 will add the approval-gate capability
+// extraction — do NOT parse capabilities from the manifest here.
+
+/** Resolved-skill projection shape (structurally mirrors the orchestrator's
+ * ResolvedSkillForOrch — NOT an @ax/skills import, per invariant #2). */
+export interface AuthoredResolvedSkill {
+  id: string;
+  capabilities: {
+    allowedHosts: string[];
+    credentials: Array<{ slot: string; kind: string }>;
+    mcpServers: never[];
+    packages: { npm: string[]; pypi: string[] };
+  };
+  bodyMd: string;
+  manifestYaml: string;
+  files: Array<{ path: string; contents: string }>;
+}
+
+export interface AgentsResolveAuthoredSkillsInput {
+  ownerUserId: string;
+  agentId: string;
+}
+
+export interface AgentsResolveAuthoredSkillsOutput {
+  skills: AuthoredResolvedSkill[];
+}
+
+export const AgentsResolveAuthoredSkillsOutputSchema = z.object({
+  skills: z.array(
+    z.object({
+      id: z.string(),
+      capabilities: z.object({
+        allowedHosts: z.array(z.string()),
+        credentials: z.array(z.object({ slot: z.string(), kind: z.string() })),
+        mcpServers: z.array(z.never()),
+        packages: z.object({ npm: z.array(z.string()), pypi: z.array(z.string()) }),
+      }),
+      bodyMd: z.string(),
+      manifestYaml: z.string(),
+      files: z.array(z.object({ path: z.string(), contents: z.string() })),
+    }),
+  ),
+}) as unknown as ZodType<AgentsResolveAuthoredSkillsOutput>;
+
 // --- Plugin config -----------------------------------------------------------
 
 export interface AgentsConfig {

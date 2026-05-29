@@ -29,7 +29,12 @@ import { makeAgentContext } from '@ax/core';
 import { createAgentsPlugin } from '../plugin.js';
 import { readAuthoredBundle, listAuthoredBundles } from '../authored-skills.js';
 import type { CreateInput, CreateOutput } from '../types.js';
-import type { AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput } from '../types.js';
+import type {
+  AgentsListAuthoredSkillsInput,
+  AgentsListAuthoredSkillsOutput,
+  AgentsResolveAuthoredSkillsInput,
+  AgentsResolveAuthoredSkillsOutput,
+} from '../types.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -652,5 +657,118 @@ describe('listAuthoredBundles', () => {
     const bundles = await listAuthoredBundles(h.bus, 'u1', agentId);
 
     expect(bundles).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// agents:resolve-authored-skills (Phase 3, Task A2)
+// Returns the agent's self-authored drafts in the resolved-skill projection
+// shape with empty capabilities. Quarantined drafts are omitted via the
+// skills:quarantine-get soft-dep (absent → project everything).
+// ---------------------------------------------------------------------------
+
+describe('agents:resolve-authored-skills', () => {
+  it('returns non-quarantined drafts with empty capabilities; omits quarantined ones', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+
+    // Seed two valid drafts.
+    const v1 = await seedFile(
+      h,
+      '.ax/draft-skills/clean/SKILL.md',
+      '---\nname: clean\ndescription: Clean skill\nversion: 1\n---\nClean body',
+      userId,
+      agentId,
+      null,
+    );
+    await seedFile(
+      h,
+      '.ax/draft-skills/evil/SKILL.md',
+      '---\nname: evil\ndescription: Evil skill\nversion: 1\n---\nEvil body',
+      userId,
+      agentId,
+      v1,
+    );
+
+    // Register a quarantine stub that marks 'evil' as quarantined.
+    h.bus.registerService(
+      'skills:quarantine-get',
+      '@ax/test',
+      async (_c: unknown, i: { skillId: string }) => ({
+        quarantined: i.skillId === 'evil',
+        ...(i.skillId === 'evil' ? { reason: 'injection' } : {}),
+      }),
+    );
+
+    const result = await h.bus.call<
+      AgentsResolveAuthoredSkillsInput,
+      AgentsResolveAuthoredSkillsOutput
+    >('agents:resolve-authored-skills', h.ctx({ userId }), {
+      ownerUserId: userId,
+      agentId,
+    });
+
+    // Only 'clean' should appear.
+    expect(result.skills).toHaveLength(1);
+    const clean = result.skills[0]!;
+    expect(clean.id).toBe('clean');
+    expect(clean.bodyMd).toBe('Clean body');
+    expect(clean.manifestYaml).toContain('name: clean');
+    // Phase 3: capabilities are ALWAYS empty — no parsing.
+    expect(clean.capabilities).toEqual({
+      allowedHosts: [],
+      credentials: [],
+      mcpServers: [],
+      packages: { npm: [], pypi: [] },
+    });
+  });
+
+  it('returns all drafts when skills:quarantine-get is NOT registered (soft-dep)', async () => {
+    // Build a harness WITHOUT registering skills:quarantine-get — the service
+    // must project all parseable drafts rather than throwing or returning [].
+    const h = await makeHarness();
+    const userId = 'u2';
+    const agentId = await createPersonalAgent(h, userId);
+
+    const v1 = await seedFile(
+      h,
+      '.ax/draft-skills/skilla/SKILL.md',
+      '---\nname: skilla\ndescription: Skill A\nversion: 1\n---\nBody A',
+      userId,
+      agentId,
+      null,
+    );
+    await seedFile(
+      h,
+      '.ax/draft-skills/skillb/SKILL.md',
+      '---\nname: skillb\ndescription: Skill B\nversion: 1\n---\nBody B',
+      userId,
+      agentId,
+      v1,
+    );
+
+    // Verify quarantine-get is NOT registered in this harness.
+    expect(h.bus.hasService('skills:quarantine-get')).toBe(false);
+
+    const result = await h.bus.call<
+      AgentsResolveAuthoredSkillsInput,
+      AgentsResolveAuthoredSkillsOutput
+    >('agents:resolve-authored-skills', h.ctx({ userId }), {
+      ownerUserId: userId,
+      agentId,
+    });
+
+    expect(result.skills).toHaveLength(2);
+    expect(result.skills.map((s) => s.id).sort()).toEqual(['skilla', 'skillb']);
+    // All capabilities must still be empty.
+    for (const skill of result.skills) {
+      expect(skill.capabilities).toEqual({
+        allowedHosts: [],
+        credentials: [],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      });
+    }
   });
 });
