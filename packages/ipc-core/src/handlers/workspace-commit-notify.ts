@@ -247,6 +247,9 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
       const body = {
         accepted: false as const,
         reason: 'bundle author verification failed',
+        // A tampered / bypassed-env bundle is not recoverable agent work — the
+        // runner discards it with --hard.
+        recoverable: false as const,
       };
       const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
       if (!checked.success) return internalError();
@@ -283,7 +286,12 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
       { changes: policyChanges, parent, reason },
     );
     if (pre.rejected) {
-      const body = { accepted: false as const, reason: pre.reason };
+      // Today the ONLY pre-apply rejecter is @ax/validator-skill's SDK-config
+      // veto (the SKILL.md content veto became accept-but-annotate in Phase 2).
+      // An SDK-config write must be CLEARED, not preserved, or it re-vetoes the
+      // atomic transcript bundle every turn (wedge). A future *recoverable*
+      // pre-apply veto would need per-subscriber plumbing (see the spec).
+      const body = { accepted: false as const, reason: pre.reason, recoverable: false as const };
       const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
       if (!checked.success) {
         logInternalError(
