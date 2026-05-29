@@ -744,6 +744,10 @@ export function createOrchestrator(
     // The session's egress is gone — drop its host-grant dedup set so a reused
     // sessionId starts fresh (TASK-37).
     wallCardsByHost.delete(sessionId);
+    // If this session was marked dirty (draft-skills changed, awaiting re-spawn
+    // next turn), prune it now — the session is gone so the entry would never
+    // be consumed and would leak indefinitely.
+    respawnSessions.delete(sessionId);
   }
 
   // Reactive egress wall (TASK-37) — turn an allowlist-MISS 403 into the

@@ -1500,6 +1500,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       // re-derives from the CURRENT committed workspace HEAD (not a stale cache
       // of the first version).
       //
+      // NOTE — split seam: this canary exercises the projection DATA path
+      // (re-derivation from committed HEAD). The orchestrator re-spawn ROUTING
+      // (delta.author.sessionId == activeSessionId → dirty-mark → fresh spawn)
+      // is unit-tested separately in chat-orchestrator's "session-dirty re-spawn
+      // (B3)" describe block. The two halves are NOT yet exercised in a single
+      // end-to-end run (the CI runner is stubbed). Flagged for the Phase-6 kind
+      // walk.
+      //
       // We drive it through REAL executors end-to-end — no fire-spy, no mocked
       // agents:resolve-authored-skills. Same harness as the quarantine/projection
       // canary above (real @ax/agents + real @ax/skills + real postgres

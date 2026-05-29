@@ -255,13 +255,13 @@ spec:
               value: "true"
             {{- end }}
 
-            # JIT open-mode gate. Stamped by DEFAULT (skills.allowUserInstalled
-            # defaults to true) so agents can author + install their own skills
-            # out of the box — the per-skill host/credential/registry approval
-            # card is the backstop. The preset's loadK8sConfigFromEnv reads it and
-            # hands it to @ax/skill-broker. Set skills.allowUserInstalled=false to
-            # opt out: this var is then omitted (curated mode) and the broker
-            # treats the gate as off.
+            # Built-in skill-creator gate. When set, the orchestrator's
+            # loadBuiltinSkills() ships the ax-skill-creator starter skill so
+            # agents get authoring capability out of the box. Self-authored draft
+            # discovery (agents:resolve-authored-skills) is UNCONDITIONAL — it is
+            # gated only by the read-only host projection + the Phase-2 quarantine
+            # scan, NOT by this flag. Set skills.allowUserInstalled=false to omit
+            # the starter skill (curated mode); discovery still runs.
             {{- if .Values.skills.allowUserInstalled }}
             - name: AX_ALLOW_USER_INSTALLED_SKILLS
               value: "true"
