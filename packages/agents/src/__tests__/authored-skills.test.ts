@@ -27,7 +27,7 @@ import {
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { makeAgentContext } from '@ax/core';
 import { createAgentsPlugin } from '../plugin.js';
-import { readAuthoredBundle } from '../authored-skills.js';
+import { readAuthoredBundle, listAuthoredBundles } from '../authored-skills.js';
 import type { CreateInput, CreateOutput } from '../types.js';
 import type { AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput } from '../types.js';
 
@@ -540,5 +540,117 @@ describe('readAuthoredBundle', () => {
       '.ax/draft-skills/multi/SKILL.md',
       '.ax/draft-skills/multi/ref.md',
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// listAuthoredBundles — projection source for all parseable self-authored drafts
+// ---------------------------------------------------------------------------
+
+describe('listAuthoredBundles', () => {
+  it('returns each parseable draft as a projection bundle with raw manifestYaml, bodyMd, and helper files, sorted by id, skipping malformed drafts', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+
+    // Seed two parseable drafts (directory form) + one malformed (no frontmatter)
+    // + one with a helper file. Seed in non-alphabetical order to verify sorting.
+    const v1 = await seedFile(
+      h,
+      '.ax/draft-skills/zoo/SKILL.md',
+      '---\nname: zoo\ndescription: Zoo skill\nversion: 1\n---\nZoo body',
+      userId,
+      agentId,
+      null,
+    );
+    const v2 = await seedFile(
+      h,
+      '.ax/draft-skills/alpha/SKILL.md',
+      '---\nname: alpha\ndescription: Alpha skill\nversion: 2\n---\nAlpha body',
+      userId,
+      agentId,
+      v1,
+    );
+    const v3 = await seedFile(
+      h,
+      '.ax/draft-skills/alpha/scripts/run.sh',
+      '#!/bin/bash\necho hello',
+      userId,
+      agentId,
+      v2,
+    );
+    // Malformed draft: no frontmatter fence — must be SKIPPED, not thrown.
+    await seedFile(
+      h,
+      '.ax/draft-skills/broken/SKILL.md',
+      'not a valid skill md at all',
+      userId,
+      agentId,
+      v3,
+    );
+
+    const bundles = await listAuthoredBundles(h.bus, userId, agentId);
+
+    // 'broken' is silently skipped; 'alpha' and 'zoo' are returned sorted by id.
+    expect(bundles).toHaveLength(2);
+    expect(bundles[0]!.id).toBe('alpha');
+    expect(bundles[0]!.manifestYaml).toContain('name: alpha');
+    expect(bundles[0]!.bodyMd).toBe('Alpha body');
+    expect(bundles[0]!.files).toEqual([{ path: 'scripts/run.sh', contents: '#!/bin/bash\necho hello' }]);
+    expect(bundles[1]!.id).toBe('zoo');
+    expect(bundles[1]!.manifestYaml).toContain('name: zoo');
+    expect(bundles[1]!.bodyMd).toBe('Zoo body');
+    expect(bundles[1]!.files).toEqual([]);
+  });
+
+  it('includes flat-file drafts (.ax/draft-skills/<id>.md) alongside directory-form drafts', async () => {
+    const h = await makeHarness();
+    const userId = 'u1';
+    const agentId = await createPersonalAgent(h, userId);
+
+    const v1 = await seedFile(
+      h,
+      '.ax/draft-skills/dirskill/SKILL.md',
+      '---\nname: dirskill\ndescription: Dir skill\nversion: 1\n---\nDir body',
+      userId,
+      agentId,
+      null,
+    );
+    await seedFile(
+      h,
+      '.ax/draft-skills/flatskill.md',
+      '---\nname: flatskill\ndescription: Flat skill\nversion: 1\n---\nFlat body',
+      userId,
+      agentId,
+      v1,
+    );
+
+    const bundles = await listAuthoredBundles(h.bus, userId, agentId);
+
+    expect(bundles.map((b) => b.id).sort()).toEqual(['dirskill', 'flatskill']);
+    const flat = bundles.find((b) => b.id === 'flatskill')!;
+    expect(flat.manifestYaml).toContain('name: flatskill');
+    expect(flat.bodyMd).toBe('Flat body');
+    expect(flat.files).toEqual([]);
+  });
+
+  it('returns [] when no workspace backend is loaded (soft-dep)', async () => {
+    // withWorkspace=false omits createMockWorkspacePlugin — bare HookBus with
+    // no workspace:list / workspace:read.
+    const h = await makeHarness(false);
+    const agentId = await createPersonalAgent(h, 'u1');
+
+    const bundles = await listAuthoredBundles(h.bus, 'u1', agentId);
+
+    expect(bundles).toEqual([]);
+  });
+
+  it('returns [] when the workspace is empty', async () => {
+    const h = await makeHarness();
+    const agentId = await createPersonalAgent(h, 'u1');
+
+    const bundles = await listAuthoredBundles(h.bus, 'u1', agentId);
+
+    expect(bundles).toEqual([]);
   });
 });

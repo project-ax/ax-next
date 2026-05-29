@@ -375,3 +375,148 @@ export async function readAuthoredBundle(
 
   return null; // neither the directory nor the flat form exists
 }
+
+/** A self-authored draft in projection shape: raw frontmatter + body + helper files. */
+export interface AuthoredProjectionBundle {
+  id: string;
+  /** The raw YAML frontmatter string (between the `---` fences) — the projection
+   * layer stores this verbatim so it can be parsed later without re-reading the
+   * workspace. Does NOT include the `---` delimiters themselves. */
+  manifestYaml: string;
+  bodyMd: string;
+  files: AuthoredBundleFile[];
+}
+
+/**
+ * Read EVERY parseable self-authored draft under `.ax/draft-skills/` as a
+ * projection bundle (raw `manifestYaml` + `bodyMd` + helper files). Unlike
+ * `readAuthoredBundle` (one id, THROWS on malformed) this is the host
+ * discovery-projection source: a malformed SKILL.md is SKIPPED (never thrown)
+ * so one bad draft can't break discovery for the rest.
+ *
+ * Both on-disk shapes are accepted — directory form
+ * `.ax/draft-skills/<id>/SKILL.md` (canonical, wins on a duplicate id) and
+ * flat form `.ax/draft-skills/<id>.md` (agent shorthand, no helper files). This
+ * mirrors the logic in `listAuthoredSkills`.
+ *
+ * Capabilities are NOT parsed here — Phase 3 projects drafts with empty caps;
+ * Phase 4 adds the approval gate.
+ *
+ * Same ctx-routing as listAuthoredSkills and readAuthoredBundle: workspace
+ * hooks key off ctx.userId + ctx.agentId. We construct a fresh ctx from the
+ * agent owner's identity so we read THAT agent's workspace, not the caller's.
+ *
+ * Soft-dep: if neither `workspace:list` nor `workspace:read` is loaded (e.g.
+ * a stripped preset without a workspace plugin) we return [] rather than throw,
+ * matching the "no workspace = no authored skills discoverable" semantic.
+ */
+export async function listAuthoredBundles(
+  bus: HookBus,
+  ownerUserId: string,
+  agentId: string,
+): Promise<AuthoredProjectionBundle[]> {
+  // Soft-dep guard — stripped presets omit a workspace backend.
+  if (!bus.hasService('workspace:list') || !bus.hasService('workspace:read')) {
+    return [];
+  }
+
+  // Root the ctx in the agent owner's identity so workspace:list and
+  // workspace:read address the correct workspace shard. Do NOT reuse the
+  // caller's ctx (wrong shard).
+  const ctx = makeAgentContext({
+    userId: ownerUserId,
+    agentId,
+    sessionId: 'authored-bundles-projection',
+  });
+
+  // Discover ids from both on-disk shapes, exactly as listAuthoredSkills does.
+  // The two parallel list calls are cheap (glob, no content reads).
+  const [dirRes, flatRes] = await Promise.all([
+    bus.call<{ pathGlob: string }, { paths: string[] }>('workspace:list', ctx, {
+      pathGlob: '.ax/draft-skills/*/SKILL.md',
+    }),
+    bus.call<{ pathGlob: string }, { paths: string[] }>('workspace:list', ctx, {
+      pathGlob: '.ax/draft-skills/*.md',
+    }),
+  ]);
+
+  // Build the id set. Directory form first so it wins on a duplicate (an agent
+  // that has both `<id>/SKILL.md` and `<id>.md`).
+  const ids = new Set<string>();
+  for (const p of dirRes.paths) {
+    const m = /^\.ax\/draft-skills\/([^/]+)\/SKILL\.md$/.exec(p);
+    if (m) ids.add(m[1]!);
+  }
+  for (const p of flatRes.paths) {
+    const m = /^\.ax\/draft-skills\/([^/]+)\.md$/.exec(p);
+    // Apply the same id-grammar gate as listAuthoredSkills so unrelated notes
+    // (e.g. `.ax/draft-skills/README.md`) can't masquerade as promotable skills.
+    if (m && AUTHORED_SKILL_ID_RE.test(m[1]!)) ids.add(m[1]!);
+  }
+
+  const out: AuthoredProjectionBundle[] = [];
+
+  for (const id of [...ids].sort()) {
+    const dir = `.ax/draft-skills/${id}`;
+
+    // --- Directory form: list every path under `.ax/draft-skills/<id>/`. ---
+    const { paths } = await bus.call<{ pathGlob: string }, { paths: string[] }>(
+      'workspace:list',
+      ctx,
+      { pathGlob: `${dir}/**` },
+    );
+
+    let manifestYaml: string | null = null;
+    let bodyMd = '';
+    const files: AuthoredBundleFile[] = [];
+    let sawDir = false; // true once we see at least one path under the dir
+
+    for (const p of [...paths].sort()) {
+      const read = await bus.call<
+        { path: string },
+        { found: true; bytes: Uint8Array } | { found: false }
+      >('workspace:read', ctx, { path: p });
+      if (!read.found) continue; // deleted between list and read — skip
+      const rel = p.slice(dir.length + 1); // strip ".ax/draft-skills/<id>/"
+      if (rel.length === 0) continue;
+      sawDir = true;
+      const text = new TextDecoder().decode(read.bytes);
+      if (rel === 'SKILL.md') {
+        // Attempt to parse — but NEVER throw. A malformed SKILL.md silently
+        // skips this whole id so one bad draft doesn't block the rest.
+        const split = splitSkillMd(text);
+        if (split === null || !parseSkillManifest(split.manifestYaml).ok) continue;
+        manifestYaml = split.manifestYaml;
+        bodyMd = split.bodyMd;
+      } else {
+        files.push({ path: rel, contents: text });
+      }
+    }
+
+    if (manifestYaml === null && !sawDir) {
+      // No directory form found — try the flat form `.ax/draft-skills/<id>.md`.
+      // `id` is validated by AUTHORED_SKILL_ID_RE above, so interpolation is safe.
+      const flat = await bus.call<
+        { path: string },
+        { found: true; bytes: Uint8Array } | { found: false }
+      >('workspace:read', ctx, { path: `${dir}.md` });
+      if (flat.found) {
+        const split = splitSkillMd(new TextDecoder().decode(flat.bytes));
+        if (split !== null && parseSkillManifest(split.manifestYaml).ok) {
+          manifestYaml = split.manifestYaml;
+          bodyMd = split.bodyMd;
+          // Flat form has no helper files — files[] stays [].
+        }
+      }
+    }
+
+    // Skip this id entirely if we couldn't parse a valid manifest from either form.
+    if (manifestYaml === null) continue;
+
+    // Sort helper files by path for determinism (SKILL.md is excluded from files[]).
+    files.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+    out.push({ id, manifestYaml, bodyMd, files });
+  }
+
+  return out; // already sorted by id (we iterated [...ids].sort())
+}
