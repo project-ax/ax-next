@@ -34,3 +34,23 @@ describe('WorkspaceCommitNotifyResponseSchema', () => {
     }
   });
 });
+
+describe('WorkspaceCommitNotifyResponse recoverable', () => {
+  it('accepts recoverable:false on a rejection and preserves the value', () => {
+    const r = WorkspaceCommitNotifyResponseSchema.safeParse({
+      accepted: false,
+      reason: 'SDK-config veto',
+      recoverable: false,
+    });
+    expect(r.success).toBe(true);
+    expect(r.success && (r.data as { recoverable?: boolean }).recoverable).toBe(false);
+  });
+
+  it('absent recoverable still parses (runner defaults to preserve)', () => {
+    const r = WorkspaceCommitNotifyResponseSchema.safeParse({
+      accepted: false,
+      reason: 'baseline drift',
+    });
+    expect(r.success).toBe(true);
+  });
+});
