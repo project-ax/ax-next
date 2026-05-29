@@ -1426,6 +1426,18 @@ export function createOrchestrator(
       }
     }
     const authoredIds = new Set(authoredDraftSkills.map((s) => s.id));
+    // Union construction order: authored drafts (highest) → explicit
+    // attachments → defaults → builtins (lowest). De-duped by id so the
+    // higher-precedence entry wins.
+    //
+    // M2 — shadowed-id caps note: when an authored draft shares an id with
+    // an explicit/global attachment, the DRAFT wins this union (the model
+    // reads the draft's SKILL.md body) but creds/hosts are still wired from
+    // the attachment's resolved capabilities (the credential loop below keys
+    // off `resolvedSkills` / `attachments`, independent of `unionedSkills`).
+    // In Phase 3 drafted skills always carry empty caps, so this only affects
+    // which instruction body the model sees; flagged here for awareness when
+    // Phase 4 adds the approval-gate capability extraction.
     const withAuthored = [
       ...authoredDraftSkills,
       ...resolvedSkills.filter((s) => !authoredIds.has(s.id)),

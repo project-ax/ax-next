@@ -814,4 +814,48 @@ describe('agents:resolve-authored-skills', () => {
       });
     }
   });
+
+  // M3-2: skills:quarantine-get THROWING must propagate through
+  // agents:resolve-authored-skills (fail toward OMISSION — an outage must
+  // never project unscanned drafts). The SAFE direction is: quarantine store
+  // unavailable → service rejects → orchestrator sees the error and falls back
+  // to [] (fail-open one level up), but NO draft is projected without a
+  // quarantine check result. Documents that the quarantine-store outage path
+  // fails toward omission, not toward projecting unscanned content.
+  it('propagates skills:quarantine-get error (quarantine-store outage fails toward omission)', async () => {
+    const h = await makeHarness();
+    const userId = 'u3';
+    const agentId = await createPersonalAgent(h, userId);
+
+    // Seed one valid draft.
+    await seedFile(
+      h,
+      '.ax/draft-skills/safe/SKILL.md',
+      '---\nname: safe\ndescription: Safe skill\nversion: 1\n---\nSafe body',
+      userId,
+      agentId,
+      null,
+    );
+
+    // Register a quarantine service that THROWS — simulating a DB outage.
+    h.bus.registerService(
+      'skills:quarantine-get',
+      '@ax/test',
+      async () => {
+        throw new Error('quarantine store unavailable');
+      },
+    );
+
+    // The call must reject — the service propagates the error rather than
+    // projecting drafts without a clean quarantine verdict.
+    await expect(
+      h.bus.call<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
+        'agents:resolve-authored-skills',
+        h.ctx({ userId }),
+        { ownerUserId: userId, agentId },
+      ),
+    ).rejects.toThrow('quarantine store unavailable');
+    // The orchestrator's catch block handles this at the next level up —
+    // see orchestrator.ts resolve_authored_skills_failed warn path.
+  });
 });

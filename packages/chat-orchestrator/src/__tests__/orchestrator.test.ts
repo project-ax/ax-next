@@ -3572,6 +3572,62 @@ describe('chat-orchestrator', () => {
     expect(skillMd?.contents).not.toContain('Default body');
   });
 
+  // M3-1: agents:resolve-authored-skills THROWING must fail OPEN — the turn
+  // still completes (sandbox opens with non-draft skills only). Regression
+  // test: a bad workspace read must never kill the chat.
+  it('agents:resolve-authored-skills throwing fails OPEN (warn + empty drafts, session completes)', async () => {
+    const proxy = buildProxyHooks();
+    // Use a capturing logger writer so we can verify the warning is emitted.
+    const logLines: string[] = [];
+    const capturingCtx = makeAgentContext({
+      sessionId: 'authored-throw-session',
+      agentId: 'test-agent',
+      userId: 'test-user',
+      logger: createLogger({ reqId: 'orch-test', writer: (line) => logLines.push(line) }),
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    // Register a throwing agents:resolve-authored-skills mock.
+    mocks.services['agents:resolve-authored-skills'] = async () => {
+      throw new Error('workspace backend unavailable');
+    };
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      capturingCtx,
+      { message: { role: 'user', content: 'hi' } },
+    );
+    // Must NOT terminate — fail-open means fewer skills, never a dead session.
+    expect(outcome.kind).toBe('complete');
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{ id: string }>;
+    };
+    // No authored drafts were projected (the throw was caught + swallowed).
+    expect(sandboxIn.installedSkills ?? []).toHaveLength(0);
+    // The warning must have been emitted so the failure is observable in logs.
+    const warnLine = logLines.find((l) => l.includes('resolve_authored_skills_failed'));
+    expect(warnLine).toBeDefined();
+  });
+
   it('skips defaults entirely when skills:list-defaults service is not registered', async () => {
     // Stripped-preset compatibility (I-S6).
     const proxy = buildProxyHooks();
