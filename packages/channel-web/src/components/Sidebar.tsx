@@ -25,7 +25,7 @@ export function Sidebar({
       data-testid="sidebar"
       id="sidebar"
       className="
-        sticky top-0 self-start h-screen overflow-visible
+        sticky top-0 z-10 self-start h-screen overflow-visible
         w-[240px] shrink-0 border-r border-border bg-background
         flex flex-col font-sans
         transition-[width] duration-200 [body.sidebar-collapsed_&]:w-[56px]
