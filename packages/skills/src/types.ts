@@ -440,3 +440,57 @@ export const CatalogAdmitOutputSchema = z.object({
   skillId: z.string().optional(),
   admitted: z.boolean(),
 }) as unknown as ZodType<CatalogAdmitOutput>;
+
+// ---- Quarantine (Phase 2) -------------------------------------------------
+// Per-(user, agent, skill) draft-skill safety status. Set by the validator
+// commit scan; read by agents:install-authored-skill + (Phase 3) the projection.
+export interface SkillsQuarantineSetInput {
+  ownerUserId: string;
+  agentId: string;
+  skillId: string;
+  reason: string;
+}
+export type SkillsQuarantineSetOutput = Record<string, never>;
+
+export interface SkillsQuarantineClearInput {
+  ownerUserId: string;
+  agentId: string;
+  skillId: string;
+}
+export interface SkillsQuarantineClearOutput {
+  cleared: boolean;
+}
+
+export interface SkillsQuarantineGetInput {
+  ownerUserId: string;
+  agentId: string;
+  skillId: string;
+}
+export interface SkillsQuarantineGetOutput {
+  quarantined: boolean;
+  reason?: string;
+}
+
+export interface SkillsQuarantineListInput {
+  ownerUserId: string;
+  agentId: string;
+}
+export interface SkillsQuarantineListOutput {
+  items: Array<{ skillId: string; reason: string; lastFlaggedAt: string }>;
+}
+
+export const SkillsQuarantineSetOutputSchema = z
+  .object({})
+  .strict() as unknown as ZodType<SkillsQuarantineSetOutput>;
+export const SkillsQuarantineClearOutputSchema = z.object({
+  cleared: z.boolean(),
+}) as unknown as ZodType<SkillsQuarantineClearOutput>;
+export const SkillsQuarantineGetOutputSchema = z.object({
+  quarantined: z.boolean(),
+  reason: z.string().optional(),
+}) as unknown as ZodType<SkillsQuarantineGetOutput>;
+export const SkillsQuarantineListOutputSchema = z.object({
+  items: z.array(
+    z.object({ skillId: z.string(), reason: z.string(), lastFlaggedAt: z.string() }),
+  ),
+}) as unknown as ZodType<SkillsQuarantineListOutput>;

@@ -37,6 +37,14 @@ import type {
   CatalogListRequestsOutput,
   CatalogAdmitInput,
   CatalogAdmitOutput,
+  SkillsQuarantineSetInput,
+  SkillsQuarantineSetOutput,
+  SkillsQuarantineClearInput,
+  SkillsQuarantineClearOutput,
+  SkillsQuarantineGetInput,
+  SkillsQuarantineGetOutput,
+  SkillsQuarantineListInput,
+  SkillsQuarantineListOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -104,6 +112,7 @@ afterEach(async () => {
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skill_files');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_quarantine');
   } finally {
     await cleanup.end().catch(() => {});
   }
@@ -134,6 +143,10 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'catalog:submit',
         'catalog:list-requests',
         'catalog:admit',
+        'skills:quarantine-set',
+        'skills:quarantine-clear',
+        'skills:quarantine-get',
+        'skills:quarantine-list',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -1568,5 +1581,54 @@ describe('@ax/skills catalog admit-queue hooks (TASK-41)', () => {
         decidedByUserId: 'admin',
       }),
     ).rejects.toMatchObject({ code: 'cold-start-not-promotable' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// skills quarantine services (Phase 2)
+// ---------------------------------------------------------------------------
+
+describe('skills quarantine services', () => {
+  it('set → get → list → clear round-trips through the bus', async () => {
+    const h = await makeHarness();
+
+    await h.bus.call<SkillsQuarantineSetInput, SkillsQuarantineSetOutput>(
+      'skills:quarantine-set',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1', skillId: 'linear', reason: 'flagged: prompt-injection' },
+    );
+
+    expect(
+      await h.bus.call<SkillsQuarantineGetInput, SkillsQuarantineGetOutput>(
+        'skills:quarantine-get',
+        h.ctx(),
+        { ownerUserId: 'u1', agentId: 'a1', skillId: 'linear' },
+      ),
+    ).toEqual({ quarantined: true, reason: 'flagged: prompt-injection' });
+
+    const listed = await h.bus.call<SkillsQuarantineListInput, SkillsQuarantineListOutput>(
+      'skills:quarantine-list',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1' },
+    );
+    expect(listed.items.map((i) => i.skillId)).toEqual(['linear']);
+    expect(listed.items[0]).toMatchObject({ skillId: 'linear', reason: 'flagged: prompt-injection' });
+    expect(typeof (listed.items[0] as { lastFlaggedAt?: unknown }).lastFlaggedAt).toBe('string');
+
+    expect(
+      await h.bus.call<SkillsQuarantineClearInput, SkillsQuarantineClearOutput>(
+        'skills:quarantine-clear',
+        h.ctx(),
+        { ownerUserId: 'u1', agentId: 'a1', skillId: 'linear' },
+      ),
+    ).toEqual({ cleared: true });
+
+    expect(
+      await h.bus.call<SkillsQuarantineGetInput, SkillsQuarantineGetOutput>(
+        'skills:quarantine-get',
+        h.ctx(),
+        { ownerUserId: 'u1', agentId: 'a1', skillId: 'linear' },
+      ),
+    ).toEqual({ quarantined: false });
   });
 });
