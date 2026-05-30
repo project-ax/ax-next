@@ -174,6 +174,38 @@ describe('ConversationStore.appendEvent / listEvents', () => {
     expect(await store.listEvents('never-written')).toEqual([]);
   });
 
+  it('does not drop any event under CONCURRENT appends to the same conversation (seq-race retry)', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+
+    // Fire many appends concurrently for ONE conversation. The MAX(seq)+1
+    // allocation races; the unique-violation retry must let every append land
+    // with a distinct seq (none dropped, none overwritten). This is the
+    // permission-card-racing-turn-end case from the review.
+    const N = 20;
+    const seqs = await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        store.appendEvent({
+          conversationId: 'c-race',
+          kind: 'turn',
+          role: 'assistant',
+          payload: { i },
+        }),
+      ),
+    );
+    // Every append returned a UNIQUE seq.
+    expect(new Set(seqs).size).toBe(N);
+    // And the log holds exactly N rows with contiguous seqs 1..N.
+    const events = await store.listEvents('c-race');
+    expect(events).toHaveLength(N);
+    expect(events.map((e) => e.seq)).toEqual(
+      Array.from({ length: N }, (_, i) => i + 1),
+    );
+    // Every payload survived (no overwrite).
+    expect(new Set(events.map((e) => (e.payload as { i: number }).i)).size).toBe(N);
+  });
+
   it('stores the payload opaquely (special chars, nested objects round-trip)', async () => {
     const db = makeKysely();
     await runConversationsMigration(db);

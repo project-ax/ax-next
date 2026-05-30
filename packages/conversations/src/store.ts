@@ -742,35 +742,57 @@ export function createConversationStore(
 
     async appendEvent({ conversationId, kind, role, foldKey, payload }) {
       // Mint the next per-conversation seq and INSERT in one statement.
-      // Single writer per conversation (the host), so an INSERT ... SELECT
-      // COALESCE(MAX(seq),0)+1 is contention-free — no CAS, no optimistic
-      // concurrency. The composite PK (conversation_id, seq) is the backstop:
-      // a genuine concurrent double-write (which shouldn't happen) would fail
-      // the unique constraint rather than silently overwrite.
-      const inserted = await db
-        .insertInto('conversations_v1_events')
-        .columns(['conversation_id', 'seq', 'event_kind', 'role', 'fold_key', 'payload'])
-        .expression((eb) =>
-          eb
-            .selectFrom('conversations_v1_events as e')
-            .where('e.conversation_id', '=', conversationId)
-            .select(() => [
-              sql<string>`${conversationId}`.as('conversation_id'),
-              sql<number>`COALESCE(MAX(e.seq), 0) + 1`.as('seq'),
-              sql<string>`${kind}`.as('event_kind'),
-              sql<string | null>`${role ?? null}`.as('role'),
-              sql<string>`${foldKey ?? ''}`.as('fold_key'),
-              // Serialize once here so the JSONB column gets a single text
-              // value (kysely's pg driver passes the string straight through
-              // to ::jsonb). The payload is opaque; never interpolated.
-              sql<string>`${JSON.stringify(payload)}::jsonb`.as('payload'),
-            ]),
-        )
-        .returning('seq')
-        .executeTakeFirst();
-      // The aggregate sub-select always returns exactly one row, so the
-      // INSERT always inserts; `inserted` is defined.
-      return coerceSeq(inserted?.seq ?? 1);
+      // Mint the next per-conversation seq via INSERT ... SELECT
+      // COALESCE(MAX(seq),0)+1 (atomic within ONE statement). Two CONCURRENT
+      // appends for the same conversation (e.g. a permission-card persist
+      // racing the turn-end persist) can each read the same MAX before either
+      // commits → one hits the (conversation_id, seq) PK and raises a
+      // unique-violation (SQLSTATE 23505). That's the backstop, not silent
+      // overwrite: retry on 23505 — the re-read sees the committed row and
+      // mints the next seq. Bounded so a genuine PK problem surfaces instead
+      // of spinning. (Concurrency here is rare — a few host events per
+      // conversation — so a tiny retry budget is plenty.)
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const inserted = await db
+            .insertInto('conversations_v1_events')
+            .columns([
+              'conversation_id',
+              'seq',
+              'event_kind',
+              'role',
+              'fold_key',
+              'payload',
+            ])
+            .expression((eb) =>
+              eb
+                .selectFrom('conversations_v1_events as e')
+                .where('e.conversation_id', '=', conversationId)
+                .select(() => [
+                  sql<string>`${conversationId}`.as('conversation_id'),
+                  sql<number>`COALESCE(MAX(e.seq), 0) + 1`.as('seq'),
+                  sql<string>`${kind}`.as('event_kind'),
+                  sql<string | null>`${role ?? null}`.as('role'),
+                  sql<string>`${foldKey ?? ''}`.as('fold_key'),
+                  // Serialize once here so the JSONB column gets a single text
+                  // value (kysely's pg driver passes the string straight
+                  // through to ::jsonb). The payload is opaque; never
+                  // interpolated.
+                  sql<string>`${JSON.stringify(payload)}::jsonb`.as('payload'),
+                ]),
+            )
+            .returning('seq')
+            .executeTakeFirst();
+          // The aggregate sub-select always returns one row, so the INSERT
+          // always inserts; `inserted` is defined.
+          return coerceSeq(inserted?.seq ?? 1);
+        } catch (err) {
+          if (isUniqueViolation(err) && attempt < APPEND_MAX_RETRIES) {
+            continue; // a concurrent append took our seq; recompute + retry.
+          }
+          throw err;
+        }
+      }
     },
 
     async listEvents(conversationId) {
@@ -799,6 +821,25 @@ export function createConversationStore(
 // ---------------------------------------------------------------------------
 // TASK-66 display-event helpers.
 // ---------------------------------------------------------------------------
+
+// Bounded retry budget for the appendEvent seq-allocation race (SQLSTATE
+// 23505). Concurrent appends per conversation are rare (a few host events at
+// a time), so a small budget self-heals the race; exceeding it means a real PK
+// problem that should surface.
+const APPEND_MAX_RETRIES = 8;
+
+/**
+ * Postgres unique_violation (23505). The pg driver surfaces the SQLSTATE on
+ * `err.code`; kysely re-throws the driver error verbatim. We match on the code
+ * string (storage-internal — never crosses a hook boundary).
+ */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    err !== null &&
+    typeof err === 'object' &&
+    (err as { code?: unknown }).code === '23505'
+  );
+}
 
 const VALID_EVENT_KINDS: ReadonlySet<ConversationEventKind> = new Set([
   'turn',

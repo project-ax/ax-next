@@ -44,17 +44,25 @@ interface AppendEventCall {
   payload: { blocks: unknown };
 }
 
-export async function fireEventTurnEnd(
+/**
+ * (1) Persist-before-ack — the display-log append, ISOLATED and AWAITED before
+ * the 202. ONLY this runs in the awaited path (the dispatcher's `persist`
+ * slot); the broadcast (fireEventTurnEnd) does NOT, so a slow observer (e.g.
+ * the title-LLM subscriber) can't delay the runner's turn-end ack or its
+ * downstream done-frame.
+ *
+ * Only non-heartbeat turns (role + non-empty contentBlocks) are displayed, so
+ * only those persist. conversationId comes from the host-stamped ctx (NOT the
+ * untrusted payload), so a runner can't aim a frame at a foreign conversation.
+ * The append-event store retries the seq-allocation race internally; a genuine
+ * persist failure re-throws → the dispatcher returns a non-2xx + logs loudly
+ * (B3 no-omission: never a silent drop).
+ */
+export async function persistEventTurnEnd(
   ctx: AgentContext,
   bus: HookBus,
   payload: unknown,
 ): Promise<void> {
-  // (1) Persist-before-ack: the display-log append, isolated + awaited.
-  // Only non-heartbeat turns (role + non-empty contentBlocks) are displayed,
-  // so only those persist. conversationId comes from the host-stamped ctx
-  // (NOT the untrusted payload), so a runner can't aim a frame at a foreign
-  // conversation. A persist failure re-throws → the dispatcher returns a
-  // non-2xx so the turn is NOT falsely acked (B3 no-omission).
   const p = payload as Partial<EventTurnEnd>;
   const conversationId = ctx.conversationId;
   if (
@@ -71,8 +79,20 @@ export async function fireEventTurnEnd(
       payload: { blocks: p.contentBlocks },
     });
   }
+}
 
-  // (2) Broadcast to every other observer (fire-and-forget at the ack level).
+/**
+ * (2) Broadcast `chat:turn-end` to every OTHER observer — last_activity bump,
+ * clear-active-req-id, the buffer evictor, conversation-titles, routines.
+ * These are not gated by persist-before-ack, so this is fire-and-forget at the
+ * ack level (the dispatcher does NOT await it for turn-end). A rejection is
+ * logged, never echoed.
+ */
+export async function fireEventTurnEnd(
+  ctx: AgentContext,
+  bus: HookBus,
+  payload: unknown,
+): Promise<void> {
   const result = await bus.fire('chat:turn-end', ctx, payload);
   if (result.rejected) {
     ctx.logger.warn('event_subscriber_rejected', {

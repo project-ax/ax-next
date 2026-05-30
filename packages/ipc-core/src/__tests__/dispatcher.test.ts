@@ -640,41 +640,124 @@ describe('dispatcher', () => {
     expect(received).toEqual(body);
   });
 
-  it('POST /event.turn-end — AWAITS the chat:turn-end subscriber BEFORE the 202 (persist-before-ack, TASK-66)', async () => {
-    // The inverse of the tool-post-call prompt-202 guard: for turn-end the
-    // dispatcher MUST hold the ack open until the subscriber chain completes,
-    // so the display event log persists the turn's frames before the runner
-    // sees the turn acknowledged (B3 no-omission / persist-before-ack).
-    let fireCompleted = false;
-    const s = await setup({
-      subscribers: [
-        {
-          hook: 'chat:turn-end',
-          handler: async () => {
-            // Simulate the display-log persist taking real (async DB) time.
-            await new Promise<void>((r) => setTimeout(r, 250));
-            fireCompleted = true;
-            return undefined;
-          },
-        },
-      ],
-    });
+  // Helper: open a conversation-bound session + its own listener so the
+  // listener stamps ctx.conversationId (the persist guard keys off it).
+  async function setupConvSession(
+    convId: string,
+    sessionId: string,
+    services: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>>,
+  ): Promise<{ socketPath: string; token: string; close: () => Promise<void> }> {
+    const s = await setup({ services });
     setups.push(s);
-    const start = Date.now();
-    const res = await doRequest(
-      s.socketPath,
-      'POST',
-      '/event.turn-end',
-      s.token,
-      JSON.stringify({ reqId: 'r-pba', reason: 'complete' as const }),
-    );
-    const elapsed = Date.now() - start;
-    expect(res.status).toBe(202);
-    // The 202 arrived only AFTER the slow subscriber finished — proof the
-    // persist completes before the ack (persist-before-ack). Contrast the
-    // tool-post-call test, which asserts elapsed < 200 and !fireReleased.
-    expect(fireCompleted).toBe(true);
-    expect(elapsed).toBeGreaterThanOrEqual(200);
+    const { token } = await s.harness.bus.call<
+      SessionCreateInput,
+      SessionCreateOutput
+    >('session:create', s.harness.ctx(), {
+      sessionId,
+      workspaceRoot: '/tmp/ws',
+      owner: {
+        userId: 'u-1',
+        agentId: 'a-1',
+        agentConfig: {
+          systemPrompt: 'be helpful',
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'claude-sonnet-4-7',
+        },
+        conversationId: convId,
+      },
+    });
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-ipc-disp-pba-'));
+    const socketPath = path.join(tempDir, 'ipc.sock');
+    const listener = await createListener({
+      socketPath,
+      sessionId,
+      bus: s.harness.bus,
+    });
+    return {
+      socketPath,
+      token,
+      close: async () => {
+        await listener.close();
+        await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+      },
+    };
+  }
+
+  it('POST /event.turn-end — AWAITS the display-log persist BEFORE the 202 (persist-before-ack, TASK-66)', async () => {
+    // For turn-end the dispatcher holds the ack open until the ISOLATED
+    // conversations:append-event persist completes — the turn's frames are
+    // durable in the display log before the runner sees the turn acked (B3).
+    let persisted = false;
+    const conv = await setupConvSession('conv-pba', 's-pba', {
+      'conversations:append-event': async () => {
+        await new Promise<void>((r) => setTimeout(r, 250));
+        persisted = true;
+        return undefined;
+      },
+    });
+    try {
+      const start = Date.now();
+      const res = await doRequest(
+        conv.socketPath,
+        'POST',
+        '/event.turn-end',
+        conv.token,
+        JSON.stringify({
+          reqId: 'r-pba',
+          reason: 'complete' as const,
+          role: 'assistant' as const,
+          contentBlocks: [{ type: 'text', text: 'hi' }],
+        }),
+      );
+      const elapsed = Date.now() - start;
+      expect(res.status).toBe(202);
+      // The 202 arrived only AFTER the slow persist finished.
+      expect(persisted).toBe(true);
+      expect(elapsed).toBeGreaterThanOrEqual(200);
+    } finally {
+      await conv.close();
+    }
+  });
+
+  it('POST /event.turn-end — a slow chat:turn-end BROADCAST subscriber does NOT delay the 202 (TASK-66 P2a)', async () => {
+    // Regression guard: the broadcast (titles/bump/clear-reqId/evictor) is
+    // fire-and-forget AFTER the ack, so a slow observer (e.g. a title-LLM
+    // subscriber) can't hold the runner's turn-end ack open.
+    let broadcastReleased = false;
+    const conv = await setupConvSession('conv-fast', 's-fast', {
+      // Fast persist so only the broadcast latency is under test.
+      'conversations:append-event': async () => undefined,
+    });
+    // Slow broadcast subscriber on the shared bus.
+    const slowBus = setups[setups.length - 1]!.harness.bus;
+    slowBus.subscribe('chat:turn-end', 'slow-observer', async () => {
+      await new Promise<void>((r) => setTimeout(r, 250));
+      broadcastReleased = true;
+      return undefined;
+    });
+    try {
+      const start = Date.now();
+      const res = await doRequest(
+        conv.socketPath,
+        'POST',
+        '/event.turn-end',
+        conv.token,
+        JSON.stringify({
+          reqId: 'r-fast',
+          reason: 'complete' as const,
+          role: 'assistant' as const,
+          contentBlocks: [{ type: 'text', text: 'hi' }],
+        }),
+      );
+      const elapsed = Date.now() - start;
+      expect(res.status).toBe(202);
+      // The ack came back well before the slow broadcast subscriber finished.
+      expect(elapsed).toBeLessThan(200);
+      expect(broadcastReleased).toBe(false);
+    } finally {
+      await conv.close();
+    }
   });
 
   it('POST /event.turn-end — persists the turn into the display log via conversations:append-event (TASK-66)', async () => {

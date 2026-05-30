@@ -213,6 +213,44 @@ describe('TASK-66 display event log — persist + read', () => {
     expect(cards[0]!.payload).toMatchObject({ status: 'approved' });
   });
 
+  it('orders folded display events by the TERMINAL event seq, not the first appearance', async () => {
+    const h = await makeHarness();
+    const userId = 'userA';
+    const conversationId = await createConv(h, userId);
+    const cctx = h.ctx({ userId, conversationId });
+
+    // card A appears pending (seq 1)...
+    await h.bus.fire('chat:permission-request', cctx, {
+      kind: 'skill',
+      skillId: 'alpha',
+      hosts: ['a.example'],
+      status: 'pending',
+    });
+    // ...then a DIFFERENT host card B lands (seq 2)...
+    await h.bus.fire('chat:permission-request', cctx, {
+      kind: 'host',
+      host: 'b.example',
+      sessionId: 's1',
+    });
+    // ...then card A RESOLVES (seq 3). Its terminal seq (3) is now AFTER B's
+    // (2), so the fold must place A LAST — not back in its seq-1 slot.
+    await h.bus.fire('chat:permission-request', cctx, {
+      kind: 'skill',
+      skillId: 'alpha',
+      hosts: ['a.example'],
+      status: 'approved',
+    });
+
+    const got = await h.bus.call<GetInput, GetOutput>(
+      'conversations:get',
+      h.ctx({ userId }),
+      { conversationId, userId },
+    );
+    const cards = got.displayEvents.filter((e) => e.kind === 'permission-card');
+    expect(cards.map((c) => c.key)).toEqual(['host:b.example', 'skill:alpha']);
+    expect(cards[1]!.payload).toMatchObject({ status: 'approved' });
+  });
+
   it('the host-only subscribers ignore events with no conversation context (no ctx.conversationId)', async () => {
     const h = await makeHarness();
     const userId = 'userA';

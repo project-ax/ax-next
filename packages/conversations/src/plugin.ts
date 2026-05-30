@@ -1023,18 +1023,30 @@ function projectEventTurns(events: StoredEvent[]): Turn[] {
 function projectDisplayEvents(events: StoredEvent[]): ConversationDisplayEvent[] {
   // Map from "kind foldKey" → the latest event (events arrive in seq
   // order, so a later one overwrites an earlier one with the same key).
-  const folded = new Map<string, ConversationDisplayEvent>();
+  const folded = new Map<
+    string,
+    { event: ConversationDisplayEvent; seq: number }
+  >();
   for (const ev of events) {
     if (ev.kind === 'turn') continue;
     const mapKey = `${ev.kind} ${ev.foldKey}`;
     folded.set(mapKey, {
-      kind: ev.kind,
-      key: ev.foldKey,
-      payload: ev.payload,
-      createdAt: ev.createdAt,
+      event: {
+        kind: ev.kind,
+        key: ev.foldKey,
+        payload: ev.payload,
+        createdAt: ev.createdAt,
+      },
+      seq: ev.seq,
     });
   }
-  return [...folded.values()];
+  // Sort by the TERMINAL event's seq so a card resolved later sorts AFTER an
+  // unrelated host event that landed between its pending + resolved frames
+  // (NOT in the pending frame's original position, which a Map's insertion
+  // order would otherwise preserve).
+  return [...folded.values()]
+    .sort((a, b) => a.seq - b.seq)
+    .map((f) => f.event);
 }
 
 /**
