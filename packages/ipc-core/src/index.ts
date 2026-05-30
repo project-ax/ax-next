@@ -1,6 +1,7 @@
 export {
   dispatch,
   DISPATCHER_PATHS,
+  checkContentType,
 } from './dispatcher.js';
 export {
   DISPATCHER_DEPENDENCIES,

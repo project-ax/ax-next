@@ -111,6 +111,32 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
       degradation:
         'workspace.materialize cannot reconstruct a baseline bundle on a non-bundle backend (the list+read fallback); only reached when workspace:export-baseline-bundle is absent.',
     },
+    {
+      // TASK-68 (out-of-git Part C): the runner-side blob store callers. Reached
+      // unconditionally on the /blob.put and /blob.get routes, but those routes
+      // only fire in a deployment that loaded a blob backend (the k8s preset
+      // registers @ax/blob-store-fs). The single-session CLI never publishes an
+      // artifact or materializes uploads from the store, so making these
+      // required would fail the CLI's bootstrap verifyCalls.
+      hook: 'blob:put',
+      degradation:
+        'POST /blob.put returns 500 — the runner cannot store an artifact/upload blob; unreachable in deployments with no blob backend.',
+    },
+    {
+      hook: 'blob:get',
+      degradation:
+        'POST /blob.get returns 500 — the runner cannot materialize /ephemeral/uploads or stream a stored blob; unreachable in deployments with no blob backend.',
+    },
+    {
+      hook: 'artifacts:publish-blob',
+      degradation:
+        'POST /artifact.publish returns 500 — a published artifact is not recorded in the metadata store; unreachable in deployments that never publish artifacts.',
+    },
+    {
+      hook: 'attachments:list-for-conversation',
+      degradation:
+        'POST /attachments.list returns 500 — the runner cannot enumerate a conversation\'s uploads to materialize /ephemeral/uploads; unreachable in single-session deployments.',
+    },
   ],
   dynamicCallPatterns: [
     // tool.execute-host — `tool:execute:${call.name}`, probed via

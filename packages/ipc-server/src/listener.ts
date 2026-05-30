@@ -1,7 +1,7 @@
 import * as http from 'node:http';
 import { promises as fs } from 'node:fs';
 import { makeAgentContext, type HookBus } from '@ax/core';
-import { authenticate, dispatch, writeJsonError } from '@ax/ipc-core';
+import { authenticate, checkContentType, dispatch, writeJsonError } from '@ax/ipc-core';
 
 // ---------------------------------------------------------------------------
 // Listener
@@ -80,16 +80,18 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
       return writeJsonError(res, 405, 'VALIDATION', 'method not allowed');
     }
 
-    // 2. content-type gate (POST only)
-    if (req.method === 'POST') {
-      const ct = req.headers['content-type'] ?? '';
-      if (!ct.toLowerCase().startsWith('application/json')) {
-        return writeJsonError(
-          res,
-          415,
-          'VALIDATION',
-          'content-type must be application/json',
-        );
+    // 2. content-type gate (POST only). Shared with @ax/ipc-http via
+    //    checkContentType so the rule (JSON, except octet-stream for the
+    //    binary blob.put action) lives in one place alongside the routing table.
+    {
+      const url = new URL(req.url ?? '/', 'http://ipc.local');
+      const ctCheck = checkContentType(
+        req.method,
+        url.pathname,
+        req.headers['content-type'] ?? '',
+      );
+      if (!ctCheck.ok) {
+        return writeJsonError(res, 415, 'VALIDATION', ctCheck.message);
       }
     }
 

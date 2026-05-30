@@ -43,6 +43,65 @@ export interface ReadBodyResult {
   bytesRead: number;
 }
 
+/**
+ * Read the RAW request body into a Buffer, size-capped, with NO JSON parse.
+ *
+ * For the REQUEST-direction binary channel (TASK-68 `blob.put`): the runner
+ * streams an artifact's opaque bytes as an `application/octet-stream` body that
+ * can be far larger than the 4 MiB JSON `MAX_FRAME` (up to the blob cap). This
+ * is the inbound mirror of the runner's `callBinaryUpload`. Same fail-fast +
+ * mid-stream-cap discipline as `readJsonBody`, but the bytes stay opaque (the
+ * blob store is content-addressed; we never interpret them).
+ *
+ * `maxBytes` here is the BLOB ceiling (the caller passes it), NOT MAX_FRAME —
+ * the whole point is to admit bodies the JSON path would reject.
+ */
+export async function readRawBody(
+  req: http.IncomingMessage,
+  maxBytes: number,
+): Promise<Buffer> {
+  const contentLengthHeader = req.headers['content-length'];
+  if (typeof contentLengthHeader === 'string' && contentLengthHeader.length > 0) {
+    const declared = Number(contentLengthHeader);
+    if (Number.isFinite(declared) && declared > maxBytes) {
+      throw new TooLargeError(
+        `content-length ${declared} exceeds blob cap ${maxBytes}`,
+      );
+    }
+  }
+
+  return new Promise<Buffer>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let total = 0;
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      fn();
+    };
+
+    req.on('data', (chunk: Buffer) => {
+      if (settled) return;
+      total += chunk.length;
+      if (total > maxBytes) {
+        req.destroy();
+        settle(() =>
+          reject(new TooLargeError(`body exceeded blob cap ${maxBytes} bytes`)),
+        );
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on('error', (err) => {
+      settle(() => reject(err));
+    });
+    req.on('end', () => {
+      if (settled) return;
+      settle(() => resolve(Buffer.concat(chunks, total)));
+    });
+  });
+}
+
 export async function readJsonBody(
   req: http.IncomingMessage,
   maxBytes: number = MAX_FRAME,
