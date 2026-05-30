@@ -74,6 +74,21 @@ describe('encodeProjectSlug', () => {
     expect(encodeProjectSlug('/permanent')).toBe('-permanent');
     expect(encodeProjectSlug('/var/lib/ax')).toBe('-var-lib-ax');
   });
+
+  it('truncates + hash-suffixes an over-200-char path (SDK P0 cap)', () => {
+    const longPath = '/' + 'a'.repeat(250);
+    const slug = encodeProjectSlug(longPath);
+    // dashed = '-' + 250 'a' = 251 chars > 200 → truncate to 200 + '-' + hash.
+    const dashed = longPath.replace(/[^a-zA-Z0-9]/g, '-');
+    // Reproduce the SDK's djb2-style hash to pin the exact suffix.
+    let h = 0;
+    for (let i = 0; i < longPath.length; i++) {
+      h = ((h << 5) - h + longPath.charCodeAt(i)) | 0;
+    }
+    const expected = `${dashed.slice(0, 200)}-${Math.abs(h).toString(36)}`;
+    expect(slug).toBe(expected);
+    expect(slug.startsWith(dashed.slice(0, 200))).toBe(true);
+  });
 });
 
 function fakeClient(over: Partial<IpcClient>): IpcClient {
@@ -179,11 +194,44 @@ describe('shipTranscriptDelta', () => {
     }
   });
 
-  it('is a noop when no complete line landed since last ship', async () => {
+  it('resyncs when an in-place prefix rewrite (no new line) fails the empty-lines prefix probe', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
+    try {
+      // The SDK rewrote an earlier line in place; no new complete line landed
+      // past sentOffset. The empty-lines append probes the prefix → the host
+      // returns resync-required → we re-ship the whole file (never silent stale).
+      writeJsonl(root, 'sess', 'rewritten\n');
+      const call = vi.fn(async () => ({ outcome: 'resync-required', maxSeq: 1 }));
+      const callBinaryUpload = vi.fn(async () => ({ maxSeq: 1 }));
+      const client = fakeClient({
+        call: call as never,
+        callBinaryUpload: callBinaryUpload as never,
+      });
+      const res = await shipTranscriptDelta({
+        client,
+        workspaceRoot: root,
+        sessionId: 'sess',
+        state: { sentOffset: 'rewritten\n'.length, sentSeq: 1 },
+      });
+      // The probe carried zero new lines.
+      const probeArg = call.mock.calls[0]![1] as { lines: string[] };
+      expect(probeArg.lines).toEqual([]);
+      // ...and the resync re-shipped the whole file.
+      expect(res.outcome).toBe('resynced');
+      expect(callBinaryUpload).toHaveBeenCalled();
+      const sent = callBinaryUpload.mock.calls[0]![1] as Buffer;
+      expect(sent.toString('utf8')).toBe('rewritten\n');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('is a noop (prefix-probe confirms intact) when no complete line landed since last ship', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
     try {
       writeJsonl(root, 'sess', 'l1\n');
-      const call = vi.fn();
+      // The empty-lines probe returns appended (prefix intact, nothing inserted).
+      const call = vi.fn(async () => ({ outcome: 'appended', maxSeq: 1 }));
       const client = fakeClient({ call: call as never });
       const res = await shipTranscriptDelta({
         client,
@@ -192,7 +240,13 @@ describe('shipTranscriptDelta', () => {
         state: { sentOffset: 'l1\n'.length, sentSeq: 1 },
       });
       expect(res.outcome).toBe('noop');
-      expect(call).not.toHaveBeenCalled();
+      // It DID probe (zero new lines) — the host confirmed the prefix.
+      const probeArg = call.mock.calls[0]![1] as { lines: string[]; fromSeq: number };
+      expect(probeArg.lines).toEqual([]);
+      expect(probeArg.fromSeq).toBe(1);
+      // State unchanged.
+      expect(res.sentOffset).toBe('l1\n'.length);
+      expect(res.sentSeq).toBe(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

@@ -124,14 +124,15 @@ export async function shipTranscriptDelta(input: {
   const tail = fileBuf.subarray(state.sentOffset);
   const { lines, consumed } = splitCompleteLines(tail);
 
-  if (lines.length === 0) {
-    // Nothing new to ship (no complete line landed since last time). Still
-    // verify the prefix didn't get rewritten under us — if it did, resync.
-    // (A rewrite shrinks/changes the prefix; the host would reject the NEXT
-    // real append anyway, but resyncing now keeps the store fresh.)
-    return { ...state, outcome: 'noop' };
-  }
-
+  // Ship the delta — INCLUDING the zero-new-lines case. The SDK can compact /
+  // update an earlier line in place (e.g. `last-prompt`) so the already-sent
+  // prefix changes with no new complete line past `sentOffset`. We do NOT treat
+  // that as a silent noop: an empty-`lines` append is a PREFIX-INTEGRITY PROBE —
+  // the host re-checks `prefixHash` against its stored bytes for `fromSeq` and
+  // returns `resync-required` if they diverged (it inserts nothing on a match).
+  // So every turn either confirms the prefix is intact or resyncs — never leaves
+  // the host stale (B3 no-omission), regardless of whether the rewrite shrank,
+  // grew, or kept the file length.
   const resp = (await client.call('session.append-transcript', {
     fromSeq: state.sentSeq,
     prefixHash,
@@ -139,6 +140,10 @@ export async function shipTranscriptDelta(input: {
   })) as { outcome: 'appended' | 'resync-required'; maxSeq: number };
 
   if (resp.outcome === 'appended') {
+    if (lines.length === 0) {
+      // Prefix probe confirmed intact, nothing inserted — state unchanged.
+      return { ...state, outcome: 'noop' };
+    }
     return {
       sentOffset: state.sentOffset + consumed,
       sentSeq: resp.maxSeq,
@@ -146,19 +151,31 @@ export async function shipTranscriptDelta(input: {
     };
   }
 
-  // resync-required: the SDK rewrote earlier bytes. Re-ship the WHOLE file
-  // (every complete line) once. Hold back only a trailing partial.
+  // resync-required: the SDK rewrote earlier bytes (the host's prefix-hash for
+  // `fromSeq` didn't match ours). Re-ship the WHOLE file once.
+  return resyncWholeFile(client, fileBuf);
+}
+
+/**
+ * Re-ship the whole jsonl (the resync path). Splits the file into complete
+ * lines, re-joins them `\n`-terminated (byte-identical to the on-disk prefix +
+ * matching the host's per-line `\n` hashing), and replaces the store wholesale.
+ * Returns the threaded state: `sentSeq` = host max seq, `sentOffset` = the bytes
+ * of complete lines shipped (NOT the raw file length — a trailing partial is
+ * held back, so offset and seq always agree).
+ */
+async function resyncWholeFile(
+  client: IpcClient,
+  fileBuf: Buffer,
+): Promise<ShipDeltaResult> {
   const whole = splitCompleteLines(fileBuf);
   const replaceResp = (await client.callBinaryUpload(
     'session.replace-transcript',
-    // Re-join with '\n' + a trailing terminator so the host's split round-trips
-    // to exactly `whole.lines` and the bytes match the on-disk prefix.
     Buffer.from(
       whole.lines.length > 0 ? whole.lines.join('\n') + '\n' : '',
       'utf8',
     ),
   )) as { maxSeq: number };
-
   return {
     sentOffset: whole.consumed,
     sentSeq: replaceResp.maxSeq,
@@ -170,15 +187,38 @@ export async function shipTranscriptDelta(input: {
 // Resume rebuild
 // ---------------------------------------------------------------------------
 
+// Mirror of the SDK's project-dir-slug length cap. A realpath longer than this
+// is truncated to SLUG_MAX chars + '-' + a stable hash of the FULL path, so two
+// long paths sharing a prefix don't collide. Verified against the vendored SDK
+// 0.2.119: `var P0=200`.
+const SLUG_MAX = 200;
+
 /**
- * The SDK encodes the project dir name from `realpath(cwd)` by replacing every
- * run of non-alphanumeric chars... actually a 1:1 replace of `/` and `.` (and
- * other separators) with `-`. We mirror the SDK's `cwd.replace(/[^a-zA-Z0-9]/g,
- * '-')` so the dir we WRITE on resume is the same one the SDK READS. Verified
- * against SDK 0.2.119 (`realpath('/permanent')` → `-permanent`).
+ * Stable hash the SDK appends to an over-length slug. Byte-for-byte port of the
+ * vendored SDK's `kB`/`gE` (a djb2-style 32-bit rolling hash, |0-truncated each
+ * step, then `Math.abs(...).toString(36)`). Replicated exactly so a long
+ * workspace path resolves to the SAME dir the SDK computes.
+ */
+function slugHash(s: string): string {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) {
+    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h).toString(36);
+}
+
+/**
+ * The SDK derives the project-dir name from `realpath(cwd)` by replacing each
+ * non-alphanumeric character with `-` (so `/permanent` → `-permanent`,
+ * `/var/lib/ax` → `-var-lib-ax`), truncating to 200 chars + a hash suffix when
+ * longer. We mirror that exact transform so the dir we WRITE on resume is the
+ * same one the SDK READS when it opens `query({ resume })`. Verified against the
+ * vendored SDK 0.2.119 (`replace(/[^a-zA-Z0-9]/g,"-")` + the P0=200 cap).
  */
 export function encodeProjectSlug(cwdRealpath: string): string {
-  return cwdRealpath.replace(/[^a-zA-Z0-9]/g, '-');
+  const dashed = cwdRealpath.replace(/[^a-zA-Z0-9]/g, '-');
+  if (dashed.length <= SLUG_MAX) return dashed;
+  return `${dashed.slice(0, SLUG_MAX)}-${slugHash(cwdRealpath)}`;
 }
 
 /**
@@ -230,11 +270,16 @@ export async function restoreTranscriptForResume(input: {
   const jsonlPath = join(dir, `${sessionId}.jsonl`);
   await writeFile(jsonlPath, buf);
 
-  // sentSeq = number of complete lines now durable (= host max seq). Recompute
-  // from the bytes so the threaded state matches what the host has.
-  const { lines } = splitCompleteLines(buf);
+  // Thread the ship state from the COMPLETE lines only: `sentSeq` = the number
+  // of complete `\n`-terminated lines (= host max seq), `sentOffset` = the bytes
+  // those lines occupy. Using `consumed` (not raw `buf.length`) keeps offset and
+  // seq internally consistent even if the host ever returned bytes whose final
+  // line lacked a terminator — that trailing partial is held back and re-shipped
+  // when it completes, exactly like a live tail. (The store emits a trailing
+  // `\n` per line today, so `consumed === buf.length` in practice.)
+  const { lines, consumed } = splitCompleteLines(buf);
   return {
     written: true,
-    state: { sentOffset: buf.length, sentSeq: lines.length },
+    state: { sentOffset: consumed, sentSeq: lines.length },
   };
 }

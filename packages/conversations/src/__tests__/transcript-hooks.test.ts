@@ -183,6 +183,31 @@ describe('conversations transcript hooks (TASK-67)', () => {
     expect(got.bytes).toBe([USER, ASSISTANT, ASSISTANT2].map((l) => l + '\n').join(''));
   });
 
+  it('treats an empty-lines append as a prefix-integrity probe (appended on match, no insert)', async () => {
+    const h = await makeHarness();
+    const conv = await createConv(h, USER_ID);
+    await h.bus.call<AppendTranscriptInput, AppendTranscriptOutput>(
+      'conversations:append-transcript',
+      h.ctx({ userId: USER_ID }),
+      { conversationId: conv, fromSeq: 0, prefixHash: emptyHash(), lines: [USER, ASSISTANT] },
+    );
+    // Empty-lines probe with the CORRECT prefix → appended, nothing inserted.
+    const probe = await h.bus.call<AppendTranscriptInput, AppendTranscriptOutput>(
+      'conversations:append-transcript',
+      h.ctx({ userId: USER_ID }),
+      { conversationId: conv, fromSeq: 2, prefixHash: prefixHashOf([USER, ASSISTANT]), lines: [] },
+    );
+    expect(probe).toEqual({ outcome: 'appended', maxSeq: 2 });
+    // Empty-lines probe with a WRONG prefix → resync-required (the SDK rewrote
+    // an earlier line in place).
+    const stale = await h.bus.call<AppendTranscriptInput, AppendTranscriptOutput>(
+      'conversations:append-transcript',
+      h.ctx({ userId: USER_ID }),
+      { conversationId: conv, fromSeq: 2, prefixHash: 'deadbeef', lines: [] },
+    );
+    expect(stale.outcome).toBe('resync-required');
+  });
+
   it('returns resync-required when fromSeq is stale', async () => {
     const h = await makeHarness();
     const conv = await createConv(h, USER_ID);
