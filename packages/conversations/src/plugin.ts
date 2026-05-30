@@ -68,7 +68,6 @@ import type {
   StoreRunnerSessionOutput,
   TitleUpdatedEvent,
   Turn,
-  TurnRole,
   UnbindSessionInput,
   UnbindSessionOutput,
 } from './types.js';
@@ -363,17 +362,17 @@ export function createConversationsPlugin(
       // Heartbeats stay heartbeats (no bump). Phase E Task 3 deleted the
       // `conversations:append-turn` service hook entirely.
       //
-      // TASK-66 (2026-05-30): ALSO persist the turn's display frame (role +
-      // contentBlocks) into the display event log — the redisplay SoT. This
-      // is the persist-before-ack discipline (B3): the event.turn-end IPC
-      // dispatch AWAITS this subscriber chain before acking the runner (see
-      // @ax/ipc-core dispatcher awaitFire), so a completed turn is durable in
-      // the display log before the runner sees the turn acknowledged.
+      // TASK-66 (2026-05-30): the turn's display frame is persisted into the
+      // display event log via `conversations:append-event` — but NOT from this
+      // broadcast subscriber. The @ax/ipc-core event.turn-end handler calls
+      // `conversations:append-event` AWAITED + isolated, BEFORE this broadcast
+      // fires, so persist-before-ack (B3) holds without blocking the turn-end
+      // ack on this chain's other (potentially slow, e.g. title-LLM)
+      // subscribers. This subscriber stays display-persist-free.
       bus.subscribe<TurnEndPayload>(
         'chat:turn-end',
         PLUGIN_NAME,
         async (ctx, payload) => {
-          await persistTurnEvent(bus, ctx, payload);
           await handleTurnEnd(localStore, ctx, payload);
           // Task 14 (J6): once the turn ends, clear active_req_id while
           // KEEPING active_session_id. The sandbox stays alive for the next
@@ -541,44 +540,6 @@ async function appendEvent(
     ...(input.key !== undefined ? { foldKey: input.key } : {}),
     payload: input.payload,
   });
-}
-
-/**
- * Persist the turn's display frame (role + contentBlocks) into the display
- * event log. Skips heartbeat turn-ends (no content) and ctx-less fires — the
- * same skip the bump does. This runs FIRST in the chat:turn-end subscriber so
- * the turn is durable in the display log before the runner's turn-end ack
- * (persist-before-ack, B3; the dispatcher awaits this fire). A persist failure
- * MUST NOT throw — log + swallow (subscriber posture).
- */
-async function persistTurnEvent(
-  bus: HookBus,
-  ctx: AgentContext,
-  payload: TurnEndPayload,
-): Promise<void> {
-  const conversationId = ctx.conversationId;
-  if (conversationId === undefined) return;
-  const blocks = payload.contentBlocks;
-  if (blocks === undefined || blocks.length === 0) return;
-  const role = payload.role;
-  if (role === undefined) return;
-  try {
-    await bus.call<AppendEventInput, AppendEventOutput>(
-      'conversations:append-event',
-      ctx,
-      {
-        conversationId,
-        kind: 'turn',
-        role: role as TurnRole,
-        payload: { blocks },
-      },
-    );
-  } catch (err) {
-    ctx.logger.warn('conversations_persist_turn_event_failed', {
-      conversationId,
-      err: err instanceof Error ? err : new Error(String(err)),
-    });
-  }
 }
 
 /**

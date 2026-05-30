@@ -677,6 +677,142 @@ describe('dispatcher', () => {
     expect(elapsed).toBeGreaterThanOrEqual(200);
   });
 
+  it('POST /event.turn-end — persists the turn into the display log via conversations:append-event (TASK-66)', async () => {
+    const appendCalls: unknown[] = [];
+    const s = await setup({
+      // Session bound to a conversation so the listener stamps ctx.conversationId.
+      sessionId: 's-disp-conv',
+      services: {
+        'conversations:append-event': async (_ctx, input) => {
+          appendCalls.push(input);
+          return undefined;
+        },
+      },
+    });
+    setups.push(s);
+    // Re-mint a token whose session carries a conversationId.
+    const { token } = await s.harness.bus.call<
+      SessionCreateInput,
+      SessionCreateOutput
+    >('session:create', s.harness.ctx(), {
+      sessionId: 's-disp-conv2',
+      workspaceRoot: '/tmp/ws',
+      owner: {
+        userId: 'u-1',
+        agentId: 'a-1',
+        agentConfig: {
+          systemPrompt: 'be helpful',
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'claude-sonnet-4-7',
+        },
+        conversationId: 'conv-66',
+      },
+    });
+    // Point the listener's expected sessionId at the bound session by opening a
+    // fresh listener — simplest is to reuse the existing one with the new token
+    // only if sessionId matches; instead assert via a direct second listener.
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-ipc-disp-c-'));
+    const socketPath = path.join(tempDir, 'ipc.sock');
+    const listener = await createListener({
+      socketPath,
+      sessionId: 's-disp-conv2',
+      bus: s.harness.bus,
+    });
+    try {
+      const res = await doRequest(
+        socketPath,
+        'POST',
+        '/event.turn-end',
+        token,
+        JSON.stringify({
+          reqId: 'r1',
+          reason: 'complete' as const,
+          role: 'assistant' as const,
+          contentBlocks: [{ type: 'text', text: 'hi' }],
+        }),
+      );
+      expect(res.status).toBe(202);
+      expect(appendCalls).toHaveLength(1);
+      expect(appendCalls[0]).toMatchObject({
+        conversationId: 'conv-66',
+        kind: 'turn',
+        role: 'assistant',
+        payload: { blocks: [{ type: 'text', text: 'hi' }] },
+      });
+
+      // A heartbeat turn-end (no contentBlocks) does NOT persist.
+      const res2 = await doRequest(
+        socketPath,
+        'POST',
+        '/event.turn-end',
+        token,
+        JSON.stringify({ reqId: 'r1', reason: 'user-message-wait' as const }),
+      );
+      expect(res2.status).toBe(202);
+      expect(appendCalls).toHaveLength(1);
+    } finally {
+      await listener.close();
+      await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it('POST /event.turn-end — a persist failure yields 500, NOT a false 202 (no-omission, TASK-66)', async () => {
+    const s = await setup({
+      sessionId: 's-disp-fail',
+      services: {
+        'conversations:append-event': async () => {
+          throw new Error('db unavailable');
+        },
+      },
+    });
+    setups.push(s);
+    const { token } = await s.harness.bus.call<
+      SessionCreateInput,
+      SessionCreateOutput
+    >('session:create', s.harness.ctx(), {
+      sessionId: 's-disp-fail2',
+      workspaceRoot: '/tmp/ws',
+      owner: {
+        userId: 'u-1',
+        agentId: 'a-1',
+        agentConfig: {
+          systemPrompt: 'be helpful',
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'claude-sonnet-4-7',
+        },
+        conversationId: 'conv-fail',
+      },
+    });
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-ipc-disp-f-'));
+    const socketPath = path.join(tempDir, 'ipc.sock');
+    const listener = await createListener({
+      socketPath,
+      sessionId: 's-disp-fail2',
+      bus: s.harness.bus,
+    });
+    try {
+      const res = await doRequest(
+        socketPath,
+        'POST',
+        '/event.turn-end',
+        token,
+        JSON.stringify({
+          reqId: 'r1',
+          reason: 'complete' as const,
+          role: 'assistant' as const,
+          contentBlocks: [{ type: 'text', text: 'hi' }],
+        }),
+      );
+      // The persist threw → the turn must NOT be falsely acked.
+      expect(res.status).toBe(500);
+    } finally {
+      await listener.close();
+      await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
   // -------------------------------------------------------------------------
   // /event.chat-end
   // -------------------------------------------------------------------------

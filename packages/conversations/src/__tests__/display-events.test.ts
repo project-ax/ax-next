@@ -7,6 +7,8 @@ import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConversationsPlugin } from '../plugin.js';
 import type {
+  AppendEventInput,
+  AppendEventOutput,
   CreateInput,
   CreateOutput,
   GetInput,
@@ -87,25 +89,33 @@ afterAll(async () => {
 });
 
 describe('TASK-66 display event log — persist + read', () => {
+  // Persist a turn via the conversations:append-event hook — the same hook the
+  // @ax/ipc-core event.turn-end handler calls (awaited, before the 202). We
+  // exercise the hook directly here (the dispatcher → handler → ack wiring +
+  // persist-before-ack barrier is covered in @ax/ipc-core's dispatcher test).
+  async function appendTurn(
+    h: TestHarness,
+    conversationId: string,
+    role: 'user' | 'assistant' | 'tool',
+    blocks: unknown[],
+  ): Promise<void> {
+    await h.bus.call<AppendEventInput, AppendEventOutput>(
+      'conversations:append-event',
+      h.ctx({ conversationId }),
+      { conversationId, kind: 'turn', role, payload: { blocks } },
+    );
+  }
+
   it('persists turn frames and conversations:get reads them back as Turn[]', async () => {
     const h = await makeHarness();
     const userId = 'userA';
     const conversationId = await createConv(h, userId);
-    const cctx = h.ctx({ userId, conversationId });
 
-    // The runner fires a user turn then an assistant turn (role-tagged).
-    await h.bus.fire('chat:turn-end', cctx, {
-      reqId: 'r1',
-      reason: 'user-message-wait',
-      role: 'user',
-      contentBlocks: [{ type: 'text', text: 'hello' }],
-    });
-    await h.bus.fire('chat:turn-end', cctx, {
-      reqId: 'r1',
-      reason: 'complete',
-      role: 'assistant',
-      contentBlocks: [{ type: 'text', text: 'hi back' }],
-    });
+    // The runner ships a user turn then an assistant turn (role-tagged).
+    await appendTurn(h, conversationId, 'user', [{ type: 'text', text: 'hello' }]);
+    await appendTurn(h, conversationId, 'assistant', [
+      { type: 'text', text: 'hi back' },
+    ]);
 
     const got = await h.bus.call<GetInput, GetOutput>(
       'conversations:get',
@@ -128,28 +138,6 @@ describe('TASK-66 display event log — persist + read', () => {
     expect(got.displayEvents).toEqual([]);
   });
 
-  it('does NOT persist a heartbeat turn-end (no contentBlocks)', async () => {
-    const h = await makeHarness();
-    const userId = 'userA';
-    const conversationId = await createConv(h, userId);
-    const cctx = h.ctx({ userId, conversationId });
-
-    await h.bus.fire('chat:turn-end', cctx, {
-      reqId: 'r1',
-      reason: 'user-message-wait',
-      role: 'assistant',
-      // heartbeat — no contentBlocks
-    });
-
-    const got = await h.bus.call<GetInput, GetOutput>(
-      'conversations:get',
-      h.ctx({ userId }),
-      { conversationId, userId },
-    );
-    // No event rows → falls back to the (empty) jsonl read; no turns.
-    expect(got.turns).toEqual([]);
-  });
-
   it('persists a host-only permission card and a surfaced error; conversations:get returns them on displayEvents (host-only UI on reload)', async () => {
     const h = await makeHarness();
     const userId = 'userA';
@@ -157,12 +145,9 @@ describe('TASK-66 display event log — persist + read', () => {
     const cctx = h.ctx({ userId, conversationId });
 
     // An assistant turn, a JIT approval card, and a surfaced error.
-    await h.bus.fire('chat:turn-end', cctx, {
-      reqId: 'r1',
-      reason: 'complete',
-      role: 'assistant',
-      contentBlocks: [{ type: 'text', text: 'working on it' }],
-    });
+    await appendTurn(h, conversationId, 'assistant', [
+      { type: 'text', text: 'working on it' },
+    ]);
     await h.bus.fire('chat:permission-request', cctx, {
       kind: 'skill',
       skillId: 'linear',
@@ -228,17 +213,22 @@ describe('TASK-66 display event log — persist + read', () => {
     expect(cards[0]!.payload).toMatchObject({ status: 'approved' });
   });
 
-  it('ignores host events with no conversation context (no ctx.conversationId)', async () => {
+  it('the host-only subscribers ignore events with no conversation context (no ctx.conversationId)', async () => {
     const h = await makeHarness();
     const userId = 'userA';
     const conversationId = await createConv(h, userId);
 
-    // Fire WITHOUT conversationId on the ctx — a canary / admin probe.
-    await h.bus.fire('chat:turn-end', h.ctx({ userId }), {
+    // Fire host-only events WITHOUT conversationId on the ctx — a canary /
+    // admin probe. The chat:turn-error / chat:permission-request subscribers
+    // must skip (no row to attribute them to) rather than throw.
+    await h.bus.fire('chat:permission-request', h.ctx({ userId }), {
+      kind: 'skill',
+      skillId: 'linear',
+      hosts: ['api.linear.app'],
+    });
+    await h.bus.fire('chat:turn-error', h.ctx({ userId }), {
       reqId: 'r1',
-      reason: 'complete',
-      role: 'assistant',
-      contentBlocks: [{ type: 'text', text: 'orphan' }],
+      reason: 'sandbox-terminated',
     });
 
     const got = await h.bus.call<GetInput, GetOutput>(

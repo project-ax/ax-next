@@ -590,6 +590,14 @@ export async function main(): Promise<number> {
           : userText,
       });
 
+      // NOTE (TASK-66): the USER turn is persisted into the display event log
+      // HOST-side by @ax/chat-orchestrator at agent:invoke dispatch (it already
+      // holds the user's content blocks + conversationId there). The runner
+      // does NOT emit a user `event.turn-end` — firing chat:turn-end here would
+      // trip the host's turn-end side effects (the SSE done-frame closer keyed
+      // by conversationId, one-shot keep-warm, clear-active-req-id), closing
+      // the live stream before the turn even runs. See orchestrator.
+
       yield {
         type: 'user',
         parent_tool_use_id: null,

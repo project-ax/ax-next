@@ -445,7 +445,12 @@ describe('main()', () => {
     expect(commitNotifies).toHaveLength(0);
 
     const turnEnds = fakeClient.event.mock.calls.filter(
-      (c) => c[0] === 'event.turn-end',
+      // Exclude the TASK-66 user display turn-end (role:'user', emitted when
+      // the runner pulls the inbox message) — these assertions target the
+      // tool/assistant turn-ends. The user turn-end has its own test.
+      (c) =>
+        c[0] === 'event.turn-end' &&
+        (c[1] as { role?: string }).role !== 'user',
     );
     // One assistant turn-end carrying the text contentBlock so
     // @ax/conversations can persist it (Task 3 of Week 10–12).
@@ -460,6 +465,17 @@ describe('main()', () => {
       reqId: 'req-test',
       contentBlocks: [{ type: 'text', text: 'hello world' }],
     });
+
+    // TASK-66: the runner does NOT emit a user `event.turn-end` (the user turn
+    // is persisted to the display log host-side by the orchestrator). Confirm
+    // no role:'user' turn-end is shipped — guarding against the SSE-close /
+    // clear-reqId side effects a chat:turn-end on the user turn would cause.
+    const userTurnEnds = fakeClient.event.mock.calls.filter(
+      (c) =>
+        c[0] === 'event.turn-end' &&
+        (c[1] as { role?: string }).role === 'user',
+    );
+    expect(userTurnEnds).toHaveLength(0);
 
     const chatEnds = fakeClient.event.mock.calls.filter(
       (c) => c[0] === 'event.chat-end',
@@ -1097,7 +1113,12 @@ describe('main()', () => {
     expect(rc).toBe(0);
 
     const turnEnds = fakeClient.event.mock.calls.filter(
-      (c) => c[0] === 'event.turn-end',
+      // Exclude the TASK-66 user display turn-end (role:'user', emitted when
+      // the runner pulls the inbox message) — these assertions target the
+      // tool/assistant turn-ends. The user turn-end has its own test.
+      (c) =>
+        c[0] === 'event.turn-end' &&
+        (c[1] as { role?: string }).role !== 'user',
     );
     expect(turnEnds).toHaveLength(1);
     expect(turnEnds[0]?.[1]).toEqual({
@@ -1170,7 +1191,12 @@ describe('main()', () => {
     expect(rc).toBe(0);
 
     const turnEnds = fakeClient.event.mock.calls.filter(
-      (c) => c[0] === 'event.turn-end',
+      // Exclude the TASK-66 user display turn-end (role:'user', emitted when
+      // the runner pulls the inbox message) — these assertions target the
+      // tool/assistant turn-ends. The user turn-end has its own test.
+      (c) =>
+        c[0] === 'event.turn-end' &&
+        (c[1] as { role?: string }).role !== 'user',
     );
     // Two turn-ends at this single SDK `result` boundary: tool first
     // (chronologically came before the assistant wrap-up), assistant
@@ -1311,7 +1337,12 @@ describe('main()', () => {
     );
 
     const turnEnds = fakeClient.event.mock.calls.filter(
-      (c) => c[0] === 'event.turn-end',
+      // Exclude the TASK-66 user display turn-end (role:'user', emitted when
+      // the runner pulls the inbox message) — these assertions target the
+      // tool/assistant turn-ends. The user turn-end has its own test.
+      (c) =>
+        c[0] === 'event.turn-end' &&
+        (c[1] as { role?: string }).role !== 'user',
     );
     expect(turnEnds).toHaveLength(2);
     // role=tool turn-end carries the 'user'-line turnId.
@@ -1410,7 +1441,12 @@ describe('main()', () => {
     expect(rc).toBe(0);
 
     const turnEnds = fakeClient.event.mock.calls.filter(
-      (c) => c[0] === 'event.turn-end',
+      // Exclude the TASK-66 user display turn-end (role:'user', emitted when
+      // the runner pulls the inbox message) — these assertions target the
+      // tool/assistant turn-ends. The user turn-end has its own test.
+      (c) =>
+        c[0] === 'event.turn-end' &&
+        (c[1] as { role?: string }).role !== 'user',
     );
     expect(turnEnds).toHaveLength(2);
     expect(turnEnds[0]?.[1]).toEqual({
@@ -1479,7 +1515,12 @@ describe('main()', () => {
     expect(rc).toBe(0);
 
     const turnEnds = fakeClient.event.mock.calls.filter(
-      (c) => c[0] === 'event.turn-end',
+      // Exclude the TASK-66 user display turn-end (role:'user', emitted when
+      // the runner pulls the inbox message) — these assertions target the
+      // tool/assistant turn-ends. The user turn-end has its own test.
+      (c) =>
+        c[0] === 'event.turn-end' &&
+        (c[1] as { role?: string }).role !== 'user',
     );
     expect(turnEnds).toHaveLength(1);
     expect(turnEnds[0]?.[1]).toEqual({
@@ -1587,7 +1628,12 @@ describe('main()', () => {
     // stream chunks are observation-only (I4) and do NOT replace the
     // canonical contentBlocks transcript.
     const turnEnds = fakeClient.event.mock.calls.filter(
-      (c) => c[0] === 'event.turn-end',
+      // Exclude the TASK-66 user display turn-end (role:'user', emitted when
+      // the runner pulls the inbox message) — these assertions target the
+      // tool/assistant turn-ends. The user turn-end has its own test.
+      (c) =>
+        c[0] === 'event.turn-end' &&
+        (c[1] as { role?: string }).role !== 'user',
     );
     expect(turnEnds).toHaveLength(1);
     expect(turnEnds[0]?.[1]).toEqual({

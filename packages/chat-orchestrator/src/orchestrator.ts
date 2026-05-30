@@ -1021,6 +1021,21 @@ export function createOrchestrator(
       model: agent.model,
     };
 
+    // TASK-66 (out-of-git Part B / B1): persist the USER turn into the display
+    // event log (the redisplay SoT) host-side, ONCE per agent:invoke, before
+    // the route/spawn decision. The runner's `event.turn-end` only ships
+    // tool/assistant turns, and a runner-side user turn-end would trip the
+    // host's turn-end side effects (the SSE done-frame closer keyed by
+    // conversationId, one-shot keep-warm, clear-active-req-id) — closing the
+    // live stream before the turn runs. Persisting here, off the turn-end
+    // path, captures the user's own message for redisplay with no side
+    // effects. Gated on `conversations:append-event` being registered (same
+    // hasService posture as the conversations:* peers above); best-effort —
+    // a persist failure must not block the chat (the runner still streams the
+    // reply; only this turn's redisplay loses the user bubble). conversationId
+    // is host-stamped on ctx.
+    await persistUserDisplayTurn(bus, ctx, input.message);
+
     // 4. Decide: route to existing sandbox session, or open a fresh one?
     //
     //    Task 16 (J6 — one sandbox per conversation at a time). When
@@ -2550,4 +2565,64 @@ function endpointToProxyConfig(
     plugin: PLUGIN_NAME,
     message: `unrecognized proxy endpoint scheme: ${rawEndpoint}`,
   });
+}
+
+// ---------------------------------------------------------------------------
+// TASK-66 (out-of-git Part B / B1) — persist the user turn into the display
+// event log host-side.
+//
+// The display event log (the redisplay SoT) needs the user's own message so a
+// reloaded chat renders the user's bubble. The runner's `event.turn-end` only
+// ships tool/assistant turns; firing a runner-side user turn-end would trip
+// the host's turn-end side effects (the conversationId-keyed SSE done-frame
+// closer, one-shot keep-warm, clear-active-req-id). So the host persists the
+// user turn here instead, off the turn-end path.
+//
+// The display content = the typed text as a text block + any attachment
+// contentBlocks (the chat UI renders an `attachment` block as a download
+// chip). I2: we call `conversations:append-event` over the bus with a
+// duck-typed payload (no @ax/conversations import). Gated on the hook being
+// registered; best-effort — a persist failure logs + returns (the chat still
+// runs; only this turn's redisplay loses the user bubble). conversationId is
+// host-stamped on ctx.
+// ---------------------------------------------------------------------------
+interface AppendEventCall {
+  conversationId: string;
+  kind: 'turn';
+  role: 'user';
+  payload: { blocks: unknown[] };
+}
+
+async function persistUserDisplayTurn(
+  bus: HookBus,
+  ctx: AgentContext,
+  message: AgentMessage,
+): Promise<void> {
+  const conversationId = ctx.conversationId;
+  if (conversationId === undefined) return;
+  if (!bus.hasService('conversations:append-event')) return;
+
+  const text = typeof message.content === 'string' ? message.content : '';
+  const attachmentBlocks = Array.isArray(message.contentBlocks)
+    ? message.contentBlocks
+    : [];
+  const blocks: unknown[] = [
+    ...(text.length > 0 ? [{ type: 'text', text }] : []),
+    ...attachmentBlocks,
+  ];
+  // Nothing displayable (no text, no blocks) → nothing to persist.
+  if (blocks.length === 0) return;
+
+  try {
+    await bus.call<AppendEventCall, void>(
+      'conversations:append-event',
+      ctx,
+      { conversationId, kind: 'turn', role: 'user', payload: { blocks } },
+    );
+  } catch (err) {
+    ctx.logger.warn('orchestrator_persist_user_turn_failed', {
+      conversationId,
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+  }
 }

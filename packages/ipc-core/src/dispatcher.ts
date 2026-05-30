@@ -275,13 +275,16 @@ export async function dispatch(
     const validated = evt.validate(bodyRead.value);
     if ('ok' in validated && validated.ok === true) {
       if (evt.awaitFire === true) {
-        // Persist-before-ack (TASK-66 / B3): AWAIT the subscriber chain
-        // before the 202 so the turn's frames are durable in the display
-        // event log before the runner sees the turn acknowledged. A
-        // subscriber failure is logged but never echoed back (events stay
-        // fire-and-forget at the contract level — the runner doesn't act on
-        // the ack body, only on its arrival). Only `event.turn-end` opts in;
+        // Persist-before-ack (TASK-66 / B3): AWAIT the handler before the 202
+        // so the turn's frames are durable in the display event log before the
+        // runner sees the turn acknowledged. Only `event.turn-end` opts in;
         // it's once-per-turn, so the one DB write of added latency is fine.
+        //
+        // No-omission (B3): if the awaited persist THROWS (DB error, timeout,
+        // seq conflict), do NOT falsely ack — write a 500 so the runner's
+        // event-post catch treats the turn as not-durably-recorded (non-fatal;
+        // its existing best-effort retry-by-accumulation handles it) rather
+        // than moving on as if the turn reached the redisplay SoT.
         try {
           await evt.fire(ctx, bus, validated.payload);
         } catch (err) {
@@ -289,6 +292,13 @@ export async function dispatch(
             hook: pathname,
             err: err instanceof Error ? err : new Error(String(err)),
           });
+          writeJsonError(
+            res,
+            500,
+            'INTERNAL',
+            'event handler failed before ack',
+          );
+          return;
         }
         res.writeHead(202, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ accepted: true }));

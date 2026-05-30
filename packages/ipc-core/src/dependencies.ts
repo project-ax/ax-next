@@ -97,6 +97,17 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
         'session.get-config skips the runnerSessionId round-trip for conversation-scoped sessions; runnerSessionId is returned as null (the runner starts a fresh SDK session).',
     },
     {
+      // TASK-66 (out-of-git Part B / B1): event.turn-end persists the turn's
+      // display frame into the display event log (the redisplay SoT) before
+      // acking the runner (persist-before-ack). Guarded by
+      // bus.hasService(...) — single-session deployments (the local CLI) that
+      // never load @ax/conversations skip the persist and redisplay falls back
+      // to the runner-native jsonl.
+      hook: 'conversations:append-event',
+      degradation:
+        'event.turn-end skips persisting the turn into the display event log; redisplay falls back to parsing the runner-native jsonl (no host-only UI events on reload). Unreachable in single-session deployments that never load @ax/conversations.',
+    },
+    {
       hook: 'workspace:export-baseline-bundle',
       degradation:
         'workspace.materialize / workspace.commit-notify treat the backend as non-bundle: materialize reconstructs the baseline from workspace:list + workspace:read, and commit-notify rejects bundle-wire writes (read-only / probe path). workspace.export-baseline-bundle (the commit-notify re-sync fetch) returns 500 — unreachable when the backend never enters the bundle re-sync path.',
