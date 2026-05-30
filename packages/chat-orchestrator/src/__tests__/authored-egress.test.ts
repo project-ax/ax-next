@@ -54,4 +54,39 @@ describe('foldAuthoredSkillCaps', () => {
     // The trusted binding is untouched — no hijack.
     expect(b.creds['ANTHROPIC_API_KEY']).toEqual({ ref: 'provider:anthropic', kind: 'api-key' });
   });
+
+  it('keeps an earlier clean skill\'s egress when a later skill collides', () => {
+    const b = emptyBase();
+    // A trusted source already owns ANTHROPIC_API_KEY.
+    b.creds['ANTHROPIC_API_KEY'] = { ref: 'provider:anthropic', kind: 'api-key' };
+    b.owners.set('ANTHROPIC_API_KEY', '<agent.requiredCredentials>');
+    const c = foldAuthoredSkillCaps(
+      [
+        // Skill A: clean — folds before B is reached.
+        {
+          id: 'alpha',
+          capabilities: {
+            allowedHosts: ['api.alpha.dev'],
+            credentials: [{ slot: 'ALPHA_API_KEY', kind: 'api-key' }],
+          },
+        },
+        // Skill B: collides on the trusted slot.
+        {
+          id: 'beta',
+          capabilities: {
+            allowedHosts: ['api.beta.dev'],
+            credentials: [{ slot: 'ANTHROPIC_API_KEY', kind: 'api-key' }],
+          },
+        },
+      ],
+      b.allow, b.creds, b.owners,
+    );
+    // The fold stops at B and reports B's collision...
+    expect(c).toEqual({ slot: 'ANTHROPIC_API_KEY', existingOwner: '<agent.requiredCredentials>', skillId: 'beta' });
+    // ...but A's egress was already applied before B was reached.
+    expect(b.allow.has('api.alpha.dev')).toBe(true);
+    expect(b.creds['ALPHA_API_KEY']).toEqual({ ref: 'skill:alpha:ALPHA_API_KEY', kind: 'api-key' });
+    // The trusted binding remains untouched — B never overrode it.
+    expect(b.creds['ANTHROPIC_API_KEY']).toEqual({ ref: 'provider:anthropic', kind: 'api-key' });
+  });
 });

@@ -1533,11 +1533,13 @@ export function createOrchestrator(
     // M2 — shadowed-id caps note: when an authored draft shares an id with
     // an explicit/global attachment, the DRAFT wins this union (the model
     // reads the draft's SKILL.md body) but creds/hosts are still wired from
-    // the attachment's resolved capabilities (the credential loop below keys
+    // the attachment's resolved capabilities (the credential loop above keys
     // off `resolvedSkills` / `attachments`, independent of `unionedSkills`).
-    // In Phase 3 drafted skills always carry empty caps, so this only affects
-    // which instruction body the model sees; flagged here for awareness when
-    // Phase 4 adds the approval-gate capability extraction.
+    // So this union decides only which instruction BODY the model sees
+    // (precedence). Egress hosts/creds are separate: an authored draft's
+    // APPROVED caps were already folded into baseAllowSet/baseCreds by
+    // foldAuthoredSkillCaps (PC-1, just above), so its egress is live
+    // regardless of what shadows its body here.
     const withAuthored = [
       ...authoredDraftSkills,
       ...resolvedSkills.filter((s) => !authoredIds.has(s.id)),

@@ -22,6 +22,10 @@
  * here — the orchestrator's registry auto-allow loop already iterates the
  * authored skills.
  */
+// Intentionally captures ONLY the fields the egress fold needs (allowed hosts +
+// credential slots). `mcpServers` and `packages` are deliberately omitted —
+// package registry hosts are handled by the orchestrator's registry auto-allow
+// loop, and MCP approval is deferred (fail-closed) — neither flows through here.
 export interface AuthoredCapsLike {
   id: string;
   capabilities: {
