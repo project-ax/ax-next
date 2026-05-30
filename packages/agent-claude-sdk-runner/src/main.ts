@@ -1,6 +1,5 @@
 #!/usr/bin/env node
 import { pathToFileURL } from 'node:url';
-import * as nodePath from 'node:path';
 import { promises as fsp } from 'node:fs';
 import {
   query,
@@ -47,7 +46,7 @@ import { buildTelemetryEnv } from './telemetry-env.js';
 import { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
-import { materializeUploads, resolveMaterializedPath } from './materialize-uploads.js';
+import { materializeUploads, resolveMaterializedPath, uploadsBaseDir } from './materialize-uploads.js';
 import { setupProxy } from './proxy-startup.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -320,33 +319,42 @@ export async function main(): Promise<number> {
     ]);
   }
 
-  // TASK-68 (out-of-git Part C): materialize the conversation's committed
-  // uploads into `<ephemeralRoot>/uploads/` so the agent can Read them. Uploads
-  // left git — the durable home is the blob store; this is the read-only working
-  // copy. Best-effort: a missing/failed blob is skipped, never fatal (a single
+  // TASK-68 (out-of-git Part C) + TASK-78: materialize the conversation's
+  // committed uploads at the ADVERTISED path `<workspaceRoot>/.ax/uploads/` so
+  // the agent can Read them where the system prompt says they are. Uploads left
+  // git — the durable home is the blob store; this is the read-only working copy
+  // (`.ax/uploads/` is git-ignored, so it never round-trips into the bundle).
+  // Best-effort: a missing/failed blob is skipped, never fatal (a single
   // unreadable upload must not abort session boot — the download path still
-  // serves it from the store, and the transcript keeps its provenance). Gated on
-  // a bound conversation + an ephemeral tier.
-  if (env.ephemeralRoot && conversationId !== null) {
+  // serves it from the store, and the transcript keeps its provenance). The
+  // closure is reused on warm-runner rebind (a later turn that brings a new
+  // upload — see userMessages below); each call wipes stale residue + writes the
+  // full current set, so the on-disk copy always matches the host's list. Gated
+  // on a bound conversation (a non-conversation session has no uploads to pull).
+  const materializeUploadsForConversation = async (): Promise<void> => {
+    if (conversationId === null) return;
     try {
       const n = await materializeUploads({
         client,
         conversationId,
-        ephemeralRoot: env.ephemeralRoot,
+        workspaceRoot: env.workspaceRoot,
       });
       if (n > 0) {
-        process.stderr.write(`runner: materialized ${n} upload(s) into /ephemeral/uploads\n`);
+        process.stderr.write(
+          `runner: materialized ${n} upload(s) into ${env.workspaceRoot}/.ax/uploads\n`,
+        );
       }
     } catch (err) {
       // materializeUploads is best-effort and shouldn't throw, but never let a
-      // surprise abort the boot.
+      // surprise abort the boot/turn.
       process.stderr.write(
         `runner: upload materialization error (non-fatal): ${
           err instanceof Error ? err.message : String(err)
         }\n`,
       );
     }
-  }
+  };
+  await materializeUploadsForConversation();
 
   // Per-turn transcript-flush wait (2026-05-22 conversations:get-latency fix).
   // The Anthropic Agent SDK writes the assistant turn's jsonl line AFTER it
@@ -525,26 +533,25 @@ export async function main(): Promise<number> {
   // Conservative default: false. Override via env for early access.
   const SUPPORTS_DOCUMENT_BLOCKS = process.env.AX_SDK_DOCUMENT_BLOCKS === '1';
 
-  // TASK-68: the attachment-translation reader fetches an attachment's bytes to
-  // inline (text) or pass through (image/pdf) to the SDK. Uploads left git — they
-  // materialize under `<ephemeralRoot>/uploads/` at session start — so for an
-  // `.ax/uploads/...` key we read the materialized local file. A non-upload path
-  // (a Pattern A workspace file referenced as an attachment) still goes through
-  // `workspace.read`. The translation pass degrades to a text mention on a read
-  // failure, so a missing materialized file is non-fatal.
+  // TASK-68 + TASK-78: the attachment-translation reader fetches an attachment's
+  // bytes to inline (text) or pass through (image/pdf) to the SDK. Uploads left
+  // git — they materialize at the advertised `<workspaceRoot>/.ax/uploads/` (see
+  // materializeUploadsForConversation above) — so for an `.ax/uploads/...` key we
+  // read the materialized local file. A non-upload path (a Pattern A workspace
+  // file referenced as an attachment) still goes through `workspace.read`. The
+  // translation pass degrades to a text mention on a read failure, so a missing
+  // materialized file is non-fatal.
   const workspaceReader: WorkspaceReader = async (p) => {
-    if (env.ephemeralRoot !== undefined) {
-      const materialized = resolveMaterializedPath(
-        nodePath.join(env.ephemeralRoot, 'uploads'),
-        p,
-      );
-      if (materialized !== null) {
-        try {
-          const bytes = await fsp.readFile(materialized);
-          return { found: true, bytesBase64: bytes.toString('base64') };
-        } catch {
-          return { found: false };
-        }
+    const materialized = resolveMaterializedPath(
+      uploadsBaseDir(env.workspaceRoot),
+      p,
+    );
+    if (materialized !== null) {
+      try {
+        const bytes = await fsp.readFile(materialized);
+        return { found: true, bytesBase64: bytes.toString('base64') };
+      } catch {
+        return { found: false };
       }
     }
     const resp = (await client.call('workspace.read', {
@@ -656,6 +663,22 @@ export async function main(): Promise<number> {
       const hasBlocks =
         entry.payload.contentBlocks !== undefined &&
         entry.payload.contentBlocks.length > 0;
+
+      // TASK-78 (warm-runner rebind): boot-time materialization (above) only
+      // covers uploads that already existed when this runner started. A warm
+      // runner reused for a LATER turn that brings a fresh upload never re-ran
+      // it, so the new file was missing on disk and the agent couldn't Read it.
+      // Re-materialize the full upload set whenever this turn carries an
+      // `attachment` block — idempotent (wipes + rewrites the current set), so
+      // the just-uploaded file lands and stale residue is cleared. Best-effort:
+      // the helper swallows its own errors and the translate pass below degrades
+      // to a text mention if a file is still missing.
+      const hasAttachment =
+        hasBlocks &&
+        entry.payload.contentBlocks!.some((b) => b.type === 'attachment');
+      if (hasAttachment) {
+        await materializeUploadsForConversation();
+      }
 
       // When the chat-messages handler ships both `content` (typed text)
       // AND `contentBlocks` (attachments) for a single user turn (Phase 3),
@@ -1021,13 +1044,11 @@ export async function main(): Promise<number> {
               hooks: [
                 createPreToolUseHook({
                   client,
+                  // TASK-78: uploads materialize at the advertised
+                  // `<workspaceRoot>/.ax/uploads/`, so a mis-rooted
+                  // `.ax/uploads/...` reference re-roots THERE (the safety net;
+                  // a path the model already rooted at /permanent is correct).
                   workspaceRoot: env.workspaceRoot,
-                  // TASK-68: uploads materialize under <ephemeralRoot>/uploads,
-                  // so a `.ax/uploads/...` reference re-roots THERE (not into
-                  // /permanent). Omitted when no ephemeral tier → legacy target.
-                  ...(env.ephemeralRoot !== undefined
-                    ? { uploadsRoot: env.ephemeralRoot }
-                    : {}),
                 }),
               ],
             },

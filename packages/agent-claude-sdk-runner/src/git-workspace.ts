@@ -202,6 +202,13 @@ const WORKSPACE_GITIGNORE_ENTRIES = [
   // one-source-of-truth). The remaining commit/bundle path carries only
   // non-transcript /permanent state (identity, Pattern A).
   '.claude/projects/',
+  // TASK-78 (out-of-git Part C): user uploads materialize at the advertised
+  // `<workspaceRoot>/.ax/uploads/` so the agent can Read them, but their durable
+  // home is the content-addressed blob store (TASK-68). Ignoring the dir keeps
+  // `git add -A` from re-staging + bundling the bytes back to the host — which
+  // would re-create the git-era blob duplication TASK-68 removed (I4
+  // one-source-of-truth: the blob store is the single SoT for upload bytes).
+  '.ax/uploads/',
 ];
 
 /**

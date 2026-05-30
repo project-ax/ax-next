@@ -582,15 +582,16 @@ export const ArtifactPublishResponseSchema = z.object({
 export type ArtifactPublishResponse = z.infer<typeof ArtifactPublishResponseSchema>;
 
 // ---------------------------------------------------------------------------
-// attachments.list — TASK-68 (out-of-git Part C, inbound). At session start the
-// runner enumerates the bound conversation's uploads so it can pull each blob
-// (`blob.get`) and materialize the read-only working copy into
-// `/ephemeral/uploads`. The host scopes the query to ctx.userId (the bearer
-// token's user) AND the requested conversationId.
+// attachments.list — TASK-68 (out-of-git Part C, inbound). At session start —
+// and on a warm-runner rebind bringing a new upload (TASK-78) — the runner
+// enumerates the bound conversation's uploads so it can pull each blob
+// (`blob.get`) and materialize the read-only working copy at the path advertised
+// to the model. The host scopes the query to ctx.userId (the bearer token's
+// user) AND the requested conversationId.
 //
 // `path` is the workspace-relative key (`.ax/uploads/<conv>/<turnId>/<file>`)
-// the runner re-roots under `<ephemeralRoot>/uploads`; `sha256` addresses the
-// blob; the rest is display metadata. No backend vocabulary (I1).
+// the runner materializes at `<workspaceRoot>/.ax/uploads/...`; `sha256`
+// addresses the blob; the rest is display metadata. No backend vocabulary (I1).
 // ---------------------------------------------------------------------------
 
 export const AttachmentsListRequestSchema = z

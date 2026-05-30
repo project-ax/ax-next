@@ -77,9 +77,10 @@ export interface ArtifactsPublishBlobOutput {
 
 /**
  * `attachments:list-for-conversation` — the IPC `attachments.list` action calls
- * this at runner session start. Returns the conversation's committed uploads
- * (scoped to ctx.userId) so the runner can pull each blob and materialize the
- * read-only working copy into /ephemeral/uploads.
+ * this at runner session start (and on a warm-runner rebind). Returns the
+ * conversation's committed uploads (scoped to ctx.userId) so the runner can pull
+ * each blob and materialize the read-only working copy at the path advertised to
+ * the model (`<workspaceRoot>/.ax/uploads/...`).
  */
 export interface AttachmentsListForConversationInput {
   conversationId: string;
