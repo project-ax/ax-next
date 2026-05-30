@@ -58,6 +58,7 @@ afterEach(async () => {
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_agents');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_authored');
     await cleanup.query('DROP TABLE IF EXISTS agents_v1_skill_attachments');
   } finally {
     await cleanup.end();
@@ -160,46 +161,42 @@ async function createPersonalAgent(
   return out.agent.id;
 }
 
-/** Build a minimal SKILL.md document (with or without capabilities). */
-function makeSkillMd(
-  id: string,
-  opts: { allowedHosts?: string[] } = {},
-): string {
-  const capBlock =
-    opts.allowedHosts && opts.allowedHosts.length > 0
-      ? `capabilities:\n  allowedHosts:\n${opts.allowedHosts.map((h) => `    - ${h}`).join('\n')}\n`
-      : '';
-  return [
-    '---',
-    `name: ${id}`,
-    `description: A skill called ${id}`,
-    'version: 1',
-    capBlock,
-    '---',
-    '',
-    `# ${id}`,
-    'This is the skill body.',
-  ].join('\n');
-}
-
-/** Seed a file into the mock workspace. */
-async function seedFile(
+/**
+ * Seed an authored skill the TASK-74 way: propose it through `skills:propose`,
+ * which writes the `skills_v1_authored` row that `agents:list-authored-skills`
+ * (the admin promote reader) now reads. (The retired `seedFile` wrote a
+ * `.ax/draft-skills` git file that the workspace scan used to pick up.) `caps`
+ * (a frontmatter capabilities block, e.g. `allowedHosts`) sends the proposal to
+ * `pending`, but the promote reader surfaces every non-deleted status — and the
+ * promote route replaces the file's caps with admin grants anyway.
+ */
+async function seedAuthored(
   h: TestHarness,
-  path: string,
-  content: string,
+  id: string,
   ownerUserId: string,
   agentId: string,
-  parent: string | null,
-): Promise<string> {
+  opts: { allowedHosts?: string[] } = {},
+): Promise<void> {
+  const capBlock =
+    opts.allowedHosts && opts.allowedHosts.length > 0
+      ? `\ncapabilities:\n  allowedHosts:\n${opts.allowedHosts.map((host) => `    - ${host}`).join('\n')}`
+      : '';
+  const manifestYaml = `name: ${id}\ndescription: A skill called ${id}\nversion: 1${capBlock}`;
   const ctx = makeAgentContext({ userId: ownerUserId, agentId, sessionId: 'test-seed' });
-  const r = await h.bus.call<
-    { changes: Array<{ path: string; kind: 'put'; content: Uint8Array }>; parent: string | null },
-    { version: string }
-  >('workspace:apply', ctx, {
-    changes: [{ path, kind: 'put', content: new TextEncoder().encode(content) }],
-    parent,
+  await h.bus.call('skills:propose', ctx, {
+    ownerUserId,
+    agentId,
+    manifestYaml,
+    bodyMd: `# ${id}\nThis is the skill body.`,
+    files: [],
+    capabilityProposal: {
+      allowedHosts: [],
+      credentials: [],
+      mcpServers: [],
+      packages: { npm: [], pypi: [] },
+    },
+    origin: 'authored',
   });
-  return r.version;
 }
 
 /** GET the installed skill from the skills plugin. */
@@ -249,14 +246,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     const agentId = await createPersonalAgent(h, 'alice');
 
     // Seed the authored skill (no capabilities in the file).
-    await seedFile(
-      h,
-      '.ax/draft-skills/foo/SKILL.md',
-      makeSkillMd('foo'),
-      'alice',
-      agentId,
-      null,
-    );
+    await seedAuthored(h, 'foo', 'alice', agentId);
 
     const { res, statusOf, bodyOf } = mkRes();
     await handlers.promoteAuthoredSkill(
@@ -295,14 +285,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     const agentId = await createPersonalAgent(h, 'alice');
 
     // Authored file declares allowedHosts: [evil.com].
-    await seedFile(
-      h,
-      '.ax/draft-skills/foo/SKILL.md',
-      makeSkillMd('foo', { allowedHosts: ['api.evil.com'] }),
-      'alice',
-      agentId,
-      null,
-    );
+    await seedAuthored(h, 'foo', 'alice', agentId, { allowedHosts: ['api.evil.com'] });
 
     const { res, statusOf } = mkRes();
     await handlers.promoteAuthoredSkill(
@@ -359,14 +342,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
     const agentId = await createPersonalAgent(h, 'alice');
 
-    await seedFile(
-      h,
-      '.ax/draft-skills/foo/SKILL.md',
-      makeSkillMd('foo'),
-      'alice',
-      agentId,
-      null,
-    );
+    await seedAuthored(h, 'foo', 'alice', agentId);
 
     const { res, statusOf, bodyOf } = mkRes();
     await handlers.promoteAuthoredSkill(
@@ -467,14 +443,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
     const agentId = await createPersonalAgent(h, 'alice');
 
-    await seedFile(
-      h,
-      '.ax/draft-skills/bar/SKILL.md',
-      makeSkillMd('bar'),
-      'alice',
-      agentId,
-      null,
-    );
+    await seedAuthored(h, 'bar', 'alice', agentId);
 
     const { res, statusOf, bodyOf } = mkRes();
     await handlers.listAuthoredSkills(
