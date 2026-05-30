@@ -128,6 +128,19 @@ export interface ApplyCapabilityGrantOutput {
   attached: boolean;
 }
 
+// Phase 4 PR-B — authored-grant I/O. Structurally mirrors channel-web's local
+// copy (no cross-plugin import, I2). `applied:false, reason:'not-authored'`
+// signals the channel-web route to fall back to the catalog grant path.
+export interface ApplyAuthoredCapabilityGrantInput {
+  conversationId: string;
+  userId: string;
+  agentId: string;
+  skillId: string;
+}
+export type ApplyAuthoredCapabilityGrantOutput =
+  | { applied: true; respawned: boolean }
+  | { applied: false; reason: 'not-authored' };
+
 // Shapes of the peer hooks we bus.call. Duplicated structurally on purpose —
 // I2 forbids cross-plugin imports. Drift would surface as a runtime shape
 // error at call time.
@@ -613,6 +626,10 @@ export function createOrchestrator(
     ctx: AgentContext,
     input: ApplyCapabilityGrantInput,
   ): Promise<ApplyCapabilityGrantOutput>;
+  applyAuthoredCapabilityGrant(
+    ctx: AgentContext,
+    input: ApplyAuthoredCapabilityGrantInput,
+  ): Promise<ApplyAuthoredCapabilityGrantOutput>;
   onHttpEgress(ctx: AgentContext, payload: HttpEgressEventLike): Promise<void>;
   onWorkspaceApplied(ctx: AgentContext, delta: WorkspaceAppliedLike): Promise<void>;
 } {
@@ -639,6 +656,13 @@ export function createOrchestrator(
   // stream with duplicate cards. Cleared per session in onSessionTerminate (the
   // session's egress is gone, so any future block under a reused id is new).
   const wallCardsByHost = new Map<string, Set<string>>(); // sessionId → hosts already carded
+  // Phase 4 PR-B — upfront authored-skill approval cards already fired, keyed by
+  // conversationId → set of shown-delta dedup keys. Conversation-scoped so it
+  // SURVIVES a re-spawn within the conversation (do NOT clear on chat:end —
+  // that's per-turn). Cleared by applyAuthoredCapabilityGrant on apply so a
+  // post-approve spawn re-evaluates the smaller delta. In-memory, single-replica
+  // (same posture as wallCardsByHost / respawnSessions).
+  const upfrontCardsByConv = new Map<string, Set<string>>();
   function registerWaiter(
     sessionId: string,
     reqId: string,
@@ -2196,29 +2220,11 @@ export function createOrchestrator(
     //    the now-attached skill). session:terminate clears active_session_id
     //    (not runner_session_id), so resume survives. No live waiter exists for
     //    a finished keepAlive turn, so onSessionTerminate fires no turn-error.
-    if (bus.hasService('conversations:get') && bus.hasService('session:is-alive')) {
+    const warm = await activeAliveSession(ctx, input.conversationId, input.userId);
+    if (warm !== null) {
       try {
-        const conv = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
-          'conversations:get',
-          ctx,
-          { conversationId: input.conversationId, userId: input.userId },
-        );
-        const candidate = conv.conversation.activeSessionId;
-        if (candidate !== null && candidate.length > 0) {
-          const alive = await bus.call<SessionIsAliveInput, SessionIsAliveOutput>(
-            'session:is-alive',
-            ctx,
-            { sessionId: candidate },
-          );
-          if (alive.alive) {
-            await bus.call('session:terminate', ctx, { sessionId: candidate });
-          }
-        }
+        await bus.call('session:terminate', ctx, { sessionId: warm });
       } catch (err) {
-        // Best-effort retire: if we can't read/terminate the warm session, the
-        // next turn's route-vs-fresh still picks fresh once is-alive sees it
-        // dead (or routes into a stale-but-skill-frozen session — degraded, not
-        // unsafe). Log and continue — the attach already landed.
         ctx.logger.warn('apply_capability_grant_retire_failed', {
           conversationId: input.conversationId,
           err: err instanceof Error ? err : new Error(String(err)),
@@ -2229,12 +2235,148 @@ export function createOrchestrator(
     return { attached };
   }
 
+  // Resolve the conversation's ACTIVE + ALIVE session id (or null). Shared by
+  // the catalog + authored grant paths (retire / live-widen). Best-effort: any
+  // lookup failure → null (the next turn's route-vs-fresh self-corrects).
+  async function activeAliveSession(
+    ctx: AgentContext,
+    conversationId: string,
+    userId: string,
+  ): Promise<string | null> {
+    if (!bus.hasService('conversations:get') || !bus.hasService('session:is-alive')) return null;
+    try {
+      const conv = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
+        'conversations:get', ctx, { conversationId, userId },
+      );
+      const candidate = conv.conversation.activeSessionId;
+      if (candidate === null || candidate.length === 0) return null;
+      const alive = await bus.call<SessionIsAliveInput, SessionIsAliveOutput>(
+        'session:is-alive', ctx, { sessionId: candidate },
+      );
+      return alive.alive ? candidate : null;
+    } catch (err) {
+      ctx.logger.warn('active_session_lookup_failed', {
+        conversationId,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return null;
+    }
+  }
+
+  // Phase 4 PR-B — apply a user-approved authored-skill capability grant. The
+  // host re-derives authored-ness (D-B7: server-authoritative); a skillId not
+  // found in the agent's drafted skills signals not-authored → the channel-web
+  // route falls back to the catalog grant. When it IS a draft, approve its
+  // proposalDelta (hosts/slots/packages; mcp deferred — D-B2), write approval
+  // rows, then activate: credential delta → re-spawn; host/pkg-only → live widen.
+  async function applyAuthoredCapabilityGrant(
+    ctx: AgentContext,
+    input: ApplyAuthoredCapabilityGrantInput,
+  ): Promise<ApplyAuthoredCapabilityGrantOutput> {
+    // 1. Re-resolve the agent's authored drafts — the HOST is the authority on
+    //    which path runs (D-B7). A skillId that is not a draft is a catalog
+    //    skill; signal not-authored so the route falls back to the catalog grant.
+    let drafts: AuthoredResolvedSkillForOrch[] = [];
+    if (bus.hasService('agents:resolve-authored-skills')) {
+      const r = await bus.call<
+        { ownerUserId: string; agentId: string },
+        AgentsResolveAuthoredSkillsOutput
+      >('agents:resolve-authored-skills', ctx, {
+        ownerUserId: input.userId,
+        agentId: input.agentId,
+      });
+      drafts = r.skills;
+    }
+    const draft = drafts.find((s) => s.id === input.skillId);
+    if (draft === undefined) return { applied: false, reason: 'not-authored' };
+
+    // 2. The SHOWN delta (hosts/slots/packages; mcp deferred — D-B2). Approve
+    //    the whole shown delta (D-B3).
+    const delta = draft.proposalDelta;
+    const deltaNpm = delta.packages?.npm ?? [];
+    const deltaPypi = delta.packages?.pypi ?? [];
+    const rows: Array<{
+      kind: 'host' | 'slot' | 'npm' | 'pypi';
+      value: string;
+      detail?: { kind: 'api-key'; account?: string };
+    }> = [
+      ...delta.allowedHosts.map((h) => ({ kind: 'host' as const, value: h })),
+      ...delta.credentials.map((c) => ({
+        kind: 'slot' as const,
+        value: c.slot,
+        detail: { kind: 'api-key' as const, ...(c.account !== undefined ? { account: c.account } : {}) },
+      })),
+      ...deltaNpm.map((p) => ({ kind: 'npm' as const, value: p })),
+      ...deltaPypi.map((p) => ({ kind: 'pypi' as const, value: p })),
+    ];
+
+    // 3. Write the approval rows (host-side store, outside the agent's reach).
+    if (bus.hasService('skills:approved-caps-set')) {
+      for (const row of rows) {
+        await bus.call('skills:approved-caps-set', ctx, {
+          ownerUserId: input.userId,
+          agentId: input.agentId,
+          skillId: input.skillId,
+          kind: row.kind,
+          value: row.value,
+          ...(row.detail !== undefined ? { detail: row.detail } : {}),
+        });
+      }
+    }
+
+    // 4. Drop the upfront-card dedup for this conversation so the next spawn
+    //    re-evaluates the now-smaller delta (re-fires only if something remains).
+    upfrontCardsByConv.delete(input.conversationId);
+
+    // 5. Activate per the asymmetry (design table): ANY credential slot → env
+    //    var frozen at spawn → re-spawn. Else host/package-only → live widen.
+    const needsRespawn = delta.credentials.length > 0;
+    if (needsRespawn) {
+      const warm = await activeAliveSession(ctx, input.conversationId, input.userId);
+      let respawned = false;
+      if (warm !== null) {
+        try {
+          await bus.call('session:terminate', ctx, { sessionId: warm });
+          respawned = true;
+        } catch (err) {
+          ctx.logger.warn('authored_grant_retire_failed', {
+            conversationId: input.conversationId,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+        }
+      }
+      return { applied: true, respawned };
+    }
+
+    // Host/package-only → live widen on the conversation's warm session.
+    const liveHosts = [...delta.allowedHosts];
+    if (deltaNpm.length > 0) liveHosts.push('registry.npmjs.org');
+    if (deltaPypi.length > 0) liveHosts.push('pypi.org', 'files.pythonhosted.org');
+    if (liveHosts.length > 0 && bus.hasService('proxy:add-host')) {
+      const warm = await activeAliveSession(ctx, input.conversationId, input.userId);
+      if (warm !== null) {
+        for (const host of liveHosts) {
+          try {
+            await bus.call('proxy:add-host', ctx, { sessionId: warm, host });
+          } catch (err) {
+            ctx.logger.warn('authored_grant_add_host_failed', {
+              host,
+              err: err instanceof Error ? err : new Error(String(err)),
+            });
+          }
+        }
+      }
+    }
+    return { applied: true, respawned: false };
+  }
+
   return {
     runAgentInvoke,
     onChatEnd,
     onTurnEnd,
     onSessionTerminate,
     applyCapabilityGrant,
+    applyAuthoredCapabilityGrant,
     onHttpEgress,
     onWorkspaceApplied,
   };

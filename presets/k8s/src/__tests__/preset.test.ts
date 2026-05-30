@@ -231,7 +231,7 @@ describe('@ax/preset-k8s wiring', () => {
     expect(registers).toContain('skills:approved-caps-list');
     expect(registers).toContain('skills:approved-caps-set');
     expect(registers).toContain('skills:approved-caps-revoke');
-    // TODO(Task 4): assert agent:apply-authored-capability-grant once registered
+    expect(registers).toContain('agent:apply-authored-capability-grant');
   });
 
   it('includes @ax/skill-broker and its calls are satisfied (TASK-34)', () => {

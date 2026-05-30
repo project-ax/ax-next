@@ -2740,7 +2740,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           // proxy:add-host (TASK-37); this canary boots channel-web without the
           // orchestrator / credential-proxy, so no-op registrations satisfy
           // bootstrap's verifyCalls walk.
-          registers: ['agent:invoke', 'agent:apply-capability-grant', 'proxy:add-host'],
+          registers: ['agent:invoke', 'agent:apply-capability-grant', 'agent:apply-authored-capability-grant', 'proxy:add-host'],
           calls: [],
           subscribes: [],
         },
@@ -2757,6 +2757,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             'agent:apply-capability-grant',
             AGENT_INVOKE_STUB_NAME,
             async () => ({ attached: true }),
+          );
+          bus.registerService(
+            'agent:apply-authored-capability-grant',
+            AGENT_INVOKE_STUB_NAME,
+            async () => ({ applied: false, reason: 'not-authored' }),
           );
           bus.registerService(
             'proxy:add-host',
@@ -3187,7 +3192,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           // proxy:add-host (TASK-37); this artifact canary boots channel-web
           // without the orchestrator / credential-proxy, so no-op registrations
           // satisfy bootstrap's verifyCalls walk.
-          registers: ['agent:invoke', 'agent:apply-capability-grant', 'proxy:add-host'],
+          registers: ['agent:invoke', 'agent:apply-capability-grant', 'agent:apply-authored-capability-grant', 'proxy:add-host'],
           calls: [],
           subscribes: [],
         },
@@ -3201,6 +3206,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             'agent:apply-capability-grant',
             AGENT_INVOKE_STUB_NAME,
             async () => ({ attached: true }),
+          );
+          bus.registerService(
+            'agent:apply-authored-capability-grant',
+            AGENT_INVOKE_STUB_NAME,
+            async () => ({ applied: false, reason: 'not-authored' }),
           );
           bus.registerService(
             'proxy:add-host',
