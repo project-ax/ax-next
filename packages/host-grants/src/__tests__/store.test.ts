@@ -105,5 +105,8 @@ describe('host-grants store', () => {
     expect(await s.grant({ ownerUserId: 'u1', agentId: 'a1', host: 'h0.example.com' })).toEqual({
       created: false,
     });
-  });
+    // 257 sequential awaited postgres inserts blow the default 5s timeout under
+    // the wide-affected-set CI load (testcontainer pool contention). Give it
+    // headroom — this is a throughput test, not a latency one.
+  }, 30_000);
 });
