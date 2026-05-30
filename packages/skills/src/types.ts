@@ -9,6 +9,7 @@
 import { z, type ZodType } from 'zod';
 import type { SkillCapabilities } from '@ax/skills-parser';
 import type { SkillTier } from './catalog-tier.js';
+import type { ApprovedCapEntry } from './approved-caps-store.js';
 export type { CapabilitySlot, McpServerSpec, SkillCapabilities } from '@ax/skills-parser';
 export type { SkillTier } from './catalog-tier.js';
 
@@ -502,11 +503,10 @@ export const SkillsQuarantineListOutputSchema = z.object({
 // the approval grant path (PR-B). The bundle frontmatter is the proposal source
 // of truth; these rows are thin approval metadata (I4).
 
-/** A capability a human approved, storage-agnostic. */
-export interface ApprovedCapEntry {
-  kind: 'host' | 'slot' | 'npm' | 'pypi' | 'mcp';
-  value: string;
-}
+/** A capability a human approved, storage-agnostic. Single source of truth
+ * lives in the store (same plugin) — re-exported here as part of the public
+ * hook payload surface so consumers import it from @ax/skills. */
+export type { ApprovedCapEntry };
 
 export interface SkillsApprovedCapsListInput {
   ownerUserId: string;
