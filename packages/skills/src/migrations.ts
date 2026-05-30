@@ -193,6 +193,39 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
       PRIMARY KEY (owner_user_id, agent_id, skill_id, cap_kind, cap_value)
     )
   `.execute(db);
+
+  // skills_v1_authored — agent-authored skills, the single source of truth that
+  // REPLACES the `.ax/draft-skills/<id>/` git workspace projection (TASK-74,
+  // out-of-git Part D). Keyed `(owner_user_id, agent_id, skill_id)` — identical to
+  // the quarantine + approved_caps side-tables — because an authored skill is a
+  // per-(user, AGENT) concept (the agent composed it in its own draft scratch).
+  // `agent_id` is an opaque scoping key — no FK to agents_v1_agents (cross-plugin
+  // FKs are banned). `manifest_yaml` is the caps-PROPOSAL source of truth (the
+  // frontmatter the agent wrote); `bundle_tree_sha` is the content-addressed blob
+  // pointer to the EXTRA (non-SKILL.md) files (NULL = single-file). `origin` ∈
+  // 'authored' (the runner only ever proposes this) | 'imported' | 'attached'
+  // (reserved for future host-side provenance). `status` ∈ 'active' (materializes
+  // next spawn) | 'pending' (awaits the approval card) | 'quarantined' (scan hit,
+  // omitted from the projection). `scan_verdict` is the validator's reason text,
+  // NULL when clean. The hybrid materialization gate (design §D3) writes exactly
+  // ONE of these per skill at propose time. Additive-only.
+  await sql`
+    CREATE TABLE IF NOT EXISTS skills_v1_authored (
+      owner_user_id   TEXT NOT NULL,
+      agent_id        TEXT NOT NULL,
+      skill_id        TEXT NOT NULL,
+      description     TEXT NOT NULL DEFAULT '',
+      manifest_yaml   TEXT NOT NULL,
+      body_md         TEXT NOT NULL DEFAULT '',
+      bundle_tree_sha TEXT NULL,
+      origin          TEXT NOT NULL DEFAULT 'authored',
+      status          TEXT NOT NULL DEFAULT 'pending',
+      scan_verdict    TEXT NULL,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (owner_user_id, agent_id, skill_id)
+    )
+  `.execute(db);
 }
 
 /**
@@ -317,6 +350,28 @@ export interface ApprovedCapRow {
   created_at: Date;
 }
 
+/**
+ * Per-(user, agent, skill) agent-authored skill row (TASK-74). The single
+ * source of truth that replaces the `.ax/draft-skills` git workspace. `origin`
+ * is a trust-provenance tag, `status` the hybrid-gate verdict, `scan_verdict`
+ * the validator reason (NULL when clean). `bundle_tree_sha` is a content hash
+ * (blob store) — storage detail, never surfaced in a hook payload.
+ */
+export interface AuthoredSkillRow {
+  owner_user_id: string;
+  agent_id: string;
+  skill_id: string;
+  description: string;
+  manifest_yaml: string;
+  body_md: string;
+  bundle_tree_sha: string | null;
+  origin: string; // 'authored' | 'imported' | 'attached'
+  status: string; // 'active' | 'pending' | 'quarantined'
+  scan_verdict: string | null;
+  created_at: Date;
+  updated_at: Date;
+}
+
 export interface SkillsDatabase {
   skills_v1_skills: SkillsRow;
   skills_v1_user_skills: UserSkillsRow;
@@ -325,4 +380,5 @@ export interface SkillsDatabase {
   skills_v1_catalog_requests: CatalogRequestRow;
   skills_v1_quarantine: QuarantineRow;
   skills_v1_approved_caps: ApprovedCapRow;
+  skills_v1_authored: AuthoredSkillRow;
 }

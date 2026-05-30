@@ -18,6 +18,8 @@ import { createUserAttachmentsStore } from './user-attachments-store.js';
 import { createCatalogRequestsStore } from './catalog-requests-store.js';
 import { createSkillsQuarantineStore } from './quarantine-store.js';
 import { createApprovedCapsStore } from './approved-caps-store.js';
+import { createAuthoredSkillsStore } from './authored-store.js';
+import { classifyProposal } from './propose-gate.js';
 import { validateAttachmentBindings } from './attachment-validation.js';
 import { mergeUserWins, compareById } from './_merge.js';
 import { registerAdminSkillsRoutes } from './admin-routes.js';
@@ -45,6 +47,8 @@ import {
   SkillsApprovedCapsListOutputSchema,
   SkillsApprovedCapsSetOutputSchema,
   SkillsApprovedCapsRevokeOutputSchema,
+  SkillsProposeOutputSchema,
+  SkillsListAuthoredOutputSchema,
 } from './types.js';
 import type {
   SkillsCheckForUpdatesInput,
@@ -89,7 +93,16 @@ import type {
   SkillsApprovedCapsSetOutput,
   SkillsApprovedCapsRevokeInput,
   SkillsApprovedCapsRevokeOutput,
+  SkillsProposeInput,
+  SkillsProposeOutput,
+  SkillsListAuthoredInput,
+  SkillsListAuthoredOutput,
+  SkillsScanInput,
+  SkillsScanOutput,
+  SkillsProposedEvent,
+  AuthoredSkillProjection,
 } from './types.js';
+import type { SkillCapabilities } from '@ax/skills-parser';
 
 const PLUGIN_NAME = '@ax/skills';
 
@@ -216,6 +229,11 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
         'skills:approved-caps-list',
         'skills:approved-caps-set',
         'skills:approved-caps-revoke',
+        // TASK-74 (out-of-git Part D): the skill_propose chokepoint + the
+        // authored-skill projection read that re-backs agents:resolve-authored-
+        // skills onto DB rows (replacing the .ax/draft-skills workspace scan).
+        'skills:propose',
+        'skills:list-authored',
       ],
       calls: [
         'database:get-instance',
@@ -266,6 +284,10 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
       const catalogRequestsStore = createCatalogRequestsStore(db, bundleStore);
       const quarantineStore = createSkillsQuarantineStore(db);
       const approvedCapsStore = createApprovedCapsStore(db);
+      // TASK-74 — authored-skills store (the .ax/draft-skills replacement).
+      // Shares the SAME content-addressed bundle store so an authored bundle's
+      // extra files dedup against any other skill's identical bytes.
+      const authoredStore = createAuthoredSkillsStore(db, bundleStore);
 
       bus.registerService<SkillsListInput, SkillsListOutput>(
         'skills:list',
@@ -991,6 +1013,156 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => approvedCapsStore.clear(input),
         { returns: SkillsApprovedCapsRevokeOutputSchema },
+      );
+
+      // -----------------------------------------------------------------------
+      // skills:propose (TASK-74, out-of-git Part D / §D1–D3) — the SINGLE write
+      // chokepoint for agent-authored skills. The runner ships a structurally-
+      // validated bundle over the skill.propose IPC action; the host handler
+      // calls this hook. We:
+      //   1. re-validate structurally (parseSkillManifest + validateBundleFiles
+      //      — defense-in-depth at the trust boundary; the untrusted bundle is
+      //      re-checked at every hop, the validateMcpEntry pattern);
+      //   2. fire the skills:scan veto/scan hook (the validator-skill veto's new
+      //      home — accept-but-annotate; a missing scanner degrades to 'clean');
+      //   3. run the hybrid materialization gate (classifyProposal): clean +
+      //      authored + zero-cap → active; any cap / non-authored → pending; scan
+      //      hit → quarantined;
+      //   4. write ONE skills_v1_authored row (origin/status/scan_verdict);
+      //   5. fire skills:proposed (notify) so the orchestrator re-spawns the
+      //      proposing session next turn (a freshly-active skill is only visible
+      //      at the next spawn — design §D6).
+      // Quarantine/structural-reject reasons are returned to the agent so it can
+      // tell the user what to fix.
+      // -----------------------------------------------------------------------
+      bus.registerService<SkillsProposeInput, SkillsProposeOutput>(
+        'skills:propose',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          // 1. Structural re-validation (the host never trusts the runner's
+          // claim that the bundle is well-formed).
+          const parsed = parseSkillManifest(input.manifestYaml);
+          if (!parsed.ok) {
+            throw new PluginError({
+              code: parsed.code,
+              plugin: PLUGIN_NAME,
+              message: parsed.message,
+            });
+          }
+          try {
+            validateBundleFiles(input.files);
+          } catch (err) {
+            throw new PluginError({
+              code: 'invalid-bundle-file',
+              plugin: PLUGIN_NAME,
+              message: err instanceof Error ? err.message : String(err),
+            });
+          }
+          const skillId = parsed.value.id;
+
+          // The capability PROPOSAL is the parsed frontmatter — the single
+          // source of truth the gate classifies on. We re-parse it host-side
+          // (never trust the runner's separately-supplied capabilityProposal):
+          // the manifest IS the proposal. The wire `capabilityProposal` is a
+          // redundant hint the runner sends for symmetry; we ignore it here.
+          const proposal: SkillCapabilities = parsed.value.capabilities;
+
+          // 2. Safety scan (the validator-skill veto, now at the propose
+          // chokepoint). A missing scanner degrades to 'clean' — the regex
+          // floor is the scanner's own concern; absent it, we don't block.
+          let scanClean = true;
+          let scanVerdict: string | null = null;
+          if (bus.hasService('skills:scan')) {
+            try {
+              const r = await bus.call<SkillsScanInput, SkillsScanOutput>(
+                'skills:scan',
+                ctx,
+                {
+                  skillId,
+                  manifestYaml: input.manifestYaml,
+                  bodyMd: input.bodyMd,
+                  files: input.files,
+                },
+              );
+              if (r.verdict === 'hit') {
+                scanClean = false;
+                scanVerdict = r.reason ?? 'flagged by the skill safety scan';
+              }
+            } catch (err) {
+              // A scanner outage must not silently DOWNGRADE safety — but it
+              // also can't block authoring forever. Fail toward caution: treat a
+              // scanner error like a clean scan ONLY for the gate's active/pending
+              // decision (the gate still requires zero-cap + authored for active),
+              // and log it. This matches the validator's existing degrade posture
+              // (a transient LLM failure leaves the regex floor in charge).
+              ctx.logger.warn('skills_scan_failed', {
+                skillId,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }
+
+          // 3. Hybrid materialization gate.
+          const status = classifyProposal({
+            origin: input.origin,
+            capabilityProposal: proposal,
+            scanClean,
+          });
+
+          // 4. Persist ONE row (last-write-wins per draft).
+          await authoredStore.upsert({
+            ownerUserId: input.ownerUserId,
+            agentId: input.agentId,
+            skillId,
+            description: parsed.value.description,
+            manifestYaml: input.manifestYaml,
+            bodyMd: input.bodyMd,
+            origin: input.origin,
+            status,
+            scanVerdict,
+            files: input.files,
+          });
+
+          // 5. Notify so the orchestrator re-spawns next turn. Fire-and-forget;
+          // a missing subscriber is fine (the next manual turn re-spawns anyway).
+          await bus.fire('skills:proposed', ctx, {
+            ownerUserId: input.ownerUserId,
+            agentId: input.agentId,
+            skillId,
+            status,
+          } satisfies SkillsProposedEvent);
+
+          const reason =
+            status === 'quarantined' && scanVerdict !== null ? scanVerdict : undefined;
+          return reason !== undefined ? { skillId, status, reason } : { skillId, status };
+        },
+        { returns: SkillsProposeOutputSchema },
+      );
+
+      // -----------------------------------------------------------------------
+      // skills:list-authored (TASK-74) — the DB read that re-backs
+      // agents:resolve-authored-skills (replacing the .ax/draft-skills workspace
+      // scan). Returns the agent's authored skills in projection shape (manifest
+      // /body/files + gate status + scan reason). The agents-side projection
+      // OMITS quarantined rows and intersects the proposal with approved caps.
+      // -----------------------------------------------------------------------
+      bus.registerService<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
+        'skills:list-authored',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const rows = await authoredStore.list(input.ownerUserId, input.agentId);
+          const skills: AuthoredSkillProjection[] = rows.map((r) => ({
+            skillId: r.skillId,
+            description: r.description,
+            manifestYaml: r.manifestYaml,
+            bodyMd: r.bodyMd,
+            files: r.files,
+            status: r.status,
+            ...(r.scanVerdict !== null ? { reason: r.scanVerdict } : {}),
+          }));
+          return { skills };
+        },
+        { returns: SkillsListAuthoredOutputSchema },
       );
 
       // Register admin + settings HTTP routes. Both batches are pushed into

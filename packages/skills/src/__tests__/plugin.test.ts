@@ -120,6 +120,7 @@ afterEach(async () => {
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_quarantine');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_approved_caps');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_authored');
   } finally {
     await cleanup.end().catch(() => {});
   }
@@ -157,6 +158,8 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:approved-caps-list',
         'skills:approved-caps-set',
         'skills:approved-caps-revoke',
+        'skills:propose',
+        'skills:list-authored',
       ],
       calls: [
         'database:get-instance',
