@@ -400,17 +400,35 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
 
             // Read what the human approved (soft dep). Absent store → [] → the
             // safe empty-caps default; frontmatter alone grants nothing (#5).
+            //
+            // NOTE the asymmetry with quarantine-get above, which PROPAGATES on
+            // error: quarantine fails closed by OMITTING the draft entirely, so
+            // an outage there must abort. The approval store fails closed by
+            // degrading to EMPTY approved caps — the draft still projects, but
+            // with no capabilities, so the proxy blocks everything.
             let approved: ApprovedCapEntry[] = [];
             if (bus.hasService('skills:approved-caps-list')) {
-              const r = await bus.call<
-                { ownerUserId: string; agentId: string; skillId: string },
-                { capabilities: ApprovedCapEntry[] }
-              >('skills:approved-caps-list', _ctx, {
-                ownerUserId: input.ownerUserId,
-                agentId: input.agentId,
-                skillId: b.id,
-              });
-              approved = r.capabilities;
+              try {
+                const r = await bus.call<
+                  { ownerUserId: string; agentId: string; skillId: string },
+                  { capabilities: ApprovedCapEntry[] }
+                >('skills:approved-caps-list', _ctx, {
+                  ownerUserId: input.ownerUserId,
+                  agentId: input.agentId,
+                  skillId: b.id,
+                });
+                approved = r.capabilities;
+              } catch (err) {
+                // Fail CLOSED: an approval-store outage degrades to EMPTY approved
+                // caps (the skill projects with no capabilities — the proxy blocks
+                // everything), never to the raw proposal. One skill's store error
+                // must not break the whole projection.
+                _ctx.logger.warn('resolve_authored_caps_list_failed', {
+                  skillId: b.id,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+                approved = [];
+              }
             }
 
             const { capabilities, delta } = intersectProposalWithApproved(

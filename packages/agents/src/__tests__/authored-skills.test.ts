@@ -694,6 +694,46 @@ describe('agents:resolve-authored-skills', () => {
     expect(linear!.manifestYaml).toContain('name: linear');
   });
 
+  // Fail-CLOSED: skills:approved-caps-list THROWING (approval-store outage) must
+  // NOT break the projection (asymmetric vs quarantine-get above, which fails by
+  // OMITTING). The draft STILL projects, but with EMPTY approved caps — the proxy
+  // then blocks everything. The host stays in proposalDelta (it was never approved).
+  it('fails closed when skills:approved-caps-list throws: draft still projects with empty caps; host stays in proposalDelta', async () => {
+    const h = await makeHarness();
+    const userId = 'u-caps-outage';
+    const agentId = await createPersonalAgent(h, userId);
+    await seedFile(
+      h,
+      '.ax/draft-skills/linear/SKILL.md',
+      makeSkillMd('linear', { withCapabilities: true }),
+      userId,
+      agentId,
+      null,
+    );
+
+    // Register an approval store that THROWS — simulating a DB outage.
+    h.bus.registerService('skills:approved-caps-list', '@ax/test', async () => {
+      throw new Error('approval store unavailable');
+    });
+
+    // The call must NOT reject — the handler degrades to empty approved caps.
+    const out = await h.bus.call<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
+      'agents:resolve-authored-skills',
+      h.ctx({ userId }),
+      { ownerUserId: userId, agentId },
+    );
+
+    const linear = out.skills.find((s) => s.id === 'linear');
+    expect(linear).toBeDefined();
+    // Fail-closed: no capabilities projected despite the proposal.
+    expect(linear!.capabilities.allowedHosts).toEqual([]);
+    // The proposed-but-unapproved host remains in the delta.
+    expect(linear!.proposalDelta.allowedHosts).toEqual(['api.evil.com']);
+    // And the materialized manifest is still caps-stripped.
+    expect(linear!.manifestYaml).not.toContain('capabilities');
+    expect(linear!.manifestYaml).not.toContain('api.evil.com');
+  });
+
   // M3-2: skills:quarantine-get THROWING must propagate through
   // agents:resolve-authored-skills (fail toward OMISSION — an outage must
   // never project unscanned drafts). The SAFE direction is: quarantine store

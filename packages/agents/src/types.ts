@@ -299,11 +299,12 @@ export interface AgentsListAuthoredSkillsOutput {
   skills: AuthoredSkillSummary[];
 }
 
-// --- agents:resolve-authored-skills (Phase 3, Task A2) -----------------------
+// --- agents:resolve-authored-skills (Phase 4) --------------------------------
 //
 // Returns the agent's self-authored drafts in the resolved-skill projection
-// shape with EMPTY capabilities. No @ax/skills import (invariant #2) — the
-// shape is defined structurally here.
+// shape, projecting only the human-approved subset of the frontmatter
+// capability proposal. No @ax/skills import (invariant #2) — the shape is
+// defined structurally here.
 
 /** Resolved-skill projection shape (structurally mirrors the orchestrator's
  * ResolvedSkillForOrch — NOT an @ax/skills import, per invariant #2).
@@ -343,7 +344,7 @@ const McpServerSpecSchema = z.object({
   transport: z.union([z.literal('stdio'), z.literal('http')]),
   command: z.string().optional(),
   args: z.array(z.string()).optional(),
-  env: z.record(z.string(), z.string()).optional(),
+  env: z.record(z.string()).optional(),
   url: z.string().optional(),
   allowedHosts: z.array(z.string()),
   credentials: z.array(CapabilitySlotSchema),
