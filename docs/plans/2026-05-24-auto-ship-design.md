@@ -356,3 +356,42 @@ entirely and the run is unaffected.
 - Per-package registry tightening, Go toolchain, and the other 🚫 trigger-gated
   TODO items are never touched by auto-ship.
 - Cross-repo / multi-DAG orchestration. One `TODO.md`, one repo.
+
+---
+
+## 14. Design-intake mode + forward learning (added 2026-05-30)
+
+Two capabilities added to the shipped skill (`.claude/skills/auto-ship/SKILL.md` +
+`references/`); board-as-source-of-truth shape unchanged.
+
+**Design-intake (`--design <path>`).** Given a *finished* design doc, a one-shot pre-pass
+(run right after the run-start lock + reconcile) dispatches a **no-worktree decomposition
+agent** that breaks the design into PR-sized slices + a dependency DAG and **creates one
+draft-issue card per slice** (`epic:<slug>` marker + `design:` pointer + self-contained
+slice spec; `(walk)`-tagged where the design needs a manual-acceptance step). The agent
+returns a **compact manifest** (task · item · title · deps); the orchestrator (sole
+router) `board_batch`es each card's `Status → To Do` + `Depends on`, prints the breakdown,
+and falls through into the normal drain loop.
+
+- **No intermediate epic-plan doc.** The design doc is the source of truth for the *why*;
+  the **cards + their dep DAG are the decomposition**; each card grows its own
+  implementation plan when it ships (yolo-ship Phase 2/3). A standalone epic-plan.md would
+  be a second source of truth for the task list (anti-pattern under the Task Board Policy)
+  and dead documentation once the cards exist (YAGNI). *Decided after the user pushed back
+  on an earlier "epic plan doc" proposal.*
+- **Cards land in To Do, not Backlog.** The dep DAG sequences them (only `deps=none` roots
+  are ready first). The plan-print-before-dispatch + `--dry-run` are the review gate; no
+  separate hold-in-Backlog step. *Decided after the user requested To Do + deps directly,
+  superseding an earlier "hold for review in Backlog" answer.*
+
+**Forward learning.** Every yolo-ship handoff returns a `learnings:` field (≤3 curated
+bullets: facts that change assumptions for *other* tasks). On merge, auto-ship appends a
+merged card's learnings to the body of **every still-queued To Do card sharing its
+`epic:<slug>`** (Channel A — shell-side `append_learnings`; scope = all same-epic cards,
+not just direct dependents), backed by the existing `.claude/memory/` path that fresh
+worktrees inherit from `main` (Channel B). Learnings are written **only to To Do cards**
+(one-writer-at-a-time: an In-Progress card's body belongs to its building agent). A queued
+card reconciles its plan against the accumulated predecessor learnings when dispatched and
+escalates `blocked` if one invalidates its premise. Timing works because a dependent card
+waits in To Do until its dependency is **Done** — i.e. merged, with its learnings already
+spliced into the waiting card.

@@ -33,6 +33,13 @@ Dispatch via `Agent` with `run_in_background: true`,
 >   **not** a failure (it doesn't count as an attempt); auto-ship routes the card to the
 >   Needs Input lane for the human. Reserve it for genuine human-owned decisions, not
 >   technical unknowns you can resolve by reading the code.
+> - **Learn from what merged before you.** Your card body may carry a `Predecessor
+>   learnings` block — lessons from same-epic cards merged ahead of you. Re-read your card
+>   body (item `<ITEM-ID>`) at the start, fold those lessons into your plan, and if one
+>   invalidates this card's premise (the design was built differently than this card
+>   assumed), return `outcome: blocked` with the scope question instead of guessing. When
+>   you finish, return the lessons YOUR work creates for later tasks in the `learnings:`
+>   handoff field (and commit durable ones to `.claude/memory/` as usual).
 > - **Report progress live on your card.** This card is item `<ITEM-ID>`. At each
 >   yolo-ship phase boundary, append a one-line heartbeat to its progress block —
 >   in a SINGLE Bash call: `source <PROGRESS-HELPER-PATH> && append_progress
@@ -55,6 +62,8 @@ Dispatch via `Agent` with `run_in_background: true`,
 > signature: <normalized failure signature> | -    # required iff outcome=failed
 > needs-input: | -                                  # required iff outcome=blocked
 >   - <one question per line — a decision only a human can make>
+> learnings: | -                                    # facts that change assumptions for OTHER tasks; "none" if nothing
+>   - <one line each — changed interface / established pattern / decision / gotcha / invalidated premise>
 > followups:
 >   - <one line each, or "none">
 > ```
@@ -115,9 +124,16 @@ into the prompt.
 > - **underspecified** → splice in the needs-input block with your specific questions,
 >   one per line, via `source <PROGRESS-HELPER-PATH> && set_needs_input "<ITEM-ID>"
 >   $'<question 1>\n<question 2>\n…'`. Use `$'…'` ANSI-C quoting (NOT plain `"…"`) so each
->   `\n` is a real newline — the helper renders one answer-ready block per question and
->   splices the START/END markers. (Plain double quotes would pass a literal `\n` and
->   jam every question into one line; the helper now tolerates that, but don't rely on it.)
+>   `\n` is a real newline. The helper renders, per question, a `**Qn.**` line then its
+>   **own blank** `**An.**` line (Q and A never share a line; the answer starts empty),
+>   and splices the START/END markers. **If `set_needs_input` is undefined after sourcing**
+>   (a stale helper file), do NOT improvise the layout — write the block into the body
+>   yourself so that each question is a `**Qn.**` line, then a blank line, then a blank
+>   `**An.**` line, then a blank line, with `<!-- AUTOSHIP-NEEDS-INPUT:START -->` /
+>   `<!-- AUTOSHIP-NEEDS-INPUT:END -->` each on its own line around the whole block. Q and
+>   A must never share a line and each `An` must start blank — that is the regression this
+>   guards against. (Plain double quotes pass a literal `\n`; the helper normalizes it, but
+>   prefer `$'…'`.)
 > - **specified but a needs-input block exists** (the user answered) → fold the Q&A
 >   into a durable `## Clarifications` section *outside* the `AUTOSHIP-NEEDS-INPUT`
 >   markers and delete the block, so the builder sees the answers as spec and nothing
@@ -130,6 +146,56 @@ into the prompt.
 >   - id: <ITEM-ID> task: <TASK-ID> walk: y|n verdict: specified | needs-input
 >   - …
 > ```
+
+## Decomposition dispatch prompt
+
+For **Design-intake mode** (SKILL.md). Dispatch ONE `general-purpose` agent **without** a
+worktree (board-only, commits nothing). Substitute `<DESIGN-PATH>` (absolute path to the
+design doc), `<EPIC-SLUG>` (derive from the doc filename, e.g. `2026-05-30-foo-design` →
+`foo`), `<BASE-N>` (current max `[TASK-<num>]` on the board; the agent numbers from
+`<BASE-N>`+1), `<PNUM>` / `<OWNER>` (board coordinates), and `<DRY-RUN>` (`yes` / `no`).
+
+> You are the **decomposition agent** for auto-ship. Turn a finished design doc into
+> PR-sized cards on the "TO DO" project board. Do NOT write code, open a worktree, or set
+> any `Status` / `Depends on` field — auto-ship owns routing and will route the cards you
+> create.
+>
+> Design doc: `<DESIGN-PATH>`   epic slug: `<EPIC-SLUG>`   number cards from: TASK-<BASE-N>+1
+> dry-run: <DRY-RUN>
+>
+> 1. Read the design doc in full. Using `writing-plans` thinking, break the work into
+>    **independent, PR-sized, testable** slices — each a single coherent PR a competent
+>    engineer could ship on its own. Apply a YAGNI pass: cut anything not load-bearing for
+>    the design's goal. Sequence the slices into a dependency DAG (which must merge before
+>    which). Honor `ax-conventions` when shaping the slices (don't split across a hook
+>    boundary in a way that strands a half-wired plugin).
+> 2. **If dry-run = no:** for each slice i (1..N), in dependency order, create a
+>    draft-issue card —
+>    `gh project item-create <PNUM> --owner <OWNER> --title "[TASK-<n>] <title>" --body "<body>"`
+>    where `<n>` = <BASE-N>+i. Capture each returned item id. The **body** must be
+>    self-contained and specified enough to ship without a human decision, and MUST begin
+>    with these two marker lines, then the spec:
+>    ```
+>    epic: <EPIC-SLUG>
+>    design: <DESIGN-PATH>
+>
+>    <scope: what this PR delivers>
+>
+>    ## Acceptance
+>    - <criterion>
+>    ```
+>    Append `(walk)` to the title for a slice that is a manual-acceptance walk (verify
+>    behaviour in the running UI / cluster), not code.
+>    **If dry-run = yes:** do everything EXCEPT `item-create` — create no cards; return the
+>    manifest with `item: -` for each so the orchestrator can print the proposed breakdown
+>    with zero board writes.
+> 3. Return ONLY this handoff (the manifest — ids, titles, deps; **NO bodies**):
+>    ```
+>    epic: <EPIC-SLUG>
+>    cards:
+>      - task: TASK-<n>  item: <ITEM-ID | ->  title: <title>  deps: <space-sep TASK-ids | none>
+>      - …
+>    ```
 
 ## Failure-signature normalization
 

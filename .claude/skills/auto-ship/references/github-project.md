@@ -243,6 +243,29 @@ body via `set_needs_input`, §8 — **not** a failure attempt). **Needs Input �
 a human drag**, never an orchestrator write; it re-enters via the triage gate (§8).
 Walk cards stay in **Backlog** unless a human moves them to To Do.
 
+**Forward learning (on merge).** After moving a card → Done, propagate its handoff
+`learnings:` to every still-queued **To Do** card sharing its `epic:<slug>`. Find those
+item-ids **shell-side** from `$ITEMS` (never surface a body to the model), then
+`append_learnings` each bullet:
+
+```bash
+# same-epic queued cards — To Do cards whose body carries `epic: <slug>`; item-ids ONLY:
+EPIC=<slug>
+IDS=$(printf '%s' "$ITEMS" | jq -r --arg e "epic: $EPIC" \
+  '.items[] | select(.status=="To Do") | select((.content.body // "") | contains($e)) | .id')
+source .claude/auto-ship-progress.sh
+for id in $IDS; do append_learnings "$id" "from $TASK_ID: <bullet>"; done   # one call per learnings bullet
+```
+
+Best-effort; a failed learnings write never blocks the merge. (The just-merged card is now
+**Done**, so it is naturally excluded from the To Do filter — no self-write.)
+
+**Design-intake card creation.** In design-intake mode the **decomposition agent** runs
+`item-create` for each slice with the `epic:<slug>` + `design:` markers in the body
+(`references/templates.md` › Decomposition dispatch prompt); the orchestrator then
+`board_batch`es each new card's `Status → To Do` + `Depends on` from the returned
+manifest — the agent never sets routing.
+
 ## 5. The poller (model-token-free To Do watcher — but NOT GraphQL-free)
 
 Write this at run start and launch it with the Bash tool, `run_in_background: true`.
@@ -382,6 +405,38 @@ SH
 chmod +x .claude/auto-ship-progress.sh
 ```
 
+**Forward-learning sibling — `append_learnings`** (SKILL.md › Forward learning). Same
+shell-side RMW discipline, a distinct `AUTOSHIP-LEARNINGS` block. Append it to the helper
+file at run start. **Call it ONLY for To Do cards** — an In-Progress card's body belongs
+to its building agent (one writer at a time):
+
+```bash
+cat >> .claude/auto-ship-progress.sh <<'SH'
+# append_learnings <project-item-node-id> "<from-line>"
+# Append a predecessor-learning bullet to the delimited LEARNINGS block of a QUEUED
+# To Do card. Shell-side RMW (body never enters the model's context); best-effort.
+append_learnings() {
+  local item="$1" line="$2"
+  local START='<!-- AUTOSHIP-LEARNINGS:START -->'
+  local END='<!-- AUTOSHIP-LEARNINGS:END -->'
+  local entry="- $line"
+  local q='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id body}}}}}'
+  local json cid body nb
+  json=$(gh api graphql -f query="$q" -f i="$item" 2>/dev/null) || { echo "learnings: skip (read)"; return 0; }
+  cid=$(printf '%s' "$json" | jq -r '.data.node.content.id // empty')
+  body=$(printf '%s' "$json" | jq -r '.data.node.content.body // ""')
+  [ -z "$cid" ] && { echo "learnings: skip (not a draft-issue card)"; return 0; }
+  if printf '%s' "$body" | grep -qF "$START"; then
+    nb=$(printf '%s' "$body" | awk -v e="$entry" -v end="$END" '$0==end{print e} {print}')
+  else
+    nb=$(printf '%s\n\n%s\n### Predecessor learnings\n%s\n%s' "$body" "$START" "$entry" "$END")
+  fi
+  gh api graphql -f query='mutation($d:ID!,$b:String!){updateProjectV2DraftIssue(input:{draftIssueId:$d,body:$b}){draftIssue{id}}}' \
+    -f d="$cid" -f b="$nb" >/dev/null 2>&1 && echo "learnings: $entry" || echo "learnings: skip (write)"
+}
+SH
+```
+
 Shell state does **not** persist across Bash calls, so `source` + call go in the
 **same** invocation each time:
 
@@ -503,20 +558,23 @@ discipline as the progress block (§6), human description preserved outside the 
 <!-- AUTOSHIP-NEEDS-INPUT:START -->
 ### ⚠ Needs input before this can ship
 
-Answer each question on its own line below (replace the `_…_` placeholder), then drag
-this card back to **To Do**.
+Type your answer on the **A** line under each question (leave the `Qn` / `An` labels in
+place), then drag this card back to **To Do**.
 
 **Q1.** <question>
-- _your answer_
+
+**A1.**
 
 **Q2.** <question>
-- _your answer_
+
+**A2.**
 <!-- AUTOSHIP-NEEDS-INPUT:END -->
 ```
 
-One question per **rendered block**, each with its own answer slot — never collapse
-multiple questions into a single line. A human filling this in shouldn't have to
-untangle a paragraph; the helper below does the splitting for you (see the quoting note).
+Each question renders as a `**Qn.**` line followed by its **own blank** `**An.**` answer
+line — Q and A never share a line, and the answer starts empty for the human to fill.
+Never collapse multiple questions onto one line; the helper below does the splitting for
+you (see the quoting note).
 
 The **triage agent** writes this block directly for the underspec path (it's already
 reading the body, and no other writer owns a To Do / Needs-Input card). When re-triage
@@ -546,11 +604,12 @@ set_needs_input() {
   cid=$(printf '%s' "$json" | jq -r '.data.node.content.id // empty')
   body=$(printf '%s' "$json" | jq -r '.data.node.content.body // ""')
   [ -z "$cid" ] && { echo "needs-input: skip (not a draft-issue card)"; return 0; }
-  # normalize literal "\n" -> real newline (defensive), drop blanks, number each
-  # question and give it its own answer slot so the human edits a clean list.
+  # normalize literal "\n" -> real newline (defensive), drop blanks, then emit one
+  # **Qn.** line + its OWN blank **An.** line per question (each its own paragraph) so
+  # Q and A never share a line and the human types into an empty slot.
   items=$(printf '%s' "$questions" | awk '{ gsub(/\\n/, "\n"); print }' \
-            | awk 'NF { printf "**Q%d.** %s\n- _your answer_\n\n", ++n, $0 }')
-  block=$(printf '%s\n### ⚠ Needs input before this can ship\n\nAnswer each question on its own line below (replace the `_…_` placeholder), then drag this card back to **To Do**.\n\n%s\n%s' \
+            | awk 'NF { n++; printf "**Q%d.** %s\n\n**A%d.**\n\n", n, $0, n }')
+  block=$(printf '%s\n### ⚠ Needs input before this can ship\n\nType your answer on the **A** line under each question (leave the `Qn` / `An` labels in place), then drag this card back to **To Do**.\n\n%s%s' \
             "$START" "$items" "$END")
   # drop any prior block (markers inclusive), then append the fresh one
   stripped=$(printf '%s' "$body" | awk -v s="$START" -v e="$END" 'BEGIN{k=0} $0==s{k=1} k==0{print} $0==e{k=0}')
@@ -559,6 +618,19 @@ set_needs_input() {
     -f d="$cid" -f b="$nb" >/dev/null 2>&1 && echo "needs-input: set" || echo "needs-input: skip (write)"
 }
 SH
+```
+
+**Completeness guard (run start).** `set_needs_input` lives in this helper file alongside
+`append_progress` + `append_learnings` (§6). A *stale* on-disk file can predate a function
+— an early run that wrote only `append_progress` was the cause of a real regression: the
+triage agent's `set_needs_input` call silently no-op'd and it hand-rolled a mangled Q&A
+block. After (re)writing the helper at run start, confirm it is whole:
+
+```bash
+source .claude/auto-ship-progress.sh
+for f in append_progress set_needs_input append_learnings; do
+  type "$f" >/dev/null 2>&1 || echo "STALE HELPER: $f missing — re-write the cat blocks (§6/§8.3; the first cat > truncates, so a full rewrite is safe)"
+done
 ```
 
 ### 8.4 The triage agent

@@ -1,6 +1,6 @@
 ---
 name: auto-ship
-description: Use when asked to autonomously drain the "TO DO" GitHub project board — watch the To Do lane (token-free, once a minute), review dependencies on every change, ship each dep-free card via yolo-ship (up to 3 in flight), merge the green PRs through a serialized queue, and loop continuously. Triggers on "drain the board", "run auto-ship", "watch the To Do board and ship ready tasks", "work the board autonomously", "fan out the To Do lane and ship it". For a SINGLE task, use yolo-ship instead.
+description: Use when asked to autonomously drain the "TO DO" GitHub project board — watch the To Do lane (token-free, once a minute), review dependencies on every change, ship each dep-free card via yolo-ship (up to 3 in flight), merge the green PRs through a serialized queue, and loop continuously. Also decomposes a finished design doc into PR-sized To Do cards (deps wired) before draining. Drain triggers: "drain the board", "run auto-ship", "watch the To Do board and ship ready tasks", "work the board autonomously", "fan out the To Do lane and ship it". Design-intake triggers: "auto-ship --design <path>", "decompose this design into cards", "plan this design into PR-sized tasks and ship it", "break this design into cards". For a SINGLE task, use yolo-ship instead.
 user-invocable: true
 ---
 
@@ -15,6 +15,11 @@ this repo) is the single source of truth for tracked work — see CLAUDE.md ›
 every ready card (no unmet dependency) via `yolo-ship` — up to 3 in flight — **merge**
 the green PRs through a **serialized** queue, and **loop continuously**. Humans and
 agents both edit the board live; you react to whatever lands in To Do.
+
+**Two entry modes.** Most runs **drain** an already-populated board. But given a finished
+**design doc** — `/auto-ship --design <path>` — auto-ship first runs a one-shot
+**design-intake** pre-pass that decomposes the design into PR-sized cards (deps wired) in
+**To Do**, then falls straight through into the same drain loop. See **Design-intake mode**.
 
 You are the **orchestrator**. You dispatch agents; you do not implement. Heavy work
 lives in subagents so your context stays lean. All durable state lives **on the
@@ -81,10 +86,12 @@ yolo-shipped** — see Cluster-walk lane.
 
 At run start: resolve the board, ensure the 7-lane `Status` set + the `Depends on`
 field exist (`references/github-project.md` §1–2), write the poller, the progress +
-needs-input helpers (`.claude/auto-ship-progress.sh`, §6/§8), **and** the batched board
-helper (`.claude/auto-ship-board.sh`, §2b) + take the owner lock (§7), **reconcile any
-orphaned in-flight cards** (§7 — this is the crash/resume recovery step), print the
-plan, launch the poller, then idle. You then run the same pass on **every wake**:
+needs-input + learnings helpers (`.claude/auto-ship-progress.sh`, §6/§8), **and** the
+batched board helper (`.claude/auto-ship-board.sh`, §2b) + take the owner lock (§7),
+**reconcile any orphaned in-flight cards** (§7 — this is the crash/resume recovery
+step), print the plan, launch the poller, then idle. **If invoked with `--design
+<path>`**, run the **Design-intake mode** pre-pass right after the lock + reconcile (it
+populates To Do), then continue. You then run the same pass on **every wake**:
 
 ```dot
 digraph autoship {
@@ -120,6 +127,43 @@ Three wake signals, all run the same pass:
 **Print the plan before the first dispatch** (ready set + skip-list + lane plan) so a
 watching human can interrupt. `--dry-run` runs one review+recompute pass, prints the
 plan, and stops — **no dispatch, no board writes, no poller**.
+
+## Design-intake mode (`--design <path>`)
+
+Given a finished **design doc** (a spec — typically the output of brainstorming), turn it
+into PR-sized cards before draining. This is a **one-shot pre-pass** that runs once at the
+top of the run, then falls through into the normal control loop. There is **no separate
+epic-plan doc**: the design doc is the source of truth for the *why*, the **cards + their
+`Depends on` DAG are the decomposition**, and each card grows its own implementation plan
+when it ships (yolo-ship Phase 2/3). One source of truth per concept (CLAUDE.md › Task
+Board Policy).
+
+1. **Dispatch ONE decomposition agent** (`general-purpose`, **no worktree** — it touches
+   only the board via `gh`, commits nothing), using the **Decomposition dispatch prompt**
+   in `references/templates.md`. Pass it the **design-doc path**, the **epic slug** (from
+   the doc filename), and the current **max `[TASK-n]`** on the board. It reads the
+   design, breaks it into **independent, PR-sized, testable** slices (a YAGNI pass — cut
+   dead tasks), sequences them into a dependency DAG, and **creates one draft-issue card
+   per slice**: title `[TASK-n] <title>`, body = that slice's self-contained spec (scope +
+   acceptance criteria) **+ a `design:` pointer + an `epic:<slug>` marker** (load-bearing —
+   Forward learning keys off it), `(walk)`-tagged where the design calls for a
+   manual-acceptance step. It returns a **compact manifest only** (`task · item · title ·
+   deps`), never the bodies — your context stays lean.
+2. **Apply routing (you, shell-side, batched).** From the manifest, set each new card's
+   `Status → To Do` and `Depends on → <task-ids | none>` in one `board_batch` mutation
+   (§4/§2b). You are the sole writer of the routing fields. Journal `decomposed <design>
+   -> TASK-a..TASK-z`.
+3. **Print the breakdown** (cards + dep DAG) so a watching human can interrupt, then
+   **fall through into the normal control loop** — triage normalizes the new cards, dep
+   review leaves the planner's deps in place (non-empty ⇒ not re-analyzed), readiness
+   picks the `deps=none` roots, and draining proceeds exactly as for any board.
+
+Cards land in **To Do**, not Backlog: the dep DAG sequences them (only `deps=none` roots
+are ready first; dependents wait in To Do until their deps reach Done). The
+plan-print-before-first-dispatch and **`--dry-run`** are the review affordances — there is
+no separate hold-in-Backlog gate. `--design <path> --dry-run` runs the decomposition
+agent in **propose-only** mode (prints the slice breakdown + deps, creates **no** cards,
+makes no board writes) and stops — your pre-commit preview of the decomposition.
 
 ## Triage gate (first review step, on every To Do change)
 
@@ -217,8 +261,9 @@ git checkout main && git pull --ff-only
 On a `pr-green` handoff (PR open, pre-merge): move the card → **In Review** (the agent
 already logged `PR #<n> opened` in its progress block — you no longer append a link).
 After the merge: move the card → **Done**, `append_progress … "merged #<n> ✅"` on the
-card, append `merged #<n>` to the journal, and **create a new To Do card for each
-follow-up** the agent reported (set its deps). You are the **sole writer of the
+card, append `merged #<n>` to the journal, **propagate the agent's `learnings:` to every
+still-queued same-epic To Do card** (Forward learning, below — shell-side, best-effort),
+and **create a new To Do card for each follow-up** the agent reported (set its deps). You are the **sole writer of the
 routing fields** (`Status`, `Depends on`) and the sole card-mover; the only thing an
 agent writes is the progress block of its own In-Progress card (§6). **Never** merge
 two PRs concurrently.
@@ -229,6 +274,38 @@ what catches cross-package breakage (e.g. a shared-table teardown no single pack
 exercises — see `feedback_new_fk_breaks_downstream_test_teardown`). After each merge,
 check the **main** run (`gh run list --branch main --limit 1`); if it goes **red**,
 **HALT and report** — do not merge onto a broken `main`. Resume once main is green.
+
+## Forward learning (queued cards learn from merged ones)
+
+Work shipped earlier in a run teaches the work still queued. A dependent card sits in
+**To Do** (not ready) until its dependency reaches **Done**, so by the time it is
+dispatched its predecessors have merged — and their lessons should reach it. Two channels
+carry them, both fed by the **`learnings:`** field every yolo-ship handoff now returns
+(≤3 curated bullets that *change assumptions for other tasks* — a changed interface, an
+established pattern, a decision, a gotcha, or "this sibling card's premise is now wrong";
+`none` if nothing):
+
+- **Channel A — the board (active, scoped, primary).** On merge of card X, append X's
+  `learnings:` to a delimited **Predecessor learnings** block in the body of **every
+  still-queued To Do card sharing X's `epic:<slug>`**. You already hold the bullets
+  (they're in X's ≤150-word handoff); find the same-epic To Do cards by a **shell-side
+  `jq`** over the bound `$ITEMS` snapshot (match `epic: <slug>` in the body, emit
+  **item-ids only** — bodies never enter your context, see `references/github-project.md`
+  §4), and write each via the shell-side **`append_learnings`** helper (§6).
+  **One-writer-safe:** learnings are written **only to To Do cards** (no agent owns them);
+  an In-Progress card's body belongs to its building agent. When such a card is finally
+  dispatched, yolo-ship re-reads its own card body, reconciles its plan/spec against the
+  accumulated learnings, and either adapts (logging the decision) or returns `blocked →
+  Needs Input` if a learning invalidates the card's premise (a human-owned scope change).
+- **Channel B — repo memory (passive, global, already there).** yolo-ship commits
+  decisions/patterns/mistakes to `.claude/memory/` on its branch; on merge those land on
+  `main`, and every *later*-dispatched card branches a fresh worktree from the updated
+  `main`, inheriting both the merged code and memory. Channel A is the in-your-face,
+  epic-scoped boost; Channel B is the durable global substrate.
+
+This step runs inside the **merge queue** (below the merge, above the next dispatch), so a
+card merged and a card dispatched in the same pass still gets the fresh learnings first.
+It is **best-effort** — a failed learnings write never blocks a merge or a ship.
 
 ## Cluster-walk lane (`(walk)` cards)
 
@@ -302,7 +379,7 @@ Locally, gitignored only:
   merges, attempt counts, signatures, crash-recoveries). The loop-breakers read it; a
   resume rebuilds attempt history from it.
 - `.claude/auto-ship-todo-snapshot.txt` — the poller's last-seen To Do hash.
-- `.claude/auto-ship-progress.sh` — the shell-side body-RMW helpers `append_progress` (§6) + `set_needs_input` (§8).
+- `.claude/auto-ship-progress.sh` — the shell-side body-RMW helpers `append_progress` (§6) + `set_needs_input` (§8) + `append_learnings` (§6).
 - `.claude/auto-ship-board.sh` — the batched board helpers `board_snapshot` + `board_batch` (§2b).
 - `.claude/auto-ship-board.json` — the once-per-pass board snapshot cache (§3).
 - `.claude/auto-ship-owner.lock` — the single-instance heartbeat (§7).
@@ -351,3 +428,7 @@ in-flight, and any walk-filed follow-ups.
 | "An In-Progress card looks stuck, I'll re-dispatch it" | Only on a **run-start** wake (no live agents). On a board-change/agent-done wake those agents are live — reconciling would double-dispatch. |
 | "I'll poll the board myself each minute" | That burns model tokens. The background poller is model-token-free (it still spends ~1 GraphQL pt/poll — see §5; never `gh project item-list`, that's ~102 pt) and re-invokes you on change. |
 | "This walk card is ready, I'll yolo-ship it" | `(walk)` cards run via the serialized k8s-acceptance-loop, never yolo-ship. |
+| "Design-intake — I'll park the new cards in Backlog for review" | No. Cards go straight to **To Do** with their deps; the dep DAG sequences them and the plan-print + `--dry-run` are the review gate. |
+| "I'll have the decomposition agent set the cards' Status / deps" | The agent only *creates* cards + writes bodies; **you** (the orchestrator) own routing — set Status→To Do + Depends on shell-side from the manifest. |
+| "I'll read the queued cards' bodies to splice in the learnings" | Never pull a body into context. `append_learnings` is shell-side; you find same-epic To Do ids by a shell-side `jq` match and pass only the bullets. |
+| "I'll push the merged card's learnings onto the in-flight cards too" | Only **To Do** cards (no agent owns them). An In-Progress card's body belongs to its building agent — writing it races the heartbeat. |
