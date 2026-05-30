@@ -50,7 +50,11 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import {
+  createTestHarness,
+  mockBlobStoreServices as blobStoreFakeServices,
+  type TestHarness,
+} from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import {
   makeAgentContext,
@@ -179,6 +183,10 @@ interface CaptureBundle {
  * runner posting /event.chat-end → the IPC server) so agent:invoke resolves
  * with a `complete` outcome.
  */
+// out-of-git Part D2: @ax/skills now stores bundle EXTRA files in the shared
+// blob store (hard-deps blob:put/blob:get). The shared content-addressed
+// in-process fake is `mockBlobStoreServices` (imported as blobStoreFakeServices).
+
 function buildCaptureFakes(busRef: { current: HookBus | null }): CaptureBundle {
   const proxyOpenInputs: CaptureBundle['proxyOpenInputs'] = [];
   const sandboxOpenInputs: CaptureBundle['sandboxOpenInputs'] = [];
@@ -186,6 +194,11 @@ function buildCaptureFakes(busRef: { current: HookBus | null }): CaptureBundle {
   const services: Record<string, ServiceHandler> = {
     'http:register-route': httpRegisterRouteStub,
     'auth:require-user': authRequireUserStub,
+
+    // out-of-git Part D2: @ax/skills now stores bundle EXTRA files in the shared
+    // blob store (hard-deps blob:put/blob:get). Provide a content-addressed
+    // in-process fake (the canary asserts reachability, not the fs backend).
+    ...blobStoreFakeServices(),
 
     // CAPTURING — allowlist + credentials land here.
     'proxy:open-session': async (_ctx, input: unknown) => {
@@ -463,7 +476,7 @@ describe('skill-install canary: install → attach → invoke (real plugins)', (
       const treeRow = await probe.query(
         "SELECT bundle_tree_sha FROM skills_v1_skills WHERE skill_id = 'github'",
       );
-      expect(treeRow.rows[0]?.bundle_tree_sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(treeRow.rows[0]?.bundle_tree_sha).toMatch(/^[0-9a-f]{64}$/);
     } finally {
       await probe.end().catch(() => {});
     }
@@ -643,6 +656,7 @@ describe('skill-install canary: user-scope isolation (real store)', () => {
       services: {
         'http:register-route': httpRegisterRouteStub,
         'auth:require-user': authRequireUserStub,
+        ...blobStoreFakeServices(),
       },
       plugins: [
         createDatabasePostgresPlugin({ connectionString }),
@@ -694,6 +708,7 @@ describe('skill-install canary: refresh-from-source (mocked fetch, through the p
       services: {
         'http:register-route': httpRegisterRouteStub,
         'auth:require-user': authRequireUserStub,
+        ...blobStoreFakeServices(),
       },
       plugins: [
         createDatabasePostgresPlugin({ connectionString }),
@@ -773,6 +788,7 @@ describe('skill-broker canary: search_catalog + request_capability reach the rea
         // http-server/auth here, so stub the two calls it declares.
         'http:register-route': httpRegisterRouteStub,
         'auth:require-user': authRequireUserStub,
+        ...blobStoreFakeServices(),
       },
       plugins: [
         createDatabasePostgresPlugin({ connectionString }),
@@ -841,6 +857,7 @@ describe('skill-broker canary: search_catalog + request_capability reach the rea
       services: {
         'http:register-route': httpRegisterRouteStub,
         'auth:require-user': authRequireUserStub,
+        ...blobStoreFakeServices(),
       },
       plugins: [
         createDatabasePostgresPlugin({ connectionString }),
@@ -1068,7 +1085,7 @@ describe('skill-install canary: share-to-catalog promotion (§6D, real plugins)'
       const globalRow = await probe.query(
         "SELECT bundle_tree_sha FROM skills_v1_skills WHERE skill_id = 'github'",
       );
-      expect(globalRow.rows[0]?.bundle_tree_sha).toMatch(/^[0-9a-f]{40}$/);
+      expect(globalRow.rows[0]?.bundle_tree_sha).toMatch(/^[0-9a-f]{64}$/);
     } finally {
       await probe.end().catch(() => {});
     }

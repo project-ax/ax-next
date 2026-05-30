@@ -1604,9 +1604,6 @@ importers:
       '@ax/skills-parser':
         specifier: workspace:*
         version: link:../skills-parser
-      isomorphic-git:
-        specifier: 1.37.5
-        version: 1.37.5
       js-yaml:
         specifier: ^4.1.0
         version: 4.1.1

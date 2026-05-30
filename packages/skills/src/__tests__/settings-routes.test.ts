@@ -7,6 +7,7 @@ import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { PluginError } from '@ax/core';
 import { createSkillsPlugin } from '../plugin.js';
+import { blobStoreFakeServices } from './_blob-fake.js';
 import { createSettingsSkillsHandlers } from '../settings-routes.js';
 import type { RouteRequest, RouteResponse } from '../admin-routes.js';
 import type {
@@ -131,6 +132,7 @@ async function makeHarness(opts: {
 
   const h = await createTestHarness({
     services: {
+      ...blobStoreFakeServices(),
       'http:register-route': httpRegisterRouteStub,
       'auth:require-user': async () => {
         if (authedUser === null) {

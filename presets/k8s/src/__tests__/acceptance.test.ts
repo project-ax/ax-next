@@ -4041,6 +4041,10 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // agents:any-attached-to-skill + agents:list-ids etc. all come from here
         // so skills:delete + routines can verify attachment state.
         createAgentsPlugin(),
+        // Blob backend (out-of-git Part D2): @ax/skills now stores bundle EXTRA
+        // files via blob:put/blob:get (hard `calls` dep), so the byte-store
+        // backend must be present for verifyCalls + any bundled-skill path.
+        createBlobStoreFsPlugin({ root: path.join(tmp, 'task21-blobs') }),
         // Real skills plugin: skills:upsert + skills:delete (Task 14 wiring).
         createSkillsPlugin(),
         // Routines hard deps not yet provided by the plugins above.

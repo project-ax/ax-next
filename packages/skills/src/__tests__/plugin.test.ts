@@ -1,15 +1,13 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
-import { PluginError } from '@ax/core';
+import { PluginError, type ServiceHandler } from '@ax/core';
 import { createSkillsPlugin, type SkillsPluginConfig } from '../plugin.js';
+import { blobStoreFakeServices } from './_blob-fake.js';
 import type {
   SkillsDeleteInput,
   SkillsDeleteOutput,
@@ -77,9 +75,17 @@ const authRequireUserStub = async () => ({ user: { id: 'admin', isAdmin: true } 
 async function makeHarness(opts: {
   services?: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>>;
   skillsConfig?: SkillsPluginConfig;
+  /**
+   * Optional SHARED blob backend (out-of-git Part D2). Pass the same map across
+   * two harness instances to simulate a process restart against a durable blob
+   * store — the role the old shared `bundleStore.repoRoot` played. Omitted → a
+   * fresh per-harness in-memory blob fake.
+   */
+  blobServices?: Record<string, ServiceHandler>;
 } = {}): Promise<TestHarness> {
   const h = await createTestHarness({
     services: {
+      ...(opts.blobServices ?? blobStoreFakeServices()),
       'http:register-route': httpRegisterRouteStub,
       'auth:require-user': authRequireUserStub,
       ...opts.services,
@@ -152,7 +158,13 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:approved-caps-set',
         'skills:approved-caps-revoke',
       ],
-      calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
+      calls: [
+        'database:get-instance',
+        'http:register-route',
+        'auth:require-user',
+        'blob:put',
+        'blob:get',
+      ],
       subscribes: [],
     });
   });
@@ -194,9 +206,8 @@ describe('@ax/skills service hooks (round-trip)', () => {
     expect(detail.bodyMd).toBe(updatedBody);
   });
 
-  it('skills:upsert + skills:resolve round-trip a bundle via a durable repoRoot', async () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'ax-skills-plugin-bundle-'));
-    const h = await makeHarness({ skillsConfig: { bundleStore: { repoRoot } } });
+  it('skills:upsert + skills:resolve round-trip a bundle via the blob store', async () => {
+    const h = await makeHarness();
     await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
       manifestYaml: SAMPLE_MANIFEST,
       bodyMd: SAMPLE_BODY,
@@ -210,10 +221,14 @@ describe('@ax/skills service hooks (round-trip)', () => {
     expect(out.skills[0]?.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
   });
 
-  it('a fresh plugin on the SAME durable repoRoot reads a previously-written tree', async () => {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'ax-skills-plugin-durable-'));
+  it('a fresh plugin against the SAME durable blob store reads a previously-written bundle', async () => {
+    // out-of-git Part D2: the blob store (not a git repoRoot) is the durable
+    // byte-store now. Share ONE blob fake across two harness instances to
+    // simulate a process restart against a durable blob backend.
+    const sharedBlob = blobStoreFakeServices();
+
     // First plugin instance writes the bundle.
-    const h1 = await makeHarness({ skillsConfig: { bundleStore: { repoRoot } } });
+    const h1 = await makeHarness({ blobServices: sharedBlob });
     await h1.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h1.ctx(), {
       manifestYaml: SAMPLE_MANIFEST,
       bodyMd: SAMPLE_BODY,
@@ -224,10 +239,11 @@ describe('@ax/skills service hooks (round-trip)', () => {
     const idx = harnesses.indexOf(h1);
     if (idx >= 0) harnesses.splice(idx, 1);
 
-    // A SECOND plugin instance pointed at the SAME repoRoot (the row's
-    // bundle_tree_sha survives in the shared DB) reconstructs the bytes from
-    // the durable bundle repo — proves the bytes aren't held in process memory.
-    const h2 = await makeHarness({ skillsConfig: { bundleStore: { repoRoot } } });
+    // A SECOND plugin instance against the SAME blob store (the row's
+    // bundle_tree_sha survives in the shared DB; the bytes survive in the
+    // shared blob store) reconstructs the bundle — proving the bytes aren't
+    // held in process memory of the first instance.
+    const h2 = await makeHarness({ blobServices: sharedBlob });
     const got = await h2.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h2.ctx(), {
       skillId: 'github',
     });
@@ -403,6 +419,7 @@ describe('@ax/skills service hooks (round-trip)', () => {
     // the delete path checks it.
     const h = await createTestHarness({
       services: {
+        ...blobStoreFakeServices(),
         'http:register-route': httpRegisterRouteStub,
         'auth:require-user': authRequireUserStub,
         'agents:any-attached-to-skill': async () => ({ attached: true }),
@@ -499,6 +516,7 @@ describe('@ax/skills credential purge on delete / slot removal', () => {
 
     const h = await makeHarness({
       services: {
+        ...blobStoreFakeServices(),
         'credentials:list': credListStub,
         'credentials:delete': credDeleteStub,
       },
@@ -550,6 +568,7 @@ describe('@ax/skills credential purge on delete / slot removal', () => {
 
     const h = await makeHarness({
       services: {
+        ...blobStoreFakeServices(),
         'credentials:list': credListStub,
         'credentials:delete': credDeleteStub,
       },
@@ -608,6 +627,7 @@ describe('@ax/skills credential purge on delete / slot removal', () => {
 
     const h = await makeHarness({
       services: {
+        ...blobStoreFakeServices(),
         'credentials:list': async () => ({ credentials: [...credStore] }),
         'credentials:delete': credDeleteStub,
       },
@@ -649,6 +669,7 @@ describe('@ax/skills credential purge on delete / slot removal', () => {
 
     const h = await makeHarness({
       services: {
+        ...blobStoreFakeServices(),
         'credentials:list': credListStub,
         'credentials:delete': credDeleteStub,
       },
@@ -1014,6 +1035,7 @@ describe('@ax/skills user-scope hooks (Phase D)', () => {
     // bus.hasService is true during init).
     const h = await createTestHarness({
       services: {
+        ...blobStoreFakeServices(),
         'http:register-route': httpRegisterRouteStub,
         'auth:require-user': authRequireUserStub,
         'agents:any-attached-to-skill': async () => ({ attached: true }),
@@ -1061,6 +1083,7 @@ describe('@ax/skills user-scope hooks (Phase D)', () => {
   it('global-scope delete still throws skill-in-use when reported in-use', async () => {
     const h = await createTestHarness({
       services: {
+        ...blobStoreFakeServices(),
         'http:register-route': httpRegisterRouteStub,
         'auth:require-user': authRequireUserStub,
         'agents:any-attached-to-skill': async () => ({ attached: true }),

@@ -8,12 +8,12 @@
  * Row mapping delegates to _row-mappers.ts (shared with store.ts) so the
  * two stores stay in sync without duplicating parsing logic.
  */
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import type { Kysely } from 'kysely';
 import type { SkillsDatabase } from './migrations.js';
-import { createBundleStore, type BundleStore } from './bundle-store.js';
+import {
+  createInMemoryBundleStore,
+  type BlobBundleStore,
+} from './blob-bundle-store.js';
 import {
   rowToUserDetail,
   rowToUserResolved,
@@ -55,9 +55,9 @@ export function createUserSkillsStore(
   // existing `createUserSkillsStore(db)` test call sites keep working; in
   // production the plugin injects the SAME instance as the global store so
   // identical bytes dedup across scopes.
-  bundleStore: BundleStore = createBundleStore(mkdtempSync(join(tmpdir(), 'ax-skills-bundles-'))),
+  bundleStore: BlobBundleStore = createInMemoryBundleStore(),
 ): UserSkillsStore {
-  // ---- bundle extra-file helpers (content-addressed git tree byte-store) ----
+  // ---- bundle extra-file helpers (content-addressed blob byte-store) ----
 
   async function loadFiles(treeSha: string | null): Promise<BundleFile[]> {
     return treeSha === null ? [] : bundleStore.readTree(treeSha);

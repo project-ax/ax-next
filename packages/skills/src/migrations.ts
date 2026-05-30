@@ -50,10 +50,12 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
       ADD COLUMN IF NOT EXISTS source_url TEXT NULL
   `.execute(db);
 
-  // Root git tree SHA of the bundle's EXTRA (non-SKILL.md) files. NULL = a
-  // single-file (SKILL.md-only) skill. The content-addressed git bundle store
-  // (TASK-40) supersedes skills_v1_skill_files as the byte-store; this column
-  // is the row's pointer into that store.
+  // Content address (sha256) of the bundle's EXTRA (non-SKILL.md) files. NULL =
+  // a single-file (SKILL.md-only) skill. Originally a git tree OID (TASK-40);
+  // out-of-git Part D2 swapped the byte-store to the shared `blob:*` store, so
+  // this now holds the blob's sha256 (a content hash, not a git oid). The column
+  // NAME is kept (additive-only migration policy; it's a storage detail that
+  // never appears in a hook payload — bundles cross boundaries as files[]).
   await sql`
     ALTER TABLE skills_v1_skills
       ADD COLUMN IF NOT EXISTS bundle_tree_sha TEXT NULL

@@ -5,11 +5,8 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { runSkillsMigration, type SkillsDatabase } from '../migrations.js';
-import { createBundleStore } from '../bundle-store.js';
+import { createInMemoryBundleStore } from '../blob-bundle-store.js';
 import { createCatalogRequestsStore } from '../catalog-requests-store.js';
 
 let container: StartedPostgreSqlContainer;
@@ -27,7 +24,7 @@ function makeKysely(): Kysely<SkillsDatabase> {
 }
 
 function freshBundleStore() {
-  return createBundleStore(mkdtempSync(join(tmpdir(), 'ax-catreq-bundles-')));
+  return createInMemoryBundleStore();
 }
 
 beforeAll(async () => {
