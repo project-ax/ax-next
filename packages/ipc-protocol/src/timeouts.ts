@@ -46,6 +46,30 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   // response is the file bytes base64-encoded. 10 s is generous for any
   // attachment file a user could plausibly upload within a single turn.
   'workspace.read': 10_000,
+  // TASK-68 (out-of-git Part C): runner-side blob store callers.
+  //
+  // `blob.put` — the runner streams an artifact's bytes (up to 100 MiB) to the
+  // host's content-addressed store as a raw octet-stream REQUEST body (the
+  // REQUEST-direction binary channel; mirror of materialize's response
+  // direction). Duration scales with the artifact size, so the per-attempt
+  // ceiling matches materialize's 120 s — capping it lower would relocate a
+  // large-artifact transfer into a timeout. Idempotent (content-addressed), so
+  // a retry re-stores identical bytes harmlessly.
+  'blob.put': 120_000,
+  // `blob.get` — the runner fetches a stored blob's bytes back as a raw
+  // octet-stream RESPONSE body (drained to a temp file, same path as
+  // materialize), to materialize `/ephemeral/uploads` at session start. Scales
+  // with the blob size; shares the 120 s ceiling.
+  'blob.get': 120_000,
+  // `artifact.publish` — after `blob.put` succeeds the runner posts the small
+  // metadata envelope so the host inserts the artifact row. Tiny JSON payload,
+  // single indexed insert host-side. 10 s is generous.
+  'artifact.publish': 10_000,
+  // `attachments.list` — runner-boot enumerate of the bound conversation's
+  // uploads (path + sha256 + display metadata) so it can pull each blob and
+  // materialize `/ephemeral/uploads`. Small JSON response (one row per upload).
+  // 10 s is generous for a single conversation's upload set.
+  'attachments.list': 10_000,
 });
 
 /** The closed set of sandbox→host RPC action names. */
