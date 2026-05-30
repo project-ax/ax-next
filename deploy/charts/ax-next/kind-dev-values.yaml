@@ -62,6 +62,19 @@ gitServerImage:
   tag: dev
   pullPolicy: IfNotPresent
 
+# ─── Blob store (out-of-git design Part A) ───────────────────────
+# Dev parity with prod object storage: run the in-cluster MinIO and point
+# @ax/blob-store-s3 at it. The MinIO root credentials (generated, lookup-
+# stable Secret) are wired into both the MinIO server and the host's S3
+# client automatically — you don't set them here. (Prod uses GCS+Workload-
+# Identity instead and leaves minio.enabled=false / sets blob.s3.* explicitly.)
+blob:
+  backend: s3
+
+minio:
+  enabled: true
+  storage: 1Gi
+
 sandbox:
   # kind doesn't ship gVisor. The plugin will WARN at boot.
   runtimeClassName: ""

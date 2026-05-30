@@ -1,0 +1,24 @@
+{{- if .Values.minio.enabled }}
+{{/*
+ClusterIP Service fronting the dev/test MinIO (out-of-git design Part A).
+The host's @ax/blob-store-s3 client reaches it at
+http://<svc>.<ns>.svc.cluster.local:<port> (ax-next.minioEndpointUrl), wired
+into AX_BLOB_S3_ENDPOINT in host/deployment.yaml. Not public — in-cluster only.
+*/}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "ax-next.minioComponentName" . }}
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "minio" "context" $) | nindent 4 }}
+spec:
+  type: ClusterIP
+  selector:
+    {{- include "ax-next.selectorLabels" (dict "component" "minio" "context" $) | nindent 4 }}
+  ports:
+    - name: s3
+      port: {{ .Values.minio.service.port }}
+      targetPort: s3
+      protocol: TCP
+{{- end }}
