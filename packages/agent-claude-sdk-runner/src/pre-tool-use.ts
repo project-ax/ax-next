@@ -36,15 +36,28 @@ export interface CreatePreToolUseHookOptions {
    * `resolveAttachmentPaths`.
    */
   workspaceRoot: string;
+  /**
+   * TASK-68: where uploaded attachments are MATERIALIZED on disk. Uploads left
+   * git — at session start the runner materializes them under
+   * `<ephemeralRoot>/uploads/<conv>/<turn>/<file>` (from the blob store), so a
+   * `.ax/uploads/...` reference in a tool input must re-root THERE, not under
+   * `<workspaceRoot>/.ax/uploads/`. When undefined (no ephemeral tier), the
+   * legacy `<workspaceRoot>/.ax/uploads/` target is used.
+   */
+  uploadsRoot?: string;
   /** Test seam: override the per-call id generator. Defaults to randomUUID. */
   idGen?: () => string;
 }
 
-// The workspace-relative namespace every uploaded attachment lives under
-// (`@ax/attachments` commits to `.ax/uploads/<conv>/<turn>/<file>`). It's our
-// own convention, so a path referencing it must resolve under the agent's
-// workspace root — that makes it a safe, deterministic re-root key.
+// The workspace-relative namespace every uploaded attachment is KEYED under in
+// the transcript (`.ax/uploads/<conv>/<turn>/<file>`). It's our own convention,
+// so a path referencing it resolves to the materialized on-disk copy — a safe,
+// deterministic re-root key the model can't strip.
 const UPLOADS_SEGMENT = '.ax/uploads/';
+// The on-disk subdir uploads materialize into under the ephemeral root
+// (`<ephemeralRoot>/uploads/<conv>/<turn>/<file>`). The transcript KEY keeps the
+// `.ax/` prefix; the materialized PATH drops it.
+const MATERIALIZED_SEGMENT = 'uploads/';
 // The path-bearing input fields of the builtin file tools (Read/Write/Edit →
 // file_path, NotebookEdit → notebook_path, Glob/Grep/LS → path). We rewrite
 // ONLY these — never free-text fields like Edit's old_string/new_string,
@@ -53,16 +66,32 @@ const UPLOADS_SEGMENT = '.ax/uploads/';
 const PATH_INPUT_KEYS = new Set(['file_path', 'path', 'notebook_path']);
 
 /**
- * If `value` is a path that references the `.ax/uploads/` attachment namespace
- * as a path segment, return it re-rooted at `<root>/.ax/uploads/...`; else
- * null (leave the value alone).
+ * If `value` references the `.ax/uploads/` attachment namespace as a path
+ * segment, return it re-rooted at the MATERIALIZED on-disk location; else null
+ * (leave the value alone).
+ *
+ * TASK-68: uploads no longer live in git at `<workspaceRoot>/.ax/uploads/`. They
+ * materialize under `<uploadsRoot>/uploads/<conv>/<turn>/<file>` (uploadsRoot =
+ * the ephemeral root). The transcript KEY keeps the `.ax/uploads/` prefix (the
+ * stable download/scope key), so we map `.ax/uploads/<rest>` →
+ * `<uploadsRoot>/uploads/<rest>` (drop the `.ax/`). When no ephemeral tier is
+ * wired (`uploadsRoot` undefined), fall back to the legacy
+ * `<workspaceRoot>/.ax/uploads/<rest>` target.
  *
  * Matches the segment at a path boundary (start of string or after a `/`) so
  * `foo.ax/uploads/x` is NOT treated as an attachment, and refuses any `..`
  * segment so a crafted `.ax/uploads/../../etc/x` can't be re-rooted out of the
- * workspace. Idempotent on an already-correct `<root>/.ax/uploads/...` path.
+ * materialized dir. Idempotent on an already-correct materialized path.
  */
-function rerootUploadsPath(value: string, root: string): string | null {
+function rerootUploadsPath(
+  value: string,
+  workspaceRoot: string,
+  uploadsRoot: string | undefined,
+): string | null {
+  // Already a correct materialized path? Leave it (idempotent).
+  if (uploadsRoot !== undefined && value.startsWith(`${uploadsRoot}/${MATERIALIZED_SEGMENT}`)) {
+    return null;
+  }
   let idx = -1;
   if (value.startsWith(UPLOADS_SEGMENT)) {
     idx = 0;
@@ -73,7 +102,13 @@ function rerootUploadsPath(value: string, root: string): string | null {
   if (idx < 0) return null;
   const rel = value.slice(idx); // `.ax/uploads/<...>`
   if (rel.split('/').includes('..')) return null;
-  return `${root}/${rel}`;
+  if (uploadsRoot !== undefined) {
+    // `.ax/uploads/<rest>` → `<uploadsRoot>/uploads/<rest>` (drop the `.ax/`).
+    const afterPrefix = rel.slice(UPLOADS_SEGMENT.length); // `<conv>/<turn>/<file>`
+    return `${uploadsRoot}/${MATERIALIZED_SEGMENT}${afterPrefix}`;
+  }
+  // Legacy fallback: no ephemeral tier — keep the in-workspace target.
+  return `${workspaceRoot}/${rel}`;
 }
 
 /**
@@ -101,17 +136,19 @@ function rerootUploadsPath(value: string, root: string): string | null {
 export function resolveAttachmentPaths(
   input: unknown,
   workspaceRoot: string,
+  uploadsRoot?: string,
 ): { changed: boolean; input: Record<string, unknown> } {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) {
     return { changed: false, input: {} };
   }
   const src = input as Record<string, unknown>;
-  const root = workspaceRoot.replace(/\/+$/, '');
+  const wsRoot = workspaceRoot.replace(/\/+$/, '');
+  const upRoot = uploadsRoot?.replace(/\/+$/, '');
   let changed = false;
   const out: Record<string, unknown> = { ...src };
   for (const [key, value] of Object.entries(src)) {
     if (!PATH_INPUT_KEYS.has(key) || typeof value !== 'string') continue;
-    const rerooted = rerootUploadsPath(value, root);
+    const rerooted = rerootUploadsPath(value, wsRoot, upRoot);
     if (rerooted !== null && rerooted !== value) {
       out[key] = rerooted;
       changed = true;
@@ -124,7 +161,7 @@ export function createPreToolUseHook(
   opts: CreatePreToolUseHookOptions,
 ): HookCallback {
   const idGen = opts.idGen ?? ((): string => randomUUID());
-  const { workspaceRoot } = opts;
+  const { workspaceRoot, uploadsRoot } = opts;
 
   // `HookCallback` is `(input, toolUseID, options: { signal })` — the SDK
   // always invokes the hook with the third options arg. We don't use it, but
@@ -152,7 +189,7 @@ export function createPreToolUseHook(
     // host's tool:pre-call sees (and policy-checks) the real path the tool will
     // actually open — not the model's mis-rooted one. The re-rooted input is
     // also what we forward to the SDK on allow.
-    const resolved = resolveAttachmentPaths(input.tool_input, workspaceRoot);
+    const resolved = resolveAttachmentPaths(input.tool_input, workspaceRoot, uploadsRoot);
 
     let parsed: ToolPreCallResponse;
     try {
