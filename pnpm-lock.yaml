@@ -2161,6 +2161,9 @@ importers:
       '@ax/tool-artifact-publish':
         specifier: workspace:*
         version: link:../../packages/tool-artifact-publish
+      '@ax/tool-skill-propose':
+        specifier: workspace:*
+        version: link:../../packages/tool-skill-propose
       '@ax/validator-routine':
         specifier: workspace:*
         version: link:../../packages/validator-routine
