@@ -213,6 +213,32 @@ describeIfHelm('ax-next chart: blob backend wiring (out-of-git Part A)', () => {
     expect(secretKey?.value).toBeUndefined();
   });
 
+  it('the mkbucket Job sets MC_CONFIG_DIR to a writable path (non-root crashloop fix)', () => {
+    // TASK-80 regression: the Job runs as runAsUser 1000 with no HOME, so `mc`
+    // tried to write its config to the default ~/.mc (== /.mc) and crashlooped
+    // with `mkdir /.mc: permission denied`. It must point MC_CONFIG_DIR at a
+    // world-writable path (under /tmp) so a non-root user can write its config.
+    const docs = helmTemplate(['-f', KIND_DEV_VALUES]);
+    const job = docs.find(
+      (d) =>
+        d.kind === 'Job' &&
+        (d.metadata?.name ?? '').includes('-minio') &&
+        (d.metadata?.name ?? '').endsWith('-mkbucket'),
+    );
+    expect(job, 'mkbucket Job should render under helm template (it is a hook)').toBeDefined();
+    const spec = (job as K8sDoc).spec as {
+      template?: { spec?: { containers?: Array<{ env?: EnvVar[] }> } };
+    };
+    const env = spec?.template?.spec?.containers?.[0]?.env ?? [];
+    const cfgDir = env.find((e) => e.name === 'MC_CONFIG_DIR');
+    expect(cfgDir, 'MC_CONFIG_DIR must be set so `mc` can write config as non-root').toBeDefined();
+    expect(typeof cfgDir?.value).toBe('string');
+    // Must resolve under /tmp (world-writable) and not the un-writable root
+    // home dir that caused the crashloop.
+    expect(cfgDir?.value).toMatch(/^\/tmp\//);
+    expect(cfgDir?.value).not.toBe('/.mc');
+  });
+
   it('the MinIO Secret never inlines a plaintext password value', () => {
     const docs = helmTemplate(['-f', KIND_DEV_VALUES]);
     const secret = docs.find(

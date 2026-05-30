@@ -54,6 +54,13 @@ spec:
               mc mb --ignore-existing "ax/{{ .Values.minio.bucket }}"
               echo "bucket ax/{{ .Values.minio.bucket }} ready"
           env:
+            # We run as UID 1000 with no home dir, so `mc` can't write its
+            # config to the default ~/.mc (== /.mc here) — it dies with
+            # `mkdir /.mc: permission denied` before it ever talks to MinIO.
+            # Point it at /tmp, which is world-writable, so a non-root user
+            # can stash its alias config and actually get to work.
+            - name: MC_CONFIG_DIR
+              value: /tmp/.mc
             - name: MINIO_ROOT_USER
               valueFrom:
                 secretKeyRef:
