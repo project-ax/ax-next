@@ -59,23 +59,59 @@ Four moves, independently shippable, in rough priority order.
 
 ### A. Transcript out of git → DB (reverts Phase D/E)
 
-The Claude Agent SDK writes each turn to a jsonl file. It is opaque, single-writer-per-session, last-write-wins — a blob, not a git tree. Two consumers need it: the **UI** (history) and the **SDK** (resume).
+Today the SDK's per-session jsonl (`.claude/projects/*/<sid>.jsonl`) is the **single** source of truth: it's committed to git every turn, and `conversations:get` reconstructs the displayed history by parsing it (`parseJsonlToTurns`). That one artifact is being asked to serve two jobs with different requirements, and that conflation is the awkwardness. Split it:
 
-**New host IPC action** `session.save-transcript`:
+| Concern | Needs | Source of truth |
+|---|---|---|
+| **Redisplay** an old chat perfectly | tool calls, errors, approval cards, artifact chips, cold-start narration, skill notices — incl. **host-generated UI events the SDK never sees** | **display event log** (host-owned DB rows) |
+| **Resume** + reuse warm KV cache | byte-exact SDK transcript incl. bookkeeping (`queue-operation`, `last-prompt`, `skill_listing`) | **the SDK jsonl** (verbatim, DB rows) |
+
+These are different shapes. Neither is derived from the other: the jsonl is lossy for display (no host UI events), the display log is lossy for resume (no SDK bookkeeping). This is *better* on I4, not worse — **display** has one SoT and **resume** has one SoT; they don't overlap. The model/tool *content* appears in both (two serializations of the same turn), with clear authority: the jsonl is authoritative for **what the model saw**, the event log for **what the user saw**. On divergence, neither is "fixed" from the other — divergence is a bug.
+
+#### A1. Display event log (the redisplay SoT)
+
+Don't reconstruct the display by re-parsing the jsonl. Persist **the exact ordered stream of UI events the host already emits to the browser over SSE** — turn deltas, tool-call frames, permission/approval cards, surfaced provider/sandbox errors, artifact-published frames, cold-start narration. Three reasons:
+
+1. **The jsonl is missing half the UI.** Approval cards, surfaced errors, artifact chips, narration, "skill installed" notices are *host/orchestrator* events — not in the SDK transcript. Redisplay from the jsonl drops them on reload.
+2. **Reload == live, by construction.** The live chat is a fold over the SSE stream; replaying the *same* persisted frames through the *same* renderer makes an old chat identical to a live one — guaranteed, not hand-maintained. One render path, exercised both ways.
+3. **It decouples display from the SDK's internal format**, which carries display-noise bookkeeping and can shift across SDK versions.
+
+The runner **already ships this stream**: `event.stream-chunk` live (`main.ts` assistant/user branches) and `event.turn-end` at the `result` boundary (`main.ts:1304,1344`), carrying the turn's `ContentBlock[]`. The only change is host-side: **persist** those frames (append-only rows, `(conversationId, seq)`) instead of only fanning them out. `conversations:get` becomes "read the event log," not "parse the jsonl." Interactive widgets fold to terminal state naturally — a card's later "approved, granted X" frame is just a subsequent event; replay reproduces the resolved card with no special final-state bookkeeping. `reconstructAttachmentBlocks` stays (untrusted-input hardening).
+
+#### A2. Resume jsonl (the resume SoT) — opaque rows, not a blob
+
+The jsonl stays the resume artifact, but **out of git** and stored as **opaque rows, one per jsonl line** — raw verbatim line text keyed by `(conversationId, seq)`. Rows (not a whole-file snapshot) so a new turn is a cheap append, not an O(n) rewrite that turns a long session into O(n²) total upload. Two guardrails make that safe:
+
+- **Store raw line bytes, never parsed-then-reserialized JSON.** Re-serialization can shift key order / number formatting / unicode escaping; the resume artifact must round-trip faithfully. Reconstruction is a pure `ORDER BY seq` → join with `\n`. "Opaque" is preserved *inside* a row layout — we never interpret the contents.
+- **Append-mostly, with a prefix-hash guard.** The SDK jsonl is append-*mostly*, not guaranteed strictly byte-append-only — it can compact when context grows or update singleton entries (`last-prompt`) in place. Naive tail-only INSERT would silently diverge on a rewrite. So the runner ships the **delta** with an integrity check; mismatch → full resync.
+
+**New host IPC actions:**
 
 ```
-session.save-transcript(conversationId, jsonlBytes)   // octet-stream (callBinary), uncapped
+session.append-transcript(conversationId, fromSeq, prefixHash, lines[])
+    → { outcome: 'appended' | 'resync-required', prefixHash }
+session.replace-transcript(conversationId, jsonlBytes)   // callBinary; resync path only
 ```
 
-At turn-end the runner uploads the raw jsonl (it already reads it via `waitForTurnTranscript`). The host:
-- stores it as an opaque blob keyed by `conversationId` (a `conversation_transcripts` row, or the `blob:*` store from move B), **last-write-wins**, and
-- parses it with the parser it already owns (`parseJsonlToTurns`, whitelisting `user`/`assistant`/`tool`) for `conversations:get`.
+**Runner lifecycle** (replaces `commitTurnAndBundle` at the `result` boundary, `main.ts:1218`):
 
-`conversations:get` becomes a DB read + parse — no `workspace:list`/`workspace:read`, no synthetic ctx, no git. `reconstructAttachmentBlocks` stays (still untrusted-input hardening). **Resume**: the host hands the stored jsonl back to the resuming runner, which writes it into `$CLAUDE_CONFIG_DIR/projects/...` before `query({ resume })`. The F2a "is there a resumable transcript?" guard becomes "did we store one for this conversation?" — a DB check.
+1. **Keep** the existing `waitForTranscriptUuid` wait (`main.ts:1204`) — it blocks until the turn's *final* assistant line lands on disk (the SDK flushes it after yielding `result`). Without it we'd append rows missing the closing reply — the exact TASK-11 bug.
+2. Read the jsonl tail (reuse `locateJsonl`) past a **threaded byte offset** `sentOffset`, split into complete lines (hold back any trailing partial), and ship them via `session.append-transcript` with `prefixHash` = hash of bytes `[0..sentOffset)`.
+3. **Append path** (`prefixHash` matches host state): INSERT the new lines. O(1) per turn, tiny payload. The common case.
+4. **Resync path** (`outcome: 'resync-required'` — the SDK rewrote earlier bytes): re-ship the whole file once via `session.replace-transcript`. Rare, self-healing, never silent corruption.
+5. Advance the runner-local `sentOffset` / `sentSeq` / `prefixHash` — threaded across turns exactly like `parentVersion` is today (`main.ts:385`).
 
-This deletes, for the common chat path: the per-turn commit, bundle, push, host-mirror fetch, the `parent-mismatch` CAS, the rebase-resync loop, the deterministic-OID tri-party coupling, and the latency. We had a `conversation_turns` table before Phase E deleted it; this is largely that store, fed by a raw-blob upload instead of git.
+`sentOffset`/`sentSeq` start at `0` on a fresh session, or at the host's `max(seq)` on resume. A final flush fires at chat-end / idle (where the final commit sits today, `main.ts:1375`).
 
-> **Note on the SDK format:** store the jsonl as **opaque bytes** and round-trip it verbatim for resume. Do **not** reconstruct it from parsed turns — the SDK adds bookkeeping entries (`queue-operation`, `last-prompt`, `attachment`, `skill_listing`) we must not lose or reorder.
+**No concurrency hazard.** The `parent-mismatch` bug came from the git *mirror* advancing out-of-band, not from appends. The transcript has a **single writer per session** (that session's runner); `(conversationId, seq)` with a monotonic seq is contention-free. This is *not* the git CAS reborn.
+
+**Resume** hands the rows back: host joins `ORDER BY seq` → bytes → the resuming runner writes them into `$CLAUDE_CONFIG_DIR/projects/...` before `query({ resume })`. The F2a "is there a resumable transcript?" guard becomes a DB check (`max(seq) > 0`) — cheaper and more reliable than scanning a file that might be missing. The conversation→session bind stays gated on host-confirmed durability: bind after `append-transcript` succeeds (today: after the commit is `accepted`, `main.ts:1246`), so a turn killed before durability never leaves a stale resume pointer.
+
+Together A1+A2 delete, for the common chat path: the per-turn commit, bundle, push, host-mirror fetch, the `parent-mismatch` CAS, the rebase-resync loop, the deterministic-OID tri-party coupling, and the latency. We had a `conversation_turns` table before Phase E deleted it; A2 is largely that store, fed by a raw-line delta instead of git.
+
+> **KV-cache horizon.** Restoring the exact jsonl gives **resume correctness always** (any age) and **warm prompt-cache reuse only while warm** — Anthropic's server-side prompt cache is TTL-bounded (minutes), so a fresh pod replaying the identical prefix hits it for a *recently active* chat and pays full prefill for an old one. Cache reuse is a free bonus of the same mechanism, not a reason the jsonl must persist forever. The jsonl persists for resume correctness.
+
+> **Don't reconstruct the jsonl from the display log.** They're complementary and each authoritative for its own job — see the table above. Store the jsonl lines verbatim; never synthesize them from parsed turns.
 
 ### B. A content-addressed blob store (`blob:*`)
 
@@ -211,8 +247,8 @@ A genuine multi-replica future (ARCH-9) gets simpler: blobs are in object storag
 
 ## Open questions
 
-1. **Transcript store: Postgres-bytea vs the blob store?** Bytea is the smaller step (single table, transactional with the conversation row) but bloats WAL/backups; the blob store is cleaner at scale but adds a hop. Lean bytea for Phase 2, revisit if transcript size grows.
-2. **Transcript GC / retention.** Last-write-wins per conversation; deleting a conversation deletes its blob/row. Any version history wanted? (Probably not — the jsonl is cumulative.)
+1. **Resume-jsonl store: row-per-line in Postgres vs the blob store?** Row-per-line is the smaller step (one table, transactional with the conversation row, cheap appends, trivial `max(seq)` resume check) but adds many small rows per long session; a periodic compaction-to-blob is the escape hatch if row counts bite. The display event log (A1) is uncontroversially Postgres rows. Lean Postgres rows for both in Phase 2; revisit the resume store only if row volume bites.
+2. **Transcript GC / retention.** Append-only rows per conversation; deleting a conversation deletes its event-log + transcript rows. The `resync-required` path replaces a conversation's transcript rows wholesale. Any version history wanted? (Probably not — both logs are cumulative.)
 3. **Blob GC.** Reference-counted by attachment/artifact rows; a sweep deletes unreferenced sha256s. Simpler than LFS GC, but define the sweep's safety (don't delete a blob mid-upload).
 4. **Pattern A project artifacts** legitimately double-home (git + blob). Confirm that's acceptable rather than surprising.
 5. **Does anything still need `git`/`git-lfs` in the sandbox image** once blobs and transcripts leave? If only Pattern A needs git, gate the binary on that profile.
