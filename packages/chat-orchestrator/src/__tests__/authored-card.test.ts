@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildAuthoredCardPayload, authoredCardDedupKey } from '../authored-card.js';
+import { buildAuthoredCardPayload, authoredCardDedupKey, hasShownDelta } from '../authored-card.js';
 
 const EMPTY = { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
 
@@ -23,6 +23,14 @@ describe('buildAuthoredCardPayload', () => {
       new Set(['account:linear']),
     );
     expect(card!.slots).toEqual([{ slot: 'KEY', kind: 'api-key', account: 'linear', haveExisting: true }]);
+  });
+
+  it('keeps account but marks haveExisting:false when the vault ref is absent', () => {
+    const card = buildAuthoredCardPayload(
+      { skillId: 'linear', description: 'd', delta: { ...EMPTY, credentials: [{ slot: 'KEY', kind: 'api-key', account: 'linear' }] } },
+      new Set(['account:other']),
+    );
+    expect(card!.slots).toEqual([{ slot: 'KEY', kind: 'api-key', account: 'linear', haveExisting: false }]);
   });
 
   it('returns null for an empty shown delta', () => {
@@ -50,5 +58,42 @@ describe('authoredCardDedupKey', () => {
     const base = authoredCardDedupKey('s', { ...EMPTY, allowedHosts: ['a.com'] });
     const withMcp = authoredCardDedupKey('s', { ...EMPTY, allowedHosts: ['a.com'], mcpServers: [{ name: 'm', transport: 'stdio' as const, allowedHosts: [], credentials: [] }] });
     expect(base).toBe(withMcp);
+  });
+});
+
+describe('hasShownDelta', () => {
+  it('is false for an empty delta and an mcp-only delta', () => {
+    expect(hasShownDelta({ ...EMPTY })).toBe(false);
+    expect(
+      hasShownDelta({ ...EMPTY, mcpServers: [{ name: 'm', transport: 'stdio', allowedHosts: [], credentials: [] }] }),
+    ).toBe(false);
+  });
+  it('is true when any of hosts/slots/npm/pypi is non-empty', () => {
+    expect(hasShownDelta({ ...EMPTY, allowedHosts: ['a.com'] })).toBe(true);
+    expect(hasShownDelta({ ...EMPTY, credentials: [{ slot: 'K', kind: 'api-key' }] })).toBe(true);
+    expect(hasShownDelta({ ...EMPTY, packages: { npm: ['p'], pypi: [] } })).toBe(true);
+    expect(hasShownDelta({ ...EMPTY, packages: { npm: [], pypi: ['q'] } })).toBe(true);
+  });
+});
+
+describe('optional packages tolerance (ResolvedSkillForOrch-style delta)', () => {
+  it('hasShownDelta tolerates a missing packages field', () => {
+    expect(hasShownDelta({ allowedHosts: [], credentials: [] })).toBe(false);
+    expect(hasShownDelta({ allowedHosts: ['a.com'], credentials: [] })).toBe(true);
+  });
+  it('buildAuthoredCardPayload normalizes a missing packages field to empty arrays', () => {
+    const card = buildAuthoredCardPayload(
+      { skillId: 's', description: 'd', delta: { allowedHosts: ['a.com'], credentials: [] } },
+      new Set(),
+    );
+    expect(card).toEqual({
+      kind: 'skill', skillId: 's', description: 'd', authored: true,
+      hosts: ['a.com'], slots: [], packages: { npm: [], pypi: [] },
+    });
+  });
+  it('authoredCardDedupKey is stable whether packages is omitted or empty', () => {
+    const omitted = authoredCardDedupKey('s', { allowedHosts: ['a.com'], credentials: [] });
+    const empty = authoredCardDedupKey('s', { ...EMPTY, allowedHosts: ['a.com'] });
+    expect(omitted).toBe(empty);
   });
 });

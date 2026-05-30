@@ -7,7 +7,7 @@ import { PluginError, type AgentContext, type AgentMessage, type AgentOutcome, t
 // definition the sandbox backends validate against. See @ax/sandbox-protocol.
 import type { AgentConfig, ProxyConfig } from '@ax/sandbox-protocol';
 import { foldAuthoredSkillCaps } from './authored-egress.js';
-import { buildAuthoredCardPayload, authoredCardDedupKey } from './authored-card.js';
+import { buildAuthoredCardPayload, authoredCardDedupKey, hasShownDelta } from './authored-card.js';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -1862,13 +1862,10 @@ export function createOrchestrator(
     // deduped per (conversation, skillId, shown-delta). conversationId is the
     // SSE match key for skill cards, so guard on it.
     if (ctx.conversationId !== undefined && ctx.conversationId.length > 0) {
-      const cardable = authoredDraftSkills.filter(
-        (s) =>
-          s.proposalDelta.allowedHosts.length > 0 ||
-          s.proposalDelta.credentials.length > 0 ||
-          (s.proposalDelta.packages?.npm ?? []).length > 0 ||
-          (s.proposalDelta.packages?.pypi ?? []).length > 0,
-      );
+      // hasShownDelta is the SINGLE source of truth for "is there anything to
+      // card" — shared with buildAuthoredCardPayload's null check so the two
+      // can't diverge (it also tolerates the optional packages field).
+      const cardable = authoredDraftSkills.filter((s) => hasShownDelta(s.proposalDelta));
       if (cardable.length > 0) {
         // Vaulted refs → haveExisting on account-tagged slots (mirror request_capability).
         const vaultedRefs = new Set<string>();
@@ -1885,21 +1882,21 @@ export function createOrchestrator(
         }
         const fired = upfrontCardsByConv.get(ctx.conversationId) ?? new Set<string>();
         for (const s of cardable) {
-          const normDelta = {
-            ...s.proposalDelta,
-            packages: { npm: s.proposalDelta.packages?.npm ?? [], pypi: s.proposalDelta.packages?.pypi ?? [] },
-          };
-          const key = authoredCardDedupKey(s.id, normDelta);
+          // buildAuthoredCardPayload/authoredCardDedupKey normalize the optional
+          // packages field internally, so proposalDelta passes straight through.
+          const key = authoredCardDedupKey(s.id, s.proposalDelta);
           if (fired.has(key)) continue;
           const card = buildAuthoredCardPayload(
-            { skillId: s.id, description: s.description, delta: normDelta },
+            { skillId: s.id, description: s.description, delta: s.proposalDelta },
             vaultedRefs,
           );
           if (card === null) continue;
           fired.add(key);
           await bus.fire('chat:permission-request', ctx, card);
         }
-        if (fired.size > 0) upfrontCardsByConv.set(ctx.conversationId, fired);
+        // Always store back: `fired` is either a new Set or the existing
+        // reference (re-set is a harmless no-op), so no size guard is needed.
+        upfrontCardsByConv.set(ctx.conversationId, fired);
       }
     }
 
