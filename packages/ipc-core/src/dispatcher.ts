@@ -26,6 +26,7 @@ import {
 } from './handlers/blob.js';
 import { artifactPublishHandler } from './handlers/artifact-publish.js';
 import { attachmentsListHandler } from './handlers/attachments-list.js';
+import { skillProposeHandler } from './handlers/skill-propose.js';
 import { toolPreCallHandler } from './handlers/tool-pre-call.js';
 import { toolExecuteHostHandler } from './handlers/tool-execute-host.js';
 import { toolListHandler } from './handlers/tool-list.js';
@@ -107,6 +108,9 @@ ACTIONS.set('/conversation.store-runner-session', {
 ACTIONS.set('/blob.get', { method: 'POST', handler: blobGetHandler });
 ACTIONS.set('/artifact.publish', { method: 'POST', handler: artifactPublishHandler });
 ACTIONS.set('/attachments.list', { method: 'POST', handler: attachmentsListHandler });
+// TASK-74 (out-of-git Part D): the skill authoring chokepoint. Small JSON
+// request (the validated bundle), small JSON response (the gate verdict).
+ACTIONS.set('/skill.propose', { method: 'POST', handler: skillProposeHandler });
 // TASK-67 (out-of-git Part B / B2): resume-transcript JSON actions. append takes
 // a small JSON request + returns a JSON envelope; get-transcript takes a JSON
 // request and returns a BINARY response (HandlerBinary) — still an ordinary

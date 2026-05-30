@@ -149,6 +149,16 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
         'POST /attachments.list returns 500 — the runner cannot enumerate a conversation\'s uploads to materialize /ephemeral/uploads; unreachable in single-session deployments.',
     },
     {
+      // TASK-74 (out-of-git Part D): the skill authoring chokepoint. Reached on
+      // the /skill.propose route, but only in a deployment that loaded @ax/skills
+      // (which registers skills:propose). The single-session CLI has no skills
+      // store and never reaches it, so making it required would fail the CLI's
+      // bootstrap verifyCalls.
+      hook: 'skills:propose',
+      degradation:
+        'POST /skill.propose returns 500 — the runner cannot propose an authored skill; unreachable in deployments without a skills store.',
+    },
+    {
       // TASK-67 (out-of-git Part B / B2): the runner-side resume-transcript
       // callers. Reached on the /session.append-transcript /
       // .replace-transcript / .get-transcript routes, but only in a
