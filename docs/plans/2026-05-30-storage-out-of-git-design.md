@@ -136,6 +136,19 @@ Recommendation: ship `fs` + `s3`; run MinIO in kind for dev/test; point `s3` at 
 
 Large files move in two directions; both land in the **same** blob store, and **neither touches git**.
 
+**Attachments: where they live, before vs. after.** (Same story for artifacts, mirrored.)
+
+| | Today | After |
+|---|---|---|
+| **Durable home** | a git blob in `/permanent`'s history (committed via `attachments:commit` → `workspace:apply`) — *not* actually an LFS object, see §D | a sha256 object in the `blob:*` store (`fs` PVC / S3·GCS) |
+| **Sandbox-visible copy** | the committed file in `/permanent`, on the shared chat mirror | a read-only working copy in `/ephemeral/uploads/`, materialized at session start from `blob:get` |
+| **Metadata** | (implicit in the git tree path) | an `attachments` row `{conversationId, sha256, displayName, mediaType, size}` |
+| **Write path** | rides the per-turn commit/bundle → shares the mirror → `parent-mismatch` race | host-side `blob:put` on `POST /api/attachments`, before any sandbox exists |
+| **Download** | served out of the git mirror | `GET /api/files` → ACL → row → `blob:get` → stream |
+| **De-dup / integrity** | none (raw bytes per commit) | content-addressed: identical bytes stored once, digest-verified on read |
+
+The headline: attachments leave git **entirely**. And the "LFS" they're nominally leaving was never load-bearing — uploads are committed as raw git blobs today, *not* LFS objects (§D), so this removes dead machinery rather than migrating live LFS data.
+
 The sandbox already has the right mount (`pod-spec.ts:461`, subprocess `open-session.ts:264`): `/permanent` is git-tracked; **`/ephemeral`** is `emptyDir` scratch that `git add -A` (run in `/permanent`) never sees, and the runner already uses it (`env.ephemeralRoot`, the Python venv).
 
 **Outbound (artifacts).** Re-point the `artifact_publish` namespace from `/permanent/.ax/artifacts/**` to **`/ephemeral/artifacts/**`**:
