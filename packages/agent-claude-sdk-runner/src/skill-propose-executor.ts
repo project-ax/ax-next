@@ -128,7 +128,7 @@ export function createSkillProposeExecutor(opts: CreateSkillProposeExecutorOptio
     const split = splitSkillMd(skillMdText);
     if (split === null) {
       throw new Error(
-        'skill_propose: SKILL.md must start with a --- frontmatter fence (id/description/version)',
+        'skill_propose: SKILL.md must start with a --- frontmatter fence (name/description/version)',
       );
     }
 

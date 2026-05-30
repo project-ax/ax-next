@@ -522,6 +522,25 @@ export function parseSkillManifest(yaml: string): ParseResult {
 
   const doc = parsed as Record<string, unknown>;
 
+  // Step 2.5 (TASK-79, SECURITY): capability keys belong ONLY under the
+  // `capabilities:` mapping. A manifest that declares any of them at the TOP
+  // LEVEL is REJECTED, never silently ignored. Older skill_propose docs wrongly
+  // told the model to write `allowedHosts`/`credentials`/`packages` at the top
+  // level; the parser used to read only `doc['capabilities']`, so those keys
+  // were dropped → the proposal parsed to ZERO caps → the hybrid materialization
+  // gate classified the (intended cap-bearing) skill as `active` with NO approval
+  // card. That is the capability-loss bypass. Failing loud here turns a silent
+  // drop into a structural reject the author must fix.
+  const MISPLACED_CAP_KEYS = ['allowedHosts', 'credentials', 'mcpServers', 'packages'];
+  for (const k of MISPLACED_CAP_KEYS) {
+    if (k in doc) {
+      return err(
+        'invalid-manifest',
+        `"${k}" must be nested under the "capabilities:" mapping, not declared at the top level of the manifest.`,
+      );
+    }
+  }
+
   // Step 3: inline-secret scan at all depths
   const secretKey = findSecretKey(doc);
   if (secretKey !== undefined) {

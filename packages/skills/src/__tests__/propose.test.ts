@@ -42,6 +42,22 @@ capabilities:
       kind: api-key
 `;
 
+// TASK-79 (SECURITY repro): the capability-LOSS shape. The model followed the
+// OLD skill_propose docs and put the caps at the TOP LEVEL (and would have used
+// `id`) instead of under `capabilities:`. Before the parser fix this parsed to
+// ZERO caps → the gate classified it `active` (a cap-bearing Linear skill went
+// live with no approval card). It must now be REJECTED as malformed, never
+// silently active.
+const TOP_LEVEL_CAPS_MANIFEST = `name: linear
+description: Work with Linear issues.
+version: 1
+allowedHosts:
+  - api.linear.app
+credentials:
+  - slot: LINEAR_API_KEY
+    kind: api-key
+`;
+
 async function makeHarness(
   services: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>> = {},
 ): Promise<TestHarness> {
@@ -130,6 +146,39 @@ describe('skills:propose — the chokepoint + hybrid gate (TASK-74)', () => {
     });
     expect(out.skillId).toBe('linear');
     expect(out.status).toBe('pending');
+  });
+
+  it('SECURITY: a cap-bearing manifest with caps at the TOP LEVEL is REJECTED, never silently active', async () => {
+    // The capability-loss bypass (TASK-79): caps declared outside `capabilities:`
+    // used to be silently dropped → zero caps → gate said `active`. The propose
+    // chokepoint must now reject the malformed manifest and write NO row.
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+        ...baseProposal(TOP_LEVEL_CAPS_MANIFEST),
+        capabilityProposal: emptyCaps,
+      }),
+    ).rejects.toThrow();
+
+    // Crucially: nothing was written — there is NO active (or any) row for it.
+    const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
+      'skills:list-authored',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1' },
+    );
+    expect(listed.skills).toHaveLength(0);
+  });
+
+  it('SECURITY: the SAME skill authored correctly (caps under capabilities:) lands pending, not active', async () => {
+    // Proves the cap-bearing skill's only safe landing is `pending` (approval
+    // card), never `active` — closing the loop on the capability-loss bug.
+    const h = await makeHarness();
+    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(HOST_MANIFEST),
+      capabilityProposal: emptyCaps,
+    });
+    expect(out.status).toBe('pending');
+    expect(out.status).not.toBe('active');
   });
 
   it('QUARANTINE path: a skills:scan hit → quarantined with the reason; omitted from active', async () => {
