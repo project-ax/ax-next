@@ -97,6 +97,25 @@ describe('agent:apply-authored-capability-grant', () => {
     expect(mocks.trace.addHost).toEqual([]);
   });
 
+  it('a credential delta with NO warm session writes the slot row but reports respawned:false', async () => {
+    // Creds approved, but no warm session to retire — `respawned` reports "did
+    // we retire a warm session THIS call", not "is a respawn needed". The next
+    // turn has no warm session, so it cold-spawns fresh and PC-1 folds the
+    // now-approved credential into that spawn — the grant self-corrects.
+    const mocks = buildMocks({
+      draft: { id: 'linear', proposalDelta: { ...EMPTY_CAPS, credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }] } },
+      activeSessionId: null, liveSessions: new Set(),
+    });
+    const h = await harnessFor(mocks);
+    const out = await h.bus.call('agent:apply-authored-capability-grant', ctx(), {
+      conversationId: 'cnv-1', userId: 'user-1', agentId: 'agent-1', skillId: 'linear',
+    });
+    expect(out).toEqual({ applied: true, respawned: false });
+    expect(mocks.trace.setRows).toEqual([{ skillId: 'linear', kind: 'slot', value: 'LINEAR_API_KEY' }]);
+    expect(mocks.trace.terminate).toEqual([]);
+    expect(mocks.trace.addHost).toEqual([]);
+  });
+
   it('a non-draft skillId returns not-authored and writes nothing', async () => {
     const mocks = buildMocks({ draft: null, activeSessionId: null, liveSessions: new Set() });
     const h = await harnessFor(mocks);

@@ -2311,6 +2311,12 @@ export function createOrchestrator(
     ];
 
     // 3. Write the approval rows (host-side store, outside the agent's reach).
+    //    DELIBERATE fail-loud: a write error PROPAGATES (the route returns 500),
+    //    NOT best-effort-swallow. Swallowing would report `applied:true` while
+    //    silently failing to approve a cap — an "approved" host would stay
+    //    unreachable (a silent failure the user never sees). Propagating surfaces
+    //    it; `skills:approved-caps-set` is idempotent, so a retry re-writes the
+    //    (now-smaller) delta and converges. Do NOT "fix" this into a swallow.
     if (bus.hasService('skills:approved-caps-set')) {
       for (const row of rows) {
         await bus.call('skills:approved-caps-set', ctx, {
@@ -2345,6 +2351,12 @@ export function createOrchestrator(
           });
         }
       }
+      // `respawned` reports "did we retire a warm session THIS call", NOT "is a
+      // respawn needed". When there's no warm session (warm === null),
+      // respawned:false is correct/expected: the next turn has no warm session
+      // to reuse, so it cold-spawns fresh and PC-1 folds the now-approved
+      // credential into that spawn — the credential activates on the next turn
+      // regardless of whether we retired anything here.
       return { applied: true, respawned };
     }
 
