@@ -11,7 +11,6 @@ import {
   type WorkspaceReadInput,
   type WorkspaceReadOutput,
 } from '@ax/core';
-import { parseJsonlToTurns } from '@ax/agent-claude-sdk-runner-host';
 import {
   AttachmentBlockSchema,
   parseAttachmentMention,
@@ -1130,42 +1129,16 @@ async function getConversation(
     };
   }
 
-  // Legacy co-existence (scope boundary): a conversation whose turns predate
-  // TASK-66 has no event-log rows. Fall back to the runner's native jsonl so
-  // old chats still redisplay. Retiring the jsonl read entirely is
-  // TASK-67/70. (Phase D, 2026-05-02): skip the workspace round-trip when
-  // runnerSessionId is null (pre-Phase-C rows or fresh rows whose first turn
-  // hasn't landed yet).
-  //
-  // Build a synthetic ctx scoped to the conversation's owner before the
-  // workspace round-trip. The host-side workspace plugins (workspace-git,
-  // workspace-git-server-client) derive their workspaceId from
-  // (ctx.userId, ctx.agentId); the runner pod's commit-notify wrote the
-  // jsonl into ws-<hash([conv.userId, conv.agentId])>. Channel-web calls
-  // us with `initCtx` (userId='system', agentId='@ax/channel-web') —
-  // forwarding that ctx into workspace:list looks up a different (empty)
-  // workspaceId and returns no matches. The auth gate (input.userId ===
-  // conv.userId, plus assertAgentReachable above) already proved the
-  // caller owns this conversation, so it's safe to lift conv.userId /
-  // conv.agentId into the synthetic ctx for the read.
-  const turns =
-    conv.runnerSessionId === null
-      ? []
-      : await readTranscriptFromWorkspace(
-          bus,
-          makeAgentContext({
-            reqId: ctx.reqId,
-            sessionId: ctx.sessionId,
-            userId: conv.userId,
-            agentId: conv.agentId,
-            logger: ctx.logger,
-            workspace: ctx.workspace,
-          }),
-          conv.runnerSessionId,
-        );
+  // No display-event rows → nothing to redisplay. The legacy fallback that
+  // re-read the runner's native jsonl over git (`workspace:list` /
+  // `workspace:read`) is GONE (TASK-70 / out-of-git Phase 5): the resume
+  // jsonl left git in TASK-67, so the `.claude/projects/` glob no longer hits
+  // a git-tracked file, and there is no production data with pre-TASK-66
+  // (event-log-less) conversations to fall back FOR. The display event log
+  // (TASK-66) is now the sole redisplay source of truth.
   return {
     conversation: conv,
-    turns: reconstructAttachmentBlocks(turns, conv.conversationId),
+    turns: [],
     displayEvents: [],
   };
 }
@@ -1285,9 +1258,9 @@ function projectDisplayEvents(events: StoredEvent[]): ConversationDisplayEvent[]
  *
  * Why per-block (and not per-array-element-of-the-whole-turn) is enough:
  * the runner emits the typed prompt and EACH attachment as SEPARATE elements
- * of the user message's content array (main.ts), and the host jsonl parser
- * (`parseJsonlToTurns` / `normalizeContent`) keeps each array element as its
- * OWN ContentBlock — it only ever coalesces *assistant* lines sharing a
+ * of the user message's content array (main.ts), and the display-event-log
+ * projection (`projectEventTurns`) keeps each array element as its OWN
+ * ContentBlock — it only ever coalesces *assistant* lines sharing a
  * `message.id`, never user content. So two attachments arrive as two separate
  * text blocks here, each handled independently; the only fusion we must
  * tolerate within ONE text block is the SDK joining a typed prompt with a
@@ -1369,44 +1342,6 @@ function reconstructAttachmentBlocks(
     }
     return changed ? { ...t, contentBlocks: rebuilt } : t;
   });
-}
-
-/**
- * Phase D. Locate the runner's jsonl transcript by sessionId and parse it
- * into the canonical Turn[] shape. We glob via `workspace:list` instead of
- * hardcoding the SDK's cwd-encoding rule (which depends on
- * `AX_WORKSPACE_ROOT` and isn't a stable contract).
- *
- * Two graceful-empty paths preserve subscriber expectations:
- *   - `workspace:list` returns no matches → file hasn't been written
- *     yet OR a pre-Phase-C row that bound a runner session before the
- *     workspace plugin started persisting them.
- *   - `workspace:read` returns `{found:false}` → race between list and
- *     read (the file existed when listed, then vanished).
- */
-async function readTranscriptFromWorkspace(
-  bus: HookBus,
-  ctx: AgentContext,
-  runnerSessionId: string,
-): Promise<Turn[]> {
-  const list = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
-    'workspace:list',
-    ctx,
-    { pathGlob: `.claude/projects/**/${runnerSessionId}.jsonl` },
-  );
-  if (list.paths.length === 0) return [];
-  // Multiple matches are not expected — sessionIds are UUIDs and the
-  // workspace stores at most one jsonl per session — but if it
-  // happens, the list is sorted ascending by the workspace plugin so
-  // picking the first entry is deterministic.
-  const path = list.paths[0]!;
-  const read = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
-    'workspace:read',
-    ctx,
-    { path },
-  );
-  if (!read.found) return [];
-  return parseJsonlToTurns(read.bytes);
 }
 
 async function listConversations(

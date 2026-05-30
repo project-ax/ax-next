@@ -134,8 +134,8 @@ jobs:
 
   # Builds the container images so the Dockerfile pins are exercised on every
   # change that touches them. Without this lane the hard apt `=version` pins in
-  # container/agent/Dockerfile (ca-certificates=, tini=, git=, git-lfs=,
-  # python3=) silently ROT: when Debian ships a point release the superseded
+  # container/agent/Dockerfile (ca-certificates=, tini=, git=, python3=)
+  # silently ROT: when Debian ships a point release the superseded
   # .deb leaves the bookworm/main pocket, so `apt-get install pkg=oldver` 404s
   # and the image build breaks — undetected, because nothing in CI built the
   # image. A `docker build` is the only thing that re-resolves the apt index +

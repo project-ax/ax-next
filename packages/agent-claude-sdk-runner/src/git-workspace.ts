@@ -151,14 +151,13 @@ export async function materializeWorkspace(
       await runGit(['-C', root, 'update-ref', 'refs/heads/baseline', 'HEAD']),
       'git update-ref refs/heads/baseline',
     );
-    // Phase 2 (attachments): enable git-lfs smudge filters in this clone so
-    // LFS-tracked files (uploads under .ax/uploads/**, artifacts matching
-    // .gitattributes) check out as real bytes. --local writes only into
-    // THIS repo's .git/config, never HOME/system. Idempotent; safe to re-run.
-    await expectOk(
-      await runGit(['-C', root, 'lfs', 'install', '--local']),
-      'git lfs install --local',
-    );
+    // (TASK-70 / out-of-git Part E): the `git lfs install --local` that used
+    // to run here is gone. The LFS layer was never load-bearing — no
+    // `.gitattributes`/`git lfs track` ever ran, the default isomorphic-git
+    // backend ignores LFS filters, and uploads/artifacts now ride the
+    // content-addressed blob store (TASK-65/68), not git. Removing it also
+    // drops the git-lfs binary dependency from the sandbox.
+    //
     // Resolve the baseline OID for the caller. The runner uses this to
     // initialize parentVersion for its first commit-notify call: when
     // the workspace has prior history, parentVersion=null on the first
@@ -236,8 +235,8 @@ export async function scaffoldWorkspaceGitignore(root: string): Promise<void> {
 /**
  * Lay down `$CLAUDE_CONFIG_DIR/projects` as a symlink pointing INTO the
  * workspace at `<workspaceRoot>/.claude/projects` so the Anthropic SDK's
- * native turn-transcript writes land inside `/permanent` and get picked
- * up by the runner's turn-end `git add -A + bundle`.
+ * native turn-transcript writes land at a path the runner's out-of-git
+ * transcript pipeline knows.
  *
  * Background: Phase 0 set `CLAUDE_CONFIG_DIR=<sandbox-HOME>/.ax/session`
  * so skill-discovery's `'user'` setting source resolves to a host-owned
@@ -245,12 +244,21 @@ export async function scaffoldWorkspaceGitignore(root: string): Promise<void> {
  * load-bearing — see proxy-startup.ts (CLAUDE_CONFIG_DIR allowlist entry)
  * and main.ts (the (a)/(b) comment block in the query() env literal).
  *
- * Side effect we missed: the SDK ALSO derives its per-session jsonl path
- * from CLAUDE_CONFIG_DIR — `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
- * <sid>.jsonl`. After Phase 0 those writes started landing OUTSIDE the
- * workspace, so `git add -A` couldn't see them, so `conversations:get`
- * came back `{ turns: [] }` for every conversation booted on a
- * post-Phase-0 runner.
+ * Side effect: the SDK ALSO derives its per-session jsonl path from
+ * CLAUDE_CONFIG_DIR — `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
+ * <sid>.jsonl`. After Phase 0 those writes landed OUTSIDE the workspace,
+ * where the runner's transcript readers don't look.
+ *
+ * Why this still matters after TASK-67/70 (transcript out of git): the
+ * jsonl no longer needs to be COMMITTED — `.claude/projects/` is gitignored
+ * and the transcript ships as opaque rows via session.append-transcript,
+ * NOT a git bundle. But the per-turn delta-ship + uuid-wait readers
+ * (`locateJsonl` in transcript-delta.ts, turn-end-uuid.ts) readdir-walk
+ * `<workspaceRoot>/.claude/projects`, and the resume rebuild
+ * (`restoreTranscriptForResume`) WRITES the reconstructed jsonl there for
+ * the SDK to read back through THIS symlink. So the redirect is still
+ * load-bearing for path locality; only the "so git add -A sees it" reason
+ * is gone.
  *
  * The SDK's `projectsDir = join(configDir, "projects")` is hard-coded
  * (no separable env override), so we redirect the I/O at the filesystem
@@ -320,15 +328,25 @@ export async function scaffoldSdkProjectsSymlink(
  * Stage `/permanent`, commit any working-tree changes, and build a thin
  * bundle of the commits in `baseline..main`.
  *
- * Returns the bundle as base64 bytes, OR null when `baseline..main` is empty —
- * i.e. nothing to ship. That covers an empty turn (no staged changes AND no
- * prior commit) AND a re-sync replay whose commit became empty because its
- * content was already in the advanced baseline (a true absorb). The gate is
- * the commit RANGE, not the working-tree staged diff: after
- * `resyncBaselineAndReplay` the tree is clean but `main` carries the replayed
- * turn commit, which still needs shipping (returning null there would let the
- * caller drop it as "absorbed" — the bug this gate fixes). Caller skips the
- * commit-notify IPC call when null.
+ * Returns the bundle as base64 bytes, OR null when there is nothing to ship.
+ *
+ * This is the TASK-70 / out-of-git Phase-5 gate: with transcripts (TASK-67),
+ * blobs/attachments (TASK-68), and skills (TASK-69) all OFF git, the only thing
+ * a commit carries now is rare agent-state (identity / Pattern-A project code).
+ * A pure chat turn changes none of it — `.claude/projects/` is gitignored, so
+ * `git add -A` stages nothing → `git diff --cached --quiet` is clean → no commit
+ * → the range below is empty → null → the caller SKIPS the commit-notify IPC
+ * call. The per-turn commit fires ONLY on a non-empty /permanent diff.
+ *
+ * The authoritative ship signal is the commit RANGE `baseline..main`, NOT the
+ * working-tree staged diff: they diverge after `resyncBaselineAndReplay`, which
+ * rebases the turn's commit onto the advanced baseline and re-pins `baseline`,
+ * leaving a CLEAN working tree but a non-empty `baseline..main` (the replayed
+ * commit still needs shipping). The old "empty staged diff ⇒ return null"
+ * wrongly reported that as nothing-to-ship and the re-sync caller dropped the
+ * turn (TASK-11). So: return null only when `baseline..main` is genuinely empty
+ * (an empty turn, or a replay whose commit became empty because its content was
+ * already in the advanced baseline — a true absorb).
  */
 export async function commitTurnAndBundle(input: {
   root: string;

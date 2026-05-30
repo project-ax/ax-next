@@ -141,7 +141,6 @@ RUN apt-get update \
       curl=7.88.1-10+deb12u14 \
       tini=0.19.0-1+b3 \
       git=1:2.39.5-0+deb12u3 \
-      git-lfs=3.3.0-1+deb12u1 \
       python3=3.11.2-1+b1 \
       xz-utils=5.4.1-1 \
  && rm -rf /var/lib/apt/lists/*
@@ -154,12 +153,11 @@ RUN apt-get update \
 # header at the top of this file should be updated when that lands as
 # its own change.
 #
-# `git-lfs` is needed by runner pods to checkout LFS-tracked files
-# (user-uploaded attachments under `.ax/uploads/**`, agent artifacts
-# matching the LFS .gitattributes) so they materialize as their real
-# bytes rather than as LFS pointer text. The runner runs
-# `git lfs install --local` in /permanent after clone (see
-# packages/agent-claude-sdk-runner/src/git-workspace.ts).
+# `git-lfs` was REMOVED (TASK-70 / out-of-git Part E): the LFS layer was
+# never load-bearing — no `.gitattributes`/`git lfs track` ever ran, the
+# default isomorphic-git backend ignores LFS filters, and uploads/artifacts
+# now ride the content-addressed blob store (TASK-65/68), not git. Dropping
+# it shrinks the sandbox's binary surface.
 
 # amd64 ELF loader (multi-arch libc6:amd64). Lets x86-64-only Linux binaries
 # load and run inside this image. They don't run natively — Docker Desktop's

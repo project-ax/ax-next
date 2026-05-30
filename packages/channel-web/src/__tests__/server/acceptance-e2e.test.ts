@@ -401,63 +401,25 @@ describe('Week 10-12 acceptance', () => {
       { userId: 'userA', agentId: 'agt' },
     );
     const cid = created.conversationId;
-    // Phase D: GET reads from the runner's native jsonl in the
-    // workspace, not conversation_turns. Seed the mock workspace with
-    // a synthetic SDK transcript and bind the runner_session_id on the
-    // row so the lookup hits.
-    const sessId = 'sess-reload-1';
-    const lines = [
+    // GET reads redisplay from the display event log (TASK-66) — the legacy
+    // runner-jsonl read is gone (TASK-70 / out-of-git Phase 5). Seed three
+    // turns into the log, the same frames the host persists in production.
+    const seeded: Array<['user' | 'assistant', string]> = [
       ['user', 'one'],
       ['assistant', 'two'],
       ['user', 'three'],
-    ].map(([role, text], i) => {
-      const ts = new Date(2026, 3, 29, 12, 0, i).toISOString();
-      if (role === 'user') {
-        return JSON.stringify({
-          type: 'user',
-          message: { role: 'user', content: text },
-          uuid: `u-${i}`,
-          timestamp: ts,
-        });
-      }
-      return JSON.stringify({
-        type: 'assistant',
-        message: {
-          id: `m-${i}`,
-          role: 'assistant',
-          content: [{ type: 'text', text }],
+    ];
+    for (const [role, text] of seeded) {
+      await booted.harness.bus.call(
+        'conversations:append-event',
+        booted.harness.ctx({ conversationId: cid }),
+        {
+          conversationId: cid,
+          kind: 'turn',
+          role,
+          payload: { blocks: [{ type: 'text', text }] },
         },
-        uuid: `u-${i}`,
-        timestamp: ts,
-      });
-    });
-    const bytes = new TextEncoder().encode(lines.join('\n'));
-    await booted.harness.bus.call(
-      'workspace:apply',
-      booted.harness.ctx({ userId: 'system' }),
-      {
-        changes: [
-          {
-            path: `.claude/projects/-permanent/${sessId}.jsonl`,
-            kind: 'put',
-            content: bytes,
-          },
-        ],
-        parent: null,
-        reason: 'seed-jsonl',
-      },
-    );
-    const pgClient = new (await import('pg')).default.Client({
-      connectionString,
-    });
-    await pgClient.connect();
-    try {
-      await pgClient.query(
-        'UPDATE conversations_v1_conversations SET runner_session_id = $1, updated_at = NOW() WHERE conversation_id = $2',
-        [sessId, cid],
       );
-    } finally {
-      await pgClient.end().catch(() => {});
     }
 
     const r = await fetch(
