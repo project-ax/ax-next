@@ -1015,13 +1015,16 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
 // Helpers shared across the read+delete describes.
 // ---------------------------------------------------------------------------
 
-// Phase D: seed the workspace's runner-native jsonl path with synthetic
-// SDK lines so conversations:get can return turns. Pairs with
-// `bindRunnerSession` below — both must run for the round-trip read to
-// see anything.
+// Seed the conversation's transcript into the DISPLAY EVENT LOG (TASK-66) so
+// conversations:get (and GET /api/chat/conversations/:id) can return turns.
+// The legacy workspace-jsonl seed is gone (TASK-70 / out-of-git Phase 5):
+// conversations:get reads only the event log now. Each turn becomes one
+// `conversations:append-event` of kind 'turn'; a raw-string user `content`
+// maps to a single text block (mirroring the runner's emit + the old jsonl
+// parser). `conversationId` keys the read (no runner_session_id bind needed).
 async function seedWorkspaceJsonl(
   harness: TestHarness,
-  runnerSessionId: string,
+  conversationId: string,
   turns: Array<{
     role: 'user' | 'assistant';
     contentBlocks?: Array<{ type: string; [k: string]: unknown }>;
@@ -1029,57 +1032,15 @@ async function seedWorkspaceJsonl(
     content?: string;
   }>,
 ): Promise<void> {
-  const lines = turns.map((t, i) => {
-    const ts = new Date(2026, 3, 29, 12, 0, i).toISOString();
-    if (t.role === 'user') {
-      return JSON.stringify({
-        type: 'user',
-        message: { role: 'user', content: t.content ?? t.contentBlocks ?? '' },
-        uuid: `u-${i}`,
-        timestamp: ts,
-      });
-    }
-    return JSON.stringify({
-      type: 'assistant',
-      message: {
-        id: `m-${i}`,
-        role: 'assistant',
-        content: t.contentBlocks ?? [],
-      },
-      uuid: `u-${i}`,
-      timestamp: ts,
-    });
-  });
-  const bytes = new TextEncoder().encode(lines.join('\n'));
-  const path = `.claude/projects/-permanent/${runnerSessionId}.jsonl`;
-  await harness.bus.call(
-    'workspace:apply',
-    harness.ctx({ userId: 'system' }),
-    {
-      changes: [{ path, kind: 'put', content: bytes }],
-      parent: null,
-      reason: 'seed-jsonl',
-    },
-  );
-}
-
-// Phase D: bind `runner_session_id` so conversations:get hits the
-// workspace lookup path. Direct SQL — Phase B's
-// `conversations:store-runner-session` hook ships in the same plugin,
-// but raw SQL is the simplest fixture.
-async function bindRunnerSession(
-  conversationId: string,
-  runnerSessionId: string,
-): Promise<void> {
-  const client = new (await import('pg')).default.Client({ connectionString });
-  await client.connect();
-  try {
-    await client.query(
-      'UPDATE conversations_v1_conversations SET runner_session_id = $1, updated_at = NOW() WHERE conversation_id = $2',
-      [runnerSessionId, conversationId],
+  for (const t of turns) {
+    const blocks =
+      t.contentBlocks ??
+      (t.content !== undefined ? [{ type: 'text', text: t.content }] : []);
+    await harness.bus.call(
+      'conversations:append-event',
+      harness.ctx({ conversationId }),
+      { conversationId, kind: 'turn', role: t.role, payload: { blocks } },
     );
-  } finally {
-    await client.end().catch(() => {});
   }
 }
 
@@ -1463,11 +1424,9 @@ describe('@ax/channel-web GET /api/chat/conversations/:id', () => {
       { userId: 'userA', agentId: 'agt_test' },
     );
 
-    // Phase D: conversations:get reads the runner-native jsonl from
-    // the workspace. Seed it via the mock workspace + bind the
-    // runner_session_id on the row.
-    const sessId = 'sess-test-1';
-    await seedWorkspaceJsonl(booted.harness, sessId, [
+    // conversations:get reads the display event log (TASK-66). Seed two
+    // turns into it.
+    await seedWorkspaceJsonl(booted.harness, created.conversationId, [
       { role: 'user', content: 'hi' },
       {
         role: 'assistant',
@@ -1478,7 +1437,6 @@ describe('@ax/channel-web GET /api/chat/conversations/:id', () => {
         ],
       },
     ]);
-    await bindRunnerSession(created.conversationId, sessId);
 
     const r = await fetch(
       `http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}`,
@@ -1518,10 +1476,9 @@ describe('@ax/channel-web GET /api/chat/conversations/:id', () => {
       booted.harness.ctx({ userId: 'userA' }),
       { userId: 'userA', agentId: 'agt_test' },
     );
-    // Phase D: seed the runner-native jsonl in the mock workspace +
-    // bind runner_session_id on the row.
-    const sessId = 'sess-test-thinking';
-    await seedWorkspaceJsonl(booted.harness, sessId, [
+    // conversations:get reads the display event log (TASK-66). Seed one
+    // assistant turn carrying thinking + redacted_thinking + text blocks.
+    await seedWorkspaceJsonl(booted.harness, created.conversationId, [
       {
         role: 'assistant',
         contentBlocks: [
@@ -1531,7 +1488,6 @@ describe('@ax/channel-web GET /api/chat/conversations/:id', () => {
         ],
       },
     ]);
-    await bindRunnerSession(created.conversationId, sessId);
 
     const r = await fetch(
       `http://127.0.0.1:${booted.port}/api/chat/conversations/${created.conversationId}?includeThinking=true`,
