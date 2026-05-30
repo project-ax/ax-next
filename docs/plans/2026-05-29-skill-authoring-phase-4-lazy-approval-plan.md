@@ -1081,7 +1081,14 @@ gh pr create --base main --title "Skill-authoring Phase 4 PR-A: approval store +
 
 ## PR-B — Hybrid approval timing (window CLOSED for approval)
 
-Detailed-plan this PR after PR-A merges (its code binds to PR-A's merged interfaces; CodeRabbit only reviews main-based PRs). Task-level outline:
+Detailed-plan this PR after PR-A merges (its code binds to PR-A's merged interfaces; CodeRabbit only reviews main-based PRs).
+
+### Hard preconditions (from the PR-A ax-code-reviewer pass — both are no-ops while the intersection is empty in PR-A, but MUST be handled before the approve path goes live, or PR-B ships a no-op approval):
+
+- **PC-1 (egress wiring — important):** the orchestrator (`packages/chat-orchestrator/src/orchestrator.ts` ~`:1407-1411`) currently folds only *catalog attachment* hosts into `baseAllowSet`/`unionedAllowlist`; authored-draft hosts flow into `installedSkillsForSandbox[].allowedHosts` (`:1563-1595`) but NOT into the proxy egress allowlist, which the gate actually reads. **PR-B must wire approved authored-draft `s.capabilities.allowedHosts` into `baseAllowSet`** — otherwise an approved host projects into `installedSkills` yet the proxy still blocks it ("approved but unreachable", a silent failure). Add an explicit assertion to PR-B's canary that an *approved* authored host is reachable through the proxy.
+- **PC-2 (CLI dev-stub drift):** `packages/cli/src/dev-agents-stub.ts` (~`:156-192`) hand-rolls `agents:resolve-authored-skills` and was NOT updated in PR-A — it passes `manifestYaml` raw (no caps-strip) and returns skills without `proposalDelta`. Harmless in PR-A (runner ignores frontmatter caps; stub is untyped). **Before PR-B's card path lands, sync the stub** to the real shape (parse → `intersectProposalWithApproved` → `buildSkillManifestYaml(EMPTY_CAPABILITIES)`; `approved=[]` since the CLI has no `@ax/skills`), or the CLI dev loop will silently never surface the approval wall. Cleanest: export a shared projection-fill helper from `@ax/agents` and call it from both the real handler and the stub.
+
+### Task-level outline:
 
 - **B1 — `-set` / `-revoke` services.** Register `skills:approved-caps-set` + `skills:approved-caps-revoke` in `@ax/skills` (store methods already exist), with types + schemas + index exports. Load in CLI + k8s presets (already loaded — services only).
 - **B2 — authored-grant path.** A new orchestrator path (NOT the catalog `agent:apply-capability-grant`): given `(conversationId/userId/agentId, skillId)` + the approved proposal, write `skills:approved-caps-set` rows for the delta, then classify: host-only delta (incl. npm/pypi registry hosts) → `proxy:add-host` LIVE; any credential slot or MCP server → `session:terminate` → fresh re-spawn (reuse `respawnSessions`). Register as `agent:apply-authored-capability-grant`.
