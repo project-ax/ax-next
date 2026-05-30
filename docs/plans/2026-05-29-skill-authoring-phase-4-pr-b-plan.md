@@ -1207,7 +1207,7 @@ export function authoredCardDedupKey(skillId: string, delta: AuthoredDeltaLike):
     n: [...delta.packages.npm].sort(),
     p: [...delta.packages.pypi].sort(),
   });
-  return `${skillId} ${canon}`;
+  return `${skillId}\u0000${canon}`;
 }
 ```
 
