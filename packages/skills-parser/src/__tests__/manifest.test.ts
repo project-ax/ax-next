@@ -261,4 +261,86 @@ describe('parseSkillManifest', () => {
       if (!r.ok) expect(r.code).toBe('invalid-account');
     },
   );
+
+  // TASK-79 (SECURITY): capability keys MUST live under the `capabilities:`
+  // mapping. A manifest that declares them at the TOP LEVEL (the shape the old
+  // skill_propose docs wrongly told the model to write) must be REJECTED, not
+  // silently parsed to zero caps — silently dropping them is the capability-loss
+  // bypass (a cap-bearing skill would otherwise materialize as a zero-cap ACTIVE
+  // skill with no approval card). Each misplaced key fails with invalid-manifest.
+  it.each([
+    [
+      'allowedHosts',
+      'name: linear\ndescription: Work with Linear.\nversion: 1\nallowedHosts:\n  - api.linear.app\n',
+    ],
+    [
+      'credentials',
+      'name: linear\ndescription: Work with Linear.\nversion: 1\ncredentials:\n  - slot: LINEAR_API_KEY\n    kind: api-key\n',
+    ],
+    [
+      'mcpServers',
+      'name: linear\ndescription: Work with Linear.\nversion: 1\nmcpServers:\n  - name: linear\n    transport: http\n    url: https://api.linear.app\n',
+    ],
+    [
+      'packages',
+      'name: tool\ndescription: A tool.\nversion: 1\npackages:\n  npm:\n    - left-pad\n',
+    ],
+  ])(
+    'rejects a top-level "%s" capability key (must be nested under capabilities:)',
+    (key, yaml) => {
+      const r = parseSkillManifest(yaml);
+      expect(r.ok).toBe(false);
+      if (r.ok) return;
+      expect(r.code).toBe('invalid-manifest');
+      expect(r.message).toContain(key);
+      expect(r.message).toContain('capabilities');
+    },
+  );
+
+  it('rejects a top-level capability key even when a capabilities: block is also present', () => {
+    // The author nested credentials correctly but left allowedHosts at the top
+    // level — the stray top-level key is still a hard reject (no partial silent drop).
+    const r = parseSkillManifest(
+      'name: linear\ndescription: Work with Linear.\nversion: 1\nallowedHosts:\n  - api.linear.app\ncapabilities:\n  credentials:\n    - slot: LINEAR_API_KEY\n      kind: api-key\n',
+    );
+    expect(r.ok).toBe(false);
+    if (!r.ok) expect(r.code).toBe('invalid-manifest');
+  });
+
+  it('parses the documented skill_propose frontmatter contract end-to-end (TASK-79 round-trip)', () => {
+    // The exact canonical shape the skill_propose tool description now documents:
+    // `name` (not id), integer `version`, capability keys nested under
+    // `capabilities:`. Proves docs ↔ parser agree on ONE contract.
+    const documented = `name: linear
+description: Work with Linear issues.
+version: 1
+capabilities:
+  allowedHosts:
+    - api.linear.app
+  credentials:
+    - slot: LINEAR_API_KEY
+      kind: api-key
+`;
+    const r = parseSkillManifest(documented);
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.id).toBe('linear'); // parser maps `name` → id
+    expect(r.value.version).toBe(1);
+    expect(r.value.capabilities.allowedHosts).toEqual(['api.linear.app']);
+    expect(r.value.capabilities.credentials).toEqual([
+      { slot: 'LINEAR_API_KEY', kind: 'api-key' },
+    ]);
+  });
+
+  it('still accepts capabilities correctly nested under capabilities: (no false positive)', () => {
+    const r = parseSkillManifest(
+      'name: linear\ndescription: Work with Linear.\nversion: 1\ncapabilities:\n  allowedHosts:\n    - api.linear.app\n  credentials:\n    - slot: LINEAR_API_KEY\n      kind: api-key\n',
+    );
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.value.capabilities.allowedHosts).toEqual(['api.linear.app']);
+    expect(r.value.capabilities.credentials).toEqual([
+      { slot: 'LINEAR_API_KEY', kind: 'api-key' },
+    ]);
+  });
 });
