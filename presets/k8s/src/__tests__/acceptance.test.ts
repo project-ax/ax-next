@@ -86,8 +86,6 @@ import type {
   SkillsUpsertOutput,
   SkillsDeleteInput,
   SkillsDeleteOutput,
-  SkillsApprovedCapsSetInput,
-  SkillsApprovedCapsSetOutput,
 } from '@ax/skills';
 import { createRoutinesPlugin } from '@ax/routines';
 
