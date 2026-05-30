@@ -21,13 +21,18 @@ export interface ApprovedCapEntry {
   value: string;
 }
 
-/** A capabilities object that grants nothing — the safe projection default. */
-export const EMPTY_CAPABILITIES: SkillCapabilities = {
-  allowedHosts: [],
-  credentials: [],
-  mcpServers: [],
-  packages: { npm: [], pypi: [] },
-};
+/** A capabilities object that grants nothing — the safe projection default.
+ * Deep-frozen: it is a shared singleton, so mutating it would corrupt every
+ * caller. Build fresh arrays in consumers; never push into this. */
+export const EMPTY_CAPABILITIES: SkillCapabilities = Object.freeze({
+  allowedHosts: Object.freeze([]) as unknown as string[],
+  credentials: Object.freeze([]) as unknown as CapabilitySlot[],
+  mcpServers: Object.freeze([]) as unknown as McpServerSpec[],
+  packages: Object.freeze({
+    npm: Object.freeze([]) as unknown as string[],
+    pypi: Object.freeze([]) as unknown as string[],
+  }),
+});
 
 /**
  * Split a frontmatter proposal into the approved subset (projected into the

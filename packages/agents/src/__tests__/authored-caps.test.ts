@@ -70,4 +70,27 @@ describe('intersectProposalWithApproved', () => {
     const { capabilities } = intersectProposalWithApproved(proposal(), approved);
     expect(capabilities.allowedHosts).toEqual([]);
   });
+
+  it('partial-kind approval: only the approved host moves; the other stays in delta', () => {
+    const p = proposal({ allowedHosts: ['api.linear.app', 'hooks.linear.app'] });
+    const approved: ApprovedCapEntry[] = [{ kind: 'host', value: 'api.linear.app' }];
+    const { capabilities, delta } = intersectProposalWithApproved(p, approved);
+    expect(capabilities.allowedHosts).toEqual(['api.linear.app']);
+    expect(delta.allowedHosts).toEqual(['hooks.linear.app']);
+  });
+
+  it('approving a pypi package moves it into capabilities', () => {
+    const p = proposal({ packages: { npm: [], pypi: ['requests'] } });
+    const approved: ApprovedCapEntry[] = [{ kind: 'pypi', value: 'requests' }];
+    const { capabilities, delta } = intersectProposalWithApproved(p, approved);
+    expect(capabilities.packages.pypi).toEqual(['requests']);
+    expect(delta.packages.pypi).toEqual([]);
+  });
+
+  it('empty proposal returns two empty caps objects regardless of approvals', () => {
+    const approved: ApprovedCapEntry[] = [{ kind: 'host', value: 'x.test' }];
+    const { capabilities, delta } = intersectProposalWithApproved(EMPTY_CAPABILITIES, approved);
+    expect(capabilities).toEqual(EMPTY_CAPABILITIES);
+    expect(delta).toEqual(EMPTY_CAPABILITIES);
+  });
 });
