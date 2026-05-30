@@ -146,7 +146,8 @@ Action: remove the LFS server/endpoints/provisioning and the runner's `git lfs i
   .venv/, caches/, code/        ← existing scratch (Python venv, cloned repos)
 
 (durable homes, off-pod)
-  Postgres   conversation_transcripts (opaque jsonl blob, last-write-wins)
+  Postgres   conversation_events     (display event log — append-only rows, the redisplay SoT)
+             conversation_transcripts (resume jsonl — opaque rows, one per line, (conv,seq))
              attachments / artifacts metadata rows
   blob store sha256-addressed bytes (fs PVC dev / S3·GCS prod)
 ```
@@ -157,10 +158,10 @@ Action: remove the LFS server/endpoints/provisioning and the runner's `git lfs i
 
 ## How this lands the invariants
 
-- **I1 (transport/storage-agnostic hooks).** Improved. `blob:*` carries `sha256`/`bytes`/`size`; `session.save-transcript` carries `conversationId`/opaque bytes. No `oid`/`bucket`/`lfs`/`commit`/`ref`. Named alternate impls: `blob-store-fs` vs `blob-store-s3`; a Postgres-bytea transcript store vs a blob-store transcript.
+- **I1 (transport/storage-agnostic hooks).** Improved. `blob:*` carries `sha256`/`bytes`/`size`; `session.append-transcript` carries `conversationId`/`fromSeq`/`prefixHash`/opaque line strings. No `oid`/`bucket`/`lfs`/`commit`/`ref`. Named alternate impls: `blob-store-fs` vs `blob-store-s3`; a Postgres row-per-line transcript store vs a blob-store transcript.
 - **I2 (no cross-plugin imports).** Unchanged. New plugins talk over the bus / IPC.
 - **I3 (no half-wired plugins).** Improved — this *removes* a half-wired surface (LFS). Each move ships its producer + consumer + canary reachability in one PR.
-- **I4 (one source of truth).** Improved. Transcript: one opaque blob per conversation, one writer (the runner via `save-transcript`). Blobs: content-addressed, one store. Removes the transcript/attachments shared-mirror contention that caused the loss bug.
+- **I4 (one source of truth).** Improved. Transcript splits cleanly into two non-overlapping SoTs — a display event log and the resume jsonl rows — each with one writer (the runner, via `event.turn-end`/`stream-chunk` and `session.append-transcript`). Blobs: content-addressed, one store. Removes the transcript/attachments shared-mirror contention that caused the loss bug.
 - **I5 (capabilities minimized).** Neutral-to-better. Trust boundary untouched. The common chat path no longer needs a `git`/`git-lfs` binary in the sandbox. S3+Workload-Identity removes static keys.
 - **I6 (one UI language).** Unchanged — download/upload chips already compose shadcn primitives.
 
@@ -174,10 +175,15 @@ Action: remove the LFS server/endpoints/provisioning and the runner's `git lfs i
 - *Subscriber risk:* none — service hook, no backend-specific field a consumer could key off.
 - *Wire surface:* bytes ride `callBinary` octet-stream; the JSON envelope (`{sha256,size}`) is small and schema-validated in `@ax/ipc-protocol`.
 
-**`session.save-transcript(conversationId, jsonlBytes)`**
-- *Alternate impl:* Postgres-bytea row, blob-store object, or (today) git — all behind the same action.
-- *Field names that might leak:* none. `conversationId` is neutral; the jsonl is opaque bytes.
-- *Subscriber risk:* the bytes are an **untrusted, adversarial** SDK/model artifact — see security walk. No subscriber should execute or trust them; the host parser already whitelists entry types.
+**`session.append-transcript(conversationId, fromSeq, prefixHash, lines[])` / `session.replace-transcript(conversationId, jsonlBytes)`**
+- *Alternate impl:* row-per-line in Postgres, a blob-store object, or (today) git — all behind the same action.
+- *Field names that might leak:* none. `conversationId`/`fromSeq`/`prefixHash` are storage-neutral; the lines are opaque verbatim bytes. (`seq` is a per-conversation monotonic counter, not a git oid or commit.)
+- *Subscriber risk:* the lines are an **untrusted, adversarial** SDK/model artifact — see security walk. No subscriber should execute or trust them; they're stored verbatim and only ever re-emitted to the SDK for resume, never interpreted.
+
+**Display event log (persisting `event.turn-end` / `event.stream-chunk`)**
+- *Alternate impl:* the host already routes these frames to live SSE clients; persisting them is an additive consumer. Storage backend is swappable behind the same `conversations:get` read.
+- *Field names that might leak:* none — frames are UI-semantic (turn deltas, tool calls, cards, errors), already storage-agnostic.
+- *Subscriber risk:* frames are untrusted model/host output; renderers sanitize (unchanged J2 hardening). The log is append-only; interactive widgets fold to terminal state via later frames, no mutable shared row.
 
 ## Security walk (security-checklist)
 
@@ -194,7 +200,7 @@ This touches IPC actions, storage of untrusted content, and a new dependency (`@
 Each phase leaves the tree green and is independently reviewable.
 
 1. **Phase 1 — blob store (additive).** Ship `@ax/blob-store-fs` (lift `lfs.ts`) + the `blob:*` hook + `@ax/ipc-protocol` wire + `callBinary` plumbing. No consumer yet beyond tests + canary. *(I3: wire a trivial real caller or land with Phase 3 — don't merge it dangling.)*
-2. **Phase 2 — transcript out of git.** Add `session.save-transcript` + `conversation_transcripts` store; switch `conversations:get` to the DB read; switch resume to hand the blob back; keep the F2a guard as a DB check. Remove the per-turn jsonl-driven commit dependency. **Biggest robustness win** — re-walk the latency + concurrent-writer + resume scenarios on `ax-next-dev`.
+2. **Phase 2 — transcript out of git.** Two halves. **2a (display):** persist the `event.turn-end`/`event.stream-chunk` frames the host already receives into a `conversation_events` log; switch `conversations:get` to read it (no jsonl parse). **2b (resume):** add `session.append-transcript`/`replace-transcript` + the row-per-line `conversation_transcripts` store; replace `commitTurnAndBundle` at the `result` boundary with the delta-ship (keeping `waitForTranscriptUuid`); switch resume to rebuild the jsonl from rows; F2a guard becomes `max(seq) > 0`. Remove the per-turn jsonl-driven commit dependency. **Biggest robustness win** — re-walk the latency + concurrent-writer + resume scenarios on `ax-next-dev`.
 3. **Phase 3 — artifacts/uploads onto the blob store + `/ephemeral`.** Re-point `artifact_publish` to `/ephemeral/artifacts/**` + `blob:put`; route uploads through `blob:put` and materialize into `/ephemeral/uploads/`; download resolves via `blob:get`. Drop `attachments:commit → workspace:apply`.
 4. **Phase 4 — delete LFS + thin the git pipeline.** Remove the LFS server/endpoints/provisioning + runner `git lfs install` (after the runtime `check-attr` confirmation). With transcripts and blobs gone, the per-turn commit/bundle fires only when `/permanent` agent state actually changed (rare) — consider gating it on a non-empty `.ax/**` diff.
 5. **Phase 5 — `@ax/blob-store-s3` + MinIO/GCS wiring.** Add the S3 backend, MinIO in kind, GCS+Workload-Identity in the prod chart. Optional: presigned direct browser↔bucket transfer.
