@@ -733,15 +733,28 @@ async function readBlobBytes(
   commitOid: string,
   path: string,
 ): Promise<Bytes> {
-  const { blob } = await git.readBlob({ fs, gitdir, oid: commitOid, filepath: path });
-  // Defensive copy so subscribers can't mutate the underlying buffer that
-  // isomorphic-git might cache or share.
-  return copyBytes(blob);
+  // Read via real `git cat-file blob`, NOT isomorphic-git's git.readBlob.
+  // isomorphic-git's `fs.read` adapter coalesces every read error — ENOENT,
+  // EAGAIN, EMFILE, partial reads — into `null`, and `loadPackIndex` then
+  // calls `BufferCursor.slice` on that null, throwing "Cannot read properties
+  // of null (reading 'slice')" under CI load (TASK-73; same race readSnapshotAt
+  // dodges). The git binary handles its own pack files atomically in a child
+  // process whose fd table is independent of ours.
+  const blob = await runGitBinary([
+    '-C', gitdir, 'cat-file', 'blob', `${commitOid}:${path}`,
+  ]);
+  if (blob.code !== 0) {
+    throw new Error(`cat-file ${commitOid}:${path} failed: ${blob.stderr}`);
+  }
+  // Defensive copy so subscribers can't mutate the underlying buffer.
+  return new Uint8Array(blob.stdout);
 }
 
 // isomorphic-git throws errors with a `code` field for not-found cases. We
 // swallow any of them as "absent" rather than propagating, since `read` has
-// a discriminated absent result.
+// a discriminated absent result. (Still used by workspace:diff, which reads
+// snapshots via real git but resolves the `from`/`to` versions through
+// isomorphic-git's resolveRef.)
 function isNotFoundError(err: unknown): boolean {
   if (typeof err !== 'object' || err === null) return false;
   const code = (err as { code?: unknown }).code;
@@ -750,6 +763,23 @@ function isNotFoundError(err: unknown): boolean {
     code === 'NotFoundError' ||
     code === 'ObjectTypeError' ||
     code === 'ResolveRefError'
+  );
+}
+
+// Real-git equivalent of isNotFoundError for `git cat-file blob <oid>:<path>`.
+// The not-found-ish cases the old isomorphic-git path swallowed to
+// { found: false } map onto these `git` stderr signatures:
+//   - path absent in the commit ............ "does not exist in"
+//   - path resolves to a tree, not a blob .. "bad file" (ObjectTypeError)
+//   - the commit/path combo is unreachable . "exists on disk, but not in"
+// Anything else (a genuine object-db error) re-throws loud — we never silently
+// turn corruption into "absent".
+function isCatFileNotFound(stderr: string): boolean {
+  return (
+    /does not exist in/.test(stderr) ||
+    /exists on disk, but not in/.test(stderr) ||
+    /: bad file/.test(stderr) ||
+    /Not a valid object name/i.test(stderr)
   );
 }
 
@@ -874,22 +904,26 @@ export function registerWorkspaceGitHooks(
     async (_ctx, input) => {
       const commitOid = await resolveVersion(input.version);
       if (commitOid === null) return { found: false };
-      try {
-        const { blob } = await git.readBlob({
-          fs,
-          gitdir,
-          oid: commitOid,
-          filepath: input.path,
-        });
-        return {
-          found: true,
-          bytes: copyBytes(blob),
-          version: asWorkspaceVersion(commitOid),
-        };
-      } catch (err) {
-        if (isNotFoundError(err)) return { found: false };
-        throw err;
+      // Read via real `git cat-file blob`, NOT isomorphic-git's git.readBlob —
+      // iso-git's `fs.read` adapter coalesces transient read errors (EAGAIN /
+      // EMFILE under CI load) into `null`, and loadPackIndex then throws
+      // "Cannot read properties of null (reading 'slice')" on that null
+      // (TASK-73). The git binary reads its packs atomically in a child
+      // process. readSnapshotAt already dodges this race the same way.
+      const blob = await runGitBinary([
+        '-C', gitdir, 'cat-file', 'blob', `${commitOid}:${input.path}`,
+      ]);
+      if (blob.code !== 0) {
+        if (isCatFileNotFound(blob.stderr)) return { found: false };
+        throw new Error(
+          `cat-file ${commitOid}:${input.path} failed: ${blob.stderr}`,
+        );
       }
+      return {
+        found: true,
+        bytes: new Uint8Array(blob.stdout),
+        version: asWorkspaceVersion(commitOid),
+      };
     },
     { returns: WorkspaceReadOutputSchema },
   );
@@ -900,13 +934,23 @@ export function registerWorkspaceGitHooks(
     async (_ctx, input) => {
       const commitOid = await resolveVersion(input.version);
       if (commitOid === null) return { paths: [] };
-      let paths: string[];
-      try {
-        paths = await git.listFiles({ fs, gitdir, ref: commitOid });
-      } catch (err) {
-        if (isNotFoundError(err)) return { paths: [] };
-        throw err;
+      // List via real `git ls-tree`, NOT isomorphic-git's git.listFiles —
+      // listFiles walks the tree through the same readObjectPacked path that
+      // throws the "Cannot read properties of null (reading 'slice')"
+      // null-slice on a transient `.idx` read under CI load (TASK-73). The git
+      // binary reads its packs atomically. Mirrors readSnapshotAt's plumbing.
+      const lsTree = await runGit([
+        '-C', gitdir, 'ls-tree', '-r', '-z', '--name-only', commitOid,
+      ]);
+      if (lsTree.code !== 0) {
+        // Unknown/unreadable ref → "absent", matching the old isNotFoundError
+        // swallow. A genuine repo error re-throws.
+        if (isCatFileNotFound(lsTree.stderr) || /not a tree object/i.test(lsTree.stderr)) {
+          return { paths: [] };
+        }
+        throw new Error(`ls-tree at ${commitOid} failed: ${lsTree.stderr}`);
       }
+      let paths = lsTree.stdout.split('\0').filter((p) => p.length > 0);
       paths.sort();
       if (input.pathGlob !== undefined) {
         const matcher = picomatch(input.pathGlob, { dot: true });
