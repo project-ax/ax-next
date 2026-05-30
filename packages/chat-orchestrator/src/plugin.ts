@@ -103,19 +103,19 @@ export function createChatOrchestratorPlugin(
       // the egress audit (the proxy already returned 403) and never affects the
       // allow/deny decision.
       //
-      // We listen to `workspace:applied` (Phase 3 / B3) so a turn that committed
-      // a change under the agent's `.ax/draft-skills/` MARKS the committing
-      // session dirty; the next turn's routing declines warm-reuse and
-      // re-spawns so the skill projection re-derives. Mark-only here (the event
-      // fires mid-commit, before chat:turn-end) — the terminate happens at the
-      // next turn's routing, safely between turns. In-memory + single-replica,
-      // matching @ax/routines' existing workspace:applied posture.
+      // We listen to `skills:proposed` (TASK-74, out-of-git Part D) so a turn in
+      // which the agent proposed a skill MARKS that session dirty; the next
+      // turn's routing declines warm-reuse and re-spawns so the skill projection
+      // re-derives (a skill is visible only at spawn, design §D6). Mark-only here
+      // — the terminate happens at the next turn's routing, safely between turns.
+      // In-memory + single-replica. REPLACES the old workspace:applied
+      // .ax/draft-skills trigger (skill authoring left git).
       subscribes: [
         'chat:end',
         'chat:turn-end',
         'session:terminate',
         'event.http-egress',
-        'workspace:applied',
+        'skills:proposed',
       ],
     },
     init({ bus }) {
@@ -194,14 +194,16 @@ export function createChatOrchestratorPlugin(
       );
 
       bus.subscribe<{
-        author?: { sessionId?: string };
-        changes: Array<{ path: string }>;
+        ownerUserId: string;
+        agentId: string;
+        skillId: string;
+        status: 'active' | 'pending' | 'quarantined';
       }>(
-        'workspace:applied',
+        'skills:proposed',
         PLUGIN_NAME,
-        async (ctx, delta) => {
-          await orch.onWorkspaceApplied(ctx, delta);
-          return undefined; // mark-only; never vetoes/transforms the commit.
+        async (ctx, event) => {
+          await orch.onSkillsProposed(ctx, event);
+          return undefined; // mark-only; never vetoes/transforms.
         },
       );
     },

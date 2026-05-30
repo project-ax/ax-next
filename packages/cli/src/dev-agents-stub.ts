@@ -1,5 +1,4 @@
 import type { Plugin } from '@ax/core';
-import { listAuthoredBundles, projectAuthoredBundle, type AuthoredProjectionBundle } from '@ax/agents';
 
 // ---------------------------------------------------------------------------
 // Dev-mode agents stub
@@ -145,52 +144,18 @@ export function createDevAgentsStubPlugin(
         },
       );
 
-      // I1 fix: register agents:resolve-authored-skills so the CLI dev loop
-      // has self-authored draft discovery after Phase 3 dropped the
-      // .claude/skills symlink + 'project' settingSource. Mirrors the real
-      // @ax/agents implementation: listAuthoredBundles is a soft-dep on
-      // workspace:list/workspace:read (returns [] when absent — acceptable for
-      // a stripped dev preset). skills:quarantine-get is also soft-dep here:
-      // the CLI has no skills store so all parseable directory-form drafts are
-      // projected; the scan gate enforces safety in the production k8s path.
+      // Register agents:resolve-authored-skills so the orchestrator's
+      // bus.hasService('agents:resolve-authored-skills') guard is satisfied.
+      // TASK-74: authored skills now live in the @ax/skills DB store (the
+      // .ax/draft-skills git workspace projection is retired). The single-tenant
+      // CLI dev loop has NO @ax/skills store, so there are no authored skills to
+      // discover — return [] (skill authoring requires the production k8s path's
+      // skill_propose host hook + skills store). The service still EXISTS so the
+      // orchestrator guard passes; it just yields no authored skills.
       bus.registerService(
         'agents:resolve-authored-skills',
         PLUGIN_NAME,
-        async (_ctx, input) => {
-          const { ownerUserId, agentId: targetAgentId } = input as {
-            ownerUserId: string;
-            agentId: string;
-          };
-          // listAuthoredBundles is a soft-dep: returns [] when workspace:list /
-          // workspace:read are not loaded (stripped dev preset = no workspace
-          // backend). The service still EXISTS so the orchestrator's
-          // bus.hasService('agents:resolve-authored-skills') guard is satisfied.
-          const bundles: AuthoredProjectionBundle[] = await listAuthoredBundles(
-            bus,
-            ownerUserId,
-            targetAgentId,
-          );
-
-          // skills:quarantine-get is absent in the CLI preset (no skills store).
-          // All parseable directory-form drafts are projected as-is — the commit-
-          // scan safety gate runs in the production k8s path. approved=[] since
-          // the CLI has no @ax/skills store (fail-closed: empty caps until approved).
-          const skills = [];
-          for (const b of bundles) {
-            const proj = projectAuthoredBundle(b.manifestYaml, []);
-            if (proj === null) continue;
-            skills.push({
-              id: b.id,
-              description: proj.description,
-              capabilities: proj.capabilities,
-              proposalDelta: proj.delta,
-              bodyMd: b.bodyMd,
-              manifestYaml: proj.manifestYaml,
-              files: b.files,
-            });
-          }
-          return { skills };
-        },
+        async () => ({ skills: [] }),
       );
     },
   };

@@ -131,22 +131,13 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
       // hard. teams:is-member is graceful (handled inside checkAccess via
       // try/catch) and intentionally NOT declared in calls.
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
-      // Soft deps for the authored-skill discovery hooks: workspace:list/read +
-      // skills:quarantine-get are hasService-guarded so a stripped preset
-      // degrades rather than fails to boot.
+      // Soft deps for the authored-skill discovery hooks (TASK-74): they read
+      // the @ax/skills DB store (skills:list-authored) — the .ax/draft-skills
+      // workspace scan is retired, so workspace:list/read are no longer deps.
       optionalCalls: [
         {
-          hook: 'workspace:list',
-          degradation: 'authored-skill discovery is skipped (no workspace backend)',
-        },
-        {
-          hook: 'workspace:read',
-          degradation: 'authored-skill bodies cannot be read (no workspace backend)',
-        },
-        {
-          hook: 'skills:quarantine-get',
-          degradation:
-            'a quarantined authored draft is NOT omitted from the discovery projection (no skills store) — it is projected like any other draft',
+          hook: 'skills:list-authored',
+          degradation: 'authored-skill discovery is skipped (no skills store)',
         },
         {
           hook: 'skills:approved-caps-list',
