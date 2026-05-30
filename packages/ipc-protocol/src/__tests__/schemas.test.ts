@@ -630,7 +630,7 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the fourteen expected keys (TASK-68 adds the blob.* / metadata runner-side callers)', () => {
+  it('IPC_TIMEOUTS_MS has the seventeen expected keys (TASK-68 adds blob.*; TASK-67 adds the resume-transcript callers)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
@@ -647,6 +647,10 @@ describe('timeouts', () => {
       'blob.get',
       'artifact.publish',
       'attachments.list',
+      // TASK-67 (out-of-git Part B / B2): the resume-transcript callers.
+      'session.append-transcript',
+      'session.replace-transcript',
+      'session.get-transcript',
     ].sort();
     expect(Object.keys(IPC_TIMEOUTS_MS).sort()).toEqual(expected);
   });

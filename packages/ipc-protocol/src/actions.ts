@@ -613,6 +613,67 @@ export const AttachmentsListResponseSchema = z.object({
 });
 export type AttachmentsListResponse = z.infer<typeof AttachmentsListResponseSchema>;
 
+// ---------------------------------------------------------------------------
+// session.append-transcript / .replace-transcript / .get-transcript — TASK-67
+// (out-of-git Part B / B2). The runner-side resume-transcript callers.
+//
+// The transcript is the SDK's per-session jsonl, taken OUT of git and stored as
+// opaque rows (one per line). At the result boundary the runner ships the DELTA
+// of new lines via `session.append-transcript`; on resume it fetches the
+// reconstructed bytes via `session.get-transcript`.
+//
+// SECURITY: there is intentionally NO `conversationId` in any request body. The
+// host derives it from the runner's session row (the bearer token → ctx →
+// session:get-config), exactly as `session.get-config` reads ctx not the body.
+// A runner therefore cannot aim a transcript at a foreign conversation. The
+// lines are an UNTRUSTED, adversarial SDK/model artifact: stored verbatim, never
+// executed or shell-interpolated, only re-emitted to the SDK on resume.
+//
+// Field names are storage-neutral (I1): `fromSeq`/`prefixHash`/`maxSeq` describe
+// an append-with-integrity-check over an ordered opaque-line store — no git/
+// jsonl/sqlite vocabulary. `seq` is a per-conversation monotonic counter, NOT a
+// git oid or commit.
+//
+// `replace-transcript` is the REQUEST-direction binary channel (the whole jsonl
+// can be large): the runner streams the raw bytes as `application/octet-stream`
+// (the host splits on `\n`), so there is NO request schema. `get-transcript` is
+// the response-direction binary channel (same shape as materialize): a small
+// JSON request and a raw octet-stream response body (the joined bytes, drained
+// to a temp file) — so NO response schema (cf. the dispatch table in
+// `ipc-client.ts`).
+// ---------------------------------------------------------------------------
+
+export const SessionAppendTranscriptRequestSchema = z
+  .object({
+    fromSeq: z.number().int().nonnegative(),
+    prefixHash: z.string().regex(SHA256_RE, 'prefixHash must be 64 lowercase-hex chars'),
+    lines: z.array(z.string()),
+  })
+  .strict();
+export type SessionAppendTranscriptRequest = z.infer<
+  typeof SessionAppendTranscriptRequestSchema
+>;
+
+export const SessionAppendTranscriptResponseSchema = z.object({
+  outcome: z.enum(['appended', 'resync-required']),
+  maxSeq: z.number().int().nonnegative(),
+});
+export type SessionAppendTranscriptResponse = z.infer<
+  typeof SessionAppendTranscriptResponseSchema
+>;
+
+export const SessionReplaceTranscriptResponseSchema = z.object({
+  maxSeq: z.number().int().nonnegative(),
+});
+export type SessionReplaceTranscriptResponse = z.infer<
+  typeof SessionReplaceTranscriptResponseSchema
+>;
+
+export const SessionGetTranscriptRequestSchema = z.object({}).strict();
+export type SessionGetTranscriptRequest = z.infer<
+  typeof SessionGetTranscriptRequestSchema
+>;
+
 // `reqId` on `user-message` is the server-minted request identifier (J9)
 // that the host stamped onto the message when it called
 // `session:queue-work`. The runner caches it locally and uses it to label

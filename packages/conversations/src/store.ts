@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
 import { ContentBlockSchema, type ContentBlock } from '@ax/ipc-protocol';
 import { z } from 'zod';
@@ -400,6 +400,69 @@ export interface ConversationStore {
    * still comes from the jsonl).
    */
   listEvents(conversationId: string): Promise<StoredEvent[]>;
+
+  // -------------------------------------------------------------------------
+  // TASK-67 (out-of-git Part B / B2) — resume transcript store.
+  // One opaque row per SDK jsonl LINE, raw verbatim, keyed (conversationId,
+  // seq). Single writer per session — contention-free, NOT a CAS.
+  // -------------------------------------------------------------------------
+
+  /**
+   * Append `lines` at seq `fromSeq+1 .. fromSeq+lines.length` for the
+   * conversation. Caller guarantees `fromSeq` is the current max seq (the
+   * delta-ship guard checks it host-side before calling). Stores each line
+   * verbatim. Returns the new max seq. A unique-violation (a stale fromSeq)
+   * propagates so the host returns resync-required rather than silently
+   * over/under-writing.
+   */
+  appendTranscriptLines(
+    conversationId: string,
+    fromSeq: number,
+    lines: string[],
+  ): Promise<number>;
+
+  /**
+   * The current max seq for the conversation (0 when empty). The F2a resume
+   * guard (max(seq) > 0) and the delta-ship prefix-hash guard both read this.
+   */
+  getTranscriptMaxSeq(conversationId: string): Promise<number>;
+
+  /**
+   * Reconstruct the resume jsonl: rows ORDER BY seq joined with `\n`. Empty
+   * string when the conversation has no transcript rows. Pure join — never
+   * re-serializes a parsed line (round-trips byte-identically).
+   */
+  getTranscriptBytes(conversationId: string): Promise<string>;
+
+  /**
+   * sha256 (hex) of the verbatim bytes of rows `seq <= throughSeq` joined with
+   * `\n`, PLUS the trailing `\n` that terminated the last such line on disk
+   * (the SDK writes each jsonl line `\n`-terminated). This must equal the
+   * runner's `sha256(fileBytes[0..sentOffset))` where `sentOffset` sits at the
+   * byte boundary AFTER a complete `\n`-terminated line. `throughSeq <= 0`
+   * hashes the empty prefix.
+   */
+  getTranscriptPrefixHash(
+    conversationId: string,
+    throughSeq: number,
+  ): Promise<string>;
+
+  /**
+   * The per-line role sequence (in seq order) for the B3 structural divergence
+   * detector: parse `type` off each line and map user/assistant to a role,
+   * tool_result-bearing user lines to 'tool', everything else (SDK bookkeeping)
+   * to null. The detector collapses consecutive same-role runs before
+   * comparing against the display log, so this is the raw per-line view.
+   */
+  getTranscriptRoles(conversationId: string): Promise<(TurnRole | null)[]>;
+
+  /**
+   * Resync path: DELETE every transcript row for the conversation and INSERT
+   * `lines` as seq `1 .. lines.length`, in one transaction. Returns the new
+   * max seq (= lines.length). Used when the SDK rewrote earlier bytes and the
+   * delta append returned resync-required.
+   */
+  replaceTranscript(conversationId: string, lines: string[]): Promise<number>;
 }
 
 /** TASK-66 — args for ConversationStore.appendEvent. */
@@ -815,7 +878,156 @@ export function createConversationStore(
         createdAt: r.created_at.toISOString(),
       }));
     },
+
+    // -----------------------------------------------------------------------
+    // TASK-67 — resume transcript store.
+    // -----------------------------------------------------------------------
+
+    async appendTranscriptLines(conversationId, fromSeq, lines) {
+      if (lines.length === 0) return fromSeq;
+      const base = fromSeq < 0 ? 0 : fromSeq;
+      // One multi-row INSERT. seq = base + 1-based index. A unique-violation
+      // (a stale fromSeq racing another writer — should never happen with a
+      // single writer per session, but the PK is the backstop) propagates so
+      // the host can return resync-required rather than silently overwrite.
+      await db
+        .insertInto('conversations_v1_transcripts')
+        .values(
+          lines.map((line, i) => ({
+            conversation_id: conversationId,
+            seq: base + i + 1,
+            line,
+          })),
+        )
+        .execute();
+      return base + lines.length;
+    },
+
+    async getTranscriptMaxSeq(conversationId) {
+      const row = await db
+        .selectFrom('conversations_v1_transcripts')
+        .where('conversation_id', '=', conversationId)
+        .select(() => sql<number>`COALESCE(MAX(seq), 0)`.as('m'))
+        .executeTakeFirst();
+      return coerceSeq(row?.m ?? 0);
+    },
+
+    async getTranscriptBytes(conversationId) {
+      const rows = await db
+        .selectFrom('conversations_v1_transcripts')
+        .where('conversation_id', '=', conversationId)
+        .select('line')
+        .orderBy('seq', 'asc')
+        .execute();
+      // Reconstruct the on-disk SDK jsonl byte-for-byte: each line is stored
+      // verbatim WITHOUT its terminator, and the SDK writes every line (incl.
+      // the last) `\n`-terminated — so we re-emit `line + '\n'` per row. This
+      // matches the prefix-hash convention (line + trailing '\n' per line) so
+      // the runner's `sha256(fileBytes[0..sentOffset))` agrees with
+      // `getTranscriptPrefixHash`. Pure concatenation — never re-serializes a
+      // parsed line. Empty transcript → '' (no spurious newline).
+      if (rows.length === 0) return '';
+      return rows.map((r) => r.line + '\n').join('');
+    },
+
+    async getTranscriptPrefixHash(conversationId, throughSeq) {
+      const hash = createHash('sha256');
+      if (throughSeq > 0) {
+        const rows = await db
+          .selectFrom('conversations_v1_transcripts')
+          .where('conversation_id', '=', conversationId)
+          .where('seq', '<=', throughSeq)
+          .select('line')
+          .orderBy('seq', 'asc')
+          .execute();
+        // Each stored line was written to disk `\n`-terminated by the SDK; the
+        // runner's sentOffset sits AFTER a complete line's terminator. So the
+        // hashed prefix is every line + its own trailing `\n` — matching
+        // `sha256(fileBytes[0..sentOffset))`.
+        for (const r of rows) {
+          hash.update(r.line);
+          hash.update('\n');
+        }
+      }
+      return hash.digest('hex');
+    },
+
+    async getTranscriptRoles(conversationId) {
+      const rows = await db
+        .selectFrom('conversations_v1_transcripts')
+        .where('conversation_id', '=', conversationId)
+        .select('line')
+        .orderBy('seq', 'asc')
+        .execute();
+      return rows.map((r) => roleOfJsonlLine(r.line));
+    },
+
+    async replaceTranscript(conversationId, lines) {
+      // DELETE + re-INSERT in one transaction so a reader never sees a
+      // partial transcript mid-resync.
+      return db.transaction().execute(async (trx) => {
+        await trx
+          .deleteFrom('conversations_v1_transcripts')
+          .where('conversation_id', '=', conversationId)
+          .execute();
+        if (lines.length > 0) {
+          await trx
+            .insertInto('conversations_v1_transcripts')
+            .values(
+              lines.map((line, i) => ({
+                conversation_id: conversationId,
+                seq: i + 1,
+                line,
+              })),
+            )
+            .execute();
+        }
+        return lines.length;
+      });
+    },
   };
+}
+
+/**
+ * TASK-67 (B3) — map ONE raw jsonl line to a display-comparable role. The SDK
+ * jsonl whitelists turn-bearing entry types (`user` / `assistant`); a `user`
+ * line carrying a `tool_result` block is the SDK's echo of a tool turn, so it
+ * maps to `'tool'`. Everything else (SDK bookkeeping: queue-operation,
+ * last-prompt, skill_listing, system, etc.) maps to `null` (not a display
+ * turn). A malformed/partial line is also `null`. We parse defensively — the
+ * line is untrusted; a parse failure must never throw here.
+ */
+function roleOfJsonlLine(line: string): TurnRole | null {
+  const trimmed = line.trim();
+  if (trimmed.length === 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object') return null;
+  const o = parsed as { type?: unknown; message?: unknown };
+  if (o.type === 'assistant') return 'assistant';
+  if (o.type === 'user') {
+    // A user line whose message content carries a tool_result block is the
+    // SDK's echo of a tool turn (the display log tags it role='tool').
+    const msg = o.message as { content?: unknown } | undefined;
+    const content = msg?.content;
+    if (
+      Array.isArray(content) &&
+      content.some(
+        (b) =>
+          b !== null &&
+          typeof b === 'object' &&
+          (b as { type?: unknown }).type === 'tool_result',
+      )
+    ) {
+      return 'tool';
+    }
+    return 'user';
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------

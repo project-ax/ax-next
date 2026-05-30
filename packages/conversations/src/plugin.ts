@@ -34,14 +34,23 @@ import {
   type StoredEvent,
 } from './store.js';
 import {
+  AppendTranscriptOutputSchema,
   GetMetadataOutputSchema,
+  GetTranscriptOutputSchema,
+  ReplaceTranscriptOutputSchema,
   StoreRunnerSessionOutputSchema,
 } from './types.js';
 import type {
   AppendEventInput,
   AppendEventOutput,
+  AppendTranscriptInput,
+  AppendTranscriptOutput,
   BindSessionInput,
   BindSessionOutput,
+  GetTranscriptInput,
+  GetTranscriptOutput,
+  ReplaceTranscriptInput,
+  ReplaceTranscriptOutput,
   ConversationDisplayEvent,
   ConversationsConfig,
   CreateInput,
@@ -68,6 +77,7 @@ import type {
   StoreRunnerSessionOutput,
   TitleUpdatedEvent,
   Turn,
+  TurnRole,
   UnbindSessionInput,
   UnbindSessionOutput,
 } from './types.js';
@@ -176,6 +186,16 @@ export function createConversationsPlugin(
         // CLOSED: the caller (the subscribers) AND the consumer
         // (conversations:get reading the log) ship in this same PR.
         'conversations:append-event',
+        // TASK-67 (out-of-git Part B / B2, 2026-05-30): the resume transcript
+        // store (the resume SoT). Host-internal, ctx-scoped — the untrusted
+        // runner reaches them ONLY via the host's session.* IPC handlers
+        // (session.append-transcript / .replace-transcript / .get-transcript),
+        // which stamp ctx from the bearer token. Half-wired window CLOSED: the
+        // callers (the IPC handlers) AND the consumers (the runner delta-ship
+        // + resume rebuild) ship in this same PR.
+        'conversations:append-transcript',
+        'conversations:replace-transcript',
+        'conversations:get-transcript',
       ],
       calls: [
         'agents:resolve',
@@ -352,6 +372,30 @@ export function createConversationsPlugin(
         'conversations:append-event',
         PLUGIN_NAME,
         async (_ctx, input) => appendEvent(localStore, input),
+      );
+
+      // TASK-67 (out-of-git Part B / B2): the resume transcript store. All
+      // ctx-scoped, host-internal — the conversationId is host-stamped on ctx
+      // by the session.* IPC handler (NOT taken from the untrusted payload), so
+      // a runner can't aim a transcript at a foreign conversation. The append
+      // path runs the B3 structural divergence detector after the rows land.
+      bus.registerService<AppendTranscriptInput, AppendTranscriptOutput>(
+        'conversations:append-transcript',
+        PLUGIN_NAME,
+        async (ctx, input) => appendTranscript(localStore, ctx, input),
+        { returns: AppendTranscriptOutputSchema },
+      );
+      bus.registerService<ReplaceTranscriptInput, ReplaceTranscriptOutput>(
+        'conversations:replace-transcript',
+        PLUGIN_NAME,
+        async (_ctx, input) => replaceTranscript(localStore, input),
+        { returns: ReplaceTranscriptOutputSchema },
+      );
+      bus.registerService<GetTranscriptInput, GetTranscriptOutput>(
+        'conversations:get-transcript',
+        PLUGIN_NAME,
+        async (_ctx, input) => getTranscript(localStore, input),
+        { returns: GetTranscriptOutputSchema },
       );
 
       // chat:turn-end subscriber.
@@ -540,6 +584,161 @@ async function appendEvent(
     ...(input.key !== undefined ? { foldKey: input.key } : {}),
     payload: input.payload,
   });
+}
+
+// ---------------------------------------------------------------------------
+// TASK-67 — resume transcript store (out-of-git Part B / B2 + B3 detector).
+// ---------------------------------------------------------------------------
+
+/**
+ * conversations:append-transcript hook handler. The delta-ship guard:
+ *   - If the runner's `fromSeq` doesn't match the store's current max seq, OR
+ *     its `prefixHash` doesn't match the hash of the store's bytes up to
+ *     `fromSeq`, the SDK rewrote earlier bytes (compaction / in-place update)
+ *     — return `resync-required` WITHOUT writing. The runner re-ships the whole
+ *     file via conversations:replace-transcript.
+ *   - Otherwise append the new lines (the O(1)-per-turn common case) and run
+ *     the B3 structural divergence detector.
+ * conversationId comes from the host-stamped ctx (NOT the untrusted payload).
+ */
+async function appendTranscript(
+  store: ConversationStore,
+  ctx: AgentContext,
+  input: AppendTranscriptInput,
+): Promise<AppendTranscriptOutput> {
+  const hookName = 'conversations:append-transcript';
+  const conversationId = requireBoundedString(
+    input.conversationId,
+    'conversationId',
+    hookName,
+  );
+  const currentMax = await store.getTranscriptMaxSeq(conversationId);
+  const expectedPrefixHash = await store.getTranscriptPrefixHash(
+    conversationId,
+    input.fromSeq,
+  );
+  if (input.fromSeq !== currentMax || input.prefixHash !== expectedPrefixHash) {
+    // The runner's view diverged from ours — never a silent partial append.
+    return { outcome: 'resync-required', maxSeq: currentMax };
+  }
+  const maxSeq = await store.appendTranscriptLines(
+    conversationId,
+    input.fromSeq,
+    input.lines,
+  );
+  await runDivergenceDetector(store, ctx, conversationId);
+  return { outcome: 'appended', maxSeq };
+}
+
+/** conversations:replace-transcript hook handler (resync path). */
+async function replaceTranscript(
+  store: ConversationStore,
+  input: ReplaceTranscriptInput,
+): Promise<ReplaceTranscriptOutput> {
+  const hookName = 'conversations:replace-transcript';
+  const conversationId = requireBoundedString(
+    input.conversationId,
+    'conversationId',
+    hookName,
+  );
+  const maxSeq = await store.replaceTranscript(conversationId, input.lines);
+  return { maxSeq };
+}
+
+/** conversations:get-transcript hook handler (resume read). */
+async function getTranscript(
+  store: ConversationStore,
+  input: GetTranscriptInput,
+): Promise<GetTranscriptOutput> {
+  const hookName = 'conversations:get-transcript';
+  const conversationId = requireBoundedString(
+    input.conversationId,
+    'conversationId',
+    hookName,
+  );
+  const [bytes, maxSeq] = await Promise.all([
+    store.getTranscriptBytes(conversationId),
+    store.getTranscriptMaxSeq(conversationId),
+  ]);
+  return { bytes, maxSeq };
+}
+
+/**
+ * B3 structural divergence detector (out-of-git Part B / B3). At transcript
+ * append time, cross-check the COLLAPSED turn-role sequence of the two host
+ * stores — the display log (what the user saw) and the resume rows (what the
+ * model saw). The enemy is OMISSION: a completed turn missing from one side.
+ *
+ * It is STRUCTURAL, not a content hash: a hash false-positives on legitimate
+ * by-audience divergence (a masked credential in display vs. the real value in
+ * resume, a host-only error never in resume). Counting turn boundaries catches
+ * the only thing that's actually a bug — a dropped/reordered turn.
+ *
+ * Lag-tolerant: the two stores are written by SEPARATE IPC calls, so one is
+ * routinely a turn ahead of the other in flight. We compare only the COMMON
+ * PREFIX of the two collapsed role sequences; a mismatch WITHIN the shorter
+ * length is the divergence we alarm on. A pure length difference (one store
+ * ahead) is expected lag, not a bug.
+ *
+ * The SDK jsonl coalesces consecutive assistant lines and writes intermediate
+ * tool_use assistant lines, while the display log folds a turn to ONE
+ * role-tagged event — so we collapse consecutive same-role runs on BOTH sides
+ * before comparing (structural turn boundaries, not raw line/row counts).
+ *
+ * Best-effort: a loud `logger.error` + metric on divergence, NEVER a throw —
+ * the detector must not block the append ack (B3: install the alarm only; the
+ * derivation escalation is deferred / YAGNI).
+ */
+async function runDivergenceDetector(
+  store: ConversationStore,
+  ctx: AgentContext,
+  conversationId: string,
+): Promise<void> {
+  try {
+    const [events, roles] = await Promise.all([
+      store.listEvents(conversationId),
+      store.getTranscriptRoles(conversationId),
+    ]);
+    const displayRoles = collapseRoleRuns(
+      events
+        .filter((e) => e.kind === 'turn' && e.role !== null)
+        .map((e) => e.role as TurnRole),
+    );
+    const resumeRoles = collapseRoleRuns(
+      roles.filter((r): r is TurnRole => r !== null),
+    );
+    const common = Math.min(displayRoles.length, resumeRoles.length);
+    for (let i = 0; i < common; i++) {
+      if (displayRoles[i] !== resumeRoles[i]) {
+        ctx.logger.error('transcript_display_divergence', {
+          conversationId,
+          position: i,
+          displayRole: displayRoles[i],
+          resumeRole: resumeRoles[i],
+          displayTurns: displayRoles.length,
+          resumeTurns: resumeRoles.length,
+        });
+        return;
+      }
+    }
+  } catch (err) {
+    // The detector is a smoke alarm, not a gate — a read failure must never
+    // fail the append. Log at warn so a persistent detector outage is visible
+    // without masking the actual append result.
+    ctx.logger.warn('transcript_divergence_detector_failed', {
+      conversationId,
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+  }
+}
+
+/** Collapse consecutive same-role entries to one (structural turn boundaries). */
+function collapseRoleRuns(roles: TurnRole[]): TurnRole[] {
+  const out: TurnRole[] = [];
+  for (const r of roles) {
+    if (out.length === 0 || out[out.length - 1] !== r) out.push(r);
+  }
+  return out;
 }
 
 /**

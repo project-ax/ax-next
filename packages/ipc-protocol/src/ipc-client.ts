@@ -11,6 +11,8 @@ import {
   ConversationStoreRunnerSessionResponseSchema,
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
+  SessionAppendTranscriptResponseSchema,
+  SessionReplaceTranscriptResponseSchema,
   SessionGetConfigResponseSchema,
   SessionNextMessageResponseSchema,
   ToolExecuteHostResponseSchema,
@@ -109,6 +111,13 @@ const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   'blob.put': BlobPutResponseSchema,
   'artifact.publish': ArtifactPublishResponseSchema,
   'attachments.list': AttachmentsListResponseSchema,
+  // TASK-67: append's small JSON response, and replace-transcript's small JSON
+  // response (parsed by callBinaryUpload — its REQUEST body is raw octet-stream,
+  // so there's no request schema, but the RESPONSE is a JSON envelope checked
+  // here). get-transcript's RESPONSE is raw binary via callBinary (drained to
+  // disk) → no schema here.
+  'session.append-transcript': SessionAppendTranscriptResponseSchema,
+  'session.replace-transcript': SessionReplaceTranscriptResponseSchema,
 };
 
 export interface IpcClientOptions {
@@ -198,7 +207,8 @@ export interface IpcClient {
     Action extends
       | 'workspace.materialize'
       | 'workspace.export-baseline-bundle'
-      | 'blob.get',
+      | 'blob.get'
+      | 'session.get-transcript',
   >(
     action: Action,
     payload: unknown,
@@ -215,7 +225,7 @@ export interface IpcClient {
    * and therefore idempotent, so a transient-error retry that re-streams the
    * same bytes is safe.
    */
-  callBinaryUpload<Action extends 'blob.put'>(
+  callBinaryUpload<Action extends 'blob.put' | 'session.replace-transcript'>(
     action: Action,
     bytes: Buffer,
   ): Promise<unknown>;
@@ -981,7 +991,8 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     Action extends
       | 'workspace.materialize'
       | 'workspace.export-baseline-bundle'
-      | 'blob.get',
+      | 'blob.get'
+      | 'session.get-transcript',
   >(
     action: Action,
     payload: unknown,
@@ -1026,7 +1037,9 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     }
   };
 
-  const callBinaryUpload = async <Action extends 'blob.put'>(
+  const callBinaryUpload = async <
+    Action extends 'blob.put' | 'session.replace-transcript',
+  >(
     action: Action,
     bytes: Buffer,
   ): Promise<unknown> => {

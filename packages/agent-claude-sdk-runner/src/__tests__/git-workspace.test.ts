@@ -253,7 +253,17 @@ describe('scaffoldWorkspaceGitignore', () => {
     await scaffoldWorkspaceGitignore(root);
 
     const gi = await fs.readFile(path.join(root, '.gitignore'), 'utf8');
-    for (const entry of ['node_modules/', '.venv/', 'venv/', '__pycache__/', '*.py[cod]', '.npm/', '.cache/']) {
+    for (const entry of [
+      'node_modules/',
+      '.venv/',
+      'venv/',
+      '__pycache__/',
+      '*.py[cod]',
+      '.npm/',
+      '.cache/',
+      // TASK-67: the SDK jsonl transcript leaves git (DB-backed resume store).
+      '.claude/projects/',
+    ]) {
       expect(gi).toContain(entry);
     }
   });

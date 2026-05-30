@@ -37,6 +37,11 @@ import { sessionNextMessageHandler } from './handlers/session-next-message.js';
 import { sessionGetConfigHandler } from './handlers/session-get-config.js';
 import { conversationStoreRunnerSessionHandler } from './handlers/conversation-store-runner-session.js';
 import {
+  sessionAppendTranscriptHandler,
+  sessionGetTranscriptHandler,
+  sessionReplaceTranscriptHandler,
+} from './handlers/session-transcript.js';
+import {
   validateEventToolPostCall,
   fireEventToolPostCall,
 } from './handlers/event-tool-post-call.js';
@@ -102,6 +107,13 @@ ACTIONS.set('/conversation.store-runner-session', {
 ACTIONS.set('/blob.get', { method: 'POST', handler: blobGetHandler });
 ACTIONS.set('/artifact.publish', { method: 'POST', handler: artifactPublishHandler });
 ACTIONS.set('/attachments.list', { method: 'POST', handler: attachmentsListHandler });
+// TASK-67 (out-of-git Part B / B2): resume-transcript JSON actions. append takes
+// a small JSON request + returns a JSON envelope; get-transcript takes a JSON
+// request and returns a BINARY response (HandlerBinary) — still an ordinary
+// ACTION (the REQUEST body is JSON). replace-transcript's REQUEST body is raw
+// octet-stream → it's a BINARY_ACTION below.
+ACTIONS.set('/session.append-transcript', { method: 'POST', handler: sessionAppendTranscriptHandler });
+ACTIONS.set('/session.get-transcript', { method: 'POST', handler: sessionGetTranscriptHandler });
 
 // Maximum inbound blob body for the raw-body REQUEST-direction channel
 // (blob.put). Matches the artifact_publish executor's 100 MiB size cap so the
@@ -119,6 +131,9 @@ const BINARY_ACTIONS = new Map<string, {
   handler: BinaryActionHandler;
 }>();
 BINARY_ACTIONS.set('/blob.put', { method: 'POST', handler: blobPutHandler });
+// TASK-67: the resync path streams the WHOLE jsonl as a raw octet-stream
+// REQUEST body (it can exceed the 4 MiB JSON cap on a long session).
+BINARY_ACTIONS.set('/session.replace-transcript', { method: 'POST', handler: sessionReplaceTranscriptHandler });
 
 type EventSpec = {
   method: 'POST';

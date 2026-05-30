@@ -59,6 +59,11 @@ import {
   readLastTurnUuid,
   waitForTranscriptUuid,
 } from './turn-end-uuid.js';
+import {
+  restoreTranscriptForResume,
+  shipTranscriptDelta,
+  type TranscriptShipState,
+} from './transcript-delta.js';
 import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 
 // ---------------------------------------------------------------------------
@@ -415,6 +420,13 @@ export async function main(): Promise<number> {
   // and the turn-end commit share the same chained `parentVersion`.
   let parentVersion: string | null = initialBaselineCommit;
 
+  // TASK-67: the runner-local resume-transcript ship state, threaded across
+  // turns exactly like `parentVersion`. `sentOffset` is the jsonl byte offset
+  // already shipped to the host store; `sentSeq` is the host's row count (max
+  // seq). Fresh boot starts at {0,0}; a resume seeds it from the rebuilt jsonl
+  // (set in the F2a block below, after restoreTranscriptForResume runs).
+  let transcriptShipState: TranscriptShipState = { sentOffset: 0, sentSeq: 0 };
+
   // Mid-turn flush for host tools that declare `flushWorkspaceBeforeCall`.
   // The runner commits + pushes its live /permanent tree to the host mirror
   // BEFORE the host tool runs, so a host read of a file the agent just wrote
@@ -677,30 +689,65 @@ export async function main(): Promise<number> {
     | { name: string; message: string; stack?: string }
     | undefined;
 
-  // F2a resume guard (defense-in-depth). `query({ resume: X })` hard-crashes
-  // the runner (`exit 1` → chat-end `terminated`) with "No conversation found
-  // with session ID: X" whenever the bound session has NO parseable transcript
-  // in the materialized workspace. The host bind is now deferred to the first
-  // durable commit (see bindRunnerSessionIfNeeded), so a bound id should always
-  // have a transcript — but if a materialize/git regression ever drops it, omit
-  // `resume` and start fresh instead of crashing. Verified against the live SDK
-  // (0.2.119) on 2026-05-24: a missing/empty/metadata-only/garbage transcript
-  // is exactly what triggers the crash; a real user/assistant transcript
-  // resumes cleanly even with a truncated trailing line.
+  // F2a resume guard + TASK-67 resume rebuild. `query({ resume: X })`
+  // hard-crashes the runner (`exit 1` → chat-end `terminated`) with "No
+  // conversation found with session ID: X" whenever the bound session has NO
+  // parseable transcript on disk where the SDK looks for it.
+  //
+  // The transcript now lives OUT OF GIT, as rows in the host store (TASK-67).
+  // So on resume we REBUILD the jsonl from the store FIRST —
+  // `restoreTranscriptForResume` fetches the joined bytes and writes them to
+  // `$CLAUDE_CONFIG_DIR/projects/<slug>/<sid>.jsonl` (the path the SDK reads) —
+  // then seed `transcriptShipState` so the delta-ship picks up where the store
+  // left off. The F2a guard becomes the DB check: when the host has no rows
+  // (`written === false`, i.e. max(seq) === 0) we omit `resume` and start fresh
+  // instead of crashing. A bound id should always have rows (bind is deferred to
+  // the first durable append), but a regression that drops them degrades to a
+  // fresh start, not a hard exit.
+  //
+  // Single-session / non-conversation runs (conversationId === null) can't
+  // reach the host transcript store, so they keep the legacy on-disk scan
+  // (hasResumableTranscript) as the guard — the jsonl, if any, is the
+  // materialized-workspace copy.
   let resumeSessionId = runnerSessionId;
-  if (
-    runnerSessionId !== null &&
-    !(await hasResumableTranscript(env.workspaceRoot, runnerSessionId))
-  ) {
-    process.stderr.write(
-      'runner: bound runner session has no resumable transcript in the workspace; starting fresh instead of resuming\n',
-    );
-    resumeSessionId = null;
-    // `transcriptSessionId` was seeded to the (stale) resume id above; the SDK
-    // will mint a FRESH session id now that we omit `resume`, so clear it back
-    // to null so the system/init handler re-captures the new id. Otherwise the
-    // turn-end flush wait would poll the wrong (non-existent) jsonl.
-    transcriptSessionId = null;
+  if (runnerSessionId !== null) {
+    let resumable: boolean;
+    if (conversationId !== null) {
+      try {
+        const restored = await restoreTranscriptForResume({
+          client,
+          workspaceRoot: env.workspaceRoot,
+          sessionId: runnerSessionId,
+        });
+        resumable = restored.written;
+        if (restored.written) {
+          transcriptShipState = restored.state;
+        }
+      } catch (err) {
+        // A failure fetching/rebuilding the transcript shouldn't crash boot —
+        // degrade to a fresh start (the user re-states; far better than a hard
+        // exit). Log loudly.
+        process.stderr.write(
+          `runner: restoreTranscriptForResume failed; starting fresh: ${err instanceof Error ? err.message : String(err)}\n`,
+        );
+        resumable = false;
+      }
+    } else {
+      resumable = await hasResumableTranscript(env.workspaceRoot, runnerSessionId);
+    }
+    if (!resumable) {
+      process.stderr.write(
+        'runner: bound runner session has no resumable transcript; starting fresh instead of resuming\n',
+      );
+      resumeSessionId = null;
+      // `transcriptSessionId` was seeded to the (stale) resume id above; the SDK
+      // will mint a FRESH session id now that we omit `resume`, so clear it back
+      // to null so the system/init handler re-captures the new id. Otherwise the
+      // turn-end flush wait would poll the wrong (non-existent) jsonl, and the
+      // fresh transcript would ship from a stale offset.
+      transcriptSessionId = null;
+      transcriptShipState = { sentOffset: 0, sentSeq: 0 };
+    }
   }
 
   // F2a root fix: bind the conversation row → runner-native transcript ONCE,
@@ -1290,6 +1337,38 @@ export async function main(): Promise<number> {
               `[commit-trace] waitForTranscriptUuid SKIPPED (finalAsstUuid=${turnLastAssistantUuid ?? '-'} session=${transcriptSessionId ?? 'null'})\n`,
             );
           }
+          // TASK-67: ship the resume-transcript DELTA (the SDK jsonl, now out of
+          // git). Replaces the per-turn commit/bundle of the jsonl: the new
+          // lines append as opaque rows in the host store, O(1) per turn. The
+          // bind-after-DURABLE (F2a) moves here — the transcript is durable once
+          // the host accepts the append/replace, mirroring today's
+          // bind-after-commit-accepted. Non-transcript /permanent state (identity,
+          // Pattern A) still rides commitTurnAndBundle below (the jsonl is
+          // gitignored, so that commit is usually empty on a chat turn).
+          if (transcriptSessionId !== null && conversationId !== null) {
+            const shipped = await shipTranscriptDelta({
+              client,
+              workspaceRoot: env.workspaceRoot,
+              sessionId: transcriptSessionId,
+              state: transcriptShipState,
+            });
+            transcriptShipState = {
+              sentOffset: shipped.sentOffset,
+              sentSeq: shipped.sentSeq,
+            };
+            commitTrace(
+              `[commit-trace] per-turn shipTranscriptDelta → ${shipped.outcome} sentSeq=${shipped.sentSeq} sentOffset=${shipped.sentOffset}\n`,
+            );
+            if (shipped.outcome === 'appended' || shipped.outcome === 'resynced') {
+              await bindRunnerSessionIfNeeded();
+            }
+          }
+          // Commit + bundle any NON-transcript /permanent change (identity,
+          // Pattern A project code). The jsonl is gitignored (TASK-67), so a
+          // pure chat turn stages nothing → returns null → commit-notify skipped
+          // (the same empty-diff semantic the legacy path had). Thinning this
+          // out entirely (gate on a non-empty agent-state diff / delete the
+          // bundle path) is Phase 5 / TASK-70.
           const bundleB64 = await commitTurnAndBundle({
             root: env.workspaceRoot,
             reason: 'turn',
@@ -1315,12 +1394,6 @@ export async function main(): Promise<number> {
             commitTrace(
               `[commit-trace] per-turn DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
             );
-            // F2a: the transcript is now durable on the host — bind the
-            // conversation row to it (once, fresh-boot only). See
-            // bindRunnerSessionIfNeeded.
-            if (result.outcome === 'accepted') {
-              await bindRunnerSessionIfNeeded();
-            }
           }
         } catch (err) {
           // A 4xx from bindRunnerSessionIfNeeded (e.g. conversation owned by
@@ -1444,9 +1517,35 @@ export async function main(): Promise<number> {
     // empty diff and no commit is created (commitTurnAndBundle short-
     // circuits on empty diffs).
     commitTrace(
-      `[commit-trace] for-await drained → final commit (parent=${parentVersion ?? 'null'})\n`,
+      `[commit-trace] for-await drained → final flush (parent=${parentVersion ?? 'null'})\n`,
     );
     try {
+      // TASK-67: final transcript flush. The SDK writes the closing assistant
+      // line AFTER yielding `result`, so the per-turn ship may have raced it;
+      // this final ship (after the for-await fully drains) captures the tail.
+      // `shipTranscriptDelta` is a noop when the per-turn ship already sent
+      // everything (no new complete line past sentOffset).
+      if (transcriptSessionId !== null && conversationId !== null) {
+        const shipped = await shipTranscriptDelta({
+          client,
+          workspaceRoot: env.workspaceRoot,
+          sessionId: transcriptSessionId,
+          state: transcriptShipState,
+        });
+        transcriptShipState = {
+          sentOffset: shipped.sentOffset,
+          sentSeq: shipped.sentSeq,
+        };
+        commitTrace(
+          `[commit-trace] final shipTranscriptDelta → ${shipped.outcome} sentSeq=${shipped.sentSeq}\n`,
+        );
+        // F2a: last chance to bind once the transcript is durable (e.g. when the
+        // per-turn ship was a noop but a final line landed here). Once-only.
+        if (shipped.outcome === 'appended' || shipped.outcome === 'resynced') {
+          await bindRunnerSessionIfNeeded();
+        }
+      }
+      // Commit + bundle any NON-transcript /permanent change (see per-turn site).
       const finalBundle = await commitTurnAndBundle({
         root: env.workspaceRoot,
         reason: 'turn',
@@ -1455,10 +1554,6 @@ export async function main(): Promise<number> {
         `[commit-trace] final commitTurnAndBundle → ${finalBundle === null ? 'EMPTY (no staged diff; commit-notify SKIPPED)' : `${finalBundle.length}B`}\n`,
       );
       if (finalBundle !== null) {
-        // Run the SAME bounded re-sync+retry helper as the per-turn commit. A
-        // concurrent writer racing this final/idle commit advances the mirror;
-        // without the re-sync the final turn's tail (the SDK's delayed
-        // post-`result` jsonl writes) was silently dropped — it only logged.
         const result = await commitNotifyWithResync({
           client,
           root: env.workspaceRoot,
@@ -1470,12 +1565,6 @@ export async function main(): Promise<number> {
         commitTrace(
           `[commit-trace] final DONE outcome=${result.outcome} parent=${parentVersion ?? 'null'}\n`,
         );
-        // F2a: last chance to bind once the final commit is durable (e.g. when
-        // the per-turn commit-notify was 'kept'/'rolled-back' but this one was
-        // accepted). Once-only via bindRunnerSessionIfNeeded.
-        if (result.outcome === 'accepted') {
-          await bindRunnerSessionIfNeeded();
-        }
       }
     } catch (err) {
       // Propagate a terminal bind rejection (4xx) past this best-effort catch
@@ -1487,7 +1576,7 @@ export async function main(): Promise<number> {
       ) {
         throw err;
       }
-      process.stderr.write(`runner: final commitTurnAndBundle failed: ${err instanceof Error ? err.message : String(err)}\n`);
+      process.stderr.write(`runner: final transcript flush / commit failed: ${err instanceof Error ? err.message : String(err)}\n`);
     }
   } catch (err) {
     exitCode = 1;

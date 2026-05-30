@@ -196,6 +196,13 @@ const WORKSPACE_GITIGNORE_ENTRIES = [
   '*.py[cod]',
   '.npm/',
   '.cache/',
+  // TASK-67 (out-of-git Part B / B2): the SDK's per-session jsonl transcript
+  // leaves git. It now lives as opaque rows in the host store (the resume SoT),
+  // shipped per-turn via session.append-transcript and rebuilt on resume — so
+  // `git add -A` must NOT stage it (that would leave TWO resume backings; I4
+  // one-source-of-truth). The remaining commit/bundle path carries only
+  // non-transcript /permanent state (identity, Pattern A).
+  '.claude/projects/',
 ];
 
 /**
