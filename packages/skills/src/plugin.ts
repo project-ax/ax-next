@@ -1089,12 +1089,14 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
                 scanVerdict = r.reason ?? 'flagged by the skill safety scan';
               }
             } catch (err) {
-              // A scanner outage must not silently DOWNGRADE safety — but it
-              // also can't block authoring forever. Fail toward caution: treat a
-              // scanner error like a clean scan ONLY for the gate's active/pending
-              // decision (the gate still requires zero-cap + authored for active),
-              // and log it. This matches the validator's existing degrade posture
-              // (a transient LLM failure leaves the regex floor in charge).
+              // A scanner OUTAGE degrades to 'clean' (scanClean stays true) — the
+              // scan never blocks authoring (the validator's own posture: the scan
+              // is accept-but-annotate, not the security boundary; capability
+              // approval is). The residual risk is bounded: the free path is
+              // already restricted to zero-cap + authored instruction text, the
+              // exact case the lazy redesign accepted "best-effort scan only" for
+              // (design §D3); anything with reach is `pending` regardless, gated on
+              // human approval. Logged so an outage is observable.
               ctx.logger.warn('skills_scan_failed', {
                 skillId,
                 error: err instanceof Error ? err.message : String(err),

@@ -56,18 +56,6 @@ export interface AuthoredSkillsStore {
    * projection caller filters by status; quarantined rows are returned so a
    * reason can be surfaced, but the projection omits them. */
   list(ownerUserId: string, agentId: string): Promise<AuthoredSkill[]>;
-  /** Get one authored skill, or null. */
-  get(ownerUserId: string, agentId: string, skillId: string): Promise<AuthoredSkill | null>;
-  /** Flip an authored skill's status (e.g. pending → active on approval). No-op
-   * if the row is absent; returns whether a row was updated. */
-  setStatus(
-    ownerUserId: string,
-    agentId: string,
-    skillId: string,
-    status: AuthoredStatus,
-  ): Promise<{ updated: boolean }>;
-  /** Delete one authored skill row. Silent if absent. */
-  delete(ownerUserId: string, agentId: string, skillId: string): Promise<void>;
 }
 
 function rowToAuthored(
@@ -168,38 +156,6 @@ export function createAuthoredSkillsStore(
       const out: AuthoredSkill[] = [];
       for (const r of rows) out.push(rowToAuthored(r, await loadFiles(r.bundle_tree_sha)));
       return out;
-    },
-
-    async get(ownerUserId, agentId, skillId) {
-      const row = await db
-        .selectFrom('skills_v1_authored')
-        .selectAll()
-        .where('owner_user_id', '=', ownerUserId)
-        .where('agent_id', '=', agentId)
-        .where('skill_id', '=', skillId)
-        .executeTakeFirst();
-      if (row === undefined) return null;
-      return rowToAuthored(row, await loadFiles(row.bundle_tree_sha));
-    },
-
-    async setStatus(ownerUserId, agentId, skillId, status) {
-      const r = await db
-        .updateTable('skills_v1_authored')
-        .set({ status, updated_at: new Date() })
-        .where('owner_user_id', '=', ownerUserId)
-        .where('agent_id', '=', agentId)
-        .where('skill_id', '=', skillId)
-        .executeTakeFirst();
-      return { updated: Number(r.numUpdatedRows ?? 0n) > 0 };
-    },
-
-    async delete(ownerUserId, agentId, skillId) {
-      await db
-        .deleteFrom('skills_v1_authored')
-        .where('owner_user_id', '=', ownerUserId)
-        .where('agent_id', '=', agentId)
-        .where('skill_id', '=', skillId)
-        .execute();
     },
   };
 }
