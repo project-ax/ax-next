@@ -3,6 +3,7 @@ export {
   runConversationsMigration,
   type ConversationDatabase,
   type ConversationsRow,
+  type ConversationEventsRow,
 } from './migrations.js';
 export {
   createConversationStore,
@@ -16,16 +17,22 @@ export {
   type ConversationStoreCreateArgs,
   type ConversationMetadata,
   type StoreRunnerSessionResult,
+  type StoreAppendEventArgs,
+  type StoredEvent,
 } from './store.js';
 export {
   scopedConversations,
   type ConversationScope,
 } from './scope.js';
 export type {
+  AppendEventInput,
+  AppendEventOutput,
   BindSessionInput,
   BindSessionOutput,
   ContentBlock,
   Conversation,
+  ConversationDisplayEvent,
+  ConversationEventKind,
   ConversationsConfig,
   CreateInput,
   CreateOutput,

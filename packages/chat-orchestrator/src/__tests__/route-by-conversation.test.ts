@@ -60,6 +60,8 @@ interface CallTrace {
   bindSession: Array<{ conversationId: string; sessionId: string; reqId: string }>;
   conversationsGet: number;
   isAlive: Array<{ sessionId: string; result: boolean }>;
+  /** TASK-66: captured `conversations:append-event` inputs (user-turn persist). */
+  appendEvent: unknown[];
 }
 
 interface BuiltMocks {
@@ -86,6 +88,7 @@ function buildMocks(opts: {
     bindSession: [],
     conversationsGet: 0,
     isAlive: [],
+    appendEvent: [],
   };
 
   const services: Record<string, ServiceHandler> = {
@@ -144,6 +147,11 @@ function buildMocks(opts: {
         reqId: string;
       };
       trace.bindSession.push({ ...i });
+      return undefined;
+    },
+    // TASK-66: the orchestrator persists the user display turn here.
+    'conversations:append-event': async (_ctx, input: unknown) => {
+      trace.appendEvent.push(input);
       return undefined;
     },
     'sandbox:open-session': async (ctx, input: unknown) => {
@@ -650,5 +658,88 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     expect(mocks.trace.queueWork).toHaveLength(2);
     expect(mocks.trace.queueWork[0]!.sessionId).toBe('s-cc');
     expect(mocks.trace.queueWork[1]!.sessionId).toBe('s-cc');
+  });
+
+  // TASK-66 (out-of-git Part B / B1): the orchestrator persists the USER turn
+  // into the display event log host-side (the runner only ships tool/assistant
+  // turn-ends; a runner-side user turn-end would trip the host's turn-end side
+  // effects). Verify conversations:append-event is called once with the user's
+  // text + attachment blocks, and that a conversationId-less invoke does not.
+  it('TASK-66) persists the user turn via conversations:append-event (text + attachment blocks)', async () => {
+    const mocks = buildMocks({
+      conversations: { 'conv-u': { activeSessionId: null } },
+      liveSessions: new Set(),
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+
+    const expected: AgentOutcome = { kind: 'complete', messages: [] };
+    arrangeImmediateEnd(h.bus, expected, 's-u', 'req-u');
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 's-u', conversationId: 'conv-u', reqId: 'req-u' }),
+      {
+        message: {
+          role: 'user',
+          content: 'summarize this',
+          contentBlocks: [
+            {
+              type: 'attachment',
+              path: '.ax/uploads/conv-u/t1/report.pdf',
+              displayName: 'report.pdf',
+              mediaType: 'application/pdf',
+              sizeBytes: 10,
+            },
+          ],
+        },
+      },
+    );
+
+    expect(mocks.trace.appendEvent).toHaveLength(1);
+    expect(mocks.trace.appendEvent[0]).toMatchObject({
+      conversationId: 'conv-u',
+      kind: 'turn',
+      role: 'user',
+      payload: {
+        blocks: [
+          { type: 'text', text: 'summarize this' },
+          {
+            type: 'attachment',
+            path: '.ax/uploads/conv-u/t1/report.pdf',
+            displayName: 'report.pdf',
+          },
+        ],
+      },
+    });
+  });
+
+  it('TASK-66) does NOT persist a user turn when ctx.conversationId is unset', async () => {
+    const mocks = buildMocks({ conversations: {}, liveSessions: new Set() });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    const expected: AgentOutcome = { kind: 'complete', messages: [] };
+    arrangeImmediateEnd(h.bus, expected, 'fresh-session', 'req-n');
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 'fresh-session', reqId: 'req-n' }),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(mocks.trace.appendEvent).toHaveLength(0);
   });
 });

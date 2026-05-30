@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
 import { ContentBlockSchema, type ContentBlock } from '@ax/ipc-protocol';
 import { z } from 'zod';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type {
   ConversationDatabase,
   ConversationsRow,
@@ -10,6 +10,7 @@ import type {
 import { scopedConversations } from './scope.js';
 import type {
   Conversation,
+  ConversationEventKind,
   TurnRole,
 } from './types.js';
 
@@ -382,6 +383,44 @@ export interface ConversationStore {
    * can coexist) AND tombstones (re-create after delete is allowed).
    */
   findOrCreate(args: ConversationStoreFindOrCreateArgs): Promise<FindOrCreateResult>;
+  /**
+   * TASK-66 (out-of-git Part B / B1). Append one display frame to the
+   * conversation's redisplay log. Mints the next per-conversation monotonic
+   * `seq` and INSERTs in a single statement (single writer per conversation
+   * — the host — so SELECT MAX()+1 is contention-free, NOT a CAS). Returns
+   * the seq assigned. No userId scope — called only by `@ax/conversations`'
+   * own host-side subscribers, gated upstream by the orchestrator's J1 check.
+   */
+  appendEvent(args: StoreAppendEventArgs): Promise<number>;
+  /**
+   * TASK-66. Read the conversation's redisplay log in seq order. Returns the
+   * raw stored rows (kind/role/foldKey/payload/createdAt) — the plugin layer
+   * projects `turn` rows to `Turn[]` and folds host-only events. Empty when
+   * the conversation has no event rows (a legacy conversation whose redisplay
+   * still comes from the jsonl).
+   */
+  listEvents(conversationId: string): Promise<StoredEvent[]>;
+}
+
+/** TASK-66 — args for ConversationStore.appendEvent. */
+export interface StoreAppendEventArgs {
+  conversationId: string;
+  kind: ConversationEventKind;
+  /** Turn role — present only for `kind: 'turn'`. */
+  role?: TurnRole;
+  /** Fold key (see ConversationDisplayEvent.key). Defaults to ''. */
+  foldKey?: string;
+  payload: Record<string, unknown>;
+}
+
+/** TASK-66 — one stored display event, as returned by listEvents. */
+export interface StoredEvent {
+  seq: number;
+  kind: ConversationEventKind;
+  role: TurnRole | null;
+  foldKey: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
 }
 
 export function createConversationStore(
@@ -700,7 +739,134 @@ export function createConversationStore(
         .executeTakeFirstOrThrow();
       return { conversation: rowToConversation(winner), created: false };
     },
+
+    async appendEvent({ conversationId, kind, role, foldKey, payload }) {
+      // Mint the next per-conversation seq and INSERT in one statement.
+      // Mint the next per-conversation seq via INSERT ... SELECT
+      // COALESCE(MAX(seq),0)+1 (atomic within ONE statement). Two CONCURRENT
+      // appends for the same conversation (e.g. a permission-card persist
+      // racing the turn-end persist) can each read the same MAX before either
+      // commits → one hits the (conversation_id, seq) PK and raises a
+      // unique-violation (SQLSTATE 23505). That's the backstop, not silent
+      // overwrite: retry on 23505 — the re-read sees the committed row and
+      // mints the next seq. Bounded so a genuine PK problem surfaces instead
+      // of spinning. (Concurrency here is rare — a few host events per
+      // conversation — so a tiny retry budget is plenty.)
+      for (let attempt = 0; ; attempt++) {
+        try {
+          const inserted = await db
+            .insertInto('conversations_v1_events')
+            .columns([
+              'conversation_id',
+              'seq',
+              'event_kind',
+              'role',
+              'fold_key',
+              'payload',
+            ])
+            .expression((eb) =>
+              eb
+                .selectFrom('conversations_v1_events as e')
+                .where('e.conversation_id', '=', conversationId)
+                .select(() => [
+                  sql<string>`${conversationId}`.as('conversation_id'),
+                  sql<number>`COALESCE(MAX(e.seq), 0) + 1`.as('seq'),
+                  sql<string>`${kind}`.as('event_kind'),
+                  sql<string | null>`${role ?? null}`.as('role'),
+                  sql<string>`${foldKey ?? ''}`.as('fold_key'),
+                  // Serialize once here so the JSONB column gets a single text
+                  // value (kysely's pg driver passes the string straight
+                  // through to ::jsonb). The payload is opaque; never
+                  // interpolated.
+                  sql<string>`${JSON.stringify(payload)}::jsonb`.as('payload'),
+                ]),
+            )
+            .returning('seq')
+            .executeTakeFirst();
+          // The aggregate sub-select always returns one row, so the INSERT
+          // always inserts; `inserted` is defined.
+          return coerceSeq(inserted?.seq ?? 1);
+        } catch (err) {
+          if (isUniqueViolation(err) && attempt < APPEND_MAX_RETRIES) {
+            continue; // a concurrent append took our seq; recompute + retry.
+          }
+          throw err;
+        }
+      }
+    },
+
+    async listEvents(conversationId) {
+      const rows = await db
+        .selectFrom('conversations_v1_events')
+        .selectAll('conversations_v1_events')
+        .where('conversation_id', '=', conversationId)
+        .orderBy('seq', 'asc')
+        .execute();
+      return rows.map((r) => ({
+        seq: coerceSeq(r.seq),
+        kind: validateEventKind(r.event_kind),
+        role: r.role === null ? null : validateRole(r.role),
+        foldKey: r.fold_key,
+        // Don't trust the JSONB column blindly: it must be a JSON object
+        // (the frame body). A non-object payload (corruption / a hand-edited
+        // row) collapses to an empty object so the read can't crash — the
+        // renderer treats an empty frame as a no-op.
+        payload: asRecord(r.payload),
+        createdAt: r.created_at.toISOString(),
+      }));
+    },
   };
+}
+
+// ---------------------------------------------------------------------------
+// TASK-66 display-event helpers.
+// ---------------------------------------------------------------------------
+
+// Bounded retry budget for the appendEvent seq-allocation race (SQLSTATE
+// 23505). Concurrent appends per conversation are rare (a few host events at
+// a time), so a small budget self-heals the race; exceeding it means a real PK
+// problem that should surface.
+const APPEND_MAX_RETRIES = 8;
+
+/**
+ * Postgres unique_violation (23505). The pg driver surfaces the SQLSTATE on
+ * `err.code`; kysely re-throws the driver error verbatim. We match on the code
+ * string (storage-internal — never crosses a hook boundary).
+ */
+function isUniqueViolation(err: unknown): boolean {
+  return (
+    err !== null &&
+    typeof err === 'object' &&
+    (err as { code?: unknown }).code === '23505'
+  );
+}
+
+const VALID_EVENT_KINDS: ReadonlySet<ConversationEventKind> = new Set([
+  'turn',
+  'permission-card',
+  'turn-error',
+]);
+
+/** BIGINT may surface as a string (pg) or number; coerce to a finite int. */
+function coerceSeq(value: string | number): number {
+  const n = typeof value === 'string' ? Number(value) : value;
+  return Number.isFinite(n) ? n : 0;
+}
+
+function validateEventKind(value: string): ConversationEventKind {
+  if (!VALID_EVENT_KINDS.has(value as ConversationEventKind)) {
+    throw invalid(
+      "event_kind must be 'turn', 'permission-card', or 'turn-error'",
+    );
+  }
+  return value as ConversationEventKind;
+}
+
+/** Coerce an opaque JSONB value to a plain string-keyed object (or {}). */
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 // ---------------------------------------------------------------------------

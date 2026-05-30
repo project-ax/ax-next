@@ -42,6 +42,10 @@ describe('@ax/conversations plugin manifest', () => {
         // agent, key) conversation lookup for `conversation: shared`
         // routines. Half-wired window OPEN: caller lands in Phase B.
         'conversations:find-or-create',
+        // TASK-66 (2026-05-30): host-internal append to the display event
+        // log. Caller (this plugin's own subscribers) + consumer
+        // (conversations:get) both ship in the same PR.
+        'conversations:append-event',
       ],
       // database:get-instance is hard — we run our own migration on init.
       // agents:resolve is hard — every hook gates through it (Invariant J1).
@@ -56,10 +60,16 @@ describe('@ax/conversations plugin manifest', () => {
         'workspace:read',
         'workspace:apply',
       ],
-      // chat:turn-end subscriber bumps last_activity_at only (Phase D
-      // dropped the conversation_turns auto-append).
-      // session:terminate subscriber clears bound rows (Task 14).
-      subscribes: ['chat:turn-end', 'session:terminate'],
+      // chat:turn-end subscriber bumps last_activity_at AND persists the
+      // turn's display frame (TASK-66). session:terminate clears bound rows
+      // (Task 14). chat:turn-error + chat:permission-request persist the
+      // host-only display events the jsonl never sees (TASK-66).
+      subscribes: [
+        'chat:turn-end',
+        'session:terminate',
+        'chat:turn-error',
+        'chat:permission-request',
+      ],
     });
   });
 });

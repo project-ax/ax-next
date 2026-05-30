@@ -116,6 +116,61 @@ export async function runConversationsMigration<DB>(
   // database (where the table was never created) is a no-op, and an
   // existing database has the legacy table removed.
   await sql`DROP TABLE IF EXISTS conversations_v1_turns`.execute(db);
+
+  // TASK-66 (out-of-git Part B / B1, 2026-05-30): the display event log —
+  // the redisplay source of truth. Append-only, keyed (conversation_id, seq)
+  // with a per-conversation monotonic seq (single writer per conversation:
+  // the host — contention-free, NOT a CAS). Persists the exact ordered
+  // display frames the host already emits over SSE so reload == live by
+  // construction: `turn` rows carry the model/tool content (the folded
+  // terminal ContentBlock[] the runner sends at the result boundary);
+  // `permission-card` / `turn-error` rows carry the HOST-only UI events the
+  // SDK jsonl never sees.
+  //
+  //   seq:        per-conversation monotonic int (1-based). The PK is the
+  //               composite (conversation_id, seq) so ordering + dedup are
+  //               free. Minted by the store inside the same statement that
+  //               inserts (SELECT COALESCE(MAX)+1) — single writer, no CAS.
+  //   event_kind: display-semantic enum — 'turn' | 'permission-card' |
+  //               'turn-error'. CHECK-constrained so a malformed kind can't
+  //               land. Storage-agnostic (I1): no backend vocabulary.
+  //   role:       turn role for 'turn' rows ('user'|'assistant'|'tool');
+  //               NULL for host-only events.
+  //   fold_key:   stable per-card / per-turn key. The read keeps the LAST row
+  //               per (conversation_id, event_kind, fold_key) so a later
+  //               card-resolution frame folds an earlier card to its terminal
+  //               state on replay with no special bookkeeping.
+  //   payload:    the opaque display frame body (JSONB). Untrusted host/model
+  //               output — stored opaque, never interpreted by the store, and
+  //               re-validated against ContentBlockSchema on read for turns
+  //               (the J2 hardening posture). Renderers sanitize.
+  //
+  // No FK to conversations_v1_conversations — keeping the same no-cross-row
+  // posture (orphan event rows after a conversation delete are tolerable and
+  // GC'able). CREATE TABLE / INDEX IF NOT EXISTS keeps the migration
+  // idempotent (I11).
+  await sql`
+    CREATE TABLE IF NOT EXISTS conversations_v1_events (
+      conversation_id TEXT NOT NULL,
+      seq BIGINT NOT NULL,
+      event_kind TEXT NOT NULL
+        CHECK (event_kind IN ('turn', 'permission-card', 'turn-error')),
+      role TEXT,
+      fold_key TEXT NOT NULL DEFAULT '',
+      payload JSONB NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (conversation_id, seq)
+    )
+  `.execute(db);
+
+  // Read path orders by seq within a conversation; the PK already covers
+  // (conversation_id, seq) so a plain conversation_id scan is index-served.
+  // The explicit index keeps the read fast even if the PK column order ever
+  // changes. Idempotent.
+  await sql`
+    CREATE INDEX IF NOT EXISTS conversations_v1_events_by_conv
+      ON conversations_v1_events (conversation_id, seq)
+  `.execute(db);
 }
 
 /**
@@ -145,6 +200,26 @@ export interface ConversationsRow {
   updated_at: Date;
 }
 
+/**
+ * TASK-66 — display event log row (out-of-git Part B / B1). One row per
+ * persisted display frame, append-only, ordered by `seq` within a conversation.
+ * `payload` is JSONB and deserializes to `unknown` — store helpers
+ * parse/validate before returning to plugin code (the same don't-trust-the-DB
+ * posture as the conversation row's blocks).
+ */
+export interface ConversationEventsRow {
+  conversation_id: string;
+  /** Per-conversation monotonic int. BIGINT → kysely surfaces it as string or
+   *  number depending on the driver; the store coerces to number on read. */
+  seq: string | number;
+  event_kind: string;
+  role: string | null;
+  fold_key: string;
+  payload: unknown;
+  created_at: Date;
+}
+
 export interface ConversationDatabase {
   conversations_v1_conversations: ConversationsRow;
+  conversations_v1_events: ConversationEventsRow;
 }

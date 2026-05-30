@@ -25,19 +25,24 @@ import {
 import {
   createConversationStore,
   dropTurnFromJsonl,
+  validateContentBlocks,
   validateOptionalBoolean,
   validateRunnerType,
   validateTitle,
   validateWorkspaceRefForFreeze,
   type ConversationStore,
+  type StoredEvent,
 } from './store.js';
 import {
   GetMetadataOutputSchema,
   StoreRunnerSessionOutputSchema,
 } from './types.js';
 import type {
+  AppendEventInput,
+  AppendEventOutput,
   BindSessionInput,
   BindSessionOutput,
+  ConversationDisplayEvent,
   ConversationsConfig,
   CreateInput,
   CreateOutput,
@@ -162,6 +167,15 @@ export function createConversationsPlugin(
         // prevent foreign callers from probing for a routine's
         // externalKey. Half-wired window OPEN: caller lands in Phase B.
         'conversations:find-or-create',
+        // TASK-66 (out-of-git Part B / B1, 2026-05-30): host-internal
+        // append to the display event log (the redisplay SoT). Fed by this
+        // plugin's own chat:turn-end / chat:turn-error /
+        // chat:permission-request subscribers below — NOT reachable by the
+        // untrusted runner over IPC (it only reaches the event.* IPC
+        // events, which those subscribers translate). Half-wired window
+        // CLOSED: the caller (the subscribers) AND the consumer
+        // (conversations:get reading the log) ship in this same PR.
+        'conversations:append-event',
       ],
       calls: [
         'agents:resolve',
@@ -179,7 +193,16 @@ export function createConversationsPlugin(
       ],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
       // teardown clears active_session_id on every bound conversation row.
-      subscribes: ['chat:turn-end', 'session:terminate'],
+      // TASK-66 (2026-05-30): also subscribe to the HOST-only display events
+      // the SDK jsonl never sees — chat:turn-error (surfaced provider/sandbox
+      // errors) and chat:permission-request (approval cards) — and persist
+      // them into the display event log so redisplay includes them.
+      subscribes: [
+        'chat:turn-end',
+        'session:terminate',
+        'chat:turn-error',
+        'chat:permission-request',
+      ],
     },
 
     async init({ bus }) {
@@ -316,14 +339,36 @@ export function createConversationsPlugin(
         async (ctx, input) => findOrCreateConversation(localStore, bus, ctx, input, resolvedConfig),
       );
 
+      // TASK-66 (out-of-git Part B / B1): host-internal append to the display
+      // event log. ctx-scoped only (no agents:resolve round-trip — same
+      // posture as bind-session; the orchestrator already gated the user at
+      // agent:invoke entry, and the untrusted runner can't reach this hook
+      // over IPC). The conversationId comes from the input; the seq is minted
+      // by the store. Used only by this plugin's own subscribers below
+      // (closing the half-wired window in one PR), but registered as a hook so
+      // the persist stays storage-agnostic (an alternate display-log backend
+      // could register it).
+      bus.registerService<AppendEventInput, AppendEventOutput>(
+        'conversations:append-event',
+        PLUGIN_NAME,
+        async (_ctx, input) => appendEvent(localStore, input),
+      );
+
       // chat:turn-end subscriber.
       //
       // Phase D (2026-05-02): the runner's native jsonl is the source of
-      // truth for transcripts. The subscriber only bumps `last_activity_at`
+      // truth for transcripts. The subscriber bumps `last_activity_at`
       // so sidebar ordering keeps tracking user-visible activity (I8).
       // Heartbeats stay heartbeats (no bump). Phase E Task 3 deleted the
-      // `conversations:append-turn` service hook entirely — no callers
-      // remain in the monorepo.
+      // `conversations:append-turn` service hook entirely.
+      //
+      // TASK-66 (2026-05-30): the turn's display frame is persisted into the
+      // display event log via `conversations:append-event` — but NOT from this
+      // broadcast subscriber. The @ax/ipc-core event.turn-end handler calls
+      // `conversations:append-event` AWAITED + isolated, BEFORE this broadcast
+      // fires, so persist-before-ack (B3) holds without blocking the turn-end
+      // ack on this chain's other (potentially slow, e.g. title-LLM)
+      // subscribers. This subscriber stays display-persist-free.
       bus.subscribe<TurnEndPayload>(
         'chat:turn-end',
         PLUGIN_NAME,
@@ -338,6 +383,27 @@ export function createConversationsPlugin(
           // Return undefined: pass-through (don't mutate the payload, don't
           // reject). HookBus treats undefined as "no change" so other
           // subscribers see the same payload we did.
+          return undefined;
+        },
+      );
+
+      // TASK-66: host-only display events the SDK jsonl never sees. Persist
+      // them into the display event log so reload shows the same cards /
+      // surfaced errors a live chat folds. Subscribers MUST NOT throw
+      // (observation-only fire-and-forget) — failures are logged + swallowed.
+      bus.subscribe<TurnErrorPayload>(
+        'chat:turn-error',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          await persistTurnError(bus, ctx, payload);
+          return undefined;
+        },
+      );
+      bus.subscribe<PermissionRequestPayload>(
+        'chat:permission-request',
+        PLUGIN_NAME,
+        async (ctx, payload) => {
+          await persistPermissionCard(bus, ctx, payload);
           return undefined;
         },
       );
@@ -389,6 +455,32 @@ interface SessionTerminatePayload {
   sessionId?: string;
 }
 
+// ---------------------------------------------------------------------------
+// TASK-66 — host-only display-event subscriber payloads.
+//
+// chat:turn-error (Fault A) and chat:permission-request (the JIT approval
+// card / reactive egress wall). Both are fired by the orchestrator with the
+// conversation ctx; we duck-type only the fields we persist. These are
+// UNTRUSTED host/model output — stored opaque, re-emitted to the renderer
+// verbatim (J2 hardening lives at render).
+// ---------------------------------------------------------------------------
+interface TurnErrorPayload {
+  reqId?: string;
+  reason?: string;
+}
+
+// The fired card shape is a discriminated union ('skill' | 'host'); the
+// orchestrator strips routing fields (reqId) before the browser sees it but
+// they may still be on the fired payload. We persist the whole frame opaquely
+// and derive a stable fold key from the card identity so a later resolution
+// frame for the same card folds onto the earlier one.
+interface PermissionRequestPayload {
+  kind?: 'skill' | 'host';
+  skillId?: string;
+  host?: string;
+  [k: string]: unknown;
+}
+
 async function handleTurnEnd(
   store: ConversationStore,
   ctx: AgentContext,
@@ -415,6 +507,116 @@ async function handleTurnEnd(
     await store.bumpLastActivity(conversationId, new Date());
   } catch (err) {
     ctx.logger.warn('conversations_bump_last_activity_failed', {
+      conversationId,
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+  }
+}
+
+// ---------------------------------------------------------------------------
+// TASK-66 — display-event persist (out-of-git Part B / B1).
+// ---------------------------------------------------------------------------
+
+/**
+ * conversations:append-event hook handler. Validates the conversationId at the
+ * boundary, then mints + appends a row. ctx-scoped only (no agents:resolve —
+ * host-internal; see the registration comment). `appendEvent` is the persist
+ * primitive both the subscribers and any alternate display-log backend use.
+ */
+async function appendEvent(
+  store: ConversationStore,
+  input: AppendEventInput,
+): Promise<AppendEventOutput> {
+  const hookName = 'conversations:append-event';
+  const conversationId = requireBoundedString(
+    input.conversationId,
+    'conversationId',
+    hookName,
+  );
+  await store.appendEvent({
+    conversationId,
+    kind: input.kind,
+    ...(input.role !== undefined ? { role: input.role } : {}),
+    ...(input.key !== undefined ? { foldKey: input.key } : {}),
+    payload: input.payload,
+  });
+}
+
+/**
+ * Persist a surfaced turn-error display event. Folds on the originating reqId
+ * so a re-fire for the same turn replaces the earlier one. ctx-less fires are
+ * skipped. MUST NOT throw.
+ */
+async function persistTurnError(
+  bus: HookBus,
+  ctx: AgentContext,
+  payload: TurnErrorPayload,
+): Promise<void> {
+  const conversationId = ctx.conversationId;
+  if (conversationId === undefined) return;
+  const reqId = payload.reqId;
+  const reason = payload.reason;
+  if (typeof reason !== 'string' || reason.length === 0) return;
+  try {
+    await bus.call<AppendEventInput, AppendEventOutput>(
+      'conversations:append-event',
+      ctx,
+      {
+        conversationId,
+        kind: 'turn-error',
+        // Fold per originating reqId so a duplicate turn-error for the same
+        // turn (the bounded-timeout path re-fires after session:terminate)
+        // collapses to one card on replay.
+        key: typeof reqId === 'string' && reqId.length > 0 ? reqId : '',
+        payload: { ...(reqId !== undefined ? { reqId } : {}), error: reason },
+      },
+    );
+  } catch (err) {
+    ctx.logger.warn('conversations_persist_turn_error_failed', {
+      conversationId,
+      err: err instanceof Error ? err : new Error(String(err)),
+    });
+  }
+}
+
+/**
+ * Persist a permission-request (approval card) display event. Folds on the
+ * card identity (skillId for the skill variant, host for the reactive-wall
+ * variant) so a later resolution frame for the same card folds onto it on
+ * replay — no special final-state bookkeeping. ctx-less fires are skipped.
+ * MUST NOT throw.
+ */
+async function persistPermissionCard(
+  bus: HookBus,
+  ctx: AgentContext,
+  payload: PermissionRequestPayload,
+): Promise<void> {
+  const conversationId = ctx.conversationId;
+  if (conversationId === undefined) return;
+  // Derive a stable fold key from the card identity. Unknown shapes get the
+  // empty key (single-slot) rather than being dropped — better to over-fold a
+  // malformed card than to lose it.
+  const foldKey =
+    payload.kind === 'skill' && typeof payload.skillId === 'string'
+      ? `skill:${payload.skillId}`
+      : payload.kind === 'host' && typeof payload.host === 'string'
+        ? `host:${payload.host}`
+        : '';
+  try {
+    await bus.call<AppendEventInput, AppendEventOutput>(
+      'conversations:append-event',
+      ctx,
+      {
+        conversationId,
+        kind: 'permission-card',
+        key: foldKey,
+        // Persist the whole frame opaquely. The renderer re-validates; we
+        // never interpret it beyond the fold key derived above.
+        payload: { ...payload },
+      },
+    );
+  } catch (err) {
+    ctx.logger.warn('conversations_persist_permission_card_failed', {
       conversationId,
       err: err instanceof Error ? err : new Error(String(err)),
     });
@@ -710,12 +912,31 @@ async function getConversation(
     input.userId,
     'conversations:get',
   );
-  // Phase D (2026-05-02): the transcript lives in the runner's native
-  // jsonl file inside the workspace, NOT in conversation_turns. We
-  // skip the workspace round-trip entirely when runnerSessionId is
-  // null (pre-Phase-C rows or fresh rows whose first turn hasn't
-  // landed yet — see Q3=(a)). The wire shape on
-  // `conversations:get` is unchanged.
+
+  // TASK-66 (out-of-git Part B / B1): redisplay reads the display event log
+  // (the redisplay SoT), NOT the SDK jsonl. The persisted `turn` events are
+  // the exact ordered display frames the host already emitted over SSE — the
+  // model/tool content folded to its terminal state at the result boundary —
+  // so a reloaded chat renders identically to a live one (same renderer path,
+  // by construction). Host-only display events the SDK jsonl never sees
+  // (approval cards, surfaced provider/sandbox errors) come back on
+  // `displayEvents`, folded to their terminal state per key.
+  const events = await store.listEvents(conv.conversationId);
+  if (events.length > 0) {
+    const turns = projectEventTurns(events);
+    return {
+      conversation: conv,
+      turns: reconstructAttachmentBlocks(turns, conv.conversationId),
+      displayEvents: projectDisplayEvents(events),
+    };
+  }
+
+  // Legacy co-existence (scope boundary): a conversation whose turns predate
+  // TASK-66 has no event-log rows. Fall back to the runner's native jsonl so
+  // old chats still redisplay. Retiring the jsonl read entirely is
+  // TASK-67/70. (Phase D, 2026-05-02): skip the workspace round-trip when
+  // runnerSessionId is null (pre-Phase-C rows or fresh rows whose first turn
+  // hasn't landed yet).
   //
   // Build a synthetic ctx scoped to the conversation's owner before the
   // workspace round-trip. The host-side workspace plugins (workspace-git,
@@ -746,7 +967,86 @@ async function getConversation(
   return {
     conversation: conv,
     turns: reconstructAttachmentBlocks(turns, conv.conversationId),
+    displayEvents: [],
   };
+}
+
+// ---------------------------------------------------------------------------
+// TASK-66 — read-side projection from the display event log.
+//
+// `turn` events project to the existing `Turn[]` wire shape (unchanged
+// renderer path); host-only events (`permission-card` / `turn-error`) project
+// to `displayEvents`, folded to their terminal state per (kind, foldKey).
+// ---------------------------------------------------------------------------
+
+/**
+ * Project `turn` events to `Turn[]`. The stored event order IS the display
+ * order (the runner emits role-tagged turn-ends in chronological order: a
+ * `tool` turn before the `assistant` turn that produced it). turnIndex is the
+ * 0-based position among rendered turns; turnId/createdAt come from the row.
+ *
+ * Each event's `payload` is `{ blocks: ContentBlock[] }` (see the persist
+ * subscriber). `validateContentBlocks` re-validates against the canonical
+ * schema on read — we never trust the JSONB column blindly (I5 / J2).
+ */
+function projectEventTurns(events: StoredEvent[]): Turn[] {
+  const turns: Turn[] = [];
+  let turnIndex = 0;
+  for (const ev of events) {
+    if (ev.kind !== 'turn' || ev.role === null) continue;
+    const rawBlocks = (ev.payload as { blocks?: unknown }).blocks;
+    let contentBlocks: ContentBlock[];
+    try {
+      contentBlocks = validateContentBlocks(rawBlocks ?? []);
+    } catch {
+      // A corrupt / hand-edited row must not crash redisplay; skip it.
+      continue;
+    }
+    turns.push({
+      turnId: `${turnIndex}`,
+      turnIndex,
+      role: ev.role,
+      contentBlocks,
+      createdAt: ev.createdAt,
+    });
+    turnIndex++;
+  }
+  return turns;
+}
+
+/**
+ * Project host-only events to `displayEvents`, keeping the LAST event per
+ * (kind, foldKey) so a later card-resolution frame folds an earlier card to
+ * its terminal state on replay (append-only; a later append wins — no special
+ * final-state bookkeeping). Order is by the terminal event's seq.
+ */
+function projectDisplayEvents(events: StoredEvent[]): ConversationDisplayEvent[] {
+  // Map from "kind foldKey" → the latest event (events arrive in seq
+  // order, so a later one overwrites an earlier one with the same key).
+  const folded = new Map<
+    string,
+    { event: ConversationDisplayEvent; seq: number }
+  >();
+  for (const ev of events) {
+    if (ev.kind === 'turn') continue;
+    const mapKey = `${ev.kind}\u0000${ev.foldKey}`;
+    folded.set(mapKey, {
+      event: {
+        kind: ev.kind,
+        key: ev.foldKey,
+        payload: ev.payload,
+        createdAt: ev.createdAt,
+      },
+      seq: ev.seq,
+    });
+  }
+  // Sort by the TERMINAL event's seq so a card resolved later sorts AFTER an
+  // unrelated host event that landed between its pending + resolved frames
+  // (NOT in the pending frame's original position, which a Map's insertion
+  // order would otherwise preserve).
+  return [...folded.values()]
+    .sort((a, b) => a.seq - b.seq)
+    .map((f) => f.event);
 }
 
 /**

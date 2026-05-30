@@ -134,7 +134,91 @@ export interface GetInput {
 export interface GetOutput {
   conversation: Conversation;
   turns: Turn[];
+  /**
+   * TASK-66 (out-of-git Part B / B1). Host-generated display events the SDK
+   * jsonl never sees — approval/permission cards and surfaced provider/sandbox
+   * errors. Empty for legacy conversations whose redisplay still comes from
+   * the jsonl (the event log had no rows). These are the redisplay SoT for
+   * host-only UI: a live chat folds the same `chat:permission-request` /
+   * `chat:turn-error` frames; replaying the persisted ones reproduces them.
+   *
+   * Each event's payload is the LAST persisted state for its `key` — a card
+   * later approved/resolved folds to its terminal state on replay with no
+   * special final-state bookkeeping (a later append wins).
+   */
+  displayEvents: ConversationDisplayEvent[];
 }
+
+// ---------------------------------------------------------------------------
+// TASK-66 — display event log (out-of-git Part B, B1).
+//
+// The redisplay source of truth: the exact ordered stream of display frames
+// the host already emits to the browser over SSE, persisted append-only and
+// keyed (conversationId, seq). `turn` frames carry the model/tool content
+// (the folded terminal `ContentBlock[]` the runner sends at the result
+// boundary — the same content the live stream-chunk deltas fold into);
+// `permission-card` / `turn-error` are HOST-only display events absent from
+// the SDK jsonl.
+//
+// Storage-agnostic (I1): `kind` is a display-semantic enum, `seq` is a
+// per-conversation monotonic int (minted by the store, not a git oid /
+// commit), `payload` is the opaque UI frame body. No backend vocabulary.
+// ---------------------------------------------------------------------------
+
+/** Display-semantic event kinds persisted in the redisplay log. */
+export type ConversationEventKind = 'turn' | 'permission-card' | 'turn-error';
+
+/**
+ * One host-only display event (a `permission-card` or a `turn-error`),
+ * projected from the redisplay log for `conversations:get`. `turn` events are
+ * projected to `Turn[]` instead (the existing renderer path); this type carries
+ * only the events that have no `ContentBlock` representation.
+ *
+ * `payload` is the opaque UI frame body (untrusted host/model output — the
+ * renderer sanitizes, per the unchanged J2 hardening). It is NOT interpreted
+ * by the store or the read projection beyond taking the terminal state per
+ * `key`.
+ */
+export interface ConversationDisplayEvent {
+  kind: Exclude<ConversationEventKind, 'turn'>;
+  /**
+   * Stable per-card / per-turn key used to fold a later resolution frame onto
+   * an earlier card (the read keeps the LAST event per key). For a
+   * `permission-card` this is the card's identity (e.g. its `skillId` or
+   * `host`); for a `turn-error` it's the originating `reqId`. Opaque string.
+   */
+  key: string;
+  /** The opaque display frame body. Re-emitted to the renderer verbatim. */
+  payload: Record<string, unknown>;
+  /** ISO-8601 string — when this event was persisted. */
+  createdAt: string;
+}
+
+/**
+ * Input to `conversations:append-event` — the host-internal persist hook fed
+ * by `@ax/conversations`' own `chat:turn-end` / `chat:turn-error` /
+ * `chat:permission-request` subscribers. Host-internal (the untrusted runner
+ * cannot reach it over IPC — it only reaches the `event.*` IPC events, which
+ * the host's subscribers translate). The `seq` is minted by the store, never
+ * supplied by the caller. ACL: ctx-scoped (no agents:resolve round-trip —
+ * same posture as bind-session; the orchestrator already gated the user).
+ */
+export interface AppendEventInput {
+  conversationId: string;
+  kind: ConversationEventKind;
+  /** Turn role — present only for `kind: 'turn'`. */
+  role?: TurnRole;
+  /**
+   * Fold key (see ConversationDisplayEvent.key). For `turn` events the store
+   * does not fold on it (every turn is its own row); for host-only events the
+   * read keeps the last event per key. Optional — defaults to the empty string
+   * (single-slot fold) when absent.
+   */
+  key?: string;
+  /** The opaque display frame body. */
+  payload: Record<string, unknown>;
+}
+export type AppendEventOutput = void;
 
 export interface ListInput {
   userId: string;

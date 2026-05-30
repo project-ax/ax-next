@@ -35,6 +35,7 @@ import {
 import {
   validateEventTurnEnd,
   fireEventTurnEnd,
+  persistEventTurnEnd,
 } from './handlers/event-turn-end.js';
 import {
   validateEventChatEnd,
@@ -94,6 +95,20 @@ type EventSpec = {
     | { ok: true; payload: unknown }
     | HandlerErr;
   fire: (ctx: AgentContext, bus: HookBus, payload: unknown) => Promise<void>;
+  /**
+   * TASK-66 (out-of-git Part B / B3 — persist-before-ack). When present, the
+   * dispatcher AWAITS this BEFORE writing the 202 ack, then runs `fire`
+   * fire-and-forget AFTER. Used for `event.turn-end`: `persist` is the
+   * ISOLATED display-log append (the turn's frames are durable before the
+   * runner sees the turn acked), while `fire` (the broadcast: bump /
+   * clear-reqId / titles / evictor) stays OFF the ack path so a slow observer
+   * can't delay the runner's ack or its downstream done-frame. A `persist`
+   * THROW propagates → the dispatcher returns a non-2xx (no false ack of an
+   * unpersisted turn — B3 no-omission) + logs loudly. Absent for every other
+   * event (those keep the prompt-202 fire-and-forget shape; stream chunks /
+   * tool-post-call are high-frequency and NOT gated by no-omission).
+   */
+  persist?: (ctx: AgentContext, bus: HookBus, payload: unknown) => Promise<void>;
 };
 
 const EVENTS = new Map<string, EventSpec>();
@@ -106,6 +121,10 @@ EVENTS.set('/event.turn-end', {
   method: 'POST',
   validate: validateEventTurnEnd,
   fire: fireEventTurnEnd,
+  // Persist-before-ack (B3): the ISOLATED display-log append, awaited before
+  // the 202. The broadcast (fire) runs fire-and-forget after, so it never
+  // blocks the ack.
+  persist: persistEventTurnEnd,
 });
 EVENTS.set('/event.chat-end', {
   method: 'POST',
@@ -247,7 +266,7 @@ export async function dispatch(
     return;
   }
 
-  // ----- POST events (fire-and-forget 202) -----
+  // ----- POST events (202) -----
   const evt = EVENTS.get(pathname);
   if (evt !== undefined) {
     if (method !== evt.method) {
@@ -259,8 +278,46 @@ export async function dispatch(
 
     const validated = evt.validate(bodyRead.value);
     if ('ok' in validated && validated.ok === true) {
-      // Write 202 BEFORE firing the subscriber — a slow subscriber must not
-      // block the client. We don't await the fire; failures are logged.
+      if (evt.persist !== undefined) {
+        // Persist-before-ack (TASK-66 / B3): AWAIT only the ISOLATED persist
+        // before the 202 so the turn's frames are durable in the display event
+        // log before the runner sees the turn acked. Only `event.turn-end`
+        // opts in; it's once-per-turn, so the one DB write of added latency is
+        // fine. The broadcast `fire` runs fire-and-forget AFTER, so a slow
+        // observer (e.g. the title-LLM subscriber) never delays the ack.
+        //
+        // No-omission (B3): if the awaited persist THROWS (a real DB outage
+        // — the store retries the seq-allocation race internally), do NOT
+        // falsely ack — write a 500 + log loudly so the missing display row is
+        // never silent.
+        try {
+          await evt.persist(ctx, bus, validated.payload);
+        } catch (err) {
+          ctx.logger.error('event_persist_failed', {
+            hook: pathname,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+          writeJsonError(
+            res,
+            500,
+            'INTERNAL',
+            'event persist failed before ack',
+          );
+          return;
+        }
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ accepted: true }));
+        // Broadcast AFTER the ack — fire-and-forget, off the latency path.
+        void evt.fire(ctx, bus, validated.payload).catch((err) => {
+          ctx.logger.error('event_fire_failed', {
+            hook: pathname,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+        });
+        return;
+      }
+      // Default: write 202 BEFORE firing the subscriber — a slow subscriber
+      // must not block the client. We don't await the fire; failures logged.
       res.writeHead(202, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ accepted: true }));
       void evt.fire(ctx, bus, validated.payload).catch((err) => {
