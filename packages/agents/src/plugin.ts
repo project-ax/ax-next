@@ -6,11 +6,17 @@ import {
   type Plugin,
 } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
+import { parseSkillManifest, buildSkillManifestYaml } from '@ax/skills-parser';
 import { checkAccess } from './acl.js';
 import {
   listAuthoredBundles,
   listAuthoredSkills,
 } from './authored-skills.js';
+import {
+  intersectProposalWithApproved,
+  EMPTY_CAPABILITIES,
+  type ApprovedCapEntry,
+} from './authored-caps.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
 import { runAgentsMigration, type AgentsDatabase } from './migrations.js';
 import {
@@ -133,6 +139,11 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           hook: 'skills:quarantine-get',
           degradation:
             'a quarantined authored draft is NOT omitted from the discovery projection (no skills store) — it is projected like any other draft',
+        },
+        {
+          hook: 'skills:approved-caps-list',
+          degradation:
+            'a self-authored draft projects with EMPTY approved capabilities (no approval store) — the safe default; frontmatter alone grants nothing',
         },
       ],
       subscribes: ['bootstrap:reset-cleanup'],
@@ -351,12 +362,17 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         },
       );
 
-      // Phase 3 projection source: returns every parseable authored draft for
-      // this agent in the resolved-skill shape with EMPTY capabilities. Caps are
-      // always empty here — Phase 4 adds the approval-gate extraction. Quarantined
-      // drafts are OMITTED so the model never sees their name/description.
-      // skills:quarantine-get is a soft dep (hasService-guarded): a preset without
-      // the skills store projects everything rather than failing to boot.
+      // Phase 4 projection source: returns every parseable authored draft for
+      // this agent in the resolved-skill shape. The frontmatter capabilities
+      // block is parsed as the agent's PROPOSAL; only the human-approved subset
+      // (proposal ∩ approved-store) is projected as live capabilities. The
+      // unapproved remainder (proposalDelta) drives PR-B's approval card.
+      // The materialized manifestYaml is caps-stripped so the SKILL.md the SDK
+      // sees never carries a capabilities block. Quarantined drafts are OMITTED
+      // so the model never sees their name/description.
+      // skills:quarantine-get and skills:approved-caps-list are soft deps
+      // (hasService-guarded): a preset without the skills store degrades
+      // gracefully — absent approved store → empty approved → empty caps.
       bus.registerService<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
         'agents:resolve-authored-skills',
         PLUGIN_NAME,
@@ -375,16 +391,69 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
               });
               if (q.quarantined) continue; // omit — the model never sees its name/description
             }
+
+            // Phase 4: the frontmatter capabilities block is the agent's PROPOSAL.
+            // listAuthoredBundles only surfaces parseable manifests, so this parse
+            // succeeds; guard defensively anyway (a failure simply skips the draft).
+            const parsed = parseSkillManifest(b.manifestYaml);
+            if (!parsed.ok) continue;
+
+            // Read what the human approved (soft dep). Absent store → [] → the
+            // safe empty-caps default; frontmatter alone grants nothing (#5).
+            //
+            // NOTE the asymmetry with quarantine-get above, which PROPAGATES on
+            // error: quarantine fails closed by OMITTING the draft entirely, so
+            // an outage there must abort. The approval store fails closed by
+            // degrading to EMPTY approved caps — the draft still projects, but
+            // with no capabilities, so the proxy blocks everything.
+            let approved: ApprovedCapEntry[] = [];
+            if (bus.hasService('skills:approved-caps-list')) {
+              try {
+                const r = await bus.call<
+                  { ownerUserId: string; agentId: string; skillId: string },
+                  { capabilities: ApprovedCapEntry[] }
+                >('skills:approved-caps-list', _ctx, {
+                  ownerUserId: input.ownerUserId,
+                  agentId: input.agentId,
+                  skillId: b.id,
+                });
+                approved = r.capabilities;
+              } catch (err) {
+                // Fail CLOSED: an approval-store outage degrades to EMPTY approved
+                // caps (the skill projects with no capabilities — the proxy blocks
+                // everything), never to the raw proposal. One skill's store error
+                // must not break the whole projection.
+                _ctx.logger.warn('resolve_authored_caps_list_failed', {
+                  skillId: b.id,
+                  error: err instanceof Error ? err.message : String(err),
+                });
+                approved = [];
+              }
+            }
+
+            const { capabilities, delta } = intersectProposalWithApproved(
+              parsed.value.capabilities,
+              approved,
+            );
+
+            // The materialized SKILL.md is caps-stripped: rebuild the frontmatter
+            // with EMPTY capabilities so the read-only projection the SDK sees
+            // carries no capabilities block. Enforcement reads `capabilities`
+            // above, never this text. (sourceUrl is intentionally dropped — a
+            // self-authored draft has none; refresh provenance is a catalog concept.)
+            const manifestYaml = buildSkillManifestYaml({
+              id: parsed.value.id,
+              description: parsed.value.description,
+              version: parsed.value.version,
+              capabilities: EMPTY_CAPABILITIES,
+            });
+
             skills.push({
               id: b.id,
-              capabilities: {
-                allowedHosts: [],
-                credentials: [],
-                mcpServers: [],
-                packages: { npm: [], pypi: [] },
-              },
+              capabilities,
+              proposalDelta: delta,
               bodyMd: b.bodyMd,
-              manifestYaml: b.manifestYaml,
+              manifestYaml,
               files: b.files,
             });
           }

@@ -1486,6 +1486,228 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   );
 
   it(
+    'Phase 4 PR-A canary: a self-authored draft that DECLARES a frontmatter host projects with EMPTY caps (unapproved) + a proposalDelta; the projected manifest is caps-stripped (real executors)',
+    { timeout: 30_000 },
+    async () => {
+      // SECURITY-CRITICAL canary for the Phase-4 PR-A capability-intersection
+      // gate. It proves, end-to-end through REAL executors — no fire-spy, no
+      // mocked agents:resolve-authored-skills — that:
+      //
+      //   1. A draft that DECLARES capabilities.allowedHosts + credentials in
+      //      its frontmatter produces EMPTY capabilities[] in the projection
+      //      (nothing is in the approved-caps store → intersection is empty →
+      //      the proxy would block all egress).
+      //   2. The UNAPPROVED hosts/credentials land in proposalDelta (drives
+      //      Phase 4 PR-B's approval card).
+      //   3. The projected manifestYaml is CAPS-STRIPPED (no capabilities block,
+      //      no api.linear.app) — the SDK-materialized SKILL.md never carries
+      //      live capabilities from frontmatter alone.
+      //
+      // Harness is identical to the Phase-3 quarantine-omit canary above.
+      const connectionString = await ensurePostgresStarted();
+
+      const serverToken = randomBytes(32).toString('hex');
+      const serverRepoRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase4-pra-canary-')),
+      );
+      let server: WorkspaceGitServer | null = null;
+      let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+      try {
+        server = await createWorkspaceGitServer({
+          repoRoot: serverRepoRoot,
+          host: '127.0.0.1',
+          port: 0,
+          token: serverToken,
+        });
+        const presetConfig: K8sPresetConfig = {
+          database: { connectionString: 'postgres://stub:5432/stub' },
+          eventbus: { connectionString: 'postgres://stub:5432/stub' },
+          session: { connectionString: 'postgres://stub:5432/stub' },
+          workspace: {
+            backend: 'git-protocol',
+            baseUrl: `http://127.0.0.1:${server.port}`,
+            token: serverToken,
+          },
+          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
+          chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+          http: {
+            host: '127.0.0.1',
+            port: 0,
+            cookieKey: '0'.repeat(64),
+            allowedOrigins: [],
+          },
+        };
+        const presetPlugins = createK8sPlugins(presetConfig);
+        const kept = presetPlugins.filter(
+          (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
+        );
+        const sqlitePath = path.join(tmp, 'phase4-pra-canary.sqlite');
+        const replacements: Plugin[] = [
+          // Real postgres backs BOTH the skills approved-caps store AND the
+          // @ax/agents tables (its init runs runAgentsMigration against it).
+          createDatabasePostgresPlugin({ connectionString }),
+          // @ax/skills: real skills:quarantine-{set,get} + skills:approved-caps-list.
+          // Nothing is approved → intersection is empty → capabilities will be [].
+          createSkillsPlugin(),
+          // REAL @ax/agents — provides agents:resolve-authored-skills (the
+          // gate under test). Its hard http:register-route + auth:require-user
+          // deps are satisfied by the no-op stubs.
+          createAgentsPlugin(),
+          createHttpRegisterRouteStubPlugin(),
+          createAuthRequireUserStubPlugin(),
+          // Storage / session / sandbox / IPC — same as the Phase-3 canary.
+          createStorageSqlitePlugin({ databasePath: sqlitePath }),
+          createSessionInmemoryPlugin(),
+          createSandboxSubprocessPlugin(),
+          createIpcServerPlugin(),
+          createTestProxyPlugin({
+            script: { entries: [{ kind: 'finish', reason: 'end_turn' }] },
+          }),
+          createMcpClientPlugin(),
+        ];
+        const plugins: Plugin[] = [...kept, ...replacements];
+        const bus = new HookBus();
+        handle = await bootstrap({ bus, plugins, config: {} });
+
+        const sessionId = 'phase4-pra';
+        const userId = `phase4-pra-user-${sessionId}`;
+        const agentId = `phase4-pra-agent-${sessionId}`;
+        const ctx = makeAgentContext({
+          sessionId,
+          agentId,
+          userId,
+          workspace: { rootPath: tmp },
+        });
+        const workspaceId = workspaceIdFor({ userId, agentId });
+        const bareRepoPath = path.join(serverRepoRoot, `${workspaceId}.git`);
+
+        // A clean draft that DECLARES a host + credential in frontmatter.
+        // The real approved-caps store returns [] (nothing approved) → caps will
+        // be empty in the projection; the host/slot land in proposalDelta.
+        const linearSkillMd =
+          '---\n' +
+          'name: linear\n' +
+          'description: Query Linear issues\n' +
+          'capabilities:\n' +
+          '  allowedHosts:\n' +
+          '    - api.linear.app\n' +
+          '  credentials:\n' +
+          '    - slot: LINEAR_API_KEY\n' +
+          '      kind: api-key\n' +
+          '---\n' +
+          '# Linear\n' +
+          'Query issues with the Linear API.\n';
+
+        const { bundleB64 } = await simulateRunnerTurn({
+          baselineFiles: [],
+          turnFiles: {
+            '.ax/draft-skills/linear/SKILL.md': linearSkillMd,
+          },
+          parentDir: tmp,
+        });
+        const result = await workspaceCommitNotifyHandler(
+          {
+            parentVersion: null,
+            reason: 'turn',
+            bundleBytes: bundleB64,
+          },
+          ctx,
+          bus,
+        );
+        // Non-destructive: the draft lands in storage.
+        expect(result.status).toBe(200);
+        const body = result.body as { accepted: true; version: string };
+        expect(body.accepted).toBe(true);
+        expect(existsSync(bareRepoPath)).toBe(true);
+        const ls = await git(['-C', bareRepoPath, 'ls-tree', '-r', 'main']);
+        expect(ls.stdout).toContain('.ax/draft-skills/linear/SKILL.md');
+
+        // Declaring capabilities is NOT a quarantine hit — it's a clean draft.
+        const linearQ = await bus.call<
+          { ownerUserId: string; agentId: string; skillId: string },
+          { quarantined: boolean; reason?: string }
+        >('skills:quarantine-get', ctx, {
+          ownerUserId: userId,
+          agentId,
+          skillId: 'linear',
+        });
+        expect(linearQ.quarantined).toBe(false);
+
+        // ── THE GATE ─────────────────────────────────────────────────────
+        // With an EMPTY approved-caps store:
+        //   - capabilities = proposal ∩ approved = ∅ (proxy blocks all egress)
+        //   - proposalDelta = proposal − approved = full proposal
+        //   - manifestYaml = caps-stripped (no capabilities block)
+        const projection = await bus.call<
+          { ownerUserId: string; agentId: string },
+          {
+            skills: Array<{
+              id: string;
+              capabilities: {
+                allowedHosts: string[];
+                credentials: Array<{ slot: string; kind: string }>;
+                mcpServers: never[];
+                packages: { npm: string[]; pypi: string[] };
+              };
+              proposalDelta: {
+                allowedHosts: string[];
+                credentials: Array<{ slot: string; kind: string }>;
+                mcpServers: never[];
+                packages: { npm: string[]; pypi: string[] };
+              };
+              bodyMd: string;
+              manifestYaml: string;
+              files: Array<{ path: string; contents: string }>;
+            }>;
+          }
+        >('agents:resolve-authored-skills', ctx, {
+          ownerUserId: userId,
+          agentId,
+        });
+
+        const projectedIds = projection.skills.map((s) => s.id);
+        // The clean draft IS projected.
+        expect(projectedIds).toContain('linear');
+
+        const linearEntry = projection.skills.find((s) => s.id === 'linear');
+        expect(linearEntry).toBeDefined();
+
+        // EMPTY approved capabilities — the proxy would block all egress
+        // until a human approves (Phase 4 PR-B).
+        expect(linearEntry!.capabilities.allowedHosts).toEqual([]);
+        expect(linearEntry!.capabilities.credentials).toEqual([]);
+        expect(linearEntry!.capabilities.mcpServers).toEqual([]);
+        expect(linearEntry!.capabilities.packages).toEqual({ npm: [], pypi: [] });
+
+        // proposalDelta carries the FULL unapproved proposal.
+        expect(linearEntry!.proposalDelta.allowedHosts).toEqual([
+          'api.linear.app',
+        ]);
+        expect(
+          linearEntry!.proposalDelta.credentials.map((c) => c.slot),
+        ).toEqual(['LINEAR_API_KEY']);
+        expect(linearEntry!.proposalDelta.mcpServers).toEqual([]);
+        expect(linearEntry!.proposalDelta.packages).toEqual({
+          npm: [],
+          pypi: [],
+        });
+
+        // The projected manifestYaml is CAPS-STRIPPED: no capabilities block,
+        // no api.linear.app — the SDK-materialized SKILL.md grants nothing.
+        expect(linearEntry!.manifestYaml).not.toContain('capabilities');
+        expect(linearEntry!.manifestYaml).not.toContain('api.linear.app');
+        // But the identity fields are present.
+        expect(linearEntry!.manifestYaml).toContain('name: linear');
+      } finally {
+        if (handle !== null) await handle.shutdown();
+        if (server !== null) await server.close();
+        await fs.rm(serverRepoRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it(
     'Phase 3 canary (B4): an EDITED self-authored draft RE-PROJECTS — agents:resolve-authored-skills reflects the current committed HEAD (real executors)',
     { timeout: 30_000 },
     async () => {

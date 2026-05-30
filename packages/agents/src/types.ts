@@ -9,6 +9,7 @@
  */
 import { z, type ZodType } from 'zod';
 import type { Transaction } from 'kysely';
+import type { SkillCapabilities } from '@ax/skills-parser';
 
 /**
  * A single installed skill attached to an agent, with its credential slot
@@ -298,25 +299,26 @@ export interface AgentsListAuthoredSkillsOutput {
   skills: AuthoredSkillSummary[];
 }
 
-// --- agents:resolve-authored-skills (Phase 3, Task A2) -----------------------
+// --- agents:resolve-authored-skills (Phase 4) --------------------------------
 //
 // Returns the agent's self-authored drafts in the resolved-skill projection
-// shape with EMPTY capabilities. No @ax/skills import (invariant #2) — the
-// shape is defined structurally here.
-//
-// Phase 3 = empty caps only. Phase 4 will add the approval-gate capability
-// extraction — do NOT parse capabilities from the manifest here.
+// shape, projecting only the human-approved subset of the frontmatter
+// capability proposal. No @ax/skills import (invariant #2) — the shape is
+// defined structurally here.
 
 /** Resolved-skill projection shape (structurally mirrors the orchestrator's
- * ResolvedSkillForOrch — NOT an @ax/skills import, per invariant #2). */
+ * ResolvedSkillForOrch — NOT an @ax/skills import, per invariant #2).
+ *
+ * `capabilities` is the APPROVED subset (proposal ∩ approved-store) — the
+ * enforcement source the orchestrator feeds to proxy:open-session. `proposalDelta`
+ * is the UNAPPROVED remainder (proposal − approved) — Phase 4 PR-B fires the
+ * upfront approval card from it. `manifestYaml` is caps-stripped (name +
+ * description + version only): the materialized SKILL.md the SDK sees never
+ * carries a capabilities block, so frontmatter alone grants nothing. */
 export interface AuthoredResolvedSkill {
   id: string;
-  capabilities: {
-    allowedHosts: string[];
-    credentials: Array<{ slot: string; kind: string }>;
-    mcpServers: never[];
-    packages: { npm: string[]; pypi: string[] };
-  };
+  capabilities: SkillCapabilities;
+  proposalDelta: SkillCapabilities;
   bodyMd: string;
   manifestYaml: string;
   files: Array<{ path: string; contents: string }>;
@@ -331,16 +333,35 @@ export interface AgentsResolveAuthoredSkillsOutput {
   skills: AuthoredResolvedSkill[];
 }
 
+const CapabilitySlotSchema = z.object({
+  slot: z.string(),
+  kind: z.literal('api-key'),
+  description: z.string().optional(),
+  account: z.string().optional(),
+});
+const McpServerSpecSchema = z.object({
+  name: z.string(),
+  transport: z.union([z.literal('stdio'), z.literal('http')]),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string()).optional(),
+  url: z.string().optional(),
+  allowedHosts: z.array(z.string()),
+  credentials: z.array(CapabilitySlotSchema),
+});
+const SkillCapabilitiesSchema = z.object({
+  allowedHosts: z.array(z.string()),
+  credentials: z.array(CapabilitySlotSchema),
+  mcpServers: z.array(McpServerSpecSchema),
+  packages: z.object({ npm: z.array(z.string()), pypi: z.array(z.string()) }),
+});
+
 export const AgentsResolveAuthoredSkillsOutputSchema = z.object({
   skills: z.array(
     z.object({
       id: z.string(),
-      capabilities: z.object({
-        allowedHosts: z.array(z.string()),
-        credentials: z.array(z.object({ slot: z.string(), kind: z.string() })),
-        mcpServers: z.array(z.never()),
-        packages: z.object({ npm: z.array(z.string()), pypi: z.array(z.string()) }),
-      }),
+      capabilities: SkillCapabilitiesSchema,
+      proposalDelta: SkillCapabilitiesSchema,
       bodyMd: z.string(),
       manifestYaml: z.string(),
       files: z.array(z.object({ path: z.string(), contents: z.string() })),

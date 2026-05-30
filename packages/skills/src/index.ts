@@ -26,6 +26,9 @@ export type {
   CatalogAdmitInput,
   CatalogAdmitOutput,
   CatalogCandidate,
+  ApprovedCapEntry,
+  SkillsApprovedCapsListInput,
+  SkillsApprovedCapsListOutput,
 } from './types.js';
 
 export { parseSkillManifest } from './manifest.js';

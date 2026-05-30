@@ -148,6 +148,11 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
           degradation:
             'a quarantined authored draft is NOT omitted from the discovery projection (no skills store) — it is projected like any other draft',
         },
+        {
+          hook: 'skills:approved-caps-list',
+          degradation:
+            'a self-authored draft projects with EMPTY approved capabilities (no approval store) — the safe default; frontmatter alone grants nothing',
+        },
       ],
       subscribes: ['bootstrap:reset-cleanup'],
     });

@@ -9,6 +9,7 @@
 import { z, type ZodType } from 'zod';
 import type { SkillCapabilities } from '@ax/skills-parser';
 import type { SkillTier } from './catalog-tier.js';
+import type { ApprovedCapEntry } from './approved-caps-store.js';
 export type { CapabilitySlot, McpServerSpec, SkillCapabilities } from '@ax/skills-parser';
 export type { SkillTier } from './catalog-tier.js';
 
@@ -494,3 +495,39 @@ export const SkillsQuarantineListOutputSchema = z.object({
     z.object({ skillId: z.string(), reason: z.string(), lastFlaggedAt: z.string() }),
   ),
 }) as unknown as ZodType<SkillsQuarantineListOutput>;
+
+// ---- Approved capabilities (Phase 4) --------------------------------------
+// Per-(user, agent, skill) approved-capability metadata. Read by the host
+// discovery projection (agents:resolve-authored-skills) to grant only the
+// approved subset of a self-authored draft's frontmatter proposal. Written by
+// the approval grant path (PR-B). The bundle frontmatter is the proposal source
+// of truth; these rows are thin approval metadata (I4).
+
+/** A capability a human approved, storage-agnostic. Single source of truth
+ * lives in the store (same plugin) — re-exported here as part of the public
+ * hook payload surface so consumers import it from @ax/skills. */
+export type { ApprovedCapEntry };
+
+export interface SkillsApprovedCapsListInput {
+  ownerUserId: string;
+  agentId: string;
+  skillId: string;
+}
+export interface SkillsApprovedCapsListOutput {
+  capabilities: ApprovedCapEntry[];
+}
+
+export const SkillsApprovedCapsListOutputSchema = z.object({
+  capabilities: z.array(
+    z.object({
+      kind: z.union([
+        z.literal('host'),
+        z.literal('slot'),
+        z.literal('npm'),
+        z.literal('pypi'),
+        z.literal('mcp'),
+      ]),
+      value: z.string(),
+    }),
+  ),
+}) as unknown as ZodType<SkillsApprovedCapsListOutput>;
