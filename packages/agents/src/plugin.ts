@@ -6,17 +6,12 @@ import {
   type Plugin,
 } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
-import { parseSkillManifest, buildSkillManifestYaml } from '@ax/skills-parser';
 import { checkAccess } from './acl.js';
 import {
   listAuthoredBundles,
   listAuthoredSkills,
 } from './authored-skills.js';
-import {
-  intersectProposalWithApproved,
-  EMPTY_CAPABILITIES,
-  type ApprovedCapEntry,
-} from './authored-caps.js';
+import { projectAuthoredBundle, type ApprovedCapEntry } from './authored-caps.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
 import { runAgentsMigration, type AgentsDatabase } from './migrations.js';
 import {
@@ -392,20 +387,8 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
               if (q.quarantined) continue; // omit — the model never sees its name/description
             }
 
-            // Phase 4: the frontmatter capabilities block is the agent's PROPOSAL.
-            // listAuthoredBundles only surfaces parseable manifests, so this parse
-            // succeeds; guard defensively anyway (a failure simply skips the draft).
-            const parsed = parseSkillManifest(b.manifestYaml);
-            if (!parsed.ok) continue;
-
-            // Read what the human approved (soft dep). Absent store → [] → the
-            // safe empty-caps default; frontmatter alone grants nothing (#5).
-            //
-            // NOTE the asymmetry with quarantine-get above, which PROPAGATES on
-            // error: quarantine fails closed by OMITTING the draft entirely, so
-            // an outage there must abort. The approval store fails closed by
-            // degrading to EMPTY approved caps — the draft still projects, but
-            // with no capabilities, so the proxy blocks everything.
+            // Read what the human approved (soft dep). Absent store / error →
+            // [] → the safe empty-caps default (the proxy blocks everything).
             let approved: ApprovedCapEntry[] = [];
             if (bus.hasService('skills:approved-caps-list')) {
               try {
@@ -419,10 +402,6 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
                 });
                 approved = r.capabilities;
               } catch (err) {
-                // Fail CLOSED: an approval-store outage degrades to EMPTY approved
-                // caps (the skill projects with no capabilities — the proxy blocks
-                // everything), never to the raw proposal. One skill's store error
-                // must not break the whole projection.
                 _ctx.logger.warn('resolve_authored_caps_list_failed', {
                   skillId: b.id,
                   error: err instanceof Error ? err.message : String(err),
@@ -431,29 +410,16 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
               }
             }
 
-            const { capabilities, delta } = intersectProposalWithApproved(
-              parsed.value.capabilities,
-              approved,
-            );
-
-            // The materialized SKILL.md is caps-stripped: rebuild the frontmatter
-            // with EMPTY capabilities so the read-only projection the SDK sees
-            // carries no capabilities block. Enforcement reads `capabilities`
-            // above, never this text. (sourceUrl is intentionally dropped — a
-            // self-authored draft has none; refresh provenance is a catalog concept.)
-            const manifestYaml = buildSkillManifestYaml({
-              id: parsed.value.id,
-              description: parsed.value.description,
-              version: parsed.value.version,
-              capabilities: EMPTY_CAPABILITIES,
-            });
+            const proj = projectAuthoredBundle(b.manifestYaml, approved);
+            if (proj === null) continue; // unparseable — skip (defensive)
 
             skills.push({
               id: b.id,
-              capabilities,
-              proposalDelta: delta,
+              description: proj.description,
+              capabilities: proj.capabilities,
+              proposalDelta: proj.delta,
               bodyMd: b.bodyMd,
-              manifestYaml,
+              manifestYaml: proj.manifestYaml,
               files: b.files,
             });
           }
