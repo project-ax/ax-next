@@ -663,6 +663,37 @@ describe('agents:resolve-authored-skills', () => {
     }
   });
 
+  it('Phase 4: a draft declaring frontmatter capabilities projects with EMPTY approved caps + a proposalDelta; the projected manifest is caps-stripped', async () => {
+    const h = await makeHarness(); // no @ax/skills → skills:approved-caps-list absent → approved = []
+    const userId = 'u-phase4-caps';
+    const agentId = await createPersonalAgent(h, userId);
+    await seedFile(
+      h,
+      '.ax/draft-skills/linear/SKILL.md',
+      makeSkillMd('linear', { withCapabilities: true }),
+      userId,
+      agentId,
+      null,
+    );
+
+    const out = await h.bus.call<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
+      'agents:resolve-authored-skills',
+      h.ctx({ userId }),
+      { ownerUserId: userId, agentId },
+    );
+
+    const linear = out.skills.find((s) => s.id === 'linear');
+    expect(linear).toBeDefined();
+    // Unapproved → empty projected caps (the safe default). The proxy will block.
+    expect(linear!.capabilities.allowedHosts).toEqual([]);
+    // The proposal is preserved as the unapproved delta (drives PR-B's card).
+    expect(linear!.proposalDelta.allowedHosts).toEqual(['api.evil.com']);
+    // The materialized manifest is caps-stripped — no capabilities block, no host.
+    expect(linear!.manifestYaml).not.toContain('capabilities');
+    expect(linear!.manifestYaml).not.toContain('api.evil.com');
+    expect(linear!.manifestYaml).toContain('name: linear');
+  });
+
   // M3-2: skills:quarantine-get THROWING must propagate through
   // agents:resolve-authored-skills (fail toward OMISSION — an outage must
   // never project unscanned drafts). The SAFE direction is: quarantine store
