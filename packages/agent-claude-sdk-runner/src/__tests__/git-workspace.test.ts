@@ -261,6 +261,9 @@ describe('scaffoldWorkspaceGitignore', () => {
       '.cache/',
       // TASK-67: the SDK jsonl transcript leaves git (DB-backed resume store).
       '.claude/projects/',
+      // TASK-78: materialized uploads are blob-store-backed; ignored so they
+      // don't round-trip into the commit/bundle.
+      '.ax/uploads/',
     ]) {
       expect(gi).toContain(entry);
     }

@@ -252,8 +252,9 @@ export interface ListForConversationDeps {
 /**
  * `attachments:list-for-conversation` — returns the conversation's committed
  * uploads (scoped to ctx.userId, so a foreign conversation returns the empty
- * set — no existence leak). The runner enumerates these at session start to
- * materialize /ephemeral/uploads from the blob store.
+ * set — no existence leak). The runner enumerates these at session start (and on
+ * a warm-runner rebind) to materialize the read-only working copy at the path
+ * advertised to the model (`<workspaceRoot>/.ax/uploads/...`) from the blob store.
  */
 export function createListForConversationHandler(deps: ListForConversationDeps) {
   return async function listForConversation(

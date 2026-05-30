@@ -1,3 +1,6 @@
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as nodePath from 'node:path';
 import type { SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk';
 import { IpcRequestError } from '@ax/ipc-protocol';
 import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
@@ -3193,9 +3196,17 @@ describe('main()', () => {
   });
 
   it('Phase 2: translates attachment contentBlocks to Anthropic image blocks before yielding to SDK', async () => {
-    setEnv(COMPLETE_ENV);
-    fakeClient = buildFakeClient();
+    // TASK-78: uploads materialize at the advertised `<workspaceRoot>/.ax/uploads/`,
+    // and the attachment-translation reader reads the bytes from THERE (not via
+    // workspace.read). Use a real temp workspace and pre-write the materialized
+    // file so the reader finds it — exactly what materializeUploads does at boot.
+    const workspaceRoot = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-att-'));
     const png = Buffer.from('fake-png-bytes');
+    const materialized = nodePath.join(workspaceRoot, '.ax', 'uploads', 'c1', 't1', 'img.png');
+    await fs.mkdir(nodePath.dirname(materialized), { recursive: true });
+    await fs.writeFile(materialized, png);
+    setEnv({ ...COMPLETE_ENV, AX_WORKSPACE_ROOT: workspaceRoot });
+    fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
         return {
@@ -3213,9 +3224,6 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.read') {
-        return { found: true, bytesBase64: png.toString('base64') };
-      }
       if (action === 'workspace.commit-notify') {
         return { accepted: true, version: 'v1', delta: null };
       }
@@ -3273,16 +3281,24 @@ describe('main()', () => {
       },
     ]);
 
-    // Confirm workspace.read was actually called for the attachment path.
-    expect(fakeClient.call).toHaveBeenCalledWith('workspace.read', {
+    // The upload bytes came from the materialized file at the advertised path —
+    // NOT via workspace.read (uploads no longer route through it).
+    expect(fakeClient.call).not.toHaveBeenCalledWith('workspace.read', {
       path: '.ax/uploads/c1/t1/img.png',
     });
+
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
   });
 
   it('Phase 2: preserves typed user text alongside translated attachment blocks', async () => {
-    setEnv(COMPLETE_ENV);
-    fakeClient = buildFakeClient();
+    // TASK-78: materialized upload bytes are read from `<workspaceRoot>/.ax/uploads/`.
+    const workspaceRoot = await fs.mkdtemp(nodePath.join(os.tmpdir(), 'ax-main-att-'));
     const png = Buffer.from('fake-png-bytes');
+    const materialized = nodePath.join(workspaceRoot, '.ax', 'uploads', 'c1', 't1', 'img.png');
+    await fs.mkdir(nodePath.dirname(materialized), { recursive: true });
+    await fs.writeFile(materialized, png);
+    setEnv({ ...COMPLETE_ENV, AX_WORKSPACE_ROOT: workspaceRoot });
+    fakeClient = buildFakeClient();
     fakeClient.call.mockImplementation(async (action: string) => {
       if (action === 'session.get-config') {
         return {
@@ -3300,9 +3316,6 @@ describe('main()', () => {
       }
       if (action === 'workspace.materialize') return { bundleBytes: '' };
       if (action === 'tool.list') return { tools: [] };
-      if (action === 'workspace.read') {
-        return { found: true, bytesBase64: png.toString('base64') };
-      }
       if (action === 'workspace.commit-notify') {
         return { accepted: true, version: 'v1', delta: null };
       }
@@ -3360,6 +3373,8 @@ describe('main()', () => {
         },
       },
     ]);
+
+    await fs.rm(workspaceRoot, { recursive: true, force: true });
   });
 
   // ---------------------------------------------------------------------
