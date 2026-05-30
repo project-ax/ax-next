@@ -2,7 +2,7 @@ import { randomBytes } from 'node:crypto';
 import { PluginError } from '@ax/core';
 import { ContentBlockSchema, type ContentBlock } from '@ax/ipc-protocol';
 import { z } from 'zod';
-import type { Kysely } from 'kysely';
+import { sql, type Kysely } from 'kysely';
 import type {
   ConversationDatabase,
   ConversationsRow,
@@ -10,6 +10,7 @@ import type {
 import { scopedConversations } from './scope.js';
 import type {
   Conversation,
+  ConversationEventKind,
   TurnRole,
 } from './types.js';
 
@@ -382,6 +383,44 @@ export interface ConversationStore {
    * can coexist) AND tombstones (re-create after delete is allowed).
    */
   findOrCreate(args: ConversationStoreFindOrCreateArgs): Promise<FindOrCreateResult>;
+  /**
+   * TASK-66 (out-of-git Part B / B1). Append one display frame to the
+   * conversation's redisplay log. Mints the next per-conversation monotonic
+   * `seq` and INSERTs in a single statement (single writer per conversation
+   * — the host — so SELECT MAX()+1 is contention-free, NOT a CAS). Returns
+   * the seq assigned. No userId scope — called only by `@ax/conversations`'
+   * own host-side subscribers, gated upstream by the orchestrator's J1 check.
+   */
+  appendEvent(args: StoreAppendEventArgs): Promise<number>;
+  /**
+   * TASK-66. Read the conversation's redisplay log in seq order. Returns the
+   * raw stored rows (kind/role/foldKey/payload/createdAt) — the plugin layer
+   * projects `turn` rows to `Turn[]` and folds host-only events. Empty when
+   * the conversation has no event rows (a legacy conversation whose redisplay
+   * still comes from the jsonl).
+   */
+  listEvents(conversationId: string): Promise<StoredEvent[]>;
+}
+
+/** TASK-66 — args for ConversationStore.appendEvent. */
+export interface StoreAppendEventArgs {
+  conversationId: string;
+  kind: ConversationEventKind;
+  /** Turn role — present only for `kind: 'turn'`. */
+  role?: TurnRole;
+  /** Fold key (see ConversationDisplayEvent.key). Defaults to ''. */
+  foldKey?: string;
+  payload: Record<string, unknown>;
+}
+
+/** TASK-66 — one stored display event, as returned by listEvents. */
+export interface StoredEvent {
+  seq: number;
+  kind: ConversationEventKind;
+  role: TurnRole | null;
+  foldKey: string;
+  payload: Record<string, unknown>;
+  createdAt: string;
 }
 
 export function createConversationStore(
@@ -700,7 +739,93 @@ export function createConversationStore(
         .executeTakeFirstOrThrow();
       return { conversation: rowToConversation(winner), created: false };
     },
+
+    async appendEvent({ conversationId, kind, role, foldKey, payload }) {
+      // Mint the next per-conversation seq and INSERT in one statement.
+      // Single writer per conversation (the host), so an INSERT ... SELECT
+      // COALESCE(MAX(seq),0)+1 is contention-free — no CAS, no optimistic
+      // concurrency. The composite PK (conversation_id, seq) is the backstop:
+      // a genuine concurrent double-write (which shouldn't happen) would fail
+      // the unique constraint rather than silently overwrite.
+      const inserted = await db
+        .insertInto('conversations_v1_events')
+        .columns(['conversation_id', 'seq', 'event_kind', 'role', 'fold_key', 'payload'])
+        .expression((eb) =>
+          eb
+            .selectFrom('conversations_v1_events as e')
+            .where('e.conversation_id', '=', conversationId)
+            .select(() => [
+              sql<string>`${conversationId}`.as('conversation_id'),
+              sql<number>`COALESCE(MAX(e.seq), 0) + 1`.as('seq'),
+              sql<string>`${kind}`.as('event_kind'),
+              sql<string | null>`${role ?? null}`.as('role'),
+              sql<string>`${foldKey ?? ''}`.as('fold_key'),
+              // Serialize once here so the JSONB column gets a single text
+              // value (kysely's pg driver passes the string straight through
+              // to ::jsonb). The payload is opaque; never interpolated.
+              sql<string>`${JSON.stringify(payload)}::jsonb`.as('payload'),
+            ]),
+        )
+        .returning('seq')
+        .executeTakeFirst();
+      // The aggregate sub-select always returns exactly one row, so the
+      // INSERT always inserts; `inserted` is defined.
+      return coerceSeq(inserted?.seq ?? 1);
+    },
+
+    async listEvents(conversationId) {
+      const rows = await db
+        .selectFrom('conversations_v1_events')
+        .selectAll('conversations_v1_events')
+        .where('conversation_id', '=', conversationId)
+        .orderBy('seq', 'asc')
+        .execute();
+      return rows.map((r) => ({
+        seq: coerceSeq(r.seq),
+        kind: validateEventKind(r.event_kind),
+        role: r.role === null ? null : validateRole(r.role),
+        foldKey: r.fold_key,
+        // Don't trust the JSONB column blindly: it must be a JSON object
+        // (the frame body). A non-object payload (corruption / a hand-edited
+        // row) collapses to an empty object so the read can't crash — the
+        // renderer treats an empty frame as a no-op.
+        payload: asRecord(r.payload),
+        createdAt: r.created_at.toISOString(),
+      }));
+    },
   };
+}
+
+// ---------------------------------------------------------------------------
+// TASK-66 display-event helpers.
+// ---------------------------------------------------------------------------
+
+const VALID_EVENT_KINDS: ReadonlySet<ConversationEventKind> = new Set([
+  'turn',
+  'permission-card',
+  'turn-error',
+]);
+
+/** BIGINT may surface as a string (pg) or number; coerce to a finite int. */
+function coerceSeq(value: string | number): number {
+  const n = typeof value === 'string' ? Number(value) : value;
+  return Number.isFinite(n) ? n : 0;
+}
+
+function validateEventKind(value: string): ConversationEventKind {
+  if (!VALID_EVENT_KINDS.has(value as ConversationEventKind)) {
+    throw invalid(
+      "event_kind must be 'turn', 'permission-card', or 'turn-error'",
+    );
+  }
+  return value as ConversationEventKind;
+}
+
+/** Coerce an opaque JSONB value to a plain string-keyed object (or {}). */
+function asRecord(value: unknown): Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
 }
 
 // ---------------------------------------------------------------------------

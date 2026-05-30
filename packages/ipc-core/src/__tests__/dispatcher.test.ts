@@ -640,6 +640,43 @@ describe('dispatcher', () => {
     expect(received).toEqual(body);
   });
 
+  it('POST /event.turn-end — AWAITS the chat:turn-end subscriber BEFORE the 202 (persist-before-ack, TASK-66)', async () => {
+    // The inverse of the tool-post-call prompt-202 guard: for turn-end the
+    // dispatcher MUST hold the ack open until the subscriber chain completes,
+    // so the display event log persists the turn's frames before the runner
+    // sees the turn acknowledged (B3 no-omission / persist-before-ack).
+    let fireCompleted = false;
+    const s = await setup({
+      subscribers: [
+        {
+          hook: 'chat:turn-end',
+          handler: async () => {
+            // Simulate the display-log persist taking real (async DB) time.
+            await new Promise<void>((r) => setTimeout(r, 250));
+            fireCompleted = true;
+            return undefined;
+          },
+        },
+      ],
+    });
+    setups.push(s);
+    const start = Date.now();
+    const res = await doRequest(
+      s.socketPath,
+      'POST',
+      '/event.turn-end',
+      s.token,
+      JSON.stringify({ reqId: 'r-pba', reason: 'complete' as const }),
+    );
+    const elapsed = Date.now() - start;
+    expect(res.status).toBe(202);
+    // The 202 arrived only AFTER the slow subscriber finished — proof the
+    // persist completes before the ack (persist-before-ack). Contrast the
+    // tool-post-call test, which asserts elapsed < 200 and !fireReleased.
+    expect(fireCompleted).toBe(true);
+    expect(elapsed).toBeGreaterThanOrEqual(200);
+  });
+
   // -------------------------------------------------------------------------
   // /event.chat-end
   // -------------------------------------------------------------------------

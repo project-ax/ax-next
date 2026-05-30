@@ -94,6 +94,18 @@ type EventSpec = {
     | { ok: true; payload: unknown }
     | HandlerErr;
   fire: (ctx: AgentContext, bus: HookBus, payload: unknown) => Promise<void>;
+  /**
+   * TASK-66 (out-of-git Part B / B3 — persist-before-ack). When true, the
+   * dispatcher AWAITS the subscriber chain (`fire`) BEFORE writing the 202
+   * ack. Used for `event.turn-end` so the display event log persists the
+   * turn's frames durably before the runner sees the turn acknowledged — a
+   * completed turn is never absent from the redisplay SoT. Defaults to false
+   * (the prompt-202 fire-and-forget shape) for every OTHER event: stream
+   * chunks and tool-post-call observations are high-frequency and NOT gated by
+   * the no-omission invariant (the turn-end carries the authoritative folded
+   * content), so a slow subscriber must not hold their ack open.
+   */
+  awaitFire?: boolean;
 };
 
 const EVENTS = new Map<string, EventSpec>();
@@ -106,6 +118,9 @@ EVENTS.set('/event.turn-end', {
   method: 'POST',
   validate: validateEventTurnEnd,
   fire: fireEventTurnEnd,
+  // Persist-before-ack (B3): await the chat:turn-end subscriber chain (which
+  // includes @ax/conversations' display-log persist) before the 202.
+  awaitFire: true,
 });
 EVENTS.set('/event.chat-end', {
   method: 'POST',
@@ -247,7 +262,7 @@ export async function dispatch(
     return;
   }
 
-  // ----- POST events (fire-and-forget 202) -----
+  // ----- POST events (202) -----
   const evt = EVENTS.get(pathname);
   if (evt !== undefined) {
     if (method !== evt.method) {
@@ -259,8 +274,28 @@ export async function dispatch(
 
     const validated = evt.validate(bodyRead.value);
     if ('ok' in validated && validated.ok === true) {
-      // Write 202 BEFORE firing the subscriber — a slow subscriber must not
-      // block the client. We don't await the fire; failures are logged.
+      if (evt.awaitFire === true) {
+        // Persist-before-ack (TASK-66 / B3): AWAIT the subscriber chain
+        // before the 202 so the turn's frames are durable in the display
+        // event log before the runner sees the turn acknowledged. A
+        // subscriber failure is logged but never echoed back (events stay
+        // fire-and-forget at the contract level — the runner doesn't act on
+        // the ack body, only on its arrival). Only `event.turn-end` opts in;
+        // it's once-per-turn, so the one DB write of added latency is fine.
+        try {
+          await evt.fire(ctx, bus, validated.payload);
+        } catch (err) {
+          ctx.logger.error('event_fire_failed', {
+            hook: pathname,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+        }
+        res.writeHead(202, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ accepted: true }));
+        return;
+      }
+      // Default: write 202 BEFORE firing the subscriber — a slow subscriber
+      // must not block the client. We don't await the fire; failures logged.
       res.writeHead(202, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ accepted: true }));
       void evt.fire(ctx, bus, validated.payload).catch((err) => {
