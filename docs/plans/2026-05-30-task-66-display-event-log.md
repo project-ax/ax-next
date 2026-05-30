@@ -145,3 +145,25 @@ switch. It does NOT:
   duplicate content. Not built. (The card lists turn-end/stream-chunk as the frames the
   host receives; turn-end is the one redisplay reads.)
 - Full client frame-fold unification: deferred follow-up (Followups).
+
+## Followups (deferred, returned in handoff)
+
+- **Persist the reactive-wall HOST permission card (kind:'host') to the display log.**
+  It is fired from `event.http-egress` with a reqId-matched ctx that carries no
+  conversationId, so the conversations subscriber skips it. Needs reqId->conversationId
+  resolution in the orchestrator's egress path (or stamping conversationId on the fired
+  card). The skill approval card + surfaced errors DO persist.
+- **Make a hard turn-end persist failure non-lossy.** The dispatcher returns 500 + logs
+  `event_persist_failed` loudly on a persist throw, but the runner swallows the non-2xx
+  (`client.event(...).catch(()=>{})`), so a hard DB outage loses that turn's display row.
+  The seq-allocation race is already handled by the store's retry; a hard outage needs
+  either a host-side retry/queue or the runner treating a turn-end 500 as retryable.
+  (B3 escalation territory — the loud alarm is installed.)
+- **Legacy-conversation merge (mooted by TASK-67/70).** A conversation with jsonl turns
+  predating this PR shows only new event-log turns after its first new turn. Accepted for
+  greenfield (no production data); TASK-67/70 retire the jsonl read entirely.
+- **B3 structural divergence detector** — needs the resume rows (TASK-67) to compare the
+  display log against; build it with Phase 2b.
+- **Client render-path unification** — reload still uses the history-adapter (Turn[]) +
+  separate card/turn-error stores; folding the persisted `displayEvents` through the live
+  transport for one render path is the follow-on now that the host SoT carries them.

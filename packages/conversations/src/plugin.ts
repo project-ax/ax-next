@@ -1021,7 +1021,7 @@ function projectEventTurns(events: StoredEvent[]): Turn[] {
  * final-state bookkeeping). Order is by the terminal event's seq.
  */
 function projectDisplayEvents(events: StoredEvent[]): ConversationDisplayEvent[] {
-  // Map from "kind foldKey" → the latest event (events arrive in seq
+  // Map from "kind foldKey" → the latest event (events arrive in seq
   // order, so a later one overwrites an earlier one with the same key).
   const folded = new Map<
     string,
@@ -1029,7 +1029,7 @@ function projectDisplayEvents(events: StoredEvent[]): ConversationDisplayEvent[]
   >();
   for (const ev of events) {
     if (ev.kind === 'turn') continue;
-    const mapKey = `${ev.kind} ${ev.foldKey}`;
+    const mapKey = `${ev.kind}\u0000${ev.foldKey}`;
     folded.set(mapKey, {
       event: {
         kind: ev.kind,
