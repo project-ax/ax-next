@@ -1677,6 +1677,8 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // until a human approves (Phase 4 PR-B).
         expect(linearEntry!.capabilities.allowedHosts).toEqual([]);
         expect(linearEntry!.capabilities.credentials).toEqual([]);
+        expect(linearEntry!.capabilities.mcpServers).toEqual([]);
+        expect(linearEntry!.capabilities.packages).toEqual({ npm: [], pypi: [] });
 
         // proposalDelta carries the FULL unapproved proposal.
         expect(linearEntry!.proposalDelta.allowedHosts).toEqual([
@@ -1685,6 +1687,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(
           linearEntry!.proposalDelta.credentials.map((c) => c.slot),
         ).toEqual(['LINEAR_API_KEY']);
+        expect(linearEntry!.proposalDelta.mcpServers).toEqual([]);
+        expect(linearEntry!.proposalDelta.packages).toEqual({
+          npm: [],
+          pypi: [],
+        });
 
         // The projected manifestYaml is CAPS-STRIPPED: no capabilities block,
         // no api.linear.app — the SDK-materialized SKILL.md grants nothing.
