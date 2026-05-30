@@ -129,3 +129,103 @@ describe('artifact_publish executor', () => {
     ).rejects.toThrow(/path/);
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-68: durable publish via blob.put + artifact.publish over IPC.
+// ---------------------------------------------------------------------------
+describe('artifact_publish executor — durable blob store path (TASK-68)', () => {
+  let ephemeral: string;
+
+  beforeEach(async () => {
+    ephemeral = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-eph-'));
+  });
+
+  async function writeEphemeral(rel: string, bytes: Buffer | string): Promise<void> {
+    const abs = path.join(ephemeral, rel);
+    await fs.mkdir(path.dirname(abs), { recursive: true });
+    await fs.writeFile(abs, bytes);
+  }
+
+  function mockClient() {
+    const calls: { put: Buffer[]; publish: unknown[] } = { put: [], publish: [] };
+    const client = {
+      callBinaryUpload: async (_action: string, bytes: Buffer) => {
+        calls.put.push(bytes);
+        // Compute the real content hash so the executor's returned sha256 is
+        // exercised end-to-end.
+        const { createHash } = await import('node:crypto');
+        const sha256 = createHash('sha256').update(bytes).digest('hex');
+        return { sha256, size: bytes.length };
+      },
+      call: async (_action: string, payload: unknown) => {
+        calls.publish.push(payload);
+        const sha = (payload as { sha256: string }).sha256;
+        return { artifactId: sha.slice(0, 16), downloadUrl: `ax://artifact/${sha.slice(0, 16)}` };
+      },
+    };
+    return { client, calls };
+  }
+
+  it('streams /ephemeral/artifacts bytes to blob.put then records artifact.publish', async () => {
+    await writeEphemeral('artifacts/report.pdf', Buffer.from('durable pdf bytes'));
+    const { client, calls } = mockClient();
+    const exec = createArtifactPublishExecutor({
+      workspaceRoot: permanent,
+      ephemeralRoot: ephemeral,
+      client,
+      conversationId: 'conv-1',
+    });
+    const out = await exec({
+      id: 't1',
+      name: 'artifact_publish',
+      input: { path: '/ephemeral/artifacts/report.pdf' },
+    });
+    const parsed = typeof out === 'string' ? JSON.parse(out) : out;
+
+    // The bytes were streamed to blob.put...
+    expect(calls.put).toHaveLength(1);
+    expect(calls.put[0]!.toString()).toBe('durable pdf bytes');
+    // ...and the metadata row was recorded with the right scope + content hash.
+    expect(calls.publish).toHaveLength(1);
+    expect(calls.publish[0]).toMatchObject({
+      conversationId: 'conv-1',
+      path: 'artifacts/report.pdf',
+      displayName: 'report.pdf',
+      mediaType: 'application/pdf',
+      size: 'durable pdf bytes'.length,
+    });
+    expect(parsed.sha256).toMatch(/^[0-9a-f]{64}$/);
+    expect(parsed.downloadUrl).toBe(`ax://artifact/${parsed.artifactId}`);
+    expect(parsed.path).toBe('artifacts/report.pdf');
+  });
+
+  it('rejects /ephemeral/artifacts when no ephemeral tier is wired', async () => {
+    const { client } = mockClient();
+    const exec = createArtifactPublishExecutor({
+      workspaceRoot: permanent,
+      client,
+      conversationId: 'conv-1',
+    });
+    await expect(
+      exec({ id: 't2', name: 'artifact_publish', input: { path: '/ephemeral/artifacts/x.pdf' } }),
+    ).rejects.toThrow(/ephemeral tier is not available/);
+  });
+
+  it('still validates (symlink reject) on the durable path before any blob.put', async () => {
+    const real = path.join(ephemeral, 'artifacts/real.txt');
+    await writeEphemeral('artifacts/real.txt', 'r');
+    await fs.symlink(real, path.join(ephemeral, 'artifacts/link.txt'));
+    const { client, calls } = mockClient();
+    const exec = createArtifactPublishExecutor({
+      workspaceRoot: permanent,
+      ephemeralRoot: ephemeral,
+      client,
+      conversationId: 'conv-1',
+    });
+    await expect(
+      exec({ id: 't3', name: 'artifact_publish', input: { path: '/ephemeral/artifacts/link.txt' } }),
+    ).rejects.toThrow(/symlink/i);
+    // No bytes were streamed — validation fired before blob.put.
+    expect(calls.put).toHaveLength(0);
+  });
+});

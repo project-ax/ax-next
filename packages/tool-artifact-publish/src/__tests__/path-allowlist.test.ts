@@ -1,22 +1,48 @@
 import { describe, it, expect } from 'vitest';
 import { checkPublishablePath, MAX_ARTIFACT_BYTES } from '../path-allowlist.js';
 
+// TASK-68: the artifact namespace moved to /ephemeral/artifacts/** (primary) +
+// kept /permanent/workspace/** (Pattern A double-home). The old git artifact
+// namespace /permanent/.ax/artifacts/** is GONE. checkPublishablePath now also
+// reports which `root` the path lives under so the executor maps it onto the
+// right filesystem root.
+
 describe('checkPublishablePath', () => {
-  it('accepts paths under /permanent/workspace/', () => {
+  it('accepts paths under /ephemeral/artifacts/ (the primary namespace)', () => {
+    expect(checkPublishablePath('/ephemeral/artifacts/report.pdf')).toEqual({
+      ok: true,
+      root: 'ephemeral',
+      relativePath: 'artifacts/report.pdf',
+    });
+  });
+
+  it('accepts nested paths under /ephemeral/artifacts/', () => {
+    expect(checkPublishablePath('/ephemeral/artifacts/sub/dir/img.png')).toEqual({
+      ok: true,
+      root: 'ephemeral',
+      relativePath: 'artifacts/sub/dir/img.png',
+    });
+  });
+
+  it('accepts paths under /permanent/workspace/ (Pattern A double-home)', () => {
     expect(checkPublishablePath('/permanent/workspace/reports/Q4.pdf')).toEqual({
       ok: true,
+      root: 'permanent',
       relativePath: 'workspace/reports/Q4.pdf',
     });
   });
 
-  it('accepts paths under /permanent/.ax/artifacts/', () => {
-    expect(checkPublishablePath('/permanent/.ax/artifacts/img.png')).toEqual({
-      ok: true,
-      relativePath: '.ax/artifacts/img.png',
-    });
+  it('rejects the retired git artifact namespace /permanent/.ax/artifacts/', () => {
+    const result = checkPublishablePath('/permanent/.ax/artifacts/img.png');
+    expect(result.ok).toBe(false);
   });
 
-  it('rejects paths outside the allowlist', () => {
+  it('rejects /ephemeral paths outside artifacts/ (e.g. the venv / caches)', () => {
+    expect(checkPublishablePath('/ephemeral/.venv/secret').ok).toBe(false);
+    expect(checkPublishablePath('/ephemeral/uploads/c/t/f').ok).toBe(false);
+  });
+
+  it('rejects paths outside any allowlisted root', () => {
     const result = checkPublishablePath('/permanent/.ax/sessions/sess1.jsonl');
     expect(result.ok).toBe(false);
     if (!result.ok) {
@@ -24,19 +50,26 @@ describe('checkPublishablePath', () => {
     }
   });
 
-  it('rejects relative paths (no /permanent/ prefix)', () => {
-    const result = checkPublishablePath('workspace/reports/Q4.pdf');
-    expect(result.ok).toBe(false);
+  it('rejects relative paths (no recognized root prefix)', () => {
+    expect(checkPublishablePath('workspace/reports/Q4.pdf').ok).toBe(false);
+    expect(checkPublishablePath('artifacts/report.pdf').ok).toBe(false);
   });
 
-  it('rejects paths with traversal segments', () => {
+  it('rejects paths with traversal segments under either root', () => {
     expect(checkPublishablePath('/permanent/workspace/../../etc/passwd').ok).toBe(false);
     expect(checkPublishablePath('/permanent/workspace/foo/../bar').ok).toBe(false);
+    expect(checkPublishablePath('/ephemeral/artifacts/../../etc/passwd').ok).toBe(false);
   });
 
-  it('rejects absolute paths outside /permanent/', () => {
+  it('rejects absolute paths outside the roots', () => {
     expect(checkPublishablePath('/etc/passwd').ok).toBe(false);
     expect(checkPublishablePath('/permanent').ok).toBe(false);
+    expect(checkPublishablePath('/ephemeral').ok).toBe(false);
+  });
+
+  it('rejects a bare root prefix with no file component', () => {
+    expect(checkPublishablePath('/ephemeral/artifacts/').ok).toBe(false);
+    expect(checkPublishablePath('/permanent/workspace/').ok).toBe(false);
   });
 
   it('exposes the size cap', () => {

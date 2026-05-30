@@ -6,5 +6,6 @@ export {
   checkPublishablePath,
   MAX_ARTIFACT_BYTES,
   type PathCheckResult,
+  type PublishRoot,
 } from './path-allowlist.js';
 export { createToolArtifactPublishPlugin } from './plugin.js';

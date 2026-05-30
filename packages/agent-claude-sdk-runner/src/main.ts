@@ -429,9 +429,18 @@ export async function main(): Promise<number> {
   // uses this path; future sandbox tools register here too.
   const localDispatcher = createLocalDispatcher();
   if (tools.some((t) => t.name === ARTIFACT_PUBLISH_TOOL_NAME && t.executesIn === 'sandbox')) {
+    // TASK-68: the executor now streams artifact bytes to the host blob store
+    // (blob.put) + records the metadata row (artifact.publish), so it needs the
+    // IPC client + the bound conversationId. Artifacts default to
+    // /ephemeral/artifacts/**, so it also needs ephemeralRoot to map the path.
     localDispatcher.register(
       ARTIFACT_PUBLISH_TOOL_NAME,
-      createArtifactPublishExecutor({ workspaceRoot: env.workspaceRoot }),
+      createArtifactPublishExecutor({
+        workspaceRoot: env.workspaceRoot,
+        ...(env.ephemeralRoot !== undefined ? { ephemeralRoot: env.ephemeralRoot } : {}),
+        client,
+        conversationId,
+      }),
     );
   }
   const sandboxMcpServer = createSandboxMcpServer({
