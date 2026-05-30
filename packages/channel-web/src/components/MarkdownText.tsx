@@ -86,6 +86,44 @@ interface ThreadMessageLikeShape {
 }
 
 /**
+ * A tool-call part's result can arrive in three shapes: a JSON string, an
+ * already-parsed object, or the SDK/MCP ARRAY shape `[{type:'text', text}]`
+ * that the runner persists for an artifact_publish result (TASK-77 — the
+ * same shape `checkPathScope` now reads server-side). Reduce all three to
+ * candidate object(s) to test for the artifact fields. Array entries that
+ * aren't `text` blocks (e.g. images) are ignored.
+ */
+function resultCandidates(result: unknown): unknown[] {
+  if (typeof result === 'string') {
+    try {
+      return [JSON.parse(result)];
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(result)) {
+    const out: unknown[] = [];
+    for (const entry of result) {
+      if (
+        entry &&
+        typeof entry === 'object' &&
+        (entry as { type?: unknown }).type === 'text' &&
+        typeof (entry as { text?: unknown }).text === 'string'
+      ) {
+        try {
+          out.push(JSON.parse((entry as { text: string }).text));
+        } catch {
+          /* not JSON — skip this entry */
+        }
+      }
+    }
+    return out;
+  }
+  // Already an object (or null/undefined — filtered out below).
+  return [result];
+}
+
+/**
  * Build the `artifactId → result` registry by scanning EVERY part of EVERY
  * message in the thread (TASK-20). The published artifact's tool-call result
  * and the markdown link that references it routinely land in different
@@ -108,35 +146,28 @@ function parseArtifactsFromThread(
       };
       if (obj.type !== 'tool-call') continue;
       if (obj.toolName !== 'artifact_publish') continue;
-      let parsed: unknown;
-      try {
-        parsed =
-          typeof obj.result === 'string'
-            ? JSON.parse(obj.result)
-            : obj.result;
-      } catch {
-        continue; // skip non-JSON tool_results
-      }
-      if (!parsed || typeof parsed !== 'object') continue;
-      const r = parsed as Partial<ArtifactToolResult>;
-      if (
-        typeof r.artifactId === 'string' &&
-        typeof r.path === 'string' &&
-        typeof r.displayName === 'string' &&
-        typeof r.mediaType === 'string' &&
-        typeof r.sizeBytes === 'number'
-      ) {
-        // First publish of an id wins — a re-publish in a later turn carries
-        // identical content (the id is the content sha), so dedup is a no-op
-        // for correctness and keeps the earliest reference stable.
-        if (!map.has(r.artifactId)) {
-          map.set(r.artifactId, {
-            artifactId: r.artifactId,
-            path: r.path,
-            displayName: r.displayName,
-            mediaType: r.mediaType,
-            sizeBytes: r.sizeBytes,
-          });
+      for (const parsed of resultCandidates(obj.result)) {
+        if (!parsed || typeof parsed !== 'object') continue;
+        const r = parsed as Partial<ArtifactToolResult>;
+        if (
+          typeof r.artifactId === 'string' &&
+          typeof r.path === 'string' &&
+          typeof r.displayName === 'string' &&
+          typeof r.mediaType === 'string' &&
+          typeof r.sizeBytes === 'number'
+        ) {
+          // First publish of an id wins — a re-publish in a later turn carries
+          // identical content (the id is the content sha), so dedup is a no-op
+          // for correctness and keeps the earliest reference stable.
+          if (!map.has(r.artifactId)) {
+            map.set(r.artifactId, {
+              artifactId: r.artifactId,
+              path: r.path,
+              displayName: r.displayName,
+              mediaType: r.mediaType,
+              sizeBytes: r.sizeBytes,
+            });
+          }
         }
       }
     }

@@ -34,7 +34,8 @@ vi.mock('@assistant-ui/react', () => ({
     selector({ content: globalThis.__TEST_PARTS__ ?? [] }),
 }));
 
-import { ToolFallback, ToolGroup } from '../components/ToolUse';
+import { ToolFallback, ToolGroup, ArtifactPublishTool } from '../components/ToolUse';
+import { setActiveConversationId } from '../lib/use-conversation-id';
 
 const makePart = (
   overrides: Partial<ToolCallMessagePartProps> = {},
@@ -161,5 +162,66 @@ describe('ToolGroup', () => {
       </ToolGroup>,
     );
     expect(screen.getByRole('button').textContent).toContain('Ran search issues');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-77: the inline artifact chip must render for the ARRAY content shape
+// `[{type:'text', text:<json>}]` the runner persists for an artifact_publish
+// result — not just the legacy string form. A bare array dropped through the
+// old `JSON.stringify(p.result)` path never matched the artifact fields, so
+// the chip silently degraded to the raw tool panel.
+// ---------------------------------------------------------------------------
+describe('ArtifactPublishTool array-content shape', () => {
+  const ARTIFACT = {
+    artifactId: 'a3f2',
+    downloadUrl: 'ax://artifact/a3f2',
+    path: 'workspace/x.pdf',
+    displayName: 'x.pdf',
+    mediaType: 'application/pdf',
+    sizeBytes: 1234,
+    sha256: 'a3f2deadbeef',
+  };
+
+  const makeArtifactPart = (
+    result: unknown,
+  ): ToolCallMessagePartProps =>
+    ({
+      type: 'tool-call',
+      toolCallId: 't1',
+      toolName: 'artifact_publish',
+      args: { path: ARTIFACT.path },
+      result,
+      isError: false,
+      status: { type: 'complete' },
+      addResult: () => {},
+      resume: () => {},
+    }) as unknown as ToolCallMessagePartProps;
+
+  it('renders the inline chip when result is the array shape', () => {
+    setActiveConversationId('c1');
+    try {
+      render(
+        <ArtifactPublishTool
+          {...makeArtifactPart([{ type: 'text', text: JSON.stringify(ARTIFACT) }])}
+        />,
+      );
+      expect(screen.getByTestId('artifact-chip')).toBeTruthy();
+      expect(screen.getByText('x.pdf')).toBeTruthy();
+    } finally {
+      setActiveConversationId(null);
+    }
+  });
+
+  it('still renders the inline chip for the legacy string shape', () => {
+    setActiveConversationId('c1');
+    try {
+      render(
+        <ArtifactPublishTool {...makeArtifactPart(JSON.stringify(ARTIFACT))} />,
+      );
+      expect(screen.getByTestId('artifact-chip')).toBeTruthy();
+    } finally {
+      setActiveConversationId(null);
+    }
   });
 });

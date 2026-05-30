@@ -350,7 +350,30 @@ function normalizePath(path: string): string | null {
  * carries authoritative user-supplied displayName + mediaType), THEN
  * fall back to the uploads-prefix branch. This means an uploaded path
  * always resolves to the transcript's metadata when present.
+ *
+ * tool_result.content has two on-the-wire shapes (ToolResultBlockSchema:
+ * `string | (TextBlock | ImageBlock)[]`). The SDK echoes an MCP tool's
+ * result back as the ARRAY form `[{type:'text', text:<json>}]`, and the
+ * runner persists exactly that — so the published-artifact JSON arrives as
+ * the `text` of an array entry, NOT as a bare string. We extract the text
+ * candidates from BOTH shapes (string entries are dropped — only `text`
+ * blocks carry the artifact JSON) and apply the same strict parse +
+ * exact-path-match. Non-text entries (e.g. images) are ignored.
  */
+function toolResultTextCandidates(content: ContentBlock & { type: 'tool_result' }): string[] {
+  const raw = content.content;
+  if (typeof raw === 'string') return [raw];
+  if (Array.isArray(raw)) {
+    return raw
+      .filter(
+        (c): c is { type: 'text'; text: string } =>
+          c.type === 'text' && typeof c.text === 'string',
+      )
+      .map((c) => c.text);
+  }
+  return [];
+}
+
 function checkPathScope(
   candidatePath: string,
   conversationId: string,
@@ -367,18 +390,20 @@ function checkPathScope(
           sizeBytes: block.sizeBytes,
         };
       }
-      if (block.type === 'tool_result' && typeof block.content === 'string') {
-        try {
-          const parsed = JSON.parse(block.content) as Record<string, unknown>;
-          if (parsed && parsed.path === candidatePath) {
-            return {
-              displayName: String(parsed.displayName ?? 'file'),
-              mediaType: String(parsed.mediaType ?? 'application/octet-stream'),
-              sizeBytes: Number(parsed.sizeBytes ?? 0),
-            };
+      if (block.type === 'tool_result') {
+        for (const candidate of toolResultTextCandidates(block)) {
+          try {
+            const parsed = JSON.parse(candidate) as Record<string, unknown>;
+            if (parsed && parsed.path === candidatePath) {
+              return {
+                displayName: String(parsed.displayName ?? 'file'),
+                mediaType: String(parsed.mediaType ?? 'application/octet-stream'),
+                sizeBytes: Number(parsed.sizeBytes ?? 0),
+              };
+            }
+          } catch {
+            /* not JSON — ignore, this entry isn't an artifact_publish result */
           }
-        } catch {
-          /* not JSON — ignore, this tool_result isn't an artifact_publish */
         }
       }
     }
