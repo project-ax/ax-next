@@ -6,6 +6,8 @@ import { PluginError, type AgentContext, type AgentMessage, type AgentOutcome, t
 // orchestrator's `AgentConfig` / `ProxyConfig` shapes pinned to the same
 // definition the sandbox backends validate against. See @ax/sandbox-protocol.
 import type { AgentConfig, ProxyConfig } from '@ax/sandbox-protocol';
+import { foldAuthoredSkillCaps } from './authored-egress.js';
+import { buildAuthoredCardPayload, authoredCardDedupKey, hasShownDelta } from './authored-card.js';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -126,6 +128,33 @@ export interface ApplyCapabilityGrantInput {
 export interface ApplyCapabilityGrantOutput {
   attached: boolean;
 }
+
+// Phase 4 PR-B — authored-grant I/O. Structurally mirrors channel-web's local
+// copy (no cross-plugin import, I2). `applied:false, reason:'not-authored'`
+// signals the channel-web route to fall back to the catalog grant path.
+//
+// FIX 1 (TOCTOU guard): `shown?` carries what the card displayed at render
+// time. When present, the grant intersects the re-resolved current
+// proposalDelta with `shown` before writing approval rows — so an agent that
+// widens its draft between card render and user click can never sneak in caps
+// the user never saw. Anything in the current delta but NOT in `shown` is
+// silently skipped (it remains unapproved; the next spawn re-evaluates the
+// now-smaller delta and fires its own card for the remainder). The server
+// stays authoritative: a cap is approved IFF it is in the current proposal
+// (re-resolved server-side) AND in `shown`. The client `shown` can only
+// NARROW, never expand — anything not in the current proposal is rejected
+// regardless.
+export interface ApplyAuthoredCapabilityGrantInput {
+  conversationId: string;
+  userId: string;
+  agentId: string;
+  skillId: string;
+  /** What the card displayed — absent ⟹ approve the full current delta (back-compat). */
+  shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
+}
+export type ApplyAuthoredCapabilityGrantOutput =
+  | { applied: true; respawned: boolean }
+  | { applied: false; reason: 'not-authored' };
 
 // Shapes of the peer hooks we bus.call. Duplicated structurally on purpose —
 // I2 forbids cross-plugin imports. Drift would surface as a runtime shape
@@ -248,8 +277,17 @@ interface SkillsResolveOutput {
 // structurally per I2 (no @ax/agents import). Conditionally called via
 // bus.hasService — NOT declared in the manifest, same convention as
 // skills:resolve / skills:list-defaults.
+/** Authored-draft projection mirror (structurally mirrors @ax/agents'
+ * AuthoredResolvedSkill — NOT an import, per invariant #2). Adds the Phase-4
+ * fields the orchestrator consumes: `proposalDelta` (the unapproved remainder,
+ * drives the upfront card) and `description` (the card body). `capabilities` is
+ * the APPROVED subset PC-1 folds into egress. */
+export interface AuthoredResolvedSkillForOrch extends ResolvedSkillForOrch {
+  proposalDelta: ResolvedSkillForOrch['capabilities'];
+  description: string;
+}
 interface AgentsResolveAuthoredSkillsOutput {
-  skills: ResolvedSkillForOrch[];
+  skills: AuthoredResolvedSkillForOrch[];
 }
 
 // skills:list-user-attachments — registered by @ax/skills (TASK-33).
@@ -603,6 +641,10 @@ export function createOrchestrator(
     ctx: AgentContext,
     input: ApplyCapabilityGrantInput,
   ): Promise<ApplyCapabilityGrantOutput>;
+  applyAuthoredCapabilityGrant(
+    ctx: AgentContext,
+    input: ApplyAuthoredCapabilityGrantInput,
+  ): Promise<ApplyAuthoredCapabilityGrantOutput>;
   onHttpEgress(ctx: AgentContext, payload: HttpEgressEventLike): Promise<void>;
   onWorkspaceApplied(ctx: AgentContext, delta: WorkspaceAppliedLike): Promise<void>;
 } {
@@ -629,6 +671,13 @@ export function createOrchestrator(
   // stream with duplicate cards. Cleared per session in onSessionTerminate (the
   // session's egress is gone, so any future block under a reused id is new).
   const wallCardsByHost = new Map<string, Set<string>>(); // sessionId → hosts already carded
+  // Phase 4 PR-B — upfront authored-skill approval cards already fired, keyed by
+  // conversationId → set of shown-delta dedup keys. Conversation-scoped so it
+  // SURVIVES a re-spawn within the conversation (do NOT clear on chat:end —
+  // that's per-turn). Cleared by applyAuthoredCapabilityGrant on apply so a
+  // post-approve spawn re-evaluates the smaller delta. In-memory, single-replica
+  // (same posture as wallCardsByHost / respawnSessions).
+  const upfrontCardsByConv = new Map<string, Set<string>>();
   function registerWaiter(
     sessionId: string,
     reqId: string,
@@ -1458,7 +1507,7 @@ export function createOrchestrator(
     // catalog/default of the same id). Instruction-only here (empty caps; lazy
     // approval is Phase 4), so a throw FAILS OPEN — fewer skills, never wider
     // reach (same posture as skills:list-defaults below).
-    let authoredDraftSkills: ResolvedSkillForOrch[] = [];
+    let authoredDraftSkills: AuthoredResolvedSkillForOrch[] = [];
     if (bus.hasService('agents:resolve-authored-skills')) {
       try {
         const r = await bus.call<
@@ -1472,6 +1521,30 @@ export function createOrchestrator(
         });
         authoredDraftSkills = [];
       }
+    }
+
+    // PC-1 — fold APPROVED authored-draft caps into the egress allowlist +
+    // credential map (Phase 4 PR-B). baseCreds is aliased by unionedCreds and
+    // baseAllowSet is frozen into unionedAllowlist below, so mutating them here
+    // reaches proxy:open-session. A slot colliding with a trusted owner is a
+    // fatal terminate (an untrusted draft must not hijack a trusted credential).
+    const authoredCollision = foldAuthoredSkillCaps(
+      authoredDraftSkills,
+      baseAllowSet,
+      baseCreds,
+      slotOwners,
+    );
+    if (authoredCollision !== null) {
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: 'skill-slot-collision',
+        error: new Error(
+          `authored skill '${authoredCollision.skillId}' slot '${authoredCollision.slot}' collides with existing owner '${authoredCollision.existingOwner}'`,
+        ),
+      };
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
+      await bus.fire('chat:end', ctx, { outcome });
+      return outcome;
     }
 
     let defaultSkillsForUnion: ResolvedSkillForOrch[] = [];
@@ -1499,11 +1572,13 @@ export function createOrchestrator(
     // M2 — shadowed-id caps note: when an authored draft shares an id with
     // an explicit/global attachment, the DRAFT wins this union (the model
     // reads the draft's SKILL.md body) but creds/hosts are still wired from
-    // the attachment's resolved capabilities (the credential loop below keys
+    // the attachment's resolved capabilities (the credential loop above keys
     // off `resolvedSkills` / `attachments`, independent of `unionedSkills`).
-    // In Phase 3 drafted skills always carry empty caps, so this only affects
-    // which instruction body the model sees; flagged here for awareness when
-    // Phase 4 adds the approval-gate capability extraction.
+    // So this union decides only which instruction BODY the model sees
+    // (precedence). Egress hosts/creds are separate: an authored draft's
+    // APPROVED caps were already folded into baseAllowSet/baseCreds by
+    // foldAuthoredSkillCaps (PC-1, just above), so its egress is live
+    // regardless of what shadows its body here.
     const withAuthored = [
       ...authoredDraftSkills,
       ...resolvedSkills.filter((s) => !authoredIds.has(s.id)),
@@ -1794,6 +1869,49 @@ export function createOrchestrator(
       await fireTurnError(ctx, ctx.reqId, outcome.reason);
       await bus.fire('chat:end', ctx, { outcome });
       return outcome;
+    }
+
+    // Phase 4 PR-B (D-B1/D-B3) — fire ONE upfront approval card per authored
+    // draft with a non-empty SHOWN delta (hosts/slots/packages; mcp deferred),
+    // deduped per (conversation, skillId, shown-delta). conversationId is the
+    // SSE match key for skill cards, so guard on it.
+    if (ctx.conversationId !== undefined && ctx.conversationId.length > 0) {
+      // hasShownDelta is the SINGLE source of truth for "is there anything to
+      // card" — shared with buildAuthoredCardPayload's null check so the two
+      // can't diverge (it also tolerates the optional packages field).
+      const cardable = authoredDraftSkills.filter((s) => hasShownDelta(s.proposalDelta));
+      if (cardable.length > 0) {
+        // Vaulted refs → haveExisting on account-tagged slots (mirror request_capability).
+        const vaultedRefs = new Set<string>();
+        if (bus.hasService('credentials:list')) {
+          try {
+            const list = await bus.call<
+              { scope: 'user'; ownerId: string },
+              { credentials: Array<{ ref: string }> }
+            >('credentials:list', ctx, { scope: 'user', ownerId: ctx.userId });
+            for (const c of list.credentials) vaultedRefs.add(c.ref);
+          } catch {
+            /* a failed lookup just means the card prompts — never block it */
+          }
+        }
+        const fired = upfrontCardsByConv.get(ctx.conversationId) ?? new Set<string>();
+        for (const s of cardable) {
+          // buildAuthoredCardPayload/authoredCardDedupKey normalize the optional
+          // packages field internally, so proposalDelta passes straight through.
+          const key = authoredCardDedupKey(s.id, s.proposalDelta);
+          if (fired.has(key)) continue;
+          const card = buildAuthoredCardPayload(
+            { skillId: s.id, description: s.description, delta: s.proposalDelta },
+            vaultedRefs,
+          );
+          if (card === null) continue;
+          fired.add(key);
+          await bus.fire('chat:permission-request', ctx, card);
+        }
+        // Always store back: `fired` is either a new Set or the existing
+        // reference (re-set is a harmless no-op), so no size guard is needed.
+        upfrontCardsByConv.set(ctx.conversationId, fired);
+      }
     }
 
     // 7. Bind the conversation row to this fresh session (J6). Same
@@ -2160,29 +2278,11 @@ export function createOrchestrator(
     //    the now-attached skill). session:terminate clears active_session_id
     //    (not runner_session_id), so resume survives. No live waiter exists for
     //    a finished keepAlive turn, so onSessionTerminate fires no turn-error.
-    if (bus.hasService('conversations:get') && bus.hasService('session:is-alive')) {
+    const warm = await activeAliveSession(ctx, input.conversationId, input.userId);
+    if (warm !== null) {
       try {
-        const conv = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
-          'conversations:get',
-          ctx,
-          { conversationId: input.conversationId, userId: input.userId },
-        );
-        const candidate = conv.conversation.activeSessionId;
-        if (candidate !== null && candidate.length > 0) {
-          const alive = await bus.call<SessionIsAliveInput, SessionIsAliveOutput>(
-            'session:is-alive',
-            ctx,
-            { sessionId: candidate },
-          );
-          if (alive.alive) {
-            await bus.call('session:terminate', ctx, { sessionId: candidate });
-          }
-        }
+        await bus.call('session:terminate', ctx, { sessionId: warm });
       } catch (err) {
-        // Best-effort retire: if we can't read/terminate the warm session, the
-        // next turn's route-vs-fresh still picks fresh once is-alive sees it
-        // dead (or routes into a stale-but-skill-frozen session — degraded, not
-        // unsafe). Log and continue — the attach already landed.
         ctx.logger.warn('apply_capability_grant_retire_failed', {
           conversationId: input.conversationId,
           err: err instanceof Error ? err : new Error(String(err)),
@@ -2193,12 +2293,210 @@ export function createOrchestrator(
     return { attached };
   }
 
+  // Resolve the conversation's ACTIVE + ALIVE session id (or null). Shared by
+  // the catalog + authored grant paths (retire / live-widen). Best-effort: any
+  // lookup failure → null (the next turn's route-vs-fresh self-corrects).
+  async function activeAliveSession(
+    ctx: AgentContext,
+    conversationId: string,
+    userId: string,
+  ): Promise<string | null> {
+    if (!bus.hasService('conversations:get') || !bus.hasService('session:is-alive')) return null;
+    try {
+      const conv = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
+        'conversations:get', ctx, { conversationId, userId },
+      );
+      const candidate = conv.conversation.activeSessionId;
+      if (candidate === null || candidate.length === 0) return null;
+      const alive = await bus.call<SessionIsAliveInput, SessionIsAliveOutput>(
+        'session:is-alive', ctx, { sessionId: candidate },
+      );
+      return alive.alive ? candidate : null;
+    } catch (err) {
+      ctx.logger.warn('active_session_lookup_failed', {
+        conversationId,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return null;
+    }
+  }
+
+  // Phase 4 PR-B — apply a user-approved authored-skill capability grant. The
+  // host re-derives authored-ness (D-B7: server-authoritative); a skillId not
+  // found in the agent's drafted skills signals not-authored → the channel-web
+  // route falls back to the catalog grant. When it IS a draft, approve its
+  // proposalDelta (hosts/slots/packages; mcp deferred — D-B2), write approval
+  // rows, then activate: credential delta → re-spawn; host/pkg-only → live widen.
+  async function applyAuthoredCapabilityGrant(
+    ctx: AgentContext,
+    input: ApplyAuthoredCapabilityGrantInput,
+  ): Promise<ApplyAuthoredCapabilityGrantOutput> {
+    // 1. Re-resolve the agent's authored drafts — the HOST is the authority on
+    //    which path runs (D-B7). A skillId that is not a draft is a catalog
+    //    skill; signal not-authored so the route falls back to the catalog grant.
+    //
+    //    FIX 2 (catalog isolation): wrap the bus.call in try/catch. If
+    //    agents:resolve-authored-skills throws (workspace:list/read hiccup,
+    //    quarantine-get error, etc.) we return not-authored so the route falls
+    //    back to the independent catalog grant — catalog approvals must not be
+    //    broken by workspace or DB outages that are unrelated to the catalog path.
+    let drafts: AuthoredResolvedSkillForOrch[] = [];
+    if (bus.hasService('agents:resolve-authored-skills')) {
+      try {
+        const r = await bus.call<
+          { ownerUserId: string; agentId: string },
+          AgentsResolveAuthoredSkillsOutput
+        >('agents:resolve-authored-skills', ctx, {
+          ownerUserId: input.userId,
+          agentId: input.agentId,
+        });
+        drafts = r.skills;
+      } catch (err) {
+        // Resolve failure: treat as "not an authored skill" so the catalog grant
+        // path stays available. A workspace/DB hiccup here must not block
+        // catalog-skill approvals (they are independent).
+        ctx.logger.warn('authored_grant_resolve_failed', {
+          agentId: input.agentId,
+          skillId: input.skillId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return { applied: false, reason: 'not-authored' };
+      }
+    }
+    const draft = drafts.find((s) => s.id === input.skillId);
+    if (draft === undefined) return { applied: false, reason: 'not-authored' };
+
+    // 2. Build the approval rows from the re-resolved CURRENT proposalDelta
+    //    (hosts/slots/packages; mcp deferred — D-B2).
+    //
+    //    FIX 1 (TOCTOU guard): if `shown` is present, filter each kind to only
+    //    entries that were ALSO present in `shown` (what the user saw on the
+    //    card). An agent that widens its draft mid-flight cannot sneak in
+    //    unshown caps — anything in the current delta but not in `shown` is
+    //    silently skipped (it remains unapproved; the next spawn fires its own
+    //    card for the remainder). When `shown` is absent (back-compat), the
+    //    full current delta is approved unchanged.
+    const delta = draft.proposalDelta;
+    const deltaNpm = delta.packages?.npm ?? [];
+    const deltaPypi = delta.packages?.pypi ?? [];
+
+    // Intersection helpers — present only when `shown` is provided.
+    const shownHostSet = input.shown !== undefined ? new Set(input.shown.hosts) : null;
+    const shownSlotSet = input.shown !== undefined ? new Set(input.shown.slots) : null;
+    const shownNpmSet  = input.shown !== undefined ? new Set(input.shown.npm)   : null;
+    const shownPypiSet = input.shown !== undefined ? new Set(input.shown.pypi)  : null;
+
+    const approvedHosts = shownHostSet !== null
+      ? delta.allowedHosts.filter((h) => shownHostSet.has(h))
+      : delta.allowedHosts;
+    const approvedCreds = shownSlotSet !== null
+      ? delta.credentials.filter((c) => shownSlotSet.has(c.slot))
+      : delta.credentials;
+    const approvedNpm = shownNpmSet !== null
+      ? deltaNpm.filter((p) => shownNpmSet.has(p))
+      : deltaNpm;
+    const approvedPypi = shownPypiSet !== null
+      ? deltaPypi.filter((p) => shownPypiSet.has(p))
+      : deltaPypi;
+
+    const rows: Array<{
+      kind: 'host' | 'slot' | 'npm' | 'pypi';
+      value: string;
+      detail?: { kind: 'api-key'; account?: string };
+    }> = [
+      ...approvedHosts.map((h) => ({ kind: 'host' as const, value: h })),
+      ...approvedCreds.map((c) => ({
+        kind: 'slot' as const,
+        value: c.slot,
+        detail: { kind: 'api-key' as const, ...(c.account !== undefined ? { account: c.account } : {}) },
+      })),
+      ...approvedNpm.map((p) => ({ kind: 'npm' as const, value: p })),
+      ...approvedPypi.map((p) => ({ kind: 'pypi' as const, value: p })),
+    ];
+
+    // 3. Write the approval rows (host-side store, outside the agent's reach).
+    //    DELIBERATE fail-loud: a write error PROPAGATES (the route returns 500),
+    //    NOT best-effort-swallow. Swallowing would report `applied:true` while
+    //    silently failing to approve a cap — an "approved" host would stay
+    //    unreachable (a silent failure the user never sees). Propagating surfaces
+    //    it; `skills:approved-caps-set` is idempotent, so a retry re-writes the
+    //    (now-smaller) delta and converges. Do NOT "fix" this into a swallow.
+    if (bus.hasService('skills:approved-caps-set')) {
+      for (const row of rows) {
+        await bus.call('skills:approved-caps-set', ctx, {
+          ownerUserId: input.userId,
+          agentId: input.agentId,
+          skillId: input.skillId,
+          kind: row.kind,
+          value: row.value,
+          ...(row.detail !== undefined ? { detail: row.detail } : {}),
+        });
+      }
+    }
+
+    // 4. Drop the upfront-card dedup for this conversation so the next spawn
+    //    re-evaluates the now-smaller delta (re-fires only if something remains).
+    upfrontCardsByConv.delete(input.conversationId);
+
+    // 5. Activate per the asymmetry (design table): ANY SHOWN credential slot →
+    //    env var frozen at spawn → re-spawn. Else host/package-only → live widen.
+    //    FIX 1: use `approvedCreds` (shown-intersection) so an unshown credential
+    //    slot does NOT trigger a re-spawn that the user never approved.
+    const needsRespawn = approvedCreds.length > 0;
+    if (needsRespawn) {
+      const warm = await activeAliveSession(ctx, input.conversationId, input.userId);
+      let respawned = false;
+      if (warm !== null) {
+        try {
+          await bus.call('session:terminate', ctx, { sessionId: warm });
+          respawned = true;
+        } catch (err) {
+          ctx.logger.warn('authored_grant_retire_failed', {
+            conversationId: input.conversationId,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+        }
+      }
+      // `respawned` reports "did we retire a warm session THIS call", NOT "is a
+      // respawn needed". When there's no warm session (warm === null),
+      // respawned:false is correct/expected: the next turn has no warm session
+      // to reuse, so it cold-spawns fresh and PC-1 folds the now-approved
+      // credential into that spawn — the credential activates on the next turn
+      // regardless of whether we retired anything here.
+      return { applied: true, respawned };
+    }
+
+    // Host/package-only → live widen on the conversation's warm session.
+    // FIX 1: use `approvedHosts`/`approvedNpm`/`approvedPypi` (shown-filtered)
+    // so only hosts the user saw on the card get live-added.
+    const liveHosts = [...approvedHosts];
+    if (approvedNpm.length > 0) liveHosts.push('registry.npmjs.org');
+    if (approvedPypi.length > 0) liveHosts.push('pypi.org', 'files.pythonhosted.org');
+    if (liveHosts.length > 0 && bus.hasService('proxy:add-host')) {
+      const warm = await activeAliveSession(ctx, input.conversationId, input.userId);
+      if (warm !== null) {
+        for (const host of liveHosts) {
+          try {
+            await bus.call('proxy:add-host', ctx, { sessionId: warm, host });
+          } catch (err) {
+            ctx.logger.warn('authored_grant_add_host_failed', {
+              host,
+              err: err instanceof Error ? err : new Error(String(err)),
+            });
+          }
+        }
+      }
+    }
+    return { applied: true, respawned: false };
+  }
+
   return {
     runAgentInvoke,
     onChatEnd,
     onTurnEnd,
     onSessionTerminate,
     applyCapabilityGrant,
+    applyAuthoredCapabilityGrant,
     onHttpEgress,
     onWorkspaceApplied,
   };

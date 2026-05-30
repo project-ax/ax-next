@@ -62,6 +62,29 @@ describe('parseSkillManifest', () => {
     }
   });
 
+  it('does not catastrophically backtrack on pathological allowedHosts input (js/polynomial-redos guard)', () => {
+    // The pre-parse wildcard detector runs on UNTRUSTED self-authored
+    // frontmatter. A polynomial regex here is a host-side DoS: a crafted
+    // draft could hang the projection. Feed inputs that maximised the old
+    // regex's backtracking (many leading newlines; a near-miss flow seq with
+    // no closing ] and no '*'; a near-miss block list) and assert each
+    // returns quickly. A polynomial regex would take many seconds here; the
+    // linear one is sub-millisecond. 2s is a generous non-flaky ceiling.
+    const cases = [
+      '\n'.repeat(40000) + 'allowedHosts: x',
+      'name: x\ndescription: x\ncapabilities:\n  allowedHosts: [' + 'a'.repeat(40000),
+      'name: x\ndescription: x\ncapabilities:\n  allowedHosts:\n' +
+        '    - '.concat('a'.repeat(40000)),
+    ];
+    for (const evil of cases) {
+      const start = Date.now();
+      const r = parseSkillManifest(evil);
+      // Any verdict is fine — the point is it RETURNS, fast, without hanging.
+      expect(typeof r.ok).toBe('boolean');
+      expect(Date.now() - start).toBeLessThan(2000);
+    }
+  });
+
   it('deduplicates allowedHosts', () => {
     const r = parseSkillManifest(
       `name: x\ndescription: x\ncapabilities:\n  allowedHosts: [a.example.com, a.example.com]\n  credentials: []`,

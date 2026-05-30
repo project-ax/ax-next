@@ -14,6 +14,8 @@ import {
   CatalogListRequestsOutputSchema,
   CatalogAdmitOutputSchema,
   SkillsApprovedCapsListOutputSchema,
+  SkillsApprovedCapsSetOutputSchema,
+  SkillsApprovedCapsRevokeOutputSchema,
   type ResolvedSkill,
   type SkillCapabilities,
   type SkillDetail,
@@ -28,6 +30,8 @@ import {
   type SkillsListUserAttachmentsOutput,
   type SkillsSearchCatalogOutput,
   type SkillsApprovedCapsListOutput,
+  type SkillsApprovedCapsSetOutput,
+  type SkillsApprovedCapsRevokeOutput,
 } from '../types.js';
 
 // ARCH-13 drift guard for the `skills:*` returns schemas. A fully-populated
@@ -270,5 +274,14 @@ describe('skills return schemas', () => {
         capabilities: [{ kind: 'unknown', value: 'x' }],
       }).success,
     ).toBe(false);
+  });
+
+  it('skills:approved-caps-set output round-trips', () => {
+    const v: SkillsApprovedCapsSetOutput = { created: true };
+    expect(SkillsApprovedCapsSetOutputSchema.parse(v)).toEqual(v);
+  });
+  it('skills:approved-caps-revoke output round-trips', () => {
+    const v: SkillsApprovedCapsRevokeOutput = { cleared: false };
+    expect(SkillsApprovedCapsRevokeOutputSchema.parse(v)).toEqual(v);
   });
 });

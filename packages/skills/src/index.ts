@@ -29,6 +29,10 @@ export type {
   ApprovedCapEntry,
   SkillsApprovedCapsListInput,
   SkillsApprovedCapsListOutput,
+  SkillsApprovedCapsSetInput,
+  SkillsApprovedCapsSetOutput,
+  SkillsApprovedCapsRevokeInput,
+  SkillsApprovedCapsRevokeOutput,
 } from './types.js';
 
 export { parseSkillManifest } from './manifest.js';

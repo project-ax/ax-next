@@ -13,6 +13,7 @@
  * It mirrors @ax/skills' SkillsApprovedCapsListOutput entry shape.
  */
 import type { CapabilitySlot, McpServerSpec, SkillCapabilities } from '@ax/skills-parser';
+import { parseSkillManifest, buildSkillManifestYaml } from '@ax/skills-parser';
 
 export type ApprovedCapKind = 'host' | 'slot' | 'npm' | 'pypi' | 'mcp';
 
@@ -33,6 +34,39 @@ export const EMPTY_CAPABILITIES: SkillCapabilities = Object.freeze({
     pypi: Object.freeze([]) as unknown as string[],
   }),
 });
+
+/**
+ * Project ONE self-authored bundle: parse its frontmatter proposal, intersect
+ * with the approved set, and rebuild a caps-stripped manifest. Pure (no I/O) —
+ * the caller supplies `approved` (the real resolver fetches it from
+ * skills:approved-caps-list; the CLI stub passes []). Returns null on an
+ * unparseable manifest so the caller skips the draft (one bad draft must not
+ * break discovery). The rebuilt manifest carries name+description+version only
+ * (EMPTY capabilities) — frontmatter alone grants nothing.
+ */
+export function projectAuthoredBundle(
+  manifestYaml: string,
+  approved: ApprovedCapEntry[],
+): {
+  description: string;
+  capabilities: SkillCapabilities;
+  delta: SkillCapabilities;
+  manifestYaml: string;
+} | null {
+  const parsed = parseSkillManifest(manifestYaml);
+  if (!parsed.ok) return null;
+  const { capabilities, delta } = intersectProposalWithApproved(
+    parsed.value.capabilities,
+    approved,
+  );
+  const stripped = buildSkillManifestYaml({
+    id: parsed.value.id,
+    description: parsed.value.description,
+    version: parsed.value.version,
+    capabilities: EMPTY_CAPABILITIES,
+  });
+  return { description: parsed.value.description, capabilities, delta, manifestYaml: stripped };
+}
 
 /**
  * Split a frontmatter proposal into the approved subset (projected into the

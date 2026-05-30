@@ -6,6 +6,8 @@ import {
   type AgentInvokeInput,
   type ApplyCapabilityGrantInput,
   type ApplyCapabilityGrantOutput,
+  type ApplyAuthoredCapabilityGrantInput,
+  type ApplyAuthoredCapabilityGrantOutput,
 } from './orchestrator.js';
 
 // ---------------------------------------------------------------------------
@@ -27,7 +29,7 @@ export function createChatOrchestratorPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['agent:invoke', 'agent:apply-capability-grant'],
+      registers: ['agent:invoke', 'agent:apply-capability-grant', 'agent:apply-authored-capability-grant'],
       // The orchestrator drives the per-chat lifecycle by calling these
       // peers. `session:create` is NOT listed — sandbox:open-session mints
       // the session itself; a double-create throws duplicate-session. The
@@ -137,6 +139,17 @@ export function createChatOrchestratorPlugin(
         'agent:apply-capability-grant',
         PLUGIN_NAME,
         async (ctx, input) => orch.applyCapabilityGrant(ctx, input),
+      );
+
+      // Phase 4 PR-B — authored-skill approval grant. The host re-derives
+      // authored-ness (D-B7); a non-draft skillId returns not-authored so the
+      // channel-web route falls back to the catalog grant. Host-side only;
+      // NOT an IPC action. `agents:resolve-authored-skills` / `skills:approved-
+      // caps-set` peers are bus.hasService-gated (same convention as above).
+      bus.registerService<ApplyAuthoredCapabilityGrantInput, ApplyAuthoredCapabilityGrantOutput>(
+        'agent:apply-authored-capability-grant',
+        PLUGIN_NAME,
+        async (ctx, input) => orch.applyAuthoredCapabilityGrant(ctx, input),
       );
 
       bus.subscribe<{ outcome: AgentOutcome }>(

@@ -23,6 +23,15 @@ export interface TestProxyPluginOpts {
   script: StubRunnerScript;
   /** Optional extra envMap entries (merged after the script). */
   envExtra?: Record<string, string>;
+  /** Test hook — receives the proxy:open-session input verbatim so a canary
+   * can assert the orchestrator folded the right allowlist/credentials. */
+  onOpenSession?: (input: {
+    sessionId: string;
+    userId: string;
+    agentId: string;
+    allowlist: string[];
+    credentials: Record<string, { ref: string; kind: string }>;
+  }) => void;
 }
 
 /**
@@ -55,14 +64,17 @@ export function createTestProxyPlugin(opts: TestProxyPluginOpts): Plugin {
       bus.registerService<unknown, OpenSessionOutput>(
         'proxy:open-session',
         PLUGIN_NAME,
-        async (_ctx: AgentContext) => ({
-          proxyEndpoint: 'tcp://127.0.0.1:1',
-          caCertPem: DUMMY_CA_PEM,
-          envMap: {
-            AX_TEST_STUB_SCRIPT: encoded,
-            ...(opts.envExtra ?? {}),
-          },
-        }),
+        async (_ctx: AgentContext, input: unknown) => {
+          opts.onOpenSession?.(input as Parameters<NonNullable<TestProxyPluginOpts['onOpenSession']>>[0]);
+          return {
+            proxyEndpoint: 'tcp://127.0.0.1:1',
+            caCertPem: DUMMY_CA_PEM,
+            envMap: {
+              AX_TEST_STUB_SCRIPT: encoded,
+              ...(opts.envExtra ?? {}),
+            },
+          };
+        },
       );
       bus.registerService<unknown, Record<string, never>>(
         'proxy:close-session',

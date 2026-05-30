@@ -692,6 +692,7 @@ describe('agents:resolve-authored-skills', () => {
     expect(linear!.manifestYaml).not.toContain('capabilities');
     expect(linear!.manifestYaml).not.toContain('api.evil.com');
     expect(linear!.manifestYaml).toContain('name: linear');
+    expect(linear!.description.length).toBeGreaterThan(0);
   });
 
   // Fail-CLOSED: skills:approved-caps-list THROWING (approval-store outage) must

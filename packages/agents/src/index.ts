@@ -40,3 +40,11 @@ export {
   type AuthoredProjectionBundle,
   type AuthoredBundleFile,
 } from './authored-skills.js';
+// Shared pure helper: parse + intersect + caps-strip one authored bundle.
+// Used by the real resolver (plugin.ts) and the CLI dev stub (dev-agents-stub.ts).
+export {
+  projectAuthoredBundle,
+  intersectProposalWithApproved,
+  EMPTY_CAPABILITIES,
+} from './authored-caps.js';
+export type { ApprovedCapEntry } from './authored-caps.js';

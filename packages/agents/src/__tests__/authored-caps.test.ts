@@ -3,6 +3,7 @@ import type { SkillCapabilities } from '@ax/skills-parser';
 import {
   intersectProposalWithApproved,
   EMPTY_CAPABILITIES,
+  projectAuthoredBundle,
   type ApprovedCapEntry,
 } from '../authored-caps.js';
 
@@ -92,5 +93,40 @@ describe('intersectProposalWithApproved', () => {
     const { capabilities, delta } = intersectProposalWithApproved(EMPTY_CAPABILITIES, approved);
     expect(capabilities).toEqual(EMPTY_CAPABILITIES);
     expect(delta).toEqual(EMPTY_CAPABILITIES);
+  });
+});
+
+describe('projectAuthoredBundle', () => {
+  const MANIFEST =
+    'name: linear\n' +
+    'description: Query Linear issues\n' +
+    'capabilities:\n' +
+    '  allowedHosts:\n' +
+    '    - api.linear.app\n' +
+    '  credentials:\n' +
+    '    - slot: LINEAR_API_KEY\n' +
+    '      kind: api-key\n';
+
+  it('returns null for an unparseable manifest', () => {
+    expect(projectAuthoredBundle(': not yaml : [', [])).toBeNull();
+  });
+
+  it('with NO approvals: empty caps, full delta, caps-stripped manifest, description preserved', () => {
+    const out = projectAuthoredBundle(MANIFEST, []);
+    expect(out).not.toBeNull();
+    expect(out!.description).toBe('Query Linear issues');
+    expect(out!.capabilities.allowedHosts).toEqual([]);
+    expect(out!.delta.allowedHosts).toEqual(['api.linear.app']);
+    expect(out!.delta.credentials.map((c) => c.slot)).toEqual(['LINEAR_API_KEY']);
+    expect(out!.manifestYaml).not.toContain('capabilities');
+    expect(out!.manifestYaml).not.toContain('api.linear.app');
+    expect(out!.manifestYaml).toContain('name: linear');
+  });
+
+  it('approving the host moves it into caps, leaves the slot in the delta', () => {
+    const out = projectAuthoredBundle(MANIFEST, [{ kind: 'host', value: 'api.linear.app' }]);
+    expect(out!.capabilities.allowedHosts).toEqual(['api.linear.app']);
+    expect(out!.delta.allowedHosts).toEqual([]);
+    expect(out!.delta.credentials.map((c) => c.slot)).toEqual(['LINEAR_API_KEY']);
   });
 });

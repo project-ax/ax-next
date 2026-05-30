@@ -446,21 +446,61 @@ function parsePackagesCapability(raw: unknown): PackagesResult {
   return { ok: true, value: out };
 }
 
-// Matches wildcard host patterns like *.example.com inside an
-// allowedHosts entry, before YAML parsing. YAML treats bare `*` as an
-// alias sigil, so the parser would throw YAMLException instead of
-// reaching the host validator — catch pre-parse to return the correct
-// code. Covers both shapes the editor / user might submit:
-//   allowedHosts: [*.example.com, ...]                (flow sequence)
-//   allowedHosts:                                     (block list)
-//     - *.example.com
-const WILDCARD_HOST_IN_YAML_RE =
-  /(?:^|\n)\s*allowedHosts\s*:\s*(?:\[[^\]]*\*[^\]]*\]|(?:\n[ \t]*-[ \t]*[^\n]*\*[^\n]*)+)/;
+// Per-line anchor for an `allowedHosts:` key (any indent). Anchored + linear —
+// no backtracking surface. The capture is whatever follows the colon ON that
+// line (a flow seq `[...]`, or empty for a block list on the next lines).
+const ALLOWED_HOSTS_KEY_LINE = /^[ \t]*allowedHosts[ \t]*:(.*)$/;
+// A block-sequence item line (`  - ...`). Anchored + linear.
+const BLOCK_ITEM_LINE = /^[ \t]*-/;
+
+/**
+ * Detect a wildcard host pattern (`*.example.com`) inside an `allowedHosts`
+ * entry BEFORE YAML parsing. YAML treats a leading bare `*` as an alias sigil,
+ * so the parser would throw YAMLException instead of reaching the host
+ * validator — we catch it pre-parse to return the correct `invalid-host` code.
+ *
+ * Covers both shapes the editor / user might submit:
+ *   allowedHosts: [*.example.com, ...]   (flow sequence, may span lines to `]`)
+ *   allowedHosts:                        (block list)
+ *     - *.example.com
+ *
+ * This runs on UNTRUSTED self-authored frontmatter, so it is a LINEAR line
+ * scan (string ops + anchored per-line regexes) rather than one backtracking
+ * regex over the whole document — no `js/polynomial-redos` surface. Worst case
+ * is O(total input length).
+ */
+function hasWildcardAllowedHost(yaml: string): boolean {
+  const lines = yaml.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const m = ALLOWED_HOSTS_KEY_LINE.exec(lines[i]!);
+    if (m === null) continue;
+    const rest = m[1]!;
+    const bracket = rest.indexOf('[');
+    if (bracket !== -1) {
+      // Flow sequence — accumulate from `[` across lines until the closing `]`.
+      let seg = rest.slice(bracket);
+      for (let j = i + 1; !seg.includes(']') && j < lines.length; j++) {
+        seg += '\n' + lines[j]!;
+      }
+      const end = seg.indexOf(']');
+      const inside = end === -1 ? seg : seg.slice(0, end);
+      if (inside.includes('*')) return true;
+    } else if (rest.trim() === '') {
+      // Block list — scan the contiguous `- ` item lines that follow.
+      for (let k = i + 1; k < lines.length && BLOCK_ITEM_LINE.test(lines[k]!); k++) {
+        if (lines[k]!.includes('*')) return true;
+      }
+    }
+    // An inline scalar (`allowedHosts: host`) isn't a sequence — a leading `*`
+    // there is the YAML's problem to surface; nothing to pre-detect.
+  }
+  return false;
+}
 
 export function parseSkillManifest(yaml: string): ParseResult {
   // Pre-check: wildcard host patterns cause YAMLException (alias sigil).
   // Detect them before parsing so we can return 'invalid-host' not 'invalid-yaml'.
-  if (WILDCARD_HOST_IN_YAML_RE.test(yaml)) {
+  if (hasWildcardAllowedHost(yaml)) {
     return err('invalid-host', 'Wildcard hosts are not allowed in allowedHosts.');
   }
 

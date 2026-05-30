@@ -317,6 +317,7 @@ export interface AgentsListAuthoredSkillsOutput {
  * carries a capabilities block, so frontmatter alone grants nothing. */
 export interface AuthoredResolvedSkill {
   id: string;
+  description: string;
   capabilities: SkillCapabilities;
   proposalDelta: SkillCapabilities;
   bodyMd: string;
@@ -360,6 +361,7 @@ export const AgentsResolveAuthoredSkillsOutputSchema = z.object({
   skills: z.array(
     z.object({
       id: z.string(),
+      description: z.string(),
       capabilities: SkillCapabilitiesSchema,
       proposalDelta: SkillCapabilitiesSchema,
       bodyMd: z.string(),

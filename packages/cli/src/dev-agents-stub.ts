@@ -1,5 +1,5 @@
 import type { Plugin } from '@ax/core';
-import { listAuthoredBundles, type AuthoredProjectionBundle } from '@ax/agents';
+import { listAuthoredBundles, projectAuthoredBundle, type AuthoredProjectionBundle } from '@ax/agents';
 
 // ---------------------------------------------------------------------------
 // Dev-mode agents stub
@@ -173,20 +173,22 @@ export function createDevAgentsStubPlugin(
 
           // skills:quarantine-get is absent in the CLI preset (no skills store).
           // All parseable directory-form drafts are projected as-is — the commit-
-          // scan safety gate runs in the production k8s path. Phase 3 caps are
-          // always empty (instruction-only; approval gate is Phase 4).
-          const skills = bundles.map((b) => ({
-            id: b.id,
-            capabilities: {
-              allowedHosts: [] as string[],
-              credentials: [] as Array<{ slot: string; kind: string }>,
-              mcpServers: [] as never[],
-              packages: { npm: [] as string[], pypi: [] as string[] },
-            },
-            bodyMd: b.bodyMd,
-            manifestYaml: b.manifestYaml,
-            files: b.files,
-          }));
+          // scan safety gate runs in the production k8s path. approved=[] since
+          // the CLI has no @ax/skills store (fail-closed: empty caps until approved).
+          const skills = [];
+          for (const b of bundles) {
+            const proj = projectAuthoredBundle(b.manifestYaml, []);
+            if (proj === null) continue;
+            skills.push({
+              id: b.id,
+              description: proj.description,
+              capabilities: proj.capabilities,
+              proposalDelta: proj.delta,
+              bodyMd: b.bodyMd,
+              manifestYaml: proj.manifestYaml,
+              files: b.files,
+            });
+          }
           return { skills };
         },
       );

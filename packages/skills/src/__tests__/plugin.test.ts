@@ -149,6 +149,8 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:quarantine-get',
         'skills:quarantine-list',
         'skills:approved-caps-list',
+        'skills:approved-caps-set',
+        'skills:approved-caps-revoke',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -1632,5 +1634,66 @@ describe('skills quarantine services', () => {
         { ownerUserId: 'u1', agentId: 'a1', skillId: 'linear' },
       ),
     ).toEqual({ quarantined: false });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// FIX 3 — skills:approved-caps-set rejects kind:'mcp'; host/slot/npm/pypi succeed
+// ---------------------------------------------------------------------------
+describe('@ax/skills skills:approved-caps-set FIX 3 (mcp rejection)', () => {
+  const key = { ownerUserId: 'u1', agentId: 'a1', skillId: 'test-skill' };
+
+  it('kind:mcp is rejected with not-supported PluginError', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call(
+        'skills:approved-caps-set',
+        h.ctx(),
+        { ...key, kind: 'mcp', value: 'some-mcp-server' },
+      ),
+    ).rejects.toMatchObject({
+      code: 'not-supported',
+      message: expect.stringContaining("kind 'mcp' is not yet supported"),
+    });
+  });
+
+  it('kind:host still succeeds after the mcp guard', async () => {
+    const h = await makeHarness();
+    const result = await h.bus.call(
+      'skills:approved-caps-set',
+      h.ctx(),
+      { ...key, kind: 'host', value: 'api.example.com' },
+    );
+    expect(result).toEqual({ created: true });
+  });
+
+  it('kind:slot still succeeds after the mcp guard', async () => {
+    const h = await makeHarness();
+    const result = await h.bus.call(
+      'skills:approved-caps-set',
+      h.ctx(),
+      { ...key, kind: 'slot', value: 'MY_API_KEY', detail: { kind: 'api-key' } },
+    );
+    expect(result).toEqual({ created: true });
+  });
+
+  it('kind:npm still succeeds after the mcp guard', async () => {
+    const h = await makeHarness();
+    const result = await h.bus.call(
+      'skills:approved-caps-set',
+      h.ctx(),
+      { ...key, kind: 'npm', value: 'left-pad' },
+    );
+    expect(result).toEqual({ created: true });
+  });
+
+  it('kind:pypi still succeeds after the mcp guard', async () => {
+    const h = await makeHarness();
+    const result = await h.bus.call(
+      'skills:approved-caps-set',
+      h.ctx(),
+      { ...key, kind: 'pypi', value: 'requests' },
+    );
+    expect(result).toEqual({ created: true });
   });
 });
