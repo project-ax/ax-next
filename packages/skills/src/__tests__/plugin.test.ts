@@ -149,6 +149,8 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:quarantine-get',
         'skills:quarantine-list',
         'skills:approved-caps-list',
+        'skills:approved-caps-set',
+        'skills:approved-caps-revoke',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],

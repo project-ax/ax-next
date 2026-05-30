@@ -46,6 +46,8 @@ import {
   SkillsQuarantineGetOutputSchema,
   SkillsQuarantineListOutputSchema,
   SkillsApprovedCapsListOutputSchema,
+  SkillsApprovedCapsSetOutputSchema,
+  SkillsApprovedCapsRevokeOutputSchema,
 } from './types.js';
 import type {
   SkillsCheckForUpdatesInput,
@@ -86,6 +88,10 @@ import type {
   SkillsQuarantineListOutput,
   SkillsApprovedCapsListInput,
   SkillsApprovedCapsListOutput,
+  SkillsApprovedCapsSetInput,
+  SkillsApprovedCapsSetOutput,
+  SkillsApprovedCapsRevokeInput,
+  SkillsApprovedCapsRevokeOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/skills';
@@ -216,6 +222,8 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
         'skills:quarantine-get',
         'skills:quarantine-list',
         'skills:approved-caps-list',
+        'skills:approved-caps-set',
+        'skills:approved-caps-revoke',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -957,6 +965,18 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => ({ capabilities: await approvedCapsStore.list(input) }),
         { returns: SkillsApprovedCapsListOutputSchema },
+      );
+      bus.registerService<SkillsApprovedCapsSetInput, SkillsApprovedCapsSetOutput>(
+        'skills:approved-caps-set',
+        PLUGIN_NAME,
+        async (_ctx, input) => approvedCapsStore.set(input),
+        { returns: SkillsApprovedCapsSetOutputSchema },
+      );
+      bus.registerService<SkillsApprovedCapsRevokeInput, SkillsApprovedCapsRevokeOutput>(
+        'skills:approved-caps-revoke',
+        PLUGIN_NAME,
+        async (_ctx, input) => approvedCapsStore.clear(input),
+        { returns: SkillsApprovedCapsRevokeOutputSchema },
       );
 
       // Register admin + settings HTTP routes. Both batches are pushed into

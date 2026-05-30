@@ -531,3 +531,35 @@ export const SkillsApprovedCapsListOutputSchema = z.object({
     }),
   ),
 }) as unknown as ZodType<SkillsApprovedCapsListOutput>;
+
+export interface SkillsApprovedCapsSetInput {
+  ownerUserId: string;
+  agentId: string;
+  skillId: string;
+  kind: 'host' | 'slot' | 'npm' | 'pypi' | 'mcp';
+  value: string;
+  /** Optional audit/display detail (slot kind + account). The projection
+   * matches on (kind, value) only; this is never read back by list(). */
+  detail?: { kind?: 'api-key'; account?: string } | null;
+}
+export interface SkillsApprovedCapsSetOutput {
+  created: boolean;
+}
+export interface SkillsApprovedCapsRevokeInput {
+  ownerUserId: string;
+  agentId: string;
+  skillId: string;
+  kind: 'host' | 'slot' | 'npm' | 'pypi' | 'mcp';
+  value: string;
+}
+export interface SkillsApprovedCapsRevokeOutput {
+  cleared: boolean;
+}
+
+export const SkillsApprovedCapsSetOutputSchema = z.object({
+  created: z.boolean(),
+}) as unknown as ZodType<SkillsApprovedCapsSetOutput>;
+
+export const SkillsApprovedCapsRevokeOutputSchema = z.object({
+  cleared: z.boolean(),
+}) as unknown as ZodType<SkillsApprovedCapsRevokeOutput>;
