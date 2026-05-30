@@ -169,6 +169,28 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
       PRIMARY KEY (owner_user_id, agent_id, skill_id)
     )
   `.execute(db);
+
+  // skills_v1_approved_caps — per-(user, agent, skill, capability) approval
+  // metadata (Phase 4). Each row records ONE capability a human approved at the
+  // wall for a self-authored draft. `approved = union of rows`; the host
+  // discovery projection grants `proposal ∩ approved`. The bundle frontmatter is
+  // the proposal source of truth; this table is thin approval metadata (I4).
+  // `agent_id` is an opaque scoping key — no FK to agents_v1_agents (cross-plugin
+  // FKs are banned). `cap_detail` is optional display/audit JSON (slot kind +
+  // account, or an MCP spec); the projection matches on (cap_kind, cap_value)
+  // only. Additive-only.
+  await sql`
+    CREATE TABLE IF NOT EXISTS skills_v1_approved_caps (
+      owner_user_id TEXT NOT NULL,
+      agent_id      TEXT NOT NULL,
+      skill_id      TEXT NOT NULL,
+      cap_kind      TEXT NOT NULL,
+      cap_value     TEXT NOT NULL,
+      cap_detail    JSONB NULL,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (owner_user_id, agent_id, skill_id, cap_kind, cap_value)
+    )
+  `.execute(db);
 }
 
 /**
@@ -277,6 +299,22 @@ export interface QuarantineRow {
   created_at: Date;
 }
 
+/**
+ * Per-(user, agent, skill, capability) approval row (Phase 4). One row per
+ * approved capability. `cap_kind` ∈ 'host' | 'slot' | 'npm' | 'pypi' | 'mcp';
+ * `cap_value` is the host / slot name / package name / mcp server name. Storage
+ * detail only — the hook surface carries {kind, value}, never row vocabulary.
+ */
+export interface ApprovedCapRow {
+  owner_user_id: string;
+  agent_id: string;
+  skill_id: string;
+  cap_kind: string;
+  cap_value: string;
+  cap_detail: unknown; // JSONB; nullable
+  created_at: Date;
+}
+
 export interface SkillsDatabase {
   skills_v1_skills: SkillsRow;
   skills_v1_user_skills: UserSkillsRow;
@@ -284,4 +322,5 @@ export interface SkillsDatabase {
   skills_v1_skill_files: SkillFileRow;
   skills_v1_catalog_requests: CatalogRequestRow;
   skills_v1_quarantine: QuarantineRow;
+  skills_v1_approved_caps: ApprovedCapRow;
 }
