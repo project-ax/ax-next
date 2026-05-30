@@ -6,6 +6,7 @@ import { PluginError, type AgentContext, type AgentMessage, type AgentOutcome, t
 // orchestrator's `AgentConfig` / `ProxyConfig` shapes pinned to the same
 // definition the sandbox backends validate against. See @ax/sandbox-protocol.
 import type { AgentConfig, ProxyConfig } from '@ax/sandbox-protocol';
+import { foldAuthoredSkillCaps } from './authored-egress.js';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -248,8 +249,17 @@ interface SkillsResolveOutput {
 // structurally per I2 (no @ax/agents import). Conditionally called via
 // bus.hasService — NOT declared in the manifest, same convention as
 // skills:resolve / skills:list-defaults.
+/** Authored-draft projection mirror (structurally mirrors @ax/agents'
+ * AuthoredResolvedSkill — NOT an import, per invariant #2). Adds the Phase-4
+ * fields the orchestrator consumes: `proposalDelta` (the unapproved remainder,
+ * drives the upfront card) and `description` (the card body). `capabilities` is
+ * the APPROVED subset PC-1 folds into egress. */
+export interface AuthoredResolvedSkillForOrch extends ResolvedSkillForOrch {
+  proposalDelta: ResolvedSkillForOrch['capabilities'];
+  description: string;
+}
 interface AgentsResolveAuthoredSkillsOutput {
-  skills: ResolvedSkillForOrch[];
+  skills: AuthoredResolvedSkillForOrch[];
 }
 
 // skills:list-user-attachments — registered by @ax/skills (TASK-33).
@@ -1458,7 +1468,7 @@ export function createOrchestrator(
     // catalog/default of the same id). Instruction-only here (empty caps; lazy
     // approval is Phase 4), so a throw FAILS OPEN — fewer skills, never wider
     // reach (same posture as skills:list-defaults below).
-    let authoredDraftSkills: ResolvedSkillForOrch[] = [];
+    let authoredDraftSkills: AuthoredResolvedSkillForOrch[] = [];
     if (bus.hasService('agents:resolve-authored-skills')) {
       try {
         const r = await bus.call<
@@ -1472,6 +1482,30 @@ export function createOrchestrator(
         });
         authoredDraftSkills = [];
       }
+    }
+
+    // PC-1 — fold APPROVED authored-draft caps into the egress allowlist +
+    // credential map (Phase 4 PR-B). baseCreds is aliased by unionedCreds and
+    // baseAllowSet is frozen into unionedAllowlist below, so mutating them here
+    // reaches proxy:open-session. A slot colliding with a trusted owner is a
+    // fatal terminate (an untrusted draft must not hijack a trusted credential).
+    const authoredCollision = foldAuthoredSkillCaps(
+      authoredDraftSkills,
+      baseAllowSet,
+      baseCreds,
+      slotOwners,
+    );
+    if (authoredCollision !== null) {
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason: 'skill-slot-collision',
+        error: new Error(
+          `authored skill '${authoredCollision.skillId}' slot '${authoredCollision.slot}' collides with existing owner '${authoredCollision.existingOwner}'`,
+        ),
+      };
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
+      await bus.fire('chat:end', ctx, { outcome });
+      return outcome;
     }
 
     let defaultSkillsForUnion: ResolvedSkillForOrch[] = [];
