@@ -20,6 +20,7 @@ import { createUserSkillsStore } from './user-store.js';
 import { createUserAttachmentsStore } from './user-attachments-store.js';
 import { createCatalogRequestsStore } from './catalog-requests-store.js';
 import { createSkillsQuarantineStore } from './quarantine-store.js';
+import { createApprovedCapsStore } from './approved-caps-store.js';
 import { validateAttachmentBindings } from './attachment-validation.js';
 import { mergeUserWins, compareById } from './_merge.js';
 import { registerAdminSkillsRoutes } from './admin-routes.js';
@@ -44,6 +45,7 @@ import {
   SkillsQuarantineClearOutputSchema,
   SkillsQuarantineGetOutputSchema,
   SkillsQuarantineListOutputSchema,
+  SkillsApprovedCapsListOutputSchema,
 } from './types.js';
 import type {
   SkillsCheckForUpdatesInput,
@@ -82,6 +84,8 @@ import type {
   SkillsQuarantineGetOutput,
   SkillsQuarantineListInput,
   SkillsQuarantineListOutput,
+  SkillsApprovedCapsListInput,
+  SkillsApprovedCapsListOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/skills';
@@ -211,6 +215,7 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
         'skills:quarantine-clear',
         'skills:quarantine-get',
         'skills:quarantine-list',
+        'skills:approved-caps-list',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],
@@ -251,6 +256,7 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
       // the SAME tree SHA when it registers the bundle in the global catalog.
       const catalogRequestsStore = createCatalogRequestsStore(db, bundleStore);
       const quarantineStore = createSkillsQuarantineStore(db);
+      const approvedCapsStore = createApprovedCapsStore(db);
 
       bus.registerService<SkillsListInput, SkillsListOutput>(
         'skills:list',
@@ -944,6 +950,13 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => ({ items: await quarantineStore.list(input) }),
         { returns: SkillsQuarantineListOutputSchema },
+      );
+
+      bus.registerService<SkillsApprovedCapsListInput, SkillsApprovedCapsListOutput>(
+        'skills:approved-caps-list',
+        PLUGIN_NAME,
+        async (_ctx, input) => ({ capabilities: await approvedCapsStore.list(input) }),
+        { returns: SkillsApprovedCapsListOutputSchema },
       );
 
       // Register admin + settings HTTP routes. Both batches are pushed into

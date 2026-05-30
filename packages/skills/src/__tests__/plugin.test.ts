@@ -113,6 +113,7 @@ afterEach(async () => {
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_quarantine');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_approved_caps');
   } finally {
     await cleanup.end().catch(() => {});
   }
@@ -147,6 +148,7 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:quarantine-clear',
         'skills:quarantine-get',
         'skills:quarantine-list',
+        'skills:approved-caps-list',
       ],
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       subscribes: [],

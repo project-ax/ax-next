@@ -13,6 +13,7 @@ import {
   CatalogSubmitOutputSchema,
   CatalogListRequestsOutputSchema,
   CatalogAdmitOutputSchema,
+  SkillsApprovedCapsListOutputSchema,
   type ResolvedSkill,
   type SkillCapabilities,
   type SkillDetail,
@@ -26,6 +27,7 @@ import {
   type SkillsAttachForUserOutput,
   type SkillsListUserAttachmentsOutput,
   type SkillsSearchCatalogOutput,
+  type SkillsApprovedCapsListOutput,
 } from '../types.js';
 
 // ARCH-13 drift guard for the `skills:*` returns schemas. A fully-populated
@@ -242,5 +244,31 @@ describe('skills return schemas', () => {
   it('CatalogAdmitOutputSchema parses + strips', () => {
     const parsed = CatalogAdmitOutputSchema.parse({ skillId: 'linear', admitted: true, x: 1 });
     expect(parsed).toEqual({ skillId: 'linear', admitted: true });
+  });
+
+  it('SkillsApprovedCapsListOutputSchema round-trips a fully-populated value', () => {
+    const v: SkillsApprovedCapsListOutput = {
+      capabilities: [
+        { kind: 'host', value: 'api.github.com' },
+        { kind: 'slot', value: 'GITHUB_TOKEN' },
+        { kind: 'npm', value: '@scope/pkg' },
+        { kind: 'pypi', value: 'requests' },
+        { kind: 'mcp', value: 'gh-mcp' },
+      ],
+    };
+    expect(SkillsApprovedCapsListOutputSchema.parse(v)).toEqual(v);
+  });
+
+  it('SkillsApprovedCapsListOutputSchema round-trips an empty capabilities list', () => {
+    const v: SkillsApprovedCapsListOutput = { capabilities: [] };
+    expect(SkillsApprovedCapsListOutputSchema.parse(v)).toEqual(v);
+  });
+
+  it('SkillsApprovedCapsListOutputSchema rejects an unknown cap kind', () => {
+    expect(
+      SkillsApprovedCapsListOutputSchema.safeParse({
+        capabilities: [{ kind: 'unknown', value: 'x' }],
+      }).success,
+    ).toBe(false);
   });
 });
