@@ -85,6 +85,8 @@ import type {
   SkillsUpsertOutput,
   SkillsDeleteInput,
   SkillsDeleteOutput,
+  SkillsApprovedCapsSetInput,
+  SkillsApprovedCapsSetOutput,
 } from '@ax/skills';
 import { createRoutinesPlugin } from '@ax/routines';
 
@@ -1699,6 +1701,361 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(linearEntry!.manifestYaml).not.toContain('api.linear.app');
         // But the identity fields are present.
         expect(linearEntry!.manifestYaml).toContain('name: linear');
+      } finally {
+        if (handle !== null) await handle.shutdown();
+        if (server !== null) await server.close();
+        await fs.rm(serverRepoRoot, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it(
+    'Phase 4 PR-B canary: an APPROVED authored host+credential is folded into the proxy allowlist+creds at spawn; an UNAPPROVED host is not; mcp stays fail-closed (real executors)',
+    { timeout: 60_000 },
+    async () => {
+      // SECURITY-CRITICAL canary for Phase 4 PR-B (PC-1 egress wiring).
+      // Proves end-to-end through REAL executors — no fire-spy, no mocked
+      // agents:resolve-authored-skills — that:
+      //
+      //   1. An APPROVED authored host (api.linear.app) lands in the proxy
+      //      open-session allowlist at cold-start spawn.
+      //   2. An UNAPPROVED authored host (unapproved.example.com) is NOT in
+      //      the allowlist (the proxy would block it).
+      //   3. The approved credential slot (LINEAR_API_KEY) is folded into the
+      //      proxy's credentials map with the correct ref (skill:linear:LINEAR_API_KEY).
+      //   4. MCP is fail-closed: the linear-mcp server is never approved, so
+      //      mcpServers is empty in the projection while the mcp server lands
+      //      in proposalDelta.
+      //   5. At cold-start spawn, an upfront chat:permission-request card is
+      //      fired for the SHOWN delta (unapproved.example.com), proving the
+      //      at-spawn card wiring works end-to-end.
+      //
+      // Harness mirrors the Phase-4 PR-A canary: real @ax/skills + real
+      // @ax/agents + real testcontainer postgres + git-protocol workspace.
+      // Adds: skills:approved-caps-set writes, credentials:set seed, a
+      // capturing onOpenSession, and a real agent:invoke cold-start.
+      const connectionString = await ensurePostgresStarted();
+
+      const serverToken = randomBytes(32).toString('hex');
+      const serverRepoRoot = await fs.realpath(
+        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase4-prb-canary-')),
+      );
+      let server: WorkspaceGitServer | null = null;
+      let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
+      // Captures each proxy:open-session input so we can assert the allowlist
+      // and credentials the orchestrator folded in at spawn time (PC-1 proof).
+      const capturedOpens: Array<{
+        allowlist: string[];
+        credentials: Record<string, { ref: string; kind: string }>;
+      }> = [];
+      // Captures each chat:permission-request payload so we can assert the
+      // upfront authored card fired at spawn.
+      const capturedCards: Array<Record<string, unknown>> = [];
+      try {
+        server = await createWorkspaceGitServer({
+          repoRoot: serverRepoRoot,
+          host: '127.0.0.1',
+          port: 0,
+          token: serverToken,
+        });
+        const presetConfig: K8sPresetConfig = {
+          database: { connectionString: 'postgres://stub:5432/stub' },
+          eventbus: { connectionString: 'postgres://stub:5432/stub' },
+          session: { connectionString: 'postgres://stub:5432/stub' },
+          workspace: {
+            backend: 'git-protocol',
+            baseUrl: `http://127.0.0.1:${server.port}`,
+            token: serverToken,
+          },
+          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
+          chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+          http: {
+            host: '127.0.0.1',
+            port: 0,
+            cookieKey: '0'.repeat(64),
+            allowedOrigins: [],
+          },
+        };
+        const presetPlugins = createK8sPlugins(presetConfig);
+        const kept = presetPlugins.filter(
+          (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
+        );
+        const sqlitePath = path.join(tmp, 'phase4-prb-canary.sqlite');
+        const replacements: Plugin[] = [
+          // Real postgres backs BOTH the skills approved-caps store AND the
+          // @ax/agents tables (its init runs runAgentsMigration against it).
+          createDatabasePostgresPlugin({ connectionString }),
+          // @ax/skills: real skills:quarantine-{set,get} + skills:approved-caps-{list,set,revoke}.
+          // We will write approval rows before the agent:invoke cold start.
+          createSkillsPlugin(),
+          // REAL @ax/agents — provides agents:resolve (ACL gate on agent:invoke)
+          // and agents:resolve-authored-skills (projection under test).
+          createAgentsPlugin(),
+          createHttpRegisterRouteStubPlugin(),
+          createAuthRequireUserStubPlugin(),
+          // Storage / session / sandbox / IPC — same as the Phase-4 PR-A canary.
+          createStorageSqlitePlugin({ databasePath: sqlitePath }),
+          createSessionInmemoryPlugin(),
+          createSandboxSubprocessPlugin(),
+          createIpcServerPlugin(),
+          // Capturing test proxy: onOpenSession pushes into capturedOpens so
+          // we can assert the PC-1 allowlist/creds fold after the cold start.
+          // The stub runner emits a single end_turn so the session completes.
+          createTestProxyPlugin({
+            script: { entries: [{ kind: 'finish', reason: 'end_turn' }] },
+            onOpenSession: (input) =>
+              capturedOpens.push({
+                allowlist: input.allowlist,
+                credentials: input.credentials,
+              }),
+          }),
+          createMcpClientPlugin(),
+        ];
+        const plugins: Plugin[] = [...kept, ...replacements];
+        const bus = new HookBus();
+        handle = await bootstrap({ bus, plugins, config: {} });
+
+        const userId = 'phase4-prb-user';
+        // Bootstrap ctx: agentId is a placeholder for the agents:create call.
+        // We re-derive ctx after getting the real DB-assigned agent ID.
+        const bootstrapCtx = makeAgentContext({
+          sessionId: 'phase4-prb-bootstrap',
+          agentId: 'phase4-prb-agent-placeholder',
+          userId,
+          workspace: { rootPath: tmp },
+        });
+
+        // Seed a real agent row so agents:resolve succeeds on agent:invoke.
+        const agentOut = await bus.call<AgentsCreateInput, AgentsCreateOutput>(
+          'agents:create',
+          bootstrapCtx,
+          {
+            actor: { userId, isAdmin: false },
+            input: {
+              displayName: 'Phase 4 PR-B canary agent',
+              systemPrompt: 'You are a helpful assistant.',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-6',
+              visibility: 'personal',
+            },
+          },
+        );
+        const agentId = agentOut.agent.id;
+
+        const sessionId = 'phase4-prb';
+        const conversationId = 'cnv-phase4-prb';
+        const ctx = makeAgentContext({
+          sessionId,
+          agentId,
+          userId,
+          conversationId,
+          workspace: { rootPath: tmp },
+        });
+        const workspaceId = workspaceIdFor({ userId, agentId });
+        const bareRepoPath = path.join(serverRepoRoot, `${workspaceId}.git`);
+
+        // A draft proposing TWO hosts + a credential + an MCP server.
+        // APPROVED: api.linear.app + LINEAR_API_KEY slot.
+        // NOT APPROVED: unapproved.example.com.
+        // FAIL-CLOSED (mcp deferred): linear-mcp.
+        const proposingSkillMd =
+          '---\n' +
+          'name: linear\n' +
+          'description: Query Linear issues\n' +
+          'capabilities:\n' +
+          '  allowedHosts:\n' +
+          '    - api.linear.app\n' +
+          '    - unapproved.example.com\n' +
+          '  credentials:\n' +
+          '    - slot: LINEAR_API_KEY\n' +
+          '      kind: api-key\n' +
+          '  mcpServers:\n' +
+          '    - name: linear-mcp\n' +
+          '      transport: stdio\n' +
+          '      command: npx\n' +
+          '      args: ["-y", "linear-mcp"]\n' +
+          '---\n' +
+          '# Linear\nQuery issues.\n';
+
+        // Commit the draft to the workspace (mirroring the PR-A canary's
+        // simulateRunnerTurn + workspaceCommitNotifyHandler pattern).
+        const { bundleB64 } = await simulateRunnerTurn({
+          baselineFiles: [],
+          turnFiles: { '.ax/draft-skills/linear/SKILL.md': proposingSkillMd },
+          parentDir: tmp,
+        });
+        const commitResult = await workspaceCommitNotifyHandler(
+          { parentVersion: null, reason: 'turn', bundleBytes: bundleB64 },
+          ctx,
+          bus,
+        );
+        expect(commitResult.status).toBe(200);
+        const commitBody = commitResult.body as { accepted: true; version: string };
+        expect(commitBody.accepted).toBe(true);
+        expect(existsSync(bareRepoPath)).toBe(true);
+
+        // Approve ONLY api.linear.app + LINEAR_API_KEY slot.
+        // unapproved.example.com is NOT approved.
+        // The MCP server is NOT approved (fail-closed by design: mcp approval
+        // is deferred per D-B2 — the card/grant path never writes mcp rows).
+        await bus.call<SkillsApprovedCapsSetInput, SkillsApprovedCapsSetOutput>(
+          'skills:approved-caps-set',
+          ctx,
+          {
+            ownerUserId: userId,
+            agentId,
+            skillId: 'linear',
+            kind: 'host',
+            value: 'api.linear.app',
+          },
+        );
+        await bus.call<SkillsApprovedCapsSetInput, SkillsApprovedCapsSetOutput>(
+          'skills:approved-caps-set',
+          ctx,
+          {
+            ownerUserId: userId,
+            agentId,
+            skillId: 'linear',
+            kind: 'slot',
+            value: 'LINEAR_API_KEY',
+            detail: { kind: 'api-key' },
+          },
+        );
+
+        // Seed the credential value under the ref PC-1 derives:
+        // skill:<skillId>:<slot> = 'skill:linear:LINEAR_API_KEY'.
+        await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
+          scope: 'user',
+          ownerId: userId,
+          ref: 'skill:linear:LINEAR_API_KEY',
+          kind: 'api-key',
+          payload: new TextEncoder().encode('tok-test-linear'),
+        });
+
+        // ── THE GATE: projection ─────────────────────────────────────────────
+        // capabilities = proposal ∩ approved-store  →  api.linear.app + LINEAR_API_KEY
+        // proposalDelta = proposal − approved-store  →  unapproved.example.com + linear-mcp
+        // mcpServers in capabilities: EMPTY (fail-closed — never approved)
+        const projection = await bus.call<
+          { ownerUserId: string; agentId: string },
+          {
+            skills: Array<{
+              id: string;
+              capabilities: {
+                allowedHosts: string[];
+                credentials: Array<{ slot: string; kind: string }>;
+                mcpServers: unknown[];
+                packages: { npm: string[]; pypi: string[] };
+              };
+              proposalDelta: {
+                allowedHosts: string[];
+                credentials: Array<{ slot: string; kind: string }>;
+                mcpServers: unknown[];
+              };
+            }>;
+          }
+        >('agents:resolve-authored-skills', ctx, {
+          ownerUserId: userId,
+          agentId,
+        });
+
+        const linear = projection.skills.find((s) => s.id === 'linear');
+        expect(linear).toBeDefined();
+        // APPROVED subset only in capabilities.
+        expect(linear!.capabilities.allowedHosts).toEqual(['api.linear.app']);
+        expect(linear!.capabilities.credentials.map((c) => c.slot)).toEqual([
+          'LINEAR_API_KEY',
+        ]);
+        // MCP FAIL-CLOSED: linear-mcp was never approved (card/grant don't write
+        // mcp rows) → NOT projected into capabilities.
+        expect(linear!.capabilities.mcpServers).toEqual([]);
+        // proposalDelta carries the unapproved remainder.
+        expect(linear!.proposalDelta.allowedHosts).toEqual([
+          'unapproved.example.com',
+        ]);
+        expect(linear!.proposalDelta.mcpServers).toHaveLength(1);
+
+        // ── THE CARD: subscribe before agent:invoke, assert card fires ──────
+        // The upfront card fires at cold-start (after sandbox opens, before
+        // session:queue-work enqueues the message). We subscribe on the bus
+        // BEFORE the invoke so we capture it synchronously.
+        const permissionRequestName =
+          '@ax/preset-k8s/test/phase4-prb-permission-request-capture';
+        const capturePlugin: Plugin = {
+          manifest: {
+            name: permissionRequestName,
+            version: '0.0.0',
+            registers: [],
+            calls: [],
+            subscribes: ['chat:permission-request'],
+          },
+          init({ bus: b }) {
+            b.subscribe(
+              'chat:permission-request',
+              permissionRequestName,
+              async (_subCtx, payload) => {
+                capturedCards.push(payload as Record<string, unknown>);
+                return undefined;
+              },
+            );
+          },
+        };
+        // bootstrap is already done; register the subscriber directly.
+        bus.subscribe(
+          'chat:permission-request',
+          permissionRequestName,
+          async (_subCtx, payload) => {
+            capturedCards.push(payload as Record<string, unknown>);
+            return undefined;
+          },
+        );
+        void capturePlugin; // suppress unused-variable lint; subscriber added above
+
+        // ── PC-1 PROOF: agent:invoke cold start ──────────────────────────────
+        // The stub runner emits end_turn immediately. The orchestrator must
+        // fold approved authored caps into proxy:open-session BEFORE the runner
+        // receives its first message, so capturedOpens has exactly one entry
+        // after the invoke completes.
+        const outcome: AgentOutcome = await bus.call('agent:invoke', ctx, {
+          message: { role: 'user', content: 'hi' },
+        });
+        expect(outcome.kind).toBe('complete');
+
+        // PC-1: the capturing proxy received exactly one open-session call.
+        expect(capturedOpens.length).toBeGreaterThan(0);
+        const openSession = capturedOpens[capturedOpens.length - 1]!;
+
+        // APPROVED host IS in the allowlist.
+        expect(openSession.allowlist).toContain('api.linear.app');
+        // UNAPPROVED host is NOT in the allowlist (proxy blocks it).
+        expect(openSession.allowlist).not.toContain('unapproved.example.com');
+        // Credential ref is correctly folded (skill:<id>:<slot>).
+        expect(openSession.credentials['LINEAR_API_KEY']).toEqual({
+          ref: 'skill:linear:LINEAR_API_KEY',
+          kind: 'api-key',
+        });
+
+        // ── UPFRONT CARD: assert the permission-request card fired ───────────
+        // The card is deduplicated per (conversation, shown-delta) and fires
+        // once at cold-start spawn for each authored draft with a non-empty
+        // shown delta. The shown delta here is:
+        //   hosts: [unapproved.example.com]  (approved hosts are NOT shown)
+        //   slots: []  (LINEAR_API_KEY was approved → not in shown delta)
+        // mcp is excluded from the card (D-B2, fail-closed deferred).
+        const authoredCards = capturedCards.filter(
+          (c) => c['kind'] === 'skill' && c['authored'] === true,
+        );
+        expect(authoredCards.length).toBeGreaterThan(0);
+        const linearCard = authoredCards.find(
+          (c) => c['skillId'] === 'linear',
+        );
+        expect(linearCard).toBeDefined();
+        // The card carries the UNAPPROVED hosts (shown delta).
+        expect(linearCard!['hosts']).toContain('unapproved.example.com');
+        // MCP server does NOT appear on the card (deferred per D-B2).
+        expect(linearCard!['hosts']).not.toContain('linear-mcp');
       } finally {
         if (handle !== null) await handle.shutdown();
         if (server !== null) await server.close();
