@@ -94,6 +94,9 @@ importers:
       '@ax/tool-artifact-publish':
         specifier: workspace:*
         version: link:../tool-artifact-publish
+      '@ax/tool-skill-propose':
+        specifier: workspace:*
+        version: link:../tool-skill-propose
       undici:
         specifier: ^6.25.0
         version: 6.25.0

@@ -119,6 +119,28 @@ export function capabilityHandoffNote(): string {
 }
 
 /**
+ * Skill-authoring note (TASK-74, design §D6) — the spawn-time-discovery
+ * constraint. A skill the agent proposes via `skill_propose` is discovered only
+ * when a session STARTS, so it becomes available on the user's NEXT message, not
+ * the current turn. Without this guidance the model may propose a skill and then
+ * try to invoke it in the same turn, fail to find it, and get confused.
+ *
+ * Fixed runner-authored prose for the LLM (no untrusted input). Always present
+ * — harmless when no skill_propose tool is wired (the model just never proposes).
+ */
+export function skillAuthoringNote(): string {
+  return [
+    `Authoring skills: if you write a skill into \`/ephemeral/skill-draft/<id>/\` and`,
+    `propose it with \`skill_propose\`, it becomes available on the user's NEXT message —`,
+    `not this turn. Skills are discovered when your session starts, so a skill you propose`,
+    `now is not yet loaded. Do NOT try to invoke a skill you proposed this turn; tell the`,
+    `user it will be ready on their next message. If it needs network access or a`,
+    `credential, the user approves it on an inline card first. If they asked you to create`,
+    `AND use a skill in one breath, propose it and offer to continue once they reply.`,
+  ].join(' ');
+}
+
+/**
  * Build the SDK `systemPrompt` value from the agent's frozen prompt, the
  * workspace root, and the optional ephemeral scratch root.
  *
@@ -144,6 +166,10 @@ export function buildSystemPrompt(
   // doesn't narrate a mid-conversation connect/approval handoff. Harmless when
   // no connect tool exists.
   notes.push(capabilityHandoffNote());
+  // TASK-74 (design §D6): the spawn-time-discovery constraint for skill_propose
+  // — a proposed skill is available next turn, not this one. Harmless when no
+  // skill_propose tool is wired.
+  notes.push(skillAuthoringNote());
   // `note` is always non-empty (the workspace note is unconditional).
   const note = notes.join('\n\n');
 
