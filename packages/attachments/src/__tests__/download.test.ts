@@ -232,6 +232,66 @@ describe('attachments:download handler (blob-backed)', () => {
       expect(result.mediaType).toBe('application/pdf');
     });
 
+    // TASK-77 (regression): the runner persists an artifact_publish tool_result
+    // as the SDK/MCP ARRAY shape `[{type:'text', text:<json>}]`, NOT the string
+    // form the test above uses. Before the fix, checkPathScope only parsed the
+    // string branch, so a published artifact's path was never matched → the
+    // download collapsed to `forbidden` and the UI showed "unknown artifact"
+    // (the TASK-72 walk step-4 404). This proves the array branch resolves too.
+    it('serves a path referenced from an artifact_publish tool_result with ARRAY content', async () => {
+      const toolResultPath = 'workspace/reports/Q4.pdf';
+      const toolUseBlock: ContentBlock = {
+        type: 'tool_use',
+        id: 'toolu-1',
+        name: 'artifact_publish',
+        input: { path: '/ephemeral/artifacts/Q4.pdf' },
+      };
+      const toolResultBlock: ContentBlock = {
+        type: 'tool_result',
+        tool_use_id: 'toolu-1',
+        // The shape the runner actually emits (main.ts narrows the SDK echo to
+        // `[{type:'text', text}]`), not the string form.
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              artifactId: 'abcd',
+              downloadUrl: 'ax://artifact/abcd',
+              path: toolResultPath,
+              displayName: 'Q4',
+              mediaType: 'application/pdf',
+              sizeBytes: 1,
+              sha256: 'sha-q4',
+            }),
+          },
+        ],
+      };
+      const bus = makeBus({
+        conversationsGet: async () => ({
+          conversation: makeConversationRow({ conversationId: 'c-1', userId: 'u-1' }),
+          turns: [
+            {
+              turnId: 't-1',
+              turnIndex: 0,
+              role: 'assistant' as const,
+              contentBlocks: [toolUseBlock, toolResultBlock],
+              createdAt: '2026-05-15T00:00:00Z',
+            },
+          ],
+        }),
+        blobGet: async (input) =>
+          input.sha256 === 'sha-q4' ? { bytes: new Uint8Array(Buffer.from('q4')) } : { found: false },
+      });
+      const store = makeStore({
+        artifacts: { [`c-1::${toolResultPath}`]: fileRow('c-1', toolResultPath, 'sha-q4', { mediaType: 'application/pdf', displayName: 'Q4' }) },
+      });
+      const handler = createDownloadHandler({ bus, store });
+      const result = await handler(makeCtx('u-1'), { path: toolResultPath, conversationId: 'c-1', userId: 'u-1' });
+      expect(result.bytes.toString()).toBe('q4');
+      expect(result.displayName).toBe('Q4');
+      expect(result.mediaType).toBe('application/pdf');
+    });
+
     it('rejects path not referenced anywhere with forbidden', async () => {
       const handler = createDownloadHandler({ bus: makeBus(), store: makeStore() });
       await expect(

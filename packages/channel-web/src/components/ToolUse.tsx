@@ -236,6 +236,43 @@ interface ArtifactPublishToolResult {
  * context) falls back to the standard `ToolFallback` panel — the user
  * still sees what happened, just without the chip affordance.
  */
+/**
+ * The tool result may arrive as a JSON string, an already-parsed object, or
+ * the SDK/MCP ARRAY shape `[{type:'text', text:<json>}]` that the runner
+ * persists for an artifact_publish result (TASK-77). Return the first
+ * candidate object that parses, or null. Array entries that aren't `text`
+ * blocks (e.g. images) are skipped.
+ */
+function parseArtifactResult(result: unknown): ArtifactPublishToolResult | null {
+  const texts: string[] = [];
+  if (typeof result === 'string') {
+    texts.push(result);
+  } else if (Array.isArray(result)) {
+    for (const entry of result) {
+      if (
+        entry &&
+        typeof entry === 'object' &&
+        (entry as { type?: unknown }).type === 'text' &&
+        typeof (entry as { text?: unknown }).text === 'string'
+      ) {
+        texts.push((entry as { text: string }).text);
+      }
+    }
+  } else if (result && typeof result === 'object') {
+    // Already-parsed object — re-serialize so the single parse path below
+    // applies uniformly.
+    texts.push(JSON.stringify(result));
+  }
+  for (const text of texts) {
+    try {
+      return JSON.parse(text) as ArtifactPublishToolResult;
+    } catch {
+      /* not JSON — try the next candidate */
+    }
+  }
+  return null;
+}
+
 export const ArtifactPublishTool: FC<ToolCallMessagePartProps> = (p) => {
   const conversationId = useConversationId();
   if (p.status?.type === 'running' || p.result === undefined) {
@@ -244,14 +281,7 @@ export const ArtifactPublishTool: FC<ToolCallMessagePartProps> = (p) => {
   if (p.isError === true) {
     return <ToolFallback {...p} />;
   }
-  let parsed: ArtifactPublishToolResult | null = null;
-  try {
-    const raw =
-      typeof p.result === 'string' ? p.result : JSON.stringify(p.result);
-    parsed = JSON.parse(raw) as ArtifactPublishToolResult;
-  } catch {
-    return <ToolFallback {...p} />;
-  }
+  const parsed = parseArtifactResult(p.result);
   if (
     !parsed ||
     conversationId === null ||
