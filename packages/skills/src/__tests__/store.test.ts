@@ -5,13 +5,10 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join as joinPath } from 'node:path';
 import { runSkillsMigration, type SkillsDatabase } from '../migrations.js';
 import { createSkillsStore } from '../store.js';
 import { createUserSkillsStore } from '../user-store.js';
-import { createBundleStore } from '../bundle-store.js';
+import { createInMemoryBundleStore } from '../blob-bundle-store.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -498,7 +495,7 @@ capabilities:
   it('upsert writes a bundle_tree_sha; single-file skill leaves it NULL', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);
-    const store = createSkillsStore(db); // default ephemeral bundle store
+    const store = createSkillsStore(db); // default in-memory bundle store
 
     await store.upsert({
       id: 'multi', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1,
@@ -510,7 +507,9 @@ capabilities:
 
     const multiRow = await db.selectFrom('skills_v1_skills').select('bundle_tree_sha').where('skill_id', '=', 'multi').executeTakeFirstOrThrow();
     const singleRow = await db.selectFrom('skills_v1_skills').select('bundle_tree_sha').where('skill_id', '=', 'single').executeTakeFirstOrThrow();
-    expect(multiRow.bundle_tree_sha).toMatch(/^[0-9a-f]{40}$/);
+    // out-of-git Part D2: the bundle pointer is now a blob sha256 (64 hex),
+    // not a git tree oid (40 hex).
+    expect(multiRow.bundle_tree_sha).toMatch(/^[0-9a-f]{64}$/);
     expect(singleRow.bundle_tree_sha).toBeNull();
 
     // Round-trip still works (behavior contract unchanged).
@@ -580,7 +579,7 @@ capabilities:
   it('global + user stores sharing one bundle repo dedup identical bytes', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);
-    const bundleStore = createBundleStore(mkdtempSync(joinPath(tmpdir(), 'ax-shared-bundles-')));
+    const bundleStore = createInMemoryBundleStore();
     const store = createSkillsStore(db, bundleStore);
     const userStore = createUserSkillsStore(db, bundleStore);
     await store.upsert({ id: 'demo', description: 'd', manifestYaml: SAMPLE_MANIFEST, bodyMd: SAMPLE_BODY, version: 1, files: [{ path: 'a.txt', contents: 'same' }] });

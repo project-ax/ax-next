@@ -18,6 +18,7 @@ import {
 import {
   createTestHarness,
   createMockWorkspacePlugin,
+  mockBlobStoreServices,
   type TestHarness,
 } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
@@ -74,6 +75,7 @@ type AuthActor = { id: string; isAdmin: boolean };
 async function makeHarness(authActor: AuthActor): Promise<TestHarness> {
   const h = await createTestHarness({
     services: {
+      ...mockBlobStoreServices(),
       'http:register-route': async () => ({ unregister: () => {} }),
       'auth:require-user': async () => ({ user: authActor }),
     },
@@ -399,6 +401,7 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     // Use teams:is-member stub to create a team agent.
     const h = await createTestHarness({
       services: {
+        ...mockBlobStoreServices(),
         'http:register-route': async () => ({ unregister: () => {} }),
         'auth:require-user': async () => ({ user: { id: 'admin', isAdmin: true } }),
         'teams:is-member': async () => ({ member: true }),

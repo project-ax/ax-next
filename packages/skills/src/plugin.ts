@@ -1,6 +1,3 @@
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import {
   makeAgentContext,
   PluginError,
@@ -10,7 +7,7 @@ import {
 } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { checkForUpdates } from './check-updates.js';
-import { createBundleStore } from './bundle-store.js';
+import { createBlobBundleStore } from './blob-bundle-store.js';
 import { validateBundleFiles } from './bundle-files.js';
 import { classifyTier } from './catalog-tier.js';
 import { parseSkillManifest } from './manifest.js';
@@ -180,20 +177,15 @@ async function purgeSkillCredentials(
   }
 }
 
-export interface SkillsPluginConfig {
-  /**
-   * Content-addressed bundle byte-store location. `repoRoot` hosts a bare git
-   * repo at `<repoRoot>/bundles.git`. Capabilities scoped to this dir only.
-   * OPTIONAL: when omitted the plugin uses an EPHEMERAL temp dir (and warns) —
-   * fine for tests, but production MUST wire a durable path (Task 6) or the
-   * catalog's extra-file bytes are lost on restart. Today every deployed skill
-   * has no extra files (the write path is half-wired until P5), so the
-   * ephemeral fallback is non-fatal until then.
-   */
-  bundleStore?: { repoRoot: string };
-}
+// SkillsPluginConfig is intentionally empty: the bundle byte-store is now the
+// shared content-addressed `blob:*` store (out-of-git Part D2 — the TASK-40
+// git-tree backing and its `bundleStore.repoRoot` are retired). Durability,
+// dedup, and the GC story all come from the blob store; nothing here to
+// configure. Kept as a named type so existing `createSkillsPlugin(config.skills)`
+// call sites and the preset's `config.skills` slot stay type-stable.
+export type SkillsPluginConfig = Record<string, never>;
 
-export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
+export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
   let db: Kysely<SkillsDatabase> | undefined;
   let _busRef: HookBus | undefined;
   const routeUnregisters: Array<() => void> = [];
@@ -225,7 +217,19 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
         'skills:approved-caps-set',
         'skills:approved-caps-revoke',
       ],
-      calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
+      calls: [
+        'database:get-instance',
+        'http:register-route',
+        'auth:require-user',
+        // out-of-git Part D2: skill bundle EXTRA files are stored as one
+        // content-addressed object in the shared blob store (retires the
+        // TASK-40 git-tree backing). Hard deps → init-ordering edges so the
+        // blob backend (@ax/blob-store-fs|s3) is up before we read/write a
+        // bundle. The chat path is single-file SKILL.md only, so bundles ride
+        // these only for multi-file catalog/authored skills.
+        'blob:put',
+        'blob:get',
+      ],
       subscribes: [],
     },
 
@@ -246,22 +250,19 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
       await runSkillsMigration(db);
 
       // Construct the content-addressed bundle byte-store ONCE and inject the
-      // SAME instance into both stores so identical bytes dedup across scopes.
-      let repoRoot = config.bundleStore?.repoRoot;
-      if (repoRoot === undefined) {
-        repoRoot = mkdtempSync(join(tmpdir(), 'ax-skills-bundles-'));
-        initCtx.logger.warn('skills_bundle_store_ephemeral', {
-          repoRoot,
-          note: 'no AX_SKILLS_BUNDLE_ROOT configured — bundle bytes are not durable across restarts',
-        });
-      }
-      const bundleStore = createBundleStore(repoRoot);
+      // SAME instance into every store so identical bytes dedup across scopes.
+      // Now blob-backed (out-of-git Part D2): bundle EXTRA files are written as
+      // one object via blob:put and read via blob:get — durability, dedup, and
+      // GC all come from the shared blob store. The store-owned initCtx is the
+      // correct ctx because blob:* is purely content-addressed (no ownership
+      // scope), so it carries only the logger.
+      const bundleStore = createBlobBundleStore(bus, initCtx);
       const store = createSkillsStore(db, bundleStore);
       const userStore = createUserSkillsStore(db, bundleStore);
       const attachmentsStore = createUserAttachmentsStore(db);
-      // Reuse the shared content-addressed bundle store (TASK-40) so a share
-      // snapshot dedups against the source skill's own tree and admit re-derives
-      // the SAME tree SHA when it registers the bundle in the global catalog.
+      // Reuse the shared content-addressed bundle store so a share snapshot
+      // dedups against the source skill's own bundle and admit re-derives the
+      // SAME sha when it registers the bundle in the global catalog.
       const catalogRequestsStore = createCatalogRequestsStore(db, bundleStore);
       const quarantineStore = createSkillsQuarantineStore(db);
       const approvedCapsStore = createApprovedCapsStore(db);

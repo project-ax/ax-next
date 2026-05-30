@@ -4,7 +4,11 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import {
+  createTestHarness,
+  mockBlobStoreServices,
+  type TestHarness,
+} from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createSkillsPlugin } from '@ax/skills';
 import { makeAgentContext, type AgentContext } from '@ax/core';
@@ -80,6 +84,9 @@ const harnesses: TestHarness[] = [];
 async function makeHarness(): Promise<TestHarness> {
   const h = await createTestHarness({
     services: {
+      // out-of-git Part D2: @ax/skills now hard-deps the blob store for bundle
+      // bytes — supply a content-addressed in-process backend.
+      ...mockBlobStoreServices(),
       // @ax/skills registers its admin/settings HTTP routes at init — stub the
       // route registrar so bootstrap completes (this suite drives the handlers
       // directly, not over HTTP).

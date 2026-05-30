@@ -8,6 +8,7 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { PluginError } from '@ax/core';
 import type { Kysely } from 'kysely';
 import { createSkillsPlugin } from '../plugin.js';
+import { blobStoreFakeServices } from './_blob-fake.js';
 import { createAdminSkillsHandlers, writeServiceError } from '../admin-routes.js';
 import type { RouteRequest, RouteResponse } from '../admin-routes.js';
 import { createSkillsStore, type SkillsStore } from '../store.js';
@@ -114,6 +115,7 @@ async function makeHarness(opts: {
   const authedUser = opts.authedUser ?? { id: 'admin', isAdmin: true };
   const h = await createTestHarness({
     services: {
+      ...blobStoreFakeServices(),
       'http:register-route': httpRegisterRouteStub,
       'auth:require-user': async () => ({ user: authedUser }),
       ...opts.services,
@@ -489,6 +491,7 @@ describe('/admin/skills handlers', () => {
   it('DELETE /admin/skills/:id with attached agents returns 409 skill-in-use', async () => {
     const h = await createTestHarness({
       services: {
+        ...blobStoreFakeServices(),
         'http:register-route': httpRegisterRouteStub,
         'auth:require-user': async () => ({ user: { id: 'admin', isAdmin: true } }),
         'agents:any-attached-to-skill': async () => ({ attached: true }),
@@ -552,6 +555,7 @@ describe('/admin/skills handlers', () => {
   it('GET /admin/skills returns 401 when auth:require-user throws unauthenticated', async () => {
     const h = await createTestHarness({
       services: {
+        ...blobStoreFakeServices(),
         'http:register-route': httpRegisterRouteStub,
         'auth:require-user': async () => {
           throw new PluginError({
@@ -1020,6 +1024,7 @@ version: 1
     }> = [];
     const h = await createTestHarness({
       services: {
+        ...blobStoreFakeServices(),
         'http:register-route': async (_ctx, input) => {
           const route = input as {
             method: string;

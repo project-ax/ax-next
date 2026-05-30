@@ -5,9 +5,9 @@
  * SNAPSHOT (manifest_yaml/body_md verbatim + a content-addressed tree SHA over
  * the extra files) so the bytes an admin reviews are exactly the bytes admit
  * promotes — no review-vs-ship drift (design §6D / §9.2). Reuses the SAME
- * shared content-addressed bundleStore the skill stores use (TASK-40), so a
- * snapshot dedups against the source skill's own tree and stays valid even if
- * the author later edits/deletes it.
+ * shared content-addressed bundleStore the skill stores use (now blob-backed,
+ * out-of-git Part D2), so a snapshot dedups against the source skill's own
+ * bundle and stays valid even if the author later edits/deletes it.
  *
  * `bundle_tree_sha` is a STORAGE detail — it never leaves this file. Callers
  * see bundles as files[] only (storage-agnostic, invariant I1).
@@ -16,7 +16,7 @@ import { randomUUID } from 'node:crypto';
 import type { Kysely } from 'kysely';
 import type { SkillsDatabase, CatalogRequestRow } from './migrations.js';
 import type { BundleFile } from './bundle-files.js';
-import type { BundleStore } from './bundle-store.js';
+import type { BlobBundleStore } from './blob-bundle-store.js';
 
 export interface CatalogRequest {
   requestId: string;
@@ -66,7 +66,7 @@ export interface CatalogRequestsStore {
 
 export function createCatalogRequestsStore(
   db: Kysely<SkillsDatabase>,
-  bundleStore: BundleStore,
+  bundleStore: BlobBundleStore,
 ): CatalogRequestsStore {
   async function rowToRequest(row: CatalogRequestRow): Promise<CatalogRequest> {
     const files =

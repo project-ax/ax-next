@@ -1,9 +1,9 @@
-import { mkdtempSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import type { Kysely } from 'kysely';
 import type { SkillsDatabase } from './migrations.js';
-import { createBundleStore, type BundleStore } from './bundle-store.js';
+import {
+  createInMemoryBundleStore,
+  type BlobBundleStore,
+} from './blob-bundle-store.js';
 import {
   parseCapabilities,
   rowToGlobalDetail,
@@ -83,14 +83,14 @@ export function createSkillsStore(
   db: Kysely<SkillsDatabase>,
   // The content-addressed bundle byte-store. Optional so the existing
   // `createSkillsStore(db)` unit-test call sites keep working — they get a
-  // fresh ephemeral repo (each test upserts+reads on one store instance).
-  // Production wires a durable repo via the plugin (Task 5).
-  bundleStore: BundleStore = createBundleStore(mkdtempSync(join(tmpdir(), 'ax-skills-bundles-'))),
+  // fresh in-memory store (each test upserts+reads on one store instance).
+  // Production wires the blob-backed store via the plugin (out-of-git Part D2).
+  bundleStore: BlobBundleStore = createInMemoryBundleStore(),
 ): SkillsStore {
-  // ---- bundle extra-file helpers (content-addressed git tree byte-store) ----
+  // ---- bundle extra-file helpers (content-addressed blob byte-store) ----
 
-  // Load a single skill's extra files from its tree SHA (NULL → []). The
-  // git-extract boundary (bundle-store readTree) re-validates modes + paths.
+  // Load a single skill's extra files from its bundle sha (NULL → []). The
+  // blob-extract boundary (bundle-store readTree) re-validates paths.
   async function loadFiles(treeSha: string | null): Promise<BundleFile[]> {
     return treeSha === null ? [] : bundleStore.readTree(treeSha);
   }

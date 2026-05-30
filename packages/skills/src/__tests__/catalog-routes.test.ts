@@ -7,6 +7,7 @@ import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { makeAgentContext, type HookBus } from '@ax/core';
 import { createSkillsPlugin } from '../plugin.js';
+import { blobStoreFakeServices } from './_blob-fake.js';
 import { createCatalogHandlers, registerCatalogRoutes } from '../catalog-routes.js';
 import type { RouteRequest, RouteResponse } from '../catalog-routes.js';
 import type { CatalogSubmitInput, CatalogSubmitOutput } from '../types.js';
@@ -71,6 +72,7 @@ async function makeHarness(opts: {
   const authedUser = opts.authedUser ?? { id: 'admin', isAdmin: true };
   const h = await createTestHarness({
     services: {
+      ...blobStoreFakeServices(),
       'http:register-route': httpRegisterRouteStub,
       'auth:require-user': async () => ({ user: authedUser }),
     },
