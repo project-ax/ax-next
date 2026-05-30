@@ -160,6 +160,83 @@ gitServer:
     initialDelaySeconds: 10
     periodSeconds: 30
 
+# ─── Blob store (out-of-git design Part A) ───────────────────────
+# The content-addressed blob:* substrate (attachments, artifacts, skill
+# bundles). Exactly ONE backend registers blob:* per deployment — mirrors
+# the workspace local/git-protocol and storage sqlite/postgres splits.
+#
+#   - `fs` (default): @ax/blob-store-fs writes content-addressed files on
+#     the host PVC. Single-replica only (RWO PVC), cheapest, zero new deps.
+#     `root` defaults to a sibling dir on the workspace PVC.
+#   - `s3`: @ax/blob-store-s3 talks to one S3-compatible bucket. Multi-
+#     replica-safe. Dev/test: point at the in-cluster MinIO (set
+#     `minio.enabled=true` and `blob.backend=s3`; see kind-dev-values.yaml).
+#     PROD (GCS, the likely GKE home): set
+#       blob.backend: s3
+#       blob.s3.bucket: <your-gcs-bucket>
+#       blob.s3.endpoint: https://storage.googleapis.com
+#       blob.s3.region: <bucket-region>
+#     and bind the host ServiceAccount to a GCP service account via Workload
+#     Identity (annotate serviceAccount; see SECURITY.md). DO NOT set
+#     accessKeyId/secretAccessKey in prod — leaving them empty makes the SDK
+#     use Workload Identity / the metadata server, so there are NO static
+#     keys in the tree. AWS S3 / R2 work the same way (their endpoint +
+#     forcePathStyle:false for AWS proper).
+blob:
+  backend: fs            # fs | s3
+  fs:
+    # Empty → preset derives <workspace.mountPath>/blobs (a sibling dir on
+    # the host PVC for the local workspace backend).
+    root: ""
+  s3:
+    bucket: ""           # required when backend=s3 AND minio.enabled=false
+    endpoint: ""         # MinIO Service URL (auto when minio.enabled) / GCS / AWS / R2
+    region: "us-east-1"  # signer needs a value even for non-AWS endpoints
+    forcePathStyle: true # MinIO + GCS need path-style; set false for AWS S3 proper
+    keyPrefix: ""        # optional namespace within the bucket
+    # accessKeyId / secretAccessKey are DEV / MinIO ONLY and live in a
+    # Secret, never here. Leave UNSET in prod so Workload Identity supplies
+    # short-lived creds. (When minio.enabled, the chart wires the MinIO
+    # Secret's keys automatically — you don't set these.)
+
+# ─── MinIO (dev/test blob backend — kind only) ───────────────────
+# A minimal single-replica MinIO Deployment for dev parity with prod object
+# storage. emptyDir-backed (NOT durable — restarts lose blobs); this is a
+# test fixture, not a production store. OFF by default; kind-dev-values.yaml
+# flips it on alongside blob.backend=s3.
+#
+# Root credentials live in a Secret (random-generated, lookup-stable) and are
+# wired into BOTH the MinIO server and the host's blob-store-s3 client — never
+# committed. Production uses GCS+Workload-Identity instead and leaves this off.
+minio:
+  enabled: false
+  image:
+    # Pin the MinIO server image. Bump deliberately.
+    repository: quay.io/minio/minio
+    tag: RELEASE.2025-04-08T15-41-24Z
+  # mc (MinIO client) image used by the one-shot bucket-create Job.
+  mcImage:
+    repository: quay.io/minio/mc
+    tag: RELEASE.2025-04-08T15-39-49Z
+  service:
+    port: 9000
+  # Bucket the host's blob-store-s3 client reads/writes. The bucket-create
+  # Job provisions it at install. Also wired into AX_BLOB_S3_BUCKET.
+  bucket: ax-blobs
+  storage: 1Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 512Mi
+  auth:
+    # Root user/password for MinIO + the host's S3 client. Empty password →
+    # the chart generates a random one (lookup-stable across upgrades).
+    rootUser: ax-minio
+    rootPassword: ""
+
 # ─── Runner pod runtime ──────────────────────────────────────────
 # `runtimeClassName` defaults to gvisor — the sandbox-k8s plugin's
 # threat model assumes it. Override to "" for clusters without gVisor

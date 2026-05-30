@@ -1,5 +1,6 @@
 {{- include "ax-next.validateWorkspaceBackend" . -}}
 {{- include "ax-next.validateHostReplicas" . -}}
+{{- include "ax-next.validateBlobBackend" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -227,6 +228,54 @@ spec:
                 secretKeyRef:
                   name: {{ include "ax-next.gitServerAuthSecretName" . }}
                   key: token
+            {{- end }}
+
+            # Blob backend selection (out-of-git design Part A). The preset's
+            # loader (blobConfigFromEnv) reads AX_BLOB_BACKEND + the per-backend
+            # vars and registers exactly one of @ax/blob-store-fs /
+            # @ax/blob-store-s3.
+            - name: AX_BLOB_BACKEND
+              value: {{ .Values.blob.backend | quote }}
+            {{- if eq .Values.blob.backend "fs" }}
+            {{- if .Values.blob.fs.root }}
+            # Explicit fs root. Empty → the preset derives <workspace
+            # mountPath>/blobs (a sibling dir on the host PVC), so we only
+            # stamp this when the operator overrode it.
+            - name: AX_BLOB_FS_ROOT
+              value: {{ .Values.blob.fs.root | quote }}
+            {{- end }}
+            {{- else if eq .Values.blob.backend "s3" }}
+            # S3-compatible blob backend. In the kind/dev path minio.enabled
+            # provides the bucket + endpoint + (dev-only) static keys from the
+            # MinIO Secret. In prod (GCS), blob.s3.* is set explicitly and the
+            # static keys are OMITTED so the SDK uses Workload Identity — NO
+            # static keys in the tree.
+            - name: AX_BLOB_S3_BUCKET
+              value: {{ (.Values.minio.enabled | ternary .Values.minio.bucket .Values.blob.s3.bucket) | quote }}
+            - name: AX_BLOB_S3_ENDPOINT
+              value: {{ (.Values.minio.enabled | ternary (include "ax-next.minioEndpointUrl" .) .Values.blob.s3.endpoint) | quote }}
+            - name: AX_BLOB_S3_REGION
+              value: {{ .Values.blob.s3.region | quote }}
+            - name: AX_BLOB_S3_FORCE_PATH_STYLE
+              value: {{ .Values.blob.s3.forcePathStyle | quote }}
+            {{- if .Values.blob.s3.keyPrefix }}
+            - name: AX_BLOB_S3_KEY_PREFIX
+              value: {{ .Values.blob.s3.keyPrefix | quote }}
+            {{- end }}
+            {{- if .Values.minio.enabled }}
+            # DEV / MinIO static keys from the generated Secret — never
+            # committed. Prod (GCS) leaves these UNSET (Workload Identity).
+            - name: AX_BLOB_S3_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.minioAuthSecretName" . }}
+                  key: root-user
+            - name: AX_BLOB_S3_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.minioAuthSecretName" . }}
+                  key: root-password
+            {{- end }}
             {{- end }}
 
             # Credentials key — encrypts secrets at rest. Required.

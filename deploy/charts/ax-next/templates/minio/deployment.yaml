@@ -1,0 +1,98 @@
+{{- if .Values.minio.enabled }}
+{{/*
+MinIO server (out-of-git design Part A — dev/test blob backend).
+
+A minimal single-replica MinIO for dev parity with prod object storage. The
+host's @ax/blob-store-s3 client points at this via AX_BLOB_S3_ENDPOINT (wired
+in host/deployment.yaml). emptyDir-backed — NOT durable across restarts; this
+is a kind/dev test fixture, not a production store. Production uses GCS +
+Workload Identity instead and leaves minio.enabled=false.
+
+Single replica + Recreate: MinIO's filesystem mode is single-writer, and the
+emptyDir is pod-local, so a second replica would diverge. (We're not shipping
+distributed/erasure MinIO here — that's overkill for a dev fixture.)
+*/}}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "ax-next.minioComponentName" . }}
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "minio" "context" $) | nindent 4 }}
+    ax.io/plane: storage
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "ax-next.selectorLabels" (dict "component" "minio" "context" $) | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "ax-next.selectorLabels" (dict "component" "minio" "context" $) | nindent 8 }}
+        ax.io/plane: storage
+      annotations:
+        # Roll the pod when the root credentials change.
+        checksum/auth: {{ include (print $.Template.BasePath "/minio/secret.yaml") . | sha256sum }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- range . }}
+        - name: {{ . }}
+        {{- end }}
+      {{- end }}
+      # MinIO's image runs as UID 1000; fsGroup makes the emptyDir writable.
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: minio
+          image: {{ include "ax-next.minioImage" . }}
+          imagePullPolicy: IfNotPresent
+          args: ["server", "/data", "--address", ":{{ .Values.minio.service.port }}"]
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.minioAuthSecretName" . }}
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.minioAuthSecretName" . }}
+                  key: root-password
+          ports:
+            - name: s3
+              containerPort: {{ .Values.minio.service.port }}
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /minio/health/ready
+              port: s3
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /minio/health/live
+              port: s3
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.minio.resources | nindent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        # Ephemeral dev store — restarts lose blobs. Fine for kind/test;
+        # prod is GCS, not this.
+        - name: data
+          emptyDir:
+            sizeLimit: {{ .Values.minio.storage }}
+{{- end }}

@@ -230,3 +230,67 @@ The previous helpers — `ax-next.devBootstrapEnabled` and
 `ax-next.googleAuthEnabled` — gated env stamping for the previous auth
 plugin and are gone.
 */}}
+
+{{/*
+MinIO component name (out-of-git design Part A — dev/test blob backend).
+<release>-<chart>-minio, truncated to 63 chars (DNS label limit). Source of
+truth for the MinIO Deployment, Service, and Secret. Only rendered when
+minio.enabled=true (the kind-dev path).
+*/}}
+{{- define "ax-next.minioComponentName" -}}
+{{- printf "%s-minio" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+MinIO image (out-of-git design Part A). Separate pin from the host/runner +
+git-server images — MinIO is its own upstream. Only used in the dev/test path.
+*/}}
+{{- define "ax-next.minioImage" -}}
+{{- printf "%s:%s" .Values.minio.image.repository .Values.minio.image.tag -}}
+{{- end -}}
+
+{{/*
+Cluster-internal S3 endpoint URL the host's @ax/blob-store-s3 plugin uses to
+reach the in-cluster MinIO. http://<svc>.<ns>.svc.cluster.local:<port>.
+Mirrors gitServerServiceUrl's fully-qualified shape so a future cluster-DNS
+suffix change moves them in lockstep. Stamped onto AX_BLOB_S3_ENDPOINT when
+the blob backend is s3 AND minio.enabled (the kind-dev path); prod GCS sets
+blob.s3.endpoint explicitly instead.
+*/}}
+{{- define "ax-next.minioEndpointUrl" -}}
+{{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.minioComponentName" .) (include "ax-next.hostNamespace" .) (int .Values.minio.service.port) -}}
+{{- end -}}
+
+{{/*
+Name of the Secret holding the MinIO root (and host-side access) credentials.
+<release>-<chart>-minio-auth. DEV / kind only — these are the MinIO root user
++ password, used by both the MinIO server and the host's blob-store-s3 client.
+Never committed: the values default is empty and the chart generates a random
+password (lookup-stable) when minio.enabled and the operator didn't supply one.
+*/}}
+{{- define "ax-next.minioAuthSecretName" -}}
+{{- printf "%s-minio-auth" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Validate blob.backend wiring (out-of-git design Part A). Fails fast at template
+time on two misconfigurations the operator can't recover from at runtime:
+  - blob.backend=s3 with neither an explicit blob.s3.endpoint NOR minio.enabled
+    → the host pod boots with no endpoint and no in-cluster MinIO to fall back
+    to; the SDK would try AWS's real endpoint, which is never what a self-host /
+    kind / GCS deploy wants.
+  - blob.backend=s3 with an empty blob.s3.bucket AND minio.enabled=false → the
+    preset's loader throws `AX_BLOB_S3_BUCKET is required` at boot.
+Belt-and-suspenders for the values schema (helm has no native enum-with-prereqs
+validator). Invoked from host/deployment.yaml, which always renders.
+*/}}
+{{- define "ax-next.validateBlobBackend" -}}
+{{- if eq .Values.blob.backend "s3" -}}
+{{- if and (not .Values.blob.s3.endpoint) (not .Values.minio.enabled) -}}
+{{- fail "blob.backend=s3 requires either blob.s3.endpoint (e.g. https://storage.googleapis.com for GCS) or minio.enabled=true (in-cluster dev MinIO)" -}}
+{{- end -}}
+{{- if and (not .Values.blob.s3.bucket) (not .Values.minio.enabled) -}}
+{{- fail "blob.backend=s3 requires blob.s3.bucket to be set" -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}

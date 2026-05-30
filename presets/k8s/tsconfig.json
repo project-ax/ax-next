@@ -22,6 +22,8 @@
     { "path": "../../packages/conversation-titles" },
     { "path": "../../packages/conversations" },
     { "path": "../../packages/attachments" },
+    { "path": "../../packages/blob-store-fs" },
+    { "path": "../../packages/blob-store-s3" },
     { "path": "../../packages/llm-anthropic" },
     { "path": "../../packages/mcp-client" },
     { "path": "../../packages/memory-strata" },
