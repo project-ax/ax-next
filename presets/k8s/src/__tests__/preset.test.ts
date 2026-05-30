@@ -152,6 +152,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/attachments',
         '@ax/audit-log',
         '@ax/auth-better',
+        '@ax/blob-store-fs',
         '@ax/channel-web',
         '@ax/chat-orchestrator',
         '@ax/conversations',

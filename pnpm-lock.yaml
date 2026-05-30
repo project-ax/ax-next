@@ -2030,6 +2030,9 @@ importers:
       '@ax/auth-better':
         specifier: workspace:*
         version: link:../../packages/auth-better
+      '@ax/blob-store-fs':
+        specifier: workspace:*
+        version: link:../../packages/blob-store-fs
       '@ax/channel-web':
         specifier: workspace:*
         version: link:../../packages/channel-web

@@ -27,6 +27,7 @@
     "@ax/attachments": "workspace:*",
     "@ax/audit-log": "workspace:*",
     "@ax/auth-better": "workspace:*",
+    "@ax/blob-store-fs": "workspace:*",
     "@ax/channel-web": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/conversation-titles": "workspace:*",

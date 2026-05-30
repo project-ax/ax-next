@@ -208,6 +208,12 @@ spec:
             # (ARCH-9), same split as workspace-git local vs -server.
             - name: AX_SKILLS_BUNDLE_ROOT
               value: {{ printf "%s/skill-bundles" .Values.workspace.mountPath | quote }}
+            # Content-addressed blob store (TASK-68) — attachments + artifacts
+            # bytes, off git. A dir under the host PVC, sibling to the workspace
+            # + skill-bundle dirs. Single-replica posture; multi-replica object
+            # storage (@ax/blob-store-s3) is deferred (out-of-git design Phase 6).
+            - name: AX_BLOB_STORE_ROOT
+              value: {{ printf "%s/blobs" .Values.workspace.mountPath | quote }}
             {{- end }}
 
             # Workspace backend selection. The host's plugin loader reads

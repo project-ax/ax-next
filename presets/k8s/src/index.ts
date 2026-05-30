@@ -26,6 +26,7 @@ import { createSkillsPlugin } from '@ax/skills';
 import { createSkillBrokerPlugin } from '@ax/skill-broker';
 import { createHostGrantsPlugin } from '@ax/host-grants';
 import { createAttachmentsPlugin } from '@ax/attachments';
+import { createBlobStoreFsPlugin } from '@ax/blob-store-fs';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { createAuthBetterPlugin, type AuthBetterConfig } from '@ax/auth-better';
@@ -370,6 +371,18 @@ export interface K8sPresetConfig {
   skills?: {
     bundleStore?: { repoRoot: string };
   };
+  /**
+   * @ax/blob-store-fs root (TASK-68, out-of-git Part C). The content-addressed
+   * store for opaque bytes — attachments (in), artifacts (out), and (later)
+   * skill bundles. Single-replica posture: a dir on the host PVC (same split as
+   * @ax/workspace-git local). `loadK8sConfigFromEnv` populates this from
+   * `AX_BLOB_STORE_ROOT`; when absent it defaults to a `blobs` sibling dir under
+   * the data root so the store is ALWAYS wired (the attachments plugin hard-
+   * requires `blob:put`/`blob:get`, so leaving it unregistered would fail
+   * bootstrap). The future @ax/blob-store-s3 backend swaps in behind the same
+   * `blob:*` hooks for the multi-replica case.
+   */
+  blobStore?: { root: string };
   /**
    * @ax/onboarding — first-run wizard. When set, the plugin loads and
    * serves the bootstrap wizard at /setup/*. The plugin reads
@@ -771,13 +784,26 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // plugins skipped → conversations stay `title: null`, same as today).
   plugins.push(createConversationsPlugin());
 
+  // ----- 9z. blob store (TASK-68, out-of-git Part C) ------------------------
+  // The content-addressed `blob:*` store (TASK-65) — the substrate attachments
+  // and artifacts land on. MUST register before @ax/attachments (which hard-
+  // requires blob:put/blob:get). Single-replica fs backend on the host PVC;
+  // the root defaults to a `blobs` sibling under the data root so the store is
+  // always wired even without explicit env. (S3 backend = Phase 6.)
+  plugins.push(
+    createBlobStoreFsPlugin({
+      root: config.blobStore?.root ?? '/var/lib/ax/blobs',
+    }),
+  );
+
   // ----- 9a. attachments ----------------------------------------------------
-  // Phase 1 of the attachments & artifacts subsystem (2026-05-15). Three
-  // service hooks (attachments:store-temp / commit / download) with a
-  // Postgres-backed temp store and the path-scope ACL inside the download
-  // hook. Half-wired window OPEN through Phase 3 — no caller in Phase 1
-  // invokes these hooks. Phase 2 wires up the agent-side artifact_publish
-  // tool; Phase 3 wires up channel-web's upload + download routes + UI.
+  // The attachments & artifacts subsystem. Service hooks
+  // (attachments:store-temp / commit / download / list-for-conversation +
+  // artifacts:publish-blob). TASK-68: commit/download/publish now ride the
+  // content-addressed blob store (registered above) instead of git — the bytes
+  // never touch the chat mirror, killing the parent-mismatch transcript-loss
+  // race. The IPC dispatcher's blob.put/blob.get/artifact.publish/
+  // attachments.list actions drive these from the runner.
   plugins.push(createAttachmentsPlugin());
   // Phase 2: registers the `artifact_publish` tool descriptor so the canary
   // smoke flow includes it in tool.list. The sandbox-MCP bridge dispatches
@@ -1238,6 +1264,17 @@ export function loadK8sConfigFromEnv(
   const skillsBundleRoot = env.AX_SKILLS_BUNDLE_ROOT;
   if (skillsBundleRoot !== undefined && skillsBundleRoot !== '') {
     config.skills = { bundleStore: { repoRoot: skillsBundleRoot } };
+  }
+
+  // ---- blob store root (TASK-68, out-of-git Part C) -----------------------
+  // The content-addressed fs blob store's PVC dir. The chart stamps
+  // AX_BLOB_STORE_ROOT (a sibling dir on the host PVC). Empty/unset → the
+  // plugin registration in createK8sPlugins falls back to its default root, so
+  // the store is ALWAYS wired (attachments hard-requires blob:put/get). Treat
+  // empty string as unset — same convention as AX_WORKSPACE_ROOT.
+  const blobStoreRoot = env.AX_BLOB_STORE_ROOT;
+  if (blobStoreRoot !== undefined && blobStoreRoot !== '') {
+    config.blobStore = { root: blobStoreRoot };
   }
 
   // ---- titles (auto-titling subscriber) -----------------------------------

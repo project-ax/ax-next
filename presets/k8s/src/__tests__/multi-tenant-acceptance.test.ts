@@ -142,10 +142,14 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Admin settings routes: declares http:register-route + auth:require-user
   // as calls (both dropped above). Static wiring is pinned in preset.test.ts.
   '@ax/admin-settings-routes',
-  // Attachments: postgres-backed (database:get-instance); no caller in
-  // Phase 1 of the attachments subsystem (half-wired window open through
-  // Phase 3). Static wiring pinned in preset.test.ts.
+  // Attachments: postgres-backed (database:get-instance); not exercised here.
+  // Static wiring pinned in preset.test.ts.
   '@ax/attachments',
+  // Blob store (TASK-68): only caller is @ax/attachments (dropped above), and
+  // the fs backend's ensureRoot() mkdirs its PVC root at init (EACCES on the
+  // canary host's default path). blob:* are optionalCalls on the IPC server, so
+  // dropping the registrant is safe. Static wiring pinned in preset.test.ts.
+  '@ax/blob-store-fs',
   // Skills: postgres-backed (database:get-instance) + depends on
   // http:register-route + auth:require-user (both dropped). Chat-orchestrator
   // soft-couples via bus.hasService('skills:resolve'); when absent, the
