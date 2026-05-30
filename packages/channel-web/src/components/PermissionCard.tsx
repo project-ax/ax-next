@@ -105,10 +105,21 @@ export function PermissionCard() {
       }
       // (TASK-36) apply the grant: attach the skill + retire the warm session.
       // No secret on this POST — only domain ids. CSRF-guarded via x-requested-with.
+      //
+      // FIX 1 (TOCTOU guard): include `shown` — what the card displayed at
+      // render time. The orchestrator intersects this with the re-resolved
+      // current proposalDelta so an agent that widens its draft between card
+      // render and user click can never grant caps the user never saw.
+      const shown = {
+        hosts: request.hosts,
+        slots: request.slots.map((s) => s.slot),
+        npm: request.packages?.npm ?? [],
+        pypi: request.packages?.pypi ?? [],
+      };
       const resp = await fetch('/api/chat/permission-decision', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
-        body: JSON.stringify({ conversationId, skillId: request.skillId }),
+        body: JSON.stringify({ conversationId, skillId: request.skillId, shown }),
         credentials: 'include',
       });
       if (!resp.ok) throw new Error(`connect failed: ${resp.status}`);

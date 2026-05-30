@@ -191,11 +191,16 @@ interface AgentInvokeInput {
 // Duck-typed I/O — I2 forbids importing from @ax/chat-orchestrator.
 // The route never trusts a client `authored` flag; the grant self-detects
 // authored-ness (D-B7) and returns not-authored for catalog skills.
+//
+// FIX 1 (TOCTOU guard): `shown?` mirrors what the client card displayed;
+// the orchestrator uses it to intersect the re-resolved proposalDelta so
+// only caps the user actually saw get approved.
 interface ApplyAuthoredGrantInput {
   conversationId: string;
   userId: string;
   agentId: string;
   skillId: string;
+  shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
 }
 type ApplyAuthoredGrantOutput =
   | { applied: true; respawned: boolean }
@@ -571,9 +576,12 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
 
       // 2) Parse + validate the body. (http-server caps the body at 1 MiB
-      // before we run.) Only `{ conversationId, skillId }` — the agentId is
-      // resolved from the conversation, never accepted from the client.
-      let body: { conversationId: string; skillId: string };
+      // before we run.) Only `{ conversationId, skillId, shown? }` — the
+      // agentId is resolved from the conversation, never accepted from the
+      // client. `shown` is optional; present on authored-skill cards (FIX 1).
+      // Use PermissionDecisionRequest (the zod schema's inferred type) so the
+      // optional `shown` field's type lines up with exactOptionalPropertyTypes.
+      let body: PermissionDecisionRequest;
       try {
         const raw =
           req.body.length === 0
@@ -643,11 +651,20 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         // path runs — the route never trusts a client `authored` flag. An
         // authored draft applies here; a catalog skill returns not-authored and
         // we fall through to the existing catalog grant.
+        //
+        // FIX 1 (TOCTOU guard): forward `shown` (optional) so the orchestrator
+        // can intersect the re-resolved proposalDelta with what the user saw.
         if (bus.hasService('agent:apply-authored-capability-grant')) {
           const a = await bus.call<ApplyAuthoredGrantInput, ApplyAuthoredGrantOutput>(
             'agent:apply-authored-capability-grant',
             grantCtx,
-            { conversationId: body.conversationId, userId, agentId, skillId: body.skillId },
+            {
+              conversationId: body.conversationId,
+              userId,
+              agentId,
+              skillId: body.skillId,
+              ...(body.shown !== undefined ? { shown: body.shown } : {}),
+            },
           );
           if (a.applied) {
             res.status(200).json({ ok: true });

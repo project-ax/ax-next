@@ -969,7 +969,20 @@ export function createSkillsPlugin(config: SkillsPluginConfig = {}): Plugin {
       bus.registerService<SkillsApprovedCapsSetInput, SkillsApprovedCapsSetOutput>(
         'skills:approved-caps-set',
         PLUGIN_NAME,
-        async (_ctx, input) => approvedCapsStore.set(input),
+        async (_ctx, input) => {
+          // FIX 3 (defense-in-depth): MCP approval is deferred — no caller
+          // should write an mcp approval row yet. Reject at the store layer so
+          // even a future caller that forgets the caller-side exclusion can't
+          // silently persist a partially-implemented MCP grant.
+          if (input.kind === 'mcp') {
+            throw new PluginError({
+              code: 'not-supported',
+              plugin: PLUGIN_NAME,
+              message: "approved-caps-set: kind 'mcp' is not yet supported",
+            });
+          }
+          return approvedCapsStore.set(input);
+        },
         { returns: SkillsApprovedCapsSetOutputSchema },
       );
       bus.registerService<SkillsApprovedCapsRevokeInput, SkillsApprovedCapsRevokeOutput>(

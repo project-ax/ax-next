@@ -77,8 +77,9 @@ export function authoredCardDedupKey(skillId: string, delta: AuthoredDeltaLike):
     p: [...pypi].sort(),
   });
   // The skillId-to-delta separator below is the JS escape \u0000 (NOT a literal
-  // NUL byte). Safe because skillIds are charset [a-z0-9._-] and can never
-  // contain NUL, so the prefix is unambiguous — two distinct (skillId, delta)
-  // pairs can't collide on the joined key.
+  // NUL byte). Safe because skillIds match PROJECTABLE_SKILL_ID_RE =
+  // /^[a-z][a-z0-9-]{0,63}$/ (defined in packages/agents/src/authored-skills.ts)
+  // and can therefore never contain NUL, so the prefix is unambiguous — two
+  // distinct (skillId, delta) pairs can't collide on the joined key.
   return `${skillId}\u0000${canon}`;
 }

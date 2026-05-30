@@ -132,11 +132,25 @@ export interface ApplyCapabilityGrantOutput {
 // Phase 4 PR-B — authored-grant I/O. Structurally mirrors channel-web's local
 // copy (no cross-plugin import, I2). `applied:false, reason:'not-authored'`
 // signals the channel-web route to fall back to the catalog grant path.
+//
+// FIX 1 (TOCTOU guard): `shown?` carries what the card displayed at render
+// time. When present, the grant intersects the re-resolved current
+// proposalDelta with `shown` before writing approval rows — so an agent that
+// widens its draft between card render and user click can never sneak in caps
+// the user never saw. Anything in the current delta but NOT in `shown` is
+// silently skipped (it remains unapproved; the next spawn re-evaluates the
+// now-smaller delta and fires its own card for the remainder). The server
+// stays authoritative: a cap is approved IFF it is in the current proposal
+// (re-resolved server-side) AND in `shown`. The client `shown` can only
+// NARROW, never expand — anything not in the current proposal is rejected
+// regardless.
 export interface ApplyAuthoredCapabilityGrantInput {
   conversationId: string;
   userId: string;
   agentId: string;
   skillId: string;
+  /** What the card displayed — absent ⟹ approve the full current delta (back-compat). */
+  shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
 }
 export type ApplyAuthoredCapabilityGrantOutput =
   | { applied: true; respawned: boolean }
@@ -2320,38 +2334,84 @@ export function createOrchestrator(
     // 1. Re-resolve the agent's authored drafts — the HOST is the authority on
     //    which path runs (D-B7). A skillId that is not a draft is a catalog
     //    skill; signal not-authored so the route falls back to the catalog grant.
+    //
+    //    FIX 2 (catalog isolation): wrap the bus.call in try/catch. If
+    //    agents:resolve-authored-skills throws (workspace:list/read hiccup,
+    //    quarantine-get error, etc.) we return not-authored so the route falls
+    //    back to the independent catalog grant — catalog approvals must not be
+    //    broken by workspace or DB outages that are unrelated to the catalog path.
     let drafts: AuthoredResolvedSkillForOrch[] = [];
     if (bus.hasService('agents:resolve-authored-skills')) {
-      const r = await bus.call<
-        { ownerUserId: string; agentId: string },
-        AgentsResolveAuthoredSkillsOutput
-      >('agents:resolve-authored-skills', ctx, {
-        ownerUserId: input.userId,
-        agentId: input.agentId,
-      });
-      drafts = r.skills;
+      try {
+        const r = await bus.call<
+          { ownerUserId: string; agentId: string },
+          AgentsResolveAuthoredSkillsOutput
+        >('agents:resolve-authored-skills', ctx, {
+          ownerUserId: input.userId,
+          agentId: input.agentId,
+        });
+        drafts = r.skills;
+      } catch (err) {
+        // Resolve failure: treat as "not an authored skill" so the catalog grant
+        // path stays available. A workspace/DB hiccup here must not block
+        // catalog-skill approvals (they are independent).
+        ctx.logger.warn('authored_grant_resolve_failed', {
+          agentId: input.agentId,
+          skillId: input.skillId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return { applied: false, reason: 'not-authored' };
+      }
     }
     const draft = drafts.find((s) => s.id === input.skillId);
     if (draft === undefined) return { applied: false, reason: 'not-authored' };
 
-    // 2. The SHOWN delta (hosts/slots/packages; mcp deferred — D-B2). Approve
-    //    the whole shown delta (D-B3).
+    // 2. Build the approval rows from the re-resolved CURRENT proposalDelta
+    //    (hosts/slots/packages; mcp deferred — D-B2).
+    //
+    //    FIX 1 (TOCTOU guard): if `shown` is present, filter each kind to only
+    //    entries that were ALSO present in `shown` (what the user saw on the
+    //    card). An agent that widens its draft mid-flight cannot sneak in
+    //    unshown caps — anything in the current delta but not in `shown` is
+    //    silently skipped (it remains unapproved; the next spawn fires its own
+    //    card for the remainder). When `shown` is absent (back-compat), the
+    //    full current delta is approved unchanged.
     const delta = draft.proposalDelta;
     const deltaNpm = delta.packages?.npm ?? [];
     const deltaPypi = delta.packages?.pypi ?? [];
+
+    // Intersection helpers — present only when `shown` is provided.
+    const shownHostSet = input.shown !== undefined ? new Set(input.shown.hosts) : null;
+    const shownSlotSet = input.shown !== undefined ? new Set(input.shown.slots) : null;
+    const shownNpmSet  = input.shown !== undefined ? new Set(input.shown.npm)   : null;
+    const shownPypiSet = input.shown !== undefined ? new Set(input.shown.pypi)  : null;
+
+    const approvedHosts = shownHostSet !== null
+      ? delta.allowedHosts.filter((h) => shownHostSet.has(h))
+      : delta.allowedHosts;
+    const approvedCreds = shownSlotSet !== null
+      ? delta.credentials.filter((c) => shownSlotSet.has(c.slot))
+      : delta.credentials;
+    const approvedNpm = shownNpmSet !== null
+      ? deltaNpm.filter((p) => shownNpmSet.has(p))
+      : deltaNpm;
+    const approvedPypi = shownPypiSet !== null
+      ? deltaPypi.filter((p) => shownPypiSet.has(p))
+      : deltaPypi;
+
     const rows: Array<{
       kind: 'host' | 'slot' | 'npm' | 'pypi';
       value: string;
       detail?: { kind: 'api-key'; account?: string };
     }> = [
-      ...delta.allowedHosts.map((h) => ({ kind: 'host' as const, value: h })),
-      ...delta.credentials.map((c) => ({
+      ...approvedHosts.map((h) => ({ kind: 'host' as const, value: h })),
+      ...approvedCreds.map((c) => ({
         kind: 'slot' as const,
         value: c.slot,
         detail: { kind: 'api-key' as const, ...(c.account !== undefined ? { account: c.account } : {}) },
       })),
-      ...deltaNpm.map((p) => ({ kind: 'npm' as const, value: p })),
-      ...deltaPypi.map((p) => ({ kind: 'pypi' as const, value: p })),
+      ...approvedNpm.map((p) => ({ kind: 'npm' as const, value: p })),
+      ...approvedPypi.map((p) => ({ kind: 'pypi' as const, value: p })),
     ];
 
     // 3. Write the approval rows (host-side store, outside the agent's reach).
@@ -2378,9 +2438,11 @@ export function createOrchestrator(
     //    re-evaluates the now-smaller delta (re-fires only if something remains).
     upfrontCardsByConv.delete(input.conversationId);
 
-    // 5. Activate per the asymmetry (design table): ANY credential slot → env
-    //    var frozen at spawn → re-spawn. Else host/package-only → live widen.
-    const needsRespawn = delta.credentials.length > 0;
+    // 5. Activate per the asymmetry (design table): ANY SHOWN credential slot →
+    //    env var frozen at spawn → re-spawn. Else host/package-only → live widen.
+    //    FIX 1: use `approvedCreds` (shown-intersection) so an unshown credential
+    //    slot does NOT trigger a re-spawn that the user never approved.
+    const needsRespawn = approvedCreds.length > 0;
     if (needsRespawn) {
       const warm = await activeAliveSession(ctx, input.conversationId, input.userId);
       let respawned = false;
@@ -2405,9 +2467,11 @@ export function createOrchestrator(
     }
 
     // Host/package-only → live widen on the conversation's warm session.
-    const liveHosts = [...delta.allowedHosts];
-    if (deltaNpm.length > 0) liveHosts.push('registry.npmjs.org');
-    if (deltaPypi.length > 0) liveHosts.push('pypi.org', 'files.pythonhosted.org');
+    // FIX 1: use `approvedHosts`/`approvedNpm`/`approvedPypi` (shown-filtered)
+    // so only hosts the user saw on the card get live-added.
+    const liveHosts = [...approvedHosts];
+    if (approvedNpm.length > 0) liveHosts.push('registry.npmjs.org');
+    if (approvedPypi.length > 0) liveHosts.push('pypi.org', 'files.pythonhosted.org');
     if (liveHosts.length > 0 && bus.hasService('proxy:add-host')) {
       const warm = await activeAliveSession(ctx, input.conversationId, input.userId);
       if (warm !== null) {

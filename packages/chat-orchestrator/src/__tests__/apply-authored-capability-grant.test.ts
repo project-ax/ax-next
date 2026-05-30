@@ -15,6 +15,8 @@ function buildMocks(opts: {
   draft: { id: string; proposalDelta: typeof EMPTY_CAPS } | null;
   activeSessionId: string | null;
   liveSessions: Set<string>;
+  /** FIX 2: when true, agents:resolve-authored-skills throws instead of returning */
+  resolveThrows?: boolean;
 }): { trace: Trace; services: Record<string, ServiceHandler> } {
   const trace: Trace = { setRows: [], terminate: [], addHost: [] };
   const services: Record<string, ServiceHandler> = {
@@ -25,12 +27,17 @@ function buildMocks(opts: {
         model: 'claude-sonnet-4-7', workspaceRef: null,
       },
     }),
-    'agents:resolve-authored-skills': async () => ({
-      skills: opts.draft === null ? [] : [{
-        id: opts.draft.id, description: 'd', capabilities: EMPTY_CAPS,
-        proposalDelta: opts.draft.proposalDelta, bodyMd: '', manifestYaml: '', files: [],
-      }],
-    }),
+    'agents:resolve-authored-skills': async () => {
+      if (opts.resolveThrows === true) {
+        throw new Error('workspace:read connection reset');
+      }
+      return {
+        skills: opts.draft === null ? [] : [{
+          id: opts.draft.id, description: 'd', capabilities: EMPTY_CAPS,
+          proposalDelta: opts.draft.proposalDelta, bodyMd: '', manifestYaml: '', files: [],
+        }],
+      };
+    },
     'skills:approved-caps-set': async (_c, input: unknown) => {
       const i = input as { skillId: string; kind: string; value: string };
       trace.setRows.push({ skillId: i.skillId, kind: i.kind, value: i.value });
@@ -139,5 +146,133 @@ describe('agent:apply-authored-capability-grant', () => {
     expect(out).toEqual({ applied: true, respawned: false });
     expect(mocks.trace.setRows).toEqual([{ skillId: 'tool', kind: 'npm', value: 'left-pad' }]);
     expect(mocks.trace.addHost).toEqual([{ sessionId: 'sess-warm', host: 'registry.npmjs.org' }]);
+  });
+
+  // ---------------------------------------------------------------------------
+  // FIX 1 (TOCTOU guard) — shown intersection tests
+  // ---------------------------------------------------------------------------
+
+  it('FIX 1: extra host in current delta NOT in shown is excluded from approval and live-add', async () => {
+    // The agent widened its draft mid-flight: proposalDelta has two hosts, but
+    // the card only showed ONE of them. The extra (unseen) host must be rejected.
+    const mocks = buildMocks({
+      draft: {
+        id: 'linear',
+        proposalDelta: {
+          ...EMPTY_CAPS,
+          allowedHosts: ['api.linear.app', 'sneaked.example.com'],
+        },
+      },
+      activeSessionId: 'sess-warm',
+      liveSessions: new Set(['sess-warm']),
+    });
+    const h = await harnessFor(mocks);
+    const out = await h.bus.call('agent:apply-authored-capability-grant', ctx(), {
+      conversationId: 'cnv-1',
+      userId: 'user-1',
+      agentId: 'agent-1',
+      skillId: 'linear',
+      // User only saw api.linear.app on the card
+      shown: { hosts: ['api.linear.app'], slots: [], npm: [], pypi: [] },
+    });
+    expect(out).toEqual({ applied: true, respawned: false });
+    // Only the shown host is written
+    expect(mocks.trace.setRows).toEqual([
+      { skillId: 'linear', kind: 'host', value: 'api.linear.app' },
+    ]);
+    // Only the shown host is live-added; the sneaked host is absent
+    expect(mocks.trace.addHost).toEqual([
+      { sessionId: 'sess-warm', host: 'api.linear.app' },
+    ]);
+    expect(mocks.trace.terminate).toEqual([]);
+  });
+
+  it('FIX 1: shown credential slot triggers re-spawn; extra unshown credential does NOT', async () => {
+    // The agent widened its draft: proposalDelta has two credential slots, but
+    // the card only showed one. Only the shown slot triggers re-spawn; the
+    // unshown slot must not be written and must not trigger re-spawn on its own.
+    const mocks = buildMocks({
+      draft: {
+        id: 'linear',
+        proposalDelta: {
+          ...EMPTY_CAPS,
+          allowedHosts: ['api.linear.app'],
+          credentials: [
+            { slot: 'LINEAR_API_KEY', kind: 'api-key' },
+            { slot: 'SNEAKED_TOKEN', kind: 'api-key' },
+          ],
+        },
+      },
+      activeSessionId: 'sess-warm',
+      liveSessions: new Set(['sess-warm']),
+    });
+    const h = await harnessFor(mocks);
+    const out = await h.bus.call('agent:apply-authored-capability-grant', ctx(), {
+      conversationId: 'cnv-1',
+      userId: 'user-1',
+      agentId: 'agent-1',
+      skillId: 'linear',
+      // User saw only the host and the one credential slot
+      shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: [], pypi: [] },
+    });
+    expect(out).toEqual({ applied: true, respawned: true });
+    // Only shown rows written
+    expect(mocks.trace.setRows).toEqual([
+      { skillId: 'linear', kind: 'host', value: 'api.linear.app' },
+      { skillId: 'linear', kind: 'slot', value: 'LINEAR_API_KEY' },
+    ]);
+    expect(mocks.trace.terminate).toEqual(['sess-warm']); // credential → re-spawn
+    expect(mocks.trace.addHost).toEqual([]);              // re-spawn path skips live-add
+  });
+
+  it('FIX 1: no shown → full delta approved (back-compat: absent shown = old behavior)', async () => {
+    // When `shown` is absent the grant approves the full current delta unchanged.
+    const mocks = buildMocks({
+      draft: {
+        id: 'linear',
+        proposalDelta: {
+          ...EMPTY_CAPS,
+          allowedHosts: ['api.linear.app', 'other.example.com'],
+        },
+      },
+      activeSessionId: 'sess-warm',
+      liveSessions: new Set(['sess-warm']),
+    });
+    const h = await harnessFor(mocks);
+    const out = await h.bus.call('agent:apply-authored-capability-grant', ctx(), {
+      conversationId: 'cnv-1', userId: 'user-1', agentId: 'agent-1', skillId: 'linear',
+      // No `shown` field — back-compat path
+    });
+    expect(out).toEqual({ applied: true, respawned: false });
+    // Both hosts written (full delta)
+    expect(mocks.trace.setRows).toEqual([
+      { skillId: 'linear', kind: 'host', value: 'api.linear.app' },
+      { skillId: 'linear', kind: 'host', value: 'other.example.com' },
+    ]);
+    expect(mocks.trace.addHost).toHaveLength(2);
+  });
+
+  // ---------------------------------------------------------------------------
+  // FIX 2 (catalog isolation) — resolve-throws test
+  // ---------------------------------------------------------------------------
+
+  it('FIX 2: agents:resolve-authored-skills throw → returns not-authored, writes nothing', async () => {
+    // A workspace/DB hiccup during resolve must not block catalog approvals.
+    const mocks = buildMocks({
+      draft: { id: 'linear', proposalDelta: { ...EMPTY_CAPS, allowedHosts: ['api.linear.app'] } },
+      activeSessionId: null,
+      liveSessions: new Set(),
+      resolveThrows: true,
+    });
+    const h = await harnessFor(mocks);
+    const out = await h.bus.call('agent:apply-authored-capability-grant', ctx(), {
+      conversationId: 'cnv-1', userId: 'user-1', agentId: 'agent-1', skillId: 'linear',
+    });
+    // Must fall back to not-authored so the route can call the catalog grant
+    expect(out).toEqual({ applied: false, reason: 'not-authored' });
+    // Nothing written, nothing terminated
+    expect(mocks.trace.setRows).toEqual([]);
+    expect(mocks.trace.terminate).toEqual([]);
+    expect(mocks.trace.addHost).toEqual([]);
   });
 });

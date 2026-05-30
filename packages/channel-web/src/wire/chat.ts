@@ -100,9 +100,25 @@ export type PostMessageResponse = z.infer<typeof PostMessageResponse>;
 // warm-session retire. `skillId` capped at 128 (catalog ids are short).
 // ---------------------------------------------------------------------------
 
+// FIX 1 (TOCTOU guard): `shown` carries what the card displayed when it
+// rendered. The orchestrator's authored grant intersects the re-resolved
+// current proposalDelta with `shown` so an agent that widens its draft
+// mid-flight can never sneak in capabilities the user didn't see.
+// `shown` is OPTIONAL for back-compat — old clients and the catalog (host)
+// grant ignore it. The server stays authoritative: a cap is approved IFF it
+// is in the current proposalDelta AND in `shown`.
+const ShownCapsSchema = z.object({
+  hosts: z.array(z.string()),
+  slots: z.array(z.string()),
+  npm: z.array(z.string()),
+  pypi: z.array(z.string()),
+});
+
 export const PermissionDecisionRequest = z.object({
   conversationId: z.string().min(1),
   skillId: z.string().min(1).max(128),
+  /** What the card displayed — authored grant intersects this with the current proposal. */
+  shown: ShownCapsSchema.optional(),
 });
 export type PermissionDecisionRequest = z.infer<
   typeof PermissionDecisionRequest
