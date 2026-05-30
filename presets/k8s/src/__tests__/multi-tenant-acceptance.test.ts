@@ -145,11 +145,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Attachments: postgres-backed (database:get-instance); not exercised here.
   // Static wiring pinned in preset.test.ts.
   '@ax/attachments',
-  // Blob store (TASK-68): only caller is @ax/attachments (dropped above), and
-  // the fs backend's ensureRoot() mkdirs its PVC root at init (EACCES on the
-  // canary host's default path). blob:* are optionalCalls on the IPC server, so
-  // dropping the registrant is safe. Static wiring pinned in preset.test.ts.
-  '@ax/blob-store-fs',
+  // (TASK-68 note: @ax/blob-store-fs is NOT dropped — local backend's default
+  // blob root derives under the tmpdir repoRoot, so ensureRoot() succeeds.
+  // Attachments is dropped, so blob:put has no caller, but a registrant with no
+  // caller is harmless.)
   // Skills: postgres-backed (database:get-instance) + depends on
   // http:register-route + auth:require-user (both dropped). Chat-orchestrator
   // soft-couples via bus.hasService('skills:resolve'); when absent, the

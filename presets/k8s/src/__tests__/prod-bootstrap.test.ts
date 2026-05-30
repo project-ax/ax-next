@@ -165,10 +165,6 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
       eventbus: { connectionString },
       session: { connectionString },
       workspace: { backend: 'local', repoRoot: path.join(tmp, 'repo') },
-      // TASK-68: the content-addressed blob store's fs root. A tmpdir here so
-      // the fs backend's ensureRoot() mkdir succeeds (the prod default
-      // /var/lib/ax/blobs isn't writable in CI).
-      blobStore: { root: path.join(tmp, 'blobs') },
       sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
       ipc: {
         host: '127.0.0.1',
@@ -335,10 +331,6 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc.cluster.local:80',
         AX_WORKSPACE_BACKEND: 'local',
         AX_WORKSPACE_ROOT: path.join(tmp, 'repo-env'),
-        // TASK-68: the chart stamps AX_BLOB_STORE_ROOT (sibling of the workspace
-        // dir, local backend). A tmpdir here so the fs blob store's ensureRoot()
-        // mkdir succeeds — the prod default /var/lib/ax isn't writable in CI.
-        AX_BLOB_STORE_ROOT: path.join(tmp, 'blobs-env'),
         AX_HTTP_HOST: '127.0.0.1',
         AX_HTTP_PORT: '0',
         // PORT drives @ax/ipc-http's bind port via loadK8sConfigFromEnv. We

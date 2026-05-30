@@ -26,7 +26,6 @@ import { createSkillsPlugin } from '@ax/skills';
 import { createSkillBrokerPlugin } from '@ax/skill-broker';
 import { createHostGrantsPlugin } from '@ax/host-grants';
 import { createAttachmentsPlugin } from '@ax/attachments';
-import { createBlobStoreFsPlugin } from '@ax/blob-store-fs';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { createAuthBetterPlugin, type AuthBetterConfig } from '@ax/auth-better';
@@ -43,6 +42,8 @@ import { createMemoryStrataIndexPostgresPlugin } from '@ax/memory-strata-index-p
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
 import { createOnboardingPlugin, type OnboardingConfig } from '@ax/onboarding';
+import { createBlobStoreFsPlugin } from '@ax/blob-store-fs';
+import { createBlobStoreS3Plugin } from '@ax/blob-store-s3';
 
 // ---------------------------------------------------------------------------
 // @ax/preset-k8s — production assembly: postgres trio + workspace-git +
@@ -139,6 +140,40 @@ export type K8sWorkspaceConfig =
   | { backend: 'local'; repoRoot: string }
   | { backend: 'git-protocol'; baseUrl: string; token: string };
 
+/**
+ * Discriminated union for the blob backend (out-of-git design Part A). Exactly
+ * one registers the storage-agnostic `blob:*` hook per deployment, mirroring
+ * the workspace `local` / `git-protocol` split and the storage
+ * `sqlite` / `postgres` split.
+ *
+ *   - `fs`: `@ax/blob-store-fs` writes content-addressed files under `root`
+ *     (single-replica RWO PVC; the default — cheapest, zero new deps).
+ *   - `s3`: `@ax/blob-store-s3` talks to one S3-compatible bucket (MinIO in
+ *     kind dev parity, GCS via its S3 endpoint + Workload Identity in prod,
+ *     AWS S3, R2). Multi-replica-safe.
+ *
+ * For `s3`, `accessKeyId` / `secretAccessKey` are DEV / MinIO only (sourced
+ * from a k8s Secret, never committed). Omit them in prod so the SDK's default
+ * credential provider chain (Workload Identity / IRSA / metadata) supplies
+ * short-lived creds — NO static keys in the tree.
+ *
+ * NOTE: `bucket` / `endpoint` / `region` are deployment config — they are NOT
+ * `blob:*` hook payload fields (invariant I1; the hook surface stays
+ * storage-agnostic).
+ */
+export type K8sBlobConfig =
+  | { backend: 'fs'; root: string }
+  | {
+      backend: 's3';
+      bucket: string;
+      endpoint?: string;
+      region?: string;
+      forcePathStyle?: boolean;
+      accessKeyId?: string;
+      secretAccessKey?: string;
+      keyPrefix?: string;
+    };
+
 export interface K8sPresetConfig {
   /**
    * Postgres pool config used by @ax/database-postgres + @ax/storage-postgres.
@@ -184,6 +219,18 @@ export interface K8sPresetConfig {
    * entrypoint reads those and constructs this config.
    */
   workspace: K8sWorkspaceConfig;
+  /**
+   * Blob backend selection (out-of-git design Part A). Discriminated on
+   * `backend`. Exactly one of @ax/blob-store-fs / @ax/blob-store-s3 registers
+   * the storage-agnostic `blob:*` hook. Optional — when omitted, the preset
+   * defaults to the `fs` backend rooted at a sibling dir on the workspace PVC
+   * (the cheapest single-replica posture, matching the chart default).
+   *
+   * The Helm chart drives this via `blob.backend: fs|s3` + the env vars
+   * `AX_BLOB_BACKEND` / `AX_BLOB_FS_ROOT` / `AX_BLOB_S3_*`; the host entrypoint
+   * reads those (via `blobConfigFromEnv`) and constructs this config.
+   */
+  blob?: K8sBlobConfig;
   /**
    * Pod template + readiness/limits config for sandbox-k8s. All fields
    * optional; defaults live in @ax/sandbox-k8s/src/config.ts.
@@ -372,18 +419,6 @@ export interface K8sPresetConfig {
     bundleStore?: { repoRoot: string };
   };
   /**
-   * @ax/blob-store-fs root (TASK-68, out-of-git Part C). The content-addressed
-   * store for opaque bytes — attachments (in), artifacts (out), and (later)
-   * skill bundles. Single-replica posture: a dir on the host PVC (same split as
-   * @ax/workspace-git local). `loadK8sConfigFromEnv` populates this from
-   * `AX_BLOB_STORE_ROOT`; when absent it defaults to a `blobs` sibling dir under
-   * the data root so the store is ALWAYS wired (the attachments plugin hard-
-   * requires `blob:put`/`blob:get`, so leaving it unregistered would fail
-   * bootstrap). The future @ax/blob-store-s3 backend swaps in behind the same
-   * `blob:*` hooks for the multi-replica case.
-   */
-  blobStore?: { root: string };
-  /**
    * @ax/onboarding — first-run wizard. When set, the plugin loads and
    * serves the bootstrap wizard at /setup/*. The plugin reads
    * AX_BOOTSTRAP_TOKEN from process.env automatically; set `publicBaseUrl`
@@ -529,6 +564,45 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
         repoRoot: config.workspace.repoRoot,
       }),
     );
+  }
+
+  // ----- 3b. blob store (out-of-git design Part A) -----------------------
+  // The storage-agnostic content-addressed blob:* substrate. Exactly ONE
+  // backend registers blob:put/get/stat/delete per deployment — registering
+  // two would make bootstrap throw (the kernel rejects duplicate registrants).
+  // Mirrors the workspace local/git-protocol and storage sqlite/postgres
+  // splits. When `config.blob` is omitted we default to the `fs` backend
+  // rooted at a sibling dir on the workspace PVC (matches the chart default
+  // and `blobConfigFromEnv`). The s3 backend (MinIO dev / GCS+Workload-Identity
+  // prod) is the multi-replica-safe path.
+  const blobConfig: K8sBlobConfig =
+    config.blob ??
+    {
+      backend: 'fs',
+      root:
+        config.workspace.backend === 'local'
+          ? `${config.workspace.repoRoot}/blobs`
+          : '/var/lib/ax-next/blobs',
+    };
+  if (blobConfig.backend === 's3') {
+    const s3Cfg: Parameters<typeof createBlobStoreS3Plugin>[0] = {
+      bucket: blobConfig.bucket,
+    };
+    if (blobConfig.endpoint !== undefined) s3Cfg.endpoint = blobConfig.endpoint;
+    if (blobConfig.region !== undefined) s3Cfg.region = blobConfig.region;
+    if (blobConfig.forcePathStyle !== undefined) {
+      s3Cfg.forcePathStyle = blobConfig.forcePathStyle;
+    }
+    if (blobConfig.accessKeyId !== undefined) {
+      s3Cfg.accessKeyId = blobConfig.accessKeyId;
+    }
+    if (blobConfig.secretAccessKey !== undefined) {
+      s3Cfg.secretAccessKey = blobConfig.secretAccessKey;
+    }
+    if (blobConfig.keyPrefix !== undefined) s3Cfg.keyPrefix = blobConfig.keyPrefix;
+    plugins.push(createBlobStoreS3Plugin(s3Cfg));
+  } else {
+    plugins.push(createBlobStoreFsPlugin({ root: blobConfig.root }));
   }
 
   // ----- 4. audit log ----------------------------------------------------
@@ -784,26 +858,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // plugins skipped → conversations stay `title: null`, same as today).
   plugins.push(createConversationsPlugin());
 
-  // ----- 9z. blob store (TASK-68, out-of-git Part C) ------------------------
-  // The content-addressed `blob:*` store (TASK-65) — the substrate attachments
-  // and artifacts land on. MUST register before @ax/attachments (which hard-
-  // requires blob:put/blob:get). Single-replica fs backend on the host PVC;
-  // the root defaults to a `blobs` sibling under the data root so the store is
-  // always wired even without explicit env. (S3 backend = Phase 6.)
-  plugins.push(
-    createBlobStoreFsPlugin({
-      root: config.blobStore?.root ?? '/var/lib/ax/blobs',
-    }),
-  );
-
   // ----- 9a. attachments ----------------------------------------------------
   // The attachments & artifacts subsystem. Service hooks
   // (attachments:store-temp / commit / download / list-for-conversation +
   // artifacts:publish-blob). TASK-68: commit/download/publish now ride the
-  // content-addressed blob store (registered above) instead of git — the bytes
-  // never touch the chat mirror, killing the parent-mismatch transcript-loss
-  // race. The IPC dispatcher's blob.put/blob.get/artifact.publish/
-  // attachments.list actions drive these from the runner.
+  // content-addressed blob store (the selected blob:* backend registered at
+  // step 3b above — fs or s3) instead of git — the bytes never touch the chat
+  // mirror, killing the parent-mismatch transcript-loss race. The IPC
+  // dispatcher's blob.put/blob.get/artifact.publish/attachments.list actions
+  // drive these from the runner.
   plugins.push(createAttachmentsPlugin());
   // Phase 2: registers the `artifact_publish` tool descriptor so the canary
   // smoke flow includes it in tool.list. The sandbox-MCP bridge dispatches
@@ -971,6 +1034,96 @@ export function workspaceConfigFromEnv(
   throw new Error(
     `unknown AX_WORKSPACE_BACKEND=${backend}; expected 'local' or 'git-protocol'`,
   );
+}
+
+// ---------------------------------------------------------------------------
+// Env → blob-config helper (out-of-git design Part A).
+//
+// The Helm chart writes these env vars onto the host pod. The host entrypoint
+// reads them via this helper to build the discriminated `blob` config before
+// calling `createK8sPlugins`.
+//
+//   AX_BLOB_BACKEND               fs | s3   (default: fs)
+//   AX_BLOB_FS_ROOT               fs root (default: <workspaceRoot>/blobs for
+//                                 the local workspace backend, else
+//                                 /var/lib/ax-next/blobs)
+//   AX_BLOB_S3_BUCKET             required when backend === 's3'
+//   AX_BLOB_S3_ENDPOINT           optional (MinIO Service URL / GCS endpoint)
+//   AX_BLOB_S3_REGION             optional (default applied by the plugin)
+//   AX_BLOB_S3_FORCE_PATH_STYLE   optional 'true'|'false' (default true)
+//   AX_BLOB_S3_ACCESS_KEY_ID      optional — DEV / MinIO only (from a Secret)
+//   AX_BLOB_S3_SECRET_ACCESS_KEY  optional — DEV / MinIO only (from a Secret)
+//   AX_BLOB_S3_KEY_PREFIX         optional namespace within the bucket
+//
+// Like `workspaceConfigFromEnv`, we throw loudly on missing required values
+// rather than silently default. Thrown messages NEVER contain the secret-key
+// literal — an errant log line carrying the MinIO secret through the kernel's
+// logger is exactly the supply-chain failure we're trying NOT to ship. The
+// prod path leaves the static keys UNSET so the SDK's default credential
+// provider chain (Workload Identity / IRSA / metadata) supplies short-lived
+// creds — no static keys in the tree.
+// ---------------------------------------------------------------------------
+
+/**
+ * Read the `AX_BLOB_*` env vars and return a `K8sBlobConfig`.
+ *
+ * @param env - the env map to read from. Defaults to `process.env`. Pass an
+ *   explicit object to keep tests deterministic.
+ * @param workspace - the already-resolved workspace config, used to derive the
+ *   default fs root (a sibling dir on the workspace PVC for the local backend).
+ */
+export function blobConfigFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+  workspace: K8sWorkspaceConfig = workspaceConfigFromEnv(env),
+): K8sBlobConfig {
+  const rawBackend = env.AX_BLOB_BACKEND;
+  const backend = rawBackend === undefined || rawBackend === '' ? 'fs' : rawBackend;
+
+  if (backend === 'fs') {
+    const explicitRoot = env.AX_BLOB_FS_ROOT;
+    if (explicitRoot !== undefined && explicitRoot !== '') {
+      return { backend: 'fs', root: explicitRoot };
+    }
+    const defaultRoot =
+      workspace.backend === 'local'
+        ? `${workspace.repoRoot}/blobs`
+        : '/var/lib/ax-next/blobs';
+    return { backend: 'fs', root: defaultRoot };
+  }
+
+  if (backend === 's3') {
+    const bucket = env.AX_BLOB_S3_BUCKET;
+    if (bucket === undefined || bucket === '') {
+      throw new Error('AX_BLOB_BACKEND=s3 requires AX_BLOB_S3_BUCKET to be set');
+    }
+    const cfg: K8sBlobConfig = { backend: 's3', bucket };
+    const endpoint = env.AX_BLOB_S3_ENDPOINT;
+    if (endpoint !== undefined && endpoint !== '') cfg.endpoint = endpoint;
+    const region = env.AX_BLOB_S3_REGION;
+    if (region !== undefined && region !== '') cfg.region = region;
+    const forcePathStyle = env.AX_BLOB_S3_FORCE_PATH_STYLE;
+    if (forcePathStyle !== undefined && forcePathStyle !== '') {
+      cfg.forcePathStyle = forcePathStyle.toLowerCase() === 'true';
+    }
+    // Static keys are DEV / MinIO only. When unset, the SDK uses its default
+    // provider chain (Workload Identity) — the no-static-keys prod posture.
+    const accessKeyId = env.AX_BLOB_S3_ACCESS_KEY_ID;
+    if (accessKeyId !== undefined && accessKeyId !== '') cfg.accessKeyId = accessKeyId;
+    const secretAccessKey = env.AX_BLOB_S3_SECRET_ACCESS_KEY;
+    if (secretAccessKey !== undefined && secretAccessKey !== '') {
+      cfg.secretAccessKey = secretAccessKey;
+    }
+    // `keyPrefix` reads an env VAR NAME (a bucket namespace prefix), not a
+    // secret value; gitleaks' generic-api-key rule false-positives on the
+    // `key`-ish identifier + high-entropy uppercase token, so we allow this
+    // exact line (the inline marker must sit ON the matched line). No secret
+    // value lives here.
+    const keyPrefix = env.AX_BLOB_S3_KEY_PREFIX; // gitleaks:allow
+    if (keyPrefix !== undefined && keyPrefix !== '') cfg.keyPrefix = keyPrefix;
+    return cfg;
+  }
+
+  throw new Error(`unknown AX_BLOB_BACKEND=${backend}; expected 'fs' or 's3'`);
 }
 
 // ---------------------------------------------------------------------------
@@ -1189,11 +1342,19 @@ export function loadK8sConfigFromEnv(
     auth.secret = authSecret;
   }
 
+  // Resolve the workspace config once — both the config object and the blob
+  // backend's default fs-root derivation need it.
+  const workspaceConfig = workspaceConfigFromEnv(env);
+
   const config: K8sPresetConfig = {
     database: { connectionString: databaseUrl },
     eventbus: { connectionString: databaseUrl },
     session: { connectionString: databaseUrl },
-    workspace: workspaceConfigFromEnv(env),
+    workspace: workspaceConfig,
+    // Blob backend (out-of-git design Part A). Defaults to fs rooted at a
+    // sibling dir on the workspace PVC; s3 (MinIO dev / GCS+Workload-Identity
+    // prod) when AX_BLOB_BACKEND=s3.
+    blob: blobConfigFromEnv(env, workspaceConfig),
     ipc,
     http: {
       host: httpHost,
@@ -1266,16 +1427,9 @@ export function loadK8sConfigFromEnv(
     config.skills = { bundleStore: { repoRoot: skillsBundleRoot } };
   }
 
-  // ---- blob store root (TASK-68, out-of-git Part C) -----------------------
-  // The content-addressed fs blob store's PVC dir. The chart stamps
-  // AX_BLOB_STORE_ROOT (a sibling dir on the host PVC). Empty/unset → the
-  // plugin registration in createK8sPlugins falls back to its default root, so
-  // the store is ALWAYS wired (attachments hard-requires blob:put/get). Treat
-  // empty string as unset — same convention as AX_WORKSPACE_ROOT.
-  const blobStoreRoot = env.AX_BLOB_STORE_ROOT;
-  if (blobStoreRoot !== undefined && blobStoreRoot !== '') {
-    config.blobStore = { root: blobStoreRoot };
-  }
+  // (Blob store root: handled by blobConfigFromEnv above — AX_BLOB_BACKEND +
+  // AX_BLOB_FS_ROOT / AX_BLOB_S3_* — TASK-71's selectable fs/s3 seam, which
+  // TASK-68's attachments/artifacts work rides on.)
 
   // ---- titles (auto-titling subscriber) -----------------------------------
   // Gated on ANTHROPIC_API_KEY presence: multi-tenant deploys without a

@@ -196,13 +196,11 @@ const PLUGINS_TO_DROP = new Set<string>([
   // preset.test.ts; drop here so these sub-tests don't need a postgres
   // testcontainer.
   '@ax/attachments',
-  // Blob store (TASK-68): @ax/attachments is the only caller of blob:put/get
-  // (dropped above), and the fs backend's ensureRoot() mkdirs its PVC root at
-  // init — which EACCES'es on the canary host's default /var/lib/ax path. The
-  // IPC server's blob:* are optionalCalls, so dropping the registrant is safe
-  // here. Static wiring + the live blob path are pinned in preset.test.ts +
-  // @ax/blob-store-fs / @ax/attachments package canaries.
-  '@ax/blob-store-fs',
+  // (TASK-68 note: @ax/blob-store-fs is NOT dropped — TASK-71 wires it with an
+  // explicit tmpdir `blob` config in these canaries' createK8sPlugins configs,
+  // so ensureRoot() succeeds. Attachments is dropped, so blob:put has no caller,
+  // but a registrant with no caller is harmless — and the blob store stays
+  // available to any sub-test that re-adds attachments wired.)
   // Skills: postgres-backed (database:get-instance) and depends on
   // http:register-route + auth:require-user (both dropped above). The
   // static hook wiring is pinned in preset.test.ts; drop here so these
@@ -384,6 +382,10 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           backend: 'local',
           repoRoot: path.join(tmp, 'repo-stub'),
         },
+        // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+        // default; point its root at the per-test tmp dir so init's
+        // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
         sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
         ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
         chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
@@ -581,7 +583,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             baseUrl: `http://127.0.0.1:${server.port}`,
             token: serverToken,
           },
-          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+          // default; point its root at the per-test tmp dir so init's
+          // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+          blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+        // default; point its root at the per-test tmp dir so init's
+        // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
           ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
           chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
           http: {
@@ -877,6 +887,10 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           baseUrl: `http://127.0.0.1:${server.port}`,
           token: serverToken,
         },
+        // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+        // default; point its root at the per-test tmp dir so init's
+        // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
         sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
         ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
         chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
@@ -1139,7 +1153,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             baseUrl: `http://127.0.0.1:${server.port}`,
             token: serverToken,
           },
-          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+          // default; point its root at the per-test tmp dir so init's
+          // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+          blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+        // default; point its root at the per-test tmp dir so init's
+        // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
           ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
           chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
           http: {
@@ -1290,7 +1312,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             baseUrl: `http://127.0.0.1:${server.port}`,
             token: serverToken,
           },
-          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+          // default; point its root at the per-test tmp dir so init's
+          // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+          blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+        // default; point its root at the per-test tmp dir so init's
+        // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
           ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
           chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
           http: {
@@ -1537,7 +1567,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             baseUrl: `http://127.0.0.1:${server.port}`,
             token: serverToken,
           },
-          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+          // default; point its root at the per-test tmp dir so init's
+          // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+          blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+        // default; point its root at the per-test tmp dir so init's
+        // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
           ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
           chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
           http: {
@@ -1774,7 +1812,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             baseUrl: `http://127.0.0.1:${server.port}`,
             token: serverToken,
           },
-          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+          // default; point its root at the per-test tmp dir so init's
+          // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+          blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+        // default; point its root at the per-test tmp dir so init's
+        // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
           ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
           chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
           http: {
@@ -2132,7 +2178,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             baseUrl: `http://127.0.0.1:${server.port}`,
             token: serverToken,
           },
-          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+          // default; point its root at the per-test tmp dir so init's
+          // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+          blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+        // default; point its root at the per-test tmp dir so init's
+        // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
           ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
           chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
           http: {
@@ -2506,7 +2560,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             baseUrl: `http://127.0.0.1:${server.port}`,
             token: serverToken,
           },
-          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+          // default; point its root at the per-test tmp dir so init's
+          // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+          blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+        // default; point its root at the per-test tmp dir so init's
+        // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
           ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
           chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
           http: {
@@ -2752,7 +2814,15 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             baseUrl: `http://127.0.0.1:${server.port}`,
             token: serverToken,
           },
-          sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+          // default; point its root at the per-test tmp dir so init's
+          // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+          blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
+        // default; point its root at the per-test tmp dir so init's
+        // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
+        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
+        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
           ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
           chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
           http: {

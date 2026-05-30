@@ -1,0 +1,72 @@
+{{- if .Values.minio.enabled }}
+{{/*
+One-shot bucket-create Job (out-of-git design Part A — dev/test blob backend).
+
+Runs `mc` (the MinIO client) as a post-install/upgrade hook to idempotently
+create the bucket the host's @ax/blob-store-s3 client expects. Without this the
+first blob:put would fail against a bucket that doesn't exist yet. `mc mb
+--ignore-existing` is idempotent so re-running on upgrade is a no-op.
+
+Hook-weighted AFTER the MinIO Deployment so the server is up before we poke it
+(we also `mc ready` / retry the alias to ride out the readiness gap). DEV / kind
+ONLY — prod provisions the GCS bucket out-of-band (Terraform / console).
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "ax-next.minioComponentName" . }}-mkbucket
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "minio" "context" $) | nindent 4 }}
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 10
+  ttlSecondsAfterFinished: 120
+  template:
+    metadata:
+      labels:
+        {{- include "ax-next.selectorLabels" (dict "component" "minio" "context" $) | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      securityContext:
+        runAsUser: 1000
+        runAsGroup: 1000
+        runAsNonRoot: true
+      containers:
+        - name: mkbucket
+          image: {{ printf "%s:%s" .Values.minio.mcImage.repository .Values.minio.mcImage.tag }}
+          imagePullPolicy: IfNotPresent
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -eu
+              # Retry the alias set until MinIO answers (the Deployment may
+              # still be coming up when the hook fires).
+              for i in $(seq 1 30); do
+                if mc alias set ax "{{ include "ax-next.minioEndpointUrl" . }}" "$MINIO_ROOT_USER" "$MINIO_ROOT_PASSWORD"; then
+                  break
+                fi
+                echo "waiting for MinIO... ($i)"; sleep 2
+              done
+              mc mb --ignore-existing "ax/{{ .Values.minio.bucket }}"
+              echo "bucket ax/{{ .Values.minio.bucket }} ready"
+          env:
+            - name: MINIO_ROOT_USER
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.minioAuthSecretName" . }}
+                  key: root-user
+            - name: MINIO_ROOT_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "ax-next.minioAuthSecretName" . }}
+                  key: root-password
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+{{- end }}
