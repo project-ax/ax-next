@@ -9,6 +9,7 @@
   "references": [
     { "path": "../credential-proxy-bridge" },
     { "path": "../ipc-protocol" },
-    { "path": "../tool-artifact-publish" }
+    { "path": "../tool-artifact-publish" },
+    { "path": "../tool-skill-propose" }
   ]
 }

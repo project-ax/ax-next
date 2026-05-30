@@ -1,33 +1,22 @@
 /**
- * Tests for agents:list-authored-skills (Phase E step 1b).
+ * Tests for the authored-skill discovery hooks (TASK-74 re-backing).
  *
- * The mock workspace plugin is a SINGLE shared store — it does NOT key
- * workspaces by ctx (userId/agentId). All workspace:apply / workspace:read /
- * workspace:list calls within one harness share the same `latest` snapshot
- * pointer. This means:
- *   1. Each test case must use a fresh harness to get an isolated workspace.
- *   2. The ctx we pass to workspace:apply for seeding only affects the
- *      delta.author metadata — it does NOT route to a per-agent shard.
- *
- * In PRODUCTION, workspace:list/read ARE ctx-routed (hashed to a per-agent
- * workspace id). The mock faithfully tests the parsing + flagging logic while
- * the ctx-routing correctness is verified by inspecting authored-skills.ts
- * (where makeAgentContext is called with the owner userId + agentId).
+ * The source of truth is now the @ax/skills DB store (the `skills:list-authored`
+ * hook) — the `.ax/draft-skills` git WORKSPACE projection is RETIRED. These
+ * tests register a mock `skills:list-authored` (+ optional `skills:approved-caps-
+ * list`) and exercise:
+ *   - agents:list-authored-skills (the admin promote-UI reader)
+ *   - agents:resolve-authored-skills (the orchestrator projection)
+ * The quarantine signal is now the row's `status === 'quarantined'`.
  */
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import {
-  createTestHarness,
-  createMockWorkspacePlugin,
-  type TestHarness,
-} from '@ax/test-harness';
+import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
-import { makeAgentContext } from '@ax/core';
 import { createAgentsPlugin } from '../plugin.js';
-import { listAuthoredBundles } from '../authored-skills.js';
 import type { CreateInput, CreateOutput } from '../types.js';
 import type {
   AgentsListAuthoredSkillsInput,
@@ -40,8 +29,7 @@ let container: StartedPostgreSqlContainer;
 let connectionString: string;
 const harnesses: TestHarness[] = [];
 
-// Minimal valid SKILL.md (no capabilities).
-function makeSkillMd(
+function makeManifest(
   id: string,
   opts: { withCapabilities?: boolean; withPackages?: boolean } = {},
 ): string {
@@ -51,33 +39,52 @@ function makeSkillMd(
   } else if (opts.withPackages) {
     capBlock = `capabilities:\n  packages:\n    npm:\n      - x\n`;
   }
-  return [
-    '---',
-    `name: ${id}`,
-    `description: A skill called ${id}`,
-    'version: 1',
-    capBlock,
-    '---',
-    '',
-    `# ${id}`,
-    'This is the skill body.',
-  ].join('\n');
+  return ['', `name: ${id}`, `description: A skill called ${id}`, 'version: 1', capBlock]
+    .join('\n')
+    .trim();
 }
 
-async function makeHarness(withWorkspace = true): Promise<TestHarness> {
-  const plugins = [
-    createDatabasePostgresPlugin({ connectionString }),
-    createAgentsPlugin(),
-    ...(withWorkspace ? [createMockWorkspacePlugin()] : []),
-  ];
-  const h = await createTestHarness({
-    services: {
-      'http:register-route': async () => ({ unregister: () => {} }),
-      'auth:require-user': async () => {
-        throw new Error('auth:require-user not configured in authored-skills.test.ts');
-      },
+interface AuthoredRow {
+  skillId: string;
+  description: string;
+  manifestYaml: string;
+  bodyMd: string;
+  files: Array<{ path: string; contents: string }>;
+  status: 'active' | 'pending' | 'quarantined';
+  reason?: string;
+}
+
+/**
+ * Boot @ax/agents with a mock skills:list-authored returning `rows`, and an
+ * optional approved-caps map keyed by skillId. Omit `rows` entirely to simulate
+ * a preset with NO skills store (the hook is absent).
+ */
+async function makeHarness(opts: {
+  rows?: AuthoredRow[];
+  approved?: Record<string, Array<{ kind: string; value: string }>>;
+  listAuthoredThrows?: boolean;
+} = {}): Promise<TestHarness> {
+  const services: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>> = {
+    'http:register-route': async () => ({ unregister: () => {} }),
+    'auth:require-user': async () => {
+      throw new Error('auth:require-user not configured');
     },
-    plugins,
+  };
+  if (opts.rows !== undefined || opts.listAuthoredThrows) {
+    services['skills:list-authored'] = async () => {
+      if (opts.listAuthoredThrows) throw new Error('skills store outage');
+      return { skills: opts.rows ?? [] };
+    };
+  }
+  if (opts.approved !== undefined) {
+    services['skills:approved-caps-list'] = async (_c, input) => {
+      const { skillId } = input as { skillId: string };
+      return { capabilities: opts.approved![skillId] ?? [] };
+    };
+  }
+  const h = await createTestHarness({
+    services,
+    plugins: [createDatabasePostgresPlugin({ connectionString }), createAgentsPlugin()],
   });
   harnesses.push(h);
   return h;
@@ -98,32 +105,15 @@ async function createPersonalAgent(h: TestHarness, userId: string): Promise<stri
   return out.agent.id;
 }
 
-/**
- * Seed a file into the mock workspace. The mock workspace is a single shared
- * store, so the ctx here only sets delta.author metadata — it does NOT route
- * to a per-agent shard. We still pass an agent-matching ctx so that if the
- * implementation is swapped to a real workspace backend in future, the seeding
- * ctx will route correctly.
- *
- * Each call must pass the CURRENT parent (null for first apply).
- */
-async function seedFile(
-  h: TestHarness,
-  path: string,
-  content: string,
-  ownerUserId: string,
-  agentId: string,
-  parent: string | null,
-): Promise<string> {
-  const ctx = makeAgentContext({ userId: ownerUserId, agentId, sessionId: 'test-seed' });
-  const r = await h.bus.call<
-    { changes: Array<{ path: string; kind: 'put'; content: Uint8Array }>; parent: string | null },
-    { version: string }
-  >('workspace:apply', ctx, {
-    changes: [{ path, kind: 'put', content: new TextEncoder().encode(content) }],
-    parent,
-  });
-  return r.version;
+function row(id: string, status: AuthoredRow['status'], opts: { withCapabilities?: boolean } = {}): AuthoredRow {
+  return {
+    skillId: id,
+    description: `A skill called ${id}`,
+    manifestYaml: makeManifest(id, opts),
+    bodyMd: `# ${id}\nbody`,
+    files: [],
+    status,
+  };
 }
 
 beforeAll(async () => {
@@ -139,7 +129,9 @@ afterEach(async () => {
   const cleanup = new (await import('pg')).default.Client({ connectionString });
   await cleanup.connect();
   try {
-    await cleanup.query('DROP TABLE IF EXISTS agents_v1_agents');
+    await cleanup.query('TRUNCATE agents_v1_agents');
+  } catch {
+    /* */
   } finally {
     await cleanup.end().catch(() => {});
   }
@@ -149,633 +141,110 @@ afterAll(async () => {
   if (container) await container.stop();
 });
 
-describe('agents:list-authored-skills', () => {
-  it('returns empty list when workspace is empty', async () => {
-    const h = await makeHarness();
-    const agentId = await createPersonalAgent(h, 'u1');
-
-    const result = await h.bus.call<
-      AgentsListAuthoredSkillsInput,
-      AgentsListAuthoredSkillsOutput
-    >('agents:list-authored-skills', h.ctx(), { agentId });
-
-    expect(result.skills).toEqual([]);
-  });
-
-  it('returns both skills sorted by id with hasForbiddenCapabilities:false for clean skills', async () => {
-    const h = await makeHarness();
+describe('agents:list-authored-skills (DB-backed promote reader)', () => {
+  it('returns summaries for each authored row, flagging capabilities', async () => {
     const userId = 'u1';
-    const agentId = await createPersonalAgent(h, userId);
-
-    // Seed two SKILL.md files with no capabilities (alphabetical order: bar, foo)
-    // but seed them in reverse order to verify sorting works.
-    const v1 = await seedFile(
-      h, '.ax/draft-skills/foo/SKILL.md', makeSkillMd('foo'), userId, agentId, null,
-    );
-    await seedFile(
-      h, '.ax/draft-skills/bar/SKILL.md', makeSkillMd('bar'), userId, agentId, v1,
-    );
-
-    const result = await h.bus.call<
-      AgentsListAuthoredSkillsInput,
-      AgentsListAuthoredSkillsOutput
-    >('agents:list-authored-skills', h.ctx(), { agentId });
-
-    // Should be sorted: bar before foo.
-    expect(result.skills).toHaveLength(2);
-    expect(result.skills[0]!.id).toBe('bar');
-    expect(result.skills[0]!.hasForbiddenCapabilities).toBe(false);
-    expect(result.skills[0]!.description).toBe('A skill called bar');
-    expect(result.skills[0]!.version).toBe(1);
-    expect(result.skills[1]!.id).toBe('foo');
-    expect(result.skills[1]!.hasForbiddenCapabilities).toBe(false);
-  });
-
-  it('flags skills that declare capabilities as hasForbiddenCapabilities:true', async () => {
-    const h = await makeHarness();
-    const userId = 'u1';
-    const agentId = await createPersonalAgent(h, userId);
-
-    const v1 = await seedFile(
-      h,
-      '.ax/draft-skills/dangerous/SKILL.md',
-      makeSkillMd('dangerous', { withCapabilities: true }),
-      userId,
-      agentId,
-      null,
-    );
-    await seedFile(
-      h, '.ax/draft-skills/safe/SKILL.md', makeSkillMd('safe'), userId, agentId, v1,
-    );
-
-    const result = await h.bus.call<
-      AgentsListAuthoredSkillsInput,
-      AgentsListAuthoredSkillsOutput
-    >('agents:list-authored-skills', h.ctx(), { agentId });
-
-    expect(result.skills).toHaveLength(2);
-    const dangerous = result.skills.find((s) => s.id === 'dangerous')!;
-    const safe = result.skills.find((s) => s.id === 'safe')!;
-    expect(dangerous.hasForbiddenCapabilities).toBe(true);
-    expect(safe.hasForbiddenCapabilities).toBe(false);
-  });
-
-  it('returns empty list when no workspace plugin is loaded', async () => {
-    // withWorkspace=false omits createMockWorkspacePlugin from the harness.
-    const h = await makeHarness(false);
-    const agentId = await createPersonalAgent(h, 'u1');
-
-    const result = await h.bus.call<
-      AgentsListAuthoredSkillsInput,
-      AgentsListAuthoredSkillsOutput
-    >('agents:list-authored-skills', h.ctx(), { agentId });
-
-    expect(result.skills).toEqual([]);
-  });
-
-  it('returns empty list for a team agent (deferred path)', async () => {
-    // teams:is-member stub lets us create a team agent without @ax/teams.
-    const h = await createTestHarness({
-      services: {
-        'http:register-route': async () => ({ unregister: () => {} }),
-        'auth:require-user': async () => {
-          throw new Error('not configured');
-        },
-        'teams:is-member': async () => ({ member: true }),
-      },
-      plugins: [
-        createDatabasePostgresPlugin({ connectionString }),
-        createAgentsPlugin(),
-        createMockWorkspacePlugin(),
-      ],
+    const h = await makeHarness({
+      rows: [row('alpha', 'active'), row('beta', 'pending', { withCapabilities: true })],
     });
-    harnesses.push(h);
-
-    const out = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx(), {
-      actor: { userId: 'u1', isAdmin: false },
-      input: {
-        displayName: 'Team Agent',
-        systemPrompt: 'You are helpful.',
-        allowedTools: [],
-        mcpConfigIds: [],
-        model: 'claude-opus-4-7',
-        visibility: 'team',
-        teamId: 't1',
-      },
-    });
-    const teamAgentId = out.agent.id;
-
-    const result = await h.bus.call<
-      AgentsListAuthoredSkillsInput,
-      AgentsListAuthoredSkillsOutput
-    >('agents:list-authored-skills', h.ctx(), { agentId: teamAgentId });
-
-    expect(result.skills).toEqual([]);
-  });
-
-  it('returns empty list for a non-existent agent', async () => {
-    const h = await makeHarness();
-
-    const result = await h.bus.call<
-      AgentsListAuthoredSkillsInput,
-      AgentsListAuthoredSkillsOutput
-    >('agents:list-authored-skills', h.ctx(), { agentId: 'agt_does_not_exist' });
-
-    expect(result.skills).toEqual([]);
-  });
-
-  it('propagates workspace:list backend errors instead of swallowing them', async () => {
-    // Build a harness where workspace:list THROWS (simulates a real backend
-    // outage, not a missing/empty workspace — the latter returns {paths:[]}).
-    // agents:list-authored-skills must REJECT, not return [].
-    const h = await createTestHarness({
-      services: {
-        'http:register-route': async () => ({ unregister: () => {} }),
-        'auth:require-user': async () => {
-          throw new Error('not configured');
-        },
-        // workspace:list throws to simulate a backend outage.
-        'workspace:list': async () => {
-          throw new Error('workspace-backend-unavailable');
-        },
-        // workspace:read is provided so the hasService guard passes for both.
-        'workspace:read': async () => ({ found: false }),
-      },
-      plugins: [
-        createDatabasePostgresPlugin({ connectionString }),
-        createAgentsPlugin(),
-      ],
-    });
-    harnesses.push(h);
-
-    const agentId = await createPersonalAgent(h, 'u1');
-
-    await expect(
-      h.bus.call<AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput>(
-        'agents:list-authored-skills',
-        h.ctx(),
-        { agentId },
-      ),
-    ).rejects.toThrow('workspace-backend-unavailable');
-  });
-
-  it('skips malformed SKILL.md files silently', async () => {
-    const h = await makeHarness();
-    const userId = 'u1';
     const agentId = await createPersonalAgent(h, userId);
-
-    const v1 = await seedFile(
-      h,
-      '.ax/draft-skills/broken/SKILL.md',
-      'this is not valid SKILL.md format at all',
-      userId,
-      agentId,
-      null,
+    const out = await h.bus.call<AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput>(
+      'agents:list-authored-skills',
+      h.ctx({ userId }),
+      { agentId },
     );
-    await seedFile(
-      h, '.ax/draft-skills/valid/SKILL.md', makeSkillMd('valid'), userId, agentId, v1,
-    );
-
-    const result = await h.bus.call<
-      AgentsListAuthoredSkillsInput,
-      AgentsListAuthoredSkillsOutput
-    >('agents:list-authored-skills', h.ctx(), { agentId });
-
-    // Only the valid one should appear.
-    expect(result.skills).toHaveLength(1);
-    expect(result.skills[0]!.id).toBe('valid');
+    const byId = new Map(out.skills.map((s) => [s.id, s]));
+    expect(byId.get('alpha')?.hasForbiddenCapabilities).toBe(false);
+    expect(byId.get('beta')?.hasForbiddenCapabilities).toBe(true);
   });
 
-  // FIX C: a frontmatter declaring only capabilities.packages must also be
-  // flagged as hasForbiddenCapabilities:true (consistency with allowedHosts /
-  // credentials / mcpServers).
-  it('flags skills with only packages capability as hasForbiddenCapabilities:true (FIX C)', async () => {
-    const h = await makeHarness();
+  it('returns [] when no skills store is loaded', async () => {
     const userId = 'u1';
+    const h = await makeHarness({}); // no skills:list-authored
     const agentId = await createPersonalAgent(h, userId);
-
-    await seedFile(
-      h,
-      '.ax/draft-skills/pkg-only/SKILL.md',
-      makeSkillMd('pkg-only', { withPackages: true }),
-      userId,
-      agentId,
-      null,
+    const out = await h.bus.call<AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput>(
+      'agents:list-authored-skills',
+      h.ctx({ userId }),
+      { agentId },
     );
-
-    const result = await h.bus.call<
-      AgentsListAuthoredSkillsInput,
-      AgentsListAuthoredSkillsOutput
-    >('agents:list-authored-skills', h.ctx(), { agentId });
-
-    expect(result.skills).toHaveLength(1);
-    expect(result.skills[0]!.id).toBe('pkg-only');
-    expect(result.skills[0]!.hasForbiddenCapabilities).toBe(true);
-  });
-
-  // Agents frequently author a skill as a flat `.ax/draft-skills/<id>.md` file rather
-  // than the directory form. The promote/list reader must surface those too, or
-  // they're invisible to the admin promote flow.
-  it('surfaces a flat-file skill (.ax/draft-skills/<id>.md) alongside directory-form skills', async () => {
-    const h = await makeHarness();
-    const userId = 'u1';
-    const agentId = await createPersonalAgent(h, userId);
-    const v1 = await seedFile(
-      h, '.ax/draft-skills/dirskill/SKILL.md', makeSkillMd('dirskill'), userId, agentId, null,
-    );
-    await seedFile(
-      h, '.ax/draft-skills/flatskill.md', makeSkillMd('flatskill'), userId, agentId, v1,
-    );
-
-    const result = await h.bus.call<
-      AgentsListAuthoredSkillsInput,
-      AgentsListAuthoredSkillsOutput
-    >('agents:list-authored-skills', h.ctx(), { agentId });
-
-    expect(result.skills.map((s) => s.id).sort()).toEqual(['dirskill', 'flatskill']);
+    expect(out.skills).toEqual([]);
   });
 });
 
-// ---------------------------------------------------------------------------
-// listAuthoredBundles — projection source for all parseable self-authored drafts
-// ---------------------------------------------------------------------------
-
-describe('listAuthoredBundles', () => {
-  it('returns each parseable draft as a projection bundle with raw manifestYaml, bodyMd, and helper files, sorted by id, skipping malformed drafts', async () => {
-    const h = await makeHarness();
+describe('agents:resolve-authored-skills (DB-backed orchestrator projection)', () => {
+  it('projects active + pending rows; OMITS quarantined', async () => {
     const userId = 'u1';
-    const agentId = await createPersonalAgent(h, userId);
-
-    // Seed two parseable drafts (directory form) + one malformed (no frontmatter)
-    // + one with a helper file. Seed in non-alphabetical order to verify sorting.
-    const v1 = await seedFile(
-      h,
-      '.ax/draft-skills/zoo/SKILL.md',
-      '---\nname: zoo\ndescription: Zoo skill\nversion: 1\n---\nZoo body',
-      userId,
-      agentId,
-      null,
-    );
-    const v2 = await seedFile(
-      h,
-      '.ax/draft-skills/alpha/SKILL.md',
-      '---\nname: alpha\ndescription: Alpha skill\nversion: 2\n---\nAlpha body',
-      userId,
-      agentId,
-      v1,
-    );
-    const v3 = await seedFile(
-      h,
-      '.ax/draft-skills/alpha/scripts/run.sh',
-      '#!/bin/bash\necho hello',
-      userId,
-      agentId,
-      v2,
-    );
-    // Malformed draft: no frontmatter fence — must be SKIPPED, not thrown.
-    await seedFile(
-      h,
-      '.ax/draft-skills/broken/SKILL.md',
-      'not a valid skill md at all',
-      userId,
-      agentId,
-      v3,
-    );
-
-    const bundles = await listAuthoredBundles(h.bus, userId, agentId);
-
-    // 'broken' is silently skipped; 'alpha' and 'zoo' are returned sorted by id.
-    expect(bundles).toHaveLength(2);
-    expect(bundles[0]!.id).toBe('alpha');
-    expect(bundles[0]!.manifestYaml).toContain('name: alpha');
-    expect(bundles[0]!.bodyMd).toBe('Alpha body');
-    expect(bundles[0]!.files).toEqual([{ path: 'scripts/run.sh', contents: '#!/bin/bash\necho hello' }]);
-    expect(bundles[1]!.id).toBe('zoo');
-    expect(bundles[1]!.manifestYaml).toContain('name: zoo');
-    expect(bundles[1]!.bodyMd).toBe('Zoo body');
-    expect(bundles[1]!.files).toEqual([]);
-  });
-
-  // C1 (review): the discovery projection must surface ONLY the directory form,
-  // because that is the exact shape @ax/validator-skill's commit scanner covers
-  // (its SKILL_PATH matches `.ax/draft-skills/<id>/SKILL.md` only). A flat
-  // `.ax/draft-skills/<id>.md` is NEVER scanned, so projecting it would be a
-  // quarantine-scan bypass — an agent could write a hostile flat draft that the
-  // SDK then discovers unfiltered. (listAuthoredSkills, the human-reviewed
-  // promote reader, keeps flat-form support — only auto-discovery drops it.)
-  it('OMITS flat-file drafts (.ax/draft-skills/<id>.md) because the commit scanner only covers the directory form', async () => {
-    const h = await makeHarness();
-    const userId = 'u1';
-    const agentId = await createPersonalAgent(h, userId);
-
-    const v1 = await seedFile(
-      h,
-      '.ax/draft-skills/dirskill/SKILL.md',
-      '---\nname: dirskill\ndescription: Dir skill\nversion: 1\n---\nDir body',
-      userId,
-      agentId,
-      null,
-    );
-    await seedFile(
-      h,
-      '.ax/draft-skills/flatskill.md',
-      '---\nname: flatskill\ndescription: Flat skill\nversion: 1\n---\nFlat body',
-      userId,
-      agentId,
-      v1,
-    );
-
-    const bundles = await listAuthoredBundles(h.bus, userId, agentId);
-
-    // Only the directory-form draft is projected; the flat-form one is omitted.
-    expect(bundles.map((b) => b.id).sort()).toEqual(['dirskill']);
-    expect(bundles.some((b) => b.id === 'flatskill')).toBe(false);
-  });
-
-  // I2 (review): a draft DIRECTORY whose name is outside the strict sandbox
-  // installed-skill id grammar (/^[a-z][a-z0-9-]{0,63}$/) must be SKIPPED, not
-  // projected. The permissive AUTHORED_SKILL_ID_RE would pass `My_Skill`, but
-  // the sandbox's InstalledSkillSchema would reject it → invalid-payload →
-  // the WHOLE installedSkills batch fails → generic sandbox-open-failed. Skip
-  // it (like a malformed manifest) so one bad id can't break discovery for the
-  // rest. A sibling clean `good` dir IS still returned.
-  it('OMITS a draft dir whose name is outside the strict sandbox id grammar; a clean sibling IS returned', async () => {
-    const h = await makeHarness();
-    const userId = 'u1';
-    const agentId = await createPersonalAgent(h, userId);
-
-    // `My_Skill`: valid SKILL.md, but the dir name has an uppercase + underscore
-    // → fails the strict installed-skill grammar.
-    const v1 = await seedFile(
-      h,
-      '.ax/draft-skills/My_Skill/SKILL.md',
-      '---\nname: my-skill\ndescription: Bad id skill\nversion: 1\n---\nBad id body',
-      userId,
-      agentId,
-      null,
-    );
-    await seedFile(
-      h,
-      '.ax/draft-skills/good/SKILL.md',
-      '---\nname: good\ndescription: Good skill\nversion: 1\n---\nGood body',
-      userId,
-      agentId,
-      v1,
-    );
-
-    const bundles = await listAuthoredBundles(h.bus, userId, agentId);
-
-    // The bad-id dir is skipped; only the clean one is projected.
-    expect(bundles.map((b) => b.id)).toEqual(['good']);
-    expect(bundles.some((b) => b.id === 'My_Skill')).toBe(false);
-  });
-
-  it('returns [] when no workspace backend is loaded (soft-dep)', async () => {
-    // withWorkspace=false omits createMockWorkspacePlugin — bare HookBus with
-    // no workspace:list / workspace:read.
-    const h = await makeHarness(false);
-    const agentId = await createPersonalAgent(h, 'u1');
-
-    const bundles = await listAuthoredBundles(h.bus, 'u1', agentId);
-
-    expect(bundles).toEqual([]);
-  });
-
-  it('returns [] when the workspace is empty', async () => {
-    const h = await makeHarness();
-    const agentId = await createPersonalAgent(h, 'u1');
-
-    const bundles = await listAuthoredBundles(h.bus, 'u1', agentId);
-
-    expect(bundles).toEqual([]);
-  });
-});
-
-// ---------------------------------------------------------------------------
-// agents:resolve-authored-skills (Phase 3, Task A2)
-// Returns the agent's self-authored drafts in the resolved-skill projection
-// shape with empty capabilities. Quarantined drafts are omitted via the
-// skills:quarantine-get soft-dep (absent → project everything).
-// ---------------------------------------------------------------------------
-
-describe('agents:resolve-authored-skills', () => {
-  it('returns non-quarantined drafts with empty capabilities; omits quarantined ones', async () => {
-    const h = await makeHarness();
-    const userId = 'u1';
-    const agentId = await createPersonalAgent(h, userId);
-
-    // Seed two valid drafts.
-    const v1 = await seedFile(
-      h,
-      '.ax/draft-skills/clean/SKILL.md',
-      '---\nname: clean\ndescription: Clean skill\nversion: 1\n---\nClean body',
-      userId,
-      agentId,
-      null,
-    );
-    await seedFile(
-      h,
-      '.ax/draft-skills/evil/SKILL.md',
-      '---\nname: evil\ndescription: Evil skill\nversion: 1\n---\nEvil body',
-      userId,
-      agentId,
-      v1,
-    );
-
-    // Register a quarantine stub that marks 'evil' as quarantined.
-    h.bus.registerService(
-      'skills:quarantine-get',
-      '@ax/test',
-      async (_c: unknown, i: { skillId: string }) => ({
-        quarantined: i.skillId === 'evil',
-        ...(i.skillId === 'evil' ? { reason: 'injection' } : {}),
-      }),
-    );
-
-    const result = await h.bus.call<
-      AgentsResolveAuthoredSkillsInput,
-      AgentsResolveAuthoredSkillsOutput
-    >('agents:resolve-authored-skills', h.ctx({ userId }), {
-      ownerUserId: userId,
-      agentId,
+    const h = await makeHarness({
+      rows: [row('alpha', 'active'), row('beta', 'pending'), row('evil', 'quarantined')],
     });
-
-    // Only 'clean' should appear.
-    expect(result.skills).toHaveLength(1);
-    const clean = result.skills[0]!;
-    expect(clean.id).toBe('clean');
-    expect(clean.bodyMd).toBe('Clean body');
-    expect(clean.manifestYaml).toContain('name: clean');
-    // Phase 3: capabilities are ALWAYS empty — no parsing.
-    expect(clean.capabilities).toEqual({
-      allowedHosts: [],
-      credentials: [],
-      mcpServers: [],
-      packages: { npm: [], pypi: [] },
-    });
-  });
-
-  it('returns all drafts when skills:quarantine-get is NOT registered (soft-dep)', async () => {
-    // Build a harness WITHOUT registering skills:quarantine-get — the service
-    // must project all parseable drafts rather than throwing or returning [].
-    const h = await makeHarness();
-    const userId = 'u2';
     const agentId = await createPersonalAgent(h, userId);
-
-    const v1 = await seedFile(
-      h,
-      '.ax/draft-skills/skilla/SKILL.md',
-      '---\nname: skilla\ndescription: Skill A\nversion: 1\n---\nBody A',
-      userId,
-      agentId,
-      null,
-    );
-    await seedFile(
-      h,
-      '.ax/draft-skills/skillb/SKILL.md',
-      '---\nname: skillb\ndescription: Skill B\nversion: 1\n---\nBody B',
-      userId,
-      agentId,
-      v1,
-    );
-
-    // Verify quarantine-get is NOT registered in this harness.
-    expect(h.bus.hasService('skills:quarantine-get')).toBe(false);
-
-    const result = await h.bus.call<
-      AgentsResolveAuthoredSkillsInput,
-      AgentsResolveAuthoredSkillsOutput
-    >('agents:resolve-authored-skills', h.ctx({ userId }), {
-      ownerUserId: userId,
-      agentId,
-    });
-
-    expect(result.skills).toHaveLength(2);
-    expect(result.skills.map((s) => s.id).sort()).toEqual(['skilla', 'skillb']);
-    // All capabilities must still be empty.
-    for (const skill of result.skills) {
-      expect(skill.capabilities).toEqual({
-        allowedHosts: [],
-        credentials: [],
-        mcpServers: [],
-        packages: { npm: [], pypi: [] },
-      });
-    }
-  });
-
-  it('Phase 4: a draft declaring frontmatter capabilities projects with EMPTY approved caps + a proposalDelta; the projected manifest is caps-stripped', async () => {
-    const h = await makeHarness(); // no @ax/skills → skills:approved-caps-list absent → approved = []
-    const userId = 'u-phase4-caps';
-    const agentId = await createPersonalAgent(h, userId);
-    await seedFile(
-      h,
-      '.ax/draft-skills/linear/SKILL.md',
-      makeSkillMd('linear', { withCapabilities: true }),
-      userId,
-      agentId,
-      null,
-    );
-
     const out = await h.bus.call<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
       'agents:resolve-authored-skills',
       h.ctx({ userId }),
       { ownerUserId: userId, agentId },
     );
-
-    const linear = out.skills.find((s) => s.id === 'linear');
-    expect(linear).toBeDefined();
-    // Unapproved → empty projected caps (the safe default). The proxy will block.
-    expect(linear!.capabilities.allowedHosts).toEqual([]);
-    // The proposal is preserved as the unapproved delta (drives PR-B's card).
-    expect(linear!.proposalDelta.allowedHosts).toEqual(['api.evil.com']);
-    // The materialized manifest is caps-stripped — no capabilities block, no host.
-    expect(linear!.manifestYaml).not.toContain('capabilities');
-    expect(linear!.manifestYaml).not.toContain('api.evil.com');
-    expect(linear!.manifestYaml).toContain('name: linear');
-    expect(linear!.description.length).toBeGreaterThan(0);
+    const ids = out.skills.map((s) => s.id).sort();
+    expect(ids).toEqual(['alpha', 'beta']);
   });
 
-  // Fail-CLOSED: skills:approved-caps-list THROWING (approval-store outage) must
-  // NOT break the projection (asymmetric vs quarantine-get above, which fails by
-  // OMITTING). The draft STILL projects, but with EMPTY approved caps — the proxy
-  // then blocks everything. The host stays in proposalDelta (it was never approved).
-  it('fails closed when skills:approved-caps-list throws: draft still projects with empty caps; host stays in proposalDelta', async () => {
-    const h = await makeHarness();
-    const userId = 'u-caps-outage';
-    const agentId = await createPersonalAgent(h, userId);
-    await seedFile(
-      h,
-      '.ax/draft-skills/linear/SKILL.md',
-      makeSkillMd('linear', { withCapabilities: true }),
-      userId,
-      agentId,
-      null,
-    );
-
-    // Register an approval store that THROWS — simulating a DB outage.
-    h.bus.registerService('skills:approved-caps-list', '@ax/test', async () => {
-      throw new Error('approval store unavailable');
+  it('projects EMPTY capabilities when nothing is approved (frontmatter alone grants nothing)', async () => {
+    const userId = 'u1';
+    const h = await makeHarness({
+      rows: [row('linear', 'pending', { withCapabilities: true })],
+      approved: {}, // nothing approved
     });
-
-    // The call must NOT reject — the handler degrades to empty approved caps.
+    const agentId = await createPersonalAgent(h, userId);
     const out = await h.bus.call<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
       'agents:resolve-authored-skills',
       h.ctx({ userId }),
       { ownerUserId: userId, agentId },
     );
-
-    const linear = out.skills.find((s) => s.id === 'linear');
-    expect(linear).toBeDefined();
-    // Fail-closed: no capabilities projected despite the proposal.
-    expect(linear!.capabilities.allowedHosts).toEqual([]);
-    // The proposed-but-unapproved host remains in the delta.
-    expect(linear!.proposalDelta.allowedHosts).toEqual(['api.evil.com']);
-    // And the materialized manifest is still caps-stripped.
-    expect(linear!.manifestYaml).not.toContain('capabilities');
-    expect(linear!.manifestYaml).not.toContain('api.evil.com');
+    const s = out.skills.find((x) => x.id === 'linear');
+    expect(s).toBeDefined();
+    expect(s!.capabilities.allowedHosts).toEqual([]); // none approved → none live
+    // The proposal delta carries the unapproved host so the orchestrator can card it.
+    expect(s!.proposalDelta.allowedHosts).toContain('api.evil.com');
   });
 
-  // M3-2: skills:quarantine-get THROWING must propagate through
-  // agents:resolve-authored-skills (fail toward OMISSION — an outage must
-  // never project unscanned drafts). The SAFE direction is: quarantine store
-  // unavailable → service rejects → orchestrator sees the error and falls back
-  // to [] (fail-open one level up), but NO draft is projected without a
-  // quarantine check result. Documents that the quarantine-store outage path
-  // fails toward omission, not toward projecting unscanned content.
-  it('propagates skills:quarantine-get error (quarantine-store outage fails toward omission)', async () => {
-    const h = await makeHarness();
-    const userId = 'u3';
+  it('folds an APPROVED host into live capabilities', async () => {
+    const userId = 'u1';
+    const h = await makeHarness({
+      rows: [row('linear', 'active', { withCapabilities: true })],
+      approved: { linear: [{ kind: 'host', value: 'api.evil.com' }] },
+    });
     const agentId = await createPersonalAgent(h, userId);
-
-    // Seed one valid draft.
-    await seedFile(
-      h,
-      '.ax/draft-skills/safe/SKILL.md',
-      '---\nname: safe\ndescription: Safe skill\nversion: 1\n---\nSafe body',
-      userId,
-      agentId,
-      null,
+    const out = await h.bus.call<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
+      'agents:resolve-authored-skills',
+      h.ctx({ userId }),
+      { ownerUserId: userId, agentId },
     );
+    const s = out.skills.find((x) => x.id === 'linear')!;
+    expect(s.capabilities.allowedHosts).toContain('api.evil.com');
+    expect(s.proposalDelta.allowedHosts).toEqual([]); // fully approved → no delta
+  });
 
-    // Register a quarantine service that THROWS — simulating a DB outage.
-    h.bus.registerService(
-      'skills:quarantine-get',
-      '@ax/test',
-      async () => {
-        throw new Error('quarantine store unavailable');
-      },
+  it('returns [] when no skills store is loaded (orchestrator guard still satisfied)', async () => {
+    const userId = 'u1';
+    const h = await makeHarness({}); // no skills:list-authored
+    const agentId = await createPersonalAgent(h, userId);
+    const out = await h.bus.call<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
+      'agents:resolve-authored-skills',
+      h.ctx({ userId }),
+      { ownerUserId: userId, agentId },
     );
+    expect(out.skills).toEqual([]);
+  });
 
-    // The call must reject — the service propagates the error rather than
-    // projecting drafts without a clean quarantine verdict.
+  it('propagates a skills:list-authored outage (orchestrator catches + warns at the next level)', async () => {
+    const userId = 'u1';
+    const h = await makeHarness({ listAuthoredThrows: true });
+    const agentId = await createPersonalAgent(h, userId);
     await expect(
       h.bus.call<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
         'agents:resolve-authored-skills',
         h.ctx({ userId }),
         { ownerUserId: userId, agentId },
       ),
-    ).rejects.toThrow('quarantine store unavailable');
-    // The orchestrator's catch block handles this at the next level up —
-    // see orchestrator.ts resolve_authored_skills_failed warn path.
+    ).rejects.toThrow();
   });
 });

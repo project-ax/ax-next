@@ -563,3 +563,110 @@ export const SkillsApprovedCapsSetOutputSchema = z.object({
 export const SkillsApprovedCapsRevokeOutputSchema = z.object({
   cleared: z.boolean(),
 }) as unknown as ZodType<SkillsApprovedCapsRevokeOutput>;
+
+// ---- skill_propose chokepoint (TASK-74, out-of-git Part D) -----------------
+//
+// `skills:propose` is the single write chokepoint for agent-authored skills.
+// The runner (via the skill.propose IPC action → host handler) hands the host a
+// structurally-validated bundle; the host re-validates, fires the `skills:scan`
+// veto/scan hook, runs the hybrid materialization gate (propose-gate.ts), and
+// writes ONE skills_v1_authored row. Storage-agnostic: no row/blob/git vocab.
+//
+// `origin` is the trust provenance ('authored' from the runner; 'imported' /
+// 'attached' reserved for host-side flows). `capabilityProposal` is the parsed
+// frontmatter — the proposal source of truth the gate classifies on. `files`
+// are the bundle EXTRA files (host writes them to the blob store).
+
+export interface SkillsProposeInput {
+  ownerUserId: string;
+  agentId: string;
+  manifestYaml: string;
+  bodyMd: string;
+  files: BundleFile[];
+  capabilityProposal: SkillCapabilities;
+  origin: 'authored' | 'imported' | 'attached';
+}
+export interface SkillsProposeOutput {
+  skillId: string;
+  status: 'active' | 'pending' | 'quarantined';
+  /** A short, model-safe reason on a quarantine (or a structural reject). */
+  reason?: string;
+}
+
+export const SkillsProposeOutputSchema = z.object({
+  skillId: z.string(),
+  status: z.union([z.literal('active'), z.literal('pending'), z.literal('quarantined')]),
+  reason: z.string().optional(),
+}) as unknown as ZodType<SkillsProposeOutput>;
+
+// `skills:list-authored` — the read backing for agents:resolve-authored-skills.
+// Returns the agent's authored skills (any status; the projection filters). The
+// payload carries the manifest/body/files + the gate status + scan reason —
+// storage-agnostic (no bundle_tree_sha / row vocab on the wire).
+export interface SkillsListAuthoredInput {
+  ownerUserId: string;
+  agentId: string;
+}
+export interface AuthoredSkillProjection {
+  skillId: string;
+  description: string;
+  manifestYaml: string;
+  bodyMd: string;
+  files: BundleFile[];
+  status: 'active' | 'pending' | 'quarantined';
+  reason?: string;
+}
+export interface SkillsListAuthoredOutput {
+  skills: AuthoredSkillProjection[];
+}
+
+export const SkillsListAuthoredOutputSchema = z.object({
+  skills: z.array(
+    z.object({
+      skillId: z.string(),
+      description: z.string(),
+      manifestYaml: z.string(),
+      bodyMd: z.string(),
+      files: z.array(z.object({ path: z.string(), contents: z.string() })),
+      status: z.union([z.literal('active'), z.literal('pending'), z.literal('quarantined')]),
+      reason: z.string().optional(),
+    }),
+  ),
+}) as unknown as ZodType<SkillsListAuthoredOutput>;
+
+// `skills:scan` — the subscriber-hook home of the validator-skill veto/scan
+// (TASK-74). Fired by `skills:propose` BEFORE the gate classifies. A subscriber
+// (e.g. @ax/validator-skill) inspects the untrusted bundle text and returns a
+// verdict. Storage/transport-agnostic: just the skill bundle text, NOT a git
+// FileChange[]. NOTE this is a SERVICE hook (one authoritative scanner) — the
+// host calls it and reads back the verdict; a missing scanner degrades to
+// 'clean' (the regex floor is then skipped, matching the pre-TASK-74 no-LLM
+// degrade). The veto is accept-but-annotate: a 'hit' quarantines, never throws.
+export interface SkillsScanInput {
+  skillId: string;
+  manifestYaml: string;
+  bodyMd: string;
+  files: BundleFile[];
+}
+export interface SkillsScanOutput {
+  /** 'clean' = no safety concern; 'hit' = quarantine with `reason`. */
+  verdict: 'clean' | 'hit';
+  reason?: string;
+}
+
+export const SkillsScanOutputSchema = z.object({
+  verdict: z.union([z.literal('clean'), z.literal('hit')]),
+  reason: z.string().optional(),
+}) as unknown as ZodType<SkillsScanOutput>;
+
+// `skills:proposed` — fire-and-forget notify the host emits AFTER a successful
+// `skills:propose` write, so the orchestrator can mark the proposing
+// conversation's warm session dirty (re-spawn next turn — a freshly-active
+// skill is only visible at the next spawn, design §D6). Ids only; storage-
+// agnostic. Replaces the `.ax/draft-skills` `workspace:applied` re-spawn trigger.
+export interface SkillsProposedEvent {
+  ownerUserId: string;
+  agentId: string;
+  skillId: string;
+  status: 'active' | 'pending' | 'quarantined';
+}

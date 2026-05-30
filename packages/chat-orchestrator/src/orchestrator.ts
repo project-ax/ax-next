@@ -354,9 +354,16 @@ interface HttpEgressEventLike {
 // changed paths. Structural (no @ax/core type import) per the file's
 // hook-payload-shape convention; @ax/core's WorkspaceDelta is the canonical
 // shape, validated upstream at the fire site.
-interface WorkspaceAppliedLike {
-  author?: { sessionId?: string };
-  changes: Array<{ path: string }>;
+// TASK-74 — the `skills:proposed` notify the host fires after a successful
+// skills:propose write. Storage-agnostic ids; the orchestrator marks the
+// PROPOSING session (read from ctx.sessionId, stamped by the IPC server from the
+// runner's bearer token) for re-spawn next turn. Re-declared here per I2 (no
+// @ax/skills import); the field shape mirrors @ax/skills' SkillsProposedEvent.
+interface SkillsProposedLike {
+  ownerUserId: string;
+  agentId: string;
+  skillId: string;
+  status: 'active' | 'pending' | 'quarantined';
 }
 
 // AgentConfig (sent through sandbox:open-session and persisted on the session
@@ -646,7 +653,7 @@ export function createOrchestrator(
     input: ApplyAuthoredCapabilityGrantInput,
   ): Promise<ApplyAuthoredCapabilityGrantOutput>;
   onHttpEgress(ctx: AgentContext, payload: HttpEgressEventLike): Promise<void>;
-  onWorkspaceApplied(ctx: AgentContext, delta: WorkspaceAppliedLike): Promise<void>;
+  onSkillsProposed(ctx: AgentContext, event: SkillsProposedLike): Promise<void>;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -848,26 +855,29 @@ export function createOrchestrator(
     }
   }
 
-  // Phase 3 (B3) — workspace:applied subscriber. Fires during commit-notify,
-  // which is BEFORE chat:turn-end, so the committing turn is still in flight.
-  // We therefore ONLY MARK the session dirty here — never terminate (that would
-  // kill the session mid-turn and hang the SSE, the Fault-A class bug). The
-  // dirty session is retired at the NEXT turn's routing decision, which runs
-  // safely between turns. Re-spawn is triggered only by a change under the
-  // agent's `.ax/draft-skills/` (a transcript-only commit, `.claude/projects/**`,
-  // must NOT trip it — else keepalive is defeated every turn). The committing
-  // session equals the conversation's activeSessionId at commit time, so keying
-  // the dirty-set by `author.sessionId` lines up with the routing candidate.
-  async function onWorkspaceApplied(
-    _ctx: AgentContext,
-    delta: WorkspaceAppliedLike,
+  // TASK-74 — skills:proposed subscriber. The host fires this after a successful
+  // skills:propose write (the agent authored a skill THIS turn). A skill becomes
+  // visible only at the NEXT spawn (the runner freezes the projection at spawn,
+  // design §D6), so we MARK the proposing session dirty and let the next turn's
+  // routing retire it + fresh-spawn (safe between turns; a mid-turn terminate
+  // would hang the SSE — the Fault-A class bug). This REPLACES the old
+  // workspace:applied `.ax/draft-skills` trigger (skill authoring left git).
+  //
+  // The proposing session is `ctx.sessionId` — the IPC server stamped the
+  // runner's bearer-resolved session onto ctx before the skill.propose handler
+  // ran, and skills:propose fires this notify on that same ctx. We mark on ANY
+  // status: an `active` free-path skill must re-spawn to load; a `pending` skill
+  // re-spawns after the approval grant ALSO terminates the warm session
+  // (belt-and-suspenders — applyAuthoredCapabilityGrant already terminates on
+  // approve, and marking here covers the case where the human approves on the
+  // SAME turn boundary). A `quarantined` skill won't project, but a harmless
+  // re-spawn is cheaper than special-casing.
+  async function onSkillsProposed(
+    ctx: AgentContext,
+    _event: SkillsProposedLike,
   ): Promise<void> {
-    const sid = delta.author?.sessionId;
-    if (
-      sid !== undefined &&
-      sid.length > 0 &&
-      delta.changes.some((c) => DRAFT_SKILLS_RE.test(c.path))
-    ) {
+    const sid = ctx.sessionId;
+    if (sid !== undefined && sid.length > 0 && sid !== 'ipc-server') {
       respawnSessions.add(sid);
     }
   }
@@ -939,14 +949,13 @@ export function createOrchestrator(
   // the runAgentInvoke finally that fires proxy:close-session.
   const sessionsNeedingRotation = new Set<string>();
 
-  // Phase 3 (B3) — sessions whose agent's draft-skills changed this turn must
-  // re-spawn next turn (the runner reads skills only at spawn, "frozen at
-  // spawn"). Populated by the workspace:applied subscriber (MARK-ONLY — see
-  // onWorkspaceApplied), consumed (terminate + fresh spawn) at the next turn's
-  // routing decision. In-memory + single-replica — same posture as
-  // @ax/routines' workspace:applied use.
+  // Sessions that proposed a skill this turn must re-spawn next turn (the runner
+  // reads skills only at spawn, "frozen at spawn", design §D6). Populated by the
+  // skills:proposed subscriber (MARK-ONLY — see onSkillsProposed; TASK-74
+  // replaced the old workspace:applied .ax/draft-skills trigger), consumed
+  // (terminate + fresh spawn) at the next turn's routing decision. In-memory +
+  // single-replica — same posture as the warm-session map.
   const respawnSessions = new Set<string>();
-  const DRAFT_SKILLS_RE = /^\.ax\/draft-skills\//;
 
   async function runAgentInvoke(
     ctx: AgentContext,
@@ -2513,7 +2522,7 @@ export function createOrchestrator(
     applyCapabilityGrant,
     applyAuthoredCapabilityGrant,
     onHttpEgress,
-    onWorkspaceApplied,
+    onSkillsProposed,
   };
 }
 

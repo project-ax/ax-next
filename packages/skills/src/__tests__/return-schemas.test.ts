@@ -16,6 +16,10 @@ import {
   SkillsApprovedCapsListOutputSchema,
   SkillsApprovedCapsSetOutputSchema,
   SkillsApprovedCapsRevokeOutputSchema,
+  SkillsProposeOutputSchema,
+  SkillsListAuthoredOutputSchema,
+  type SkillsProposeOutput,
+  type SkillsListAuthoredOutput,
   type ResolvedSkill,
   type SkillCapabilities,
   type SkillDetail,
@@ -283,5 +287,43 @@ describe('skills return schemas', () => {
   it('skills:approved-caps-revoke output round-trips', () => {
     const v: SkillsApprovedCapsRevokeOutput = { cleared: false };
     expect(SkillsApprovedCapsRevokeOutputSchema.parse(v)).toEqual(v);
+  });
+
+  it('skills:propose output round-trips (with reason)', () => {
+    const v: SkillsProposeOutput = { skillId: 'linear', status: 'quarantined', reason: 'flagged' };
+    expect(SkillsProposeOutputSchema.parse(v)).toEqual(v);
+  });
+  it('skills:propose output round-trips (active, no reason)', () => {
+    const v: SkillsProposeOutput = { skillId: 'commit-style', status: 'active' };
+    expect(SkillsProposeOutputSchema.parse(v)).toEqual(v);
+  });
+  it('skills:list-authored output round-trips a fully-populated projection', () => {
+    const v: SkillsListAuthoredOutput = {
+      skills: [
+        {
+          skillId: 'linear',
+          description: 'd',
+          manifestYaml: 'name: linear',
+          bodyMd: '# body',
+          files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+          status: 'pending',
+          reason: undefined,
+        },
+      ],
+    };
+    // `reason: undefined` is stripped by the schema; compare against the
+    // expected shape without it.
+    expect(SkillsListAuthoredOutputSchema.parse(v)).toEqual({
+      skills: [
+        {
+          skillId: 'linear',
+          description: 'd',
+          manifestYaml: 'name: linear',
+          bodyMd: '# body',
+          files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
+          status: 'pending',
+        },
+      ],
+    });
   });
 });

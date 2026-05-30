@@ -35,6 +35,11 @@ afterEach(async () => {
       /* drained pool — ignore */
     }
     try {
+      await k.schema.dropTable('skills_v1_authored').ifExists().execute();
+    } catch {
+      /* drained pool — ignore */
+    }
+    try {
       await k.schema.dropTable('skills_v1_user_attachments').ifExists().execute();
     } catch {
       /* drained pool — ignore */

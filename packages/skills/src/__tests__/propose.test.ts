@@ -1,0 +1,223 @@
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import {
+  PostgreSqlContainer,
+  type StartedPostgreSqlContainer,
+} from '@testcontainers/postgresql';
+import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { createDatabasePostgresPlugin } from '@ax/database-postgres';
+import { createSkillsPlugin } from '../plugin.js';
+import { blobStoreFakeServices } from './_blob-fake.js';
+import type {
+  SkillsProposeInput,
+  SkillsProposeOutput,
+  SkillsListAuthoredInput,
+  SkillsListAuthoredOutput,
+  SkillsScanInput,
+  SkillsScanOutput,
+  SkillsProposedEvent,
+} from '../types.js';
+
+let container: StartedPostgreSqlContainer;
+let connectionString: string;
+const harnesses: TestHarness[] = [];
+
+const httpRegisterRouteStub = async () => ({ unregister: () => {} });
+const authRequireUserStub = async () => ({ user: { id: 'admin', isAdmin: true } });
+
+const ZERO_CAP_MANIFEST = `name: commit-style
+description: How we write commit messages.
+version: 1
+`;
+
+const HOST_MANIFEST = `name: linear
+description: Work with Linear issues.
+version: 1
+capabilities:
+  allowedHosts:
+    - api.linear.app
+  credentials:
+    - slot: LINEAR_API_KEY
+      kind: api-key
+`;
+
+async function makeHarness(
+  services: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>> = {},
+): Promise<TestHarness> {
+  const h = await createTestHarness({
+    services: {
+      ...blobStoreFakeServices(),
+      'http:register-route': httpRegisterRouteStub,
+      'auth:require-user': authRequireUserStub,
+      ...services,
+    },
+    plugins: [
+      createDatabasePostgresPlugin({ connectionString }),
+      createSkillsPlugin(),
+    ],
+  });
+  harnesses.push(h);
+  return h;
+}
+
+beforeAll(async () => {
+  container = await new PostgreSqlContainer('postgres:16-alpine').start();
+  connectionString = container.getConnectionUri();
+}, 120_000);
+
+afterEach(async () => {
+  while (harnesses.length > 0) {
+    const h = harnesses.pop()!;
+    await h.close({ onError: () => {} });
+  }
+  const cleanup = new (await import('pg')).default.Client({ connectionString });
+  await cleanup.connect();
+  try {
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_authored');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_attachments');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_skill_files');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_catalog_requests');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_quarantine');
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_approved_caps');
+  } finally {
+    await cleanup.end().catch(() => {});
+  }
+});
+
+afterAll(async () => {
+  if (container) await container.stop();
+});
+
+const baseProposal = (manifestYaml: string): Omit<SkillsProposeInput, 'capabilityProposal'> => ({
+  ownerUserId: 'u1',
+  agentId: 'a1',
+  manifestYaml,
+  bodyMd: '# body\n',
+  files: [],
+  origin: 'authored',
+});
+
+// capabilityProposal is a redundant wire hint — the host re-parses the manifest.
+// Pass empty; the gate reads the parsed frontmatter, not this field.
+const emptyCaps = { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
+
+describe('skills:propose — the chokepoint + hybrid gate (TASK-74)', () => {
+  it('FREE path: zero-cap authored skill → active, one authored row, list-authored returns it', async () => {
+    const h = await makeHarness();
+    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(ZERO_CAP_MANIFEST),
+      capabilityProposal: emptyCaps,
+    });
+    expect(out).toEqual({ skillId: 'commit-style', status: 'active' });
+
+    const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
+      'skills:list-authored',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1' },
+    );
+    expect(listed.skills).toHaveLength(1);
+    expect(listed.skills[0]).toMatchObject({ skillId: 'commit-style', status: 'active' });
+  });
+
+  it('GATED path: a skill declaring hosts + a credential → pending', async () => {
+    const h = await makeHarness();
+    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(HOST_MANIFEST),
+      capabilityProposal: emptyCaps,
+    });
+    expect(out.skillId).toBe('linear');
+    expect(out.status).toBe('pending');
+  });
+
+  it('QUARANTINE path: a skills:scan hit → quarantined with the reason; omitted from active', async () => {
+    const reason = 'contains a credential exfiltration pattern';
+    const h = await makeHarness({
+      'skills:scan': (async (_ctx, _input) =>
+        ({ verdict: 'hit', reason }) satisfies SkillsScanOutput) as never,
+    });
+    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(ZERO_CAP_MANIFEST),
+      capabilityProposal: emptyCaps,
+    });
+    expect(out).toEqual({ skillId: 'commit-style', status: 'quarantined', reason });
+
+    const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
+      'skills:list-authored',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1' },
+    );
+    expect(listed.skills[0]).toMatchObject({ status: 'quarantined', reason });
+  });
+
+  it('skills:scan receives the bundle text', async () => {
+    let seen: SkillsScanInput | undefined;
+    const h = await makeHarness({
+      'skills:scan': (async (_ctx, input) => {
+        seen = input as SkillsScanInput;
+        return { verdict: 'clean' } satisfies SkillsScanOutput;
+      }) as never,
+    });
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(ZERO_CAP_MANIFEST),
+      capabilityProposal: emptyCaps,
+    });
+    expect(seen?.skillId).toBe('commit-style');
+    expect(seen?.manifestYaml).toContain('commit-style');
+  });
+
+  it('fires skills:proposed after a successful write', async () => {
+    const events: SkillsProposedEvent[] = [];
+    const h = await makeHarness();
+    h.bus.subscribe<SkillsProposedEvent>('skills:proposed', 'test-sub', async (_ctx, e) => {
+      events.push(e);
+      return undefined;
+    });
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(ZERO_CAP_MANIFEST),
+      capabilityProposal: emptyCaps,
+    });
+    expect(events).toEqual([
+      { ownerUserId: 'u1', agentId: 'a1', skillId: 'commit-style', status: 'active' },
+    ]);
+  });
+
+  it('rejects a structurally-invalid manifest (PluginError, no row written)', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+        ...baseProposal('this is not: [valid yaml frontmatter'),
+        capabilityProposal: emptyCaps,
+      }),
+    ).rejects.toThrow();
+
+    const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
+      'skills:list-authored',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1' },
+    );
+    expect(listed.skills).toHaveLength(0);
+  });
+
+  it('re-propose REPLACES the row (last-write-wins per draft)', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(ZERO_CAP_MANIFEST),
+      capabilityProposal: emptyCaps,
+    });
+    // Re-propose the same id but now with caps → flips to pending.
+    const out2 = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(HOST_MANIFEST.replace('name: linear', 'name: commit-style')),
+      capabilityProposal: emptyCaps,
+    });
+    expect(out2.status).toBe('pending');
+
+    const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
+      'skills:list-authored',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1' },
+    );
+    expect(listed.skills).toHaveLength(1);
+    expect(listed.skills[0]?.status).toBe('pending');
+  });
+});

@@ -7,10 +7,7 @@ import {
 } from '@ax/core';
 import { sql, type Kysely } from 'kysely';
 import { checkAccess } from './acl.js';
-import {
-  listAuthoredBundles,
-  listAuthoredSkills,
-} from './authored-skills.js';
+import { listAuthoredSkills } from './authored-skills.js';
 import { projectAuthoredBundle, type ApprovedCapEntry } from './authored-caps.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
 import { runAgentsMigration, type AgentsDatabase } from './migrations.js';
@@ -118,22 +115,15 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // declared.
       calls: ['database:get-instance', 'http:register-route', 'auth:require-user'],
       // Soft deps used via hasService by the authored-skill discovery hooks
-      // (agents:list-authored-skills + agents:resolve-authored-skills): presets
-      // that strip the skills/workspace plugins degrade gracefully rather than
-      // failing to boot.
+      // (agents:list-authored-skills + agents:resolve-authored-skills). TASK-74:
+      // these read the @ax/skills DB store (skills:list-authored) — the
+      // .ax/draft-skills workspace scan is RETIRED, so workspace:list/read are
+      // no longer deps. A preset that strips @ax/skills degrades to no authored
+      // skills (the safe default).
       optionalCalls: [
         {
-          hook: 'workspace:list',
-          degradation: 'authored-skill discovery is skipped (no workspace backend)',
-        },
-        {
-          hook: 'workspace:read',
-          degradation: 'authored-skill bodies cannot be read (no workspace backend)',
-        },
-        {
-          hook: 'skills:quarantine-get',
-          degradation:
-            'a quarantined authored draft is NOT omitted from the discovery projection (no skills store) — it is projected like any other draft',
+          hook: 'skills:list-authored',
+          degradation: 'authored-skill discovery is skipped (no skills store)',
         },
         {
           hook: 'skills:approved-caps-list',
@@ -357,35 +347,56 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         },
       );
 
-      // Phase 4 projection source: returns every parseable authored draft for
-      // this agent in the resolved-skill shape. The frontmatter capabilities
-      // block is parsed as the agent's PROPOSAL; only the human-approved subset
-      // (proposal ∩ approved-store) is projected as live capabilities. The
-      // unapproved remainder (proposalDelta) drives PR-B's approval card.
-      // The materialized manifestYaml is caps-stripped so the SKILL.md the SDK
-      // sees never carries a capabilities block. Quarantined drafts are OMITTED
-      // so the model never sees their name/description.
-      // skills:quarantine-get and skills:approved-caps-list are soft deps
-      // (hasService-guarded): a preset without the skills store degrades
-      // gracefully — absent approved store → empty approved → empty caps.
+      // Authored-skill discovery projection (TASK-74 re-backing). The source is
+      // now the @ax/skills DB store (skills:list-authored) — the
+      // .ax/draft-skills git workspace projection (listAuthoredBundles) is
+      // RETIRED (one source of truth, I4). The shape returned is unchanged, so
+      // the orchestrator union + the approval-card flow are untouched.
+      //
+      // The frontmatter capabilities block is the agent's PROPOSAL; only the
+      // human-approved subset (proposal ∩ approved-store) projects as live
+      // capabilities; the unapproved remainder (proposalDelta) drives the
+      // approval card. The materialized manifestYaml is caps-stripped so the
+      // SKILL.md the SDK sees never carries a capabilities block.
+      //
+      // QUARANTINE is now the row's `status === 'quarantined'` (set by the
+      // skills:propose gate when skills:scan flagged it) — a quarantined skill
+      // is OMITTED so the model never sees its name/description. `pending` /
+      // `active` both project (a `pending` skill has a non-empty proposalDelta →
+      // the orchestrator fires the card; nothing in its delta is approved yet, so
+      // it grants no live reach until the human approves and the row flips to
+      // `active`). skills:list-authored / skills:approved-caps-list are soft deps
+      // (hasService-guarded): a preset without the skills store yields no
+      // authored skills / empty approved caps — the safe defaults.
       bus.registerService<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
         'agents:resolve-authored-skills',
         PLUGIN_NAME,
         async (_ctx, input) => {
-          const bundles = await listAuthoredBundles(bus, input.ownerUserId, input.agentId);
+          if (!bus.hasService('skills:list-authored')) {
+            return { skills: [] };
+          }
+          // Structural mirror of @ax/skills' SkillsListAuthoredOutput (I2 — no
+          // @ax/skills import).
+          interface AuthoredRow {
+            skillId: string;
+            description: string;
+            manifestYaml: string;
+            bodyMd: string;
+            files: Array<{ path: string; contents: string }>;
+            status: 'active' | 'pending' | 'quarantined';
+            reason?: string;
+          }
+          const { skills: rows } = await bus.call<
+            { ownerUserId: string; agentId: string },
+            { skills: AuthoredRow[] }
+          >('skills:list-authored', _ctx, {
+            ownerUserId: input.ownerUserId,
+            agentId: input.agentId,
+          });
+
           const skills: AuthoredResolvedSkill[] = [];
-          for (const b of bundles) {
-            if (bus.hasService('skills:quarantine-get')) {
-              const q = await bus.call<
-                { ownerUserId: string; agentId: string; skillId: string },
-                { quarantined: boolean; reason?: string }
-              >('skills:quarantine-get', _ctx, {
-                ownerUserId: input.ownerUserId,
-                agentId: input.agentId,
-                skillId: b.id,
-              });
-              if (q.quarantined) continue; // omit — the model never sees its name/description
-            }
+          for (const b of rows) {
+            if (b.status === 'quarantined') continue; // omit — model never sees it
 
             // Read what the human approved (soft dep). Absent store / error →
             // [] → the safe empty-caps default (the proxy blocks everything).
@@ -398,12 +409,12 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
                 >('skills:approved-caps-list', _ctx, {
                   ownerUserId: input.ownerUserId,
                   agentId: input.agentId,
-                  skillId: b.id,
+                  skillId: b.skillId,
                 });
                 approved = r.capabilities;
               } catch (err) {
                 _ctx.logger.warn('resolve_authored_caps_list_failed', {
-                  skillId: b.id,
+                  skillId: b.skillId,
                   error: err instanceof Error ? err.message : String(err),
                 });
                 approved = [];
@@ -414,7 +425,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
             if (proj === null) continue; // unparseable — skip (defensive)
 
             skills.push({
-              id: b.id,
+              id: b.skillId,
               description: proj.description,
               capabilities: proj.capabilities,
               proposalDelta: proj.delta,

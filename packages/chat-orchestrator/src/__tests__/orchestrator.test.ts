@@ -5,7 +5,6 @@ import {
   makeAgentContext,
   createLogger,
   reject,
-  asWorkspaceVersion,
   type AgentMessage,
   type AgentOutcome,
   type ServiceHandler,
@@ -4051,22 +4050,23 @@ describe('withBrokerDefaults', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Phase 3 (B3) — session-dirty → next-turn re-spawn on .ax/draft-skills change.
+// TASK-74 — session-dirty → next-turn re-spawn on skills:proposed.
 //
 // Under keepalive a warm session reuses a frozen skill projection. When a turn
-// commits a change under the agent's `.ax/draft-skills/`, the `workspace:applied`
-// subscriber marks the committing session dirty (mark-ONLY — terminating there
-// would wedge the in-flight turn / hang the SSE, the Fault-A class bug). The
-// dirty session is retired at the NEXT turn's routing decision (safely between
-// turns), forcing a fresh spawn that re-derives the projection. A transcript-only
-// commit (`.claude/projects/**`) must NOT trigger a re-spawn — else keepalive is
-// defeated every turn.
+// proposes a skill (skill_propose → skills:propose → skills:proposed), the
+// `skills:proposed` subscriber marks the PROPOSING session dirty (mark-ONLY —
+// terminating there would wedge the in-flight turn / hang the SSE, the Fault-A
+// class bug). The dirty session is retired at the NEXT turn's routing decision
+// (safely between turns), forcing a fresh spawn that re-derives the projection
+// so the freshly-active skill is visible (design §D6). A turn that proposed
+// NOTHING must NOT trigger a re-spawn — else keepalive is defeated every turn.
 //
-// We drive turns through the bus harness (mirrors keepalive.test.ts) and fire
-// `workspace:applied` through the bus, exercising the real plugin.ts wiring →
-// orchestrator.onWorkspaceApplied → the shared dirty-set the routing reads.
+// We drive turns through the bus harness and fire `skills:proposed` through the
+// bus on the proposing session's ctx, exercising the real plugin.ts wiring →
+// orchestrator.onSkillsProposed → the shared dirty-set the routing reads. (This
+// replaced the old workspace:applied .ax/draft-skills trigger.)
 // ---------------------------------------------------------------------------
-describe('chat-orchestrator session-dirty re-spawn (B3)', () => {
+describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
   function ctxWith(o: { sessionId: string; conversationId?: string; reqId: string }) {
     return makeAgentContext({
       sessionId: o.sessionId,
@@ -4172,7 +4172,17 @@ describe('chat-orchestrator session-dirty re-spawn (B3)', () => {
     return { h, counters };
   }
 
-  it('re-spawns after a turn that committed a .ax/draft-skills change', async () => {
+  // Fire skills:proposed on the proposing session's ctx (the host stamps the
+  // runner's session onto ctx; the orchestrator marks ctx.sessionId dirty).
+  async function fireProposed(bus: HookBus, sessionId: string) {
+    await bus.fire(
+      'skills:proposed',
+      ctxWith({ sessionId, reqId: 'sp-1' }),
+      { ownerUserId: 'test-user', agentId: 'test-agent', skillId: 'linear', status: 'active' },
+    );
+  }
+
+  it('re-spawns after a turn that proposed a skill', async () => {
     const { h, counters } = await makeKeepaliveHarness();
 
     // Turn 1 — fresh spawn, binds 's-1' as the conversation's active session.
@@ -4184,18 +4194,9 @@ describe('chat-orchestrator session-dirty re-spawn (B3)', () => {
     );
     expect(counters.opens).toBe(1);
 
-    // The committing session ('s-1') changed its agent's .ax/draft-skills/ this
-    // turn. workspace:applied fires (BEFORE the next turn) → marks 's-1' dirty.
-    await h.bus.fire(
-      'workspace:applied',
-      ctxWith({ sessionId: 's-1', reqId: 'wa-1' }),
-      {
-        before: null,
-        after: asWorkspaceVersion('v2'),
-        author: { userId: 'test-user', agentId: 'test-agent', sessionId: 's-1' },
-        changes: [{ path: '.ax/draft-skills/linear/SKILL.md', kind: 'added' }],
-      },
-    );
+    // 's-1' proposed a skill this turn → skills:proposed fires (BEFORE the next
+    // turn) on its ctx → marks 's-1' dirty.
+    await fireProposed(h.bus, 's-1');
 
     // Turn 2 — same conversation. 's-1' is still alive, BUT it's dirty → routing
     // must decline warm-reuse, terminate 's-1', and re-spawn (a 2nd open).
@@ -4210,7 +4211,7 @@ describe('chat-orchestrator session-dirty re-spawn (B3)', () => {
     expect(counters.terminates).toContain('s-1'); // stale session retired
   });
 
-  it('reuses the warm session when the turn changed only the transcript (no draft change)', async () => {
+  it('reuses the warm session when the turn proposed nothing', async () => {
     const { h, counters } = await makeKeepaliveHarness();
 
     // Turn 1 — fresh spawn, binds 's-1'.
@@ -4222,17 +4223,7 @@ describe('chat-orchestrator session-dirty re-spawn (B3)', () => {
     );
     expect(counters.opens).toBe(1);
 
-    // Transcript-only commit — must NOT mark 's-1' dirty (keepalive must hold).
-    await h.bus.fire(
-      'workspace:applied',
-      ctxWith({ sessionId: 's-1', reqId: 'wa-1' }),
-      {
-        before: null,
-        after: asWorkspaceVersion('v2'),
-        author: { userId: 'test-user', agentId: 'test-agent', sessionId: 's-1' },
-        changes: [{ path: '.claude/projects/abc.jsonl', kind: 'modified' }],
-      },
-    );
+    // No skills:proposed fires — 's-1' stays clean (keepalive must hold).
 
     // Turn 2 — 's-1' alive + clean → routed warm, NO second open.
     fireTurnEnd(h.bus, 's-1', 'req-2');
@@ -4335,16 +4326,11 @@ describe('chat-orchestrator session-dirty re-spawn (B3)', () => {
     );
     expect(counters.opens).toBe(1);
 
-    // Mark 's-1' dirty via a .ax/draft-skills/ commit.
+    // Mark 's-1' dirty via a skills:proposed notify (the agent proposed a skill).
     await h.bus.fire(
-      'workspace:applied',
-      ctxWith({ sessionId: 's-1', reqId: 'wa-1' }),
-      {
-        before: null,
-        after: asWorkspaceVersion('v2'),
-        author: { userId: 'test-user', agentId: 'test-agent', sessionId: 's-1' },
-        changes: [{ path: '.ax/draft-skills/linear/SKILL.md', kind: 'added' }],
-      },
+      'skills:proposed',
+      ctxWith({ sessionId: 's-1', reqId: 'sp-1' }),
+      { ownerUserId: 'test-user', agentId: 'test-agent', skillId: 'linear', status: 'active' },
     );
 
     // Turn 2 — dirty-session retire throws. The orchestrator must NOT propagate

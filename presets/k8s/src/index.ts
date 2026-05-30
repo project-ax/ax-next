@@ -27,6 +27,7 @@ import { createSkillBrokerPlugin } from '@ax/skill-broker';
 import { createHostGrantsPlugin } from '@ax/host-grants';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
+import { createToolSkillProposePlugin } from '@ax/tool-skill-propose';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { createAuthBetterPlugin, type AuthBetterConfig } from '@ax/auth-better';
 import { createTeamsPlugin } from '@ax/teams';
@@ -861,6 +862,19 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // smoke flow includes it in tool.list. The sandbox-MCP bridge dispatches
   // calls once the runner's allowedTools includes `artifact_publish`.
   plugins.push(createToolArtifactPublishPlugin());
+  // TASK-74 (out-of-git Part D): registers the `skill_propose` tool descriptor —
+  // gated on open mode (allow_user_installed_skills), the design's tie for
+  // agent skill authoring. The sandbox-side executor (runner) reads
+  // /ephemeral/skill-draft/<id>/ and ships skill.propose → the host's
+  // skills:propose gate (above). The gate + the skills:scan veto
+  // (validator-skill) + the skills:list-authored projection (re-backing
+  // agents:resolve-authored-skills) are all wired, so the authoring chokepoint
+  // is reachable end-to-end. A wildcard-scope agent (dev/single-tenant) sees the
+  // descriptor via the catalog wildcard; a non-wildcard tenant agent needs it in
+  // its allowedTools (follow-up — same broker-injection shape as TASK-51).
+  if (config.allowUserInstalledSkills) {
+    plugins.push(createToolSkillProposePlugin());
+  }
 
   // Auto-titling: @ax/llm-anthropic registers `llm:call:anthropic`,
   // @ax/conversation-titles subscribes to `chat:turn-end` and dispatches

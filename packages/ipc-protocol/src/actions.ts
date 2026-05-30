@@ -674,6 +674,100 @@ export type SessionGetTranscriptRequest = z.infer<
   typeof SessionGetTranscriptRequestSchema
 >;
 
+// ---------------------------------------------------------------------------
+// skill.propose — TASK-74 (out-of-git Part D / §D1–D2). The runner-side skill
+// authoring chokepoint.
+//
+// The agent writes a bundle into `/ephemeral/skill-draft/<id>/` (throwaway
+// scratch git never sees) then calls the `skill_propose` sandbox tool. Its
+// executor reads + structurally validates the draft dir, then posts THIS
+// envelope so the host's `skills:propose` hook gates + stores it (DB row +
+// blob). This is an ordinary JSON `call()` action — the bundle EXTRA files ride
+// `files[]` inline (validateBundleFiles caps them at ≤16 files / ≤512 KiB total,
+// far under the 4 MiB JSON `MAX_FRAME`), so there is NO raw-octet-stream channel
+// here (unlike artifact_publish, whose bytes are unbounded). The host writes the
+// files to the blob store itself, reusing the same byte-store path skills:upsert
+// uses — one storage path (I4).
+//
+// SECURITY: there is intentionally NO conversationId / agentId / ownerUserId in
+// the request body. The host derives the (user, agent) scope from the runner's
+// session row (bearer token → ctx → session:get-config), exactly as
+// session.get-config / session.append-transcript do — so a runner cannot aim a
+// proposal at a foreign agent. `origin` is FIXED to 'authored' on the wire (the
+// schema is a single-literal enum): the runner only ever proposes a bundle IT
+// composed; `imported`/`attached` are host-side admin/catalog actions that never
+// come from the untrusted runner (I5 — the runner can't claim a more-trusted
+// provenance to dodge the gate).
+//
+// Field names are skill-domain, not backend vocabulary (I1): `manifestYaml` /
+// `bodyMd` / `files` / `capabilityProposal` are the skill bundle shape;
+// `origin` is a trust-provenance enum, not a storage id. The bundle bytes that
+// land in the blob store are keyed by a content sha256 INSIDE the host hook —
+// never surfaced on this wire. `manifestYaml` / `bodyMd` / file contents are
+// UNTRUSTED, adversarial model output: stored as opaque bytes, structurally
+// validated, scanned, and gated — never executed or shell-interpolated.
+// ---------------------------------------------------------------------------
+
+// Mirror of skills-parser CapabilitySlot — re-declared at the wire boundary
+// (I2: ipc-protocol must not import @ax/skills-parser, the host kernel layer).
+// Kept structurally in sync; if skills-parser's shape drifts, reconcile here.
+const SkillProposeSlotSchema = z.object({
+  slot: z.string(),
+  kind: z.literal('api-key'),
+  description: z.string().optional(),
+  account: z.string().optional(),
+});
+const SkillProposeMcpSchema = z.object({
+  name: z.string(),
+  transport: z.union([z.literal('stdio'), z.literal('http')]),
+  command: z.string().optional(),
+  args: z.array(z.string()).optional(),
+  env: z.record(z.string()).optional(),
+  url: z.string().optional(),
+  allowedHosts: z.array(z.string()),
+  credentials: z.array(SkillProposeSlotSchema),
+});
+const SkillProposeCapabilitiesSchema = z.object({
+  allowedHosts: z.array(z.string()),
+  credentials: z.array(SkillProposeSlotSchema),
+  mcpServers: z.array(SkillProposeMcpSchema),
+  packages: z.object({ npm: z.array(z.string()), pypi: z.array(z.string()) }),
+});
+
+export const SkillProposeRequestSchema = z
+  .object({
+    // The raw YAML frontmatter (between the `---` fences), verbatim. The host
+    // re-parses + re-validates it (defense-in-depth at the trust boundary).
+    manifestYaml: z.string().min(1).max(64 * 1024),
+    bodyMd: z.string().max(512 * 1024),
+    // Bundle EXTRA (non-SKILL.md) files. Bounded by the host's validateBundleFiles
+    // (≤16 files / ≤512 KiB total) — re-validated host-side; the wire cap here is
+    // a coarse sanity wall so a malformed runner can't blow the JSON frame.
+    files: z
+      .array(z.object({ path: z.string().max(256), contents: z.string() }))
+      .max(16),
+    // The agent's capability PROPOSAL (parsed from the frontmatter). The gate
+    // classifies on this (∅ + authored + clean scan → active; any cap → pending).
+    capabilityProposal: SkillProposeCapabilitiesSchema,
+    // FIXED to 'authored' — the runner only proposes bundles it composed.
+    origin: z.literal('authored'),
+  })
+  .strict();
+export type SkillProposeRequest = z.infer<typeof SkillProposeRequestSchema>;
+
+export const SkillProposeResponseSchema = z.object({
+  skillId: z.string(),
+  // The gate verdict (design §D3). `active` = materializes next spawn; `pending`
+  // = awaits the approval card; `quarantined` = a scan hit, omitted from the
+  // projection (reason carried separately to the agent via the tool result).
+  status: z.enum(['active', 'pending', 'quarantined']),
+  // On a quarantine (or a structural/scan reason worth surfacing) the host
+  // returns a short, model-safe reason so the agent can tell the user what to
+  // fix. Absent on a clean active/pending.
+  reason: z.string().optional(),
+});
+export type SkillProposeResponse = z.infer<typeof SkillProposeResponseSchema>;
+
 // `reqId` on `user-message` is the server-minted request identifier (J9)
 // that the host stamped onto the message when it called
 // `session:queue-work`. The runner caches it locally and uses it to label

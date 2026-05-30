@@ -4,6 +4,7 @@ import {
   capabilityHandoffNote,
   ephemeralScratchNote,
   pythonVenvNote,
+  skillAuthoringNote,
   workspaceNote,
 } from '../system-prompt.js';
 
@@ -34,7 +35,7 @@ describe('buildSystemPrompt', () => {
       expect(buildSystemPrompt('', WS, undefined)).toEqual({
         type: 'preset',
         preset: 'claude_code',
-        append: `${workspaceNote(WS)}\n\n${capabilityHandoffNote()}`,
+        append: `${workspaceNote(WS)}\n\n${capabilityHandoffNote()}\n\n${skillAuthoringNote()}`,
       });
     });
   });
@@ -56,7 +57,7 @@ describe('buildSystemPrompt', () => {
       expect(result).toEqual({
         type: 'preset',
         preset: 'claude_code',
-        append: `${workspaceNote(WS)}\n\n${ephemeralScratchNote('/tmp/ax-scratch')}\n\n${capabilityHandoffNote()}`,
+        append: `${workspaceNote(WS)}\n\n${ephemeralScratchNote('/tmp/ax-scratch')}\n\n${capabilityHandoffNote()}\n\n${skillAuthoringNote()}`,
       });
     });
 
@@ -102,6 +103,26 @@ describe('buildSystemPrompt', () => {
       const out = buildSystemPrompt('', WS, undefined);
       const text = typeof out === 'string' ? out : (out.append ?? '');
       expect(text.toLowerCase()).toContain('asked your admin');
+    });
+  });
+
+  describe('skill-authoring note (always present, TASK-74 §D6)', () => {
+    it('states proposed skills are available next turn and not invokable now', () => {
+      const note = skillAuthoringNote().toLowerCase();
+      expect(note).toContain('skill_propose');
+      expect(note).toMatch(/next message|next turn/);
+      expect(note).toContain('do not try to invoke');
+    });
+
+    it('is appended to a custom string prompt', () => {
+      const out = buildSystemPrompt('You are helpful.', WS, undefined) as string;
+      expect(out).toContain(skillAuthoringNote());
+    });
+
+    it('rides the empty-prompt preset append', () => {
+      const out = buildSystemPrompt('', WS, undefined);
+      const append = typeof out === 'string' ? out : (out.append ?? '');
+      expect(append).toContain(skillAuthoringNote());
     });
   });
 

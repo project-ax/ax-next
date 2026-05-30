@@ -52,6 +52,7 @@ import { setupProxy } from './proxy-startup.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { buildSystemPrompt } from './system-prompt.js';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
+import { createSkillProposeExecutor } from './skill-propose-executor.js';
 import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
 import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME } from './tool-names.js';
 import {
@@ -65,6 +66,7 @@ import {
   type TranscriptShipState,
 } from './transcript-delta.js';
 import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
+import { SKILL_PROPOSE_TOOL_NAME } from '@ax/tool-skill-propose';
 
 // ---------------------------------------------------------------------------
 // Runner entry binary (claude-sdk variant).
@@ -101,6 +103,7 @@ import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 // ---------------------------------------------------------------------------
 
 export { createArtifactPublishExecutor } from './artifact-publish-executor.js';
+export { createSkillProposeExecutor } from './skill-propose-executor.js';
 export type {
   ArtifactPublishOutput,
   CreateArtifactPublishExecutorOptions,
@@ -491,6 +494,19 @@ export async function main(): Promise<number> {
         ...(env.ephemeralRoot !== undefined ? { ephemeralRoot: env.ephemeralRoot } : {}),
         client,
         conversationId,
+      }),
+    );
+  }
+  // TASK-74 — skill_propose executor (sandbox-executed, like artifact_publish):
+  // reads the agent's draft under /ephemeral/skill-draft/<id>/, validates it, and
+  // ships it to the host gate over the skill.propose IPC action. Needs the
+  // ephemeral root (the draft scratch) + the IPC client; scope is host-derived.
+  if (tools.some((t) => t.name === SKILL_PROPOSE_TOOL_NAME && t.executesIn === 'sandbox')) {
+    localDispatcher.register(
+      SKILL_PROPOSE_TOOL_NAME,
+      createSkillProposeExecutor({
+        ...(env.ephemeralRoot !== undefined ? { ephemeralRoot: env.ephemeralRoot } : {}),
+        client,
       }),
     );
   }
