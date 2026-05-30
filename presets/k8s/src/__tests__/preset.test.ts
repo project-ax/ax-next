@@ -225,6 +225,17 @@ describe('@ax/preset-k8s wiring', () => {
     }
   });
 
+  it('loads @ax/skills and registers the approved-caps read service (Phase 4 PR-A)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const registers = plugins.flatMap((p) => p.manifest.registers);
+    // The read-only approval service feeds the agents projection. The write
+    // services (-set/-revoke) are deferred to PR-B with the grant path, so they
+    // must NOT be registered yet (half-wired-window discipline).
+    expect(registers).toContain('skills:approved-caps-list');
+    expect(registers).not.toContain('skills:approved-caps-set');
+    expect(registers).not.toContain('skills:approved-caps-revoke');
+  });
+
   it('includes @ax/skill-broker and its calls are satisfied (TASK-34)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const names = plugins.map((p) => p.manifest.name);
