@@ -679,9 +679,6 @@ importers:
 
   packages/conversations:
     dependencies:
-      '@ax/agent-claude-sdk-runner-host':
-        specifier: workspace:*
-        version: link:../agent-claude-sdk-runner-host
       '@ax/core':
         specifier: workspace:*
         version: link:../core
@@ -2164,9 +2161,6 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace-git-server
     devDependencies:
-      '@ax/agent-claude-sdk-runner-host':
-        specifier: workspace:*
-        version: link:../../packages/agent-claude-sdk-runner-host
       '@ax/ipc-core':
         specifier: workspace:*
         version: link:../../packages/ipc-core

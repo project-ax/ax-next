@@ -40,14 +40,13 @@ import { createConversationsPlugin } from '@ax/conversations';
 import type {
   CreateInput as ConversationsCreateInput,
   CreateOutput as ConversationsCreateOutput,
-  StoreRunnerSessionInput as ConversationsStoreRunnerSessionInput,
-  StoreRunnerSessionOutput as ConversationsStoreRunnerSessionOutput,
   GetInput as ConversationsGetInput,
   GetOutput as ConversationsGetOutput,
   GetMetadataInput as ConversationsGetMetadataInput,
   GetMetadataOutput as ConversationsGetMetadataOutput,
+  AppendEventInput as ConversationsAppendEventInput,
+  AppendEventOutput as ConversationsAppendEventOutput,
 } from '@ax/conversations';
-import { parseJsonlToTurns } from '@ax/agent-claude-sdk-runner-host';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import { createConversationTitlesPlugin } from '@ax/conversation-titles';
 import type Anthropic from '@anthropic-ai/sdk';
@@ -2497,233 +2496,6 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   );
 
   // ---------------------------------------------------------------------------
-  // Phase D / Phase E canary — conversations:get reads transcripts from the
-  // runner-native jsonl in the workspace. After Phase E (2026-05-09) this
-  // is the ONLY transcript path: the legacy `conversations_v1_turns` table,
-  // the `:append-turn` / `:fetch-history` service hooks, and the
-  // `conversation.fetch-history` IPC are all gone. No DB fallback exists,
-  // so this canary now guards the entire read path end-to-end.
-  //
-  // The pipeline:
-  //   preset config (git-protocol workspace) →
-  //   bootstrap → workspace plugin (real workspace-git-server) →
-  //   workspace:apply seeds the jsonl into the storage tier →
-  //   conversations:get → workspace:list + workspace:read → parser →
-  //   canonical Turn[] shape.
-  //
-  // We do NOT drive `agent:invoke` — the chat path is not what we're
-  // verifying. We use `workspace:apply` to simulate what the runner's
-  // HOME-redirect + commit-notify pipeline would write at turn boundaries.
-  // (The Phase A spike confirmed that pipeline; the spec for THIS test is
-  // the read+parse path.)
-  //
-  // Postgres testcontainer is required because the conversations plugin
-  // calls `database:get-instance`. It's the only test in this file that
-  // does — the chat-path canaries above all use sqlite + in-memory session
-  // because they don't load conversations.
-  // ---------------------------------------------------------------------------
-  it(
-    'Phase D canary: conversations:get reads transcript from workspace jsonl',
-    { timeout: 180_000 },
-    async () => {
-      const connectionString = await ensurePostgresStarted();
-
-      // Storage tier — same shape as the git-protocol canary above.
-      const serverToken = randomBytes(32).toString('hex');
-      const serverRepoRoot = await fs.realpath(
-        await fs.mkdtemp(path.join(os.tmpdir(), 'ax-phase-d-canary-')),
-      );
-
-      let server: WorkspaceGitServer | null = null;
-      let handle: Awaited<ReturnType<typeof bootstrap>> | null = null;
-      try {
-        server = await createWorkspaceGitServer({
-          repoRoot: serverRepoRoot,
-          host: '127.0.0.1',
-          port: 0,
-          token: serverToken,
-        });
-
-        // No chat is driven; the script is a no-op stub kept only so the
-        // test-proxy plugin has something to serialize. Same posture as
-        // the Phase 3 canaries above.
-        const script: StubRunnerScript = {
-          entries: [{ kind: 'finish', reason: 'end_turn' }],
-        };
-
-        const presetConfig: K8sPresetConfig = {
-          database: { connectionString },
-          eventbus: { connectionString: 'postgres://stub:5432/stub' },
-          session: { connectionString: 'postgres://stub:5432/stub' },
-          workspace: {
-            backend: 'git-protocol',
-            baseUrl: `http://127.0.0.1:${server.port}`,
-            token: serverToken,
-          },
-          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
-          // default; point its root at the per-test tmp dir so init's
-          // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
-          blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
-          // Blob backend (TASK-71): the preset now wires @ax/blob-store-fs by
-        // default; point its root at the per-test tmp dir so init's
-        // ensureRoot() doesn't try to mkdir the prod default /var/lib/ax-next.
-        blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
-        sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
-          ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
-          chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
-          http: {
-            host: '127.0.0.1',
-            port: 0,
-            cookieKey: '0'.repeat(64),
-            allowedOrigins: [],
-          },
-          };
-
-        // We use the existing PLUGINS_TO_DROP filter — it strips the
-        // postgres trio (database/storage/eventbus/session) from the
-        // preset's output AND the conversations plugin (which is in the
-        // preset but can't run without postgres in this test rig). Then
-        // we add `database-postgres` back as a replacement (now
-        // connected to the real testcontainer) plus the `conversations`
-        // plugin we just dropped — this canary needs the real one
-        // wired against the real testcontainer database.
-        const presetPlugins = createK8sPlugins(presetConfig);
-        const kept = presetPlugins.filter(
-          (p) => !PLUGINS_TO_DROP.has(p.manifest.name),
-        );
-
-        const sqlitePath = path.join(tmp, 'preset-k8s-acceptance-phased.sqlite');
-        const replacements: Plugin[] = [
-          // database-postgres: real, against the testcontainer. Provides
-          // `database:get-instance` for the conversations plugin.
-          createDatabasePostgresPlugin({ connectionString }),
-          // conversations plugin — the unit under test for this canary.
-          createConversationsPlugin(),
-          // storage:set/get + session:* — sqlite + in-memory remain (the
-          // chat-path test above uses the same pair). Conversations does
-          // NOT depend on storage:get/set.
-          createStorageSqlitePlugin({ databasePath: sqlitePath }),
-          createSessionInmemoryPlugin(),
-          createSandboxSubprocessPlugin(),
-          createIpcServerPlugin(),
-          createTestProxyPlugin({ script }),
-          // agents:resolve permissive mock — conversations:create gates
-          // the user through this hook (Invariant J1).
-          createPermissiveAgentsStubPlugin(),
-          createMcpClientPlugin(),
-        ];
-
-        const plugins: Plugin[] = [...kept, ...replacements];
-
-        const bus = new HookBus();
-        handle = await bootstrap({ bus, plugins, config: {} });
-
-        const userId = 'phase-d-canary-user';
-        const agentId = 'phase-d-canary-agent';
-        const ctx = makeAgentContext({
-          sessionId: 'phase-d-canary-session',
-          agentId,
-          userId,
-          workspace: { rootPath: tmp },
-        });
-
-        // 1. Create a conversation. The conversations plugin freezes
-        // agentId on the row and starts with runner_session_id=null.
-        const conv = await bus.call<
-          ConversationsCreateInput,
-          ConversationsCreateOutput
-        >('conversations:create', ctx, { userId, agentId });
-        expect(conv.runnerSessionId).toBeNull();
-
-        // 2. Bind a runnerSessionId. This is what the runner-plugin's
-        // host-side IPC handler would do on the first turn (Phase C).
-        const runnerSessionId = '00000000-0000-0000-0000-000000000abc';
-        await bus.call<
-          ConversationsStoreRunnerSessionInput,
-          ConversationsStoreRunnerSessionOutput
-        >('conversations:store-runner-session', ctx, {
-          conversationId: conv.conversationId,
-          runnerSessionId,
-        });
-
-        // 3. Seed the jsonl into the workspace storage tier via the same
-        // workspace:apply hook the runner's commit-notify pipeline would
-        // write at turn boundaries. Format mirrors the SDK's real
-        // on-disk shape: one user line + one assistant line.
-        const jsonlText = [
-          JSON.stringify({
-            type: 'user',
-            message: { role: 'user', content: 'hello canary' },
-            uuid: 'u-1111',
-            timestamp: '2026-05-02T00:00:00.000Z',
-            sessionId: runnerSessionId,
-          }),
-          JSON.stringify({
-            type: 'assistant',
-            message: {
-              id: 'msg_canary',
-              type: 'message',
-              role: 'assistant',
-              content: [{ type: 'text', text: 'hi back' }],
-            },
-            uuid: 'u-2222',
-            timestamp: '2026-05-02T00:00:01.000Z',
-            sessionId: runnerSessionId,
-          }),
-          '',
-        ].join('\n');
-        const jsonlBytes = new TextEncoder().encode(jsonlText);
-        // The `.claude/projects/<encoded-cwd>/<sessionId>.jsonl` location
-        // is what the SDK writes after HOME redirect (Phase A spike).
-        // The `<encoded-cwd>` segment is whatever — `conversations:get`
-        // globs by sessionId across all subdirectories.
-        const jsonlPath = `.claude/projects/-permanent/${runnerSessionId}.jsonl`;
-        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-          'workspace:apply',
-          ctx,
-          {
-            changes: [{ path: jsonlPath, kind: 'put', content: jsonlBytes }],
-            parent: null,
-            reason: 'phase-d canary: seed jsonl',
-          },
-        );
-
-        // 4. Call conversations:get. Internally it does:
-        //   workspace:list({pathGlob: ".claude/projects/**/<sessionId>.jsonl"})
-        //   → workspace:read({path}) → parseJsonlToTurns(bytes)
-        const got = await bus.call<
-          ConversationsGetInput,
-          ConversationsGetOutput
-        >('conversations:get', ctx, {
-          conversationId: conv.conversationId,
-          userId,
-        });
-
-        // 5a. Round-trip: the turns the hook returned must equal what the
-        // parser produces on the same jsonl bytes. Proof that no shape
-        // was lost between bytes-on-storage and Turn[]-on-wire.
-        const expected = parseJsonlToTurns(jsonlBytes);
-        expect(got.turns).toEqual(expected);
-        // 5b. Canary shape: the SDK fixture starts with a user line; the
-        // parser remaps a string content to a single text block.
-        expect(got.turns).toHaveLength(2);
-        expect(got.turns[0]!.role).toBe('user');
-        expect(got.turns[0]!.contentBlocks).toEqual([
-          { type: 'text', text: 'hello canary' },
-        ]);
-        expect(got.turns[1]!.role).toBe('assistant');
-        expect(got.turns[1]!.contentBlocks).toEqual([
-          { type: 'text', text: 'hi back' },
-        ]);
-      } finally {
-        if (handle !== null) await handle.shutdown();
-        if (server !== null) await server.close();
-        await fs.rm(serverRepoRoot, { recursive: true, force: true });
-      }
-    },
-  );
-
-  // ---------------------------------------------------------------------------
   // Phase F canary — conversation-titles auto-titles via llm:call after the
   // first assistant turn lands. Wires the @ax/llm-anthropic registrar (with a
   // stub Anthropic client so the test stays hermetic) and the
@@ -2887,53 +2659,31 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           ConversationsCreateOutput
         >('conversations:create', bootstrapCtx, { userId, agentId });
 
-        // 2. Bind a runnerSessionId so the jsonl glob has a target.
-        const runnerSessionId = '00000000-0000-0000-0000-0000000ff000';
+        // 2. Seed the transcript (one user turn + one assistant turn) into the
+        // display event log so the titles subscriber sees a non-empty
+        // transcript via conversations:get and proceeds with the llm:call. The
+        // legacy workspace-jsonl seed is gone (TASK-70 / out-of-git Phase 5);
+        // conversations:get now reads the event log (TASK-66). An empty
+        // transcript is the documented early-return path; we'd be testing a
+        // no-op without this seed.
         await bus.call<
-          ConversationsStoreRunnerSessionInput,
-          ConversationsStoreRunnerSessionOutput
-        >('conversations:store-runner-session', bootstrapCtx, {
+          ConversationsAppendEventInput,
+          ConversationsAppendEventOutput
+        >('conversations:append-event', bootstrapCtx, {
           conversationId: conv.conversationId,
-          runnerSessionId,
+          kind: 'turn',
+          role: 'user',
+          payload: { blocks: [{ type: 'text', text: 'hello canary' }] },
         });
-
-        // 3. Seed the jsonl (one user line + one assistant line) so the
-        // titles subscriber sees a non-empty transcript and proceeds with
-        // the llm:call. An empty transcript is the documented early-return
-        // path; we'd be testing a no-op without this seed.
-        const jsonlText = [
-          JSON.stringify({
-            type: 'user',
-            message: { role: 'user', content: 'hello canary' },
-            uuid: 'u-1111',
-            timestamp: '2026-05-03T00:00:00.000Z',
-            sessionId: runnerSessionId,
-          }),
-          JSON.stringify({
-            type: 'assistant',
-            message: {
-              id: 'msg_canary',
-              type: 'message',
-              role: 'assistant',
-              content: [{ type: 'text', text: 'hi back' }],
-            },
-            uuid: 'u-2222',
-            timestamp: '2026-05-03T00:00:01.000Z',
-            sessionId: runnerSessionId,
-          }),
-          '',
-        ].join('\n');
-        const jsonlBytes = new TextEncoder().encode(jsonlText);
-        const jsonlPath = `.claude/projects/-permanent/${runnerSessionId}.jsonl`;
-        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-          'workspace:apply',
-          bootstrapCtx,
-          {
-            changes: [{ path: jsonlPath, kind: 'put', content: jsonlBytes }],
-            parent: null,
-            reason: 'phase-f canary: seed jsonl',
-          },
-        );
+        await bus.call<
+          ConversationsAppendEventInput,
+          ConversationsAppendEventOutput
+        >('conversations:append-event', bootstrapCtx, {
+          conversationId: conv.conversationId,
+          kind: 'turn',
+          role: 'assistant',
+          payload: { blocks: [{ type: 'text', text: 'hi back' }] },
+        });
 
         // 4. Build the per-turn context that includes conversationId — the
         // titles subscriber early-returns when ctx.conversationId is unset.
@@ -3324,65 +3074,34 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const attachmentPath = listed.files[0]!.path;
         expect(attachmentPath.endsWith('__note.txt')).toBe(true);
 
-        // 3b. Seed the runner-native jsonl. attachments:download calls
+        // 3b. Seed the transcript. attachments:download calls
         // conversations:get internally to check that the requested path
-        // appears in the transcript; conversations:get reads the jsonl
-        // from the workspace. Without seeding, the transcript would be
-        // empty (we stubbed agent:invoke, so no runner ran).
-        //
-        // First bind a runnerSessionId — conversations:get short-circuits
-        // to empty turns when runnerSessionId is null (Phase D contract).
-        const runnerSessionId = '00000000-0000-0000-0000-00000000a3a3';
+        // appears in the transcript; conversations:get reads the DISPLAY EVENT
+        // LOG (TASK-66) — the legacy workspace-jsonl read is gone (TASK-70 /
+        // out-of-git Phase 5). Without seeding the transcript would be empty
+        // (we stubbed agent:invoke, so no runner ran), so we append the user
+        // turn the orchestrator would persist in production — a text block + an
+        // `attachment` block at the committed path.
         await bus.call<
-          ConversationsStoreRunnerSessionInput,
-          ConversationsStoreRunnerSessionOutput
-        >('conversations:store-runner-session', listCtx, {
+          ConversationsAppendEventInput,
+          ConversationsAppendEventOutput
+        >('conversations:append-event', listCtx, {
           conversationId,
-          runnerSessionId,
-        });
-
-        // The jsonl line mirrors what the SDK writes: a `user` turn whose
-        // `content` is an array carrying a text block + an `attachment`
-        // block at the committed path. The parseJsonlToTurns helper
-        // (used by conversations:get) maps that to a Turn with the same
-        // attachment block in contentBlocks.
-        const jsonlText =
-          JSON.stringify({
-            type: 'user',
-            message: {
-              role: 'user',
-              content: [
-                { type: 'text', text: 'here is a note' },
-                {
-                  type: 'attachment',
-                  path: attachmentPath,
-                  displayName: 'note.txt',
-                  mediaType: 'text/plain',
-                  sizeBytes: ATTACHMENT_BYTES.length,
-                },
-              ],
-            },
-            uuid: 'u-phase3-1',
-            timestamp: '2026-05-18T00:00:00.000Z',
-            sessionId: runnerSessionId,
-          }) + '\n';
-        const jsonlBytes = new TextEncoder().encode(jsonlText);
-        const jsonlPath = `.claude/projects/-permanent/${runnerSessionId}.jsonl`;
-        // TASK-68: attachments:commit no longer writes to the workspace (the
-        // bytes go to the blob store), so the workspace starts EMPTY here — the
-        // jsonl seed is the first apply and uses parent: null (back to the Phase
-        // D canary's posture). We only seed the TRANSCRIPT so the download
-        // path-scope ACL (which scans conversations:get) sees the attachment
-        // block; the bytes themselves come from the blob store, not this apply.
-        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-          'workspace:apply',
-          listCtx,
-          {
-            changes: [{ path: jsonlPath, kind: 'put', content: jsonlBytes }],
-            parent: null,
-            reason: 'phase-3 canary: seed user jsonl',
+          kind: 'turn',
+          role: 'user',
+          payload: {
+            blocks: [
+              { type: 'text', text: 'here is a note' },
+              {
+                type: 'attachment',
+                path: attachmentPath,
+                displayName: 'note.txt',
+                mediaType: 'text/plain',
+                sizeBytes: ATTACHMENT_BYTES.length,
+              },
+            ],
           },
-        );
+        });
 
         // 3c. Sanity-check: conversations:get returns the seeded transcript
         // with the attachment block. This is the same path
@@ -3763,24 +3482,13 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           ARTIFACT_BYTES,
         );
 
-        // 3. Bind a runnerSessionId so conversations:get exits the
-        //    short-circuit-empty branch and reads the workspace jsonl.
-        const runnerSessionId = '00000000-0000-0000-0000-00000000a3ac';
-        await bus.call<
-          ConversationsStoreRunnerSessionInput,
-          ConversationsStoreRunnerSessionOutput
-        >('conversations:store-runner-session', seedCtx, {
-          conversationId,
-          runnerSessionId,
-        });
-
-        // 4. Seed the jsonl with one user line + one assistant line. The
-        // assistant line bundles BOTH the tool_use call AND the tool_result
-        // (one assistant line, all three blocks) — parseJsonlToTurns admits
-        // any block that round-trips through ContentBlockSchema, so tool_use
-        // and tool_result both land in a single role='assistant' Turn.
-        // The tool_result's `content` is a JSON string whose `path` matches
-        // ARTIFACT_PATH — that's the artifact-block branch of checkPathScope.
+        // 3 + 4. Publish the artifact and seed the transcript. The
+        // download path-scope ACL scans conversations:get, which now reads the
+        // DISPLAY EVENT LOG (TASK-66) — the legacy workspace-jsonl read is gone
+        // (TASK-70 / out-of-git Phase 5). So we append the assistant turn the
+        // orchestrator would persist in production: a tool_use call + a
+        // tool_result whose JSON `content.path` matches ARTIFACT_PATH (the
+        // artifact-block branch of checkPathScope) + the closing text.
         const executor = createArtifactPublishExecutor({
           workspaceRoot: runnerCheckoutRoot,
         });
@@ -3827,23 +3535,27 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           size: ARTIFACT_BYTES.byteLength,
         });
 
-        const userLine = JSON.stringify({
-          type: 'user',
-          message: {
-            role: 'user',
-            content: [{ type: 'text', text: 'make me a summary file' }],
-          },
-          uuid: 'u-1',
-          timestamp: '2026-05-19T00:00:00.000Z',
-          sessionId: runnerSessionId,
+        // Append the user turn, then the assistant turn carrying all three
+        // blocks (tool_use + tool_result + closing text), to the display event
+        // log — exactly what the orchestrator/runner persist in production.
+        await bus.call<
+          ConversationsAppendEventInput,
+          ConversationsAppendEventOutput
+        >('conversations:append-event', seedCtx, {
+          conversationId,
+          kind: 'turn',
+          role: 'user',
+          payload: { blocks: [{ type: 'text', text: 'make me a summary file' }] },
         });
-        const assistantLine = JSON.stringify({
-          type: 'assistant',
-          message: {
-            id: 'msg-canary',
-            type: 'message',
-            role: 'assistant',
-            content: [
+        await bus.call<
+          ConversationsAppendEventInput,
+          ConversationsAppendEventOutput
+        >('conversations:append-event', seedCtx, {
+          conversationId,
+          kind: 'turn',
+          role: 'assistant',
+          payload: {
+            blocks: [
               {
                 type: 'tool_use',
                 id: 'toolu_1',
@@ -3861,39 +3573,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
               },
             ],
           },
-          uuid: 'u-2',
-          timestamp: '2026-05-19T00:00:01.000Z',
-          sessionId: runnerSessionId,
         });
-        const jsonlPath = `.claude/projects/-permanent/${runnerSessionId}.jsonl`;
-        // Chain the jsonl apply onto the artifact-commit HEAD via parent CAS.
-        const headProbe = await bus.call<
-          { path: string },
-          | { found: true; bytes: Uint8Array; version?: string }
-          | { found: false }
-        >('workspace:read', seedCtx, { path: ARTIFACT_PATH });
-        if (!headProbe.found || headProbe.version === undefined) {
-          throw new Error(
-            'phase-3 artifact canary: failed to recover workspace version for seed apply',
-          );
-        }
-        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-          'workspace:apply',
-          seedCtx,
-          {
-            changes: [
-              {
-                path: jsonlPath,
-                kind: 'put',
-                content: new TextEncoder().encode(
-                  userLine + '\n' + assistantLine + '\n',
-                ),
-              },
-            ],
-            parent: headProbe.version,
-            reason: 'phase-3 artifact canary: seed assistant jsonl',
-          },
-        );
 
         // 5. GET /api/files for the artifact path → 200 + bytes match.
         const downloadResp = await fetch(

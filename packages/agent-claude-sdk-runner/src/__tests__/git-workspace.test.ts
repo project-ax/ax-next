@@ -211,21 +211,19 @@ describe('materializeWorkspace', () => {
     await expect(fs.stat(notABundle)).rejects.toMatchObject({ code: 'ENOENT' });
   });
 
-  it('runs `git lfs install --local` after clone so LFS smudge is enabled', async () => {
-    // Requires git-lfs on PATH. The suite runs on machines that have it
-    // (same requirement as the agent container image built in Task 1).
+  it('does NOT run `git lfs install --local` (LFS layer removed, TASK-70)', async () => {
+    // The half-wired LFS layer is gone (out-of-git Part E): no `git lfs
+    // install --local`, so no `[filter "lfs"]` should be written into the
+    // clone's .git/config. This both proves the removal and removes the
+    // suite's git-lfs-binary dependency (the missing-binary failure that
+    // reddened ~25 runner tests on any sandbox without git-lfs).
     const bundleFile = await makeBundle({});
     const root = path.join(scratchRoot, 'permanent');
 
     await materializeWorkspace({ root, bundlePath: bundleFile });
 
-    // `git lfs install --local` writes [filter "lfs"] into .git/config.
-    // Its presence (with clean + smudge entries) is the durable signal
-    // that LFS smudge filters are active for this clone.
     const cfg = await fs.readFile(path.join(root, '.git', 'config'), 'utf8');
-    expect(cfg).toContain('[filter "lfs"]');
-    expect(cfg).toMatch(/clean\s*=\s*git-lfs clean/);
-    expect(cfg).toMatch(/smudge\s*=\s*git-lfs smudge/);
+    expect(cfg).not.toContain('[filter "lfs"]');
   });
 });
 
@@ -452,6 +450,52 @@ describe('commitTurnAndBundle', () => {
     const { root } = await setupMaterializedWorkspace();
     const r = await commitTurnAndBundle({ root, reason: 'turn' });
     expect(r).toBeNull();
+  });
+
+  it('returns null + creates NO commit for a pure chat turn (jsonl-only write, gitignored) — TASK-70 Phase-5 gate', async () => {
+    // The realistic post-out-of-git chat turn: the SDK appends to its session
+    // jsonl under `.claude/projects/`, which scaffoldWorkspaceGitignore has
+    // gitignored (TASK-67) so it never rides a commit. With transcripts, blobs,
+    // and skills all off git, that jsonl is the ONLY thing a chat turn touches
+    // in /permanent — so the per-turn commit must see an EMPTY diff, create no
+    // commit, and return null (commit-notify SKIPPED). This is the Phase-5 gate:
+    // the per-turn commit fires only on a non-empty /permanent diff.
+    const { root } = await setupMaterializedWorkspace();
+    // In production scaffoldWorkspaceGitignore runs ONCE at materialize,
+    // before any turn — so by turn time the `.gitignore` (with
+    // `.claude/projects/`) is already baselined. Mirror that: scaffold it,
+    // commit it, and advance `baseline` so the turn under test starts from a
+    // clean, gitignore-aware baseline (exactly the runner's post-materialize
+    // state).
+    await scaffoldWorkspaceGitignore(root);
+    await git(['-C', root, 'add', '-A']);
+    await git(['-C', root, 'commit', '-m', 'scaffold gitignore']);
+    await advanceBaseline(root);
+    const headBefore = (
+      await git(['-C', root, 'rev-parse', 'HEAD'])
+    ).stdout.trim();
+
+    // Simulate the SDK's per-session jsonl write (gitignored path).
+    const jsonlDir = path.join(root, '.claude', 'projects', '-permanent');
+    await fs.mkdir(jsonlDir, { recursive: true });
+    await fs.writeFile(
+      path.join(jsonlDir, 'sess-abc.jsonl'),
+      '{"type":"user","message":{"role":"user","content":"hi"}}\n',
+    );
+
+    const r = await commitTurnAndBundle({ root, reason: 'turn' });
+    expect(r).toBeNull();
+
+    // NO commit was created — HEAD is unchanged and baseline..main is empty.
+    const headAfter = (
+      await git(['-C', root, 'rev-parse', 'HEAD'])
+    ).stdout.trim();
+    expect(headAfter).toBe(headBefore);
+    expect(
+      (
+        await git(['-C', root, 'rev-list', '--count', 'refs/heads/baseline..main'])
+      ).stdout.trim(),
+    ).toBe('0');
   });
 
   it('bundles an already-committed turn when the working tree is clean (re-sync replay; baseline..main non-empty) — TASK-11', async () => {

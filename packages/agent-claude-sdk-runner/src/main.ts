@@ -242,17 +242,25 @@ export async function main(): Promise<number> {
     // bundled back to the host. Must run AFTER the clone for the same reason
     // as the skill-surface scaffold (it appends to any baseline .gitignore).
     await scaffoldWorkspaceGitignore(env.workspaceRoot);
-    // Phase E follow-up: redirect the SDK's turn-transcript jsonl
-    // writes back into the workspace. Phase 0 set CLAUDE_CONFIG_DIR
-    // OUTSIDE /permanent so the `'user'` skill-discovery source could
-    // be distinct from the `'project'` source, but the SDK ALSO derives
-    // `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/<sid>.jsonl` from the
-    // same var — the transcript writes moved with it. We restore the
-    // pre-Phase-0 invariant ("turn-end git add -A captures the SDK's
-    // own jsonl") with a filesystem-level redirect: a symlink at
-    // `$CLAUDE_CONFIG_DIR/projects` pointing into the workspace. See
-    // scaffoldSdkProjectsSymlink's doc and the (a)/(b) comment block
-    // around the SDK query() env literal below for the full picture.
+    // Redirect the SDK's turn-transcript jsonl writes into the workspace.
+    // Phase 0 set CLAUDE_CONFIG_DIR OUTSIDE /permanent so the `'user'`
+    // skill-discovery source could be distinct from the `'project'` source,
+    // but the SDK ALSO derives `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
+    // <sid>.jsonl` from the same var — the transcript writes moved with it.
+    // A filesystem-level redirect (a symlink at `$CLAUDE_CONFIG_DIR/projects`
+    // pointing into `<workspaceRoot>/.claude/projects`) lands those writes
+    // inside the workspace.
+    //
+    // This symlink stays LOAD-BEARING after TASK-67/70 — but NOT for git:
+    // `.claude/projects/` is gitignored (scaffoldWorkspaceGitignore above),
+    // so the jsonl never rides a commit/bundle anymore. Its purpose now is
+    // PATH LOCALITY for the out-of-git transcript pipeline: the per-turn
+    // delta-ship + uuid-wait readers (transcript-delta.ts `locateJsonl`,
+    // turn-end-uuid.ts) readdir-walk `<workspaceRoot>/.claude/projects`, and
+    // resume (`restoreTranscriptForResume`) WRITES the rebuilt jsonl there
+    // for the SDK to read back via this same symlink. Remove it and both the
+    // delta-ship and resume go blind. See scaffoldSdkProjectsSymlink's doc
+    // and the (a)/(b) comment block around the SDK query() env literal below.
     //
     // Guard: CLAUDE_CONFIG_DIR is sandbox-injected. If a future sandbox
     // provider doesn't set it, fall through to the pre-Phase-0 behavior
@@ -1364,11 +1372,15 @@ export async function main(): Promise<number> {
             }
           }
           // Commit + bundle any NON-transcript /permanent change (identity,
-          // Pattern A project code). The jsonl is gitignored (TASK-67), so a
-          // pure chat turn stages nothing → returns null → commit-notify skipped
-          // (the same empty-diff semantic the legacy path had). Thinning this
-          // out entirely (gate on a non-empty agent-state diff / delete the
-          // bundle path) is Phase 5 / TASK-70.
+          // Pattern A project code). With transcripts (TASK-67), blobs/
+          // attachments (TASK-68), and skills (TASK-69) all off git, this is
+          // the WHOLE of what the per-turn commit carries now — and a pure
+          // chat turn changes none of it: `.claude/projects/` is gitignored,
+          // so nothing stages → `commitTurnAndBundle` returns null →
+          // commit-notify is SKIPPED. The commit fires ONLY on a non-empty
+          // /permanent diff (TASK-70 Phase-5 gate; the empty-diff skip is the
+          // `git diff --cached --quiet` short-circuit inside
+          // commitTurnAndBundle).
           const bundleB64 = await commitTurnAndBundle({
             root: env.workspaceRoot,
             reason: 'turn',

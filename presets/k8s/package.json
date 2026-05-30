@@ -66,7 +66,6 @@
     "@ax/workspace-git-server": "workspace:*"
   },
   "devDependencies": {
-    "@ax/agent-claude-sdk-runner-host": "workspace:*",
     "@ax/ipc-core": "workspace:*",
     "@ax/ipc-server": "workspace:*",
     "@ax/sandbox-subprocess": "workspace:*",

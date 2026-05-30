@@ -591,11 +591,10 @@ describe('GET /repos/<id>', () => {
     expect(r.status).toBe(401);
   });
 
-  it('PUT on /repos/<id> returns 400 invalid_workspace_id', async () => {
-    // PUT is now allowed at the method gate (for LFS storage uploads).
-    // /repos/<id> isn't a valid PUT target, and matchRoute surfaces it as
-    // invalid-repo-id rather than 405 or 503 — the same response shape that
-    // PUT/PATCH against /repos/<bad-id> would receive.
+  it('PUT on /repos/<id> returns 405 unsupported_method', async () => {
+    // PUT was only ever a valid method for the LFS storage-upload route,
+    // which is gone (TASK-70). The method gate now allows only
+    // GET / POST / DELETE, so any PUT is rejected with 405 before routing.
     const { server, url } = await boot();
     active = server;
     await postCreate(url, 'put-test');
@@ -607,9 +606,9 @@ describe('GET /repos/<id>', () => {
       },
       body: JSON.stringify({}),
     });
-    expect(r.status).toBe(400);
+    expect(r.status).toBe(405);
     const body = (await r.json()) as { error: string };
-    expect(body.error).toBe('invalid_workspace_id');
+    expect(body.error).toBe('unsupported_method');
   });
 });
 
