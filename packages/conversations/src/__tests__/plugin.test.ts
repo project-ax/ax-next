@@ -55,16 +55,14 @@ describe('@ax/conversations plugin manifest', () => {
       ],
       // database:get-instance is hard — we run our own migration on init.
       // agents:resolve is hard — every hook gates through it (Invariant J1).
-      // workspace:list + workspace:read are hard — Phase D conversations:get
-      // reads transcripts from the runner-native jsonl in the workspace.
-      // workspace:apply is hard — Phase B conversations:drop-turn rewrites
-      // the jsonl file in-place via workspace:apply.
+      // TASK-75 (2026-05-30): the `workspace:*` calls are GONE. conversations:
+      // get's git-jsonl transcript read was deleted in TASK-70 (the resume
+      // jsonl left git in TASK-67), and conversations:drop-turn now rewrites
+      // the transcript-ROW store instead of the git workspace jsonl — so
+      // workspace:list/read/apply are no longer called (I5: minimal caps).
       calls: [
         'agents:resolve',
         'database:get-instance',
-        'workspace:list',
-        'workspace:read',
-        'workspace:apply',
       ],
       // chat:turn-end subscriber bumps last_activity_at AND persists the
       // turn's display frame (TASK-66). session:terminate clears bound rows

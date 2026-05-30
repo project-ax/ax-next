@@ -4,12 +4,6 @@ import {
   type AgentContext,
   type HookBus,
   type Plugin,
-  type WorkspaceApplyInput,
-  type WorkspaceApplyOutput,
-  type WorkspaceListInput,
-  type WorkspaceListOutput,
-  type WorkspaceReadInput,
-  type WorkspaceReadOutput,
 } from '@ax/core';
 import {
   AttachmentBlockSchema,
@@ -199,16 +193,12 @@ export function createConversationsPlugin(
       calls: [
         'agents:resolve',
         'database:get-instance',
-        // Phase D (2026-05-02): conversations:get reads the runner's
-        // native jsonl transcript via workspace:list + workspace:read
-        // instead of the conversation_turns rows. The hook's wire
-        // shape is unchanged; only the source-of-truth shifted.
-        'workspace:list',
-        'workspace:read',
-        // Phase B (routines, 2026-05-14): conversations:drop-turn rewrites
-        // the jsonl file in-place via workspace:apply. Added alongside the
-        // full drop-turn implementation (I7 closure).
-        'workspace:apply',
+        // TASK-75 (2026-05-30): the last `workspace:*` callers in this plugin
+        // are gone. conversations:get's git-jsonl fallback was deleted in
+        // TASK-70 (the resume jsonl left git in TASK-67), and conversations:
+        // drop-turn now rewrites the transcript-ROW store instead of the git
+        // workspace jsonl — so `workspace:list`/`read`/`apply` are no longer
+        // called and are dropped from the manifest (I5: minimal capabilities).
       ],
       // Task 14 (Week 10–12): subscribe to session:terminate so a sandbox
       // teardown clears active_session_id on every bound conversation row.
@@ -1601,37 +1591,39 @@ async function dropTurn(
     return;
   }
 
-  const workspaceCtx = makeAgentContext({
-    reqId: ctx.reqId, sessionId: ctx.sessionId,
-    userId: conv.userId, agentId: conv.agentId,
-    logger: ctx.logger, workspace: ctx.workspace,
-  });
+  // TASK-75 (out-of-git follow-up): the resume transcript left git in TASK-67
+  // and now lives in the `conversations:get-transcript`/transcript-row store.
+  // The pre-TASK-67 path read+rewrote the SDK jsonl in the git workspace
+  // (workspace:list/read/apply over `.claude/projects/**/<sid>.jsonl`); after
+  // the migration that glob hits a gitignored file → 0 paths → a SILENT no-op,
+  // so the silenced routine turn survived on resume. Read the joined jsonl
+  // bytes from the rows, run the same pure byte-rewrite, and write the survivors
+  // back via replaceTranscript (the existing DELETE + re-INSERT seam).
+  const bytes = await store.getTranscriptBytes(conv.conversationId);
+  if (bytes.length === 0) return;
 
-  const list = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
-    'workspace:list', workspaceCtx,
-    { pathGlob: `.claude/projects/**/${conv.runnerSessionId}.jsonl` },
-  );
-  if (list.paths.length === 0) return;
-  const path = list.paths[0]!;
-  const read = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
-    'workspace:read', workspaceCtx, { path },
-  );
-  if (!read.found) return;
-
-  const rewritten = dropTurnFromJsonl(read.bytes, input.turnId);
+  const rewritten = dropTurnFromJsonl(new TextEncoder().encode(bytes), input.turnId);
   if (rewritten === null) return;
 
-  // Use the version we just read from as the parent. Backends that don't
-  // surface read.version fall back to null and get today's behavior
-  // (parent-mismatch propagates; conversation hide is authoritative).
-  await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-    'workspace:apply', workspaceCtx,
-    {
-      changes: [{ path, kind: 'put', content: rewritten }],
-      parent: read.version ?? null,
-      reason: `routines:drop-turn ${input.conversationId} ${input.turnId}`,
-    },
-  );
+  // Split the rewritten bytes back into the verbatim per-line rows the store
+  // holds, the same way the runner's resync ship does — so the round-trip is
+  // byte-identical.
+  await store.replaceTranscript(conv.conversationId, splitJsonlLines(rewritten));
+}
+
+/**
+ * Split rewritten jsonl bytes into the verbatim per-line rows the transcript
+ * store holds (no trailing `\n` per row). Mirrors the runner-side resync split
+ * (`@ax/ipc-core` session-transcript handler): a trailing terminator produces a
+ * final empty element which is the last line's terminator, not a new line —
+ * drop it so the store doesn't gain a spurious blank row.
+ */
+function splitJsonlLines(bytes: Uint8Array): string[] {
+  const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
+  if (text.length === 0) return [];
+  const parts = text.split('\n');
+  if (parts.length > 0 && parts[parts.length - 1] === '') parts.pop();
+  return parts;
 }
 
 async function hideConversation(
