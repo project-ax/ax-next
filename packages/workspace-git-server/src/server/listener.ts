@@ -125,8 +125,10 @@ export type RouteMatch =
   | { kind: 'smart-http-receive-pack'; workspaceId: string }
   // "/repos/<bad-id>" — path shape recognized but the id segment fails the
   // regex. Listener emits 400 invalid_workspace_id for these (distinguishes
-  // a malformed id from a totally-unknown path).
-  | { kind: 'invalid-repo-id'; method: 'GET' | 'DELETE' | 'OTHER' }
+  // a malformed id from a totally-unknown path). Only GET + DELETE reach this
+  // now: the POST/PUT producers were all LFS-shaped paths (removed in
+  // TASK-70), and PUT/PATCH 405 at the method gate before routing.
+  | { kind: 'invalid-repo-id'; method: 'GET' | 'DELETE' }
   | { kind: 'unknown' };
 
 // URL extraction regexes — strict to defend against argv injection:
