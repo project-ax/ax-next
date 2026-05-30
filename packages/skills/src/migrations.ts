@@ -311,7 +311,7 @@ export interface ApprovedCapRow {
   skill_id: string;
   cap_kind: string;
   cap_value: string;
-  cap_detail: unknown; // JSONB; nullable
+  cap_detail: unknown | null; // JSONB; nullable
   created_at: Date;
 }
 

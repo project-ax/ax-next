@@ -57,7 +57,7 @@ export function createApprovedCapsStore(db: Kysely<SkillsDatabase>): ApprovedCap
           skill_id: skillId,
           cap_kind: kind,
           cap_value: value,
-          cap_detail: detail === undefined ? null : (detail as never),
+          cap_detail: detail === undefined ? null : (detail as unknown),
           created_at: new Date(),
         })
         .onConflict((oc) =>
