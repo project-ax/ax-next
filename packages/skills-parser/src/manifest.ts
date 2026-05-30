@@ -454,8 +454,15 @@ function parsePackagesCapability(raw: unknown): PackagesResult {
 //   allowedHosts: [*.example.com, ...]                (flow sequence)
 //   allowedHosts:                                     (block list)
 //     - *.example.com
+//
+// ReDoS-safe (js/polynomial-redos): this runs on UNTRUSTED self-authored
+// frontmatter, so every quantifier is linear — no overlapping unbounded
+// repeats. `[ \t]*` (not `\s*`) so newlines are never re-consumed across the
+// `(?:^|\n)` boundary; the star-bearing classes exclude their own terminator
+// (`[^\]*]`, `[^\n*]`) so the literal `\*` can't be matched by the preceding
+// repeat (the classic `[^x]*x[^x]*` polynomial trap).
 const WILDCARD_HOST_IN_YAML_RE =
-  /(?:^|\n)\s*allowedHosts\s*:\s*(?:\[[^\]]*\*[^\]]*\]|(?:\n[ \t]*-[ \t]*[^\n]*\*[^\n]*)+)/;
+  /(?:^|\n)[ \t]*allowedHosts[ \t]*:[ \t]*(?:\[[^\]*]*\*[^\]]*\]|(?:\n[ \t]*-[^\n*]*\*[^\n]*)+)/;
 
 export function parseSkillManifest(yaml: string): ParseResult {
   // Pre-check: wildcard host patterns cause YAMLException (alias sigil).
