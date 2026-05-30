@@ -160,6 +160,7 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:approved-caps-revoke',
         'skills:propose',
         'skills:list-authored',
+        'skills:authored-activate',
       ],
       calls: [
         'database:get-instance',

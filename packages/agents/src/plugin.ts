@@ -432,6 +432,11 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
               bodyMd: b.bodyMd,
               manifestYaml: proj.manifestYaml,
               files: b.files,
+              // TASK-76 (§D3): forward the gate verdict so the orchestrator
+              // materializes only `active` skills' bytes into the spawn; a
+              // `pending` skill projects nothing until a human approves. The row
+              // is `active` | `pending` here (quarantined was `continue`d above).
+              status: b.status === 'active' ? 'active' : 'pending',
             });
           }
           return { skills };

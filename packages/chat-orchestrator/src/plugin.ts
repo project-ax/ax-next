@@ -145,7 +145,9 @@ export function createChatOrchestratorPlugin(
       // authored-ness (D-B7); a non-draft skillId returns not-authored so the
       // channel-web route falls back to the catalog grant. Host-side only;
       // NOT an IPC action. `agents:resolve-authored-skills` / `skills:approved-
-      // caps-set` peers are bus.hasService-gated (same convention as above).
+      // caps-set` / `skills:authored-activate` (TASK-76, the pending→active
+      // flip on approval) peers are bus.hasService-gated (same convention as
+      // above).
       bus.registerService<ApplyAuthoredCapabilityGrantInput, ApplyAuthoredCapabilityGrantOutput>(
         'agent:apply-authored-capability-grant',
         PLUGIN_NAME,

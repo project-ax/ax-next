@@ -56,6 +56,15 @@ export interface AuthoredSkillsStore {
    * projection caller filters by status; quarantined rows are returned so a
    * reason can be surfaced, but the projection omits them. */
   list(ownerUserId: string, agentId: string): Promise<AuthoredSkill[]>;
+  /** Flip a `pending` row to `active` (design §D3 — on approval). Status-guarded:
+   * the UPDATE matches `status = 'pending'` only, so a `quarantined` row is never
+   * un-quarantined and an already-`active` row is a no-op. Returns whether THIS
+   * call flipped a row (false = already active / quarantined / no such row). */
+  activate(input: {
+    ownerUserId: string;
+    agentId: string;
+    skillId: string;
+  }): Promise<{ activated: boolean }>;
 }
 
 function rowToAuthored(
@@ -156,6 +165,23 @@ export function createAuthoredSkillsStore(
       const out: AuthoredSkill[] = [];
       for (const r of rows) out.push(rowToAuthored(r, await loadFiles(r.bundle_tree_sha)));
       return out;
+    },
+
+    async activate({ ownerUserId, agentId, skillId }) {
+      // Status-guarded flip: only a `pending` row transitions. A `quarantined`
+      // row is left alone (approval must never un-quarantine a flagged bundle),
+      // and an already-`active` row is a no-op. The `status = 'pending'` predicate
+      // also makes the call idempotent + race-safe (a concurrent duplicate
+      // approval flips zero rows the second time).
+      const res = await db
+        .updateTable('skills_v1_authored')
+        .set({ status: 'active', updated_at: new Date() })
+        .where('owner_user_id', '=', ownerUserId)
+        .where('agent_id', '=', agentId)
+        .where('skill_id', '=', skillId)
+        .where('status', '=', 'pending')
+        .executeTakeFirst();
+      return { activated: Number(res.numUpdatedRows ?? 0n) > 0 };
     },
   };
 }

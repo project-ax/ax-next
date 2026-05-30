@@ -1054,10 +1054,17 @@ describe('chat-orchestrator', () => {
     expect(last.owner.agentId).toBe('a-resolved');
     expect(last.owner.agentConfig).toEqual({
       systemPrompt: 'you are a poet',
-      // TASK-51: this agent is non-wildcard (explicit tools + mcpConfigIds), so
-      // the two always-on broker tools are locked into the frozen allowedTools
-      // at session-open. The agent's own tools come first, broker tools appended.
-      allowedTools: ['file.read', 'bash.exec', 'search_catalog', 'request_capability'],
+      // TASK-51/76: this agent is non-wildcard (explicit tools + mcpConfigIds),
+      // so the always-on broker tools (incl. skill_propose, TASK-76) are locked
+      // into the frozen allowedTools at session-open. The agent's own tools come
+      // first, broker tools appended.
+      allowedTools: [
+        'file.read',
+        'bash.exec',
+        'search_catalog',
+        'request_capability',
+        'skill_propose',
+      ],
       mcpConfigIds: ['mcp-1'],
       model: 'claude-opus-4-7',
     });
@@ -1133,6 +1140,7 @@ describe('chat-orchestrator', () => {
       'file.read',
       'search_catalog',
       'request_capability',
+      'skill_propose',
     ]);
   });
 
@@ -1181,7 +1189,11 @@ describe('chat-orchestrator', () => {
     expect(outcome.kind).toBe('complete');
     // Non-wildcard via mcpConfigIds → allowedTools was [] but gets the broker
     // tools (the agent's mcp tools still come through the mcpConfigIds path).
-    expect(getConfig().allowedTools).toEqual(['search_catalog', 'request_capability']);
+    expect(getConfig().allowedTools).toEqual([
+      'search_catalog',
+      'request_capability',
+      'skill_propose',
+    ]);
     expect(getConfig().mcpConfigIds).toEqual(['mcp-1']);
   });
 
@@ -1209,11 +1221,13 @@ describe('chat-orchestrator', () => {
       { message: { role: 'user', content: 'hi' } },
     );
     expect(outcome.kind).toBe('complete');
-    // search_catalog already present → not duplicated; request_capability added.
+    // search_catalog already present → not duplicated; request_capability +
+    // skill_propose appended (TASK-76).
     expect(getConfig().allowedTools).toEqual([
       'search_catalog',
       'file.read',
       'request_capability',
+      'skill_propose',
     ]);
   });
 
@@ -3572,6 +3586,192 @@ describe('chat-orchestrator', () => {
     expect(skillMd?.contents).not.toContain('Default body');
   });
 
+  // -----------------------------------------------------------------
+  // TASK-76 (§D3) — "no bytes project" for a PENDING authored skill.
+  // A pending draft (caps the user hasn't approved) must contribute
+  // NOTHING to the spawn: no SKILL.md body, no name/description in the
+  // projection. Only `active` drafts materialize. (The approval card is
+  // a separate path — exercised in the upfront-card tests — and reads
+  // description+proposalDelta, never the body.)
+  // -----------------------------------------------------------------
+  it('§D3: a PENDING authored skill projects NO bytes into the sandbox', async () => {
+    const proxy = buildProxyHooks();
+    const pendingDraft = {
+      id: 'linear',
+      capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+      proposalDelta: {
+        allowedHosts: ['api.linear.app'],
+        credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' as const }],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      },
+      description: 'Work with Linear issues.',
+      bodyMd: 'SECRET PENDING BODY the model must not see yet',
+      manifestYaml: 'name: linear\ndescription: Work with Linear issues.\nversion: 1\n',
+      files: [{ path: 'helper.md', contents: 'pending helper bytes' }],
+      status: 'pending' as const,
+    };
+    const authoredServices: Record<string, ServiceHandler> = {
+      'agents:resolve-authored-skills': async () => ({ skills: [pendingDraft] }),
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, authoredServices);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('pending-no-bytes-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{ id: string; files: Array<{ path: string; contents: string }> }>;
+    };
+    // The pending draft is absent from the spawn projection entirely. With no
+    // other skills, installedSkills is omitted (the orchestrator only sets it
+    // when non-empty) — either way, no 'linear' and no pending bytes.
+    const installed = sandboxIn.installedSkills ?? [];
+    expect(installed.some((s) => s.id === 'linear')).toBe(false);
+    const allBytes = JSON.stringify(installed);
+    expect(allBytes).not.toContain('SECRET PENDING BODY');
+    expect(allBytes).not.toContain('pending helper bytes');
+    // §D3 "no caps inject": the unapproved host never reaches the allowlist.
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).not.toContain('api.linear.app');
+  });
+
+  it('§D3: an ACTIVE authored skill DOES project its bytes (the flip target)', async () => {
+    const proxy = buildProxyHooks();
+    const activeDraft = {
+      id: 'commit-style',
+      capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+      proposalDelta: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+      description: 'How we write commits.',
+      bodyMd: 'ACTIVE BODY the model should see',
+      manifestYaml: 'name: commit-style\ndescription: How we write commits.\nversion: 1\n',
+      files: [],
+      status: 'active' as const,
+    };
+    const authoredServices: Record<string, ServiceHandler> = {
+      'agents:resolve-authored-skills': async () => ({ skills: [activeDraft] }),
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, authoredServices);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('active-projects-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills: Array<{ id: string; files: Array<{ path: string; contents: string }> }>;
+    };
+    const entry = sandboxIn.installedSkills.find((s) => s.id === 'commit-style');
+    expect(entry).toBeDefined();
+    const skillMd = entry!.files.find((f) => f.path === 'SKILL.md');
+    expect(skillMd?.contents).toContain('ACTIVE BODY the model should see');
+  });
+
+  it('§D3: a PENDING draft does NOT suppress a same-id default attachment', async () => {
+    const proxy = buildProxyHooks();
+    // A default-attached skill of id 'linear' that SHOULD still project.
+    const defaultSameId: ResolvedSkill = {
+      id: 'linear',
+      capabilities: { allowedHosts: [], credentials: [] },
+      bodyMd: 'Default linear body',
+      manifestYaml: 'name: linear\ndescription: default\n',
+    };
+    const defaults = buildDefaultsHook({ skills: [defaultSameId] });
+    const pendingDraft = {
+      id: 'linear',
+      capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+      proposalDelta: {
+        allowedHosts: ['api.linear.app'],
+        credentials: [],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      },
+      description: 'pending draft',
+      bodyMd: 'PENDING DRAFT BODY',
+      manifestYaml: 'name: linear\ndescription: pending\n',
+      files: [],
+      status: 'pending' as const,
+    };
+    const authoredServices: Record<string, ServiceHandler> = {
+      'agents:resolve-authored-skills': async () => ({ skills: [pendingDraft] }),
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, defaults.services, authoredServices);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('pending-no-suppress-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills: Array<{ id: string; files: Array<{ path: string; contents: string }> }>;
+    };
+    // The DEFAULT linear still projects (the pending draft didn't shadow it),
+    // and it carries the default body, NOT the pending draft's body.
+    const linear = sandboxIn.installedSkills.find((s) => s.id === 'linear');
+    expect(linear).toBeDefined();
+    const skillMd = linear!.files.find((f) => f.path === 'SKILL.md');
+    expect(skillMd?.contents).toContain('Default linear body');
+    expect(skillMd?.contents).not.toContain('PENDING DRAFT BODY');
+  });
+
   // M3-1: agents:resolve-authored-skills THROWING must fail OPEN — the turn
   // still completes (sandbox opens with non-draft skills only). Regression
   // test: a bad workspace read must never kill the chat.
@@ -4016,14 +4216,24 @@ describe('chat-orchestrator — reactive egress wall (TASK-37)', () => {
 // the helper's contract directly (wildcard preservation, append-only, dedup).
 // ---------------------------------------------------------------------------
 describe('withBrokerDefaults', () => {
-  const BROKER = ['search_catalog', 'request_capability'];
+  // TASK-76 — skill_propose joins the always-on set so a non-wildcard tenant
+  // agent can author skills too (previously only wildcard agents saw it).
+  const BROKER = ['search_catalog', 'request_capability', 'skill_propose'];
 
   it('returns the empty-empty wildcard unchanged', () => {
     expect(withBrokerDefaults([], [])).toEqual([]);
   });
 
-  it('appends both broker tools to a non-wildcard allowedTools (order-stable)', () => {
+  it('appends all broker tools to a non-wildcard allowedTools (order-stable)', () => {
     expect(withBrokerDefaults(['file.read'], [])).toEqual(['file.read', ...BROKER]);
+  });
+
+  it('injects skill_propose for a non-wildcard agent (TASK-76)', () => {
+    expect(withBrokerDefaults(['file.read'], [])).toContain('skill_propose');
+  });
+
+  it('does NOT inject skill_propose into a wildcard agent (it already sees the catalog)', () => {
+    expect(withBrokerDefaults([], [])).not.toContain('skill_propose');
   });
 
   it('treats an mcpConfigIds-only scope as non-wildcard', () => {
@@ -4034,6 +4244,15 @@ describe('withBrokerDefaults', () => {
     expect(withBrokerDefaults(['request_capability'], [])).toEqual([
       'request_capability',
       'search_catalog',
+      'skill_propose',
+    ]);
+  });
+
+  it('dedups skill_propose the agent already lists', () => {
+    expect(withBrokerDefaults(['skill_propose'], [])).toEqual([
+      'skill_propose',
+      'search_catalog',
+      'request_capability',
     ]);
   });
 

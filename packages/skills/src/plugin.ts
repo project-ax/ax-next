@@ -49,6 +49,7 @@ import {
   SkillsApprovedCapsRevokeOutputSchema,
   SkillsProposeOutputSchema,
   SkillsListAuthoredOutputSchema,
+  SkillsAuthoredActivateOutputSchema,
 } from './types.js';
 import type {
   SkillsCheckForUpdatesInput,
@@ -101,6 +102,8 @@ import type {
   SkillsScanOutput,
   SkillsProposedEvent,
   AuthoredSkillProjection,
+  SkillsAuthoredActivateInput,
+  SkillsAuthoredActivateOutput,
 } from './types.js';
 import type { SkillCapabilities } from '@ax/skills-parser';
 
@@ -234,6 +237,9 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
         // skills onto DB rows (replacing the .ax/draft-skills workspace scan).
         'skills:propose',
         'skills:list-authored',
+        // TASK-76 (§D3): flip a pending authored skill → active once a human
+        // approves its caps (called by the orchestrator's authored-grant flow).
+        'skills:authored-activate',
       ],
       calls: [
         'database:get-instance',
@@ -1165,6 +1171,27 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
           return { skills };
         },
         { returns: SkillsListAuthoredOutputSchema },
+      );
+
+      // -----------------------------------------------------------------------
+      // skills:authored-activate (TASK-76, §D3) — flip a pending authored skill
+      // to `active` once a human approves its caps. The orchestrator's
+      // authored-grant flow calls this AFTER writing the approved-caps rows, so
+      // the next spawn's projection includes the now-active skill (its body
+      // bytes project + caps inject). Status-guarded in the store: only a
+      // `pending` row flips (a quarantined row is never un-quarantined; an
+      // already-active row no-ops). Idempotent — a duplicate approval flips zero.
+      // -----------------------------------------------------------------------
+      bus.registerService<SkillsAuthoredActivateInput, SkillsAuthoredActivateOutput>(
+        'skills:authored-activate',
+        PLUGIN_NAME,
+        async (_ctx, input) =>
+          authoredStore.activate({
+            ownerUserId: input.ownerUserId,
+            agentId: input.agentId,
+            skillId: input.skillId,
+          }),
+        { returns: SkillsAuthoredActivateOutputSchema },
       );
 
       // Register admin + settings HTTP routes. Both batches are pushed into

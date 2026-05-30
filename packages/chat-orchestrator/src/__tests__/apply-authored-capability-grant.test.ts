@@ -7,6 +7,8 @@ interface Trace {
   setRows: Array<{ skillId: string; kind: string; value: string }>;
   terminate: string[];
   addHost: Array<{ sessionId: string; host: string }>;
+  // TASK-76 — the pending→active flip the grant flow fires on approval.
+  activate: Array<{ ownerUserId: string; agentId: string; skillId: string }>;
 }
 
 const EMPTY_CAPS = { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
@@ -18,7 +20,7 @@ function buildMocks(opts: {
   /** FIX 2: when true, agents:resolve-authored-skills throws instead of returning */
   resolveThrows?: boolean;
 }): { trace: Trace; services: Record<string, ServiceHandler> } {
-  const trace: Trace = { setRows: [], terminate: [], addHost: [] };
+  const trace: Trace = { setRows: [], terminate: [], addHost: [], activate: [] };
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async () => ({
       agent: {
@@ -42,6 +44,11 @@ function buildMocks(opts: {
       const i = input as { skillId: string; kind: string; value: string };
       trace.setRows.push({ skillId: i.skillId, kind: i.kind, value: i.value });
       return { created: true };
+    },
+    'skills:authored-activate': async (_c, input: unknown) => {
+      const i = input as { ownerUserId: string; agentId: string; skillId: string };
+      trace.activate.push({ ownerUserId: i.ownerUserId, agentId: i.agentId, skillId: i.skillId });
+      return { activated: true };
     },
     'conversations:get': async (_c, input: unknown) => {
       const i = input as { conversationId: string; userId: string };
@@ -84,6 +91,11 @@ describe('agent:apply-authored-capability-grant', () => {
     expect(mocks.trace.setRows).toEqual([{ skillId: 'linear', kind: 'host', value: 'api.linear.app' }]);
     expect(mocks.trace.addHost).toEqual([{ sessionId: 'sess-warm', host: 'api.linear.app' }]);
     expect(mocks.trace.terminate).toEqual([]);
+    // TASK-76 (§D3): the approval flips the pending row to active so the next
+    // spawn's projection includes the skill's body bytes + approved caps.
+    expect(mocks.trace.activate).toEqual([
+      { ownerUserId: 'user-1', agentId: 'agent-1', skillId: 'linear' },
+    ]);
   });
 
   it('a credential delta writes a slot row + re-spawns, no live add-host', async () => {
@@ -132,6 +144,8 @@ describe('agent:apply-authored-capability-grant', () => {
     expect(out).toEqual({ applied: false, reason: 'not-authored' });
     expect(mocks.trace.setRows).toEqual([]);
     expect(mocks.trace.terminate).toEqual([]);
+    // A non-authored skill never reaches the flip (the grant returns early).
+    expect(mocks.trace.activate).toEqual([]);
   });
 
   it('a package-only delta widens the registry host live, no re-spawn', async () => {

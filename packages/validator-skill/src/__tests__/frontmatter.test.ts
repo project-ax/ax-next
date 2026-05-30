@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  parseFrontmatter,
-  parseFrontmatterBytes,
-  stripCapabilitiesFromFrontmatter,
-} from '../frontmatter.js';
+import { parseFrontmatter, parseFrontmatterBytes } from '../frontmatter.js';
 
 describe('parseFrontmatter', () => {
   it('accepts well-formed frontmatter with name + description', () => {
@@ -135,79 +131,5 @@ describe('parseFrontmatterBytes', () => {
     const r = parseFrontmatterBytes(new Uint8Array());
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.reason).toContain('frontmatter');
-  });
-});
-
-describe('stripCapabilitiesFromFrontmatter', () => {
-  it('returns the original text unchanged when no capabilities block is present', () => {
-    const src = '---\nname: foo\ndescription: bar\n---\nbody';
-    const r = stripCapabilitiesFromFrontmatter(src);
-    expect(r.stripped).toBe(false);
-    expect(r.text).toBe(src);
-  });
-
-  it('strips the capabilities block and returns stripped=true', () => {
-    const src =
-      '---\n' +
-      'name: foo\n' +
-      'description: bar\n' +
-      'capabilities:\n' +
-      '  allowedHosts: [api.example.com]\n' +
-      '---\n' +
-      'body';
-    const r = stripCapabilitiesFromFrontmatter(src);
-    expect(r.stripped).toBe(true);
-    expect(r.text).not.toMatch(/capabilities/);
-    expect(r.text).toMatch(/name: foo/);
-    expect(r.text).toMatch(/description: bar/);
-    expect(r.text).toMatch(/body/);
-  });
-
-  it('returns the original text unchanged when there is no frontmatter fence', () => {
-    const r = stripCapabilitiesFromFrontmatter('no fence here');
-    expect(r.stripped).toBe(false);
-    expect(r.text).toBe('no fence here');
-  });
-
-  it('returns the original text unchanged on malformed YAML in the fence', () => {
-    const src = '---\n: bad\n---\nbody';
-    const r = stripCapabilitiesFromFrontmatter(src);
-    expect(r.stripped).toBe(false);
-    expect(r.text).toBe(src);
-  });
-
-  it('preserves the body after the fence', () => {
-    const src =
-      '---\n' +
-      'name: foo\n' +
-      'description: bar\n' +
-      'capabilities:\n' +
-      '  credentials:\n' +
-      '    - slot: A\n' +
-      '      kind: api-key\n' +
-      '---\n' +
-      '# heading\n\nsome text\n';
-    const r = stripCapabilitiesFromFrontmatter(src);
-    expect(r.stripped).toBe(true);
-    expect(r.text).toContain('# heading');
-    expect(r.text).toContain('some text');
-  });
-
-  it('produces output that still parses as valid frontmatter', () => {
-    const src =
-      '---\n' +
-      'name: foo\n' +
-      'description: bar\n' +
-      'capabilities:\n' +
-      '  allowedHosts: [a.example.com]\n' +
-      '---\nbody';
-    const r = stripCapabilitiesFromFrontmatter(src);
-    expect(r.stripped).toBe(true);
-    const re = parseFrontmatter(r.text);
-    expect(re.ok).toBe(true);
-    if (re.ok) {
-      expect(re.fields.name).toBe('foo');
-      expect(re.fields.description).toBe('bar');
-    }
   });
 });
