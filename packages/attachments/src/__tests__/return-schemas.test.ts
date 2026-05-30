@@ -1,8 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import {
+  ArtifactsPublishBlobOutputSchema,
+  AttachmentsListForConversationOutputSchema,
   CommitOutputSchema,
   DownloadOutputSchema,
   StoreTempOutputSchema,
+  type ArtifactsPublishBlobOutput,
+  type AttachmentsListForConversationOutput,
   type CommitOutput,
   type DownloadOutput,
   type StoreTempOutput,
@@ -72,5 +76,30 @@ describe('attachments return schemas', () => {
         displayName: 'x',
       }).success,
     ).toBe(false);
+  });
+
+  // TASK-68 hooks.
+  it('artifacts:publish-blob round-trips a fully-populated output', () => {
+    const full: ArtifactsPublishBlobOutput = { artifactId: 'abc123' };
+    expect(ArtifactsPublishBlobOutputSchema.parse(full)).toEqual(full);
+  });
+
+  it('attachments:list-for-conversation round-trips a fully-populated output', () => {
+    const full: AttachmentsListForConversationOutput = {
+      files: [
+        {
+          path: '.ax/uploads/c1/t1/a.png',
+          sha256: 'a'.repeat(64),
+          mediaType: 'image/png',
+          displayName: 'a.png',
+          sizeBytes: 99,
+        },
+      ],
+    };
+    expect(AttachmentsListForConversationOutputSchema.parse(full)).toEqual(full);
+  });
+
+  it('attachments:list-for-conversation accepts an empty file list', () => {
+    expect(AttachmentsListForConversationOutputSchema.parse({ files: [] })).toEqual({ files: [] });
   });
 });

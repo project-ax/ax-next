@@ -3,6 +3,14 @@ import { HookBus, PluginError, makeAgentContext } from '@ax/core';
 import type { AgentContext } from '@ax/core';
 import type { ContentBlock } from '@ax/ipc-protocol';
 import { createDownloadHandler } from '../handlers.js';
+import type { AttachmentsStore, FileRow } from '../store.js';
+
+// ---------------------------------------------------------------------------
+// TASK-68: attachments:download keeps its full ACL ladder (normalize → owner
+// gate → path-scope) but its FINAL fetch swaps workspace:read (git) for
+// row → blob:get (content-addressed store). These tests prove the ACL is intact
+// and the new fetch path resolves a path → metadata row → blob bytes.
+// ---------------------------------------------------------------------------
 
 function makeCtx(userId: string): AgentContext {
   return makeAgentContext({
@@ -12,13 +20,6 @@ function makeCtx(userId: string): AgentContext {
   });
 }
 
-/**
- * Build a full Conversation row shape that matches GetOutput.conversation.
- * conversations:get returns the strongly-typed Conversation interface — every
- * nullable field needs to be present (even if null) so the handler's
- * type-checks against `got.turns` succeed regardless of which other fields
- * it might one day key off of.
- */
 function makeConversationRow(opts: {
   conversationId: string;
   userId: string;
@@ -47,10 +48,41 @@ interface ConversationsGetInput {
   userId: string;
 }
 
+/** A row keyed by `${conversationId}::${path}`. */
+function fileRow(conversationId: string, path: string, sha256: string, extra?: Partial<FileRow>): FileRow {
+  return {
+    id: 'id-' + sha256.slice(0, 6),
+    conversationId,
+    userId: 'u-1',
+    sha256,
+    path,
+    displayName: extra?.displayName ?? path.split('/').pop() ?? 'file',
+    mediaType: extra?.mediaType ?? 'application/octet-stream',
+    sizeBytes: extra?.sizeBytes ?? 0,
+  };
+}
+
+/**
+ * Mock store exposing only the read methods download uses. `files`/`artifacts`
+ * are keyed by `${conversationId}::${path}`.
+ */
+function makeStore(opts: {
+  files?: Record<string, FileRow>;
+  artifacts?: Record<string, FileRow>;
+} = {}): AttachmentsStore {
+  const files = opts.files ?? {};
+  const artifacts = opts.artifacts ?? {};
+  const stub = {
+    getFileByPath: async (c: string, p: string) => files[`${c}::${p}`] ?? null,
+    getArtifactByPath: async (c: string, p: string) => artifacts[`${c}::${p}`] ?? null,
+  } as Partial<AttachmentsStore>;
+  return stub as AttachmentsStore;
+}
+
 function makeBus(
   opts: {
     conversationsGet?: (input: ConversationsGetInput) => Promise<unknown>;
-    workspaceRead?: (input: { path: string }) => Promise<unknown>;
+    blobGet?: (input: { sha256: string }) => Promise<unknown>;
   } = {},
 ): HookBus {
   const bus = new HookBus();
@@ -72,26 +104,26 @@ function makeBus(
         turns: [],
       };
     });
-  const wr =
-    opts.workspaceRead ??
-    (async (input: { path: string }) => {
-      if (input.path === '.ax/uploads/c-1/t-1/abc__file.pdf') {
-        return { found: true, bytes: Buffer.from('pdf-bytes') };
+  const bg =
+    opts.blobGet ??
+    (async (input: { sha256: string }) => {
+      if (input.sha256 === 'sha-pdf') {
+        return { bytes: new Uint8Array(Buffer.from('pdf-bytes')) };
       }
       return { found: false };
     });
-  // Service handlers receive (ctx, input). Test factories above only need
-  // `input`, so we wrap them to discard the ctx.
   bus.registerService('conversations:get', 'test-mock', async (_ctx, input) =>
     cg(input as ConversationsGetInput),
   );
-  bus.registerService('workspace:read', 'test-mock', async (_ctx, input) =>
-    wr(input as { path: string }),
+  bus.registerService('blob:get', 'test-blob', async (_ctx, input) =>
+    bg(input as { sha256: string }),
   );
   return bus;
 }
 
-describe('attachments:download handler', () => {
+const UPLOAD_PATH = '.ax/uploads/c-1/t-1/abc__file.pdf';
+
+describe('attachments:download handler (blob-backed)', () => {
   describe('path normalization', () => {
     it.each([
       ['../etc/passwd'],
@@ -101,130 +133,65 @@ describe('attachments:download handler', () => {
       ['a'.repeat(1025)],
       [''],
     ])('rejects path %j with not-found', async (badPath) => {
-      const handler = createDownloadHandler({ bus: makeBus() });
+      const handler = createDownloadHandler({ bus: makeBus(), store: makeStore() });
       await expect(
-        handler(makeCtx('u-1'), {
-          path: badPath,
-          conversationId: 'c-1',
-          userId: 'u-1',
-        }),
+        handler(makeCtx('u-1'), { path: badPath, conversationId: 'c-1', userId: 'u-1' }),
       ).rejects.toMatchObject({ code: 'not-found' });
     });
   });
 
   describe('owner gate', () => {
     it('rejects foreign conversation with not-found (uniform existence-leak)', async () => {
-      const handler = createDownloadHandler({ bus: makeBus() });
+      const handler = createDownloadHandler({ bus: makeBus(), store: makeStore() });
       await expect(
-        handler(makeCtx('u-attacker'), {
-          path: '.ax/uploads/c-1/t-1/abc__file.pdf',
-          conversationId: 'c-1',
-          userId: 'u-attacker',
-        }),
+        handler(makeCtx('u-attacker'), { path: UPLOAD_PATH, conversationId: 'c-1', userId: 'u-attacker' }),
       ).rejects.toMatchObject({ code: 'not-found' });
     });
 
     it('collapses forbidden from conversations:get to not-found', async () => {
       const bus = makeBus({
         conversationsGet: async () => {
-          throw new PluginError({
-            code: 'forbidden',
-            plugin: 'test-mock',
-            message: 'no',
-          });
+          throw new PluginError({ code: 'forbidden', plugin: 'test-mock', message: 'no' });
         },
       });
-      const handler = createDownloadHandler({ bus });
+      const handler = createDownloadHandler({ bus, store: makeStore() });
       await expect(
-        handler(makeCtx('u-1'), {
-          path: '.ax/uploads/c-1/t-1/abc__file.pdf',
-          conversationId: 'c-1',
-          userId: 'u-1',
-        }),
+        handler(makeCtx('u-1'), { path: UPLOAD_PATH, conversationId: 'c-1', userId: 'u-1' }),
       ).rejects.toMatchObject({ code: 'not-found' });
     });
 
     it('rejects input.userId !== ctx.userId with not-found (spoof attempt)', async () => {
-      // A caller asserting they're acting as someone else than ctx.userId
-      // is either confused or probing — collapse to not-found so the
-      // response is indistinguishable from a missing conversation.
-      const handler = createDownloadHandler({ bus: makeBus() });
+      const handler = createDownloadHandler({ bus: makeBus(), store: makeStore() });
       await expect(
-        handler(makeCtx('u-attacker'), {
-          path: '.ax/uploads/c-1/t-1/abc__file.pdf',
-          conversationId: 'c-1',
-          userId: 'u-1', // claims to be the legitimate owner
-        }),
+        handler(makeCtx('u-attacker'), { path: UPLOAD_PATH, conversationId: 'c-1', userId: 'u-1' }),
       ).rejects.toMatchObject({ code: 'not-found' });
     });
   });
 
   describe('path-scope check', () => {
-    it('allows path under .ax/uploads/<conversationId>/', async () => {
-      const handler = createDownloadHandler({ bus: makeBus() });
-      const result = await handler(makeCtx('u-1'), {
-        path: '.ax/uploads/c-1/t-1/abc__file.pdf',
-        conversationId: 'c-1',
-        userId: 'u-1',
-      });
+    it('allows + serves a path under .ax/uploads/<conversationId>/ via its files row', async () => {
+      const store = makeStore({ files: { [`c-1::${UPLOAD_PATH}`]: fileRow('c-1', UPLOAD_PATH, 'sha-pdf', { mediaType: 'application/pdf', displayName: 'file.pdf' }) } });
+      const handler = createDownloadHandler({ bus: makeBus(), store });
+      const result = await handler(makeCtx('u-1'), { path: UPLOAD_PATH, conversationId: 'c-1', userId: 'u-1' });
       expect(result.bytes.toString()).toBe('pdf-bytes');
+      expect(result.mediaType).toBe('application/pdf');
+      expect(result.displayName).toBe('file.pdf');
     });
 
     it('rejects path under another conversation with forbidden', async () => {
-      const handler = createDownloadHandler({ bus: makeBus() });
+      const handler = createDownloadHandler({ bus: makeBus(), store: makeStore() });
       await expect(
-        handler(makeCtx('u-1'), {
-          path: '.ax/uploads/c-OTHER/t-1/abc__file.pdf',
-          conversationId: 'c-1',
-          userId: 'u-1',
-        }),
+        handler(makeCtx('u-1'), { path: '.ax/uploads/c-OTHER/t-1/abc__file.pdf', conversationId: 'c-1', userId: 'u-1' }),
       ).rejects.toMatchObject({ code: 'forbidden' });
     });
 
-    it('allows path referenced from an attachment block in any turn', async () => {
-      const attachmentBlock: ContentBlock = {
-        type: 'attachment',
-        path: 'workspace/reports/Q4.pdf',
-        displayName: 'Q4',
-        mediaType: 'application/pdf',
-        sizeBytes: 1,
-      };
-      const bus = makeBus({
-        conversationsGet: async () => ({
-          conversation: makeConversationRow({
-            conversationId: 'c-1',
-            userId: 'u-1',
-          }),
-          turns: [
-            {
-              turnId: 't-1',
-              turnIndex: 0,
-              role: 'assistant' as const,
-              contentBlocks: [attachmentBlock],
-              createdAt: '2026-05-15T00:00:00Z',
-            },
-          ],
-        }),
-        workspaceRead: async () => ({ found: true, bytes: Buffer.from('q4') }),
-      });
-      const handler = createDownloadHandler({ bus });
-      const result = await handler(makeCtx('u-1'), {
-        path: 'workspace/reports/Q4.pdf',
-        conversationId: 'c-1',
-        userId: 'u-1',
-      });
-      expect(result.bytes.toString()).toBe('q4');
-      expect(result.displayName).toBe('Q4');
-      expect(result.mediaType).toBe('application/pdf');
-    });
-
-    it('allows path referenced from an artifact_publish tool_result', async () => {
+    it('serves a path referenced from an artifact_publish tool_result via its artifact row', async () => {
       const toolResultPath = 'workspace/reports/Q4.pdf';
       const toolUseBlock: ContentBlock = {
         type: 'tool_use',
         id: 'toolu-1',
         name: 'artifact_publish',
-        input: { path: '/permanent/workspace/reports/Q4.pdf' },
+        input: { path: '/ephemeral/artifacts/Q4.pdf' },
       };
       const toolResultBlock: ContentBlock = {
         type: 'tool_result',
@@ -236,15 +203,12 @@ describe('attachments:download handler', () => {
           displayName: 'Q4',
           mediaType: 'application/pdf',
           sizeBytes: 1,
-          sha256: 'x',
+          sha256: 'sha-q4',
         }),
       };
       const bus = makeBus({
         conversationsGet: async () => ({
-          conversation: makeConversationRow({
-            conversationId: 'c-1',
-            userId: 'u-1',
-          }),
+          conversation: makeConversationRow({ conversationId: 'c-1', userId: 'u-1' }),
           turns: [
             {
               turnId: 't-1',
@@ -255,40 +219,42 @@ describe('attachments:download handler', () => {
             },
           ],
         }),
-        workspaceRead: async () => ({ found: true, bytes: Buffer.from('q4') }),
+        blobGet: async (input) =>
+          input.sha256 === 'sha-q4' ? { bytes: new Uint8Array(Buffer.from('q4')) } : { found: false },
       });
-      const handler = createDownloadHandler({ bus });
-      const result = await handler(makeCtx('u-1'), {
-        path: toolResultPath,
-        conversationId: 'c-1',
-        userId: 'u-1',
+      const store = makeStore({
+        artifacts: { [`c-1::${toolResultPath}`]: fileRow('c-1', toolResultPath, 'sha-q4', { mediaType: 'application/pdf', displayName: 'Q4' }) },
       });
+      const handler = createDownloadHandler({ bus, store });
+      const result = await handler(makeCtx('u-1'), { path: toolResultPath, conversationId: 'c-1', userId: 'u-1' });
       expect(result.bytes.toString()).toBe('q4');
       expect(result.displayName).toBe('Q4');
       expect(result.mediaType).toBe('application/pdf');
     });
 
     it('rejects path not referenced anywhere with forbidden', async () => {
-      const handler = createDownloadHandler({ bus: makeBus() });
+      const handler = createDownloadHandler({ bus: makeBus(), store: makeStore() });
       await expect(
-        handler(makeCtx('u-1'), {
-          path: 'workspace/reports/SECRET.pdf',
-          conversationId: 'c-1',
-          userId: 'u-1',
-        }),
+        handler(makeCtx('u-1'), { path: 'workspace/reports/SECRET.pdf', conversationId: 'c-1', userId: 'u-1' }),
       ).rejects.toMatchObject({ code: 'forbidden' });
     });
   });
 
-  describe('workspace:read', () => {
-    it('returns not-found when the file is gone from main', async () => {
-      const handler = createDownloadHandler({ bus: makeBus() });
+  describe('row + blob resolution', () => {
+    it('returns not-found when the path is in scope but no metadata row exists', async () => {
+      // In scope (uploads prefix), but no row → not-found (e.g. a pre-TASK-68
+      // git-era attachment, or a GC'd blob).
+      const handler = createDownloadHandler({ bus: makeBus(), store: makeStore() });
       await expect(
-        handler(makeCtx('u-1'), {
-          path: '.ax/uploads/c-1/t-1/missing__file.pdf',
-          conversationId: 'c-1',
-          userId: 'u-1',
-        }),
+        handler(makeCtx('u-1'), { path: '.ax/uploads/c-1/t-1/missing__file.pdf', conversationId: 'c-1', userId: 'u-1' }),
+      ).rejects.toMatchObject({ code: 'not-found' });
+    });
+
+    it('returns not-found when the row exists but the blob is gone', async () => {
+      const store = makeStore({ files: { [`c-1::${UPLOAD_PATH}`]: fileRow('c-1', UPLOAD_PATH, 'sha-missing') } });
+      const handler = createDownloadHandler({ bus: makeBus(), store });
+      await expect(
+        handler(makeCtx('u-1'), { path: UPLOAD_PATH, conversationId: 'c-1', userId: 'u-1' }),
       ).rejects.toMatchObject({ code: 'not-found' });
     });
   });

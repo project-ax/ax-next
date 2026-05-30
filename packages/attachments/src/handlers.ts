@@ -3,16 +3,15 @@ import {
   PluginError,
   type AgentContext,
   type HookBus,
-  type WorkspaceApplyInput,
-  type WorkspaceApplyOutput,
-  type WorkspaceReadInput,
-  type WorkspaceReadOutput,
-  type WorkspaceVersion,
 } from '@ax/core';
 import type { ContentBlock } from '@ax/ipc-protocol';
 import type { AttachmentsStore } from './store.js';
 import type {
   AttachmentsConfig,
+  AttachmentsListForConversationInput,
+  AttachmentsListForConversationOutput,
+  ArtifactsPublishBlobInput,
+  ArtifactsPublishBlobOutput,
   CommitInput,
   CommitOutput,
   DownloadInput,
@@ -20,6 +19,20 @@ import type {
   StoreTempInput,
   StoreTempOutput,
 } from './types.js';
+
+// TASK-68 (out-of-git Part C): bytes live in the content-addressed blob store,
+// reached via the storage-agnostic blob:* bus hooks (NOT an import — I2).
+interface BlobPutInput {
+  bytes: Uint8Array;
+}
+interface BlobPutOutput {
+  sha256: string;
+  size: number;
+}
+interface BlobGetInput {
+  sha256: string;
+}
+type BlobGetOutput = { bytes: Uint8Array } | { found: false };
 import {
   DEFAULT_MAX_FILE_BYTES,
   DEFAULT_MAX_PENDING_BYTES_PER_USER,
@@ -176,66 +189,39 @@ export function createCommitHandler(deps: CommitDeps) {
     }
 
     const filenameComponent = sanitizeFilenameComponent(row.displayName);
+    // The `path` stays the workspace-relative `.ax/uploads/<conv>/<turn>/<file>`
+    // KEY — unchanged from the git era — so the transcript `attachment` block,
+    // the download ACL's path-scope check, and the runner's re-rooting all keep
+    // working. Only the STORAGE moves: the bytes now go to the content-addressed
+    // blob store + a metadata row, not a git commit.
     const path = `.ax/uploads/${input.conversationId}/${input.turnId}/${filenameComponent}`;
-    const sha256 = createHash('sha256').update(row.bytes).digest('hex');
 
-    // workspace:apply requires `parent` to match the current mirror HEAD —
-    // a fresh empty workspace accepts `null`, a non-empty one needs the
-    // current head. We don't know which we're against (the workspace is
-    // shared across all conversations for the same agent+user, so prior
-    // turns or attachments may have left commits), so try `null` first
-    // and rebase on `parent-mismatch` using the actualParent the storage
-    // tier echoes back in the error's `cause`.
-    //
-    // Bounded retries (5) cover concurrent committers without spinning if
-    // the workspace is genuinely contended.
-    let parent: WorkspaceVersion | null = null;
-    let applied = false;
-    let lastErr: unknown;
-    for (let attempt = 0; attempt < 5; attempt++) {
-      try {
-        await deps.bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-          'workspace:apply',
-          ctx,
-          {
-            changes: [{ path, kind: 'put', content: row.bytes }],
-            parent,
-            reason: `attachments:commit ${input.attachmentId}`,
-          },
-        );
-        applied = true;
-        break;
-      } catch (err) {
-        lastErr = err;
-        if (
-          err instanceof PluginError &&
-          err.code === 'parent-mismatch' &&
-          err.cause !== null &&
-          typeof err.cause === 'object' &&
-          'actualParent' in err.cause
-        ) {
-          const next = (err.cause as { actualParent: WorkspaceVersion | null })
-            .actualParent;
-          // Same parent twice in a row means the storage tier is wedged or
-          // the contract drifted; don't loop forever.
-          if (next === parent) break;
-          parent = next;
-          continue;
-        }
-        throw err;
-      }
-    }
-    if (!applied) {
-      throw lastErr ??
-        new PluginError({
-          code: 'internal-error',
-          plugin: PLUGIN_NAME,
-          hookName: 'attachments:commit',
-          message: 'workspace:apply exhausted retries without applying',
-        });
-    }
+    // TASK-68: store the bytes in the content-addressed blob store (host-side;
+    // no sandbox involved). The store computes + returns the sha256 — we don't
+    // forge it. Idempotent: identical bytes are stored once. This REPLACES the
+    // old `workspace:apply` → git commit path, and with it the shared-mirror
+    // `parent-mismatch` rebase race (the chat-transcript-loss root cause) is
+    // gone entirely — an upload no longer advances the chat mirror out-of-band.
+    const put = await deps.bus.call<BlobPutInput, BlobPutOutput>(
+      'blob:put',
+      ctx,
+      { bytes: new Uint8Array(row.bytes.buffer, row.bytes.byteOffset, row.bytes.byteLength) },
+    );
 
-    // Best-effort delete; janitor reaps any leftovers.
+    // Durable metadata row mapping (conversationId, path) → sha256. The download
+    // ACL + the runner's materialize loop resolve a path back to its blob here.
+    await deps.store.upsertFile({
+      id: input.attachmentId,
+      conversationId: input.conversationId,
+      userId: ctx.userId,
+      sha256: put.sha256,
+      path,
+      displayName: row.displayName,
+      mediaType: row.mediaType,
+      sizeBytes: row.sizeBytes,
+    });
+
+    // Best-effort delete of the temp row; janitor reaps any leftovers.
     try {
       await deps.store.deleteTemp(input.attachmentId);
     } catch (err) {
@@ -247,7 +233,7 @@ export function createCommitHandler(deps: CommitDeps) {
 
     return {
       path,
-      sha256,
+      sha256: put.sha256,
       mediaType: row.mediaType,
       sizeBytes: row.sizeBytes,
       displayName: row.displayName,
@@ -255,8 +241,75 @@ export function createCommitHandler(deps: CommitDeps) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// TASK-68: attachments:list-for-conversation + artifacts:publish-blob.
+// ---------------------------------------------------------------------------
+
+export interface ListForConversationDeps {
+  store: AttachmentsStore;
+}
+
+/**
+ * `attachments:list-for-conversation` — returns the conversation's committed
+ * uploads (scoped to ctx.userId, so a foreign conversation returns the empty
+ * set — no existence leak). The runner enumerates these at session start to
+ * materialize /ephemeral/uploads from the blob store.
+ */
+export function createListForConversationHandler(deps: ListForConversationDeps) {
+  return async function listForConversation(
+    ctx: AgentContext,
+    input: AttachmentsListForConversationInput,
+  ): Promise<AttachmentsListForConversationOutput> {
+    const rows = await deps.store.listFilesForConversation(
+      input.conversationId,
+      ctx.userId,
+    );
+    return {
+      files: rows.map((r) => ({
+        path: r.path,
+        sha256: r.sha256,
+        mediaType: r.mediaType,
+        displayName: r.displayName,
+        sizeBytes: r.sizeBytes,
+      })),
+    };
+  };
+}
+
+export interface PublishArtifactBlobDeps {
+  store: AttachmentsStore;
+}
+
+/**
+ * `artifacts:publish-blob` — inserts a published-artifact metadata row after the
+ * runner streamed the bytes to `blob:put`. Scoped to ctx.userId. The artifactId
+ * is the sha256 prefix (matching the runner executor's existing contract +
+ * stable across re-publishes of identical bytes). Idempotent on
+ * (conversationId, path).
+ */
+export function createPublishArtifactBlobHandler(deps: PublishArtifactBlobDeps) {
+  return async function publishArtifactBlob(
+    ctx: AgentContext,
+    input: ArtifactsPublishBlobInput,
+  ): Promise<ArtifactsPublishBlobOutput> {
+    const artifactId = input.sha256.slice(0, 16);
+    await deps.store.upsertArtifact({
+      id: artifactId,
+      conversationId: input.conversationId,
+      userId: ctx.userId,
+      sha256: input.sha256,
+      path: input.path,
+      displayName: input.displayName,
+      mediaType: input.mediaType,
+      sizeBytes: input.size,
+    });
+    return { artifactId };
+  };
+}
+
 export interface DownloadDeps {
   bus: HookBus;
+  store: AttachmentsStore;
 }
 
 /**
@@ -443,33 +496,55 @@ export function createDownloadHandler(deps: DownloadDeps) {
       });
     }
 
-    // 4) workspace:read. Symlink refusal is enforced at write-time in
-    //    Phase 2 (artifact_publish lstat-rejects; attachments:commit takes
-    //    Buffer bytes and can't create a symlink). Read-time symlink
-    //    refusal would require extending WorkspaceReadResponseSchema with a
-    //    `mode` field — separate schema-level change, not blocking Phase 1.
-    const readResult = await deps.bus.call<
-      WorkspaceReadInput,
-      WorkspaceReadOutput
-    >('workspace:read', ctx, { path: normalized });
-    if (!readResult.found) {
+    // 4) Resolve path → metadata row → blob:get → bytes (TASK-68). The bytes
+    //    no longer live in git/workspace; they're content-addressed in the blob
+    //    store. We look up the (conversationId, path) row to learn the sha256,
+    //    then fetch the bytes — which `blob:get` re-verifies against that digest
+    //    on read (TASK-65), so a corrupt/tampered object is refused, never
+    //    served. A path can be either a committed UPLOAD or a published
+    //    ARTIFACT; check both tables (the transcript path-scope check above
+    //    already proved the path belongs to this conversation).
+    //
+    //    Symlink refusal is enforced at WRITE time (artifact_publish lstat; an
+    //    upload is opaque bytes that can't be a symlink), so there's no symlink
+    //    to refuse here.
+    const fileRow =
+      (await deps.store.getFileByPath(input.conversationId, normalized)) ??
+      (await deps.store.getArtifactByPath(input.conversationId, normalized));
+    if (fileRow === null) {
+      // The transcript referenced this path but no metadata row exists (e.g. a
+      // pre-TASK-68 git-era attachment, or a GC'd blob). Uniform not-found.
       throw new PluginError({
         code: 'not-found',
         plugin: PLUGIN_NAME,
         hookName: 'attachments:download',
-        message: 'file not in workspace',
+        message: 'file not found',
       });
     }
 
-    // WorkspaceReadOutput.bytes is `Bytes` (Uint8Array). DownloadOutput.bytes
-    // is `Buffer` for caller ergonomics. `Buffer.from(uint8)` is a zero-copy
-    // view over the same memory.
-    const buf = Buffer.from(readResult.bytes);
+    const got = await deps.bus.call<BlobGetInput, BlobGetOutput>('blob:get', ctx, {
+      sha256: fileRow.sha256,
+    });
+    if ('found' in got && got.found === false) {
+      throw new PluginError({
+        code: 'not-found',
+        plugin: PLUGIN_NAME,
+        hookName: 'attachments:download',
+        message: 'blob not found',
+      });
+    }
+
+    // `blob:get` returns a Uint8Array; DownloadOutput.bytes is `Buffer` for
+    // caller ergonomics. `Buffer.from(uint8)` is a zero-copy view. Prefer the
+    // metadata row's display fields (the authoritative committed metadata) over
+    // the transcript scrape, falling back to the scope metadata.
+    const bytes = (got as { bytes: Uint8Array }).bytes;
+    const buf = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
     return {
       bytes: buf,
-      mediaType: scopeMeta.mediaType,
+      mediaType: fileRow.mediaType || scopeMeta.mediaType,
       sizeBytes: buf.length,
-      displayName: scopeMeta.displayName,
+      displayName: fileRow.displayName || scopeMeta.displayName,
     };
   };
 }

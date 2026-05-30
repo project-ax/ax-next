@@ -26,6 +26,31 @@ export type InsertTempIfWithinQuotaResult =
   | { ok: true }
   | { ok: false; reason: 'quota-exceeded' };
 
+// TASK-68: durable metadata for a committed upload / published artifact. The
+// bytes are in the blob store (sha256-addressed); this is the row that maps
+// (conversationId, path) → sha256 + display metadata.
+export interface FileRowInsert {
+  id: string;
+  conversationId: string;
+  userId: string;
+  sha256: string;
+  path: string;
+  displayName: string;
+  mediaType: string;
+  sizeBytes: number;
+}
+
+export interface FileRow {
+  id: string;
+  conversationId: string;
+  userId: string;
+  sha256: string;
+  path: string;
+  displayName: string;
+  mediaType: string;
+  sizeBytes: number;
+}
+
 /**
  * Pure data access over `attachments_v1_temps`. No policy, no ACL — handlers
  * (Task 5+) layer those on top. `getTemp` filters out already-expired rows
@@ -52,6 +77,25 @@ export interface AttachmentsStore {
   deleteTemp(attachmentId: string): Promise<void>;
   /** Deletes rows past expires_at. Returns the count deleted. */
   purgeExpired(): Promise<number>;
+
+  // --- TASK-68: committed-upload (`files`) metadata ---
+  /**
+   * Upsert a committed-upload row. Idempotent on (conversationId, path): a
+   * re-commit of the same path (same turn replay) updates the existing row
+   * rather than duplicating. Content-addressed bytes already live in the blob
+   * store; this only records ownership + display metadata.
+   */
+  upsertFile(input: FileRowInsert): Promise<void>;
+  /** Resolve a committed upload by (conversationId, path). Null if absent. */
+  getFileByPath(conversationId: string, path: string): Promise<FileRow | null>;
+  /** All committed uploads for a conversation owned by `userId` (empty if none / foreign). */
+  listFilesForConversation(conversationId: string, userId: string): Promise<FileRow[]>;
+
+  // --- TASK-68: published-artifact metadata ---
+  /** Upsert a published-artifact row. Idempotent on (conversationId, path). */
+  upsertArtifact(input: FileRowInsert): Promise<void>;
+  /** Resolve a published artifact by (conversationId, path). Null if absent. */
+  getArtifactByPath(conversationId: string, path: string): Promise<FileRow | null>;
 }
 
 export function createAttachmentsStore(
@@ -162,6 +206,123 @@ export function createAttachmentsStore(
         .where('expires_at', '<=', new Date())
         .executeTakeFirst();
       return Number(result.numDeletedRows ?? 0);
+    },
+
+    async upsertFile(input) {
+      await db
+        .insertInto('attachments_v1_files')
+        .values({
+          attachment_id: input.id,
+          conversation_id: input.conversationId,
+          user_id: input.userId,
+          sha256: input.sha256,
+          path: input.path,
+          display_name: input.displayName,
+          media_type: input.mediaType,
+          size_bytes: input.sizeBytes,
+          created_at: new Date(),
+        })
+        // Idempotent on (conversation_id, path): a re-commit of the same path
+        // (turn replay) refreshes the metadata + content hash rather than
+        // failing the unique constraint or duplicating the row.
+        .onConflict((oc) =>
+          oc.columns(['conversation_id', 'path']).doUpdateSet({
+            attachment_id: input.id,
+            user_id: input.userId,
+            sha256: input.sha256,
+            display_name: input.displayName,
+            media_type: input.mediaType,
+            size_bytes: input.sizeBytes,
+          }),
+        )
+        .execute();
+    },
+
+    async getFileByPath(conversationId, path) {
+      const row = await db
+        .selectFrom('attachments_v1_files')
+        .selectAll()
+        .where('conversation_id', '=', conversationId)
+        .where('path', '=', path)
+        .executeTakeFirst();
+      if (!row) return null;
+      return {
+        id: row.attachment_id,
+        conversationId: row.conversation_id,
+        userId: row.user_id,
+        sha256: row.sha256,
+        path: row.path,
+        displayName: row.display_name,
+        mediaType: row.media_type,
+        sizeBytes: Number(row.size_bytes),
+      };
+    },
+
+    async listFilesForConversation(conversationId, userId) {
+      const rows = await db
+        .selectFrom('attachments_v1_files')
+        .selectAll()
+        .where('conversation_id', '=', conversationId)
+        .where('user_id', '=', userId)
+        .orderBy('created_at', 'asc')
+        .execute();
+      return rows.map((row) => ({
+        id: row.attachment_id,
+        conversationId: row.conversation_id,
+        userId: row.user_id,
+        sha256: row.sha256,
+        path: row.path,
+        displayName: row.display_name,
+        mediaType: row.media_type,
+        sizeBytes: Number(row.size_bytes),
+      }));
+    },
+
+    async upsertArtifact(input) {
+      await db
+        .insertInto('attachments_v1_artifacts')
+        .values({
+          artifact_id: input.id,
+          conversation_id: input.conversationId,
+          user_id: input.userId,
+          sha256: input.sha256,
+          path: input.path,
+          display_name: input.displayName,
+          media_type: input.mediaType,
+          size_bytes: input.sizeBytes,
+          created_at: new Date(),
+        })
+        .onConflict((oc) =>
+          oc.columns(['conversation_id', 'path']).doUpdateSet({
+            artifact_id: input.id,
+            user_id: input.userId,
+            sha256: input.sha256,
+            display_name: input.displayName,
+            media_type: input.mediaType,
+            size_bytes: input.sizeBytes,
+          }),
+        )
+        .execute();
+    },
+
+    async getArtifactByPath(conversationId, path) {
+      const row = await db
+        .selectFrom('attachments_v1_artifacts')
+        .selectAll()
+        .where('conversation_id', '=', conversationId)
+        .where('path', '=', path)
+        .executeTakeFirst();
+      if (!row) return null;
+      return {
+        id: row.artifact_id,
+        conversationId: row.conversation_id,
+        userId: row.user_id,
+        sha256: row.sha256,
+        path: row.path,
+        displayName: row.display_name,
+        mediaType: row.media_type,
+        sizeBytes: Number(row.size_bytes),
+      };
     },
   };
 }

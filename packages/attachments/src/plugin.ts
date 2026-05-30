@@ -6,10 +6,14 @@ import {
   createStoreTempHandler,
   createCommitHandler,
   createDownloadHandler,
+  createListForConversationHandler,
+  createPublishArtifactBlobHandler,
 } from './handlers.js';
 import { startJanitor, type JanitorHandle } from './janitor.js';
 import {
   type AttachmentsConfig,
+  ArtifactsPublishBlobOutputSchema,
+  AttachmentsListForConversationOutputSchema,
   CommitOutputSchema,
   DEFAULT_JANITOR_INTERVAL_SECONDS,
   DownloadOutputSchema,
@@ -52,11 +56,18 @@ export function createAttachmentsPlugin(
         'attachments:store-temp',
         'attachments:commit',
         'attachments:download',
+        // TASK-68 (out-of-git Part C): the host-side metadata hooks the IPC
+        // artifact.publish / attachments.list actions drive.
+        'attachments:list-for-conversation',
+        'artifacts:publish-blob',
       ],
       calls: [
         'database:get-instance',
-        'workspace:apply',
-        'workspace:read',
+        // TASK-68: bytes move from git (workspace:apply/read) to the
+        // content-addressed blob store. attachments:commit stores via blob:put;
+        // attachments:download fetches via blob:get. The git path is dropped.
+        'blob:put',
+        'blob:get',
         'conversations:get',
       ],
       subscribes: [],
@@ -86,7 +97,9 @@ export function createAttachmentsPlugin(
       _store = store;
       const storeTempHandler = createStoreTempHandler({ store, config });
       const commitHandler = createCommitHandler({ store, bus });
-      const downloadHandler = createDownloadHandler({ bus });
+      const downloadHandler = createDownloadHandler({ bus, store });
+      const listForConversationHandler = createListForConversationHandler({ store });
+      const publishArtifactBlobHandler = createPublishArtifactBlobHandler({ store });
 
       // 4) Register the hooks. `bus.registerService` is generic in I/O;
       //    each handler factory above returned a correctly-typed closure,
@@ -103,6 +116,19 @@ export function createAttachmentsPlugin(
       bus.registerService('attachments:download', PLUGIN_NAME, downloadHandler, {
         returns: DownloadOutputSchema,
       });
+      // TASK-68: host-side metadata hooks driven by the IPC dispatcher.
+      bus.registerService(
+        'attachments:list-for-conversation',
+        PLUGIN_NAME,
+        listForConversationHandler,
+        { returns: AttachmentsListForConversationOutputSchema },
+      );
+      bus.registerService(
+        'artifacts:publish-blob',
+        PLUGIN_NAME,
+        publishArtifactBlobHandler,
+        { returns: ArtifactsPublishBlobOutputSchema },
+      );
 
       // 5) Start the janitor. The interval defaults to 5 minutes; tests
       //    can override via `janitorIntervalSeconds`.
