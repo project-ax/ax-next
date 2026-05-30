@@ -285,6 +285,13 @@ interface SkillsResolveOutput {
 export interface AuthoredResolvedSkillForOrch extends ResolvedSkillForOrch {
   proposalDelta: ResolvedSkillForOrch['capabilities'];
   description: string;
+  /** Gate verdict (TASK-76, §D3). Only `active` skills materialize their bytes
+   * into the spawn union; a `pending` skill projects NOTHING (no body, no
+   * name/description in context, no caps) but still drives the approval card —
+   * the card reads description+proposalDelta, never bodyMd, so withholding the
+   * body doesn't break it. Optional for back-compat with an agents projection
+   * that predates the field (defaults to `active`, the pre-TASK-76 behavior). */
+  status?: 'active' | 'pending';
 }
 interface AgentsResolveAuthoredSkillsOutput {
   skills: AuthoredResolvedSkillForOrch[];
@@ -588,12 +595,20 @@ const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
 //
 // I2 (no cross-plugin imports): the orchestrator deps are only `@ax/core` +
 // `@ax/sandbox-protocol`, so these are a LOCAL mirror of the broker's
-// `SEARCH_CATALOG_DESCRIPTOR.name` / `REQUEST_CAPABILITY_DESCRIPTOR.name`
-// (the source of truth) — duplicated structurally with this comment, the
-// same posture TASK-34 used to mirror the candidate shape. `install_authored_
-// skill` (the broker's open-mode 3rd tool, gated behind allow_user_installed_
-// skills) is intentionally EXCLUDED — only the two always-on tools.
-const ALWAYS_ON_BROKER_TOOLS = ['search_catalog', 'request_capability'] as const;
+// `SEARCH_CATALOG_DESCRIPTOR.name` / `REQUEST_CAPABILITY_DESCRIPTOR.name` and
+// @ax/tool-skill-propose's `SKILL_PROPOSE_TOOL_NAME` (the sources of truth) —
+// duplicated structurally with this comment, the same posture TASK-34 used to
+// mirror the candidate shape. `install_authored_skill` (the broker's open-mode
+// 3rd tool, gated behind allow_user_installed_skills) is intentionally EXCLUDED.
+//
+// TASK-76: `skill_propose` is added here so a NON-WILDCARD tenant agent can
+// author skills too. The descriptor is registered host-side via tool:register;
+// a wildcard agent already sees the whole catalog (incl. skill_propose), but a
+// non-wildcard agent sees only its explicit list + these always-on tools — so
+// without this it could never invoke skill_propose. The host `skills:propose`
+// gate (re-validate + scan + classify) is the real boundary; tool visibility
+// isn't a grant.
+const ALWAYS_ON_BROKER_TOOLS = ['search_catalog', 'request_capability', 'skill_propose'] as const;
 
 /**
  * "default+locked" broker tools, computed at session-open (TASK-51).
@@ -1547,13 +1562,29 @@ export function createOrchestrator(
       }
     }
 
+    // §D3 "no bytes project, no caps inject" (TASK-76). A `pending` authored
+    // skill — one whose declared caps a human hasn't approved yet — must
+    // contribute NOTHING to this spawn: not its SKILL.md body, not its
+    // name/description in context, not its caps. Only `active` skills (zero-cap
+    // free-path, or a gated skill the user approved → status flipped to active)
+    // materialize. The full `authoredDraftSkills` list is still used below to
+    // fire the approval card (the card reads description+proposalDelta, never the
+    // body), so a pending skill is invisible to the model yet still promptable.
+    // A projection that predates the `status` field (back-compat) defaults to
+    // active — the pre-TASK-76 behavior.
+    const activeAuthoredDraftSkills = authoredDraftSkills.filter(
+      (s) => (s.status ?? 'active') === 'active',
+    );
+
     // PC-1 — fold APPROVED authored-draft caps into the egress allowlist +
     // credential map (Phase 4 PR-B). baseCreds is aliased by unionedCreds and
     // baseAllowSet is frozen into unionedAllowlist below, so mutating them here
     // reaches proxy:open-session. A slot colliding with a trusted owner is a
     // fatal terminate (an untrusted draft must not hijack a trusted credential).
+    // Only ACTIVE skills fold (§D3 "no caps inject" for pending; a pending
+    // skill's proposal∩approved is empty anyway, so this is belt-and-suspenders).
     const authoredCollision = foldAuthoredSkillCaps(
-      authoredDraftSkills,
+      activeAuthoredDraftSkills,
       baseAllowSet,
       baseCreds,
       slotOwners,
@@ -1588,7 +1619,12 @@ export function createOrchestrator(
         defaultSkillsForUnion = [];
       }
     }
-    const authoredIds = new Set(authoredDraftSkills.map((s) => s.id));
+    // §D3 (TASK-76): only ACTIVE authored skills enter the union (and therefore
+    // shadow same-id attachments). A `pending` draft must project nothing — and
+    // it must NOT suppress an explicit/default skill of the same id either (else
+    // an unapproved draft would blank out a real attachment), so the shadow set
+    // is the ACTIVE ids, not the full authored list.
+    const authoredIds = new Set(activeAuthoredDraftSkills.map((s) => s.id));
     // Union construction order: authored drafts (highest) → explicit
     // attachments → defaults → builtins (lowest). De-duped by id so the
     // higher-precedence entry wins.
@@ -1604,7 +1640,7 @@ export function createOrchestrator(
     // foldAuthoredSkillCaps (PC-1, just above), so its egress is live
     // regardless of what shadows its body here.
     const withAuthored = [
-      ...authoredDraftSkills,
+      ...activeAuthoredDraftSkills,
       ...resolvedSkills.filter((s) => !authoredIds.has(s.id)),
     ];
     const explicitIds = new Set(withAuthored.map((s) => s.id));
@@ -2456,6 +2492,22 @@ export function createOrchestrator(
           ...(row.detail !== undefined ? { detail: row.detail } : {}),
         });
       }
+    }
+
+    // 3b. Flip the authored row pending→active (TASK-76, §D3 "on approve … flips
+    //     to active"). A human just approved this skill at the card, so it stops
+    //     being a pending "no bytes project" draft — the next spawn's projection
+    //     now includes its body bytes + the approved caps. Status-guarded in the
+    //     store (only a pending row flips; quarantined stays quarantined). Same
+    //     fail-loud posture as the caps writes above: a flip error propagates
+    //     rather than silently leaving the skill stuck pending after an approval.
+    //     hasService-guarded — a preset without @ax/skills (CLI stub) no-ops.
+    if (bus.hasService('skills:authored-activate')) {
+      await bus.call('skills:authored-activate', ctx, {
+        ownerUserId: input.userId,
+        agentId: input.agentId,
+        skillId: input.skillId,
+      });
     }
 
     // 4. Drop the upfront-card dedup for this conversation so the next spawn

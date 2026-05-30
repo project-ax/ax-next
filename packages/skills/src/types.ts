@@ -670,3 +670,24 @@ export interface SkillsProposedEvent {
   skillId: string;
   status: 'active' | 'pending' | 'quarantined';
 }
+
+// `skills:authored-activate` — flip a `pending` authored skill's row to `active`
+// once a human has approved its capabilities (design §D3: "on approve … flips to
+// active"). Called by the orchestrator's authored-grant flow AFTER it writes the
+// approved-caps rows. Idempotent + status-guarded: only a `pending` row flips
+// (a `quarantined` row stays quarantined — approval never un-quarantines a
+// flagged bundle; an already-`active` row is a no-op). Ids only; storage-
+// agnostic (no row/blob/git vocab). `activated` reports whether THIS call flipped
+// a pending row (false = already active / quarantined / no such row).
+export interface SkillsAuthoredActivateInput {
+  ownerUserId: string;
+  agentId: string;
+  skillId: string;
+}
+export interface SkillsAuthoredActivateOutput {
+  activated: boolean;
+}
+
+export const SkillsAuthoredActivateOutputSchema = z.object({
+  activated: z.boolean(),
+}) as unknown as ZodType<SkillsAuthoredActivateOutput>;

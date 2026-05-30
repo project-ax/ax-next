@@ -15,6 +15,8 @@ import type {
   SkillsScanInput,
   SkillsScanOutput,
   SkillsProposedEvent,
+  SkillsAuthoredActivateInput,
+  SkillsAuthoredActivateOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -219,5 +221,105 @@ describe('skills:propose — the chokepoint + hybrid gate (TASK-74)', () => {
     );
     expect(listed.skills).toHaveLength(1);
     expect(listed.skills[0]?.status).toBe('pending');
+  });
+});
+
+describe('skills:authored-activate — pending→active flip on approval (TASK-76, §D3)', () => {
+  async function listStatus(
+    h: TestHarness,
+    skillId: string,
+  ): Promise<string | undefined> {
+    const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
+      'skills:list-authored',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1' },
+    );
+    return listed.skills.find((s) => s.skillId === skillId)?.status;
+  }
+
+  it('flips a pending authored skill to active (the core regression)', async () => {
+    const h = await makeHarness();
+    // A gated (host+credential) skill lands as pending.
+    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(HOST_MANIFEST),
+      capabilityProposal: emptyCaps,
+    });
+    expect(out.status).toBe('pending');
+    expect(await listStatus(h, 'linear')).toBe('pending');
+
+    // Approval grant flips it.
+    const flip = await h.bus.call<SkillsAuthoredActivateInput, SkillsAuthoredActivateOutput>(
+      'skills:authored-activate',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1', skillId: 'linear' },
+    );
+    expect(flip).toEqual({ activated: true });
+    expect(await listStatus(h, 'linear')).toBe('active');
+  });
+
+  it('is idempotent — re-activating an already-active row flips nothing', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(HOST_MANIFEST),
+      capabilityProposal: emptyCaps,
+    });
+    const first = await h.bus.call<SkillsAuthoredActivateInput, SkillsAuthoredActivateOutput>(
+      'skills:authored-activate',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1', skillId: 'linear' },
+    );
+    expect(first.activated).toBe(true);
+    const second = await h.bus.call<SkillsAuthoredActivateInput, SkillsAuthoredActivateOutput>(
+      'skills:authored-activate',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1', skillId: 'linear' },
+    );
+    expect(second).toEqual({ activated: false });
+    expect(await listStatus(h, 'linear')).toBe('active');
+  });
+
+  it('does NOT un-quarantine a flagged skill (approval never un-quarantines)', async () => {
+    const reason = 'flagged';
+    const h = await makeHarness({
+      'skills:scan': (async () => ({ verdict: 'hit', reason }) satisfies SkillsScanOutput) as never,
+    });
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(HOST_MANIFEST),
+      capabilityProposal: emptyCaps,
+    });
+    expect(await listStatus(h, 'linear')).toBe('quarantined');
+
+    const flip = await h.bus.call<SkillsAuthoredActivateInput, SkillsAuthoredActivateOutput>(
+      'skills:authored-activate',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1', skillId: 'linear' },
+    );
+    expect(flip).toEqual({ activated: false });
+    expect(await listStatus(h, 'linear')).toBe('quarantined');
+  });
+
+  it('no-ops (activated:false) for a skill that does not exist', async () => {
+    const h = await makeHarness();
+    const flip = await h.bus.call<SkillsAuthoredActivateInput, SkillsAuthoredActivateOutput>(
+      'skills:authored-activate',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1', skillId: 'nope' },
+    );
+    expect(flip).toEqual({ activated: false });
+  });
+
+  it('is scoped to (user, agent, skill) — does not flip a sibling row', async () => {
+    const h = await makeHarness();
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
+      ...baseProposal(HOST_MANIFEST),
+      capabilityProposal: emptyCaps,
+    });
+    // Activate a DIFFERENT skill id → the real one stays pending.
+    await h.bus.call<SkillsAuthoredActivateInput, SkillsAuthoredActivateOutput>(
+      'skills:authored-activate',
+      h.ctx(),
+      { ownerUserId: 'u1', agentId: 'a1', skillId: 'other' },
+    );
+    expect(await listStatus(h, 'linear')).toBe('pending');
   });
 });

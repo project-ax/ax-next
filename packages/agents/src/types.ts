@@ -323,6 +323,12 @@ export interface AuthoredResolvedSkill {
   bodyMd: string;
   manifestYaml: string;
   files: Array<{ path: string; contents: string }>;
+  /** The hybrid-gate verdict (TASK-76, §D3). `quarantined` is already omitted
+   * upstream; the orchestrator consumes this to MATERIALIZE only `active`
+   * skills' bytes into the spawn (a `pending` skill projects nothing — "no bytes
+   * project" — but still drives the approval card from description+proposalDelta
+   * until a human approves and it flips to `active`). */
+  status: 'active' | 'pending';
 }
 
 export interface AgentsResolveAuthoredSkillsInput {
@@ -367,6 +373,7 @@ export const AgentsResolveAuthoredSkillsOutputSchema = z.object({
       bodyMd: z.string(),
       manifestYaml: z.string(),
       files: z.array(z.object({ path: z.string(), contents: z.string() })),
+      status: z.union([z.literal('active'), z.literal('pending')]),
     }),
   ),
 }) as unknown as ZodType<AgentsResolveAuthoredSkillsOutput>;

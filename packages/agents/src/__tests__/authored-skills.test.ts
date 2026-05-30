@@ -185,6 +185,12 @@ describe('agents:resolve-authored-skills (DB-backed orchestrator projection)', (
     );
     const ids = out.skills.map((s) => s.id).sort();
     expect(ids).toEqual(['alpha', 'beta']);
+    // TASK-76 (§D3): the gate verdict is threaded through so the orchestrator
+    // materializes only `active` skills' bytes (a `pending` skill projects
+    // nothing). quarantined never arrives (omitted above), so the field is
+    // narrowed to 'active' | 'pending'.
+    expect(out.skills.find((s) => s.id === 'alpha')!.status).toBe('active');
+    expect(out.skills.find((s) => s.id === 'beta')!.status).toBe('pending');
   });
 
   it('projects EMPTY capabilities when nothing is approved (frontmatter alone grants nothing)', async () => {
