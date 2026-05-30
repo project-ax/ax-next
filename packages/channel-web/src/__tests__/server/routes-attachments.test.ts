@@ -21,11 +21,41 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import {
-  createMockWorkspacePlugin,
   createTestHarness,
   type TestHarness,
 } from '@ax/test-harness';
 import { registerAttachmentsRoutes } from '../../server/routes-attachments.js';
+
+// TASK-68: @ax/attachments now calls blob:put/blob:get (not workspace:apply/
+// read). A tiny in-memory content-addressed stub satisfies bootstrap verifyCalls
+// without pulling in @ax/blob-store-fs (these POST-upload tests only hit
+// store-temp, which never invokes blob:put — the stub just needs to register).
+function blobStubPlugin(): Plugin {
+  const blobs = new Map<string, Uint8Array>();
+  return {
+    manifest: {
+      name: 'test-blob-stub',
+      version: '0.0.0',
+      registers: ['blob:put', 'blob:get'],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService('blob:put', 'test-blob-stub', async (_ctx, input) => {
+        const bytes = (input as { bytes: Uint8Array }).bytes;
+        // Cheap deterministic key — these tests never read back, so a length+first-
+        // byte key is enough to register the hook; real hashing isn't needed.
+        const sha256 = 'f'.repeat(64);
+        blobs.set(sha256, bytes);
+        return { sha256, size: bytes.length };
+      });
+      bus.registerService('blob:get', 'test-blob-stub', async (_ctx, input) => {
+        const bytes = blobs.get((input as { sha256: string }).sha256);
+        return bytes === undefined ? { found: false } : { bytes };
+      });
+    },
+  };
+}
 
 // ---------------------------------------------------------------------------
 // POST /api/attachments — multipart upload (Phase 3, Task 3).
@@ -178,11 +208,11 @@ async function boot(args: BootArgs): Promise<BootResult> {
       http,
       createDatabasePostgresPlugin({ connectionString }),
       authMockPlugin({ user: args.user }),
-      // @ax/attachments declares workspace:apply + workspace:read +
-      // conversations:get calls. Bootstrap verifies registration at boot,
-      // so we need stubs for all three even though POST /api/attachments
-      // only hits store-temp (which never invokes any of them).
-      createMockWorkspacePlugin(),
+      // @ax/attachments declares blob:put + blob:get + conversations:get calls
+      // (TASK-68: blob:* replaced the git workspace:apply/read path). Bootstrap
+      // verifies registration at boot, so we stub all three even though POST
+      // /api/attachments only hits store-temp (which never invokes any of them).
+      blobStubPlugin(),
       conversationsGetMockPlugin(),
       createAttachmentsPlugin(args.attachmentsConfig ?? {}),
     ],

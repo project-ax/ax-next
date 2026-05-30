@@ -289,17 +289,16 @@ interface BootResult {
   grantCaptures: GrantCapture[];
 }
 
-// In-memory workspace stub used by the Phase-3 attachment-ref tests. The
-// production `createMockWorkspacePlugin` enforces a `parent === latest` CAS
-// check; `attachments:commit` deliberately uses `parent: null` for every
-// commit (write-once-on-commit, no parallel-edit lock). For the chat-route
-// tests we only need `workspace:apply` to behave as a black-box "stash
-// these bytes" + `workspace:list`/`workspace:read` returning empty (the
-// `conversations:get` jsonl-scan paths these tests exercise have no
-// committed transcript yet). Mirrors the inline stub in
+// In-memory store stub used by the Phase-3 attachment-ref tests. TASK-68:
+// `attachments:commit` now writes upload bytes to the content-addressed blob
+// store (blob:put) + a metadata row, NOT the git workspace. For the chat-route
+// tests we only need blob:put/blob:get to behave as a black-box content store;
+// the workspace:* hooks stay registered for OTHER plugins booted here that still
+// call them (chat-orchestrator etc.). Mirrors the inline stub in
 // `packages/attachments/src/__tests__/contract.test.ts`.
 function permissiveWorkspacePlugin(): Plugin {
   const blobs = new Map<string, Uint8Array>();
+  const cas = new Map<string, Uint8Array>();
   return {
     manifest: {
       name: 'mock-workspace-permissive',
@@ -309,6 +308,10 @@ function permissiveWorkspacePlugin(): Plugin {
         'workspace:read',
         'workspace:list',
         'workspace:diff',
+        // TASK-68: the content-addressed blob store the attachments commit/
+        // download path now rides.
+        'blob:put',
+        'blob:get',
       ],
       calls: [],
       subscribes: [],
@@ -359,6 +362,28 @@ function permissiveWorkspacePlugin(): Plugin {
         async () => ({
           delta: { before: null, after: 'v-permissive', changes: [] },
         }),
+      );
+      // Content-addressed in-memory blob store (length+first-byte key is enough
+      // for these tests — they don't assert cross-content de-dup).
+      bus.registerService(
+        'blob:put',
+        'mock-workspace-permissive',
+        async (_ctx, input: unknown) => {
+          const bytes = (input as { bytes: Uint8Array }).bytes;
+          const sha256 = `${bytes.length.toString(16).padStart(8, '0')}${(bytes[0] ?? 0)
+            .toString(16)
+            .padStart(2, '0')}`.padEnd(64, '0');
+          cas.set(sha256, bytes);
+          return { sha256, size: bytes.length };
+        },
+      );
+      bus.registerService(
+        'blob:get',
+        'mock-workspace-permissive',
+        async (_ctx, input: unknown) => {
+          const bytes = cas.get((input as { sha256: string }).sha256);
+          return bytes === undefined ? { found: false } : { bytes };
+        },
       );
     },
   };
