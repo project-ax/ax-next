@@ -46,6 +46,12 @@ describe('@ax/conversations plugin manifest', () => {
         // log. Caller (this plugin's own subscribers) + consumer
         // (conversations:get) both ship in the same PR.
         'conversations:append-event',
+        // TASK-67 (2026-05-30): the resume transcript store (resume SoT).
+        // Host-internal; callers are the host's session.* IPC handlers,
+        // consumers are the runner delta-ship + resume rebuild (same PR).
+        'conversations:append-transcript',
+        'conversations:replace-transcript',
+        'conversations:get-transcript',
       ],
       // database:get-instance is hard — we run our own migration on init.
       // agents:resolve is hard — every hook gates through it (Invariant J1).

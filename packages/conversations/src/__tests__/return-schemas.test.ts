@@ -1,8 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
+  AppendTranscriptOutputSchema,
   GetMetadataOutputSchema,
+  GetTranscriptOutputSchema,
+  ReplaceTranscriptOutputSchema,
   StoreRunnerSessionOutputSchema,
+  type AppendTranscriptOutput,
   type GetMetadataOutput,
+  type GetTranscriptOutput,
+  type ReplaceTranscriptOutput,
 } from '../types.js';
 
 describe('conversations return schemas', () => {
@@ -60,6 +66,56 @@ describe('conversations return schemas', () => {
 
     it('rejects a non-empty return (would signal a handler bug)', () => {
       expect(StoreRunnerSessionOutputSchema.safeParse({ ok: true }).success).toBe(false);
+    });
+  });
+
+  // TASK-67 — resume transcript hooks.
+  describe('AppendTranscriptOutputSchema', () => {
+    const full: AppendTranscriptOutput = { outcome: 'appended', maxSeq: 7 };
+    it('accepts both outcomes and round-trips', () => {
+      expect(AppendTranscriptOutputSchema.safeParse(full).success).toBe(true);
+      expect(
+        AppendTranscriptOutputSchema.safeParse({
+          outcome: 'resync-required',
+          maxSeq: 0,
+        }).success,
+      ).toBe(true);
+      expect(AppendTranscriptOutputSchema.parse(full)).toEqual(full);
+    });
+    it('rejects an unknown outcome', () => {
+      expect(
+        AppendTranscriptOutputSchema.safeParse({ outcome: 'nope', maxSeq: 1 })
+          .success,
+      ).toBe(false);
+    });
+    it('rejects a missing field', () => {
+      expect(
+        AppendTranscriptOutputSchema.safeParse({ outcome: 'appended' }).success,
+      ).toBe(false);
+    });
+  });
+
+  describe('ReplaceTranscriptOutputSchema', () => {
+    const full: ReplaceTranscriptOutput = { maxSeq: 3 };
+    it('round-trips without stripping fields', () => {
+      expect(ReplaceTranscriptOutputSchema.parse(full)).toEqual(full);
+    });
+    it('rejects a non-number maxSeq', () => {
+      expect(
+        ReplaceTranscriptOutputSchema.safeParse({ maxSeq: 'x' }).success,
+      ).toBe(false);
+    });
+  });
+
+  describe('GetTranscriptOutputSchema', () => {
+    const full: GetTranscriptOutput = { bytes: 'line1\nline2', maxSeq: 2 };
+    it('round-trips without stripping fields', () => {
+      expect(GetTranscriptOutputSchema.parse(full)).toEqual(full);
+    });
+    it('rejects a non-string bytes', () => {
+      expect(
+        GetTranscriptOutputSchema.safeParse({ bytes: 123, maxSeq: 0 }).success,
+      ).toBe(false);
     });
   });
 });

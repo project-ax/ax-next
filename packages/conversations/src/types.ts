@@ -220,6 +220,75 @@ export interface AppendEventInput {
 }
 export type AppendEventOutput = void;
 
+// ---------------------------------------------------------------------------
+// TASK-67 (out-of-git Part B / B2) — resume transcript hooks.
+//
+// Host-internal, ctx-scoped (same posture as append-event): the untrusted
+// runner reaches these ONLY via the host's session.* IPC handlers, which stamp
+// `ctx` from the bearer token — a runner can't aim a transcript at a foreign
+// conversation. The lines are OPAQUE verbatim SDK jsonl bytes: stored as-is,
+// never executed/interpreted, only re-emitted to the SDK on resume. All field
+// names are storage-neutral (I1): no git/jsonl/sqlite vocabulary.
+// ---------------------------------------------------------------------------
+
+/**
+ * Append the delta of new jsonl lines. `fromSeq` is the seq the runner believes
+ * the store is at; `prefixHash` is sha256 of the verbatim bytes it has already
+ * shipped (`[0..sentOffset)`). The host appends ONLY when both match its state
+ * (append path); otherwise the SDK rewrote earlier bytes → `resync-required`
+ * and the runner re-ships the whole file via `conversations:replace-transcript`.
+ */
+export interface AppendTranscriptInput {
+  conversationId: string;
+  fromSeq: number;
+  prefixHash: string;
+  /** New jsonl lines, in order, verbatim (no trailing `\n`). */
+  lines: string[];
+}
+export interface AppendTranscriptOutput {
+  outcome: 'appended' | 'resync-required';
+  /** The store's max seq after the call (unchanged on resync-required). */
+  maxSeq: number;
+}
+
+/** Resync path: replace the whole transcript with `lines`. Returns the new max seq. */
+export interface ReplaceTranscriptInput {
+  conversationId: string;
+  lines: string[];
+}
+export interface ReplaceTranscriptOutput {
+  maxSeq: number;
+}
+
+/** Resume read: the reconstructed jsonl bytes + the max seq. */
+export interface GetTranscriptInput {
+  conversationId: string;
+}
+export interface GetTranscriptOutput {
+  /** Rows ORDER BY seq joined with `\n`; '' when there is no transcript. */
+  bytes: string;
+  maxSeq: number;
+}
+
+/**
+ * Runtime `returns` contracts (ARCH-6). IPC-reachable — the session.* IPC
+ * handlers forward through these hooks. Each is a per-registration shape
+ * assertion paired with the drift-guard test in `return-schemas.test.ts`.
+ */
+export const AppendTranscriptOutputSchema = z.object({
+  outcome: z.enum(['appended', 'resync-required']),
+  maxSeq: z.number(),
+}) as unknown as ZodType<AppendTranscriptOutput>;
+
+export const ReplaceTranscriptOutputSchema = z.object({
+  maxSeq: z.number(),
+}) as unknown as ZodType<ReplaceTranscriptOutput>;
+
+export const GetTranscriptOutputSchema = z.object({
+  bytes: z.string(),
+  maxSeq: z.number(),
+}) as unknown as ZodType<GetTranscriptOutput>;
+
 export interface ListInput {
   userId: string;
   /**

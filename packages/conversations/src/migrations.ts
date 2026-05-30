@@ -171,6 +171,42 @@ export async function runConversationsMigration<DB>(
     CREATE INDEX IF NOT EXISTS conversations_v1_events_by_conv
       ON conversations_v1_events (conversation_id, seq)
   `.execute(db);
+
+  // TASK-67 (out-of-git Part B / B2, 2026-05-30): the resume transcript store —
+  // the resume source of truth. One opaque row per SDK jsonl LINE, raw verbatim
+  // text keyed (conversation_id, seq) with a per-conversation monotonic seq.
+  // Single writer per session (that session's runner) — contention-free, NOT a
+  // CAS (the parent-mismatch bug came from the git MIRROR advancing out-of-band,
+  // not from appends). Replaces the git-bundled jsonl: the per-turn delta ships
+  // the new lines via session.append-transcript, and resume rebuilds the jsonl by
+  // joining the rows ORDER BY seq with `\n`.
+  //
+  //   seq:   per-conversation monotonic int (1-based) = the line's position in
+  //          the jsonl. The PK is the composite (conversation_id, seq) so
+  //          ordering + dedup are free.
+  //   line:  the RAW verbatim jsonl line text — stored byte-for-byte, NEVER
+  //          parsed-then-reserialized (re-serialization shifts key order / number
+  //          formatting / unicode escaping; the resume artifact must round-trip
+  //          faithfully). Opaque (I1): the store never interprets the contents;
+  //          the only re-emission is back to the SDK on resume.
+  //
+  // No FK to conversations_v1_conversations — same no-cross-row posture as the
+  // display event log (orphan rows after a conversation delete are tolerable and
+  // GC'able). CREATE TABLE / INDEX IF NOT EXISTS keeps the migration idempotent.
+  await sql`
+    CREATE TABLE IF NOT EXISTS conversations_v1_transcripts (
+      conversation_id TEXT NOT NULL,
+      seq BIGINT NOT NULL,
+      line TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (conversation_id, seq)
+    )
+  `.execute(db);
+
+  await sql`
+    CREATE INDEX IF NOT EXISTS conversations_v1_transcripts_by_conv
+      ON conversations_v1_transcripts (conversation_id, seq)
+  `.execute(db);
 }
 
 /**
@@ -219,7 +255,24 @@ export interface ConversationEventsRow {
   created_at: Date;
 }
 
+/**
+ * TASK-67 — resume transcript row (out-of-git Part B / B2). One row per SDK
+ * jsonl line, raw verbatim text ordered by `seq` within a conversation. The
+ * store never parses `line` — it's opaque verbatim bytes re-emitted to the SDK
+ * on resume.
+ */
+export interface ConversationTranscriptRow {
+  conversation_id: string;
+  /** Per-conversation monotonic int = the line's 1-based jsonl position. BIGINT
+   *  → kysely surfaces it as string or number; the store coerces on read. */
+  seq: string | number;
+  line: string;
+  /** DB-defaulted (NOW()); optional on insert so callers omit it. */
+  created_at?: Date;
+}
+
 export interface ConversationDatabase {
   conversations_v1_conversations: ConversationsRow;
   conversations_v1_events: ConversationEventsRow;
+  conversations_v1_transcripts: ConversationTranscriptRow;
 }

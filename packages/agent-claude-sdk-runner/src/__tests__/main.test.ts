@@ -141,6 +141,30 @@ vi.mock('../turn-end-uuid.js', async (importOriginal) => {
   };
 });
 
+// TASK-67: the resume-transcript delta-ship + resume rebuild. These are
+// wire-shape tests (no real jsonl on disk), so we mock the module — its real
+// fs/IPC behavior is covered in transcript-delta.test.ts. Defaults model the
+// happy path: the per-turn ship 'appended' (so the F2a bind fires), and resume
+// rebuilds a real transcript ('written: true'). The F2a-guard test overrides
+// restore to 'written: false'.
+const shipTranscriptDeltaMock = vi.fn().mockResolvedValue({
+  outcome: 'appended',
+  sentOffset: 10,
+  sentSeq: 1,
+});
+const restoreTranscriptForResumeMock = vi.fn().mockResolvedValue({
+  written: true,
+  state: { sentOffset: 10, sentSeq: 1 },
+});
+vi.mock('../transcript-delta.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../transcript-delta.js')>();
+  return {
+    ...actual,
+    shipTranscriptDelta: shipTranscriptDeltaMock,
+    restoreTranscriptForResume: restoreTranscriptForResumeMock,
+  };
+});
+
 const COMPLETE_ENV = {
   AX_RUNNER_ENDPOINT: 'unix:///tmp/ax.sock',
   AX_SESSION_ID: 'sess-1',
@@ -349,6 +373,17 @@ beforeEach(() => {
   waitForTranscriptUuidMock.mockResolvedValue(true);
   hasResumableTranscriptMock.mockReset();
   hasResumableTranscriptMock.mockResolvedValue(true);
+  shipTranscriptDeltaMock.mockReset();
+  shipTranscriptDeltaMock.mockResolvedValue({
+    outcome: 'appended',
+    sentOffset: 10,
+    sentSeq: 1,
+  });
+  restoreTranscriptForResumeMock.mockReset();
+  restoreTranscriptForResumeMock.mockResolvedValue({
+    written: true,
+    state: { sentOffset: 10, sentSeq: 1 },
+  });
   scaffoldPythonVenvMock.mockReset();
   scaffoldPythonVenvMock.mockResolvedValue(true);
   createIpcClientMock = vi.fn();
@@ -2061,11 +2096,12 @@ describe('main()', () => {
   // ---------------------------------------------------------------------
 
   describe('Phase C: runner_session_id binding', () => {
-    it('happy path: bound conversation → captures system/init session_id and POSTs conversation.store-runner-session once, AFTER the first host-accepted turn-end commit (F2a)', async () => {
+    it('happy path: bound conversation → captures system/init session_id and POSTs conversation.store-runner-session once, AFTER the transcript delta is durable (F2a)', async () => {
       setEnv(COMPLETE_ENV);
-      // F2a: the bind is deferred to a durable commit, so the turn must
-      // actually ship + get accepted for the bind to fire.
-      commitTurnAndBundleMock.mockResolvedValue('YnVuZGxl');
+      // TASK-67 / F2a: the bind is deferred to a DURABLE TRANSCRIPT — it fires
+      // after shipTranscriptDelta returns 'appended'/'resynced' (the rows are
+      // in the host store), replacing the old bind-after-commit-accepted. The
+      // mock defaults to 'appended', so the bind fires this turn.
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
         if (action === 'session.get-config') {
@@ -2118,26 +2154,42 @@ describe('main()', () => {
         conversationId: 'cnv-1',
         runnerSessionId: 'sdk-sess-abc',
       });
-      // The bind must come AFTER an accepted commit-notify (durability first).
-      const order = fakeClient.call.mock.calls.map((c) => c[0]);
-      const firstCommit = order.indexOf('workspace.commit-notify');
-      const bindIdx = order.indexOf('conversation.store-runner-session');
-      expect(firstCommit).toBeGreaterThanOrEqual(0);
-      expect(bindIdx).toBeGreaterThan(firstCommit);
+      // The bind must come AFTER a durable transcript ship (durability first):
+      // shipTranscriptDelta runs at the result boundary BEFORE the bind.
+      expect(shipTranscriptDeltaMock).toHaveBeenCalled();
+      const shipOrder = shipTranscriptDeltaMock.mock.invocationCallOrder[0]!;
+      const bindOrder =
+        fakeClient.call.mock.calls.findIndex(
+          (c) => c[0] === 'conversation.store-runner-session',
+        ) >= 0
+          ? // The fake client's `call` shares vitest's global invocation order.
+            (
+              fakeClient.call.mock.invocationCallOrder[
+                fakeClient.call.mock.calls.findIndex(
+                  (c) => c[0] === 'conversation.store-runner-session',
+                )
+              ] as number
+            )
+          : -1;
+      expect(bindOrder).toBeGreaterThan(shipOrder);
     });
 
-    it('F2a regression: a turn killed before any commit (no accepted commit) does NOT bind — so the retry never resumes a phantom session', async () => {
+    it('F2a regression: a turn killed before any durable transcript does NOT bind — so the retry never resumes a phantom session', async () => {
       // This is the heart of F2a: binding at system/init persisted
       // runner_session_id ~1s into the turn, BEFORE the transcript was durable.
       // A turn killed in that window left a stale binding that crashed the
       // retry's query({resume}) with "No conversation found". With the bind
-      // deferred to a host-accepted commit, a turn with no committed transcript
-      // (commitTurnAndBundle returns null → no commit-notify) leaves the row
-      // UNBOUND, so the host returns runner_session_id=null on the retry and the
-      // fresh runner starts clean instead of resuming nothing.
+      // deferred (TASK-67) to a DURABLE TRANSCRIPT ship, a turn whose transcript
+      // never reached the store (shipTranscriptDelta → no-jsonl/noop, never
+      // 'appended') leaves the row UNBOUND, so the host returns
+      // runner_session_id=null on the retry and the fresh runner starts clean.
       setEnv(COMPLETE_ENV);
-      // Default commitTurnAndBundleMock → null (no diff → no commit-notify),
-      // simulating a turn that never reached a durable commit.
+      // Simulate a turn killed before the transcript landed: the ship is a noop.
+      shipTranscriptDeltaMock.mockResolvedValue({
+        outcome: 'no-jsonl',
+        sentOffset: 0,
+        sentSeq: 0,
+      });
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
         if (action === 'session.get-config') {
@@ -2535,13 +2587,18 @@ describe('main()', () => {
       ]);
     });
 
-    it('F2a guard: runnerSessionId set but NO resumable transcript → OMITS options.resume (starts fresh, never crashes)', async () => {
+    it('F2a guard: runnerSessionId set but NO resumable transcript (host has no rows) → OMITS options.resume (starts fresh, never crashes)', async () => {
       // The SDK hard-crashes (exit 1, "No conversation found with session ID")
-      // if asked to resume a session whose materialized transcript has no
-      // parseable user/assistant message. The runner checks
-      // hasResumableTranscript first and demotes the resume to a fresh start.
+      // if asked to resume a session whose on-disk transcript has no parseable
+      // user/assistant message. TASK-67: the transcript lives in the host store,
+      // so the guard becomes the DB check — restoreTranscriptForResume returns
+      // `written: false` when the host has no rows (max(seq) === 0), and the
+      // runner demotes the resume to a fresh start instead of crashing.
       setEnv(COMPLETE_ENV);
-      hasResumableTranscriptMock.mockResolvedValue(false);
+      restoreTranscriptForResumeMock.mockResolvedValue({
+        written: false,
+        state: { sentOffset: 0, sentSeq: 0 },
+      });
       fakeClient = buildFakeClient();
       fakeClient.call.mockImplementation(async (action: string) => {
         if (action === 'session.get-config') {
@@ -2583,10 +2640,12 @@ describe('main()', () => {
       const rc = await main();
       expect(rc).toBe(0);
 
-      // The guard was consulted with the workspace root + the bound session id.
-      expect(hasResumableTranscriptMock).toHaveBeenCalledWith(
-        '/tmp/workspace',
-        'sdk-sess-missing',
+      // The guard ran via the DB-backed restore (the workspace root + bound id).
+      expect(restoreTranscriptForResumeMock).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceRoot: '/tmp/workspace',
+          sessionId: 'sdk-sess-missing',
+        }),
       );
       // resume was stripped → query started fresh (no crash).
       expect(queryMock).toHaveBeenCalledTimes(1);
@@ -2594,6 +2653,78 @@ describe('main()', () => {
         options: { resume?: string };
       };
       expect(queryArg.options.resume).toBeUndefined();
+    });
+
+    it('TASK-67: a conversation-scoped turn ships the resume-transcript DELTA at the result boundary (replaces commitTurnAndBundle for the jsonl)', async () => {
+      // The result boundary now ships the jsonl delta to the host store
+      // (session.append-transcript via shipTranscriptDelta) instead of
+      // committing the jsonl to git. The bind fires off the durable transcript.
+      setEnv(COMPLETE_ENV);
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              systemPrompt: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: 'cnv-ship',
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        if (action === 'conversation.store-runner-session') return { ok: true };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('go'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield systemInit('sdk-sess-ship');
+            yield assistantText('hi');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+      expect(rc).toBe(0);
+
+      // The transcript delta shipped (per-turn + final flush), threading the
+      // sentOffset/sentSeq state across calls.
+      expect(shipTranscriptDeltaMock).toHaveBeenCalled();
+      const shipArg = shipTranscriptDeltaMock.mock.calls[0]![0] as {
+        workspaceRoot: string;
+        sessionId: string;
+        state: { sentOffset: number; sentSeq: number };
+      };
+      expect(shipArg.sessionId).toBe('sdk-sess-ship');
+      expect(shipArg.state).toEqual({ sentOffset: 0, sentSeq: 0 });
+      // The jsonl is NOT committed to git as the resume backing — no
+      // commit-notify carries it (commitTurnAndBundle is null on a pure chat
+      // turn now that .claude/projects is gitignored).
+      const commitNotifies = fakeClient.call.mock.calls.filter(
+        (c) => c[0] === 'workspace.commit-notify',
+      );
+      expect(commitNotifies).toHaveLength(0);
+      // The bind fired off the durable transcript ship.
+      const binds = fakeClient.call.mock.calls.filter(
+        (c) => c[0] === 'conversation.store-runner-session',
+      );
+      expect(binds).toHaveLength(1);
+      expect(binds[0]?.[1]).toEqual({
+        conversationId: 'cnv-ship',
+        runnerSessionId: 'sdk-sess-ship',
+      });
     });
 
     it('runnerSessionId null on session.get-config: omits options.resume', async () => {

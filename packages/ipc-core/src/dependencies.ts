@@ -148,6 +148,28 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
       degradation:
         'POST /attachments.list returns 500 — the runner cannot enumerate a conversation\'s uploads to materialize /ephemeral/uploads; unreachable in single-session deployments.',
     },
+    {
+      // TASK-67 (out-of-git Part B / B2): the runner-side resume-transcript
+      // callers. Reached on the /session.append-transcript /
+      // .replace-transcript / .get-transcript routes, but only in a
+      // conversation-scoped deployment that loaded @ax/conversations (which
+      // registers these). The single-session CLI is never conversation-scoped
+      // and never reaches them, so making them required would fail the CLI's
+      // bootstrap verifyCalls.
+      hook: 'conversations:append-transcript',
+      degradation:
+        'POST /session.append-transcript returns 500 — the runner cannot ship the per-turn resume delta; unreachable in single-session deployments that never load @ax/conversations.',
+    },
+    {
+      hook: 'conversations:replace-transcript',
+      degradation:
+        'POST /session.replace-transcript returns 500 — the runner cannot re-ship the whole resume transcript on the resync path; unreachable in single-session deployments.',
+    },
+    {
+      hook: 'conversations:get-transcript',
+      degradation:
+        'POST /session.get-transcript returns 500 — the runner cannot rebuild the resume jsonl from the store; unreachable in single-session deployments.',
+    },
   ],
   dynamicCallPatterns: [
     // tool.execute-host — `tool:execute:${call.name}`, probed via

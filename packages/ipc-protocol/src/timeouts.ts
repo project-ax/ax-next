@@ -70,6 +70,24 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   // materialize `/ephemeral/uploads`. Small JSON response (one row per upload).
   // 10 s is generous for a single conversation's upload set.
   'attachments.list': 10_000,
+  // TASK-67 (out-of-git Part B / B2): resume-transcript callers.
+  //
+  // `session.append-transcript` — the per-turn delta: a few new jsonl lines as
+  // a small JSON body + an integrity hash. Single indexed multi-row INSERT
+  // host-side. 10 s is generous; a turn that can't ship in 10 s has a bigger
+  // problem than the transcript.
+  'session.append-transcript': 10_000,
+  // `session.replace-transcript` — the rare resync path: the runner streams the
+  // WHOLE jsonl as a raw octet-stream REQUEST body (the SDK rewrote earlier
+  // bytes). Duration scales with the transcript size, so the per-attempt ceiling
+  // matches materialize's 120 s — capping it lower would relocate a large-
+  // transcript transfer into a timeout. Idempotent (whole-file replace).
+  'session.replace-transcript': 120_000,
+  // `session.get-transcript` — resume read: the host joins the rows and streams
+  // the reconstructed jsonl back as a raw octet-stream RESPONSE body (drained to
+  // a temp file, same path as materialize). Scales with transcript size; shares
+  // the 120 s ceiling.
+  'session.get-transcript': 120_000,
 });
 
 /** The closed set of sandbox→host RPC action names. */
