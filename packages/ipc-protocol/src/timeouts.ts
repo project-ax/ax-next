@@ -88,6 +88,12 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   // a temp file, same path as materialize). Scales with transcript size; shares
   // the 120 s ceiling.
   'session.get-transcript': 120_000,
+  // TASK-74 (out-of-git Part D): `skill.propose` — the runner posts a structurally
+  // validated skill bundle (manifest + body + ≤512 KiB of extra files) as a small
+  // JSON envelope; the host gates + stores it (DB row + blob). Bounded payload, a
+  // few indexed writes + a blob put host-side. 30 s covers the optional LLM safety
+  // scan the `skills:scan` subscriber may run before the gate classifies.
+  'skill.propose': 30_000,
 });
 
 /** The closed set of sandbox→host RPC action names. */

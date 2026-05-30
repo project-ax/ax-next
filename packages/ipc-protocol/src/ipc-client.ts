@@ -11,6 +11,7 @@ import {
   ConversationStoreRunnerSessionResponseSchema,
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
+  SkillProposeResponseSchema,
   SessionAppendTranscriptResponseSchema,
   SessionReplaceTranscriptResponseSchema,
   SessionGetConfigResponseSchema,
@@ -118,6 +119,9 @@ const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   // disk) → no schema here.
   'session.append-transcript': SessionAppendTranscriptResponseSchema,
   'session.replace-transcript': SessionReplaceTranscriptResponseSchema,
+  // TASK-74 (out-of-git Part D): skill.propose's small JSON response
+  // `{ skillId, status, reason? }`. Ordinary JSON `call()` action.
+  'skill.propose': SkillProposeResponseSchema,
 };
 
 export interface IpcClientOptions {
