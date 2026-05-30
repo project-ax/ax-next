@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 import { pathToFileURL } from 'node:url';
+import * as nodePath from 'node:path';
+import { promises as fsp } from 'node:fs';
 import {
   query,
   type SDKAssistantMessage,
@@ -45,6 +47,7 @@ import { buildTelemetryEnv } from './telemetry-env.js';
 import { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
+import { materializeUploads, resolveMaterializedPath } from './materialize-uploads.js';
 import { setupProxy } from './proxy-startup.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { buildSystemPrompt } from './system-prompt.js';
@@ -301,6 +304,34 @@ export async function main(): Promise<number> {
     ]);
   }
 
+  // TASK-68 (out-of-git Part C): materialize the conversation's committed
+  // uploads into `<ephemeralRoot>/uploads/` so the agent can Read them. Uploads
+  // left git — the durable home is the blob store; this is the read-only working
+  // copy. Best-effort: a missing/failed blob is skipped, never fatal (a single
+  // unreadable upload must not abort session boot — the download path still
+  // serves it from the store, and the transcript keeps its provenance). Gated on
+  // a bound conversation + an ephemeral tier.
+  if (env.ephemeralRoot && conversationId !== null) {
+    try {
+      const n = await materializeUploads({
+        client,
+        conversationId,
+        ephemeralRoot: env.ephemeralRoot,
+      });
+      if (n > 0) {
+        process.stderr.write(`runner: materialized ${n} upload(s) into /ephemeral/uploads\n`);
+      }
+    } catch (err) {
+      // materializeUploads is best-effort and shouldn't throw, but never let a
+      // surprise abort the boot.
+      process.stderr.write(
+        `runner: upload materialization error (non-fatal): ${
+          err instanceof Error ? err.message : String(err)
+        }\n`,
+      );
+    }
+  }
+
   // Per-turn transcript-flush wait (2026-05-22 conversations:get-latency fix).
   // The Anthropic Agent SDK writes the assistant turn's jsonl line AFTER it
   // yields `result`, so the per-turn commit in the `result` handler below
@@ -429,9 +460,18 @@ export async function main(): Promise<number> {
   // uses this path; future sandbox tools register here too.
   const localDispatcher = createLocalDispatcher();
   if (tools.some((t) => t.name === ARTIFACT_PUBLISH_TOOL_NAME && t.executesIn === 'sandbox')) {
+    // TASK-68: the executor now streams artifact bytes to the host blob store
+    // (blob.put) + records the metadata row (artifact.publish), so it needs the
+    // IPC client + the bound conversationId. Artifacts default to
+    // /ephemeral/artifacts/**, so it also needs ephemeralRoot to map the path.
     localDispatcher.register(
       ARTIFACT_PUBLISH_TOOL_NAME,
-      createArtifactPublishExecutor({ workspaceRoot: env.workspaceRoot }),
+      createArtifactPublishExecutor({
+        workspaceRoot: env.workspaceRoot,
+        ...(env.ephemeralRoot !== undefined ? { ephemeralRoot: env.ephemeralRoot } : {}),
+        client,
+        conversationId,
+      }),
     );
   }
   const sandboxMcpServer = createSandboxMcpServer({
@@ -449,9 +489,30 @@ export async function main(): Promise<number> {
   // Conservative default: false. Override via env for early access.
   const SUPPORTS_DOCUMENT_BLOCKS = process.env.AX_SDK_DOCUMENT_BLOCKS === '1';
 
-  const workspaceReader: WorkspaceReader = async (path) => {
+  // TASK-68: the attachment-translation reader fetches an attachment's bytes to
+  // inline (text) or pass through (image/pdf) to the SDK. Uploads left git — they
+  // materialize under `<ephemeralRoot>/uploads/` at session start — so for an
+  // `.ax/uploads/...` key we read the materialized local file. A non-upload path
+  // (a Pattern A workspace file referenced as an attachment) still goes through
+  // `workspace.read`. The translation pass degrades to a text mention on a read
+  // failure, so a missing materialized file is non-fatal.
+  const workspaceReader: WorkspaceReader = async (p) => {
+    if (env.ephemeralRoot !== undefined) {
+      const materialized = resolveMaterializedPath(
+        nodePath.join(env.ephemeralRoot, 'uploads'),
+        p,
+      );
+      if (materialized !== null) {
+        try {
+          const bytes = await fsp.readFile(materialized);
+          return { found: true, bytesBase64: bytes.toString('base64') };
+        } catch {
+          return { found: false };
+        }
+      }
+    }
     const resp = (await client.call('workspace.read', {
-      path,
+      path: p,
     } as WorkspaceReadRequest)) as WorkspaceReadResponse;
     return resp;
   };
@@ -890,6 +951,12 @@ export async function main(): Promise<number> {
                 createPreToolUseHook({
                   client,
                   workspaceRoot: env.workspaceRoot,
+                  // TASK-68: uploads materialize under <ephemeralRoot>/uploads,
+                  // so a `.ax/uploads/...` reference re-roots THERE (not into
+                  // /permanent). Omitted when no ephemeral tier → legacy target.
+                  ...(env.ephemeralRoot !== undefined
+                    ? { uploadsRoot: env.ephemeralRoot }
+                    : {}),
                 }),
               ],
             },

@@ -5,6 +5,9 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { z } from 'zod';
 import {
+  ArtifactPublishResponseSchema,
+  AttachmentsListResponseSchema,
+  BlobPutResponseSchema,
   ConversationStoreRunnerSessionResponseSchema,
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
@@ -98,6 +101,14 @@ const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   'session.next-message': SessionNextMessageResponseSchema,
   'session.get-config': SessionGetConfigResponseSchema,
   'conversation.store-runner-session': ConversationStoreRunnerSessionResponseSchema,
+  // TASK-68: blob.put's small JSON response (parsed by callBinaryUpload, whose
+  // REQUEST body is raw octet-stream — so there's no request schema, but the
+  // response IS a Zod-parsed JSON envelope). artifact.publish / attachments.list
+  // are ordinary JSON `call()` actions. blob.get is absent — its RESPONSE is raw
+  // binary served via callBinary (cf. workspace.materialize), not JSON.
+  'blob.put': BlobPutResponseSchema,
+  'artifact.publish': ArtifactPublishResponseSchema,
+  'attachments.list': AttachmentsListResponseSchema,
 };
 
 export interface IpcClientOptions {
@@ -173,19 +184,41 @@ export interface IpcClient {
 
   /**
    * POST a JSON request and drain the RAW octet-stream response body to a temp
-   * file, returning its path. For the binary actions — `workspace.materialize`
-   * (session-start clone) and `workspace.export-baseline-bundle` (commit-notify
-   * re-sync fetch) — each a git bundle that grows unbounded with workspace age:
-   * bypasses the 4 MiB JSON Buffer cap by streaming to disk under
-   * MAX_BINARY_RESPONSE_BYTES. The CALLER owns the returned file and must delete
-   * it. On any error the temp file is cleaned up before the error propagates.
+   * file, returning its path. For the binary RESPONSE actions —
+   * `workspace.materialize` (session-start clone),
+   * `workspace.export-baseline-bundle` (commit-notify re-sync fetch), and
+   * `blob.get` (TASK-68 — fetch a stored blob's bytes to materialize
+   * `/ephemeral/uploads`): each a body that can grow unbounded (a git bundle, or
+   * an arbitrarily large blob). Bypasses the 4 MiB JSON Buffer cap by streaming
+   * to disk under MAX_BINARY_RESPONSE_BYTES. The CALLER owns the returned file
+   * and must delete it. On any error the temp file is cleaned up before the
+   * error propagates.
    */
   callBinary<
-    Action extends 'workspace.materialize' | 'workspace.export-baseline-bundle',
+    Action extends
+      | 'workspace.materialize'
+      | 'workspace.export-baseline-bundle'
+      | 'blob.get',
   >(
     action: Action,
     payload: unknown,
   ): Promise<{ path: string; bytes: number }>;
+
+  /**
+   * The REQUEST-direction binary channel (TASK-68): POST `bytes` as the RAW
+   * `application/octet-stream` request body and parse a small JSON response.
+   * The mirror of `callBinary` — outbound bytes instead of inbound. Used for
+   * `blob.put`: the runner streams an artifact's bytes (up to the host's blob
+   * cap) without base64-inflating them into a JSON field or hitting the 4 MiB
+   * `MAX_FRAME` JSON cap. The response is a small `{sha256,size}` envelope,
+   * Zod-validated against the matching schema. `blob.put` is content-addressed
+   * and therefore idempotent, so a transient-error retry that re-streams the
+   * same bytes is safe.
+   */
+  callBinaryUpload<Action extends 'blob.put'>(
+    action: Action,
+    bytes: Buffer,
+  ): Promise<unknown>;
 
   event(eventName: string, payload: unknown): Promise<void>;
 
@@ -576,6 +609,125 @@ function requestOnceBinaryToFile(opts: {
   });
 }
 
+/**
+ * One attempt for the REQUEST-direction binary channel (TASK-68): POST `body`
+ * as a RAW `application/octet-stream` request body and drain the (small) JSON
+ * RESPONSE into memory, capped at the JSON ceiling. The mirror of `requestOnce`
+ * but with an octet-stream request instead of JSON. The request body itself is
+ * NOT capped here — the caller (the runner) only ever streams an
+ * already-size-checked artifact (the executor's lstat size cap), and the HOST
+ * enforces its own inbound ceiling; this client is the trust root's sandbox, so
+ * the request-side bound lives host-side. Throws a HostUnavailableError for
+ * connection / timeout / over-cap-RESPONSE failures.
+ */
+function requestOnceUploadBinary(opts: {
+  target: TransportTarget;
+  pathWithQuery: string;
+  token: string;
+  body: Buffer;
+  timeoutMs: number;
+}): Promise<RawResponse> {
+  return new Promise<RawResponse>((resolve, reject) => {
+    const controller = new AbortController();
+    const timer = setTimeout(() => {
+      controller.abort();
+    }, opts.timeoutMs);
+
+    let settled = false;
+    const settle = (fn: () => void): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      fn();
+    };
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${opts.token}`,
+      'Content-Type': 'application/octet-stream',
+      'Content-Length': String(opts.body.length),
+    };
+    const requestOptions: http.RequestOptions =
+      opts.target.kind === 'unix'
+        ? {
+            socketPath: opts.target.socketPath,
+            path: opts.pathWithQuery,
+            method: 'POST',
+            headers,
+            signal: controller.signal,
+          }
+        : {
+            host: opts.target.host,
+            port: opts.target.port,
+            path: opts.pathWithQuery,
+            method: 'POST',
+            headers,
+            signal: controller.signal,
+          };
+
+    const req = http.request(requestOptions, (res) => {
+      const chunks: Buffer[] = [];
+      let total = 0;
+      let overflowed = false;
+      res.on('data', (chunk: Buffer) => {
+        total += chunk.length;
+        if (total > MAX_RESPONSE_BYTES) {
+          if (!overflowed) {
+            overflowed = true;
+            res.destroy(new Error('response body too large'));
+          }
+          return;
+        }
+        chunks.push(chunk);
+      });
+      res.on('end', () => {
+        settle(() =>
+          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks) }),
+        );
+      });
+      res.on('error', (err) => {
+        const message = overflowed
+          ? 'response body exceeded cap'
+          : 'response stream error';
+        settle(() =>
+          reject(new HostUnavailableError(message, err, { retryable: !overflowed })),
+        );
+      });
+    });
+
+    const onConnFailure = (err: NodeJS.ErrnoException): void => {
+      const errno = err.code;
+      if ((err as Error).name === 'AbortError' || errno === 'ABORT_ERR') {
+        settle(() => reject(new HostUnavailableError('timeout', err)));
+        return;
+      }
+      if (errno !== undefined && TRANSIENT_ERRNOS.has(errno)) {
+        settle(() => reject(new HostUnavailableError(`connect failed: ${errno}`, err)));
+        return;
+      }
+      settle(() =>
+        reject(new HostUnavailableError(`request failed: ${(err as Error).message}`, err)),
+      );
+    };
+    req.on('error', onConnFailure);
+    // A large upload can hit a write error (EPIPE/ECONNRESET) at the SOCKET
+    // level if the host closes the connection before we finish streaming the
+    // body — e.g. an early 413 reject, or the benign case where the host
+    // accepted + responded while our last body bytes were still in flight.
+    // Node emits this on the underlying socket, which has no default listener →
+    // an uncaught exception that would crash the runner. Attach a socket-level
+    // error handler so it routes through `settle` instead: post-settle (the
+    // benign success race) it no-ops; pre-settle it's a real transient
+    // connection failure → reject so the retry loop can replay (blob.put is
+    // content-addressed ⇒ replay-safe).
+    req.on('socket', (socket) => {
+      socket.on('error', (err: NodeJS.ErrnoException) => onConnFailure(err));
+    });
+
+    req.write(opts.body);
+    req.end();
+  });
+}
+
 function toQueryString(query: Record<string, string>): string {
   const params = new URLSearchParams();
   for (const [k, v] of Object.entries(query)) params.append(k, v);
@@ -826,7 +978,10 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
   };
 
   const callBinary = async <
-    Action extends 'workspace.materialize' | 'workspace.export-baseline-bundle',
+    Action extends
+      | 'workspace.materialize'
+      | 'workspace.export-baseline-bundle'
+      | 'blob.get',
   >(
     action: Action,
     payload: unknown,
@@ -871,6 +1026,30 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     }
   };
 
+  const callBinaryUpload = async <Action extends 'blob.put'>(
+    action: Action,
+    bytes: Buffer,
+  ): Promise<unknown> => {
+    const timeoutMs = timeoutFor(action);
+    return withRetry(
+      classifyRetry,
+      elapsedBudgetFor(action),
+      async () => {
+        const raw = await requestOnceUploadBinary({
+          target,
+          pathWithQuery: `/${action}`,
+          token: opts.token,
+          body: bytes,
+          timeoutMs,
+        });
+        if (raw.status >= 200 && raw.status < 300) {
+          return parseSuccessBody(action, raw.body);
+        }
+        throw parseErrorEnvelope(raw.status, raw.body);
+      },
+    );
+  };
+
   const event = async (eventName: string, payload: unknown): Promise<void> => {
     const body = Buffer.from(JSON.stringify(payload), 'utf8');
     // Events are fire-and-forget on the wire (202). They still need a
@@ -896,5 +1075,5 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
     // keep-alive agent if we ever need it.
   };
 
-  return { call, callGet, callBinary, event, close };
+  return { call, callGet, callBinary, callBinaryUpload, event, close };
 }

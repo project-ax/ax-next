@@ -1,7 +1,4 @@
-import { mkdtempSync } from 'node:fs';
-import { rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { createHash } from 'node:crypto';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { Kysely, PostgresDialect } from 'kysely';
 import {
@@ -9,28 +6,22 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
-import {
-  HookBus,
-  PluginError,
-  bootstrap,
-  makeAgentContext,
-  type Plugin,
-  type WorkspaceApplyInput,
-  type WorkspaceApplyOutput,
-  type WorkspaceReadInput,
-  type WorkspaceReadOutput,
-} from '@ax/core';
-// Test-only cross-plugin import (eslint no-restricted-imports is OFF in
-// __tests__): we drive the REAL single-replica workspace backend through the
-// attachments commit path to prove the parent-mismatch → rebase recovery works
-// end-to-end against a real backend, not just a mock that echoes actualParent.
-import { registerWorkspaceGitHooks } from '@ax/workspace-git-core';
+import { HookBus, PluginError, makeAgentContext } from '@ax/core';
 import {
   runAttachmentsMigration,
   type AttachmentsDatabase,
 } from '../migrations.js';
 import { createAttachmentsStore } from '../store.js';
 import { createCommitHandler } from '../handlers.js';
+
+// ---------------------------------------------------------------------------
+// TASK-68: attachments:commit now stores bytes in the content-addressed blob
+// store (blob:put) + a metadata row, NOT a git commit (workspace:apply). The
+// shared-mirror parent-mismatch rebase path — and its whole test surface — is
+// GONE, which is one of this card's acceptance criteria. These tests prove the
+// new path: blob:put receives the exact bytes, a files row maps
+// (conversationId, path) → sha256, no workspace:apply is ever called.
+// ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -54,32 +45,40 @@ function makeCtx(userId: string) {
   });
 }
 
-interface ApplyCall {
-  ctx: ReturnType<typeof makeCtx>;
-  input: { changes: Array<{ path: string; kind: 'put' | 'delete'; content?: Uint8Array }>; parent: string | null; reason?: string };
+interface PutCall {
+  bytes: Uint8Array;
 }
 
-function makeBusWithApply(
-  apply: (input: ApplyCall['input']) => Promise<{ version: string; delta: unknown }>,
-): { bus: HookBus; calls: ApplyCall[] } {
+/** A bus with a mock blob:put that records the bytes it received and returns
+ *  the real content hash (so the handler's returned sha256 is exercised). It
+ *  also FAILS if anything calls workspace:apply — proving the git path is gone. */
+function makeBusWithBlob(): { bus: HookBus; puts: PutCall[] } {
   const bus = new HookBus();
-  const calls: ApplyCall[] = [];
-  bus.registerService<ApplyCall['input'], { version: string; delta: unknown }>(
-    'workspace:apply',
-    'test-mock',
-    async (ctx, input) => {
-      calls.push({ ctx, input });
-      return apply(input);
+  const puts: PutCall[] = [];
+  bus.registerService<{ bytes: Uint8Array }, { sha256: string; size: number }>(
+    'blob:put',
+    'test-blob',
+    async (_ctx, input) => {
+      puts.push({ bytes: input.bytes });
+      const sha256 = createHash('sha256').update(Buffer.from(input.bytes)).digest('hex');
+      return { sha256, size: input.bytes.length };
     },
   );
-  return { bus, calls };
+  bus.registerService(
+    'workspace:apply',
+    'test-guard',
+    async () => {
+      throw new Error('workspace:apply must NOT be called — the git path is removed');
+    },
+  );
+  return { bus, puts };
 }
 
 async function freshSetup() {
   const db = makeKysely();
   await runAttachmentsMigration(db);
   const store = createAttachmentsStore(db);
-  return { store };
+  return { store, db };
 }
 
 beforeAll(async () => {
@@ -92,6 +91,8 @@ afterEach(async () => {
     const k = opened.pop()!;
     try {
       await k.schema.dropTable('attachments_v1_temps').ifExists().execute();
+      await k.schema.dropTable('attachments_v1_files').ifExists().execute();
+      await k.schema.dropTable('attachments_v1_artifacts').ifExists().execute();
     } catch {
       /* drained pool */
     }
@@ -103,13 +104,10 @@ afterAll(async () => {
   if (container) await container.stop();
 });
 
-describe('attachments:commit handler', () => {
-  it('commits a staged temp to the workspace and returns metadata', async () => {
+describe('attachments:commit handler (blob-backed)', () => {
+  it('stores bytes via blob:put + a files row and returns metadata', async () => {
     const { store } = await freshSetup();
-    const { bus, calls } = makeBusWithApply(async () => ({
-      version: 'v-after',
-      delta: { before: 'v-before', after: 'v-after', changes: [] },
-    }));
+    const { bus, puts } = makeBusWithBlob();
     const handler = createCommitHandler({ store, bus });
 
     await store.insertTemp({
@@ -128,7 +126,7 @@ describe('attachments:commit handler', () => {
     });
 
     expect(result.path).toMatch(/^\.ax\/uploads\/c-1\/t-1\/[a-f0-9]{8}__greeting\.txt$/);
-    // sha256("hello world") = b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9
+    // sha256("hello world")
     expect(result.sha256).toBe(
       'b94d27b9934d3e08a52e52d7da7dabfac484efe37a5380ee9088f7ace2efcde9',
     );
@@ -136,336 +134,117 @@ describe('attachments:commit handler', () => {
     expect(result.sizeBytes).toBe(11);
     expect(result.displayName).toBe('greeting.txt');
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.input.changes).toHaveLength(1);
-    expect(calls[0]!.input.changes[0]!.kind).toBe('put');
-    expect(calls[0]!.input.changes[0]!.path).toBe(result.path);
-    const content = calls[0]!.input.changes[0]!.content!;
-    expect(Buffer.from(content).toString()).toBe('hello world');
-    expect(calls[0]!.input.parent).toBeNull();
+    // The exact bytes reached blob:put.
+    expect(puts).toHaveLength(1);
+    expect(Buffer.from(puts[0]!.bytes).toString()).toBe('hello world');
 
-    const afterRow = await store.getTemp('a-100');
-    expect(afterRow).toBeNull();
+    // A files row maps (conversationId, path) → sha256 for the download ACL.
+    const row = await store.getFileByPath('c-1', result.path);
+    expect(row).not.toBeNull();
+    expect(row!.sha256).toBe(result.sha256);
+    expect(row!.userId).toBe('u-1');
+    expect(row!.displayName).toBe('greeting.txt');
+
+    // Temp row consumed.
+    expect(await store.getTemp('a-100')).toBeNull();
+  });
+
+  it('de-dups identical bytes to one content hash at the blob level', async () => {
+    const { store } = await freshSetup();
+    const { bus, puts } = makeBusWithBlob();
+    const handler = createCommitHandler({ store, bus });
+
+    const insert = (id: string) =>
+      store.insertTemp({
+        attachmentId: id, userId: 'u-1',
+        bytes: Buffer.from('same bytes'),
+        displayName: 'dup.txt', mediaType: 'text/plain', sizeBytes: 10,
+        expiresAt: new Date(Date.now() + 60_000),
+      });
+
+    await insert('a-1');
+    const r1 = await handler(makeCtx('u-1'), { attachmentId: 'a-1', conversationId: 'c-1', turnId: 't-1' });
+    await insert('a-2');
+    const r2 = await handler(makeCtx('u-1'), { attachmentId: 'a-2', conversationId: 'c-1', turnId: 't-1' });
+
+    // Identical bytes ⇒ the SAME content hash both times (the blob store stores
+    // them once — content-addressed de-dup). The filename component carries a
+    // random anti-collision prefix, so each upload gets a distinct PATH/row that
+    // both point at the one shared blob — de-dup lives at the blob, not the row.
+    expect(r1.sha256).toBe(r2.sha256);
+    expect(r1.path).not.toBe(r2.path);
+    expect(puts).toHaveLength(2);
+    expect(puts[0]!.bytes).toEqual(puts[1]!.bytes);
   });
 
   it('rejects unknown attachmentId with not-found', async () => {
     const { store } = await freshSetup();
-    const { bus } = makeBusWithApply(async () => ({ version: 'v', delta: {} }));
+    const { bus } = makeBusWithBlob();
     const handler = createCommitHandler({ store, bus });
-
     await expect(
-      handler(makeCtx('u-1'), {
-        attachmentId: 'does-not-exist',
-        conversationId: 'c-1',
-        turnId: 't-1',
-      }),
+      handler(makeCtx('u-1'), { attachmentId: 'does-not-exist', conversationId: 'c-1', turnId: 't-1' }),
     ).rejects.toMatchObject({ code: 'not-found' });
   });
 
   it('rejects expired attachmentId with not-found', async () => {
     const { store } = await freshSetup();
-    const { bus } = makeBusWithApply(async () => ({ version: 'v', delta: {} }));
+    const { bus } = makeBusWithBlob();
     const handler = createCommitHandler({ store, bus });
-
     await store.insertTemp({
       attachmentId: 'a-expired', userId: 'u-1',
       bytes: Buffer.from('x'), displayName: 'x', mediaType: 'text/plain',
-      sizeBytes: 1,
-      expiresAt: new Date(Date.now() - 60_000),
+      sizeBytes: 1, expiresAt: new Date(Date.now() - 60_000),
     });
-
     await expect(
-      handler(makeCtx('u-1'), {
-        attachmentId: 'a-expired', conversationId: 'c-1', turnId: 't-1',
-      }),
+      handler(makeCtx('u-1'), { attachmentId: 'a-expired', conversationId: 'c-1', turnId: 't-1' }),
     ).rejects.toMatchObject({ code: 'not-found' });
   });
 
-  it('rejects cross-user redemption with forbidden and leaves the temp row intact', async () => {
+  it('rejects cross-user redemption with forbidden, never calls blob:put, leaves temp intact', async () => {
     const { store } = await freshSetup();
-    const { bus, calls } = makeBusWithApply(async () => ({ version: 'v', delta: {} }));
+    const { bus, puts } = makeBusWithBlob();
     const handler = createCommitHandler({ store, bus });
-
     await store.insertTemp({
       attachmentId: 'a-foreign', userId: 'u-victim',
       bytes: Buffer.from('secret'), displayName: 'secret.txt',
       mediaType: 'text/plain', sizeBytes: 6,
       expiresAt: new Date(Date.now() + 60_000),
     });
-
     await expect(
-      handler(makeCtx('u-attacker'), {
-        attachmentId: 'a-foreign', conversationId: 'c-1', turnId: 't-1',
-      }),
+      handler(makeCtx('u-attacker'), { attachmentId: 'a-foreign', conversationId: 'c-1', turnId: 't-1' }),
     ).rejects.toMatchObject({ code: 'forbidden' });
-
-    // The attacker's call never reached workspace:apply.
-    expect(calls).toHaveLength(0);
-
-    // Temp row preserved.
-    // Note: getTemp's expiry filter requires us to use a direct query OR
-    // check via the still-valid expiresAt. The row was inserted with +60s,
-    // so getTemp should still return it.
-    const stillThere = await store.getTemp('a-foreign');
-    expect(stillThere).not.toBeNull();
+    expect(puts).toHaveLength(0);
+    expect(await store.getTemp('a-foreign')).not.toBeNull();
   });
 
   it('sanitizes the on-disk filename component but preserves the displayName', async () => {
     const { store } = await freshSetup();
-    const { bus, calls } = makeBusWithApply(async () => ({
-      version: 'v', delta: { before: null, after: 'v', changes: [] },
-    }));
+    const { bus } = makeBusWithBlob();
     const handler = createCommitHandler({ store, bus });
-
     const hostileName = '../../etc/passwd ; rm -rf /.txt';
     await store.insertTemp({
       attachmentId: 'a-weird', userId: 'u-1',
-      bytes: Buffer.from('x'),
-      displayName: hostileName,
+      bytes: Buffer.from('x'), displayName: hostileName,
       mediaType: 'text/plain', sizeBytes: 1,
       expiresAt: new Date(Date.now() + 60_000),
     });
-
-    const result = await handler(makeCtx('u-1'), {
-      attachmentId: 'a-weird', conversationId: 'c-1', turnId: 't-1',
-    });
-
+    const result = await handler(makeCtx('u-1'), { attachmentId: 'a-weird', conversationId: 'c-1', turnId: 't-1' });
     expect(result.path).not.toContain('..');
     expect(result.path).not.toContain(' ');
     expect(result.path).not.toContain(';');
     expect(result.path.startsWith('.ax/uploads/c-1/t-1/')).toBe(true);
     expect(result.displayName).toBe(hostileName);
-
-    // The path passed to workspace:apply matches what we returned.
-    expect(calls[0]!.input.changes[0]!.path).toBe(result.path);
-  });
-
-  it('deletes the temp row after a successful workspace:apply', async () => {
-    const { store } = await freshSetup();
-    const { bus } = makeBusWithApply(async () => ({ version: 'v', delta: {} }));
-    const handler = createCommitHandler({ store, bus });
-
-    await store.insertTemp({
-      attachmentId: 'a-del', userId: 'u-1',
-      bytes: Buffer.from('x'), displayName: 'x.txt',
-      mediaType: 'text/plain', sizeBytes: 1,
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-
-    await handler(makeCtx('u-1'), {
-      attachmentId: 'a-del', conversationId: 'c-1', turnId: 't-1',
-    });
-
-    expect(await store.getTemp('a-del')).toBeNull();
-  });
-
-  it('rebases on workspace:apply parent-mismatch and re-applies', async () => {
-    const { store } = await freshSetup();
-    let attempt = 0;
-    const seenParents: Array<string | null> = [];
-    const bus = new HookBus();
-    bus.registerService<ApplyCall['input'], { version: string; delta: unknown }>(
-      'workspace:apply',
-      'test-mock',
-      async (_ctx, input) => {
-        seenParents.push(input.parent);
-        if (attempt++ === 0) {
-          throw new PluginError({
-            code: 'parent-mismatch',
-            plugin: 'test-mock',
-            message: 'mirror has commits; caller passed parent: null',
-            cause: { actualParent: 'v-current' },
-          });
-        }
-        return { version: 'v-after', delta: { before: 'v-current', after: 'v-after', changes: [] } };
-      },
-    );
-    const handler = createCommitHandler({ store, bus });
-
-    await store.insertTemp({
-      attachmentId: 'a-rebase', userId: 'u-1',
-      bytes: Buffer.from('hello'),
-      displayName: 'h.txt', mediaType: 'text/plain',
-      sizeBytes: 5,
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-
-    const result = await handler(makeCtx('u-1'), {
-      attachmentId: 'a-rebase',
-      conversationId: 'c-1',
-      turnId: 't-1',
-    });
-
-    expect(result.path).toMatch(/h\.txt$/);
-    expect(attempt).toBe(2);
-    expect(seenParents).toEqual([null, 'v-current']);
-  });
-
-  it('bails out after a bounded number of parent-mismatch retries', async () => {
-    const { store } = await freshSetup();
-    let attempts = 0;
-    const bus = new HookBus();
-    bus.registerService<ApplyCall['input'], { version: string; delta: unknown }>(
-      'workspace:apply',
-      'test-mock',
-      async () => {
-        attempts++;
-        // Always echo a NEW parent so the retry guard ("same parent twice")
-        // never trips — proves the retry cap fires independently.
-        throw new PluginError({
-          code: 'parent-mismatch',
-          plugin: 'test-mock',
-          message: 'churning',
-          cause: { actualParent: `v-${attempts}` },
-        });
-      },
-    );
-    const handler = createCommitHandler({ store, bus });
-
-    await store.insertTemp({
-      attachmentId: 'a-loop', userId: 'u-1',
-      bytes: Buffer.from('x'), displayName: 'x.txt', mediaType: 'text/plain',
-      sizeBytes: 1, expiresAt: new Date(Date.now() + 60_000),
-    });
-
-    await expect(
-      handler(makeCtx('u-1'), {
-        attachmentId: 'a-loop', conversationId: 'c-1', turnId: 't-1',
-      }),
-    ).rejects.toMatchObject({ code: 'parent-mismatch' });
-    // 5 bounded attempts.
-    expect(attempts).toBe(5);
   });
 
   it('throws PluginError instances (not plain Errors)', async () => {
     const { store } = await freshSetup();
-    const { bus } = makeBusWithApply(async () => ({ version: 'v', delta: {} }));
+    const { bus } = makeBusWithBlob();
     const handler = createCommitHandler({ store, bus });
     try {
-      await handler(makeCtx('u-1'), {
-        attachmentId: 'does-not-exist',
-        conversationId: 'c-1',
-        turnId: 't-1',
-      });
+      await handler(makeCtx('u-1'), { attachmentId: 'does-not-exist', conversationId: 'c-1', turnId: 't-1' });
       expect.fail('should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(PluginError);
     }
-  });
-});
-
-// Test-only Plugin shim for the REAL single-replica backend (modeled on
-// packages/workspace-git-core/src/__tests__/contract.test.ts). The manifest's
-// `registers` lists the public `workspace:apply` facade + the internal hooks
-// registerWorkspaceGitHooks installs.
-function makeCorePlugin(repoRoot: string): Plugin {
-  return {
-    manifest: {
-      name: '@ax/workspace-git-core-attachments-test-shim',
-      version: '0.0.0',
-      registers: [
-        'workspace:apply',
-        'workspace:apply-internal',
-        'workspace:read',
-        'workspace:list',
-        'workspace:diff',
-      ],
-      calls: [],
-      subscribes: [],
-    },
-    init({ bus }) {
-      registerWorkspaceGitHooks(bus, { repoRoot });
-    },
-  };
-}
-
-describe('attachments:commit against the REAL single-replica workspace-git-core backend (F-1 sibling)', () => {
-  const enc = new TextEncoder();
-  const dec = new TextDecoder();
-  const repoRoots: string[] = [];
-
-  afterEach(async () => {
-    for (const r of repoRoots.splice(0)) {
-      await rm(r, { recursive: true, force: true });
-    }
-  });
-
-  async function makeRealBackendBus(): Promise<HookBus> {
-    const repoRoot = mkdtempSync(join(tmpdir(), 'ax-attach-core-'));
-    repoRoots.push(repoRoot);
-    const bus = new HookBus();
-    await bootstrap({ bus, plugins: [makeCorePlugin(repoRoot)], config: {} });
-    return bus;
-  }
-
-  it('recovers from parent-mismatch by rebasing on the echoed actualParent and commits the attachment', async () => {
-    const { store } = await freshSetup();
-    const bus = await makeRealBackendBus();
-    const ctx = makeCtx('u-real');
-
-    // Advance the shared mirror OUT OF BAND first (as a prior turn or another
-    // attachment would), so the head is non-null. The commit handler starts at
-    // parent:null and must rebase onto this head via the backend's echoed
-    // actualParent — exactly the production single-replica scenario.
-    const seed = await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-      'workspace:apply',
-      ctx,
-      {
-        changes: [{ path: '.ax/seed', kind: 'put', content: enc.encode('prior turn') }],
-        parent: null,
-      },
-    );
-    const v1 = seed.version;
-    expect(v1).toMatch(/^[0-9a-f]{40}$/);
-
-    await store.insertTemp({
-      attachmentId: 'a-real',
-      userId: 'u-real',
-      bytes: Buffer.from('hello world'),
-      displayName: 'greeting.txt',
-      mediaType: 'text/plain',
-      sizeBytes: 11,
-      expiresAt: new Date(Date.now() + 60_000),
-    });
-
-    const handler = createCommitHandler({ store, bus });
-
-    // Pre-fix: the real backend throws parent-mismatch with NO cause, so the
-    // handler's retry guard (`'actualParent' in err.cause`) is false → it
-    // re-throws and this call REJECTS (the production 500). Post-fix: the
-    // backend echoes actualParent=v1, the handler rebases and commits at a
-    // child of v1.
-    const result = await handler(ctx, {
-      attachmentId: 'a-real',
-      conversationId: 'c-real',
-      turnId: 't-1',
-    });
-
-    expect(result.path).toMatch(
-      /^\.ax\/uploads\/c-real\/t-1\/[a-f0-9]{8}__greeting\.txt$/,
-    );
-
-    // The attachment landed in the workspace at the rebased head.
-    const readAttachment = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
-      'workspace:read',
-      ctx,
-      { path: result.path },
-    );
-    expect(readAttachment.found).toBe(true);
-    if (readAttachment.found) {
-      expect(dec.decode(readAttachment.bytes)).toBe('hello world');
-    }
-
-    // The out-of-band seed (v1) survived — proving the handler rebased ONTO it
-    // rather than clobbering history with a fresh parent:null commit.
-    const readSeed = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
-      'workspace:read',
-      ctx,
-      { path: '.ax/seed' },
-    );
-    expect(readSeed.found).toBe(true);
-
-    // The temp row is consumed only on a successful apply.
-    expect(await store.getTemp('a-real')).toBeNull();
   });
 });

@@ -630,7 +630,7 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the ten expected keys (adds workspace.export-baseline-bundle for the commit-notify re-sync binary fetch)', () => {
+  it('IPC_TIMEOUTS_MS has the fourteen expected keys (TASK-68 adds the blob.* / metadata runner-side callers)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
@@ -642,6 +642,11 @@ describe('timeouts', () => {
       'session.next-message',
       'session.get-config',
       'conversation.store-runner-session',
+      // TASK-68 (out-of-git Part C): the runner-side blob store callers.
+      'blob.put',
+      'blob.get',
+      'artifact.publish',
+      'attachments.list',
     ].sort();
     expect(Object.keys(IPC_TIMEOUTS_MS).sort()).toEqual(expected);
   });

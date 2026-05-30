@@ -8,6 +8,7 @@ import {
 import {
   BadJsonError,
   readJsonBody,
+  readRawBody,
   TooLargeError,
 } from './body.js';
 import { writeBinaryOk, writeJsonError, writeJsonOk } from './response.js';
@@ -18,6 +19,13 @@ import type {
   HandlerErr,
   HandlerOk,
 } from './handlers/types.js';
+import {
+  blobGetHandler,
+  blobPutHandler,
+  type BinaryActionHandler,
+} from './handlers/blob.js';
+import { artifactPublishHandler } from './handlers/artifact-publish.js';
+import { attachmentsListHandler } from './handlers/attachments-list.js';
 import { toolPreCallHandler } from './handlers/tool-pre-call.js';
 import { toolExecuteHostHandler } from './handlers/tool-execute-host.js';
 import { toolListHandler } from './handlers/tool-list.js';
@@ -88,6 +96,29 @@ ACTIONS.set('/conversation.store-runner-session', {
   method: 'POST',
   handler: conversationStoreRunnerSessionHandler,
 });
+// TASK-68 (out-of-git Part C): JSON actions. blob.get takes a JSON request and
+// returns a BINARY response (HandlerBinary), so it's an ordinary ACTION (the
+// REQUEST body is JSON); only blob.put needs the raw-body path below.
+ACTIONS.set('/blob.get', { method: 'POST', handler: blobGetHandler });
+ACTIONS.set('/artifact.publish', { method: 'POST', handler: artifactPublishHandler });
+ACTIONS.set('/attachments.list', { method: 'POST', handler: attachmentsListHandler });
+
+// Maximum inbound blob body for the raw-body REQUEST-direction channel
+// (blob.put). Matches the artifact_publish executor's 100 MiB size cap so the
+// host never admits a body larger than the runner would ever legitimately send.
+// This is the inbound mirror of the runner's outbound size check — defense in
+// depth at the host boundary, far above the 4 MiB JSON MAX_FRAME (the whole
+// point of the binary channel).
+const MAX_BLOB_BODY_BYTES = 100 * 1024 * 1024;
+
+// BINARY_ACTIONS — POST actions whose REQUEST body is a raw octet-stream (NOT
+// JSON), read via `readRawBody` under MAX_BLOB_BODY_BYTES instead of the 4 MiB
+// JSON cap. Today only `blob.put` (the runner streams artifact bytes inbound).
+const BINARY_ACTIONS = new Map<string, {
+  method: 'POST';
+  handler: BinaryActionHandler;
+}>();
+BINARY_ACTIONS.set('/blob.put', { method: 'POST', handler: blobPutHandler });
 
 type EventSpec = {
   method: 'POST';
@@ -145,12 +176,37 @@ EVENTS.set('/event.stream-chunk', {
 export const DISPATCHER_PATHS: {
   readonly get: readonly string[];
   readonly actions: readonly string[];
+  readonly binaryActions: readonly string[];
   readonly events: readonly string[];
 } = {
   get: ['/session.next-message'],
   actions: [...ACTIONS.keys()],
+  binaryActions: [...BINARY_ACTIONS.keys()],
   events: [...EVENTS.keys()],
 };
+
+/**
+ * Pre-dispatch Content-Type gate (TASK-68). The two transports (ipc-server unix,
+ * ipc-http TCP) share this so the rule lives in ONE place alongside the routing
+ * table. A POST must carry `application/json` — EXCEPT a binary action
+ * (`/blob.put`), whose REQUEST body is a raw `application/octet-stream` stream
+ * (the REQUEST-direction binary channel). GET carries no body. Returns
+ * `{ ok: true }` to proceed or `{ ok: false }` with the 415 message.
+ */
+export function checkContentType(
+  method: string | undefined,
+  pathname: string,
+  contentType: string,
+): { ok: true } | { ok: false; message: string } {
+  if (method !== 'POST') return { ok: true };
+  const ct = contentType.toLowerCase();
+  if (BINARY_ACTIONS.has(pathname)) {
+    if (ct.startsWith('application/octet-stream')) return { ok: true };
+    return { ok: false, message: 'content-type must be application/octet-stream' };
+  }
+  if (ct.startsWith('application/json')) return { ok: true };
+  return { ok: false, message: 'content-type must be application/json' };
+}
 
 function isBinary(r: HandlerResult): r is HandlerBinary {
   // The binary variant is the only result carrying a `binary` Buffer (no
@@ -200,6 +256,30 @@ async function readBodyOrWriteError(
   }
 }
 
+async function readRawBodyOrWriteError(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  maxBytes: number,
+): Promise<{ ok: true; value: Buffer } | { ok: false }> {
+  try {
+    const value = await readRawBody(req, maxBytes);
+    return { ok: true, value };
+  } catch (err) {
+    if (err instanceof TooLargeError) {
+      if (!res.headersSent) {
+        try {
+          res.setHeader('Connection', 'close');
+        } catch {
+          // Response already closed.
+        }
+      }
+      writeJsonError(res, 413, 'VALIDATION', 'body too large');
+      return { ok: false };
+    }
+    throw err;
+  }
+}
+
 function writeResult(res: http.ServerResponse, result: HandlerResult): void {
   if (isBinary(result)) {
     writeBinaryOk(res, result.status, result.binary, result.contentType);
@@ -236,6 +316,31 @@ export async function dispatch(
       writeResult(res, result);
     } catch (err) {
       logInternalError(ctx.logger, 'session.next-message', err);
+      if (!res.headersSent) {
+        const fallback = internalError();
+        writeJsonError(res, fallback.status, fallback.body.error.code, fallback.body.error.message);
+      }
+    }
+    return;
+  }
+
+  // ----- POST binary actions (raw octet-stream REQUEST body) -----
+  // Checked BEFORE the JSON actions so blob.put reads its body via readRawBody
+  // (capped at MAX_BLOB_BODY_BYTES) instead of the 4 MiB JSON reader — the whole
+  // point of the REQUEST-direction binary channel (TASK-68).
+  const binaryAction = BINARY_ACTIONS.get(pathname);
+  if (binaryAction !== undefined) {
+    if (method !== binaryAction.method) {
+      writeJsonError(res, 405, 'VALIDATION', 'method not allowed');
+      return;
+    }
+    const bodyRead = await readRawBodyOrWriteError(req, res, MAX_BLOB_BODY_BYTES);
+    if (!bodyRead.ok) return;
+    try {
+      const result = await binaryAction.handler(bodyRead.value, ctx, bus);
+      writeResult(res, result);
+    } catch (err) {
+      logInternalError(ctx.logger, pathname, err);
       if (!res.headersSent) {
         const fallback = internalError();
         writeJsonError(res, fallback.status, fallback.body.error.code, fallback.body.error.message);

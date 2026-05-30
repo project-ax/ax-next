@@ -17,23 +17,27 @@ export const ARTIFACT_PUBLISH_TOOL_NAME = 'artifact_publish' as const;
 export const ARTIFACT_PUBLISH_DESCRIPTOR: ToolDescriptor = {
   name: ARTIFACT_PUBLISH_TOOL_NAME,
   description: [
-    'Publish a workspace file as a downloadable artifact for the user.',
+    'Publish a file as a downloadable artifact for the user.',
     'Returns a stable ax://artifact/<id> URL that you can embed in your',
     'response text or markdown links.',
     '',
-    'Allowed paths (others rejected):',
-    '  - /permanent/workspace/**     (user project content)',
-    '  - /permanent/.ax/artifacts/** (explicit artifact namespace)',
+    'Write your deliverable to /ephemeral/artifacts/ and publish it from there.',
     '',
-    'The tool does NOT commit the file — the workspace commit at turn',
-    'end captures it. Symlinks and files larger than 100 MiB are rejected.',
+    'Allowed paths (others rejected):',
+    '  - /ephemeral/artifacts/**  (your artifact namespace — write deliverables here)',
+    '  - /permanent/workspace/**  (publish a snapshot of versioned project content)',
+    '',
+    'The bytes are stored durably the moment this tool returns — nothing is',
+    'committed, and the URL works immediately. Symlinks and files larger than',
+    '100 MiB are rejected.',
   ].join('\n'),
   inputSchema: {
     type: 'object',
     properties: {
       path: {
         type: 'string',
-        description: 'Absolute path under /permanent/ to publish.',
+        description:
+          'Absolute path under /ephemeral/artifacts/ (or /permanent/workspace/) to publish.',
       },
       displayName: {
         type: 'string',

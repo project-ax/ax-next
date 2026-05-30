@@ -142,10 +142,13 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Admin settings routes: declares http:register-route + auth:require-user
   // as calls (both dropped above). Static wiring is pinned in preset.test.ts.
   '@ax/admin-settings-routes',
-  // Attachments: postgres-backed (database:get-instance); no caller in
-  // Phase 1 of the attachments subsystem (half-wired window open through
-  // Phase 3). Static wiring pinned in preset.test.ts.
+  // Attachments: postgres-backed (database:get-instance); not exercised here.
+  // Static wiring pinned in preset.test.ts.
   '@ax/attachments',
+  // (TASK-68 note: @ax/blob-store-fs is NOT dropped — local backend's default
+  // blob root derives under the tmpdir repoRoot, so ensureRoot() succeeds.
+  // Attachments is dropped, so blob:put has no caller, but a registrant with no
+  // caller is harmless.)
   // Skills: postgres-backed (database:get-instance) + depends on
   // http:register-route + auth:require-user (both dropped). Chat-orchestrator
   // soft-couples via bus.hasService('skills:resolve'); when absent, the

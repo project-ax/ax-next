@@ -24,59 +24,56 @@ interface ConversationsCreateMin {
 // End-to-end contract test (Task 11).
 //
 // Exercises the @ax/attachments hook surface against real
-// @ax/database-postgres and @ax/conversations plugins. workspace:apply and
-// workspace:read are stubbed via an in-memory blob map per harness — that's
-// the abstraction boundary at this layer (Phase 2 of the workspace plugins
-// owns the real backing store).
+// @ax/database-postgres and @ax/conversations plugins. TASK-68: the bytes now
+// ride the content-addressed blob store (blob:put/blob:get), stubbed here via an
+// in-memory sha256-keyed map per harness — that's the abstraction boundary at
+// this layer (@ax/blob-store-fs owns the real backing store). The attachments
+// metadata rows (files/artifacts) ARE real (the postgres harness), so the
+// path → row → blob resolution is exercised end-to-end.
 //
-// The transcript-block branch of path-scope (attachment block referenced
-// from a stored turn) is unit-tested in download.test.ts. Phase E removed
-// conversations:append-turn — transcripts now live in runner-native jsonl
-// in the workspace — so injecting a turn via the bus would require a real
-// workspace, not a stub. Here we cover the .ax/uploads/<conversationId>/
-// prefix branch, which is the canonical commit destination.
+// The transcript-block branch of path-scope (attachment block referenced from a
+// stored turn) is unit-tested in download.test.ts. Here we cover the
+// .ax/uploads/<conversationId>/ prefix branch, the canonical commit destination.
 // ---------------------------------------------------------------------------
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
 const harnesses: TestHarness[] = [];
 
-// Shared in-memory workspace blob store. workspace:apply writes here;
-// workspace:read serves from here. Scoped per-harness via closures.
-interface WorkspaceFakeState {
+// Shared in-memory content-addressed blob store. blob:put hashes + stores;
+// blob:get serves by sha. Scoped per-harness via closures.
+interface BlobFakeState {
   blobs: Map<string, Uint8Array>;
 }
 
-async function makeHarness(): Promise<{ harness: TestHarness; ws: WorkspaceFakeState }> {
-  const ws: WorkspaceFakeState = { blobs: new Map() };
+async function makeHarness(): Promise<{ harness: TestHarness; ws: BlobFakeState }> {
+  const ws: BlobFakeState = { blobs: new Map() };
   const h = await createTestHarness({
     services: {
       'agents:resolve': async (_ctx, input: unknown) => {
         const call = input as { agentId: string };
         return { agent: { id: call.agentId, visibility: 'personal' } };
       },
+      // @ax/conversations declares the workspace:* trio as required calls (its
+      // transcript path). Stub them so its bootstrap passes — unrelated to the
+      // attachments blob path under test.
       'workspace:list': async () => ({ paths: [] as string[] }),
-      'workspace:apply': async (_ctx, input: unknown) => {
-        const { changes } = input as {
-          changes: Array<{ path: string; kind: 'put' | 'delete'; content?: Uint8Array }>;
-        };
-        for (const change of changes) {
-          if (change.kind === 'put' && change.content !== undefined) {
-            ws.blobs.set(change.path, change.content);
-          }
-          if (change.kind === 'delete') {
-            ws.blobs.delete(change.path);
-          }
-        }
-        return { version: 'v-fake', delta: { before: null, after: 'v-fake', changes: [] } };
+      'workspace:read': async () => ({ found: false }) as const,
+      'workspace:apply': async () => ({
+        version: 'v-fake',
+        delta: { before: null, after: 'v-fake', changes: [] },
+      }),
+      'blob:put': async (_ctx, input: unknown) => {
+        const { bytes } = input as { bytes: Uint8Array };
+        const sha256 = createHash('sha256').update(Buffer.from(bytes)).digest('hex');
+        ws.blobs.set(sha256, bytes);
+        return { sha256, size: bytes.length };
       },
-      'workspace:read': async (_ctx, input: unknown) => {
-        const { path } = input as { path: string };
-        const bytes = ws.blobs.get(path);
-        if (bytes === undefined) {
-          return { found: false } as const;
-        }
-        return { found: true as const, bytes };
+      'blob:get': async (_ctx, input: unknown) => {
+        const { sha256 } = input as { sha256: string };
+        const bytes = ws.blobs.get(sha256);
+        if (bytes === undefined) return { found: false } as const;
+        return { bytes };
       },
     },
     plugins: [
@@ -107,6 +104,8 @@ afterEach(async () => {
   await cleanup.connect();
   try {
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_temps');
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_files');
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifacts');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_turns');
     await cleanup.query('DROP TABLE IF EXISTS conversations_v1_conversations');
   } finally {
@@ -169,10 +168,11 @@ describe('@ax/attachments bus contract', () => {
       { path: commitResult.path, conversationId, userId: 'u-1' },
     );
     expect(Buffer.from(downloaded.bytes).toString()).toBe('hello attachments');
-    // The .ax/uploads/<conv>/ branch returns octet-stream defaults when
-    // there's no transcript block to source metadata from. This is the
-    // documented fall-back path in checkPathScope.
-    expect(downloaded.mediaType).toBe('application/octet-stream');
+    // TASK-68: download now sources mediaType from the AUTHORITATIVE committed
+    // files row (text/plain), not the octet-stream fall-back the git path used
+    // when there was no transcript block. The row metadata is the better truth.
+    expect(downloaded.mediaType).toBe('text/plain');
+    expect(downloaded.displayName).toBe('greeting.txt');
   });
 
   it('rejects foreign user with not-found (cross-user existence-leak)', async () => {

@@ -511,6 +511,108 @@ export type ConversationStoreRunnerSessionResponse = z.infer<
 // loop stores this value verbatim and passes it back on the next GET.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// blob.put / blob.get — TASK-68 (out-of-git Part C). The runner-side binary
+// blob-store callers.
+//
+// `blob.put` is the REQUEST-direction binary channel: the runner streams the
+// artifact's raw bytes as the HTTP request body (`Content-Type:
+// application/octet-stream`, NOT a JSON envelope — so the bytes bypass the
+// 4 MiB `MAX_FRAME` JSON cap exactly like the response-direction
+// materialize/export-baseline-bundle channels do, just inbound). There is
+// therefore NO request *schema* — the body is opaque bytes. The RESPONSE is a
+// small JSON envelope `{sha256, size}`, validated below.
+//
+// `blob.get` is the response-direction binary channel (same shape as
+// materialize): a small JSON request `{sha256}` and a raw octet-stream
+// response body (the blob bytes, drained to a temp file). No response schema
+// (binary body) — cf. the dispatch table in `ipc-client.ts`.
+//
+// `sha256` is a CONTENT hash on the wire, not a backend pointer (I1) — the
+// same storage-agnostic identity the `blob:*` bus hook + the
+// `attachments:commit` output already carry. The strict regex defends the
+// host's `blob:get` against a malformed key reaching the filesystem shard
+// (defense in depth — the fs store re-validates with the identical regex).
+// ---------------------------------------------------------------------------
+
+const SHA256_RE = /^[a-f0-9]{64}$/;
+
+export const BlobPutResponseSchema = z.object({
+  sha256: z.string().regex(SHA256_RE),
+  size: z.number().int().nonnegative(),
+});
+export type BlobPutResponse = z.infer<typeof BlobPutResponseSchema>;
+
+export const BlobGetRequestSchema = z
+  .object({
+    sha256: z.string().regex(SHA256_RE, 'sha256 must be 64 lowercase-hex chars'),
+  })
+  .strict();
+export type BlobGetRequest = z.infer<typeof BlobGetRequestSchema>;
+
+// ---------------------------------------------------------------------------
+// artifact.publish — TASK-68 (out-of-git Part C, outbound). After the runner
+// streams an artifact's bytes via `blob.put`, it posts this small metadata
+// envelope so the host inserts the artifact row and mints the stable
+// `ax://artifact/<id>` URL.
+//
+// Field names are storage-agnostic (I1): `conversationId` scopes ownership,
+// `sha256` is the content hash linking the row to the stored blob, `path` is
+// the workspace-relative display/scope key the transcript + download ACL use,
+// `displayName`/`mediaType` are untrusted display text (the renderer treats
+// them as untrusted; never shell-interpolated). No backend vocabulary.
+// ---------------------------------------------------------------------------
+
+export const ArtifactPublishRequestSchema = z
+  .object({
+    conversationId: z.string().min(1).max(256),
+    sha256: z.string().regex(SHA256_RE),
+    path: z.string().min(1).max(1024),
+    displayName: z.string().min(1).max(1024),
+    mediaType: z.string().min(1).max(256),
+    size: z.number().int().nonnegative(),
+  })
+  .strict();
+export type ArtifactPublishRequest = z.infer<typeof ArtifactPublishRequestSchema>;
+
+export const ArtifactPublishResponseSchema = z.object({
+  artifactId: z.string(),
+  downloadUrl: z.string(),
+});
+export type ArtifactPublishResponse = z.infer<typeof ArtifactPublishResponseSchema>;
+
+// ---------------------------------------------------------------------------
+// attachments.list — TASK-68 (out-of-git Part C, inbound). At session start the
+// runner enumerates the bound conversation's uploads so it can pull each blob
+// (`blob.get`) and materialize the read-only working copy into
+// `/ephemeral/uploads`. The host scopes the query to ctx.userId (the bearer
+// token's user) AND the requested conversationId.
+//
+// `path` is the workspace-relative key (`.ax/uploads/<conv>/<turnId>/<file>`)
+// the runner re-roots under `<ephemeralRoot>/uploads`; `sha256` addresses the
+// blob; the rest is display metadata. No backend vocabulary (I1).
+// ---------------------------------------------------------------------------
+
+export const AttachmentsListRequestSchema = z
+  .object({
+    conversationId: z.string().min(1).max(256),
+  })
+  .strict();
+export type AttachmentsListRequest = z.infer<typeof AttachmentsListRequestSchema>;
+
+export const AttachmentsListResponseSchema = z.object({
+  files: z.array(
+    z.object({
+      path: z.string(),
+      sha256: z.string().regex(SHA256_RE),
+      mediaType: z.string(),
+      displayName: z.string(),
+      sizeBytes: z.number().int().nonnegative(),
+    }),
+  ),
+});
+export type AttachmentsListResponse = z.infer<typeof AttachmentsListResponseSchema>;
+
 // `reqId` on `user-message` is the server-minted request identifier (J9)
 // that the host stamped onto the message when it called
 // `session:queue-work`. The runner caches it locally and uses it to label

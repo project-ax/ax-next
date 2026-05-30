@@ -816,4 +816,173 @@ describe('createIpcClient', () => {
       expect(attempts).toBe(1);
     });
   });
+
+  // -------------------------------------------------------------------------
+  // TASK-68: callBinaryUpload (REQUEST-direction binary channel) + callBinary
+  // for blob.get (response-direction). The runner-side blob-store callers.
+  // -------------------------------------------------------------------------
+  describe('callBinaryUpload (blob.put — REQUEST-direction octet-stream)', () => {
+    const SHA = 'b'.repeat(64);
+
+    it('POSTs the raw bytes as octet-stream and parses the {sha256,size} JSON response', async () => {
+      // >4 MiB body — proves the upload bypasses the 4 MiB MAX_FRAME JSON cap
+      // (the whole point of the binary REQUEST channel). A deterministic
+      // pattern so we can verify the host received the exact bytes.
+      const size = 5 * 1024 * 1024;
+      const payload = Buffer.alloc(size);
+      for (let i = 0; i < size; i++) payload[i] = (i * 7 + 3) & 0xff;
+
+      const server = await startFakeServer();
+      servers.push(server);
+      let seenPath = '';
+      let seenContentType = '';
+      let received: Buffer = Buffer.alloc(0);
+      server.setHandler((req, res) => {
+        seenPath = req.url ?? '';
+        seenContentType = req.headers['content-type'] ?? '';
+        // Swallow a benign trailing socket error on EITHER stream object AND the
+        // underlying socket: after the body is fully received and we respond, the
+        // peer's socket teardown can surface as EPIPE/ECONNRESET on a write that
+        // crosses the close. The transfer is already complete; ignore it.
+        res.on('error', () => {});
+        req.on('error', () => {});
+        req.socket.on('error', () => {});
+        const chunks: Buffer[] = [];
+        req.on('data', (c: Buffer) => chunks.push(c));
+        req.on('end', () => {
+          received = Buffer.concat(chunks);
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ sha256: SHA, size: received.length }));
+        });
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        maxRetries: 0,
+      });
+
+      const result = (await client.callBinaryUpload('blob.put', payload)) as {
+        sha256: string;
+        size: number;
+      };
+
+      expect(seenPath).toBe('/blob.put');
+      expect(seenContentType).toBe('application/octet-stream');
+      // The full >4 MiB body arrived intact (not truncated, not re-encoded).
+      expect(received.length).toBe(size);
+      expect(received.equals(payload)).toBe(true);
+      expect(result.sha256).toBe(SHA);
+      expect(result.size).toBe(size);
+    });
+
+    it('rejects when the JSON response fails schema validation (malformed sha256)', async () => {
+      const server = await startFakeServer();
+      servers.push(server);
+      server.setHandler((_req, res) => {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ sha256: 'not-a-sha', size: 1 }));
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        maxRetries: 0,
+      });
+      const err = await client.callBinaryUpload('blob.put', Buffer.from('x')).then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(IpcRequestError);
+      expect((err as IpcRequestError).message).toContain('validation failed');
+    });
+
+    it('parses a non-2xx JSON error envelope into an IpcRequestError', async () => {
+      const server = await startFakeServer();
+      servers.push(server);
+      server.setHandler((_req, res) => {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: { code: 'VALIDATION', message: 'blob too large' } }));
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        maxRetries: 0,
+      });
+      const err = await client.callBinaryUpload('blob.put', Buffer.from('x')).then(
+        () => {
+          throw new Error('expected rejection');
+        },
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(IpcRequestError);
+      expect((err as IpcRequestError).status).toBe(413);
+    });
+
+    it('retries a transient 5xx then succeeds (content-addressed ⇒ replay-safe)', async () => {
+      let attempts = 0;
+      const server = await startFakeServer();
+      servers.push(server);
+      server.setHandler((req, res) => {
+        attempts += 1;
+        // Drain the body each attempt so the socket doesn't wedge.
+        req.on('data', () => {});
+        req.on('end', () => {
+          if (attempts === 1) {
+            res.writeHead(503, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ error: { code: 'INTERNAL', message: 'warming up' } }));
+            return;
+          }
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ sha256: SHA, size: 1 }));
+        });
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        retryBackoff: () => 0,
+      });
+      const result = (await client.callBinaryUpload('blob.put', Buffer.from('x'))) as {
+        sha256: string;
+      };
+      expect(attempts).toBe(2);
+      expect(result.sha256).toBe(SHA);
+    });
+  });
+
+  describe('callBinary (blob.get — response-direction octet-stream)', () => {
+    const created: string[] = [];
+    afterEach(async () => {
+      for (const p of created) await fsp.rm(p, { force: true }).catch(() => {});
+      created.length = 0;
+    });
+
+    it('drains a >4 MiB blob body to a temp file', async () => {
+      const size = 5 * 1024 * 1024;
+      const payload = Buffer.alloc(size);
+      for (let i = 0; i < size; i++) payload[i] = (i * 13 + 1) & 0xff;
+      const server = await startFakeServer();
+      servers.push(server);
+      let seenPath = '';
+      server.setHandler((req, res) => {
+        seenPath = req.url ?? '';
+        res.writeHead(200, {
+          'Content-Type': 'application/octet-stream',
+          'Content-Length': String(payload.length),
+        });
+        res.end(payload);
+      });
+      const client = createIpcClient({
+        runnerEndpoint: `unix://${server.socketPath}`,
+        token: 'tok-abc',
+        maxRetries: 0,
+      });
+      const result = await client.callBinary('blob.get', { sha256: 'a'.repeat(64) });
+      created.push(result.path);
+      expect(seenPath).toBe('/blob.get');
+      expect(result.bytes).toBe(size);
+      const onDisk = await fsp.readFile(result.path);
+      expect(onDisk.equals(payload)).toBe(true);
+    });
+  });
 });

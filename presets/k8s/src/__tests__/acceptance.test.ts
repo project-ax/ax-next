@@ -29,6 +29,7 @@ import {
   workspaceCommitNotifyHandler,
 } from '@ax/ipc-core';
 import { createAttachmentsPlugin } from '@ax/attachments';
+import { createBlobStoreFsPlugin } from '@ax/blob-store-fs';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createArtifactPublishExecutor } from '@ax/agent-claude-sdk-runner';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
@@ -191,11 +192,15 @@ const PLUGINS_TO_DROP = new Set<string>([
   // as calls (both dropped above). Static wiring is pinned in preset.test.ts.
   '@ax/admin-settings-routes',
   // Attachments: postgres-backed (database:get-instance) and not exercised
-  // by any of these canaries — Phase 1 of the attachments subsystem has no
-  // caller yet (half-wired window open through Phase 3). The static hook
-  // wiring is pinned in preset.test.ts; drop here so these sub-tests don't
-  // need a postgres testcontainer.
+  // by any of these canaries. The static hook wiring is pinned in
+  // preset.test.ts; drop here so these sub-tests don't need a postgres
+  // testcontainer.
   '@ax/attachments',
+  // (TASK-68 note: @ax/blob-store-fs is NOT dropped — TASK-71 wires it with an
+  // explicit tmpdir `blob` config in these canaries' createK8sPlugins configs,
+  // so ensureRoot() succeeds. Attachments is dropped, so blob:put has no caller,
+  // but a registrant with no caller is harmless — and the blob store stays
+  // available to any sub-test that re-adds attachments wired.)
   // Skills: postgres-backed (database:get-instance) and depends on
   // http:register-route + auth:require-user (both dropped above). The
   // static hook wiring is pinned in preset.test.ts; drop here so these
@@ -3205,6 +3210,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         createDatabasePostgresPlugin({ connectionString }),
         createWorkspaceGitPlugin({ repoRoot: workspaceRoot }),
         createConversationsPlugin(),
+        // TASK-68: attachments/artifacts ride the content-addressed blob store.
+        // A tmpdir root so the fs backend's ensureRoot() succeeds.
+        createBlobStoreFsPlugin({ root: path.join(workspaceRoot, 'blobs') }),
         createAttachmentsPlugin(),
         createChannelWebServerPlugin(),
         authStubPlugin,
@@ -3296,12 +3304,12 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(typeof chatJson.conversationId).toBe('string');
         const conversationId = chatJson.conversationId;
 
-        // 3a. Locate the committed attachment via workspace:list. The
+        // 3a. Locate the committed attachment via attachments:list-for-
+        // conversation (TASK-68: the bytes live in the blob store + a metadata
+        // row now, NOT a git file, so workspace:list won't find them). The
         // commit handler mints a random filename prefix
-        // (sanitizeFilenameComponent), so we glob for the file rather
-        // than reconstructing the path. The workspace plugin keys by
-        // (ctx.userId, ctx.agentId) — same tuple as the route's
-        // attachmentCtx, so this list returns the file we just wrote.
+        // (sanitizeFilenameComponent), so we read the path from the row rather
+        // than reconstructing it. The hook is scoped to ctx.userId.
         const listCtx = makeAgentContext({
           sessionId: 'phase-3-canary-lookup',
           agentId: AGENT,
@@ -3309,13 +3317,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           workspace: { rootPath: workspaceRoot },
         });
         const listed = await bus.call<
-          { pathGlob: string },
-          { paths: string[] }
-        >('workspace:list', listCtx, {
-          pathGlob: `.ax/uploads/${conversationId}/**`,
-        });
-        expect(listed.paths.length).toBe(1);
-        const attachmentPath = listed.paths[0]!;
+          { conversationId: string },
+          { files: Array<{ path: string; sha256: string; mediaType: string; displayName: string; sizeBytes: number }> }
+        >('attachments:list-for-conversation', listCtx, { conversationId });
+        expect(listed.files.length).toBe(1);
+        const attachmentPath = listed.files[0]!.path;
         expect(attachmentPath.endsWith('__note.txt')).toBe(true);
 
         // 3b. Seed the runner-native jsonl. attachments:download calls
@@ -3362,27 +3368,18 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           }) + '\n';
         const jsonlBytes = new TextEncoder().encode(jsonlText);
         const jsonlPath = `.claude/projects/-permanent/${runnerSessionId}.jsonl`;
-        // The workspace already has a commit from attachments:commit; the
-        // git-backed workspace enforces parent CAS. Read the attachment we
-        // just located to recover the current HEAD as a WorkspaceVersion,
-        // then chain the seed apply onto it. (Phase D's canary used
-        // parent: null because its workspace started empty; we can't.)
-        const headProbe = await bus.call<
-          { path: string },
-          | { found: true; bytes: Uint8Array; version?: string }
-          | { found: false }
-        >('workspace:read', listCtx, { path: attachmentPath });
-        if (!headProbe.found || headProbe.version === undefined) {
-          throw new Error(
-            'phase-3 canary: failed to recover workspace version for seed apply',
-          );
-        }
+        // TASK-68: attachments:commit no longer writes to the workspace (the
+        // bytes go to the blob store), so the workspace starts EMPTY here — the
+        // jsonl seed is the first apply and uses parent: null (back to the Phase
+        // D canary's posture). We only seed the TRANSCRIPT so the download
+        // path-scope ACL (which scans conversations:get) sees the attachment
+        // block; the bytes themselves come from the blob store, not this apply.
         await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
           'workspace:apply',
           listCtx,
           {
             changes: [{ path: jsonlPath, kind: 'put', content: jsonlBytes }],
-            parent: headProbe.version,
+            parent: null,
             reason: 'phase-3 canary: seed user jsonl',
           },
         );
@@ -3681,6 +3678,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         createDatabasePostgresPlugin({ connectionString }),
         createWorkspaceGitPlugin({ repoRoot: workspaceRoot }),
         createConversationsPlugin(),
+        // TASK-68: attachments/artifacts ride the content-addressed blob store.
+        // A tmpdir root so the fs backend's ensureRoot() succeeds.
+        createBlobStoreFsPlugin({ root: path.join(workspaceRoot, 'blobs') }),
         createAttachmentsPlugin(),
         toolRegisterStubPlugin,
         createToolArtifactPublishPlugin(),
@@ -3804,6 +3804,29 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         expect(artifactResult.mediaType).toBe('text/markdown');
         expect(artifactResult.sizeBytes).toBe(ARTIFACT_BYTES.byteLength);
         expect(artifactResult.sha256).toMatch(/^[0-9a-f]{64}$/);
+
+        // TASK-68: in production the executor streams the bytes to blob.put and
+        // posts artifact.publish over IPC; the host inserts the artifact row +
+        // stores the blob. This canary runs the executor WITHOUT an IPC client
+        // (validation-only), so we simulate the host side directly on the bus:
+        // store the bytes in the blob store and record the artifact row. The
+        // download (step 5) then resolves path → artifact row → blob:get.
+        const put = await bus.call<
+          { bytes: Uint8Array },
+          { sha256: string; size: number }
+        >('blob:put', seedCtx, { bytes: new Uint8Array(ARTIFACT_BYTES) });
+        await bus.call<
+          { conversationId: string; sha256: string; path: string; displayName: string; mediaType: string; size: number },
+          { artifactId: string }
+        >('artifacts:publish-blob', seedCtx, {
+          conversationId,
+          sha256: put.sha256,
+          path: ARTIFACT_PATH,
+          displayName: 'summary.md',
+          mediaType: 'text/markdown',
+          size: ARTIFACT_BYTES.byteLength,
+        });
+
         const userLine = JSON.stringify({
           type: 'user',
           message: {

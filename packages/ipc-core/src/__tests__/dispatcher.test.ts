@@ -1079,4 +1079,86 @@ describe('dispatcher', () => {
     expect(res.status).toBe(200);
     expect(seenWorkspace).toBe('/tmp/ws');
   });
+
+  // -------------------------------------------------------------------------
+  // TASK-68: blob.put (raw octet-stream REQUEST body) + content-type gate.
+  // -------------------------------------------------------------------------
+
+  /** POST a raw octet-stream body (the REQUEST-direction binary channel). */
+  function doRawUpload(
+    socketPath: string,
+    reqPath: string,
+    token: string,
+    body: Buffer,
+    contentType = 'application/octet-stream',
+  ): Promise<Response> {
+    return new Promise<Response>((resolve, reject) => {
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${token}`,
+        'Content-Type': contentType,
+        'Content-Length': String(body.length),
+      };
+      const req = http.request({ socketPath, path: reqPath, method: 'POST', headers }, (res) => {
+        const chunks: Buffer[] = [];
+        res.on('data', (c: Buffer) => chunks.push(c));
+        res.on('end', () =>
+          resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }),
+        );
+      });
+      req.on('error', reject);
+      req.on('socket', (sock) => sock.on('error', () => {}));
+      req.write(body);
+      req.end();
+    });
+  }
+
+  it('POST /blob.put — reads the raw octet-stream body and forwards it to blob:put', async () => {
+    const VALID_SHA = 'a'.repeat(64);
+    // A body LARGER than the 4 MiB JSON MAX_FRAME — proves the raw-body path
+    // admits bodies the JSON reader would reject (the point of the channel).
+    const body = Buffer.alloc(5 * 1024 * 1024, 0x42);
+    let seenLen = -1;
+    const s = await setup({
+      services: {
+        'blob:put': async (_ctx, input) => {
+          seenLen = (input as { bytes: Uint8Array }).bytes.length;
+          return { sha256: VALID_SHA, size: seenLen };
+        },
+      },
+    });
+    setups.push(s);
+    const res = await doRawUpload(s.socketPath, '/blob.put', s.token, body);
+    expect(res.status).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ sha256: VALID_SHA, size: body.length });
+    expect(seenLen).toBe(body.length);
+  });
+
+  it('POST /blob.put with application/json content-type → 415 (gate requires octet-stream)', async () => {
+    const s = await setup({
+      services: {
+        'blob:put': async () => ({ sha256: 'a'.repeat(64), size: 0 }),
+      },
+    });
+    setups.push(s);
+    // doRequest sends application/json — the binary action requires octet-stream.
+    const res = await doRequest(s.socketPath, 'POST', '/blob.put', s.token, '{}');
+    expect(res.status).toBe(415);
+  });
+
+  it('POST /blob.get with octet-stream content-type → 415 (JSON action requires json)', async () => {
+    const s = await setup({
+      services: {
+        'blob:get': async () => ({ found: false }),
+      },
+    });
+    setups.push(s);
+    const res = await doRawUpload(
+      s.socketPath,
+      '/blob.get',
+      s.token,
+      Buffer.from('{}'),
+      'application/octet-stream',
+    );
+    expect(res.status).toBe(415);
+  });
 });

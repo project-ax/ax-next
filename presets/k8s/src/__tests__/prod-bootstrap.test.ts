@@ -220,6 +220,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     '@ax/admin-settings-routes',
     '@ax/conversations',
     '@ax/attachments',
+    '@ax/blob-store-fs',
     '@ax/channel-web',
   ] as const;
 

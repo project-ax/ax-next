@@ -859,12 +859,14 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createConversationsPlugin());
 
   // ----- 9a. attachments ----------------------------------------------------
-  // Phase 1 of the attachments & artifacts subsystem (2026-05-15). Three
-  // service hooks (attachments:store-temp / commit / download) with a
-  // Postgres-backed temp store and the path-scope ACL inside the download
-  // hook. Half-wired window OPEN through Phase 3 — no caller in Phase 1
-  // invokes these hooks. Phase 2 wires up the agent-side artifact_publish
-  // tool; Phase 3 wires up channel-web's upload + download routes + UI.
+  // The attachments & artifacts subsystem. Service hooks
+  // (attachments:store-temp / commit / download / list-for-conversation +
+  // artifacts:publish-blob). TASK-68: commit/download/publish now ride the
+  // content-addressed blob store (the selected blob:* backend registered at
+  // step 3b above — fs or s3) instead of git — the bytes never touch the chat
+  // mirror, killing the parent-mismatch transcript-loss race. The IPC
+  // dispatcher's blob.put/blob.get/artifact.publish/attachments.list actions
+  // drive these from the runner.
   plugins.push(createAttachmentsPlugin());
   // Phase 2: registers the `artifact_publish` tool descriptor so the canary
   // smoke flow includes it in tool.list. The sandbox-MCP bridge dispatches
@@ -1424,6 +1426,10 @@ export function loadK8sConfigFromEnv(
   if (skillsBundleRoot !== undefined && skillsBundleRoot !== '') {
     config.skills = { bundleStore: { repoRoot: skillsBundleRoot } };
   }
+
+  // (Blob store root: handled by blobConfigFromEnv above — AX_BLOB_BACKEND +
+  // AX_BLOB_FS_ROOT / AX_BLOB_S3_* — TASK-71's selectable fs/s3 seam, which
+  // TASK-68's attachments/artifacts work rides on.)
 
   // ---- titles (auto-titling subscriber) -----------------------------------
   // Gated on ANTHROPIC_API_KEY presence: multi-tenant deploys without a

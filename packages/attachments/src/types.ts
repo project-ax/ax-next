@@ -56,6 +56,44 @@ export interface DownloadOutput {
   displayName: string;
 }
 
+// TASK-68 (out-of-git Part C): host-side metadata hooks.
+
+/**
+ * `artifacts:publish-blob` — the IPC `artifact.publish` action calls this after
+ * the runner streamed the artifact bytes to `blob:put`. Inserts the artifact
+ * metadata row scoped to ctx.userId; returns the stable artifactId.
+ */
+export interface ArtifactsPublishBlobInput {
+  conversationId: string;
+  sha256: string;
+  path: string;
+  displayName: string;
+  mediaType: string;
+  size: number;
+}
+export interface ArtifactsPublishBlobOutput {
+  artifactId: string;
+}
+
+/**
+ * `attachments:list-for-conversation` — the IPC `attachments.list` action calls
+ * this at runner session start. Returns the conversation's committed uploads
+ * (scoped to ctx.userId) so the runner can pull each blob and materialize the
+ * read-only working copy into /ephemeral/uploads.
+ */
+export interface AttachmentsListForConversationInput {
+  conversationId: string;
+}
+export interface AttachmentsListForConversationOutput {
+  files: Array<{
+    path: string;
+    sha256: string;
+    mediaType: string;
+    displayName: string;
+    sizeBytes: number;
+  }>;
+}
+
 // ---------------------------------------------------------------------------
 // Runtime `returns` contracts for the `attachments:*` service hooks (ARCH-13).
 //
@@ -90,6 +128,24 @@ export const DownloadOutputSchema = z.object({
   sizeBytes: z.number(),
   displayName: z.string(),
 }) as unknown as ZodType<DownloadOutput>;
+
+// TASK-68 returns contracts. Storage-agnostic: `artifactId`/`path` opaque ids,
+// `sha256` the file's own content digest (not a backend pointer).
+export const ArtifactsPublishBlobOutputSchema = z.object({
+  artifactId: z.string(),
+}) as unknown as ZodType<ArtifactsPublishBlobOutput>;
+
+export const AttachmentsListForConversationOutputSchema = z.object({
+  files: z.array(
+    z.object({
+      path: z.string(),
+      sha256: z.string(),
+      mediaType: z.string(),
+      displayName: z.string(),
+      sizeBytes: z.number(),
+    }),
+  ),
+}) as unknown as ZodType<AttachmentsListForConversationOutput>;
 
 // Plugin config.
 

@@ -18,10 +18,11 @@ async function makeHarness(
   const h = await createTestHarness({
     // Mock the hooks this plugin `calls` but doesn't register itself.
     // bootstrap's verifyCalls() rejects on any missing call producer; these
-    // mocks satisfy the contract without booting unrelated plugins.
+    // mocks satisfy the contract without booting unrelated plugins. TASK-68:
+    // the git path (workspace:apply/read) is replaced by the blob:* store.
     services: {
-      'workspace:apply': async () => ({ commitId: 'mock-commit' }),
-      'workspace:read': async () => ({ found: false }) as const,
+      'blob:put': async () => ({ sha256: 'a'.repeat(64), size: 0 }),
+      'blob:get': async () => ({ found: false }) as const,
       'conversations:get': async () => ({
         conversation: {
           conversationId: 'mock-conv',
@@ -54,6 +55,8 @@ afterEach(async () => {
   await cleanup.connect();
   try {
     await cleanup.query('DROP TABLE IF EXISTS attachments_v1_temps');
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_files');
+    await cleanup.query('DROP TABLE IF EXISTS attachments_v1_artifacts');
   } finally {
     await cleanup.end().catch(() => {});
   }
@@ -64,7 +67,7 @@ afterAll(async () => {
 });
 
 describe('@ax/attachments plugin manifest', () => {
-  it('declares the three service hooks + expected calls', () => {
+  it('declares the service hooks + expected calls (TASK-68: blob:* not git)', () => {
     const plugin = createAttachmentsPlugin();
     expect(plugin.manifest.name).toBe('@ax/attachments');
     expect(plugin.manifest.version).toBe('0.0.0');
@@ -72,21 +75,28 @@ describe('@ax/attachments plugin manifest', () => {
       'attachments:store-temp',
       'attachments:commit',
       'attachments:download',
+      'attachments:list-for-conversation',
+      'artifacts:publish-blob',
     ]);
     expect(plugin.manifest.calls).toContain('database:get-instance');
-    expect(plugin.manifest.calls).toContain('workspace:apply');
-    expect(plugin.manifest.calls).toContain('workspace:read');
+    expect(plugin.manifest.calls).toContain('blob:put');
+    expect(plugin.manifest.calls).toContain('blob:get');
     expect(plugin.manifest.calls).toContain('conversations:get');
+    // The git path is removed (acceptance criterion).
+    expect(plugin.manifest.calls).not.toContain('workspace:apply');
+    expect(plugin.manifest.calls).not.toContain('workspace:read');
     expect(plugin.manifest.subscribes).toEqual([]);
   });
 });
 
 describe('@ax/attachments plugin init / shutdown', () => {
-  it('registers all three service hooks on init', async () => {
+  it('registers all service hooks on init', async () => {
     const harness = await makeHarness();
     expect(harness.bus.hasService('attachments:store-temp')).toBe(true);
     expect(harness.bus.hasService('attachments:commit')).toBe(true);
     expect(harness.bus.hasService('attachments:download')).toBe(true);
+    expect(harness.bus.hasService('attachments:list-for-conversation')).toBe(true);
+    expect(harness.bus.hasService('artifacts:publish-blob')).toBe(true);
   });
 
   it('runs the attachments_v1_temps migration on init', async () => {

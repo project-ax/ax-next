@@ -1,39 +1,63 @@
 /**
- * Phase 2 — `artifact_publish` tool path-allowlist (design Boundary D).
+ * `artifact_publish` tool path-allowlist (TASK-68, out-of-git Part C).
  *
- * Pure-function path validation. No filesystem access. Reused by both
- * the host plugin's descriptor (for the model-facing `description`) and
- * the runner-side executor (for actual enforcement).
+ * Pure-function path validation. No filesystem access. Reused by both the host
+ * plugin's descriptor (for the model-facing `description`) and the runner-side
+ * executor (for actual enforcement).
  *
- * Allowed prefixes:
- *  - /permanent/workspace/<sub>        — user project content
- *  - /permanent/.ax/artifacts/<sub>    — explicit artifact namespace
+ * The artifact namespace moved OFF git (`/permanent/.ax/artifacts/`) onto the
+ * disposable `/ephemeral` tier — artifacts are published to the content-addressed
+ * blob store at `artifact_publish` time, not swept into a git commit. So the
+ * allowlist now spans TWO sandbox roots:
  *
- * Returns a `relativePath` (workspace-relative) on success so the
- * caller stores a path that matches what `workspace:read` expects and
- * what the path-scope ACL in `attachments:download` compares against.
+ *  - `/ephemeral/artifacts/<sub>`  — the primary artifact namespace (scratch;
+ *                                    bytes go to blob:put on publish).
+ *  - `/permanent/workspace/<sub>`  — the rare Pattern A case: ax-hosted project
+ *                                    code under git may still publish a snapshot
+ *                                    as an artifact (an intentional double-home —
+ *                                    git holds editable history, the blob holds
+ *                                    the immutable shared snapshot).
+ *
+ * Returns which `root` (`ephemeral` | `permanent`) the path lives under plus the
+ * root-relative `relativePath`, so the executor maps it onto the right
+ * filesystem root and the host stores a stable display/scope key.
  */
 
 export const MAX_ARTIFACT_BYTES = 100 * 1024 * 1024; // 100 MiB
 
-const PERMANENT_PREFIX = '/permanent/';
-const ALLOWED_RELATIVE_PREFIXES = ['workspace/', '.ax/artifacts/'];
+export type PublishRoot = 'ephemeral' | 'permanent';
+
+interface RootSpec {
+  root: PublishRoot;
+  /** Sandbox-absolute prefix, e.g. `/ephemeral/`. */
+  prefix: string;
+  /** Allowed relative prefixes under the root. */
+  allowed: string[];
+}
+
+const ROOTS: RootSpec[] = [
+  { root: 'ephemeral', prefix: '/ephemeral/', allowed: ['artifacts/'] },
+  { root: 'permanent', prefix: '/permanent/', allowed: ['workspace/'] },
+];
 
 export type PathCheckResult =
-  | { ok: true; relativePath: string }
+  | { ok: true; root: PublishRoot; relativePath: string }
   | { ok: false; reason: string };
+
+const ALLOWED_DESC = '/ephemeral/artifacts/**, /permanent/workspace/**';
 
 export function checkPublishablePath(absPath: string): PathCheckResult {
   if (typeof absPath !== 'string' || absPath.length === 0) {
     return { ok: false, reason: 'artifact-path-not-publishable: empty path' };
   }
-  if (!absPath.startsWith(PERMANENT_PREFIX)) {
+  const spec = ROOTS.find((r) => absPath.startsWith(r.prefix));
+  if (spec === undefined) {
     return {
       ok: false,
-      reason: `artifact-path-not-publishable: path must start with ${PERMANENT_PREFIX}`,
+      reason: `artifact-path-not-publishable: path must be under one of ${ALLOWED_DESC}`,
     };
   }
-  const relative = absPath.slice(PERMANENT_PREFIX.length);
+  const relative = absPath.slice(spec.prefix.length);
   if (relative.length === 0) {
     return { ok: false, reason: 'artifact-path-not-publishable: no file component' };
   }
@@ -43,15 +67,15 @@ export function checkPublishablePath(absPath: string): PathCheckResult {
       return { ok: false, reason: 'artifact-path-not-publishable: path contains ..' };
     }
   }
-  const prefix = ALLOWED_RELATIVE_PREFIXES.find((p) => relative.startsWith(p));
-  if (prefix === undefined) {
+  const allowedPrefix = spec.allowed.find((p) => relative.startsWith(p));
+  if (allowedPrefix === undefined) {
     return {
       ok: false,
-      reason: `artifact-path-not-publishable: path must be under one of ${ALLOWED_RELATIVE_PREFIXES.map((p) => PERMANENT_PREFIX + p).join(', ')}`,
+      reason: `artifact-path-not-publishable: path must be under one of ${ALLOWED_DESC}`,
     };
   }
-  if (relative.length === prefix.length) {
+  if (relative.length === allowedPrefix.length) {
     return { ok: false, reason: 'artifact-path-not-publishable: no file component after prefix' };
   }
-  return { ok: true, relativePath: relative };
+  return { ok: true, root: spec.root, relativePath: relative };
 }
