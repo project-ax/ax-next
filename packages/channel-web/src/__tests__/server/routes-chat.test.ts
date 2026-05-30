@@ -200,16 +200,24 @@ interface GrantCapture {
   input: { conversationId: string; userId: string; agentId: string; skillId: string };
 }
 
+// Module-level routing trace for the authored-first routing tests (Task 6).
+// Reset in beforeEach inside those tests.
+const grantTrace = { authored: [] as string[], catalog: [] as string[] };
+
 // Mock `agent:apply-capability-grant` (TASK-36). Channel-web declares it as a
 // hard `call`, so bootstrap's verifyCalls needs SOMEONE registered. Captures
 // the inputs so the decision-endpoint test can assert the resolved agentId +
 // userId thread through.
+//
+// Also registers `agent:apply-authored-capability-grant` (Task 6 / Phase 4
+// PR-B): skillId 'authored-draft' → {applied:true}, otherwise
+// {applied:false, reason:'not-authored'}. Both handlers push into grantTrace.
 function grantMockPlugin(captures: GrantCapture[]): Plugin {
   return {
     manifest: {
       name: 'mock-grant',
       version: '0.0.0',
-      registers: ['agent:apply-capability-grant'],
+      registers: ['agent:apply-capability-grant', 'agent:apply-authored-capability-grant'],
       calls: [],
       subscribes: [],
     },
@@ -218,8 +226,21 @@ function grantMockPlugin(captures: GrantCapture[]): Plugin {
         'agent:apply-capability-grant',
         'mock-grant',
         async (ctx, input: unknown) => {
-          captures.push({ ctx, input: input as GrantCapture['input'] });
+          const i = input as GrantCapture['input'];
+          grantTrace.catalog.push(i.skillId);
+          captures.push({ ctx, input: i });
           return { attached: true };
+        },
+      );
+      bus.registerService(
+        'agent:apply-authored-capability-grant',
+        'mock-grant',
+        async (_c, input: unknown) => {
+          const i = input as { skillId: string };
+          grantTrace.authored.push(i.skillId);
+          return i.skillId === 'authored-draft'
+            ? { applied: true, respawned: false }
+            : { applied: false, reason: 'not-authored' };
         },
       );
     },
@@ -1156,6 +1177,36 @@ describe('@ax/channel-web POST /api/chat/permission-decision', () => {
     );
     expect(r.status).toBe(403);
     expect(booted.grantCaptures).toHaveLength(0);
+  });
+
+  it('routes an authored draft to agent:apply-authored-capability-grant', async () => {
+    grantTrace.authored.length = 0;
+    grantTrace.catalog.length = 0;
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+    const conversationId = await createConversation(booted.port);
+    const res = await postDecision(booted.port, { conversationId, skillId: 'authored-draft' });
+    expect(res.status).toBe(200);
+    expect(grantTrace.authored).toContain('authored-draft');
+    expect(grantTrace.catalog).not.toContain('authored-draft');
+  });
+
+  it('falls back to the catalog grant when the skill is not an authored draft', async () => {
+    grantTrace.authored.length = 0;
+    grantTrace.catalog.length = 0;
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+    const conversationId = await createConversation(booted.port);
+    const res = await postDecision(booted.port, { conversationId, skillId: 'catalog-skill' });
+    expect(res.status).toBe(200);
+    expect(grantTrace.authored).toContain('catalog-skill'); // tried authored first
+    expect(grantTrace.catalog).toContain('catalog-skill');  // then fell back
   });
 });
 

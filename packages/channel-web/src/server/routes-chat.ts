@@ -187,6 +187,20 @@ interface AgentInvokeInput {
   message: AgentMessage;
 }
 
+// --- agent:apply-authored-capability-grant (Phase 4 PR-B / Task 6) --------
+// Duck-typed I/O — I2 forbids importing from @ax/chat-orchestrator.
+// The route never trusts a client `authored` flag; the grant self-detects
+// authored-ness (D-B7) and returns not-authored for catalog skills.
+interface ApplyAuthoredGrantInput {
+  conversationId: string;
+  userId: string;
+  agentId: string;
+  skillId: string;
+}
+type ApplyAuthoredGrantOutput =
+  | { applied: true; respawned: boolean }
+  | { applied: false; reason: 'not-authored' };
+
 // --- attachments:commit (Phase 3) ----------------------------------------
 // Duck-typed payloads — I2 forbids importing `@ax/attachments` from here.
 // Drift surfaces as a test failure (the Phase-3 attachment-ref tests
@@ -625,6 +639,21 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         reqId: makeReqId(),
       });
       try {
+        // Authored-first (D-B7): the host-side grant is the authority on which
+        // path runs — the route never trusts a client `authored` flag. An
+        // authored draft applies here; a catalog skill returns not-authored and
+        // we fall through to the existing catalog grant.
+        if (bus.hasService('agent:apply-authored-capability-grant')) {
+          const a = await bus.call<ApplyAuthoredGrantInput, ApplyAuthoredGrantOutput>(
+            'agent:apply-authored-capability-grant',
+            grantCtx,
+            { conversationId: body.conversationId, userId, agentId, skillId: body.skillId },
+          );
+          if (a.applied) {
+            res.status(200).json({ ok: true });
+            return;
+          }
+        }
         const out = await bus.call<
           {
             conversationId: string;
