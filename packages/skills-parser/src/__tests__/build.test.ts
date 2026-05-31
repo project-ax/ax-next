@@ -151,4 +151,29 @@ describe('buildSkillManifestYaml', () => {
     });
     expect(yaml).not.toContain('capabilities');
   });
+
+  it('round-trips a non-empty connectors[] reference list', () => {
+    const yaml = buildSkillManifestYaml({
+      id: 'demo', description: 'd', version: 1,
+      capabilities: { allowedHosts: [], credentials: [], mcpServers: [],
+        packages: { npm: [], pypi: [] } },
+      connectors: ['salesforce', 'google-drive'],
+    });
+    const parsed = parseSkillManifest(yaml);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.value.connectors).toEqual(['salesforce', 'google-drive']);
+  });
+
+  it('omits connectors entirely when none are declared (absent ≡ [] on parse)', () => {
+    const yaml = buildSkillManifestYaml({
+      id: 'demo', description: 'd', version: 1,
+      capabilities: { allowedHosts: [], credentials: [], mcpServers: [],
+        packages: { npm: [], pypi: [] } },
+    });
+    expect(yaml).not.toContain('connectors');
+    const parsed = parseSkillManifest(yaml);
+    expect(parsed.ok).toBe(true);
+    if (parsed.ok) expect(parsed.value.connectors).toEqual([]);
+  });
 });

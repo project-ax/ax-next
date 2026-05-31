@@ -32,6 +32,7 @@ const GITHUB_SKILL: SkillSummary = {
     mcpServers: [],
     packages: { npm: [], pypi: [] },
   },
+  connectors: [],
   defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
 };
@@ -47,6 +48,7 @@ const SLACK_SKILL: SkillSummary = {
     mcpServers: [],
     packages: { npm: [], pypi: [] },
   },
+  connectors: [],
   defaultAttached: false,
   updatedAt: '2026-05-17T08:00:00.000Z',
 };
@@ -96,6 +98,7 @@ describe('SkillAttachmentsSection', () => {
           mcpServers: [],
           packages: { npm: [], pypi: [] },
         },
+        connectors: [],
         defaultAttached: false,
         updatedAt: new Date().toISOString(),
       },

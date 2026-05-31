@@ -8,13 +8,16 @@ import type { Capabilities } from './capabilities.js';
  * Only emits a `capabilities:` block when there is at least one host,
  * credential, MCP server, or package ecosystem — a no-capability skill has
  * no `capabilities:` key at all, which matches what the parser produces on
- * round-trip.
+ * round-trip. Likewise only emits a top-level `connectors:` list when the
+ * skill declares at least one connector reference (absent ≡ `[]` on parse).
  */
 export function buildSkillManifestYaml(input: {
   id: string;
   description: string;
   version: number;
   capabilities: Capabilities;
+  /** Soft-dependency connector-id reference list (defaults to none). */
+  connectors?: string[];
 }): string {
   const doc: Record<string, unknown> = {
     name: input.id,
@@ -41,6 +44,10 @@ export function buildSkillManifestYaml(input: {
             } }
         : {}),
     };
+  }
+  const connectors = input.connectors ?? [];
+  if (connectors.length > 0) {
+    doc.connectors = connectors;
   }
   return yamlDump(doc, { noRefs: true });
 }

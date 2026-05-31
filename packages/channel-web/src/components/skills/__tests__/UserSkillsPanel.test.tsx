@@ -66,6 +66,7 @@ const SKILL_A: SkillSummary = {
     mcpServers: [],
     packages: { npm: [], pypi: [] },
   },
+  connectors: [],
   defaultAttached: false,
   updatedAt: '2026-05-20T10:00:00.000Z',
 };
@@ -81,6 +82,7 @@ const SKILL_B: SkillSummary = {
     mcpServers: [],
     packages: { npm: [], pypi: [] },
   },
+  connectors: [],
   defaultAttached: true,
   updatedAt: '2026-05-20T09:00:00.000Z',
 };

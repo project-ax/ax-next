@@ -343,4 +343,77 @@ capabilities:
       { slot: 'LINEAR_API_KEY', kind: 'api-key' },
     ]);
   });
+
+  // ---- connectors[] soft-dependency reference list (TASK-92) --------------
+  describe('connectors[] reference list', () => {
+    it('defaults connectors to [] when absent (pre-connector skill loads unchanged)', () => {
+      const r = parseSkillManifest('name: x\ndescription: x desc');
+      expect(r.ok).toBe(true);
+      if (r.ok) expect(r.value.connectors).toEqual([]);
+    });
+
+    it('parses a non-empty connectors list, preserving order', () => {
+      const r = parseSkillManifest(
+        'name: x\ndescription: x\nconnectors:\n  - salesforce\n  - google-drive\n  - gitlab_ce',
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.connectors).toEqual(['salesforce', 'google-drive', 'gitlab_ce']);
+    });
+
+    it('parses connectors ALONGSIDE an authoritative capabilities block (additive — capabilities untouched)', () => {
+      const r = parseSkillManifest(
+        'name: x\ndescription: x\nconnectors:\n  - salesforce\ncapabilities:\n  allowedHosts:\n    - api.github.com\n  credentials:\n    - slot: GITHUB_TOKEN\n      kind: api-key',
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.connectors).toEqual(['salesforce']);
+      // capabilities stay authoritative — the connectors list does not touch them.
+      expect(r.value.capabilities.allowedHosts).toEqual(['api.github.com']);
+      expect(r.value.capabilities.credentials).toEqual([
+        { slot: 'GITHUB_TOKEN', kind: 'api-key' },
+      ]);
+    });
+
+    it('rejects connectors that is not an array', () => {
+      const r = parseSkillManifest('name: x\ndescription: x\nconnectors: salesforce');
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe('invalid-connector');
+    });
+
+    it('rejects a non-string connector entry', () => {
+      const r = parseSkillManifest('name: x\ndescription: x\nconnectors:\n  - 42');
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe('invalid-connector');
+    });
+
+    it('rejects a connector id not matching the slug grammar', () => {
+      for (const bad of ['Salesforce', '-leading', '_leading', 'has space', 'has/slash', 'has:colon']) {
+        const r = parseSkillManifest(`name: x\ndescription: x\nconnectors: [${JSON.stringify(bad)}]`);
+        expect(r.ok).toBe(false);
+        if (!r.ok) expect(r.code).toBe('invalid-connector');
+      }
+    });
+
+    it('rejects an over-long connector id (> 128 chars)', () => {
+      const r = parseSkillManifest(`name: x\ndescription: x\nconnectors: [${'a'.repeat(129)}]`);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe('invalid-connector');
+    });
+
+    it('rejects more than 64 connector ids (count DoS bound)', () => {
+      const many = Array.from({ length: 65 }, (_, i) => `c${i}`).join(', ');
+      const r = parseSkillManifest(`name: x\ndescription: x\nconnectors: [${many}]`);
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe('invalid-connector');
+    });
+
+    it('rejects connectors nested under capabilities: (it is a top-level field, not a capability)', () => {
+      const r = parseSkillManifest(
+        'name: x\ndescription: x\ncapabilities:\n  connectors:\n    - salesforce',
+      );
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.code).toBe('invalid-connector');
+    });
+  });
 });

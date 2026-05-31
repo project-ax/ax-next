@@ -42,6 +42,21 @@ export function parseCapabilities(
   return result.value.capabilities;
 }
 
+/**
+ * Derive the skill's connector-id reference list from its manifest YAML
+ * (connectors-first-class design, Phasing step 1). Same derived-from-manifest
+ * posture as {@link parseCapabilities}: the manifest YAML is the single source
+ * of truth, re-parsed on read — there is no stored `connectors` column.
+ * A corrupt manifest degrades to `[]` (logged once via parseCapabilities; we
+ * don't double-log here). Additive: a manifest with no `connectors:` parses to
+ * `[]`, so pre-connector skills surface an empty list unchanged.
+ */
+export function parseConnectors(manifestYaml: string): string[] {
+  const result = parseSkillManifest(manifestYaml);
+  if (!result.ok) return [];
+  return result.value.connectors;
+}
+
 // ---------------------------------------------------------------------------
 // Row shapes (minimal — only the columns both stores share)
 // ---------------------------------------------------------------------------
@@ -66,6 +81,7 @@ export function rowToGlobalSummary(row: BaseSkillRow): SkillSummary {
     description: row.description,
     version: row.version,
     capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
+    connectors: parseConnectors(row.manifest_yaml),
     defaultAttached: row.default_attached,
     ...(row.source_url !== null ? { sourceUrl: row.source_url } : {}),
     updatedAt: row.updated_at.toISOString(),
@@ -92,6 +108,7 @@ export function rowToGlobalResolved(
   return {
     id: row.skill_id,
     capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
+    connectors: parseConnectors(row.manifest_yaml),
     bodyMd: row.body_md,
     manifestYaml: row.manifest_yaml,
     files,
@@ -111,6 +128,7 @@ export function rowToUserSummary(
     description: row.description,
     version: row.version,
     capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
+    connectors: parseConnectors(row.manifest_yaml),
     defaultAttached: row.default_attached,
     ...(row.source_url !== null ? { sourceUrl: row.source_url } : {}),
     updatedAt: row.updated_at.toISOString(),
@@ -139,6 +157,7 @@ export function rowToUserResolved(
   return {
     id: row.skill_id,
     capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
+    connectors: parseConnectors(row.manifest_yaml),
     bodyMd: row.body_md,
     manifestYaml: row.manifest_yaml,
     files,
