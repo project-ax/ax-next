@@ -1724,3 +1724,63 @@ describe('@ax/skills skills:approved-caps-set FIX 3 (mcp rejection)', () => {
     expect(result).toEqual({ created: true });
   });
 });
+
+// ---------------------------------------------------------------------------
+// TASK-93 — approved-caps hooks accept a connector subject; exactly-one is
+// enforced; the skill-scoped path is unchanged (additive).
+// ---------------------------------------------------------------------------
+describe('@ax/skills approved-caps connector subject (TASK-93)', () => {
+  const owner = { ownerUserId: 'u1', agentId: 'a1' };
+
+  it('connector-scoped set → list → revoke round-trips through the bus', async () => {
+    const h = await makeHarness();
+    const subj = { ...owner, connectorId: 'salesforce' };
+    expect(await h.bus.call('skills:approved-caps-set', h.ctx(), { ...subj, kind: 'host', value: 'api.salesforce.com' })).toEqual({ created: true });
+    expect(await h.bus.call('skills:approved-caps-list', h.ctx(), subj)).toEqual({
+      capabilities: [{ kind: 'host', value: 'api.salesforce.com' }],
+    });
+    expect(await h.bus.call('skills:approved-caps-revoke', h.ctx(), { ...subj, kind: 'host', value: 'api.salesforce.com' })).toEqual({ cleared: true });
+    expect(await h.bus.call('skills:approved-caps-list', h.ctx(), subj)).toEqual({ capabilities: [] });
+  });
+
+  it('a skill grant and a connector grant with the same id stay disjoint', async () => {
+    const h = await makeHarness();
+    await h.bus.call('skills:approved-caps-set', h.ctx(), { ...owner, skillId: 'linear', kind: 'host', value: 'skill-host' });
+    await h.bus.call('skills:approved-caps-set', h.ctx(), { ...owner, connectorId: 'linear', kind: 'host', value: 'connector-host' });
+    expect(await h.bus.call('skills:approved-caps-list', h.ctx(), { ...owner, skillId: 'linear' })).toEqual({
+      capabilities: [{ kind: 'host', value: 'skill-host' }],
+    });
+    expect(await h.bus.call('skills:approved-caps-list', h.ctx(), { ...owner, connectorId: 'linear' })).toEqual({
+      capabilities: [{ kind: 'host', value: 'connector-host' }],
+    });
+  });
+
+  it('rejects a grant with BOTH skillId and connectorId', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call('skills:approved-caps-set', h.ctx(), { ...owner, skillId: 's', connectorId: 'c', kind: 'host', value: 'h' }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('rejects a grant with NEITHER skillId nor connectorId', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call('skills:approved-caps-set', h.ctx(), { ...owner, kind: 'host', value: 'h' }),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
+  });
+
+  it('list rejects when no subject is supplied', async () => {
+    const h = await makeHarness();
+    await expect(h.bus.call('skills:approved-caps-list', h.ctx(), owner)).rejects.toMatchObject({
+      code: 'invalid-payload',
+    });
+  });
+
+  it('skill-scoped path is unchanged (still works)', async () => {
+    const h = await makeHarness();
+    await h.bus.call('skills:approved-caps-set', h.ctx(), { ...owner, skillId: 'github', kind: 'npm', value: 'left-pad' });
+    expect(await h.bus.call('skills:approved-caps-list', h.ctx(), { ...owner, skillId: 'github' })).toEqual({
+      capabilities: [{ kind: 'npm', value: 'left-pad' }],
+    });
+  });
+});

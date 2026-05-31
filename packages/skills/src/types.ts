@@ -508,10 +508,18 @@ export const SkillsQuarantineListOutputSchema = z.object({
  * hook payload surface so consumers import it from @ax/skills. */
 export type { ApprovedCapEntry };
 
+// TASK-93 — the grant SUBJECT is exactly one of {skill, connector}. The same
+// wall now attributes an approved capability to a connector ref as well as a
+// skill ref (design §"reuse the existing approval wall"). Both fields are
+// optional on the wire; the registered handler enforces exactly-one (a
+// PluginError otherwise). Existing `{ skillId }` callers are unchanged.
 export interface SkillsApprovedCapsListInput {
   ownerUserId: string;
   agentId: string;
-  skillId: string;
+  /** Skill-scoped grant subject (mutually exclusive with `connectorId`). */
+  skillId?: string;
+  /** Connector-scoped grant subject (mutually exclusive with `skillId`). */
+  connectorId?: string;
 }
 export interface SkillsApprovedCapsListOutput {
   capabilities: ApprovedCapEntry[];
@@ -535,7 +543,10 @@ export const SkillsApprovedCapsListOutputSchema = z.object({
 export interface SkillsApprovedCapsSetInput {
   ownerUserId: string;
   agentId: string;
-  skillId: string;
+  /** Skill-scoped grant subject (mutually exclusive with `connectorId`). */
+  skillId?: string;
+  /** Connector-scoped grant subject (mutually exclusive with `skillId`). */
+  connectorId?: string;
   kind: 'host' | 'slot' | 'npm' | 'pypi' | 'mcp';
   value: string;
   /** Optional audit/display detail (slot kind + account). The projection
@@ -548,7 +559,10 @@ export interface SkillsApprovedCapsSetOutput {
 export interface SkillsApprovedCapsRevokeInput {
   ownerUserId: string;
   agentId: string;
-  skillId: string;
+  /** Skill-scoped grant subject (mutually exclusive with `connectorId`). */
+  skillId?: string;
+  /** Connector-scoped grant subject (mutually exclusive with `skillId`). */
+  connectorId?: string;
   kind: 'host' | 'slot' | 'npm' | 'pypi' | 'mcp';
   value: string;
 }
