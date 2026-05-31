@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach, afterEach } from 'vitest';
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest';
 import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -268,70 +268,98 @@ describe('Consolidator wiring (chat:end subscriber, I10)', () => {
   });
 
   it('consolidation timeout fires warn log and does not crash (I10 bounded)', async () => {
-    // We use a real workspace but seed a high-confidence inbox file AND a
-    // consolidatorTimeoutMs that is shorter than any real consolidation pass
-    // can complete (10 ms). The raceTimeout fires, plugin swallows the error
-    // and emits memory_strata_consolidator_failed — we capture that via a
-    // custom logger spy injected through makeAgentContext's logger override.
-    const warnEvents: string[] = [];
-    const customLogger = {
-      debug: () => {},
-      info: () => {},
-      warn: (msg: string) => { warnEvents.push(msg); },
-      error: () => {},
-      child: function () { return this; },
-    } as unknown as import('@ax/core').Logger;
+    // I10 invariant under test: when a consolidation pass exceeds
+    // `consolidatorTimeoutMs`, the plugin's `raceTimeout` wrapper rejects,
+    // the plugin SWALLOWS the error (no crash) and emits a
+    // `memory_strata_consolidator_failed` warn log.
+    //
+    // DETERMINISM (TASK-102, #146/TASK-5 flake class): the prior version of
+    // this test seeded a real inbox file with `consolidatorTimeoutMs: 1` and
+    // raced the REAL fs consolidation against a 1 ms deadline using a
+    // wall-clock `setTimeout(100)` sleep + a tight `Date.now() < 200`
+    // upper-bound. Under full-suite parallel load the event loop starves and
+    // those wall-clock windows breach, flaking on the push-to-main backstop.
+    //
+    // Instead we drive the timeout with FAKE TIMERS and a test-only
+    // consolidation override (per the repo's TASK-24 deterministic-timer
+    // pattern): the injected pass hangs on a timer we control, so the
+    // `raceTimeout(work, consolidatorTimeoutMs)` deadline ALWAYS wins by
+    // construction — no dependency on real wall-clock or fs speed.
+    vi.useFakeTimers();
+    try {
+      const warnEvents: string[] = [];
+      const customLogger = {
+        debug: () => {},
+        info: () => {},
+        warn: (msg: string) => { warnEvents.push(msg); },
+        error: () => {},
+        child: function () { return this; },
+      } as unknown as import('@ax/core').Logger;
 
-    const bus = new HookBus();
-    bus.registerService('agents:resolve', 'test-agents', async () => ({ agent: fakeAgent() }));
-    // Stub tool:register — required by plugin.init() for memory_search registration.
-    bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
-    bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'test-llm', async () => ({
-      text: '[]',
-      stopReason: 'end_turn',
-      usage: { inputTokens: 0, outputTokens: 0 },
-    }));
+      const bus = new HookBus();
+      bus.registerService('agents:resolve', 'test-agents', async () => ({ agent: fakeAgent() }));
+      // Stub tool:register — required by plugin.init() for memory_search registration.
+      bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
+      bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'test-llm', async () => ({
+        text: '[]',
+        stopReason: 'end_turn',
+        usage: { inputTokens: 0, outputTokens: 0 },
+      }));
 
-    let capturedDebouncer: Debouncer | undefined;
-    const plugin = createMemoryStrataPlugin({
-      consolidatorDebounceMs: 10,   // fire quickly
-      consolidatorTimeoutMs: 1,     // vanishingly small so timeout always fires first
-      testHooks: {
-        onDebouncerCreated(d) { capturedDebouncer = d; },
-      },
-    });
-    await plugin.init?.({ bus, config: {} });
+      const DEBOUNCE_MS = 10;
+      const TIMEOUT_MS = 50;
+      // The injected pass takes far longer than the timeout, so the deadline
+      // fires first — deterministically, because BOTH timers are fake.
+      const PASS_MS = 10_000;
 
-    // Seed a real inbox file so the Consolidator actually tries to do work.
-    await seedInboxObservation(workspaceRoot, 'obs-timeout-1');
+      let capturedDebouncer: Debouncer | undefined;
+      const plugin = createMemoryStrataPlugin({
+        consolidatorDebounceMs: DEBOUNCE_MS,
+        consolidatorTimeoutMs: TIMEOUT_MS,
+        testHooks: {
+          onDebouncerCreated(d) { capturedDebouncer = d; },
+          // A consolidation that never completes before the timeout. It would
+          // eventually "succeed", but the raceTimeout deadline fires first.
+          runConsolidation: () =>
+            new Promise((resolve) => {
+              setTimeout(
+                () => resolve({ promoted: 0, dupesMerged: 0, quarantined: 0, leftInInbox: 0, decayed: 0 }),
+                PASS_MS,
+              );
+            }),
+        },
+      });
+      await plugin.init?.({ bus, config: {} });
 
-    const ctxWithLogger = makeAgentContext({
-      sessionId: 'test-session',
-      agentId: 'test-agent',
-      userId: 'test-user',
-      workspace: { rootPath: workspaceRoot },
-      logger: customLogger,
-    });
+      const ctxWithLogger = makeAgentContext({
+        sessionId: 'test-session',
+        agentId: 'test-agent',
+        userId: 'test-user',
+        workspace: { rootPath: workspaceRoot },
+        logger: customLogger,
+      });
 
-    const outcome: AgentOutcome = {
-      kind: 'complete',
-      messages: [{ role: 'user', content: 'test' }, { role: 'assistant', content: 'ok' }],
-    };
+      const outcome: AgentOutcome = {
+        kind: 'complete',
+        messages: [{ role: 'user', content: 'test' }, { role: 'assistant', content: 'ok' }],
+      };
 
-    await bus.fire('chat:end', ctxWithLogger, { outcome });
+      await bus.fire('chat:end', ctxWithLogger, { outcome });
 
-    // Wait longer than debounce + timeout window so the Consolidator fires + times out.
-    await new Promise((r) => setTimeout(r, 100));
+      // Force-fire the debounce timer immediately (flush bypasses the window),
+      // which kicks off the consolidation pass + arms the raceTimeout deadline.
+      const flushed = capturedDebouncer!.flush();
+      // Advance fake time past the timeout deadline (but NOT past PASS_MS), so
+      // the raceTimeout rejects deterministically and the warn log fires.
+      await vi.advanceTimersByTimeAsync(TIMEOUT_MS + 1);
+      await flushed;
 
-    // Flush via test seam — should complete quickly (nothing left in-flight after
-    // the timeout already fired). Plugin.shutdown is resource-release only per
-    // @ax/core contract and cannot be used to drain in-flight passes.
-    const t0 = Date.now();
-    await capturedDebouncer!.flush();
-    expect(Date.now() - t0).toBeLessThan(200);
-
-    // The warn log for the consolidator failure must have been emitted.
-    expect(warnEvents.some((e) => e.includes('memory_strata_consolidator_failed'))).toBe(true);
+      // The plugin must have caught the TimeoutError and emitted the warn log
+      // (and NOT crashed — reaching this assertion proves no throw escaped).
+      expect(warnEvents.some((e) => e.includes('memory_strata_consolidator_failed'))).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('serializes consolidator passes per-agent — pass 2 waits for pass 1 fs work to settle before starting (C4)', async () => {
