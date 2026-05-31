@@ -94,22 +94,33 @@ async function bootStack(): Promise<BootedStack> {
       'skills:resolve': async (
         _ctx: unknown,
         input: { skillIds: string[] },
-      ) => ({
-        skills: input.skillIds
-          .filter((id) => id === 'github' || id === 'openai')
-          .map((id) => ({
-            id,
-            capabilities: {
-              allowedHosts: [id === 'github' ? 'api.github.com' : 'api.openai.com'],
-              credentials:
-                id === 'github'
-                  ? [{ slot: 'GITHUB_TOKEN', kind: 'api-key' as const }]
-                  : [{ slot: 'OPENAI_API_KEY', kind: 'api-key' as const }],
-            },
-            bodyMd: 'body',
-            manifestYaml: 'name: x\n',
-          })),
-      }),
+      ) => {
+        // Known skills: 'github'/'openai' have disjoint slots; 'linear-a' and
+        // 'linear-b' BOTH declare LINEAR_API_KEY (the shared-slot coexistence
+        // case TASK-86 namespaces per-skill at runtime).
+        const slotBySkill: Record<string, { slot: string; host: string }> = {
+          github: { slot: 'GITHUB_TOKEN', host: 'api.github.com' },
+          openai: { slot: 'OPENAI_API_KEY', host: 'api.openai.com' },
+          'linear-a': { slot: 'LINEAR_API_KEY', host: 'api.linear.app' },
+          'linear-b': { slot: 'LINEAR_API_KEY', host: 'api.linear.app' },
+        };
+        return {
+          skills: input.skillIds
+            .filter((id) => id in slotBySkill)
+            .map((id) => {
+              const { slot, host } = slotBySkill[id]!;
+              return {
+                id,
+                capabilities: {
+                  allowedHosts: [host],
+                  credentials: [{ slot, kind: 'api-key' as const }],
+                },
+                bodyMd: 'body',
+                manifestYaml: 'name: x\n',
+              };
+            }),
+        };
+      },
       'credentials:envelope-encrypt': async (_ctx, input) => ({
         ciphertext: Buffer.from((input as { plaintext: string }).plaintext, 'utf8'),
       }),
@@ -634,22 +645,40 @@ describe('@ax/agents admin routes', () => {
     expect((r.body as { code: string }).code).toBe('skill-not-found');
   });
 
-  it('PATCH /admin/agents/:id/skill-attachments with slot collision → 400 slot-collision', async () => {
+  it('PATCH /admin/agents/:id/skill-attachments — two skills sharing a slot name coexist → 200 (TASK-87)', async () => {
+    // TASK-86 namespaces credential slots per-skill (`skill:<id>:<slot>`) at
+    // runtime, so attaching two skills that both declare LINEAR_API_KEY is NOT a
+    // collision. The admin agent-global attach gate must accept it (TASK-87).
     const cookie = await signIn(stack);
     const created = await http(stack.port, 'POST', '/admin/agents', {
       cookie,
       body: makeBody(),
     });
     const id = (created.body as { agent: SerializedAgent }).agent.id;
-    // Both 'github' and a hypothetical second skill claim the same slot.
-    // Since our test stub only knows 'github' and 'openai' with disjoint slots,
-    // simulate collision by attaching 'github' twice (duplicated skillId).
-    // The validator sees duplicate slot from the second github reference.
-    // Instead, we directly test what happens with an explicitly constructed
-    // payload that would fail the slot-collision path — but our stub only has
-    // two skills with different slots. Skip that path in HTTP layer tests;
-    // it's fully covered in skill-attachments-validation.test.ts.
-    // We test via the zod max(20) limit as a simpler 400 boundary.
+    const r = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/skill-attachments`,
+      {
+        cookie,
+        body: {
+          skillAttachments: [
+            { skillId: 'linear-a', credentialBindings: { LINEAR_API_KEY: 'ref-a' } },
+            { skillId: 'linear-b', credentialBindings: { LINEAR_API_KEY: 'ref-b' } },
+          ],
+        },
+      },
+    );
+    expect(r.status).toBe(200);
+  });
+
+  it('PATCH /admin/agents/:id/skill-attachments over the zod max(20) limit → 400', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
     const overLimit = Array.from({ length: 21 }, (_, i) => ({
       skillId: 'github',
       credentialBindings: { GITHUB_TOKEN: `ref-${i}` },

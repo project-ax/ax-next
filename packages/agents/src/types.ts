@@ -18,7 +18,8 @@ import type { SkillCapabilities } from '@ax/skills-parser';
  *
  * Written exclusively via PATCH /admin/agents/:id/skill-attachments — never
  * via agents:create or agents:update. Validated at attach-time by
- * validateNewAttachments (slot-collision detection, missing/orphan bindings).
+ * validateNewAttachments (missing/orphan bindings + malformed-slot rejection;
+ * two skills sharing a slot name coexist via per-skill credential namespacing).
  */
 export interface SkillAttachment {
   skillId: string;
