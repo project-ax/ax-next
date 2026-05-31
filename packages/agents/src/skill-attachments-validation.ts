@@ -9,9 +9,30 @@
  *   - skill-not-found:   attachment references a skillId not in resolvedSkills
  *   - binding-orphan:    attachment binds a slot the skill doesn't declare
  *   - binding-missing:   attachment is missing a binding for a declared slot
- *   - slot-collision:    two attachments (or an attachment + agent reserved
- *                        slots) claim the same credential slot
+ *   - invalid-slot:      a declared slot id is malformed (not SCREAMING_SNAKE) —
+ *                        re-checked here against the manifest parser's contract as
+ *                        a defense-in-depth drift guard (slot values are untrusted:
+ *                        a skill manifest may be model-authored)
+ *
+ * NO cross-skill `slot-collision` check (TASK-87). TASK-86 namespaces credential
+ * slots PER-SKILL (`skill:<id>:<slot>`) in the orchestrator's host-side credential
+ * map, so two attachments declaring the same bare slot name resolve to two DISTINCT
+ * keys → two distinct `ax-cred:<hex>` placeholders → no runtime collision. A skill
+ * slot shadowing a TRUSTED/agent-reserved bare name is likewise not a fatal
+ * collision: the trusted bare name always wins the flat sandbox env stamp
+ * (`projectEnvMapToBareNames`) — a benign no-op suppression, not the old
+ * `skill-slot-collision` lockout. Rejecting either at admin-attach time would be a
+ * false negative, stricter than runtime. This mirrors the per-user validator
+ * (`@ax/skills` attachment-validation.ts), which dropped its collision check in
+ * TASK-86 for the same reason.
  */
+
+// A valid credential slot id: SCREAMING_SNAKE_CASE, starts with A-Z. This is the
+// manifest parser's contract (`@ax/skills-parser` manifest.ts SLOT_RE), re-checked
+// here so a drifted upstream (or an untrusted, possibly model-authored skill shape)
+// can't smuggle a malformed slot id into the per-skill credential namespace
+// (`skill:<id>:<garbage>`). Kept structurally in sync, not imported (invariant #2).
+const SLOT_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 
 // Types are structurally inlined rather than imported from @ax/skills to avoid
 // a cross-plugin runtime import (Invariant I2). The shapes must stay in sync;
@@ -41,7 +62,7 @@ export type ValidationResult =
   | { ok: true; validated: NewAttachmentInput[] }
   | {
       ok: false;
-      code: 'skill-not-found' | 'binding-missing' | 'binding-orphan' | 'slot-collision';
+      code: 'skill-not-found' | 'binding-missing' | 'binding-orphan' | 'invalid-slot';
       message: string;
     };
 
@@ -50,22 +71,24 @@ export type ValidationResult =
  *
  * @param attachments         - The incoming attachments array from the PATCH body.
  * @param resolvedSkills      - Skills resolved from skills:resolve for the referenced skillIds.
- * @param agentRequiredCredentialSlots - Slot names the agent itself already claims
- *                              (forward-compat for Phase 1.5 when orchestrator plumbs
- *                              requiredCredentials through the agent shape). Pass [] for now.
+ * @param agentRequiredCredentialSlots - Slot names the agent itself already claims.
+ *                              Forward-compat seam for Phase 1.5 (when the orchestrator
+ *                              plumbs requiredCredentials through the agent shape);
+ *                              pass [] for now. NO LONGER used to reject a colliding
+ *                              skill slot (TASK-87): a skill slot shadowing a trusted
+ *                              bare name is a benign no-op suppression at runtime
+ *                              (the trusted name wins the env stamp), not a fatal
+ *                              collision. Kept as a documented seam — wired through the
+ *                              admin route's `reservedAgentSlots` + its
+ *                              `TODO(orchestrator-grows-requiredCredentials)`.
  */
 export function validateNewAttachments(
   attachments: NewAttachmentInput[],
   resolvedSkills: ResolvedSkillShape[],
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- forward-compat seam; see jsdoc + TASK-87 decision.
   agentRequiredCredentialSlots: readonly string[],
 ): ValidationResult {
   const skillById = new Map(resolvedSkills.map((s) => [s.id, s]));
-
-  // Seed slot ownership with the agent's reserved credential slots.
-  const slotOwners = new Map<string, string>();
-  for (const slot of agentRequiredCredentialSlots) {
-    slotOwners.set(slot, '<agent.requiredCredentials>');
-  }
 
   for (const attachment of attachments) {
     const skill = skillById.get(attachment.skillId);
@@ -75,6 +98,21 @@ export function validateNewAttachments(
         code: 'skill-not-found',
         message: `skill '${attachment.skillId}' is not installed`,
       };
+    }
+
+    // invalid-slot: a declared slot id must be SCREAMING_SNAKE (the manifest
+    // parser's contract). Re-checked here as a defense-in-depth drift guard — a
+    // malformed slot must never flow into the per-skill credential namespace
+    // (`skill:<id>:<garbage>`). Slot values are untrusted (a skill manifest may be
+    // model-authored), so this is enforced before any binding check.
+    for (const declared of skill.capabilities.credentials) {
+      if (!SLOT_RE.test(declared.slot)) {
+        return {
+          ok: false,
+          code: 'invalid-slot',
+          message: `attachment for skill '${skill.id}' declares malformed credential slot '${declared.slot}' (must match /^[A-Z][A-Z0-9_]{0,63}$/)`,
+        };
+      }
     }
 
     const declaredSlots = new Set(skill.capabilities.credentials.map((c) => c.slot));
@@ -101,18 +139,9 @@ export function validateNewAttachments(
       }
     }
 
-    // slot-collision: this skill claims a slot some other owner already has
-    for (const declared of skill.capabilities.credentials) {
-      if (slotOwners.has(declared.slot)) {
-        const other = slotOwners.get(declared.slot)!;
-        return {
-          ok: false,
-          code: 'slot-collision',
-          message: `slot '${declared.slot}' on skill '${skill.id}' collides with existing owner '${other}'`,
-        };
-      }
-      slotOwners.set(declared.slot, skill.id);
-    }
+    // NO slot-collision check (TASK-87) — two skills (or a skill + a trusted
+    // reserved slot) sharing a bare slot name coexist: TASK-86 namespaces them
+    // per-skill at runtime, and a trusted bare name always wins the env stamp.
   }
 
   return { ok: true, validated: attachments };
