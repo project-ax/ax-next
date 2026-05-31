@@ -88,18 +88,35 @@ export const DEFAULT_TURN_ERROR =
 export const CONNECTION_LOST = 'Connection lost. Retry to continue.';
 
 /**
- * SSE-open retry policy (TASK-84). The browser opens GET /api/chat/stream/:reqId
- * microseconds after the POST's 202. On a cold-respawn gated turn the per-reqId
- * binding / host route can lag that GET by a beat, so the FIRST open 404s and —
- * before this — the user had to retry by hand. The GET is idempotent (it only
- * REPLAYS a bounded per-reqId buffer; it never starts or duplicates a turn —
- * that's POST's job), so re-opening it is safe, unlike a regenerate() re-POST.
- * We retry a SMALL number of times with short backoff on TRANSIENT open
- * failures only; a real client error (401/403/400/413) is not a boot race and
- * throws on the first attempt.
+ * SSE-open retry policy (TASK-84, budget extended in TASK-88). The browser opens
+ * GET /api/chat/stream/:reqId microseconds after the POST's 202. On a cold-respawn
+ * gated turn the per-reqId binding / host route can lag that GET — the early-bind
+ * is best-effort, so when it doesn't hold the binding only lands AFTER the
+ * orchestrator's `sandbox:open-session`, which is SECONDS later for a fresh
+ * runner pod. The GET is idempotent (it only REPLAYS a bounded per-reqId buffer;
+ * it never starts or duplicates a turn — that's POST's job), so re-opening it is
+ * safe to retry far longer than the cold-boot window, unlike a regenerate()
+ * re-POST.
+ *
+ * TASK-84 shipped a fixed 4-attempt / [150,400,900]ms budget (~1.45s total) —
+ * too small for a genuine cold pod spawn, so the user still saw the manual
+ * CONNECTION_LOST banner on cold/gated turns. TASK-88 replaces it with a
+ * wall-clock budget (~30s) of capped exponential backoff (250ms doubling, capped
+ * at 2s): plenty for a cold spawn, while still bounded so a turn that died before
+ * ANY bind (the GET can never open) eventually surfaces the banner. We retry only
+ * on TRANSIENT open failures; a real client error (401/403/400/413) is not a boot
+ * race and throws on the first attempt.
  */
-const SSE_OPEN_MAX_ATTEMPTS = 4;
-const SSE_OPEN_BACKOFF_MS = [150, 400, 900];
+/** Base backoff before the first retry; doubles each attempt, capped below. */
+const SSE_OPEN_BACKOFF_BASE_MS = 250;
+/** Per-wait ceiling so the backoff doesn't balloon past a couple seconds. */
+const SSE_OPEN_BACKOFF_CAP_MS = 2_000;
+/**
+ * Total wall-clock budget for the whole open-retry loop. Sized for a cold runner
+ * pod spawn + per-reqId bind (seconds), with margin; once it's spent we throw →
+ * the existing CONNECTION_LOST banner for the genuine terminal case.
+ */
+const SSE_OPEN_TOTAL_BUDGET_MS = 30_000;
 /** HTTP statuses that signal "not ready yet / try again", not "you're wrong". */
 const SSE_OPEN_RETRYABLE_STATUS = new Set([404, 425, 429, 502, 503, 504]);
 
@@ -406,20 +423,58 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
 
   /**
    * Open GET /api/chat/stream/:reqId, retrying on a transient open failure with
-   * bounded backoff (TASK-84). Returns the SSE response body on success; throws
-   * once the attempt budget is spent OR on a non-retryable status. Retrying the
-   * GET is safe because it only replays the server's bounded per-reqId buffer —
-   * it never starts a turn (only POST does). Honors abortSignal: an abort during
-   * a fetch or a backoff wait stops the loop immediately.
+   * capped exponential backoff under a wall-clock budget (TASK-84 / TASK-88).
+   * Returns the SSE response body on success; throws once the time budget is
+   * spent OR on a non-retryable status. Retrying the GET is safe because it only
+   * replays the server's bounded per-reqId buffer — it never starts a turn (only
+   * POST does). Honors abortSignal: an abort during a fetch or a backoff wait
+   * stops the loop immediately.
+   *
+   * While we're committed to waiting out a (possibly multi-second) cold boot, we
+   * surface the "Starting sandbox…" status so the wait isn't a silent hang. We
+   * set it lazily — only after the first retryable failure, so the happy-path
+   * first-open success never flashes it. The label transitions naturally once the
+   * stream opens (the phase/content handlers overwrite it) or on the terminal
+   * throw (the runtime's onError swaps to the CONNECTION_LOST banner).
    */
   private async openSseStream(
     reqId: string,
     abortSignal: AbortSignal | undefined,
   ): Promise<ReadableStream<Uint8Array>> {
     const url = `${this.streamApi}/${encodeURIComponent(reqId)}`;
+    const deadline = Date.now() + SSE_OPEN_TOTAL_BUDGET_MS;
     let lastStatus = 0;
     let lastStatusText = '';
-    for (let attempt = 0; attempt < SSE_OPEN_MAX_ATTEMPTS; attempt += 1) {
+    let statusShown = false;
+    // True once we break out of the loop on a NON-retryable status (401/403/etc.)
+    // — a real client error, surfaced verbatim. A break on a spent budget leaves
+    // this false: that's the genuine terminal cold-boot case, which falls back to
+    // the user-facing CONNECTION_LOST banner instead of a raw status string.
+    let failFast = false;
+    // Backoff before the NEXT retry: capped exponential growth from BASE.
+    let backoffMs = SSE_OPEN_BACKOFF_BASE_MS;
+
+    /**
+     * After a retryable failure, wait `backoffMs` (clamped so we never overshoot
+     * the deadline) and grow the backoff for next time, surfacing the cold-boot
+     * status on the way. Returns false when the budget is spent (caller throws).
+     */
+    const waitForRetry = async (): Promise<boolean> => {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      if (!statusShown) {
+        // Lazily reveal the cold-boot label now that we're actually waiting.
+        const label = PHASE_LABELS['sandbox-starting'];
+        if (label !== undefined) agentStatusActions.show(label);
+        statusShown = true;
+      }
+      const ms = Math.min(backoffMs, remaining);
+      await this.sseBackoffWait(ms, abortSignal);
+      backoffMs = Math.min(backoffMs * 2, SSE_OPEN_BACKOFF_CAP_MS);
+      return true;
+    };
+
+    for (;;) {
       if (abortSignal?.aborted) {
         throw new DOMException('Aborted', 'AbortError');
       }
@@ -441,10 +496,7 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
         if (abortSignal?.aborted) throw err;
         lastStatus = 0;
         lastStatusText = err instanceof Error ? err.message : 'network error';
-        if (attempt < SSE_OPEN_MAX_ATTEMPTS - 1) {
-          await this.sseBackoffWait(attempt, abortSignal);
-          continue;
-        }
+        if (await waitForRetry()) continue;
         break;
       }
 
@@ -456,28 +508,32 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
       // A non-retryable status (e.g. 401/403/400/413) is a real error, not a
       // boot race — fail fast without burning the budget.
       if (!SSE_OPEN_RETRYABLE_STATUS.has(resp.status)) {
+        failFast = true;
         break;
       }
-      if (attempt < SSE_OPEN_MAX_ATTEMPTS - 1) {
-        await this.sseBackoffWait(attempt, abortSignal);
-      }
+      if (await waitForRetry()) continue;
+      break;
+    }
+    // Budget spent on a retryable failure → the genuine terminal cold-boot case
+    // (the turn died before ANY bind, so the GET can never open). Surface the
+    // user-facing CONNECTION_LOST banner — same wording + manual-retry affordance
+    // as a mid-turn drop — rather than a raw status string. A fail-fast client
+    // error keeps its verbatim message (it's a real bug, not a connection loss).
+    if (!failFast) {
+      throw new Error(CONNECTION_LOST);
     }
     throw new Error(`chat-flow SSE open failed: ${lastStatus} ${lastStatusText}`);
   }
 
   /**
-   * Sleep for the configured backoff for `attempt`, resolving early (and
-   * leaving the abort to be observed by the next loop guard) if the signal
-   * fires. Pure timer wait — no fetch — so an abort never leaks a pending
-   * connection.
+   * Sleep for `ms`, resolving early (and leaving the abort to be observed by the
+   * next loop guard) if the signal fires. Pure timer wait — no fetch — so an
+   * abort never leaks a pending connection.
    */
   private sseBackoffWait(
-    attempt: number,
+    ms: number,
     abortSignal: AbortSignal | undefined,
   ): Promise<void> {
-    const ms =
-      SSE_OPEN_BACKOFF_MS[attempt] ??
-      SSE_OPEN_BACKOFF_MS[SSE_OPEN_BACKOFF_MS.length - 1]!;
     return new Promise<void>((resolve) => {
       if (abortSignal?.aborted) {
         resolve();

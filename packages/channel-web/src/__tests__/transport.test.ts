@@ -889,14 +889,16 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     ).rejects.toThrow(/chat-flow POST failed/);
   });
 
-  // TASK-84 — the cold-respawn SSE-open race. The browser opens GET
+  // TASK-84 / TASK-88 — the cold-respawn SSE-open race. The browser opens GET
   // /api/chat/stream/:reqId microseconds after the POST's 202. On a gated turn
   // the runner pod is cold-spawned and the per-reqId binding / host route can
-  // lag that GET, so the FIRST open 404s. Before the fix, the transport threw on
+  // lag that GET, so the FIRST open 404s. Before TASK-84, the transport threw on
   // that first 404 and the user had to retry by hand (TASK-82 made the approval
   // card durable but the 404 itself persisted). The GET is idempotent — it only
   // replays a bounded per-reqId buffer; only POST starts a turn — so we retry it
-  // with bounded backoff.
+  // with backoff. TASK-84's ~1.45s budget was too small for a genuine cold pod
+  // spawn (seconds), so TASK-88 extends it to a ~30s wall-clock budget with
+  // capped exponential backoff — recovering automatically, no manual Retry.
   test('retries SSE open on a transient 404 (cold-respawn race) then succeeds', async () => {
     vi.useFakeTimers();
     try {
@@ -936,9 +938,104 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     }
   });
 
-  test('throws after the retry budget is exhausted on a persistent SSE 404', async () => {
+  // TASK-88 — a 404 that CLEARS after ~10s (well beyond TASK-84's old ~1.45s
+  // budget) must now recover automatically: the extended ~30s budget keeps
+  // re-opening the idempotent GET until the cold pod binds, then streams the
+  // turn — NO throw, NO manual banner.
+  test('recovers from a ~10s persistent SSE 404 (cold pod spawn) without throwing', async () => {
     vi.useFakeTimers();
     try {
+      // Wall-clock anchor: the transport budgets on Date.now() deltas, so the
+      // mocked timer clock must advance with the fake timers.
+      vi.setSystemTime(0);
+      let sseOpens = 0;
+      const fetchFn = vi.fn(async (url: RequestInfo | URL) => {
+        const u = String(url);
+        if (u.includes('/api/chat/messages')) {
+          return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'r1' }), {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        sseOpens += 1;
+        // 404 until ~10s of wall-clock has elapsed, then bind succeeds.
+        if (Date.now() < 10_000) {
+          return new Response('not-found', { status: 404 });
+        }
+        return new Response(sseStream(`data: {"reqId":"r1","done":true}\n\n`), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }) as unknown as typeof fetch;
+
+      const transport = new AxChatTransport({ fetch: fetchFn, getAgentId: () => 'a' });
+      const streamPromise = transport.sendMessages({
+        messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+      } as unknown as Parameters<typeof transport.sendMessages>[0]);
+      // Drive ~12s of fake time so the retry loop spans the cold-boot window.
+      await vi.advanceTimersByTimeAsync(12_000);
+      const stream = await streamPromise;
+      const chunks = (await drain(stream)) as Array<{ type: string }>;
+      // The turn streamed to completion — no CONNECTION_LOST banner.
+      expect(chunks.map((c) => c.type)).toEqual(['finish']);
+      // It took MANY more opens than TASK-84's old 4-attempt budget allowed.
+      expect(sseOpens).toBeGreaterThan(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // TASK-88 — while the open-retry loop waits out a cold boot, the status row
+  // must show "Starting sandbox…" (PHASE_LABELS['sandbox-starting']) so a
+  // multi-second wait is not a silent hang.
+  test('shows "Starting sandbox…" status while retrying the SSE open', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
+      agentStatusActions.reset();
+      let sseOpens = 0;
+      const fetchFn = vi.fn(async (url: RequestInfo | URL) => {
+        const u = String(url);
+        if (u.includes('/api/chat/messages')) {
+          return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'r1' }), {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        sseOpens += 1;
+        return new Response('not-found', { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const transport = new AxChatTransport({ fetch: fetchFn, getAgentId: () => 'a' });
+      const p = transport.sendMessages({
+        messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+      } as unknown as Parameters<typeof transport.sendMessages>[0]);
+      // A spent budget on a retryable (404) failure surfaces the user-facing
+      // CONNECTION_LOST banner, not a raw status string.
+      const settled = expect(p).rejects.toThrow(CONNECTION_LOST);
+      // Let the first 404 land and the retry loop enter its first backoff wait.
+      await vi.advanceTimersByTimeAsync(300);
+      // The loop has retried at least once (so it IS waiting), and the cold-boot
+      // status is surfaced rather than hanging silently.
+      expect(sseOpens).toBeGreaterThanOrEqual(1);
+      expect(getAgentStatusSnapshot().text).toBe('Starting sandbox…');
+      // Drain the remaining budget so the promise rejects (no dangling timer).
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settled;
+      agentStatusActions.reset();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // TASK-88 — once the ~30s budget is spent on a persistent retryable (404)
+  // failure, the GET can never open (the turn died before any bind), so we fall
+  // back to the existing user-facing CONNECTION_LOST banner — same wording +
+  // manual-retry affordance as a mid-turn drop — rather than a raw status string.
+  test('falls back to CONNECTION_LOST after the retry budget is exhausted on a persistent SSE 404', async () => {
+    vi.useFakeTimers();
+    try {
+      vi.setSystemTime(0);
       let sseOpens = 0;
       const fetchFn = vi.fn(async (url: RequestInfo | URL) => {
         const u = String(url);
@@ -959,11 +1056,12 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
       // Attach the rejection handler BEFORE advancing timers so an early
       // rejection isn't an unhandled rejection; advance well past the total
       // backoff budget to drive every retry.
-      const settled = expect(p).rejects.toThrow(/SSE open failed/);
+      const settled = expect(p).rejects.toThrow(CONNECTION_LOST);
       await vi.advanceTimersByTimeAsync(60_000);
       await settled;
-      // SSE_OPEN_MAX_ATTEMPTS opens, all 404.
-      expect(sseOpens).toBe(4);
+      // TASK-88 extended the budget from TASK-84's fixed 4 attempts to a
+      // ~30s wall-clock budget, so it now tries MANY more times before giving up.
+      expect(sseOpens).toBeGreaterThan(4);
     } finally {
       vi.useRealTimers();
     }
