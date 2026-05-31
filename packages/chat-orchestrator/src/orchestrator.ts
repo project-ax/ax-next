@@ -8,6 +8,10 @@ import { PluginError, type AgentContext, type AgentMessage, type AgentOutcome, t
 import type { AgentConfig, ProxyConfig } from '@ax/sandbox-protocol';
 import { foldAuthoredSkillCaps } from './authored-egress.js';
 import { buildAuthoredCardPayload, authoredCardDedupKey, hasShownDelta } from './authored-card.js';
+import {
+  skillCredentialEnvName,
+  projectEnvMapToBareNames,
+} from './credential-namespace.js';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -491,7 +495,15 @@ interface InstalledSkillForSandbox {
    * SKILL.md YAML at the runner's trust boundary.
    */
   allowedHosts: string[];
-  credentials: Array<{ slot: string; kind: 'api-key' }>;
+  /**
+   * TASK-86 — `slot` is the BARE env-var name the skill reads (e.g.
+   * `LINEAR_API_KEY`); `placeholder` is the skill's OWN resolved
+   * `ax-cred:<hex>` token, threaded so git HTTP-Basic wiring uses the skill's
+   * own credential even when another skill won the flat-env stamp for the same
+   * bare name. Optional + back-compat: when absent, git wiring falls back to
+   * `envMap[slot]` (the pre-TASK-86 path).
+   */
+  credentials: Array<{ slot: string; kind: 'api-key'; placeholder?: string | undefined }>;
 }
 
 interface OpenSessionInput {
@@ -709,6 +721,16 @@ export function createOrchestrator(
   // post-approve spawn re-evaluates the smaller delta. In-memory, single-replica
   // (same posture as wallCardsByHost / respawnSessions).
   const upfrontCardsByConv = new Map<string, Set<string>>();
+  // TASK-86 — the conversation that PROPOSED each still-pending authored skill.
+  // A pending cap-skill's upfront "Connect …" card used to fire in EVERY
+  // conversation (the projection resolves the user's pending skills on every
+  // turn, regardless of conversation), so a single pending skill papered its card
+  // across unrelated chats. We only fire a PENDING skill's card in the
+  // conversation it was proposed in. Set in the skills:proposed subscriber (which
+  // carries ctx.conversationId); evicted on approve / conversation-delete.
+  // ACTIVE skills and catalog skills are unaffected. In-memory, single-replica
+  // (same posture as upfrontCardsByConv / respawnSessions).
+  const pendingSkillConversation = new Map<string, string>(); // skillId → conversationId
   function registerWaiter(
     sessionId: string,
     reqId: string,
@@ -898,11 +920,19 @@ export function createOrchestrator(
   // re-spawn is cheaper than special-casing.
   async function onSkillsProposed(
     ctx: AgentContext,
-    _event: SkillsProposedLike,
+    event: SkillsProposedLike,
   ): Promise<void> {
     const sid = ctx.sessionId;
     if (sid !== undefined && sid.length > 0 && sid !== 'ipc-server') {
       respawnSessions.add(sid);
+    }
+    // TASK-86 — remember which conversation proposed a PENDING cap-skill so its
+    // upfront "Connect …" card only fires there (not across every chat). An
+    // `active` (free-path) skill needs no card; a `quarantined` one never
+    // projects. Best-effort: needs a conversationId to scope against.
+    const convId = ctx.conversationId;
+    if (event.status === 'pending' && convId !== undefined && convId.length > 0) {
+      pendingSkillConversation.set(event.skillId, convId);
     }
   }
 
@@ -1496,10 +1526,23 @@ export function createOrchestrator(
       ? { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } }
       : { ...(agent.requiredCredentials ?? {}) };
 
-    // Track slot ownership so the collision error can name the culprit.
+    // TASK-86 — the bare env-var names a TRUSTED source owns (agent defaults).
+    // These ALWAYS win the sandbox flat-env stamp; a skill can never overwrite
+    // them. Skill slots are namespaced (`skill:<id>:<slot>`) so they coexist in
+    // the host-side credential map instead of fatally colliding.
+    const trustedBareNames = new Set<string>(Object.keys(baseCreds));
+
+    // Track slot ownership (now keyed by the NAMESPACED env name for skill slots,
+    // the bare name for trusted base creds) — purely diagnostic / idempotence.
     const slotOwners = new Map<string, string>(
-      Object.keys(baseCreds).map((slot) => [slot, '<agent.requiredCredentials>']),
+      [...trustedBareNames].map((slot) => [slot, '<agent.requiredCredentials>']),
     );
+
+    // TASK-86 — ordered (highest precedence first) skill-slot descriptors driving
+    // the namespaced→bare env projection. `attachments` is already in per-user >
+    // agent-global precedence order; authored drafts (folded below) append after,
+    // so the FIRST writer of a shared bare name wins the flat-env stamp.
+    const skillSlotEnvNames: Array<{ envName: string; bareSlot: string }> = [];
 
     for (const attachment of attachments) {
       const skill = skillById.get(attachment.skillId);
@@ -1521,23 +1564,17 @@ export function createOrchestrator(
           await bus.fire('chat:end', ctx, { outcome });
           return outcome;
         }
-        if (slotOwners.has(slotDef.slot)) {
-          const existing = slotOwners.get(slotDef.slot)!;
-          const outcome: AgentOutcome = {
-            kind: 'terminated',
-            reason: 'skill-slot-collision',
-            error: new Error(
-              `slot '${slotDef.slot}' on skill '${skill.id}' collides with existing owner '${existing}'`,
-            ),
-          };
-          // TASK-22 — pre-waiter early-return: surface on the SSE so the client
-          // doesn't hang (coarse `reason` only; see note above).
-          await fireTurnError(ctx, ctx.reqId, outcome.reason);
-          await bus.fire('chat:end', ctx, { outcome });
-          return outcome;
-        }
-        baseCreds[slotDef.slot] = { ref, kind: slotDef.kind };
-        slotOwners.set(slotDef.slot, skill.id);
+        // TASK-86 — key the catalog skill's slot by its PER-SKILL namespace so
+        // two skills wanting the same bare slot (e.g. both `LINEAR_API_KEY`)
+        // coexist instead of the old fatal `skill-slot-collision` lockout. The
+        // bare env-var name the skill reads is restored by the env projection
+        // after proxy:open-session. Idempotent on a duplicate slot within one
+        // skill; a different skill can never collide (the key carries the id).
+        const envName = skillCredentialEnvName(skill.id, slotDef.slot);
+        if (slotOwners.has(envName)) continue;
+        baseCreds[envName] = { ref, kind: slotDef.kind };
+        slotOwners.set(envName, skill.id);
+        skillSlotEnvNames.push({ envName, bareSlot: slotDef.slot });
       }
     }
 
@@ -1588,27 +1625,29 @@ export function createOrchestrator(
     // PC-1 — fold APPROVED authored-draft caps into the egress allowlist +
     // credential map (Phase 4 PR-B). baseCreds is aliased by unionedCreds and
     // baseAllowSet is frozen into unionedAllowlist below, so mutating them here
-    // reaches proxy:open-session. A slot colliding with a trusted owner is a
-    // fatal terminate (an untrusted draft must not hijack a trusted credential).
+    // reaches proxy:open-session. TASK-86 — authored skill slots are namespaced
+    // (`skill:<id>:<slot>`) like catalog slots, so two skills wanting the same
+    // bare slot coexist and a skill can't hijack a trusted credential (the env
+    // projection makes the trusted bare name win) — no more fatal collision.
     // Only ACTIVE skills fold (§D3 "no caps inject" for pending; a pending
     // skill's proposal∩approved is empty anyway, so this is belt-and-suspenders).
-    const authoredCollision = foldAuthoredSkillCaps(
+    foldAuthoredSkillCaps(
       activeAuthoredDraftSkills,
       baseAllowSet,
       baseCreds,
       slotOwners,
     );
-    if (authoredCollision !== null) {
-      const outcome: AgentOutcome = {
-        kind: 'terminated',
-        reason: 'skill-slot-collision',
-        error: new Error(
-          `authored skill '${authoredCollision.skillId}' slot '${authoredCollision.slot}' collides with existing owner '${authoredCollision.existingOwner}'`,
-        ),
-      };
-      await fireTurnError(ctx, ctx.reqId, outcome.reason);
-      await bus.fire('chat:end', ctx, { outcome });
-      return outcome;
+    // Append the authored skills' namespaced slots AFTER the catalog attachments
+    // so the projection's first-writer-wins precedence holds (catalog > authored
+    // on a shared bare name). Mirror the fold's account/untagged ref derivation
+    // for the bare-name mapping (the ref itself is already in baseCreds).
+    for (const s of activeAuthoredDraftSkills) {
+      for (const c of s.capabilities.credentials) {
+        skillSlotEnvNames.push({
+          envName: skillCredentialEnvName(s.id, c.slot),
+          bareSlot: c.slot,
+        });
+      }
     }
 
     let defaultSkillsForUnion: ResolvedSkillForOrch[] = [];
@@ -1732,6 +1771,11 @@ export function createOrchestrator(
       // credential kind the manifest grammar permits is 'api-key' (see
       // @ax/skills CapabilitySlotSchema), so narrow the forwarded kind.
       allowedHosts: s.capabilities.allowedHosts ?? [],
+      // TASK-86 — `slot` is the BARE env-var name the skill reads. The skill's
+      // OWN `ax-cred:<hex>` placeholder is stamped below (after proxy:open-session
+      // resolves the namespaced credential map) so git HTTP-Basic wiring uses the
+      // skill's own credential even when another skill won the flat-env stamp for
+      // the same bare name.
       credentials: (s.capabilities.credentials ?? []).map((c) => ({
         slot: c.slot,
         kind: 'api-key' as const,
@@ -1754,10 +1798,30 @@ export function createOrchestrator(
       // unrecognized scheme, and we still owe the proxy a close in that
       // case (the session was minted before the throw).
       proxyOpened = true;
+      // TASK-86 — stamp each skill's OWN placeholder onto its sandbox credential
+      // entry (looked up by the skill's namespaced env name), so per-skill git
+      // wiring resolves the right credential regardless of the flat-env winner.
+      for (const skill of installedSkillsForSandbox) {
+        for (const cred of skill.credentials) {
+          const ph = opened.envMap[skillCredentialEnvName(skill.id, cred.slot)];
+          if (typeof ph === 'string') cred.placeholder = ph;
+        }
+      }
+      // TASK-86 — project the proxy's NAMESPACED envMap back to BARE env-var
+      // names for the flat sandbox env (the skill reads `$LINEAR_API_KEY`, not
+      // `$skill:linear:LINEAR_API_KEY`). Trusted base names win; among skills
+      // sharing a bare name the first writer wins (catalog > authored). The proxy
+      // substitution is value-based, so the env-var NAME is only a placeholder
+      // vehicle — the dropped duplicates' credentials still reach the proxy.
+      const bareEnvMap = projectEnvMapToBareNames({
+        namespacedEnvMap: opened.envMap,
+        trustedBareNames,
+        skillSlots: skillSlotEnvNames,
+      });
       proxyConfig = endpointToProxyConfig(
         opened.proxyEndpoint,
         opened.caCertPem,
-        opened.envMap,
+        bareEnvMap,
         opened.proxyAuthToken,
       );
       // I10 — flag the session for per-turn rotation when ANY required
@@ -1945,10 +2009,26 @@ export function createOrchestrator(
     // deduped per (conversation, skillId, shown-delta). conversationId is the
     // SSE match key for skill cards, so guard on it.
     if (ctx.conversationId !== undefined && ctx.conversationId.length > 0) {
+      const convId = ctx.conversationId;
       // hasShownDelta is the SINGLE source of truth for "is there anything to
       // card" — shared with buildAuthoredCardPayload's null check so the two
       // can't diverge (it also tolerates the optional packages field).
-      const cardable = authoredDraftSkills.filter((s) => hasShownDelta(s.proposalDelta));
+      const cardable = authoredDraftSkills.filter((s) => {
+        if (!hasShownDelta(s.proposalDelta)) return false;
+        // TASK-86 — a PENDING cap-skill's card only fires in the conversation
+        // that proposed it (tracked in onSkillsProposed), so it stops papering
+        // across every unrelated chat. If we never recorded a proposing
+        // conversation (e.g. the skill predates this host process / was proposed
+        // before restart), fall back to the pre-TASK-86 behavior (fire here) so
+        // an approvable skill is never silently un-cardable. ACTIVE skills are
+        // exempt — they don't need an approval card anyway (their shown delta is
+        // empty post-approval), and the filter must not suppress one.
+        if ((s.status ?? 'active') === 'pending') {
+          const proposedIn = pendingSkillConversation.get(s.id);
+          if (proposedIn !== undefined && proposedIn !== convId) return false;
+        }
+        return true;
+      });
       if (cardable.length > 0) {
         // Vaulted refs → haveExisting on account-tagged slots (mirror request_capability).
         const vaultedRefs = new Set<string>();
@@ -2525,6 +2605,9 @@ export function createOrchestrator(
     //    no per-conversation card to dedup-drop, so skip this when absent.
     const convId = input.conversationId;
     if (convId !== undefined) upfrontCardsByConv.delete(convId);
+    // TASK-86 — the skill is no longer pending (it just flipped to active), so
+    // drop its proposing-conversation scope record (bounded-map hygiene).
+    pendingSkillConversation.delete(input.skillId);
 
     // 5. Activate per the asymmetry (design table): ANY SHOWN credential slot →
     //    env var frozen at spawn → re-spawn. Else host/package-only → live widen.

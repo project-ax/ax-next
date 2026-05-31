@@ -171,8 +171,24 @@ export const InstalledSkillSchema = z.object({
   // sandbox re-checks at the wire. Default `[]` for back-compat with
   // pre-TASK-14 callers (tests, ad-hoc CLI) that don't set them.
   allowedHosts: z.array(z.string().max(256)).max(64).default([]),
+  // TASK-86 — `slot` is the BARE env-var name; the optional `placeholder` is the
+  // skill's OWN `ax-cred:<hex>` token, so per-skill git HTTP-Basic wiring uses
+  // the skill's own credential even when another skill won the flat-env stamp for
+  // the same bare slot name. Re-validated to the placeholder shape at the wire so
+  // a regressed host can never smuggle a real secret here (only the opaque token
+  // is ever embedded into a git URL). Optional + back-compat: pre-TASK-86 callers
+  // omit it and git wiring falls back to `envMap[slot]`.
   credentials: z
-    .array(z.object({ slot: z.string().max(64), kind: z.literal('api-key') }))
+    .array(
+      z.object({
+        slot: z.string().max(64),
+        kind: z.literal('api-key'),
+        placeholder: z
+          .string()
+          .regex(/^ax-cred:[0-9a-f]{32}$/)
+          .optional(),
+      }),
+    )
     .max(32)
     .default([]),
 });

@@ -401,7 +401,8 @@ describe('skill-install canary: install → attach → invoke (real plugins)', (
     expect(fakes.proxyOpenInputs).toHaveLength(1);
     const proxyIn = fakes.proxyOpenInputs[0]!;
     expect(proxyIn.allowlist).toContain('api.github.com');
-    expect(proxyIn.credentials.GITHUB_TOKEN).toEqual({
+    // TASK-86 — the skill slot is keyed by its per-skill namespace.
+    expect(proxyIn.credentials['skill:github:GITHUB_TOKEN']).toEqual({
       ref: 'cred-ref-alice-gh',
       kind: 'api-key',
     });
@@ -556,7 +557,8 @@ describe('skill-install canary: per-user attachment union (TASK-33, real plugins
     expect(fakes.proxyOpenInputs).toHaveLength(1);
     const proxyIn = fakes.proxyOpenInputs[0]!;
     expect(proxyIn.allowlist).toContain('api.linear.app');
-    expect(proxyIn.credentials.LINEAR_TOKEN).toEqual({ ref: 'user-linear-ref', kind: 'api-key' });
+    // TASK-86 — the skill slot is keyed by its per-skill namespace.
+    expect(proxyIn.credentials['skill:linear:LINEAR_TOKEN']).toEqual({ ref: 'user-linear-ref', kind: 'api-key' });
   }, 60_000);
 
   it('per-user binding wins over an agent-global binding for the same skill', async () => {
@@ -589,7 +591,8 @@ describe('skill-install canary: per-user attachment union (TASK-33, real plugins
     expect(fakes.proxyOpenInputs).toHaveLength(1);
     // Per-user ref wins; the agent-global copy of the same skill id is dropped
     // (so no slot-collision termination — the skill never collides with itself).
-    expect(fakes.proxyOpenInputs[0]!.credentials.LINEAR_TOKEN).toEqual({
+    // TASK-86 — keyed by the per-skill namespace.
+    expect(fakes.proxyOpenInputs[0]!.credentials['skill:linear:LINEAR_TOKEN']).toEqual({
       ref: 'user-linear-ref',
       kind: 'api-key',
     });
@@ -1011,7 +1014,9 @@ describe('skill-install canary: approve → apply-capability-grant → fresh re-
     expect(fakes.proxyOpenInputs).toHaveLength(1);
     const proxyIn = fakes.proxyOpenInputs[0]!;
     expect(proxyIn.allowlist).toContain('api.linear.app');
-    expect(proxyIn.credentials.LINEAR_TOKEN).toEqual({
+    // TASK-86 — the credentials map is keyed by the per-skill namespace (which
+    // for an untagged slot equals its ref).
+    expect(proxyIn.credentials['skill:linear:LINEAR_TOKEN']).toEqual({
       ref: 'skill:linear:LINEAR_TOKEN',
       kind: 'api-key',
     });
@@ -1264,8 +1269,13 @@ describe('skill-install canary: account-tagged slots bind the shared vault ref (
     expect(outcome.kind).toBe('complete');
     expect(fakes.proxyOpenInputs).toHaveLength(1);
     const creds = fakes.proxyOpenInputs[0]!.credentials;
-    expect(creds.LINEAR_TOKEN).toEqual({ ref: 'account:linear', kind: 'api-key' });
-    expect(creds.LIN_KEY).toEqual({ ref: 'account:linear', kind: 'api-key' });
-    expect(creds.PLAIN_TOKEN).toEqual({ ref: 'skill:plain:PLAIN_TOKEN', kind: 'api-key' });
+    // TASK-86 — the proxy credential map is keyed by the PER-SKILL namespace, so
+    // two account:linear skills no longer collide on the shared bare slot name.
+    // Each keeps its OWN namespaced key but resolves the SAME shared
+    // `account:linear` ref (the account-tag semantics are unchanged). The
+    // account-free skill keeps its `skill:<id>:<slot>` ref under its own key.
+    expect(creds['skill:linear-a:LINEAR_TOKEN']).toEqual({ ref: 'account:linear', kind: 'api-key' });
+    expect(creds['skill:linear-b:LIN_KEY']).toEqual({ ref: 'account:linear', kind: 'api-key' });
+    expect(creds['skill:plain:PLAIN_TOKEN']).toEqual({ ref: 'skill:plain:PLAIN_TOKEN', kind: 'api-key' });
   }, 60_000);
 });

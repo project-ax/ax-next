@@ -7,12 +7,13 @@
  * the plugin boundary. The shapes are simple (a slot-name array + a slot→ref
  * map), so there is no cross-plugin type to drift.
  *
- * `slot-collision` is intentionally NOT checked here — cross-skill slot
- * collisions across the per-user / agent-global / default sources are resolved
- * (per-user wins, dropping the agent-global copy of the same skill id) and
- * otherwise rejected at session open by the orchestrator's existing
- * `skill-slot-collision` path. This validator only checks one skill's own
- * bindings against its own declared slots.
+ * `slot-collision` is intentionally NOT checked here. Per-user wins over the
+ * agent-global copy of the SAME skill id (the agent-global copy is dropped). Two
+ * DIFFERENT skills declaring the same bare slot name (e.g. both `LINEAR_API_KEY`)
+ * COEXIST — TASK-86 namespaces credential slots per-skill (`skill:<id>:<slot>`)
+ * in the orchestrator's host-side credential map, so they no longer collide at
+ * session open (the old fatal `skill-slot-collision` lockout is gone). This
+ * validator only checks one skill's own bindings against its own declared slots.
  */
 export type AttachmentValidationResult =
   | { ok: true }
