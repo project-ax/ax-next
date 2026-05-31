@@ -88,4 +88,19 @@ describe('@ax/connectors hook surface — no leaked backing-mechanism fields', (
     // capabilities IS a top-level key (it just isn't descended into).
     expect(keys).toContain('capabilities');
   });
+
+  it('the resolve credential plan + consent gate are storage-agnostic (TASK-96)', () => {
+    // The derived credentialPlan exposes only neutral fields — slot / scope / ref
+    // — and the consent gate is a boolean. `scope` carries the neutral
+    // credential-scope contract (`user`/`global`), NOT backend vocabulary, so it
+    // is NOT in the leaky-field list above. The plan never surfaces a backing
+    // mechanism (transport/command/url/mcp) — that already lives only inside
+    // capabilities, which the walk above pins for the resolve shape too.
+    const keys = topLevelKeysOutsideCapabilities(ResolveOutputSchema);
+    expect(keys).toContain('credentialPlan');
+    expect(keys).toContain('requiresSharedKeyConsent');
+    expect(keys).toContain('slot');
+    expect(keys).toContain('scope');
+    expect(keys).toContain('ref');
+  });
 });
