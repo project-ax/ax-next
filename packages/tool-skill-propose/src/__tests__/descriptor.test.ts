@@ -17,6 +17,15 @@ describe('SKILL_PROPOSE_DESCRIPTOR', () => {
     expect(d).toMatch(/not.*invoke it now|Do not try to invoke it now/i);
   });
 
+  it('carries the propose-time JIT hint (cap-skill prompts for a key; approve early from My Skills) — TASK-83', () => {
+    const d = SKILL_PROPOSE_DESCRIPTOR.description ?? '';
+    // The model must tell the user a cap-skill is waiting on their approval / a key.
+    expect(d).toMatch(/key/i);
+    expect(d).toMatch(/approv/i);
+    // And point them at the early-approval affordance in the My Skills panel.
+    expect(d).toMatch(/My Skills/);
+  });
+
   it('documents the parser frontmatter contract (name, integer version, capabilities: nesting)', () => {
     // TASK-79: docs must match the skills-parser contract — `name` (NOT `id`),
     // an integer `version`, and capability keys nested under `capabilities:`.

@@ -152,3 +152,33 @@ export async function shareUserSkill(
   );
   return (await handleResponse(res)) as CatalogSubmitOutput;
 }
+
+/**
+ * Approve a PENDING agent-authored cap-skill EARLY, before the agent's first use
+ * (TASK-83 / JIT discoverability). The "My Skills" panel calls this after the
+ * user has entered any required keys (which post straight to the credential
+ * store via `setDestinationCredential`, never through this call). This is the
+ * out-of-band twin of the in-chat approval card's POST to
+ * `/api/chat/permission-decision` — same authored grant, no conversation.
+ *
+ * NO secret on this wire — only domain ids + the `shown` TOCTOU guard (exactly
+ * what the panel displayed). The server ACL-checks the agent and re-resolves the
+ * skill as one of THAT agent's pending drafts before approving. A 409
+ * 'not-authored' means the skill isn't a pending draft of this agent.
+ */
+export async function approveAuthoredSkill(input: {
+  agentId: string;
+  skillId: string;
+  shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
+}): Promise<void> {
+  const res = await fetch('/api/chat/approve-authored-skill', {
+    method: 'POST',
+    headers: writeHeaders,
+    credentials: 'include',
+    body: JSON.stringify(input),
+  });
+  if (!res.ok) {
+    const excerpt = await res.text().catch(() => '');
+    throw new Error(`approve failed: ${res.status} ${excerpt.slice(0, 200)}`);
+  }
+}

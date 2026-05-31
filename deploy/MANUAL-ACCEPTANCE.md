@@ -1379,6 +1379,73 @@ into the admin global list, that's a privacy bug, and this walk catches it.
 # cheap to recreate.
 ```
 
+## Scenario: JIT early-approval of a pending cap-skill (TASK-83)
+
+### What this proves
+
+An agent-authored skill that needs a host or a key lands `pending` and is
+**discoverable + approvable from My Skills before the agent ever uses it** —
+you don't have to wait for the in-chat card to fire on first use. The card
+still fires just-in-time if you skip this; early approval is the *deliberate*
+mirror of the just-in-time face. Capability gating stays strict: approving
+still needs the human + the key. Design:
+`docs/notes/2026-05-30-jit-capability-approval-flow.md`.
+
+### Prerequisites
+
+- A completed-bootstrap cluster in **open mode** (`allow_user_installed_skills`
+  on) with a user (**alice**) who owns a personal agent.
+- Egress + credential plugins wired (the k8s preset).
+
+### Walk
+
+1. **alice's agent authors a cap-skill.** In a chat with her agent, ask it to
+   author a skill that needs a host + an API key (e.g. "write me a Linear
+   skill"). The agent writes a SKILL.md with `capabilities.allowedHosts` +
+   `capabilities.credentials` and calls `skill_propose`. It should tell you the
+   skill is **waiting on your approval** and that you can approve it on first
+   use *or* ahead of time from My Skills (the propose-time hint).
+
+2. **No card fires yet.** The skill is `pending`; no approval card appears just
+   from authoring. (This is the design — just-in-time, not eager.)
+
+3. **alice approves early from My Skills.** Open the user menu → **My Skills**.
+   Under **"Authored by your agents"**, the new skill shows status
+   **"needs approval"** with an **Approve** button. Click it. The dialog shows
+   the host(s) it will reach + a field for the key. Enter the key, click
+   **Approve**.
+
+4. **It goes live without an in-chat prompt.** A banner confirms the skill is
+   approved and live. The status flips to **active**. On the agent's next turn,
+   the skill is usable with no card interruption.
+
+### Acceptance criteria
+
+- A pending cap-bearing authored skill shows **"needs approval"** + an
+  **Approve** button in My Skills; an inert pending skill shows neither.
+- `GET /settings/skills/authored` returns `pendingCapabilities` (hosts/slots/
+  packages) for the pending cap-skill, and omits it for active/inert skills.
+- Approving writes the key to the credential store, the approved-cap rows, and
+  flips the authored row to `active` — verifiable in the DB:
+
+  ```sql
+  -- the skill is now active (not pending) for alice's agent
+  SELECT skill_id, status FROM skills_v1_authored WHERE owner_user_id = '<alice>';
+  -- approved-cap rows exist for the host + slot
+  SELECT skill_id, kind, value FROM skills_v1_approved_caps WHERE owner_user_id = '<alice>';
+  ```
+- A user can only approve onto an agent they own: `POST
+  /api/chat/approve-authored-skill` for an agent alice doesn't own → 403/404.
+- The key never appears in the transcript, the model context, or any SSE frame.
+
+### Cleanup
+
+```bash
+# Delete the authored skill from My Skills (and revoke the key under My Keys
+# if you vaulted it). The authored row is keyed (owner_user_id, agent_id,
+# skill_id), so it's cheap to recreate by re-authoring.
+```
+
 ## Scenario: Google sign-in (better-auth Google provider)
 
 This scenario walks the end-to-end Google OAuth flow — configuring the

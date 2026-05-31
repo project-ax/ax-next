@@ -1,4 +1,5 @@
 import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
+import { parseSkillManifest } from '@ax/skills-parser';
 import type {
   SkillsListOutput,
   SkillsGetOutput,
@@ -51,6 +52,57 @@ interface AgentsListForUserAgent {
 }
 interface AgentsListForUserOutput {
   agents: AgentsListForUserAgent[];
+}
+
+// credentials:list returns METADATA ONLY — refs + kinds, NEVER a secret value.
+// Minimal local mirror (I2 — no @ax/credentials import). We only learn whether
+// an `account:<service>` ref EXISTS for the user, so the discoverability summary
+// can offer "use your existing key" for an already-vaulted account-tagged slot.
+interface CredentialsListMetaOutput {
+  credentials: Array<{ ref: string }>;
+}
+
+// The subset of the `skills:list-authored` projection this helper reads.
+interface AuthoredProjectionLike {
+  status: 'active' | 'pending' | 'quarantined';
+  manifestYaml: string;
+}
+
+/**
+ * JIT discoverability (TASK-83). Compute the `{ pendingCapabilities }` patch for
+ * an authored-skill listing. Returns `{}` (no patch) unless the skill is
+ * `pending` AND its manifest declares at least one approvable capability (a
+ * host, a credential slot, or package egress). The summary mirrors exactly what
+ * the just-in-time approval card shows on first use — public manifest data only
+ * (hostnames + slot NAMES, never a secret).
+ *
+ * The manifest is parsed best-effort: a malformed proposal (shouldn't happen — it
+ * passed the propose gate) yields no patch rather than throwing, so one bad row
+ * never blanks the whole list.
+ */
+function pendingCapabilitiesFor(
+  s: AuthoredProjectionLike,
+  vaulted: ReadonlySet<string>,
+): Pick<AuthoredSkillListing, 'pendingCapabilities'> {
+  if (s.status !== 'pending') return {};
+  const parsed = parseSkillManifest(s.manifestYaml);
+  if (!parsed.ok) return {};
+  const caps = parsed.value.capabilities;
+  const hosts = caps.allowedHosts;
+  const slots = caps.credentials.map((c) => ({
+    slot: c.slot,
+    kind: 'api-key' as const,
+    ...(c.account !== undefined ? { account: c.account } : {}),
+    haveExisting: c.account !== undefined && vaulted.has(`account:${c.account}`),
+  }));
+  const packages = caps.packages;
+  const hasAnything =
+    hosts.length > 0 ||
+    slots.length > 0 ||
+    packages.npm.length > 0 ||
+    packages.pypi.length > 0;
+  if (!hasAnything) return {}; // inert pending skill — nothing to approve
+  return { pendingCapabilities: { hosts, slots, packages } };
 }
 
 export interface SettingsRouteDeps {
@@ -131,6 +183,25 @@ export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
           .filter((a) => a.ownerType === 'user' && a.ownerId === actor.id)
           .map((a) => a.id);
 
+        // JIT discoverability (TASK-83): which `account:<service>` vault entries
+        // does this user already have? Metadata-only (credentials:list, user
+        // scope) — the secret NEVER crosses this read surface; we only learn
+        // EXISTENCE so a pending account-tagged slot can offer "use your existing
+        // key" (haveExisting). Gated by hasService so credential-less presets
+        // degrade to always-prompt; best-effort so a failed lookup just prompts.
+        const vaulted = new Set<string>();
+        if (deps.bus.hasService('credentials:list')) {
+          try {
+            const list = await deps.bus.call<
+              { scope: 'user'; ownerId: string },
+              CredentialsListMetaOutput
+            >('credentials:list', ctx, { scope: 'user', ownerId: actor.id });
+            for (const c of list.credentials) vaulted.add(c.ref);
+          } catch {
+            // A failed lookup just means the affordance prompts for a key.
+          }
+        }
+
         const listings: AuthoredSkillListing[] = [];
         for (const agentId of ownAgentIds) {
           const { skills } = await deps.bus.call<
@@ -147,6 +218,13 @@ export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
               agentId,
               description: s.description,
               status: s.status,
+              // TASK-83: enrich a PENDING skill with the public capability
+              // summary the JIT card would show, so My Skills can offer an
+              // approve + key affordance before first use. Omitted for active
+              // skills (already approved) and inert pending skills (nothing to
+              // approve). `s.manifestYaml` is the stored proposal — for a pending
+              // skill nothing is approved yet, so the full proposal IS the delta.
+              ...pendingCapabilitiesFor(s, vaulted),
             });
           }
         }

@@ -12,6 +12,13 @@ vi.mock('@/lib/user-skills', () => ({
   updateUserSkill: vi.fn(),
   deleteUserSkill: vi.fn(),
   shareUserSkill: vi.fn(),
+  approveAuthoredSkill: vi.fn(),
+}));
+
+// Mock the credential write at the lib boundary — the approve+key flow posts
+// each entered key straight to the host credential store (never the model).
+vi.mock('@/lib/credentials', () => ({
+  setDestinationCredential: vi.fn(),
 }));
 
 // Mock SkillEditor so tests don't depend on its internals (parser + form).
@@ -37,12 +44,16 @@ import {
   listAuthoredSkills,
   deleteUserSkill,
   shareUserSkill,
+  approveAuthoredSkill,
 } from '@/lib/user-skills';
+import { setDestinationCredential } from '@/lib/credentials';
 
 const mockListUserSkills = vi.mocked(listUserSkills);
 const mockListAuthoredSkills = vi.mocked(listAuthoredSkills);
 const mockDeleteUserSkill = vi.mocked(deleteUserSkill);
 const mockShareUserSkill = vi.mocked(shareUserSkill);
+const mockApproveAuthoredSkill = vi.mocked(approveAuthoredSkill);
+const mockSetDestinationCredential = vi.mocked(setDestinationCredential);
 
 const SKILL_A: SkillSummary = {
   id: 'my-github',
@@ -88,9 +99,25 @@ const AUTHORED_PENDING: AuthoredSkillListing = {
   status: 'pending',
 };
 
+// A PENDING cap-bearing authored skill — declares a host + a credential slot,
+// so the panel must offer an approve + key affordance BEFORE first use (TASK-83).
+const AUTHORED_PENDING_CAP: AuthoredSkillListing = {
+  skillId: 'needs-key',
+  agentId: 'agt_a',
+  description: 'Authored skill that wants a host and a key.',
+  status: 'pending',
+  pendingCapabilities: {
+    hosts: ['api.linear.app'],
+    slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', haveExisting: false }],
+    packages: { npm: [], pypi: [] },
+  },
+};
+
 beforeEach(() => {
   vi.resetAllMocks();
   mockDeleteUserSkill.mockResolvedValue(undefined);
+  mockApproveAuthoredSkill.mockResolvedValue(undefined);
+  mockSetDestinationCredential.mockResolvedValue(undefined);
   // Default: no authored skills (most tests cover catalog skills). The authored
   // section is opt-in per test via mockListAuthoredSkills.mockResolvedValue(...).
   mockListAuthoredSkills.mockResolvedValue([]);
@@ -452,5 +479,111 @@ describe('UserSkillsPanel', () => {
     // No authored section, no top-level error banner from the authored failure.
     expect(screen.queryByText('Authored by your agents')).toBeNull();
     expect(screen.queryByText('authored boom')).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // JIT early-approval discoverability (TASK-83)
+  // -------------------------------------------------------------------------
+
+  it('a pending cap-skill shows an Approve affordance; an inert pending one does not', async () => {
+    // THE TASK-83 regression guard: a pending cap-bearing authored skill must be
+    // discoverable + approvable from My Skills BEFORE first use. A pending skill
+    // with no caps to approve has nothing to do here, so no Approve button.
+    mockListUserSkills.mockResolvedValue([]);
+    mockListAuthoredSkills.mockResolvedValue([
+      AUTHORED_PENDING, // pending, no pendingCapabilities → no Approve button
+      AUTHORED_PENDING_CAP, // pending + caps → Approve button
+    ]);
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('needs-key')).toBeTruthy();
+    });
+
+    // The cap-skill row has an Approve button.
+    expect(
+      screen.getByRole('button', { name: /approve needs-key/i }),
+    ).toBeTruthy();
+    // The inert pending skill has NO Approve button (nothing to approve).
+    expect(
+      screen.queryByRole('button', { name: /approve needs-approval/i }),
+    ).toBeNull();
+  });
+
+  it('approve a pending cap-skill: enter key → writes credential → calls approveAuthoredSkill with shown', async () => {
+    mockListUserSkills.mockResolvedValue([]);
+    mockListAuthoredSkills.mockResolvedValue([AUTHORED_PENDING_CAP]);
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('needs-key')).toBeTruthy();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /approve needs-key/i }));
+
+    // The approve dialog shows the host + the key field.
+    await waitFor(() => {
+      expect(screen.getByText('api.linear.app')).toBeTruthy();
+      expect(screen.getByLabelText('LINEAR_API_KEY')).toBeTruthy();
+    });
+
+    // Approve is disabled until the (non-vaulted) slot is filled.
+    const approveBtn = screen.getByRole('button', { name: 'Approve' });
+    expect((approveBtn as HTMLButtonElement).disabled).toBe(true);
+
+    fireEvent.change(screen.getByLabelText('LINEAR_API_KEY'), {
+      target: { value: 'lin_secret' },
+    });
+    expect((approveBtn as HTMLButtonElement).disabled).toBe(false);
+
+    fireEvent.click(approveBtn);
+
+    await waitFor(() => {
+      // The key posts straight to the credential store (per-skill slot here).
+      expect(mockSetDestinationCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          destination: {
+            kind: 'skill-slot',
+            skillId: 'needs-key',
+            slot: 'LINEAR_API_KEY',
+          },
+          payload: 'lin_secret',
+        }),
+      );
+      // Then the early-approve grant fires with the shown TOCTOU guard.
+      expect(mockApproveAuthoredSkill).toHaveBeenCalledWith({
+        agentId: 'agt_a',
+        skillId: 'needs-key',
+        shown: {
+          hosts: ['api.linear.app'],
+          slots: ['LINEAR_API_KEY'],
+          npm: [],
+          pypi: [],
+        },
+      });
+    });
+  });
+
+  it('approve error surfaces and does NOT close the dialog', async () => {
+    mockListUserSkills.mockResolvedValue([]);
+    mockListAuthoredSkills.mockResolvedValue([AUTHORED_PENDING_CAP]);
+    mockApproveAuthoredSkill.mockRejectedValueOnce(new Error('grant boom'));
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('needs-key')).toBeTruthy();
+    });
+    fireEvent.click(screen.getByRole('button', { name: /approve needs-key/i }));
+    await waitFor(() => {
+      expect(screen.getByLabelText('LINEAR_API_KEY')).toBeTruthy();
+    });
+    fireEvent.change(screen.getByLabelText('LINEAR_API_KEY'), {
+      target: { value: 'lin_secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }));
+
+    await waitFor(() => {
+      expect(screen.getByText(/grant boom/)).toBeTruthy();
+    });
   });
 });

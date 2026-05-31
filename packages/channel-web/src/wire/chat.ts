@@ -124,6 +124,32 @@ export type PermissionDecisionRequest = z.infer<
   typeof PermissionDecisionRequest
 >;
 
+// ---------------------------------------------------------------------------
+// POST /api/chat/approve-authored-skill — approve a PENDING agent-authored
+// cap-skill EARLY, from the "My Skills" panel, BEFORE the agent's first use
+// (TASK-83 / JIT discoverability). Unlike permission-decision, there is NO
+// conversation in scope: the user is approving from settings, not mid-turn. So
+// the client supplies the `agentId` directly (it owns the listing); the server
+// ACL-checks that the actor can reach that agent (agents:resolve) and then fires
+// the SAME authored grant the in-chat card uses, just with no conversationId —
+// it writes the approval rows + flips the skill active, and the user's next turn
+// cold-spawns with the skill already approved.
+//
+// NO secret on this wire: the key the user typed was already POSTed straight to
+// the host credential store by the panel (mirroring the card's TASK-35 path).
+// `shown` is the SAME TOCTOU guard as permission-decision — the server only
+// approves caps that are BOTH in the current proposal AND in `shown`.
+// ---------------------------------------------------------------------------
+export const ApproveAuthoredSkillRequest = z.object({
+  agentId: z.string().min(1).max(128),
+  skillId: z.string().min(1).max(128),
+  /** What the panel displayed — the grant intersects this with the current proposal. */
+  shown: ShownCapsSchema.optional(),
+});
+export type ApproveAuthoredSkillRequest = z.infer<
+  typeof ApproveAuthoredSkillRequest
+>;
+
 /**
  * Pull the first text block's `text` out of a content-blocks array. Used
  * by the route handler to feed `agent:invoke`'s flat-string `message` field

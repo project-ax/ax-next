@@ -145,7 +145,16 @@ export interface ApplyCapabilityGrantOutput {
 // NARROW, never expand — anything not in the current proposal is rejected
 // regardless.
 export interface ApplyAuthoredCapabilityGrantInput {
-  conversationId: string;
+  /**
+   * The conversation whose warm session this grant retires (so the next turn
+   * re-spawns with the now-approved caps). OPTIONAL (TASK-83): the in-chat card
+   * always supplies it, but the My Skills "approve early" path has no
+   * conversation — it approves a pending cap-skill BEFORE first use. When absent,
+   * the grant still writes the approval rows + flips the skill active; it simply
+   * skips the warm-session retire / live-widen (there's nothing live to widen),
+   * and the user's next turn cold-spawns with the skill already approved.
+   */
+  conversationId?: string;
   userId: string;
   agentId: string;
   skillId: string;
@@ -2512,15 +2521,24 @@ export function createOrchestrator(
 
     // 4. Drop the upfront-card dedup for this conversation so the next spawn
     //    re-evaluates the now-smaller delta (re-fires only if something remains).
-    upfrontCardsByConv.delete(input.conversationId);
+    //    TASK-83: the My Skills "approve early" path has no conversation — there's
+    //    no per-conversation card to dedup-drop, so skip this when absent.
+    const convId = input.conversationId;
+    if (convId !== undefined) upfrontCardsByConv.delete(convId);
 
     // 5. Activate per the asymmetry (design table): ANY SHOWN credential slot →
     //    env var frozen at spawn → re-spawn. Else host/package-only → live widen.
     //    FIX 1: use `approvedCreds` (shown-intersection) so an unshown credential
     //    slot does NOT trigger a re-spawn that the user never approved.
+    //    TASK-83: with no conversation (early approval) there is no warm session
+    //    to retire or widen — the approval rows + activate above are the whole
+    //    effect, and the user's next turn cold-spawns with the skill approved.
     const needsRespawn = approvedCreds.length > 0;
     if (needsRespawn) {
-      const warm = await activeAliveSession(ctx, input.conversationId, input.userId);
+      const warm =
+        convId !== undefined
+          ? await activeAliveSession(ctx, convId, input.userId)
+          : null;
       let respawned = false;
       if (warm !== null) {
         try {
@@ -2548,8 +2566,8 @@ export function createOrchestrator(
     const liveHosts = [...approvedHosts];
     if (approvedNpm.length > 0) liveHosts.push('registry.npmjs.org');
     if (approvedPypi.length > 0) liveHosts.push('pypi.org', 'files.pythonhosted.org');
-    if (liveHosts.length > 0 && bus.hasService('proxy:add-host')) {
-      const warm = await activeAliveSession(ctx, input.conversationId, input.userId);
+    if (liveHosts.length > 0 && bus.hasService('proxy:add-host') && convId !== undefined) {
+      const warm = await activeAliveSession(ctx, convId, input.userId);
       if (warm !== null) {
         for (const host of liveHosts) {
           try {
