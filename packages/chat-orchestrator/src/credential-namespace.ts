@@ -71,42 +71,51 @@ export interface ProjectEnvMapInput {
 
 /**
  * Project the proxy's namespaced envMap back to the BARE-keyed env map that gets
- * stamped flat into the sandbox process env. Precedence:
+ * stamped flat into the sandbox process env.
  *
- *   1. TRUSTED bare names always win (copied verbatim from namespacedEnvMap).
+ * NON-DESTRUCTIVE passthrough: the proxy's envMap can carry entries that are
+ * NOT credential slots (e.g. a test-proxy that feeds a stub-runner script var,
+ * or any future proxy-injected env). Every entry whose KEY is already a valid
+ * BARE env-var name passes through VERBATIM — this preserves trusted base
+ * credentials (their key is bare) AND any non-credential var. Only the
+ * NAMESPACED skill keys (`skill:<id>:<slot>`, which contain `:` and so fail the
+ * bare-name shape) are excluded from passthrough and instead re-projected to
+ * their bare slot name below.
+ *
+ * Skill-slot projection precedence (deterministic):
+ *   1. A TRUSTED bare name (already passed through) is never overwritten — the
+ *      trusted credential wins; a skill can't hijack it.
  *   2. Among skill slots sharing a bare name, the FIRST in `skillSlots` wins;
- *      later ones are dropped (their credential is still live in the proxy for
+ *      the rest are dropped (their credential is still live in the proxy for
  *      their own egress — git wiring uses the per-skill placeholder directly).
- *   3. A skill slot whose bare name collides with a trusted name is dropped (the
- *      trusted credential wins; the skill can't hijack it).
  *
  * Defensive: SKILL-slot values must be `ax-cred:<hex>` placeholders (UNTRUSTED
- * source — a malformed one is skipped, fail-closed: fewer env vars, never a
- * smuggled name/secret). TRUSTED base values pass through verbatim (the
- * orchestrator built them and the proxy resolved them); only their bare-name
- * shape is re-checked. Either way a malformed BARE NAME is never stamped.
+ * source — a malformed one is skipped, fail-closed). A malformed BARE slot name
+ * is never stamped (smuggled-env-name guard).
  */
 export function projectEnvMapToBareNames(
   input: ProjectEnvMapInput,
 ): Record<string, string> {
   const out: Record<string, string> = {};
 
-  // 1. Trusted bare names first — they own their slot and can't be displaced.
-  //    Value passes verbatim (trusted); only the name shape is re-validated.
-  for (const name of input.trustedBareNames) {
-    const v = input.namespacedEnvMap[name];
+  // 1. Passthrough — every entry already keyed by a valid bare env-var name.
+  //    This carries trusted base credentials (bare key) AND any non-credential
+  //    var the proxy injected. Namespaced `skill:<id>:<slot>` keys contain `:`
+  //    and fail BARE_ENV_NAME_RE, so they're naturally excluded here and
+  //    re-projected to their bare slot below.
+  for (const [name, v] of Object.entries(input.namespacedEnvMap)) {
     if (typeof v === 'string' && BARE_ENV_NAME_RE.test(name)) {
       out[name] = v;
     }
   }
 
   // 2. Skill slots in precedence order — first writer wins the bare name; never
-  //    overwrite a trusted name already stamped above. Skill values are
-  //    UNTRUSTED, so the placeholder shape is enforced.
+  //    overwrite a name already stamped above (a trusted bare credential, an
+  //    earlier skill, or a passthrough var). Skill values are UNTRUSTED, so the
+  //    placeholder shape is enforced.
   for (const { envName, bareSlot } of input.skillSlots) {
     if (!BARE_ENV_NAME_RE.test(bareSlot)) continue; // smuggled name guard
-    if (input.trustedBareNames.has(bareSlot)) continue; // trusted wins (rule 3)
-    if (Object.prototype.hasOwnProperty.call(out, bareSlot)) continue; // first wins
+    if (Object.prototype.hasOwnProperty.call(out, bareSlot)) continue; // first/trusted wins
     const v = input.namespacedEnvMap[envName];
     if (typeof v === 'string' && PLACEHOLDER_RE.test(v)) {
       out[bareSlot] = v;

@@ -93,4 +93,36 @@ describe('projectEnvMapToBareNames', () => {
     });
     expect(out).toEqual({ ANTHROPIC_API_KEY: PH(1), LINEAR_API_KEY: PH(2) });
   });
+
+  it('passes a NON-credential env var through unchanged (regression: AX_TEST_STUB_SCRIPT)', () => {
+    // The proxy's envMap can carry non-credential vars (e.g. a test-proxy feeds
+    // the stub-runner script through envMap). The projection must NOT drop them —
+    // dropping AX_TEST_STUB_SCRIPT broke the preset-k8s acceptance canaries
+    // (sandbox-exit-before-chat-end: "stub-runner: missing required env").
+    const out = projectEnvMapToBareNames({
+      namespacedEnvMap: {
+        AX_TEST_STUB_SCRIPT: '/tmp/stub.mjs',
+        ANTHROPIC_API_KEY: PH(1),
+        'skill:linear:LINEAR_API_KEY': PH(2),
+      },
+      trustedBareNames: new Set(['ANTHROPIC_API_KEY']),
+      skillSlots: [{ envName: 'skill:linear:LINEAR_API_KEY', bareSlot: 'LINEAR_API_KEY' }],
+    });
+    expect(out).toEqual({
+      AX_TEST_STUB_SCRIPT: '/tmp/stub.mjs', // non-credential var preserved verbatim
+      ANTHROPIC_API_KEY: PH(1),
+      LINEAR_API_KEY: PH(2),
+    });
+  });
+
+  it('excludes the raw namespaced key from the projected (flat) env', () => {
+    const out = projectEnvMapToBareNames({
+      namespacedEnvMap: { 'skill:linear:LINEAR_API_KEY': PH(1) },
+      trustedBareNames: new Set(),
+      skillSlots: [{ envName: 'skill:linear:LINEAR_API_KEY', bareSlot: 'LINEAR_API_KEY' }],
+    });
+    // Only the bare name survives; the `skill:...` key (invalid env name) is gone.
+    expect(out).toEqual({ LINEAR_API_KEY: PH(1) });
+    expect(out['skill:linear:LINEAR_API_KEY']).toBeUndefined();
+  });
 });
