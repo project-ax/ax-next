@@ -1009,6 +1009,118 @@ describe('@ax/channel-web POST /api/chat/messages', () => {
     expect(got.conversation.activeSessionId).toBe(liveSessionId);
     expect(got.conversation.activeReqId).toBe(body.reqId);
   });
+
+  it('13. (TASK-89) happy path: active_req_id is bound BEFORE the 202, binding exactly once (no added latency)', async () => {
+    // The early bind is authoritative but must not cost the common case
+    // anything: when the bind lands first try, the route calls
+    // conversations:bind-session exactly once and returns 202 with the
+    // reqId already resolvable via conversations:get-by-req-id — i.e. the
+    // SSE GET racing in right after the 202 finds the row (no 404 window).
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const callSpy = vi.spyOn(booted.harness.bus, 'call');
+
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [{ type: 'text', text: 'hi' }],
+    });
+
+    expect(r.status).toBe(202);
+    const body = (await r.json()) as { conversationId: string; reqId: string };
+
+    // Bound exactly once on the happy path — the retry loop never spins.
+    const bindCalls = callSpy.mock.calls.filter(
+      ([hookName]) => hookName === 'conversations:bind-session',
+    );
+    expect(bindCalls).toHaveLength(1);
+    callSpy.mockRestore();
+
+    // The reqId resolves the conversation NOW (before any orchestrator bind) —
+    // the cold-respawn 404 window is closed at the source.
+    interface ByReqIdInput {
+      reqId: string;
+      userId: string;
+    }
+    interface ByReqIdOutput {
+      conversationId: string;
+      activeReqId: string | null;
+    }
+    const resolved = await booted.harness.bus.call<ByReqIdInput, ByReqIdOutput>(
+      'conversations:get-by-req-id',
+      booted.harness.ctx({ userId: 'userA' }),
+      { reqId: body.reqId, userId: 'userA' },
+    );
+    expect(resolved.conversationId).toBe(body.conversationId);
+    expect(resolved.activeReqId).toBe(body.reqId);
+  });
+
+  it('14. (TASK-89) bind never establishes → 503 (not 202), agent:invoke NOT dispatched', async () => {
+    // When the bind can't be established within the retry budget, the POST
+    // returns 503 so the client retries the whole turn — rather than a 202
+    // for a reqId whose stream could never open. Critically: no turn is
+    // started (agent:invoke is dispatched only AFTER a successful bind), so
+    // a 503 can't leave a half-started turn behind.
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    // Force every conversations:bind-session call to reject, simulating a
+    // bind backend that's down for the whole retry window. All OTHER hooks
+    // pass through to the real implementations.
+    const realCall = booted.harness.bus.call.bind(booted.harness.bus);
+    const callSpy = vi
+      .spyOn(booted.harness.bus, 'call')
+      .mockImplementation((hookName: string, ...rest: unknown[]) => {
+        if (hookName === 'conversations:bind-session') {
+          return Promise.reject(
+            new PluginError({
+              code: 'unknown',
+              plugin: 'mock-conversations',
+              hookName,
+              message: 'bind backend unavailable (test)',
+            }),
+          );
+        }
+        return (realCall as (...a: unknown[]) => Promise<unknown>)(
+          hookName,
+          ...rest,
+        );
+      });
+
+    const r = await postMessage(booted.port, {
+      conversationId: null,
+      agentId: 'agt_test',
+      contentBlocks: [{ type: 'text', text: 'hi' }],
+    });
+
+    expect(r.status).toBe(503);
+    expect(await r.json()).toEqual({ error: 'bind-unavailable' });
+
+    // It retried (bounded), not a single best-effort attempt.
+    const bindCalls = callSpy.mock.calls.filter(
+      ([hookName]) => hookName === 'conversations:bind-session',
+    );
+    expect(bindCalls.length).toBeGreaterThan(1);
+
+    // No turn was started — agent:invoke must NOT have been dispatched.
+    const invokeCalls = callSpy.mock.calls.filter(
+      ([hookName]) => hookName === 'agent:invoke',
+    );
+    expect(invokeCalls).toHaveLength(0);
+
+    callSpy.mockRestore();
+    // Give any (non-existent) async dispatch a tick — proves the capture
+    // really is empty, not just not-yet-flushed.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(booted.chatRunCaptures).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -234,6 +234,89 @@ interface AttachmentsCommitOutput {
  */
 const MAX_PER_MESSAGE_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 
+// --- early-bind authoritativeness (TASK-89) -------------------------------
+//
+// The early bind of `active_req_id` (below, before the 202) is what lets the
+// browser's `GET /api/chat/stream/:reqId` resolve a conversation the instant
+// it races over after the POST. If it doesn't land, the SSE handler 404s until
+// the orchestrator's own post-`sandbox:open-session` bind lands — seconds later
+// for a cold runner pod (the cold-respawn 404 window TASK-88 mitigated
+// client-side; this closes it at the source).
+//
+// So the bind is no longer best-effort: it retries within a SMALL budget, and
+// if it still can't land we 503 the POST (the client retries the whole turn)
+// rather than hand back a 202 for a reqId whose stream can never open. The
+// happy path binds first try → no added latency, 202 as before.
+//
+// 400ms total is sub-perceptible (the SSE GET races us in microseconds, and a
+// cold pod's stream isn't ready for seconds regardless) yet absorbs the
+// realistic transient causes of a first-try miss when the row was JUST
+// created/fetched in THIS request: a read-after-write replica lag race or a
+// brief DB blip. A genuinely-missing row never recovers — the budget bounds it
+// and the 503 lets the client retry cleanly.
+const BIND_TOTAL_BUDGET_MS = 400;
+const BIND_BACKOFF_INITIAL_MS = 25;
+const BIND_BACKOFF_MAX_MS = 150;
+
+/**
+ * Bind `active_req_id` (+ the chosen sessionId) on the conversation row,
+ * authoritatively: retry within `BIND_TOTAL_BUDGET_MS` of capped-exponential
+ * backoff. Returns `true` once the bind lands, `false` if it can't be
+ * established within the budget (caller 503s the POST).
+ *
+ * `conversations:bind-session` is gated via `bus.hasService` (NOT a manifest
+ * call — same convention the orchestrator uses for this hook). When it's
+ * absent the bind can NEVER land, so we return `false` immediately: a 202 for
+ * an un-openable reqId is exactly the failure this closes. In prod the k8s
+ * preset always co-deploys @ax/conversations, so this branch is unreachable
+ * there; it's the contract-honoring fallback for a degenerate preset.
+ *
+ * The `chat_bind_session_failed` telemetry is preserved — it fires on every
+ * failed attempt (so a flaky bind that eventually succeeds still leaves a
+ * trail), with the attempt count for triage.
+ */
+export async function bindActiveReqIdAuthoritative(
+  bus: HookBus,
+  ctx: AgentContext,
+  bind: { conversationId: string; sessionId: string; reqId: string },
+): Promise<boolean> {
+  if (!bus.hasService('conversations:bind-session')) {
+    return false;
+  }
+  const deadline = Date.now() + BIND_TOTAL_BUDGET_MS;
+  let backoff = BIND_BACKOFF_INITIAL_MS;
+  let attempt = 0;
+  for (;;) {
+    attempt += 1;
+    try {
+      await bus.call<
+        { conversationId: string; sessionId: string; reqId: string },
+        unknown
+      >('conversations:bind-session', ctx, {
+        conversationId: bind.conversationId,
+        sessionId: bind.sessionId,
+        reqId: bind.reqId,
+      });
+      return true;
+    } catch (err) {
+      ctx.logger.warn('chat_bind_session_failed', {
+        plugin: PLUGIN_NAME,
+        conversationId: bind.conversationId,
+        attempt,
+        err:
+          err instanceof Error
+            ? { name: err.name, message: err.message }
+            : String(err),
+      });
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      const wait = Math.min(backoff, remaining);
+      await new Promise<void>((resolve) => setTimeout(resolve, wait));
+      backoff = Math.min(backoff * 2, BIND_BACKOFF_MAX_MS);
+    }
+  }
+}
+
 // --- handler factory ------------------------------------------------------
 
 export interface ChatRouteDeps {
@@ -479,30 +562,21 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       //     `session:is-alive` return false and forces fresh-spawn even
       //     when the live session is reachable.
       //
-      // Best-effort: bind failures fall through silently — the
-      // orchestrator's later bind retries.
-      if (bus.hasService('conversations:bind-session')) {
-        const sessionIdToBind = existingActiveSessionId ?? placeholderSessionId;
-        try {
-          await bus.call<
-            {
-              conversationId: string;
-              sessionId: string;
-              reqId: string;
-            },
-            unknown
-          >('conversations:bind-session', agentInvokeCtx, {
-            conversationId,
-            sessionId: sessionIdToBind,
-            reqId,
-          });
-        } catch (err) {
-          agentInvokeCtx.logger.warn('chat_bind_session_failed', {
-            plugin: PLUGIN_NAME,
-            conversationId,
-            err: err instanceof Error ? { name: err.name, message: err.message } : String(err),
-          });
-        }
+      // TASK-89 — the bind is AUTHORITATIVE: it retries within a small
+      // budget, and if it still can't land we 503 the POST (the client
+      // retries the whole turn) rather than hand back a 202 for a reqId
+      // whose stream can never open. The happy path binds first try, so no
+      // added latency — 202 as before. We have NOT dispatched agent:invoke
+      // yet, so a 503 here starts no turn (nothing to duplicate).
+      const sessionIdToBind = existingActiveSessionId ?? placeholderSessionId;
+      const bound = await bindActiveReqIdAuthoritative(bus, agentInvokeCtx, {
+        conversationId,
+        sessionId: sessionIdToBind,
+        reqId,
+      });
+      if (!bound) {
+        res.status(503).json({ error: 'bind-unavailable' });
+        return;
       }
 
       // `content` carries the typed text; `contentBlocks` carries only
