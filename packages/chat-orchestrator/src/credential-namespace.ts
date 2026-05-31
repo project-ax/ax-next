@@ -115,7 +115,11 @@ export function projectEnvMapToBareNames(
   //    placeholder shape is enforced.
   for (const { envName, bareSlot } of input.skillSlots) {
     if (!BARE_ENV_NAME_RE.test(bareSlot)) continue; // smuggled name guard
-    if (Object.prototype.hasOwnProperty.call(out, bareSlot)) continue; // first/trusted wins
+    // SECURITY: a skill can NEVER claim a trusted bare name, even if step-1
+    // passthrough didn't stamp it (e.g. the proxy omitted the trusted value).
+    // Explicit guard over the implicit "already stamped" check below.
+    if (input.trustedBareNames.has(bareSlot)) continue; // trusted wins, always
+    if (Object.prototype.hasOwnProperty.call(out, bareSlot)) continue; // first wins
     const v = input.namespacedEnvMap[envName];
     if (typeof v === 'string' && PLACEHOLDER_RE.test(v)) {
       out[bareSlot] = v;
