@@ -88,6 +88,22 @@ export const DEFAULT_TURN_ERROR =
 export const CONNECTION_LOST = 'Connection lost. Retry to continue.';
 
 /**
+ * SSE-open retry policy (TASK-84). The browser opens GET /api/chat/stream/:reqId
+ * microseconds after the POST's 202. On a cold-respawn gated turn the per-reqId
+ * binding / host route can lag that GET by a beat, so the FIRST open 404s and —
+ * before this — the user had to retry by hand. The GET is idempotent (it only
+ * REPLAYS a bounded per-reqId buffer; it never starts or duplicates a turn —
+ * that's POST's job), so re-opening it is safe, unlike a regenerate() re-POST.
+ * We retry a SMALL number of times with short backoff on TRANSIENT open
+ * failures only; a real client error (401/403/400/413) is not a boot race and
+ * throws on the first attempt.
+ */
+const SSE_OPEN_MAX_ATTEMPTS = 4;
+const SSE_OPEN_BACKOFF_MS = [150, 400, 900];
+/** HTTP statuses that signal "not ready yet / try again", not "you're wrong". */
+const SSE_OPEN_RETRYABLE_STATUS = new Set([404, 425, 429, 502, 503, 504]);
+
+/**
  * Map a wire turn-error reason code (backend-agnostic, from the orchestrator)
  * to a user-facing label. Unknown codes fall back to DEFAULT_TURN_ERROR —
  * forward-compat with newer server builds that emit a code the client
@@ -378,27 +394,105 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
     this.localConversationId = postOut.conversationId;
     this.setConversationIdFn?.(postOut.conversationId);
 
-    // Phase 2: SSE. Open the stream for the minted reqId and feed its body to
-    // buildTurnStream. A FAILED open here is a request-time error (the turn may
-    // or may not have started) — surface it as a thrown rejection so the
-    // runtime shows the banner rather than auto-retrying (which could
-    // duplicate a started turn).
-    const sseInit: RequestInit = {
-      method: 'GET',
-      headers: { accept: 'text/event-stream' },
-      credentials: 'include',
-    };
-    if (abortSignal) sseInit.signal = abortSignal;
-    const sseResp = await this.fetchImpl(
-      `${this.streamApi}/${encodeURIComponent(postOut.reqId)}`,
-      sseInit,
-    );
-    if (!sseResp.ok || !sseResp.body) {
-      throw new Error(
-        `chat-flow SSE open failed: ${sseResp.status} ${sseResp.statusText}`,
-      );
+    // Phase 2: SSE. Open the stream for the minted reqId with bounded backoff/
+    // retry on a transient open failure (TASK-84 — the cold-respawn 404 race),
+    // then feed its body to buildTurnStream. A FAILED open after the retry
+    // budget is a request-time error (the turn may or may not have started) —
+    // surface it as a thrown rejection so the runtime shows the banner rather
+    // than auto-RE-POSTING (which could duplicate a started turn).
+    const sseBody = await this.openSseStream(postOut.reqId, abortSignal);
+    return this.buildTurnStream(sseBody, abortSignal);
+  }
+
+  /**
+   * Open GET /api/chat/stream/:reqId, retrying on a transient open failure with
+   * bounded backoff (TASK-84). Returns the SSE response body on success; throws
+   * once the attempt budget is spent OR on a non-retryable status. Retrying the
+   * GET is safe because it only replays the server's bounded per-reqId buffer —
+   * it never starts a turn (only POST does). Honors abortSignal: an abort during
+   * a fetch or a backoff wait stops the loop immediately.
+   */
+  private async openSseStream(
+    reqId: string,
+    abortSignal: AbortSignal | undefined,
+  ): Promise<ReadableStream<Uint8Array>> {
+    const url = `${this.streamApi}/${encodeURIComponent(reqId)}`;
+    let lastStatus = 0;
+    let lastStatusText = '';
+    for (let attempt = 0; attempt < SSE_OPEN_MAX_ATTEMPTS; attempt += 1) {
+      if (abortSignal?.aborted) {
+        throw new DOMException('Aborted', 'AbortError');
+      }
+      const sseInit: RequestInit = {
+        method: 'GET',
+        headers: { accept: 'text/event-stream' },
+        credentials: 'include',
+      };
+      if (abortSignal) sseInit.signal = abortSignal;
+
+      let resp: Response;
+      try {
+        resp = await this.fetchImpl(url, sseInit);
+      } catch (err) {
+        // A network-level throw (connection refused / reset while the host is
+        // still coming up) is transient — retry it like a retryable status.
+        // But a caller-driven abort is NOT: re-throw so the SDK's normal
+        // cancellation runs (no spurious retry).
+        if (abortSignal?.aborted) throw err;
+        lastStatus = 0;
+        lastStatusText = err instanceof Error ? err.message : 'network error';
+        if (attempt < SSE_OPEN_MAX_ATTEMPTS - 1) {
+          await this.sseBackoffWait(attempt, abortSignal);
+          continue;
+        }
+        break;
+      }
+
+      if (resp.ok && resp.body) {
+        return resp.body;
+      }
+      lastStatus = resp.status;
+      lastStatusText = resp.statusText;
+      // A non-retryable status (e.g. 401/403/400/413) is a real error, not a
+      // boot race — fail fast without burning the budget.
+      if (!SSE_OPEN_RETRYABLE_STATUS.has(resp.status)) {
+        break;
+      }
+      if (attempt < SSE_OPEN_MAX_ATTEMPTS - 1) {
+        await this.sseBackoffWait(attempt, abortSignal);
+      }
     }
-    return this.buildTurnStream(sseResp.body, abortSignal);
+    throw new Error(`chat-flow SSE open failed: ${lastStatus} ${lastStatusText}`);
+  }
+
+  /**
+   * Sleep for the configured backoff for `attempt`, resolving early (and
+   * leaving the abort to be observed by the next loop guard) if the signal
+   * fires. Pure timer wait — no fetch — so an abort never leaks a pending
+   * connection.
+   */
+  private sseBackoffWait(
+    attempt: number,
+    abortSignal: AbortSignal | undefined,
+  ): Promise<void> {
+    const ms =
+      SSE_OPEN_BACKOFF_MS[attempt] ??
+      SSE_OPEN_BACKOFF_MS[SSE_OPEN_BACKOFF_MS.length - 1]!;
+    return new Promise<void>((resolve) => {
+      if (abortSignal?.aborted) {
+        resolve();
+        return;
+      }
+      const timer = setTimeout(() => {
+        abortSignal?.removeEventListener('abort', onAbort);
+        resolve();
+      }, ms);
+      const onAbort = (): void => {
+        clearTimeout(timer);
+        resolve();
+      };
+      abortSignal?.addEventListener('abort', onAbort, { once: true });
+    });
   }
 
   /**

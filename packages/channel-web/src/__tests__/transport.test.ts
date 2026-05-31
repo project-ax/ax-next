@@ -889,6 +889,145 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     ).rejects.toThrow(/chat-flow POST failed/);
   });
 
+  // TASK-84 — the cold-respawn SSE-open race. The browser opens GET
+  // /api/chat/stream/:reqId microseconds after the POST's 202. On a gated turn
+  // the runner pod is cold-spawned and the per-reqId binding / host route can
+  // lag that GET, so the FIRST open 404s. Before the fix, the transport threw on
+  // that first 404 and the user had to retry by hand (TASK-82 made the approval
+  // card durable but the 404 itself persisted). The GET is idempotent — it only
+  // replays a bounded per-reqId buffer; only POST starts a turn — so we retry it
+  // with bounded backoff.
+  test('retries SSE open on a transient 404 (cold-respawn race) then succeeds', async () => {
+    vi.useFakeTimers();
+    try {
+      let sseOpens = 0;
+      const fetchFn = vi.fn(async (url: RequestInfo | URL) => {
+        const u = String(url);
+        if (u.includes('/api/chat/messages')) {
+          return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'r1' }), {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        // SSE: 404 on the first open (reqId not bound yet), 200 on the second.
+        sseOpens += 1;
+        if (sseOpens === 1) {
+          return new Response('not-found', { status: 404 });
+        }
+        return new Response(sseStream(`data: {"reqId":"r1","done":true}\n\n`), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }) as unknown as typeof fetch;
+
+      const transport = new AxChatTransport({ fetch: fetchFn, getAgentId: () => 'a' });
+      const streamPromise = transport.sendMessages({
+        messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+      } as unknown as Parameters<typeof transport.sendMessages>[0]);
+      // Let the first (404) open settle, then advance past the backoff so the
+      // retry fires.
+      await vi.advanceTimersByTimeAsync(1000);
+      const stream = await streamPromise;
+      const chunks = (await drain(stream)) as Array<{ type: string }>;
+      expect(chunks.map((c) => c.type)).toEqual(['finish']);
+      expect(sseOpens).toBe(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('throws after the retry budget is exhausted on a persistent SSE 404', async () => {
+    vi.useFakeTimers();
+    try {
+      let sseOpens = 0;
+      const fetchFn = vi.fn(async (url: RequestInfo | URL) => {
+        const u = String(url);
+        if (u.includes('/api/chat/messages')) {
+          return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'r1' }), {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        sseOpens += 1;
+        return new Response('not-found', { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const transport = new AxChatTransport({ fetch: fetchFn, getAgentId: () => 'a' });
+      const p = transport.sendMessages({
+        messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+      } as unknown as Parameters<typeof transport.sendMessages>[0]);
+      // Attach the rejection handler BEFORE advancing timers so an early
+      // rejection isn't an unhandled rejection; advance well past the total
+      // backoff budget to drive every retry.
+      const settled = expect(p).rejects.toThrow(/SSE open failed/);
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settled;
+      // SSE_OPEN_MAX_ATTEMPTS opens, all 404.
+      expect(sseOpens).toBe(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test('does NOT retry a non-transient SSE open failure (403)', async () => {
+    let sseOpens = 0;
+    const fetchFn = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.includes('/api/chat/messages')) {
+        return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'r1' }), {
+          status: 202,
+          headers: { 'content-type': 'application/json' },
+        });
+      }
+      sseOpens += 1;
+      return new Response('forbidden', { status: 403 });
+    }) as unknown as typeof fetch;
+
+    const transport = new AxChatTransport({ fetch: fetchFn, getAgentId: () => 'a' });
+    await expect(
+      transport.sendMessages({
+        messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+      } as unknown as Parameters<typeof transport.sendMessages>[0]),
+    ).rejects.toThrow(/SSE open failed/);
+    // A real client error is NOT a cold-boot race — one attempt only.
+    expect(sseOpens).toBe(1);
+  });
+
+  test('aborts the SSE-open retry loop when the signal fires during backoff', async () => {
+    vi.useFakeTimers();
+    try {
+      let sseOpens = 0;
+      const fetchFn = vi.fn(async (url: RequestInfo | URL) => {
+        const u = String(url);
+        if (u.includes('/api/chat/messages')) {
+          return new Response(JSON.stringify({ conversationId: 'c1', reqId: 'r1' }), {
+            status: 202,
+            headers: { 'content-type': 'application/json' },
+          });
+        }
+        sseOpens += 1;
+        return new Response('not-found', { status: 404 });
+      }) as unknown as typeof fetch;
+
+      const ac = new AbortController();
+      const transport = new AxChatTransport({ fetch: fetchFn, getAgentId: () => 'a' });
+      const p = transport.sendMessages({
+        messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
+        abortSignal: ac.signal,
+      } as unknown as Parameters<typeof transport.sendMessages>[0]);
+      const settled = expect(p).rejects.toThrow();
+      // First 404 open has happened; abort while we're in the backoff wait.
+      await vi.advanceTimersByTimeAsync(50);
+      ac.abort();
+      await vi.advanceTimersByTimeAsync(60_000);
+      await settled;
+      // The loop stopped on abort — it did not exhaust the full attempt budget.
+      expect(sseOpens).toBeLessThan(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   test('returns empty finish stream when no user message is present', async () => {
     const { fetchFn, calls } = makeFetchMock();
     const transport = new AxChatTransport({
