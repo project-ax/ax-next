@@ -2,6 +2,12 @@
 
 Architectural / process decisions. Never deleted — strikethrough if reversed.
 
+## 2026-05-31 — TASK-103 Raise @ax/agents testcontainer hook timeout
+
+| Date | Decision | Rationale | Alternatives |
+|---|---|---|---|
+| 2026-05-31 | Fix via a new `packages/agents/vitest.config.ts` (`testTimeout: 60_000` + `hookTimeout: 60_000`), NOT a per-`beforeAll` 2nd-arg in migrations.test.ts. | 9 of 12 agents suites start a PostgreSqlContainer in `beforeAll`, all sharing the 10s-default flake — a config fix covers them all at once. Every sibling Postgres-testcontainer package (database/eventbus/session/storage-postgres) uses exactly this config shape; matching it is the established TASK-73-class precedent. The card explicitly allows the config approach and says "whichever matches the sibling packages' approach." `include: ['src/__tests__/**/*.test.ts']` matches the agents layout, so no test set changes. tsconfig `include: ['src/**/*']` excludes the root config from `tsc --build`. | (a) `beforeAll(..., 30_000)` 2nd arg in migrations.test.ts only — rejected: leaves the other 8 container suites on the 10s default, doesn't match siblings. (b) 30_000 instead of 60_000 — rejected: card says match siblings, which use 60_000; 60s is the proven value already running in CI. |
+
 ## 2026-05-31 — TASK-92 Skill manifest gains additive connectors[] reference list
 
 | Date | Decision | Rationale | Alternatives |
