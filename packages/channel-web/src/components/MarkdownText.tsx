@@ -33,6 +33,7 @@ import { useAui, useAuiState } from '@assistant-ui/react';
 import remarkGfm from 'remark-gfm';
 import { ArtifactChip } from './ArtifactChip';
 import { useConversationId } from '../lib/use-conversation-id';
+import { stripMcpToolPrefix } from '../lib/tool-name';
 
 const AX_ARTIFACT_PREFIX = 'ax://artifact/';
 
@@ -145,7 +146,13 @@ function parseArtifactsFromThread(
         result?: unknown;
       };
       if (obj.type !== 'tool-call') continue;
-      if (obj.toolName !== 'artifact_publish') continue;
+      // The runner emits the MCP-namespaced `mcp__ax-sandbox-tools__artifact_publish`
+      // (the SDK renames MCP tools at the canUseTool boundary, and that name is
+      // what's persisted + reaches the part). Strip the prefix before matching so
+      // we pair the artifact link with its result regardless of the bare vs.
+      // namespaced form (TASK-81).
+      if (typeof obj.toolName !== 'string') continue;
+      if (stripMcpToolPrefix(obj.toolName) !== 'artifact_publish') continue;
       for (const parsed of resultCandidates(obj.result)) {
         if (!parsed || typeof parsed !== 'object') continue;
         const r = parsed as Partial<ArtifactToolResult>;

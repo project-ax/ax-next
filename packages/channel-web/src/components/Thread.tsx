@@ -46,6 +46,22 @@ import { ArtifactPublishTool, ToolFallback, ToolGroup } from './ToolUse';
 import { AttachmentChip } from './AttachmentChip';
 import { decodeAttachmentPath } from '../lib/history-adapter';
 import { useConversationId } from '../lib/use-conversation-id';
+import {
+  ARTIFACT_PUBLISH_TOOL_NAME,
+  MCP_ARTIFACT_PUBLISH_TOOL_NAME,
+} from '../lib/tool-name';
+
+// `tools.by_name` is an exact-match dictionary on the raw `part.toolName`, and
+// the runner emits the MCP-namespaced `mcp__ax-sandbox-tools__artifact_publish`
+// (the SDK renames MCP tools at the canUseTool boundary). Register the chip
+// renderer under BOTH the namespaced name and the bare `artifact_publish` so it
+// resolves whether the part carries the live SDK name or an already-stripped /
+// legacy bare name — otherwise the published-artifact download chip degrades to
+// the raw tool panel (TASK-81).
+const ARTIFACT_PUBLISH_BY_NAME = {
+  [ARTIFACT_PUBLISH_TOOL_NAME]: ArtifactPublishTool,
+  [MCP_ARTIFACT_PUBLISH_TOOL_NAME]: ArtifactPublishTool,
+};
 
 const MSG_ACTION_CLASS =
   'msg-action inline-flex items-center justify-center cursor-pointer h-[22px] w-[22px] rounded text-muted-foreground hover:text-foreground hover:bg-muted transition-colors data-[copied=true]:text-primary [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:block [&[data-copied=true]_.msg-action-icon-copy]:hidden [&:not([data-copied])_.msg-action-icon-check]:hidden';
@@ -263,7 +279,7 @@ const AssistantMessage: FC = () => (
           components={{
             Text: MarkdownText,
             tools: {
-              by_name: { artifact_publish: ArtifactPublishTool },
+              by_name: ARTIFACT_PUBLISH_BY_NAME,
               Fallback: ToolFallback,
             },
             ToolGroup,
