@@ -172,26 +172,63 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
     )
   `.execute(db);
 
-  // skills_v1_approved_caps — per-(user, agent, skill, capability) approval
-  // metadata (Phase 4). Each row records ONE capability a human approved at the
-  // wall for a self-authored draft. `approved = union of rows`; the host
-  // discovery projection grants `proposal ∩ approved`. The bundle frontmatter is
-  // the proposal source of truth; this table is thin approval metadata (I4).
-  // `agent_id` is an opaque scoping key — no FK to agents_v1_agents (cross-plugin
-  // FKs are banned). `cap_detail` is optional display/audit JSON (slot kind +
-  // account, or an MCP spec); the projection matches on (cap_kind, cap_value)
-  // only. Additive-only.
+  // skills_v1_approved_caps — per-(user, agent, SUBJECT, capability) approval
+  // metadata (Phase 4; TASK-93 extends SUBJECT to cover connectors). Each row
+  // records ONE capability a human approved at the wall for a model-authored
+  // draft. `approved = union of rows`; the host discovery projection grants
+  // `proposal ∩ approved`. The bundle/connector frontmatter is the proposal
+  // source of truth; this table is thin approval metadata (I4).
+  //
+  // The grant SUBJECT is exactly one of {skill, connector} — TASK-93 reuses the
+  // SAME wall for agent-authored connectors instead of forking a parallel store
+  // (invariant I4 one-source-of-truth). `skill_id`/`connector_id` are opaque
+  // domain slugs (NOT backend vocab; no FK — cross-plugin FKs are banned). The
+  // unused side carries the empty-string sentinel `''` (a PK column can't be
+  // NULL), so a skill grant is `(skill_id='x', connector_id='')` and a connector
+  // grant is `(skill_id='', connector_id='c')` — they never collide even with the
+  // same id, and existing skill-scoped `WHERE skill_id=…` queries still match.
+  // `cap_detail` is optional display/audit JSON (slot kind + account, or an MCP
+  // spec); the projection matches on (cap_kind, cap_value) only. Additive-only.
   await sql`
     CREATE TABLE IF NOT EXISTS skills_v1_approved_caps (
       owner_user_id TEXT NOT NULL,
       agent_id      TEXT NOT NULL,
-      skill_id      TEXT NOT NULL,
+      skill_id      TEXT NOT NULL DEFAULT '',
+      connector_id  TEXT NOT NULL DEFAULT '',
       cap_kind      TEXT NOT NULL,
       cap_value     TEXT NOT NULL,
       cap_detail    JSONB NULL,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (owner_user_id, agent_id, skill_id, cap_kind, cap_value)
+      CONSTRAINT skills_v1_approved_caps_pkey
+        PRIMARY KEY (owner_user_id, agent_id, skill_id, connector_id, cap_kind, cap_value)
     )
+  `.execute(db);
+
+  // TASK-93 in-place upgrade for a table created before connector_id existed
+  // (forward-only, idempotent — greenfield has no prod rows). Add the column,
+  // then swap the 5-col PK for the 6-col one. The PK swap is guarded by a column
+  // check so a freshly-created table (already 6-col) and a re-run are both no-ops.
+  await sql`
+    ALTER TABLE skills_v1_approved_caps
+      ADD COLUMN IF NOT EXISTS connector_id TEXT NOT NULL DEFAULT ''
+  `.execute(db);
+  await sql`
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.key_column_usage
+        WHERE table_name = 'skills_v1_approved_caps'
+          AND constraint_name = 'skills_v1_approved_caps_pkey'
+          AND column_name = 'connector_id'
+      ) THEN
+        ALTER TABLE skills_v1_approved_caps
+          DROP CONSTRAINT IF EXISTS skills_v1_approved_caps_pkey;
+        ALTER TABLE skills_v1_approved_caps
+          ADD CONSTRAINT skills_v1_approved_caps_pkey
+          PRIMARY KEY (owner_user_id, agent_id, skill_id, connector_id, cap_kind, cap_value);
+      END IF;
+    END $$
   `.execute(db);
 
   // skills_v1_authored — agent-authored skills, the single source of truth that
@@ -343,7 +380,10 @@ export interface QuarantineRow {
 export interface ApprovedCapRow {
   owner_user_id: string;
   agent_id: string;
+  // Exactly one of skill_id/connector_id identifies the grant subject; the
+  // unused side is the empty-string sentinel '' (TASK-93). Both default to ''.
   skill_id: string;
+  connector_id: string;
   cap_kind: string;
   cap_value: string;
   cap_detail: unknown | null; // JSONB; nullable

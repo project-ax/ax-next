@@ -17,7 +17,7 @@ import { createUserSkillsStore } from './user-store.js';
 import { createUserAttachmentsStore } from './user-attachments-store.js';
 import { createCatalogRequestsStore } from './catalog-requests-store.js';
 import { createSkillsQuarantineStore } from './quarantine-store.js';
-import { createApprovedCapsStore } from './approved-caps-store.js';
+import { createApprovedCapsStore, type ApprovedCapSubject } from './approved-caps-store.js';
 import { createAuthoredSkillsStore } from './authored-store.js';
 import { classifyProposal } from './propose-gate.js';
 import { validateAttachmentBindings } from './attachment-validation.js';
@@ -123,6 +123,30 @@ function requireOwner(ownerUserId: string | undefined): string {
     });
   }
   return ownerUserId;
+}
+
+// ---------------------------------------------------------------------------
+// resolveApprovedCapSubject — TASK-93. The approved-caps wall attributes a grant
+// to exactly one of {skill, connector}. The wire input carries both as optional
+// fields; enforce exactly-one here so neither a caller nor the store can persist
+// an ambiguous (both-set) or unattributed (neither-set) grant. An empty-string
+// id counts as absent (it's the store's reserved sentinel for "no subject").
+// ---------------------------------------------------------------------------
+function resolveApprovedCapSubject(input: {
+  skillId?: string;
+  connectorId?: string;
+}): ApprovedCapSubject {
+  const hasSkill = !!input.skillId;
+  const hasConnector = !!input.connectorId;
+  if (hasSkill === hasConnector) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message:
+        'approved-caps: exactly one of skillId or connectorId is required (a grant is attributed to one subject)',
+    });
+  }
+  return hasConnector ? { connectorId: input.connectorId! } : { skillId: input.skillId! };
 }
 
 // ---------------------------------------------------------------------------
@@ -996,7 +1020,17 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
       bus.registerService<SkillsApprovedCapsListInput, SkillsApprovedCapsListOutput>(
         'skills:approved-caps-list',
         PLUGIN_NAME,
-        async (_ctx, input) => ({ capabilities: await approvedCapsStore.list(input) }),
+        async (_ctx, input) => {
+          // TASK-93: the grant subject is exactly one of {skill, connector}.
+          const subject = resolveApprovedCapSubject(input);
+          return {
+            capabilities: await approvedCapsStore.list({
+              ownerUserId: input.ownerUserId,
+              agentId: input.agentId,
+              ...subject,
+            }),
+          };
+        },
         { returns: SkillsApprovedCapsListOutputSchema },
       );
       bus.registerService<SkillsApprovedCapsSetInput, SkillsApprovedCapsSetOutput>(
@@ -1014,14 +1048,31 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
               message: "approved-caps-set: kind 'mcp' is not yet supported",
             });
           }
-          return approvedCapsStore.set(input);
+          const subject = resolveApprovedCapSubject(input);
+          return approvedCapsStore.set({
+            ownerUserId: input.ownerUserId,
+            agentId: input.agentId,
+            kind: input.kind,
+            value: input.value,
+            ...(input.detail !== undefined ? { detail: input.detail } : {}),
+            ...subject,
+          });
         },
         { returns: SkillsApprovedCapsSetOutputSchema },
       );
       bus.registerService<SkillsApprovedCapsRevokeInput, SkillsApprovedCapsRevokeOutput>(
         'skills:approved-caps-revoke',
         PLUGIN_NAME,
-        async (_ctx, input) => approvedCapsStore.clear(input),
+        async (_ctx, input) => {
+          const subject = resolveApprovedCapSubject(input);
+          return approvedCapsStore.clear({
+            ownerUserId: input.ownerUserId,
+            agentId: input.agentId,
+            kind: input.kind,
+            value: input.value,
+            ...subject,
+          });
+        },
         { returns: SkillsApprovedCapsRevokeOutputSchema },
       );
 
