@@ -285,23 +285,44 @@ Backlog→To Do promote). Re-launch it after every loop pass.
 cat > .claude/auto-ship-board-poll.sh <<'SH'
 #!/usr/bin/env bash
 # Exits 0 when the To Do lane changes vs the cached snapshot (re-invokes auto-ship).
-# GraphQL-frugal: this targeted query costs ~1 pt/poll (vs ~102 for `gh project
-# item-list`, which fetches every field value + body). At 60s cadence that is ~60
-# pts/hr against the 5000/hr budget. It also refuses to poll when the budget is low,
-# so a poller can never be what drains GraphQL.
+# GraphQL-frugal: the targeted fieldValueByName query costs ~1 pt per 100-item page
+# (vs ~102 for `gh project item-list`, which fetches every field value + body). The
+# board exceeds 100 items, so we PAGINATE every page: a single first:100 silently
+# truncates the newest cards — including a brand-new To Do follow-up — and the poller
+# goes BLIND (it never detects the change, stalling the loop). It also refuses to poll
+# when the budget is low, so a poller can never be what drains GraphQL.
 SNAP=.claude/auto-ship-todo-snapshot.txt
-Q='query{ organization(login:"project-ax"){ projectV2(number:1){ items(first:100){ nodes{
-  id
-  content{ ... on DraftIssue{title} ... on Issue{title} ... on PullRequest{title} }
-  status: fieldValueByName(name:"Status")    { ... on ProjectV2ItemFieldSingleSelectValue{name} }
-  deps:   fieldValueByName(name:"Depends on") { ... on ProjectV2ItemFieldTextValue{text} } }}}}}'
+Q='query($after:String){ organization(login:"project-ax"){ projectV2(number:1){ items(first:100, after:$after){
+  pageInfo{ hasNextPage endCursor }
+  nodes{
+    id
+    content{ ... on DraftIssue{title} ... on Issue{title} ... on PullRequest{title} }
+    status: fieldValueByName(name:"Status")    { ... on ProjectV2ItemFieldSingleSelectValue{name} }
+    deps:   fieldValueByName(name:"Depends on") { ... on ProjectV2ItemFieldTextValue{text} } }}}}}'
+# todo_json — paginate ALL items, emit the To Do lane as canonical JSON sorted by id.
+# sort_by(.id) is load-bearing: items() returns nodes in non-deterministic order, and
+# jq -S sorts object KEYS but not ARRAY order, so without it the hash flips on identical
+# content and the poller spurious-fires. Non-zero on a failed/rate-limited read.
+todo_json() {
+  local after="null" all="[]" page nodes hasnext cursor
+  while :; do
+    if [ "$after" = "null" ]; then page=$(gh api graphql -f query="$Q" -F after=null 2>/dev/null) || return 1
+    else page=$(gh api graphql -f query="$Q" -f after="$after" 2>/dev/null) || return 1; fi
+    printf '%s' "$page" | jq -e '.data.organization.projectV2.items' >/dev/null 2>&1 || return 1
+    nodes=$(printf '%s' "$page" | jq -c '.data.organization.projectV2.items.nodes')
+    all=$(jq -cn --argjson a "$all" --argjson b "$nodes" '$a + $b')
+    hasnext=$(printf '%s' "$page" | jq -r '.data.organization.projectV2.items.pageInfo.hasNextPage')
+    cursor=$(printf '%s' "$page" | jq -r '.data.organization.projectV2.items.pageInfo.endCursor')
+    [ "$hasnext" = "true" ] || break
+    after="$cursor"
+  done
+  printf '%s' "$all" | jq -S '[.[] | select(.status.name=="To Do")
+    | {id, title:.content.title, deps:(.deps.text // "")}] | sort_by(.id)'
+}
 while true; do
   REM=$(gh api rate_limit --jq '.resources.graphql.remaining' 2>/dev/null || echo 5000)
   if [ "${REM:-5000}" -lt 500 ]; then sleep 120; continue; fi   # free pre-check; never be the drainer
-  CUR=$(gh api graphql -f query="$Q" \
-    | jq -S '[.data.organization.projectV2.items.nodes[]
-             | select(.status.name=="To Do")
-             | {id, title:.content.title, deps:(.deps.text // "")}]')
+  CUR=$(todo_json) || { sleep 60; continue; }                   # failed read: don't act on garbage
   H=$(printf '%s' "$CUR" | { shasum 2>/dev/null || sha1sum; } | cut -d" " -f1)
   if [ "$H" != "$(cat "$SNAP" 2>/dev/null)" ]; then
     printf '%s' "$H" > "$SNAP"; echo "TO-DO CHANGED"; exit 0
@@ -312,19 +333,27 @@ SH
 chmod +x .claude/auto-ship-board-poll.sh
 ```
 
-The `first:100` covers a board up to 100 items (this one is 41); the To Do lane is
-always a small subset. `fieldValueByName` pulls only the two fields the hash needs
-(Status, Depends on) instead of the whole `fieldValues` connection — that single change
-is the ~102→~1 pt collapse. The orchestrator's per-pass read (§3) still legitimately
-needs bodies, but it runs **once per pass**, not every 60s — the poller is the one that
-must stay cheap.
+Pagination is load-bearing: the board exceeds 100 items (Done cards accumulate and
+never leave — 117+ as of 2026-05-31), so a lone `first:100` would drop the newest cards
+(a just-created To Do follow-up lands *last*), and the poller would never see them — a
+**blind poller that stalls the loop**, not just a spurious fire. `todo_json` loops
+`after`/`endCursor` over every page (~1 pt each, a handful of pages) so no To Do card is
+ever invisible. `fieldValueByName` pulls only the two fields the hash needs (Status,
+Depends on) instead of the whole `fieldValues` connection — that's the ~102→~1-pt-per-page
+collapse. The orchestrator's per-pass read (§3) still legitimately needs bodies, but it
+runs **once per pass**, not every 60s — the poller is the one that must stay cheap.
 
 **Snapshot-refresh discipline (avoids self-triggering):** the orchestrator's own pass
 mutates To Do (moves a card out, writes deps), which would re-trip the poller. So at
 the **end** of each pass — after all board writes, before re-launching the poller —
 recompute the hash and overwrite `.claude/auto-ship-todo-snapshot.txt` with it, so the
 poller's next compare sees no change and sleeps. The first launch has an empty
-snapshot, so it fires immediately → that's the run-start review.
+snapshot, so it fires immediately → that's the run-start review. **The manual refresh
+MUST mirror the poller's method exactly** — reuse the paginated, `sort_by(.id)`-sorted
+`todo_json` and `printf '%s' "$CUR" | shasum` (capture into a var first). An ad-hoc
+`first:100` snippet re-introduces the blind-truncation bug, and `jq … | shasum` (piping
+jq straight to shasum) adds a trailing newline the poller's `printf '%s'` omits — a hash
+mismatch that fires the poller *every* cycle.
 
 The poller hashes **only the To Do lane**. All progress-block writes (§6) land on
 **In Progress** cards, so they never trip the poller — no self-trigger from the live
