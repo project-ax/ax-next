@@ -468,4 +468,127 @@ describe('@ax/channel-web ChunkBuffer', () => {
       buf.dispose();
     }
   });
+
+  // TASK-82 — durable pending JIT approval cards. These back the SSE replay
+  // path that recovers a card lost to the cold-boot delivery race.
+  describe('pending permission cards (TASK-82)', () => {
+    const skill = (skillId: string) =>
+      ({
+        kind: 'skill' as const,
+        skillId,
+        description: 'd',
+        hosts: ['api.example.com'],
+        slots: [{ slot: 'KEY', kind: 'api-key' as const }],
+      });
+
+    it('appendPermissionCard + tailPermissionCards round-trips by conversationId', () => {
+      const buf = createChunkBuffer();
+      try {
+        buf.appendPermissionCard('cnv1', skill('s1'));
+        buf.appendPermissionCard('cnv1', skill('s2'));
+        const cards = buf.tailPermissionCards('cnv1');
+        expect(cards.map((c) => (c.kind === 'skill' ? c.skillId : ''))).toEqual([
+          's1',
+          's2',
+        ]);
+        expect(buf.tailPermissionCards('cnv-unknown')).toEqual([]);
+      } finally {
+        buf.dispose();
+      }
+    });
+
+    it('de-dupes by skillId — a re-proposal replaces in place, never stacks', () => {
+      const buf = createChunkBuffer();
+      try {
+        buf.appendPermissionCard('cnv1', skill('s1'));
+        buf.appendPermissionCard('cnv1', {
+          ...skill('s1'),
+          hosts: ['api.example.com', 'extra.example.com'],
+        });
+        const cards = buf.tailPermissionCards('cnv1');
+        expect(cards).toHaveLength(1);
+        expect(cards[0]?.kind === 'skill' ? cards[0].hosts : []).toEqual([
+          'api.example.com',
+          'extra.example.com',
+        ]);
+      } finally {
+        buf.dispose();
+      }
+    });
+
+    it('evictPermissionCard removes one resolved skill card (grant applied)', () => {
+      const buf = createChunkBuffer();
+      try {
+        buf.appendPermissionCard('cnv1', skill('s1'));
+        buf.appendPermissionCard('cnv1', skill('s2'));
+        buf.evictPermissionCard('cnv1', 's1');
+        const cards = buf.tailPermissionCards('cnv1');
+        expect(cards.map((c) => (c.kind === 'skill' ? c.skillId : ''))).toEqual([
+          's2',
+        ]);
+        // Idempotent — evicting an absent skill is a no-op.
+        buf.evictPermissionCard('cnv1', 's-absent');
+        expect(buf.tailPermissionCards('cnv1')).toHaveLength(1);
+      } finally {
+        buf.dispose();
+      }
+    });
+
+    it('evictConversationCards drops every card for a deleted conversation', () => {
+      const buf = createChunkBuffer();
+      try {
+        buf.appendPermissionCard('cnv1', skill('s1'));
+        buf.appendPermissionCard('cnv1', skill('s2'));
+        buf.evictConversationCards('cnv1');
+        expect(buf.tailPermissionCards('cnv1')).toEqual([]);
+      } finally {
+        buf.dispose();
+      }
+    });
+
+    it('host cards key off reqId and are dropped at the turn boundary (evictReqId)', () => {
+      const buf = createChunkBuffer();
+      try {
+        buf.appendPermissionCard('r1', {
+          kind: 'host',
+          host: 'h.example.com',
+          sessionId: 's1',
+        });
+        expect(buf.tailHostCards('r1')).toHaveLength(1);
+        buf.evictReqId('r1');
+        expect(buf.tailHostCards('r1')).toEqual([]);
+      } finally {
+        buf.dispose();
+      }
+    });
+
+    it('pending skill cards SURVIVE the IDLE_TTL sweep (a human may take minutes)', () => {
+      vi.useFakeTimers();
+      const buf = createChunkBuffer();
+      try {
+        buf.appendPermissionCard('cnv1', skill('s1'));
+        // Well past the chunk IDLE_TTL (60s) and several sweep ticks (30s).
+        vi.advanceTimersByTime(5 * 60_000);
+        expect(buf.tailPermissionCards('cnv1')).toHaveLength(1);
+      } finally {
+        buf.dispose();
+        vi.useRealTimers();
+      }
+    });
+
+    it('caps the per-conversation card list, dropping the oldest on overflow', () => {
+      const buf = createChunkBuffer();
+      try {
+        // Push 20 distinct skill cards — the cap is 16.
+        for (let i = 0; i < 20; i++) buf.appendPermissionCard('cnv1', skill(`s${i}`));
+        const cards = buf.tailPermissionCards('cnv1');
+        expect(cards).toHaveLength(16);
+        // Oldest (s0..s3) dropped; the tail retains s4..s19.
+        expect(cards[0]?.kind === 'skill' ? cards[0].skillId : '').toBe('s4');
+        expect(cards[15]?.kind === 'skill' ? cards[15].skillId : '').toBe('s19');
+      } finally {
+        buf.dispose();
+      }
+    });
+  });
 });

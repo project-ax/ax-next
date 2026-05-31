@@ -262,6 +262,37 @@ export function createSseHandler(deps: SseHandlerDeps) {
       return;
     }
 
+    // 4a-ter) Replay pending JIT approval cards (TASK-82). A
+    // `chat:permission-request` fires onto the live bus the instant the runner
+    // proposes a cap-bearing skill (or a blocked egress hits the wall). On a
+    // gated turn the runner pod is COLD-spawned, so that card routinely fires
+    // BEFORE this EventSource opened and installed the live subscriber below —
+    // the per-reqId stream even 404s on the boot race. The live-only path then
+    // drops the card, and the orchestrator's per-conversation dedup suppresses
+    // re-emission, so the pending skill is permanently un-approvable. The
+    // boot-level permission-card fill subscriber buffered the card, so we replay
+    // it on connect here. These frames are NON-terminal (unlike turn-error) —
+    // we replay and KEEP the stream open for the live subscribers below. Skill
+    // cards key off conversationId; host cards off the connection reqId — both
+    // match the live subscriber's filter posture so replay + live agree exactly.
+    for (const card of deps.buffer.tailPermissionCards(conversationId)) {
+      safeWrite({ reqId, permissionRequest: card });
+    }
+    for (const card of deps.buffer.tailHostCards(reqId)) {
+      // Strip the routing reqId before the browser sees it (same posture as the
+      // live host-card subscriber): the connection already knows its reqId.
+      if (card.kind === 'host') {
+        safeWrite({
+          reqId,
+          permissionRequest: {
+            kind: 'host',
+            host: card.host,
+            sessionId: card.sessionId,
+          },
+        });
+      }
+    }
+
     // 4b) Attach the live chunk subscriber. Filter by reqId so multiple
     // in-flight conversations sharing the same host don't bleed.
     deps.bus.subscribe<StreamChunk>(
@@ -509,6 +540,65 @@ export function createTurnErrorFillSubscriber(buffer: ChunkBuffer) {
       return undefined;
     }
     buffer.appendTurnError(payload.reqId, payload.reason ?? 'unknown');
+    return undefined;
+  };
+}
+
+/**
+ * Sister to `createTurnErrorFillSubscriber`, but for `chat:permission-request`.
+ * Records the pending JIT approval card so an SSE handler that connects (or
+ * reconnects) AFTER the card fired still replays it on connect (TASK-82). This
+ * is the cold-boot delivery race: every gated turn cold-spawns a runner pod and
+ * the card fires the instant the runner proposes the cap-skill — routinely
+ * before the browser's separate GET /api/chat/stream/:reqId opens and installs
+ * the live subscriber, so a live-only path drops the card and the
+ * orchestrator's per-conversation dedup suppresses re-emission → the pending
+ * skill is permanently un-approvable. Storing the card here (rather than relying
+ * on the live subscriber alone) is what makes replay possible.
+ *
+ * Keying mirrors the live subscriber's match posture so replay and live agree:
+ *   - skill cards key off the firing ctx's conversationId (the broker fires with
+ *     the real conversationId; its reqId is fresh — see ipc-server/listener.ts).
+ *   - host cards key off the routing reqId carried on the payload (the
+ *     orchestrator fires with its synthetic egress ctx, NOT the turn's).
+ *
+ * The card payload carries only PUBLIC manifest data — hostnames, slot names,
+ * the opaque sessionId. No secret ever rides this frame or the buffer (the key
+ * posts straight to the credential store; design §10), so buffering it adds no
+ * capability or secret-exposure surface.
+ */
+export function createPermissionCardFillSubscriber(buffer: ChunkBuffer) {
+  return async function (
+    ctx: AgentContext,
+    payload: PermissionRequest & { reqId?: string },
+  ): Promise<undefined> {
+    if (payload.kind === 'skill') {
+      // Skill cards are matched by conversationId on the SSE side. No
+      // conversationId → nothing the replay path can key off, so don't buffer.
+      if (
+        typeof ctx.conversationId !== 'string' ||
+        ctx.conversationId.length === 0
+      ) {
+        return undefined;
+      }
+      // Strip the optional reqId envelope (skill cards don't carry one; the
+      // replay path stamps the connection reqId). Store the card verbatim.
+      const { reqId: _reqId, ...card } = payload;
+      buffer.appendPermissionCard(ctx.conversationId, card as PermissionRequest);
+      return undefined;
+    }
+    if (payload.kind === 'host') {
+      // Host cards are matched by the routing reqId carried on the payload.
+      if (typeof payload.reqId !== 'string' || payload.reqId.length === 0) {
+        return undefined;
+      }
+      buffer.appendPermissionCard(payload.reqId, {
+        kind: 'host',
+        host: payload.host,
+        sessionId: payload.sessionId,
+      });
+      return undefined;
+    }
     return undefined;
   };
 }

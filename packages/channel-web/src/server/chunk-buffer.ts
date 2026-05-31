@@ -1,4 +1,4 @@
-import type { PhaseKind, StreamChunk } from './types.js';
+import type { PermissionRequest, PhaseKind, StreamChunk } from './types.js';
 
 // ---------------------------------------------------------------------------
 // Per-reqId chunk ring buffer for SSE reconnect tail.
@@ -37,6 +37,14 @@ import type { PhaseKind, StreamChunk } from './types.js';
 const MAX_CHUNKS_PER_REQ_ID = 256;
 const IDLE_TTL_MS = 60_000;
 const SWEEP_INTERVAL_MS = 30_000;
+
+// Ceiling on how many distinct pending approval cards we retain per
+// conversation. A turn proposes at most a handful of cap-bearing skills; this
+// bound just stops a pathological loop (an agent re-proposing endlessly) from
+// growing the per-conversation card list without limit. Oldest is dropped on
+// overflow. Cards are keyed by skillId, so a re-proposal of the SAME skill
+// updates in place and never counts twice (see appendPermissionCard).
+const MAX_PENDING_CARDS_PER_CONV = 16;
 
 // DEFAULT ceiling on how long a cursor-only shell (a TTL-reclaimed entry whose
 // monotonic seq we keep so a still-live quiet turn doesn't reset to 1 — Codex
@@ -139,8 +147,52 @@ export interface ChunkBuffer {
   tailPhase(reqId: string): PhaseKind | null;
   /** Terminal turn-error reason for a reqId, or null. */
   tailTurnError(reqId: string): string | null;
-  /** Drop the entry for `reqId`. Idempotent. */
+  /** Drop the entry for `reqId`. Idempotent. Also drops any pending host
+   *  approval card stored under this reqId (host cards are session/turn-scoped
+   *  — once the turn ends the reactive-wall card is no longer live). */
   evictReqId(reqId: string): void;
+  /**
+   * Record a pending JIT approval card so an SSE handler that connects (or
+   * reconnects) AFTER the card fired can replay it. This is the durable
+   * delivery store for `chat:permission-request` — the live per-connection
+   * subscriber in sse.ts only reaches an ALREADY-attached stream, so a card
+   * raised during the cold-boot window (every gated turn cold-spawns a runner
+   * pod, and the SSE GET races that boot) would otherwise be lost forever — and
+   * the orchestrator's per-conversation dedup then suppresses re-emission, so
+   * the pending cap-skill becomes permanently un-approvable (TASK-82).
+   *
+   * Skill cards are keyed by `conversationId` (the SSE skill match key — the
+   * firing ctx carries the real conversationId; its reqId is fresh) + `skillId`
+   * (a re-proposal of the same skill replaces in place — never duplicates).
+   * Host cards are keyed by the routing `reqId` carried on the payload (the SSE
+   * host match key) + host. Unlike the chunk/phase/turn-error slots, skill
+   * cards are NOT reaped by the IDLE_TTL sweep — a pending approval legitimately
+   * outlives the turn (the human may take minutes) and is only cleared by
+   * `evictPermissionCard` on grant or by conversation eviction. Host cards ride
+   * the turn and are dropped by `evictReqId` at the turn boundary.
+   */
+  appendPermissionCard(key: string, card: PermissionRequest): void;
+  /**
+   * Snapshot of pending skill cards for a conversation, in insertion order.
+   * Empty when none. The SSE handler replays these on stream open keyed by
+   * conversationId.
+   */
+  tailPermissionCards(conversationId: string): readonly PermissionRequest[];
+  /**
+   * Snapshot of pending host cards for a routing reqId, in insertion order.
+   * Empty when none. The SSE handler replays these on stream open keyed by the
+   * connection reqId.
+   */
+  tailHostCards(reqId: string): readonly PermissionRequest[];
+  /**
+   * Drop one pending skill card for a conversation by skillId. Called when the
+   * grant is applied (the card is resolved — replaying it would re-prompt for an
+   * already-approved skill). Idempotent.
+   */
+  evictPermissionCard(conversationId: string, skillId: string): void;
+  /** Drop all pending skill cards for a conversation. Called on conversation
+   *  delete. Idempotent. */
+  evictConversationCards(conversationId: string): void;
   /** Stop the sweep timer. Safe to call multiple times. */
   dispose(): void;
 }
@@ -177,6 +229,15 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       : SHELL_MAX_AGE_MS;
 
   const map = new Map<string, BufferEntry>();
+  // Durable pending-card stores, separate from the chunk ring so the IDLE_TTL
+  // sweep (which reaps chunk/phase/turn-error entries) never drops a pending
+  // approval card out from under a human who hasn't decided yet (TASK-82).
+  //   - skillCards: conversationId → ordered list of pending skill cards
+  //     (the SSE skill match key). Cleared only on grant / conversation delete.
+  //   - hostCards: routing reqId → ordered list of pending host cards (the SSE
+  //     host match key). Cleared by evictReqId at the turn boundary.
+  const skillCards = new Map<string, PermissionRequest[]>();
+  const hostCards = new Map<string, PermissionRequest[]>();
   let timer: ReturnType<typeof setInterval> | null = setIntervalFn(() => {
     sweep();
   }, SWEEP_INTERVAL_MS);
@@ -340,6 +401,79 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
 
     evictReqId(reqId) {
       map.delete(reqId);
+      // Host cards are turn-scoped (the reactive egress wall is per-session),
+      // so the turn boundary drops them. Skill cards are NOT keyed by reqId and
+      // intentionally survive (the pending approval outlives the turn).
+      hostCards.delete(reqId);
+    },
+
+    appendPermissionCard(key, card) {
+      if (typeof key !== 'string' || key.length === 0) return;
+      if (card.kind === 'skill') {
+        const list = skillCards.get(key) ?? [];
+        // De-dupe by skillId: a re-proposal of the same skill replaces the
+        // stored card in place (the delta may have changed) rather than
+        // stacking a second identical prompt.
+        const idx = list.findIndex(
+          (c) => c.kind === 'skill' && c.skillId === card.skillId,
+        );
+        if (idx >= 0) {
+          list[idx] = card;
+        } else {
+          list.push(card);
+          // Bound the per-conversation list — drop the oldest on overflow.
+          if (list.length > MAX_PENDING_CARDS_PER_CONV) {
+            list.splice(0, list.length - MAX_PENDING_CARDS_PER_CONV);
+          }
+        }
+        skillCards.set(key, list);
+        return;
+      }
+      // Host card.
+      const list = hostCards.get(key) ?? [];
+      // De-dupe by host: the same blocked host re-tried within a turn shouldn't
+      // stack duplicate cards.
+      const idx = list.findIndex(
+        (c) => c.kind === 'host' && c.host === card.host,
+      );
+      if (idx >= 0) {
+        list[idx] = card;
+      } else {
+        list.push(card);
+        if (list.length > MAX_PENDING_CARDS_PER_CONV) {
+          list.splice(0, list.length - MAX_PENDING_CARDS_PER_CONV);
+        }
+      }
+      hostCards.set(key, list);
+    },
+
+    tailPermissionCards(conversationId) {
+      const list = skillCards.get(conversationId);
+      if (list === undefined) return [];
+      return list.slice();
+    },
+
+    tailHostCards(reqId) {
+      const list = hostCards.get(reqId);
+      if (list === undefined) return [];
+      return list.slice();
+    },
+
+    evictPermissionCard(conversationId, skillId) {
+      const list = skillCards.get(conversationId);
+      if (list === undefined) return;
+      const next = list.filter(
+        (c) => !(c.kind === 'skill' && c.skillId === skillId),
+      );
+      if (next.length === 0) {
+        skillCards.delete(conversationId);
+      } else {
+        skillCards.set(conversationId, next);
+      }
+    },
+
+    evictConversationCards(conversationId) {
+      skillCards.delete(conversationId);
     },
 
     dispose() {

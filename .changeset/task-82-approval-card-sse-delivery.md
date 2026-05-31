@@ -1,0 +1,5 @@
+---
+'@ax/channel-web': patch
+---
+
+Fix the JIT skill approval card never rendering on a gated turn (TASK-82). The `chat:permission-request` SSE frame was delivered only to an already-attached live subscriber, so a card raised during the cold-boot window — every gated turn cold-spawns a runner pod, and the browser's `GET /api/chat/stream/:reqId` races that boot — was lost, and the orchestrator's per-conversation dedup then suppressed re-emission, leaving the pending cap-bearing skill permanently un-approvable. The approval card is now durable: a boot-level fill subscriber buffers it (per-conversation for skill cards, per-reqId for host cards, in the replica-local `ChunkBuffer`), and the SSE handler replays any pending card on stream (re)connect — the same pattern chunks, phase, and turn-error already use. Cards are cleared when the grant is applied or the conversation is deleted. The gate itself is unchanged (the card only governs delivery; approval still flows through the existing permission-decision grant) and the card carries only public manifest data — no secret rides the frame.
