@@ -1,5 +1,5 @@
 import { load as yamlLoad, YAMLException } from 'js-yaml';
-import type { CapabilitySlot, McpServerSpec, PackagesSpec, SkillCapabilities } from './capabilities.js';
+import type { Capabilities, CapabilitySlot, McpServerSpec, PackagesSpec } from './capabilities.js';
 
 export type ManifestCode =
   | 'invalid-yaml'
@@ -24,7 +24,7 @@ export interface ParsedManifest {
   description: string;
   version: number;
   sourceUrl?: string;       // optional metadata pointer for refresh
-  capabilities: SkillCapabilities;
+  capabilities: Capabilities;
 }
 
 export type ParseResult =
