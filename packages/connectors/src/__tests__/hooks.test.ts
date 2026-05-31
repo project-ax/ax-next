@@ -190,6 +190,56 @@ describe('@ax/connectors hooks — resolve', () => {
     expect(resolved).not.toHaveProperty('visibility');
   });
 
+  it('workspace keyMode resolves every slot to scope=global (the company key) + requires consent', async () => {
+    const h = await makeHarness();
+    // A workspace, shared Salesforce connector — the org-wide systems case.
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'admin' }),
+      upsertInput({
+        userId: 'admin',
+        connectorId: 'sf',
+        keyMode: 'workspace',
+        visibility: 'shared',
+        capabilities: {
+          allowedHosts: ['login.salesforce.com'],
+          credentials: [{ slot: 'SF_TOKEN', kind: 'api-key', account: 'salesforce' }],
+          mcpServers: [],
+          packages: { npm: ['@salesforce/cli'], pypi: [] },
+        },
+      }),
+    );
+    const resolved = await h.bus.call<ResolveInput, ResolveOutput>(
+      'connectors:resolve',
+      h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'sf' },
+    );
+    expect(resolved.credentialPlan).toEqual([
+      { slot: 'SF_TOKEN', scope: 'global', ref: 'account:salesforce' },
+    ]);
+    expect(resolved.requiresSharedKeyConsent).toBe(true);
+  });
+
+  it('personal keyMode resolves every slot to scope=user (per-user JIT vault) + no consent when private', async () => {
+    const h = await makeHarness();
+    // A personal, private Google Drive connector — the my-data case. Slot tags
+    // the shared account:google vault; keyMode binds it per-user.
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ keyMode: 'personal', visibility: 'private' }),
+    );
+    const resolved = await h.bus.call<ResolveInput, ResolveOutput>(
+      'connectors:resolve',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'gdrive' },
+    );
+    expect(resolved.credentialPlan).toEqual([
+      { slot: 'gdrive', scope: 'user', ref: 'account:google' },
+    ]);
+    expect(resolved.requiresSharedKeyConsent).toBe(false);
+  });
+
   it('resolve for a missing connector throws not-found', async () => {
     const h = await makeHarness();
     await expect(

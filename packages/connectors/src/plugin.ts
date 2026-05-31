@@ -5,6 +5,10 @@ import {
   type ConnectorDatabase,
 } from './migrations.js';
 import {
+  deriveCredentialPlan,
+  requiresSharedKeyConsent,
+} from './credential-plan.js';
+import {
   createConnectorStore,
   DESCRIPTION_MAX,
   USAGE_NOTE_MAX,
@@ -262,11 +266,20 @@ async function resolveConnector(
   }
   // The mechanism-agnostic spec descriptor the future router routes on — id +
   // keyMode + the opaque capabilities fill. Deliberately NOT the management
-  // metadata (name/description/visibility): the resolve surface can evolve
-  // (union shared + catalog) without widening the management read.
+  // metadata (name/description): the resolve surface can evolve (union shared +
+  // catalog) without widening the management read.
+  //
+  // TASK-96 — reach-by-attachment: the derived credentialPlan maps the
+  // connector's keyMode to the credential SCOPE each slot's key attaches to
+  // (`personal` → `user` per-user vault, `workspace` → `global` company key) and
+  // the deterministic `account:<service>` ref. requiresSharedKeyConsent gates the
+  // "act as you" consent moment (workspace mode or a shared connector). Reach
+  // derives PURELY from this scope — no visibility flag on the credential itself.
   return {
     id: connector.id,
     keyMode: connector.keyMode,
     capabilities: connector.capabilities,
+    credentialPlan: deriveCredentialPlan(connector),
+    requiresSharedKeyConsent: requiresSharedKeyConsent(connector),
   };
 }

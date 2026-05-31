@@ -5,6 +5,9 @@ import type {
   McpServerSpec,
   PackagesSpec,
 } from '@ax/skills-parser';
+// Type-only import of the derived plan entry — no runtime cycle (types are
+// erased; credential-plan.ts imports the domain types from here).
+import type { CredentialPlanEntry } from './credential-plan.js';
 
 /**
  * @ax/connectors public types.
@@ -207,6 +210,23 @@ export interface ResolveOutput {
   keyMode: KeyMode;
   /** The mechanism-agnostic fill the resolver routes on. */
   capabilities: Capabilities;
+  /**
+   * The derived credential plan (TASK-96 — reach-by-attachment). One entry per
+   * declared credential slot, mapping the connector's `keyMode` to the credential
+   * SCOPE the key attaches to (`personal` → `user`, `workspace` → `global`) and
+   * the deterministic `account:<service>` vault ref. The connect flow / future
+   * credential-proxy router uses this to know whose key to prompt for / spend.
+   * Empty when the connector declares no credential slots. Storage-agnostic —
+   * `scope` is the neutral credential-scope contract, not backend vocabulary.
+   */
+  credentialPlan: CredentialPlanEntry[];
+  /**
+   * Whether the connect flow must surface the shared-key consent moment before
+   * the key becomes spendable (design "Consent caveat", invariant #5). True iff
+   * `keyMode === 'workspace'` (one key, every allowed agent spends it) or the
+   * connector's `visibility === 'shared'` (bound to a shared/team agent).
+   */
+  requiresSharedKeyConsent: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -261,8 +281,21 @@ export const DeleteOutputSchema = z.object({
   deleted: z.boolean(),
 }) as unknown as ZodType<DeleteOutput>;
 
+// The derived credential plan + consent gate (TASK-96). `scope` is the neutral
+// credential-scope contract (NOT backend vocab); only the two scopes the keyMode
+// derivation produces are accepted. `ref` is the opaque `account:<service>` vault
+// ref. These are storage-agnostic first-class fields (like keyMode/visibility) —
+// the leak-guard test pins that they introduce no mechanism vocabulary.
+const CredentialPlanEntrySchema = z.object({
+  slot: z.string(),
+  scope: z.union([z.literal('user'), z.literal('global')]),
+  ref: z.string(),
+});
+
 export const ResolveOutputSchema = z.object({
   id: z.string(),
   keyMode: KeyModeSchema,
   capabilities: CapabilitiesSchema,
+  credentialPlan: z.array(CredentialPlanEntrySchema),
+  requiresSharedKeyConsent: z.boolean(),
 }) as unknown as ZodType<ResolveOutput>;

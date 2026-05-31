@@ -34,3 +34,12 @@ export { createConnectorStore } from './store.js';
 export type { ConnectorStore, UpsertArgs } from './store.js';
 export { scopedConnectors } from './scope.js';
 export type { ConnectorScope } from './scope.js';
+export {
+  deriveCredentialPlan,
+  requiresSharedKeyConsent,
+  serviceTagForSlot,
+  accountRef,
+  sharedKeyConsentMessage,
+  SHARED_KEY_CONSENT_COPY,
+} from './credential-plan.js';
+export type { CredentialPlanEntry, CredentialScope } from './credential-plan.js';
