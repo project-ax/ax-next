@@ -382,6 +382,59 @@ describe('MarkdownText ax://artifact resolution across messages (TASK-20)', () =
     expect(screen.queryByText(/unknown artifact/i)).toBeNull();
   });
 
+  // TASK-81 regression — the runner emits the MCP-namespaced tool name
+  // `mcp__ax-sandbox-tools__artifact_publish` (the SDK renames MCP tools at the
+  // canUseTool boundary, and that name is what's persisted + reaches the part).
+  // `parseArtifactsFromThread` keyed on the bare `artifact_publish`, so the link
+  // never paired with its result and rendered a dead "unknown artifact" pill —
+  // the published artifact wasn't downloadable from the transcript.
+  it('resolves the chip when the tool-call carries the MCP-namespaced tool name', async () => {
+    const uiMessages = [
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'make a poem' }] },
+      {
+        id: 'a1',
+        role: 'assistant',
+        parts: [
+          {
+            type: 'dynamic-tool',
+            toolName: 'mcp__ax-sandbox-tools__artifact_publish',
+            toolCallId: 't1',
+            state: 'output-available',
+            input: { path: ARTIFACT.path },
+            output: JSON.stringify(ARTIFACT),
+          },
+        ],
+      },
+      {
+        id: 'a2',
+        role: 'assistant',
+        parts: [
+          { type: 'text', text: 'Done: [Download Ocean Poem](ax://artifact/21bea75)' },
+        ],
+      },
+    ];
+
+    function McpNameHarness() {
+      setActiveConversationId('c1');
+      const chat = useChat();
+      useEffect(() => {
+        chat.setMessages(uiMessages as never);
+        return () => setActiveConversationId(null);
+      }, []);
+      const runtime = useAISDKRuntime(chat);
+      return (
+        <AssistantRuntimeProvider runtime={runtime}>
+          <ThreadRenderer />
+        </AssistantRuntimeProvider>
+      );
+    }
+
+    render(<McpNameHarness />);
+    const a = await screen.findByRole('link', { name: 'Ocean Poem' });
+    expect(a.getAttribute('href')).toMatch(/\/api\/files\?/);
+    expect(screen.queryByText(/unknown artifact/i)).toBeNull();
+  });
+
   it('still renders "unknown artifact" when NO message in the thread published that id', async () => {
     const uiMessages = [
       { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'hi' }] },

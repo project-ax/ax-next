@@ -73,6 +73,66 @@ describe('Thread renders AttachmentChip for ax://attachment-path file parts', ()
   });
 });
 
+// TASK-81 regression — the runner emits the MCP-namespaced tool name
+// `mcp__ax-sandbox-tools__artifact_publish` (the SDK renames MCP tools at the
+// canUseTool boundary). Thread's `tools.by_name` registration is an exact-match
+// dict on the raw `part.toolName`, and it was keyed only on the bare
+// `artifact_publish` — so a published-artifact tool-call rendered the raw
+// ToolFallback panel instead of the downloadable `ArtifactChip`. The chip's
+// renderer must resolve for the MCP-namespaced name too.
+describe('Thread renders the artifact download chip for the MCP-namespaced tool name', () => {
+  const ARTIFACT = {
+    artifactId: 'a3f2',
+    downloadUrl: 'ax://artifact/a3f2',
+    path: 'workspace/x.pdf',
+    displayName: 'x.pdf',
+    mediaType: 'application/pdf',
+    sizeBytes: 1234,
+    sha256: 'a3f2deadbeef',
+  };
+
+  it('routes mcp__ax-sandbox-tools__artifact_publish through ArtifactPublishTool', () => {
+    function Provider({ children }: { children: ReactNode }) {
+      setActiveConversationId('c1');
+      useEffect(() => () => setActiveConversationId(null), []);
+      const seeded: ThreadMessageLike[] = [
+        {
+          id: 'm-assistant-artifact',
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 't1',
+              toolName: 'mcp__ax-sandbox-tools__artifact_publish',
+              args: { path: ARTIFACT.path },
+              result: JSON.stringify(ARTIFACT),
+            },
+          ],
+        },
+      ];
+      const runtime = useExternalStoreRuntime({
+        messages: seeded,
+        convertMessage: (m) => m,
+        async onNew() {},
+      });
+      return (
+        <AssistantRuntimeProvider runtime={runtime}>
+          {children}
+        </AssistantRuntimeProvider>
+      );
+    }
+    render(
+      <Provider>
+        <Thread />
+      </Provider>,
+    );
+    // The downloadable ArtifactChip (data-testid="artifact-chip") renders — NOT
+    // the raw ToolFallback panel that would show the bare tool name as a label.
+    expect(screen.getByTestId('artifact-chip')).toBeTruthy();
+    expect(screen.getByText('x.pdf')).toBeTruthy();
+  });
+});
+
 describe('Thread live-frame attachment rendering', () => {
   it('renders LiveAttachmentChip via MessagePrimitive.Attachments for a just-sent message', () => {
     const seeded: ThreadMessageLike[] = [
