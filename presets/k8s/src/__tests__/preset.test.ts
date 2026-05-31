@@ -214,7 +214,7 @@ describe('@ax/preset-k8s wiring', () => {
     ]);
   });
 
-  it('loads @ax/connectors and registers the five connectors:* hooks (TASK-91)', () => {
+  it('loads @ax/connectors and registers the six connectors:* hooks (TASK-91, +list-defaults TASK-97)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const connectors = plugins.find(
       (p) => p.manifest.name === '@ax/connectors',
@@ -222,6 +222,7 @@ describe('@ax/preset-k8s wiring', () => {
     expect(connectors).toBeDefined();
     expect(connectors!.manifest.registers).toEqual([
       'connectors:list',
+      'connectors:list-defaults',
       'connectors:get',
       'connectors:upsert',
       'connectors:delete',

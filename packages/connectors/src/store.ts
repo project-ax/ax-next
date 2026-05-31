@@ -123,6 +123,9 @@ function rowToConnector(row: ConnectorsRow): Connector {
     keyMode: validateKeyMode(row.key_mode),
     visibility: validateVisibility(row.visibility),
     capabilities: validateCapabilities(row.capabilities),
+    // Coerce to a real boolean — a NULL from a row written before the column
+    // existed (greenfield, so unlikely, but cheap defense) reads as false.
+    defaultAttached: row.default_attached === true,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };
@@ -156,11 +159,24 @@ export interface UpsertArgs {
   keyMode: KeyMode;
   visibility: Visibility;
   capabilities: Capabilities;
+  /**
+   * TASK-97 — workspace-default flag. `undefined` ⟹ PRESERVE the existing row's
+   * flag on update (and default to false on insert). A caller that means to
+   * clear it passes `false` explicitly. This keeps a plain content re-upsert
+   * from silently un-defaulting a connector an admin flagged.
+   */
+  defaultAttached?: boolean;
 }
 
 export interface ConnectorStore {
   /** Metadata-only list for the owner, newest-updated first. */
   listForUser(userId: string): Promise<ConnectorSummary[]>;
+  /**
+   * TASK-97 — the owner's DEFAULT-attached connectors, FULL (capabilities
+   * included), sorted by id ascending (stable, matches skills:list-defaults).
+   * The orchestrator unions these into every agent's effective connector set.
+   */
+  listDefaults(userId: string): Promise<Connector[]>;
   /** Full connector by id for the owner; null if absent / tombstoned. */
   getByIdNotDeleted(
     userId: string,
@@ -219,6 +235,26 @@ export function createConnectorStore(
         args.capabilities,
       )}::jsonb`;
 
+      // On UPDATE, only set default_attached when the caller passed it
+      // explicitly — otherwise PRESERVE the stored flag (a content re-upsert
+      // must not silently un-default a connector an admin flagged). On INSERT
+      // the absent flag defaults to false (a fresh connector is not a default).
+      const updateSet = {
+        name: args.name,
+        description: args.description,
+        usage_note: args.usageNote,
+        key_mode: args.keyMode,
+        visibility: args.visibility,
+        capabilities: capabilitiesJson,
+        // Resurrect a tombstoned row on upsert — re-creating a deleted
+        // connector under the same id is allowed.
+        deleted_at: null,
+        updated_at: now,
+        ...(args.defaultAttached !== undefined
+          ? { default_attached: args.defaultAttached }
+          : {}),
+      };
+
       const row = await db
         .insertInto('connectors_v1_connectors')
         .values({
@@ -230,27 +266,28 @@ export function createConnectorStore(
           key_mode: args.keyMode,
           visibility: args.visibility,
           capabilities: capabilitiesJson,
+          default_attached: args.defaultAttached ?? false,
           deleted_at: null,
           created_at: now,
           updated_at: now,
         })
         .onConflict((oc) =>
-          oc.columns(['owner_user_id', 'connector_id']).doUpdateSet({
-            name: args.name,
-            description: args.description,
-            usage_note: args.usageNote,
-            key_mode: args.keyMode,
-            visibility: args.visibility,
-            capabilities: capabilitiesJson,
-            // Resurrect a tombstoned row on upsert — re-creating a deleted
-            // connector under the same id is allowed.
-            deleted_at: null,
-            updated_at: now,
-          }),
+          oc.columns(['owner_user_id', 'connector_id']).doUpdateSet(updateSet),
         )
         .returningAll()
         .executeTakeFirstOrThrow();
       return { connector: rowToConnector(row as ConnectorsRow), created };
+    },
+
+    async listDefaults(userId) {
+      // Scoped to the owner + non-tombstoned (the scope helper bakes both in),
+      // then narrowed to default-flagged rows. Sorted by connector_id ascending
+      // so the union order is stable (matches skills:list-defaults' compareById).
+      const rows = await scopedConnectors(db, { userId })
+        .where('default_attached', '=', true)
+        .orderBy('connector_id', 'asc')
+        .execute();
+      return rows.map((r) => rowToConnector(r as ConnectorsRow));
     },
 
     async softDelete(userId, connectorId) {

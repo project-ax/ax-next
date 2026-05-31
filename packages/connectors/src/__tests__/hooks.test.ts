@@ -13,6 +13,8 @@ import type {
   DeleteOutput,
   GetInput,
   GetOutput,
+  ListDefaultsInput,
+  ListDefaultsOutput,
   ListInput,
   ListOutput,
   ResolveInput,
@@ -426,5 +428,58 @@ describe('@ax/connectors hooks — boundary validation', () => {
         { userId: '' },
       ),
     ).rejects.toBeInstanceOf(PluginError);
+  });
+});
+
+describe('@ax/connectors hooks — list-defaults', () => {
+  it('returns only the owner\'s default-flagged FULL connectors (capabilities included)', async () => {
+    const h = await makeHarness();
+    // A default-on connector + a non-default one for the same owner.
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ connectorId: 'gdrive', capabilities: mcpCaps(), defaultAttached: true }),
+    );
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ connectorId: 'sf', capabilities: cliCaps(), defaultAttached: false }),
+    );
+
+    const defaults = await h.bus.call<ListDefaultsInput, ListDefaultsOutput>(
+      'connectors:list-defaults',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA' },
+    );
+    expect(defaults.connectors.map((c) => c.id)).toEqual(['gdrive']);
+    // FULL connector — the union needs the capabilities spec to materialize reach.
+    expect(defaults.connectors[0]!.capabilities).toEqual(mcpCaps());
+    expect(defaults.connectors[0]!.defaultAttached).toBe(true);
+  });
+
+  it('an absent userId yields no defaults (owner-scoped)', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ connectorId: 'gdrive', defaultAttached: true }),
+    );
+    const defaults = await h.bus.call<ListDefaultsInput, ListDefaultsOutput>(
+      'connectors:list-defaults',
+      h.ctx({ userId: 'userA' }),
+      {},
+    );
+    expect(defaults.connectors).toEqual([]);
+  });
+
+  it('rejects a non-boolean defaultAttached on upsert', async () => {
+    const h = await makeHarness();
+    await expect(
+      h.bus.call<UpsertInput, UpsertOutput>(
+        'connectors:upsert',
+        h.ctx({ userId: 'userA' }),
+        upsertInput({ defaultAttached: 'yes' as unknown as boolean }),
+      ),
+    ).rejects.toMatchObject({ code: 'invalid-payload' });
   });
 });

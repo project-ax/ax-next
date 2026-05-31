@@ -7,13 +7,14 @@ import { createConnectorsPlugin } from '../plugin.js';
 // ---------------------------------------------------------------------------
 
 describe('@ax/connectors plugin manifest', () => {
-  it('registers the five connectors:* hooks, calls database:get-instance, subscribes to nothing', () => {
+  it('registers the six connectors:* hooks, calls database:get-instance, subscribes to nothing', () => {
     const plugin = createConnectorsPlugin();
     expect(plugin.manifest).toEqual({
       name: '@ax/connectors',
       version: '0.0.0',
       registers: [
         'connectors:list',
+        'connectors:list-defaults',
         'connectors:get',
         'connectors:upsert',
         'connectors:delete',

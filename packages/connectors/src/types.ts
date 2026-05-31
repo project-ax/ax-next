@@ -126,6 +126,13 @@ export interface Connector {
    * packages). The ONLY place backing-mechanism vocabulary lives.
    */
   capabilities: Capabilities;
+  /**
+   * TASK-97 — workspace-default flag. When true this connector flows into every
+   * agent's effective connector set (the orchestrator reads default-attached
+   * connectors via `connectors:list-defaults`), mirroring a default-attached
+   * skill. Storage-agnostic boolean.
+   */
+  defaultAttached: boolean;
   /** ISO-8601. */
   createdAt: string;
   /** ISO-8601. */
@@ -178,6 +185,14 @@ export interface UpsertInput {
   keyMode: KeyMode;
   visibility: Visibility;
   capabilities: Capabilities;
+  /**
+   * TASK-97 — optional workspace-default flag. Omitted ⟹ false (a fresh
+   * connector is not a default until explicitly flagged). This is the admin
+   * write that flips a connector default-on; the management UI / admin route
+   * (a later card) sets it. Re-upserting without it does NOT silently clear an
+   * existing flag — the store preserves the prior value when the field is absent.
+   */
+  defaultAttached?: boolean;
 }
 export interface UpsertOutput {
   connector: Connector;
@@ -229,6 +244,26 @@ export interface ResolveOutput {
   requiresSharedKeyConsent: boolean;
 }
 
+/**
+ * List the workspace-DEFAULT connectors — those flagged `defaultAttached` (the
+ * admin-curated set that flows into every agent's effective connector set).
+ * Mirrors `skills:list-defaults`. Returns FULL connectors (capabilities
+ * included) because the orchestrator union materializes their declared reach
+ * into the sandbox; a metadata-only summary wouldn't carry the
+ * allowedHosts/credentials/mcpServers/packages the union needs.
+ *
+ * `userId` is OPTIONAL so the routing surface can evolve to a per-user overlay
+ * (mirroring `skills:list-defaults`'s `ownerUserId`); in this slice defaults are
+ * owner-scoped to the supplied user (each owner's own default-flagged
+ * connectors), with the system-wide overlay deferred to the catalog/admin work.
+ */
+export interface ListDefaultsInput {
+  userId?: string;
+}
+export interface ListDefaultsOutput {
+  connectors: Connector[];
+}
+
 // ---------------------------------------------------------------------------
 // Return schemas — registered with the hooks so the bus validates the response
 // shape (a mismatch becomes PluginError('invalid-return')).
@@ -256,6 +291,7 @@ const ConnectorSchema = z.object({
   keyMode: KeyModeSchema,
   visibility: VisibilitySchema,
   capabilities: CapabilitiesSchema,
+  defaultAttached: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });
@@ -299,3 +335,7 @@ export const ResolveOutputSchema = z.object({
   credentialPlan: z.array(CredentialPlanEntrySchema),
   requiresSharedKeyConsent: z.boolean(),
 }) as unknown as ZodType<ResolveOutput>;
+
+export const ListDefaultsOutputSchema = z.object({
+  connectors: z.array(ConnectorSchema),
+}) as unknown as ZodType<ListDefaultsOutput>;
