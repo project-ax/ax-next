@@ -2,6 +2,15 @@
 
 Architectural / process decisions. Never deleted — strikethrough if reversed.
 
+## 2026-05-31 — TASK-92 Skill manifest gains additive connectors[] reference list
+
+| Date | Decision | Rationale | Alternatives |
+|---|---|---|---|
+| 2026-05-31 | `connectors[]` is a TOP-LEVEL manifest field (sibling of `sourceUrl`), NOT under `capabilities:`. | It's a soft-dependency REFERENCE list, not a capability grant. The design ("skill manifest … gains a `connectors: string[]` reference list") + the boundary review (capabilities block stays authoritative) both treat it as orthogonal to capabilities. Reject it nested under `capabilities:` (fail-loud `invalid-connector`) so an author who confuses the two doesn't get a silent drop. | Nest it under capabilities (rejected — it's not a capability and would muddy the one-source-of-truth boundary that TASK-100 will key off). |
+| 2026-05-31 | Derive `connectors` from `manifest_yaml` on read (no column, no migration). | The skills store never persisted `capabilities` either — it re-parses `manifest_yaml`. The YAML is the single source of truth; matching that pattern keeps the change additive and migration-free. | Add a `connectors` JSONB column (rejected — duplicates the manifest as a second source of truth, needs a migration + backfill, drifts on manifest edit). |
+| 2026-05-31 | Accept the double-parse of `manifest_yaml` (one `parseCapabilities` + one `parseConnectors` per row) rather than refactor to a single combined parse. | Mirrors the existing derived-on-read pattern with minimal/additive surface; skill row counts are tiny and reads aren't a hot path. A combined helper would touch the existing solo `parseCapabilities` caller in `store.ts setDefaultAttached`, widening the diff. | Combined `parseManifestDerived` returning {capabilities, connectors} (deferred as a perf follow-up; over-scope for this card). |
+| 2026-05-31 | Connector-id grammar/bounds mirror the @ax/connectors store (`/^[a-z0-9][a-z0-9_-]*$/`, ≤128 chars), re-declared inline; count cap 64. | Same id space so a reference resolves later; re-declared (not imported) per I2 since `@ax/skills-parser` is a pure parser package. Count cap is defense-in-depth on untrusted self-authored frontmatter. | Import the connectors grammar (rejected — runtime cross-plugin import, I2 violation). |
+
 ## 2026-05-31 — TASK-89 Make server early-bind authoritative (retry bind + 503 POST) to close cold-respawn 404 at the source
 
 | Date | Decision | Rationale | Alternatives |
