@@ -21,6 +21,7 @@
 const TENANT_TABLE_PREFIXES = [
   'agents_v1_',
   'auth_v1_',
+  'connectors_v1_',
   'conversations_v1_',
   'teams_v1_',
 ];

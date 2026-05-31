@@ -121,6 +121,10 @@ const PLUGINS_TO_DROP = new Set<string>([
   // ACL canary (we go straight through the chat-orchestrator's agents:resolve
   // gate without touching conversation rows).
   '@ax/conversations',
+  // Connectors (TASK-91): postgres-backed (database:get-instance) and not
+  // exercised by the multi-tenant ACL canary. Static wiring pinned in
+  // preset.test.ts; drop here so this canary needs no postgres testcontainer.
+  '@ax/connectors',
   '@ax/agents',
   '@ax/workspace-git',
   '@ax/ipc-http',

@@ -21,6 +21,7 @@
     { "path": "../../packages/channel-web" },
     { "path": "../../packages/conversation-titles" },
     { "path": "../../packages/conversations" },
+    { "path": "../../packages/connectors" },
     { "path": "../../packages/attachments" },
     { "path": "../../packages/blob-store-fs" },
     { "path": "../../packages/blob-store-s3" },

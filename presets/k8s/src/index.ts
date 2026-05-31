@@ -33,6 +33,7 @@ import { createAuthBetterPlugin, type AuthBetterConfig } from '@ax/auth-better';
 import { createTeamsPlugin } from '@ax/teams';
 import { createStaticFilesPlugin } from '@ax/static-files';
 import { createConversationsPlugin } from '@ax/conversations';
+import { createConnectorsPlugin } from '@ax/connectors';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
 import {
   createConversationTitlesPlugin,
@@ -847,6 +848,27 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // shared host key opt out cleanly (cfg.titles undefined → both
   // plugins skipped → conversations stay `title: null`, same as today).
   plugins.push(createConversationsPlugin());
+
+  // ----- 9b. connectors -----------------------------------------------------
+  // TASK-91 (connectors-first-class, design Phase 1). Registers the five
+  // `connectors:*` service hooks (list/get/upsert/delete/resolve) backed by its
+  // own `connectors_v1_*` table — the one source of truth for the first-class
+  // Connector object `{ id, name, description, usageNote, keyMode, visibility } +
+  // Capabilities` (the neutral capability shape lifted into @ax/skills-parser by
+  // TASK-90). Calls `database:get-instance` (loaded above; topo-sort orders it).
+  //
+  // This OPENS the half-wired window BY DESIGN: the connector store exists but
+  // nothing routes through it yet — the skill `capabilities` block stays
+  // authoritative until the authoring + orchestrator-union phases land. It is
+  // NOT a half-wired plugin (I3): it is fully registered + tested + reachable
+  // (preset.test.ts asserts the five hooks load here). Only the *consumer*
+  // arrives in later phases.
+  //
+  // k8s-preset-ONLY (card Clarifications): the local CLI preset registers no
+  // `database:get-instance` provider (it's Postgres-free — sqlite KV only), so
+  // loading connectors there would crash bootstrap, exactly like
+  // @ax/skills / @ax/routines / @ax/conversations are deliberately CLI-absent.
+  plugins.push(createConnectorsPlugin());
 
   // ----- 9a. attachments ----------------------------------------------------
   // The attachments & artifacts subsystem. Service hooks

@@ -50,6 +50,14 @@ tester.run('no-bare-tenant-tables', rule, {
       code: "db.selectFrom('conversations_v1_conversations').execute()",
       filename: '/foo/packages/conversations/src/store.ts',
     },
+    // The connectors_v1_ prefix (TASK-91) is exempt inside its plugin's
+    // scope.ts — same shape as conversations_v1_ above. Pins the prefix into
+    // TENANT_TABLE_PREFIXES; a regression that drops it would still flag this
+    // case as valid AND surface in the matching invalid case below.
+    {
+      code: "db.selectFrom('connectors_v1_connectors').execute()",
+      filename: '/foo/packages/connectors/src/scope.ts',
+    },
 
     // Non-`selectFrom` calls are out of scope (insertInto / updateTable
     // are write paths handled by the plugin's CRUD methods).
@@ -93,6 +101,17 @@ tester.run('no-bare-tenant-tables', rule, {
       code: "db.selectFrom('conversations_v1_turns').execute()",
       errors: [
         { messageId: 'bareQuery', data: { table: 'conversations_v1_turns' } },
+      ],
+    },
+    // connectors_v1_* (TASK-91). Without this case, dropping the prefix from
+    // TENANT_TABLE_PREFIXES would leave every other test green.
+    {
+      code: "db.selectFrom('connectors_v1_connectors').execute()",
+      errors: [
+        {
+          messageId: 'bareQuery',
+          data: { table: 'connectors_v1_connectors' },
+        },
       ],
     },
     // Aliased reference still gets flagged.

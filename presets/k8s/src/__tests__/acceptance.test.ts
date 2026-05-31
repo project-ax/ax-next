@@ -156,6 +156,12 @@ const PLUGINS_TO_DROP = new Set<string>([
   // exercised by the chat-path canaries. The Phase D canary further down
   // loads it explicitly against a real testcontainer; everywhere else, drop.
   '@ax/conversations',
+  // Connectors (TASK-91): postgres-backed (calls database:get-instance in
+  // init) and not exercised by the chat-path canaries. Its static wiring +
+  // reachability are pinned in preset.test.ts and its hook behavior is covered
+  // by @ax/connectors' own testcontainer suite; drop here so these sub-tests
+  // don't need a postgres testcontainer.
+  '@ax/connectors',
   // Agents plugin is postgres-backed and depends on http+auth above; we
   // mount a permissive `agents:resolve` mock plugin further down.
   '@ax/agents',
