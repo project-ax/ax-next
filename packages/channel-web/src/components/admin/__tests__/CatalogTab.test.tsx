@@ -49,6 +49,7 @@ const SKILL_A: SkillSummary = {
     mcpServers: [],
     packages: { npm: [], pypi: [] },
   },
+  connectors: [],
   defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
 };
@@ -64,6 +65,7 @@ const SKILL_B: SkillSummary = {
     mcpServers: [],
     packages: { npm: [], pypi: [] },
   },
+  connectors: [],
   defaultAttached: false,
   updatedAt: '2026-05-17T08:00:00.000Z',
 };
@@ -204,6 +206,7 @@ describe('CatalogTab', () => {
         version: 1,
         scope: 'global' as const,
         capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+        connectors: [],
         defaultAttached: true,
         updatedAt: '2026-05-19T00:00:00.000Z',
       },
@@ -271,6 +274,7 @@ describe('CatalogTab', () => {
         mcpServers: [],
         packages: { npm: [], pypi: [] },
       },
+      connectors: [],
       defaultAttached: false,
       sourceUrl: 'https://example.com/github-api.md',
       updatedAt: '2026-05-18T10:00:00.000Z',

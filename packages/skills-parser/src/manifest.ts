@@ -17,7 +17,8 @@ export type ManifestCode =
   | 'invalid-mcp-command'
   | 'invalid-mcp-transport'
   | 'invalid-package'
-  | 'unsupported-package-ecosystem';
+  | 'unsupported-package-ecosystem'
+  | 'invalid-connector';
 
 export interface ParsedManifest {
   id: string;
@@ -25,6 +26,17 @@ export interface ParsedManifest {
   version: number;
   sourceUrl?: string;       // optional metadata pointer for refresh
   capabilities: Capabilities;
+  /**
+   * Soft-dependency reference list: the IDs of the connectors this skill uses
+   * (connectors-first-class design, Phasing step 1). Always present; defaults to
+   * `[]` when absent. This is a DECLARED REFERENCE only — the connector
+   * definitions (allowedHosts / credentials / mcpServers / packages) live in the
+   * @ax/connectors store, NOT here. The skill's `capabilities` block stays
+   * authoritative during the half-wired window (closed by TASK-100); a connector
+   * id here does not yet grant anything. Backing-mechanism vocab never appears in
+   * this list — it is a flat list of opaque connector-id slugs.
+   */
+  connectors: string[];
 }
 
 export type ParseResult =
@@ -77,6 +89,17 @@ const SLOT_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
 // boundaries (parser here, the destination route schema, refForDestination's
 // colon guard) per invariant I2 — no shared import.
 const ACCOUNT_RE = /^[a-z][a-z0-9-]{0,63}$/;
+
+// Connector id reference (connectors-first-class design). A flat list of opaque
+// connector-id slugs a skill declares as soft dependencies. The grammar +
+// length bound MIRROR the @ax/connectors store's own connectorId rules
+// (`/^[a-z0-9][a-z0-9_-]*$/`, ≤ 128 chars) — re-declared here, NOT imported,
+// per invariant I2 (no runtime cross-plugin import; this is a pure parser
+// package). The count cap is defense-in-depth against an over-large reference
+// list in untrusted self-authored frontmatter.
+const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
+const CONNECTOR_ID_LEN_MAX = 128;
+const CONNECTORS_MAX = 64;
 
 function err(code: ManifestCode, message: string): ParseResult {
   return { ok: false, code, message };
@@ -497,6 +520,36 @@ function hasWildcardAllowedHost(yaml: string): boolean {
   return false;
 }
 
+type ConnectorsResult =
+  | { ok: true; value: string[] }
+  | { ok: false; code: 'invalid-connector'; message: string };
+
+// Parse the top-level `connectors:` reference list. Absent → `[]` (additive
+// default; pre-connector skills load unchanged). Present → must be an array of
+// connector-id slugs, each matching CONNECTOR_ID_RE and ≤ CONNECTOR_ID_LEN_MAX,
+// at most CONNECTORS_MAX entries. The list is preserved as declared (a reference
+// list, deliberately not deduped/sorted) so the author's intent round-trips.
+function parseConnectors(raw: unknown): ConnectorsResult {
+  if (raw === undefined) return { ok: true, value: [] };
+  if (!Array.isArray(raw)) {
+    return { ok: false, code: 'invalid-connector', message: '"connectors" must be an array of connector ids.' };
+  }
+  if (raw.length > CONNECTORS_MAX) {
+    return { ok: false, code: 'invalid-connector', message: `"connectors" may list at most ${CONNECTORS_MAX} ids, got ${raw.length}.` };
+  }
+  const out: string[] = [];
+  for (const entry of raw) {
+    if (typeof entry !== 'string' || entry.length === 0 || entry.length > CONNECTOR_ID_LEN_MAX) {
+      return { ok: false, code: 'invalid-connector', message: `Each "connectors" entry must be a 1-${CONNECTOR_ID_LEN_MAX} char connector id string, got: ${JSON.stringify(entry)}` };
+    }
+    if (!CONNECTOR_ID_RE.test(entry)) {
+      return { ok: false, code: 'invalid-connector', message: `"connectors" entry must match ${CONNECTOR_ID_RE.source} (lowercase slug), got: ${JSON.stringify(entry)}` };
+    }
+    out.push(entry);
+  }
+  return { ok: true, value: out };
+}
+
 export function parseSkillManifest(yaml: string): ParseResult {
   // Pre-check: wildcard host patterns cause YAMLException (alias sigil).
   // Detect them before parsing so we can return 'invalid-host' not 'invalid-yaml'.
@@ -618,6 +671,17 @@ export function parseSkillManifest(yaml: string): ParseResult {
     }
     const caps = rawCaps as Record<string, unknown>;
 
+    // `connectors` is a TOP-LEVEL reference list, NOT a capability. Reject it
+    // nested under `capabilities:` (fail loud, same posture as the misplaced
+    // capability-key guard above) so an author who confuses the two gets a
+    // structural error instead of a silently-dropped reference.
+    if ('connectors' in caps) {
+      return err(
+        'invalid-connector',
+        '"connectors" is a top-level manifest field, not a capability — declare it at the top level, not under "capabilities:".',
+      );
+    }
+
     // Accumulator: top-level allowedHosts plus every per-server allowedHosts
     // (incl. the http transport's implicit URL host) are unioned here so the
     // credential-proxy sees the full skill-level egress allowlist. See
@@ -660,6 +724,16 @@ export function parseSkillManifest(yaml: string): ParseResult {
     packages = pkgResult.value;
   }
 
+  // Step 11: top-level `connectors` reference list (connectors-first-class
+  // design). Additive + storage-agnostic: a soft-dependency list of opaque
+  // connector-id slugs, parsed from the manifest YAML (the source of truth)
+  // exactly like capabilities. Defaults to [] when absent so pre-connector
+  // skills load unchanged. The capability block above stays authoritative
+  // during the half-wired window (TASK-100 closes it).
+  const connectorsResult = parseConnectors(doc['connectors']);
+  if (!connectorsResult.ok) return err(connectorsResult.code, connectorsResult.message);
+  const connectors = connectorsResult.value;
+
   return {
     ok: true,
     value: {
@@ -668,6 +742,7 @@ export function parseSkillManifest(yaml: string): ParseResult {
       version,
       ...(sourceUrl !== undefined ? { sourceUrl } : {}),
       capabilities: { allowedHosts, credentials, mcpServers, packages },
+      connectors,
     },
   };
 }

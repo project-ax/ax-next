@@ -27,6 +27,7 @@ const DETAIL: SkillDetail = {
     mcpServers: [],
     packages: { npm: [], pypi: [] },
   },
+  connectors: [],
   defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
   bodyMd: '# GitHub API\n\nUsage details here.\n',

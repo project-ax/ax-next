@@ -66,6 +66,7 @@ const summary: SkillSummary = {
   description: 'GitHub helper',
   version: 3,
   capabilities,
+  connectors: ['github-connector', 'gitlab_ce'],
   defaultAttached: false,
   sourceUrl: 'https://example.com/github.md',
   updatedAt: '2026-01-01T00:00:00.000Z',
@@ -83,6 +84,7 @@ const detail: SkillDetail = {
 const resolved: ResolvedSkill = {
   id: 'github',
   capabilities,
+  connectors: ['github-connector'],
   bodyMd: '# GitHub',
   manifestYaml: 'id: github',
   files: [{ path: 'scripts/run.py', contents: 'print(1)' }],
@@ -113,6 +115,7 @@ describe('skills return schemas', () => {
         mcpServers: [],
         packages: { npm: [], pypi: [] },
       },
+      connectors: [],
       defaultAttached: false,
       updatedAt: new Date(0).toISOString(),
       scope: 'global',
@@ -126,6 +129,21 @@ describe('skills return schemas', () => {
       }
     ).parse(detailWithAccount);
     expect(parsed.capabilities.credentials[0]!.account).toBe('linear');
+  });
+
+  // TASK-92 — the connectors[] soft-dependency reference list must survive the
+  // return-validation strip (the hook-bus strips keys absent from the schema),
+  // so skills:get / skills:list / skills:resolve preserve it for downstream
+  // consumers. A schema that forgot the new field would silently drop it; these
+  // assert it round-trips on both the summary (get/list) and resolved surfaces.
+  it('SkillsGetOutputSchema preserves the connectors reference list', () => {
+    const parsed = SkillsGetOutputSchema.parse(detail) as SkillDetail;
+    expect(parsed.connectors).toEqual(['github-connector', 'gitlab_ce']);
+  });
+
+  it('SkillsResolveOutputSchema preserves the connectors reference list', () => {
+    const out = SkillsResolveOutputSchema.parse({ skills: [resolved] }) as SkillsResolveOutput;
+    expect(out.skills[0]!.connectors).toEqual(['github-connector']);
   });
 
   it('skills:upsert round-trips a fully-populated SkillsUpsertOutput', () => {

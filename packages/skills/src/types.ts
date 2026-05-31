@@ -18,6 +18,16 @@ export interface SkillSummary {
   description: string;
   version: number;
   capabilities: SkillCapabilities;
+  /**
+   * Soft-dependency reference list: the connector ids this skill declares it
+   * uses (connectors-first-class design, Phasing step 1). Always present;
+   * defaults to `[]` for a skill that declares none. A DECLARED REFERENCE only
+   * — the connector definitions live in @ax/connectors, and the skill's
+   * `capabilities` block above stays AUTHORITATIVE during the half-wired window
+   * (TASK-100 closes it). Derived from the manifest YAML (one source of truth)
+   * on read, exactly like `capabilities` — never a stored column.
+   */
+  connectors: string[];
   defaultAttached: boolean;
   sourceUrl?: string;
   updatedAt: string;
@@ -43,6 +53,12 @@ export interface SkillDetail extends SkillSummary {
 export interface ResolvedSkill {
   id: string;
   capabilities: SkillCapabilities;
+  /**
+   * Soft-dependency connector-id reference list (see {@link SkillSummary}).
+   * Always present; defaults to `[]`. Derived from the manifest on read; the
+   * capability block stays authoritative until the half-wired window closes.
+   */
+  connectors: string[];
   bodyMd: string;
   manifestYaml: string;
   /** Extra (non-SKILL.md) bundle files. Empty for single-file skills. */
@@ -255,6 +271,7 @@ const SkillSummarySchema = z.object({
   description: z.string(),
   version: z.number(),
   capabilities: SkillCapabilitiesSchema,
+  connectors: z.array(z.string()),
   defaultAttached: z.boolean(),
   sourceUrl: z.string().optional(),
   updatedAt: z.string(),
@@ -280,6 +297,7 @@ const SkillDetailSchema = SkillSummarySchema.extend({
 const ResolvedSkillSchema = z.object({
   id: z.string(),
   capabilities: SkillCapabilitiesSchema,
+  connectors: z.array(z.string()),
   bodyMd: z.string(),
   manifestYaml: z.string(),
   files: z.array(BundleFileSchema),

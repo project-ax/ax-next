@@ -179,6 +179,73 @@ describe('SkillsStore', () => {
     expect(parsedUpdatedAt.toISOString()).toBe(detail!.updatedAt);
   });
 
+  // TASK-92 — a skill that declares a non-empty connectors[] soft-dependency
+  // list round-trips it across list/get/resolve (derived from manifest_yaml,
+  // exactly like capabilities — no stored column). Asserts the additive design:
+  // the connectors list and the still-authoritative capability block coexist.
+  it('round-trips a non-empty connectors[] across list/get/resolve, additive to capabilities', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+
+    const manifestWithConnectors = `name: github
+description: GitHub helper with a declared connector.
+version: 1
+connectors:
+  - github-connector
+  - gitlab_ce
+capabilities:
+  allowedHosts:
+    - api.github.com
+  credentials:
+    - slot: GITHUB_TOKEN
+      kind: api-key
+`;
+
+    await store.upsert({
+      id: 'github',
+      description: 'GitHub.',
+      manifestYaml: manifestWithConnectors,
+      bodyMd: SAMPLE_BODY,
+      version: 1,
+    });
+
+    // summary (list)
+    const [summary] = await store.list();
+    expect(summary?.connectors).toEqual(['github-connector', 'gitlab_ce']);
+    // additive — the capability block is untouched and still surfaced.
+    expect(summary?.capabilities.allowedHosts).toEqual(['api.github.com']);
+    expect(summary?.capabilities.credentials[0]?.slot).toBe('GITHUB_TOKEN');
+
+    // detail (get)
+    const detail = await store.get('github');
+    expect(detail?.connectors).toEqual(['github-connector', 'gitlab_ce']);
+
+    // resolved (resolve)
+    const [resolved] = await store.resolve(['github']);
+    expect(resolved?.connectors).toEqual(['github-connector', 'gitlab_ce']);
+  });
+
+  it('surfaces connectors as [] for a pre-connector skill (manifest with no connectors:)', async () => {
+    const db = makeKysely();
+    await runSkillsMigration(db);
+    const store = createSkillsStore(db);
+
+    // SAMPLE_MANIFEST declares no connectors: — the additive default is [].
+    await store.upsert({
+      id: 'github',
+      description: 'GitHub.',
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+      version: 1,
+    });
+
+    const detail = await store.get('github');
+    expect(detail?.connectors).toEqual([]);
+    const [resolved] = await store.resolve(['github']);
+    expect(resolved?.connectors).toEqual([]);
+  });
+
   it('delete(id) removes the row; subsequent get returns null', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);
