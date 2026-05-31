@@ -8,6 +8,8 @@ import {
   type ApplyCapabilityGrantOutput,
   type ApplyAuthoredCapabilityGrantInput,
   type ApplyAuthoredCapabilityGrantOutput,
+  type ApplyAuthoredConnectorGrantInput,
+  type ApplyAuthoredConnectorGrantOutput,
 } from './orchestrator.js';
 
 // ---------------------------------------------------------------------------
@@ -29,7 +31,18 @@ export function createChatOrchestratorPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['agent:invoke', 'agent:apply-capability-grant', 'agent:apply-authored-capability-grant'],
+      registers: [
+        'agent:invoke',
+        'agent:apply-capability-grant',
+        'agent:apply-authored-capability-grant',
+        // TASK-94 — authored-CONNECTOR approval grant. Twin of the authored-
+        // skill grant; host-side only (NOT an IPC action). Its
+        // connectors:list-authored / connectors:activate-authored /
+        // skills:approved-caps-set peers are bus.hasService-gated (same
+        // convention as the authored-skill grant peers below) → stay OUT of
+        // `calls`.
+        'agent:apply-authored-connector-grant',
+      ],
       // The orchestrator drives the per-chat lifecycle by calling these
       // peers. `session:create` is NOT listed — sandbox:open-session mints
       // the session itself; a double-create throws duplicate-session. The
@@ -161,6 +174,19 @@ export function createChatOrchestratorPlugin(
         'agent:apply-authored-capability-grant',
         PLUGIN_NAME,
         async (ctx, input) => orch.applyAuthoredCapabilityGrant(ctx, input),
+      );
+
+      // TASK-94 — authored-CONNECTOR approval grant. Twin of the authored-skill
+      // grant; the host re-resolves the agent's authored connector drafts (an
+      // unknown connectorId returns not-authored), approves the proposal under
+      // the TASK-93 connector wall, and flips the draft active. Host-side only;
+      // NOT an IPC action. `connectors:list-authored` /
+      // `connectors:activate-authored` / `skills:approved-caps-set` peers are
+      // bus.hasService-gated (same convention as above).
+      bus.registerService<ApplyAuthoredConnectorGrantInput, ApplyAuthoredConnectorGrantOutput>(
+        'agent:apply-authored-connector-grant',
+        PLUGIN_NAME,
+        async (ctx, input) => orch.applyAuthoredConnectorGrant(ctx, input),
       );
 
       bus.subscribe<{ outcome: AgentOutcome }>(

@@ -214,7 +214,7 @@ describe('@ax/preset-k8s wiring', () => {
     ]);
   });
 
-  it('loads @ax/connectors and registers the six connectors:* hooks (TASK-91, +list-defaults TASK-97)', () => {
+  it('loads @ax/connectors and registers the connectors:* hooks (CRUD TASK-91 + list-defaults TASK-97 + authored lifecycle TASK-94)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const connectors = plugins.find(
       (p) => p.manifest.name === '@ax/connectors',
@@ -227,6 +227,11 @@ describe('@ax/preset-k8s wiring', () => {
       'connectors:upsert',
       'connectors:delete',
       'connectors:resolve',
+      // TASK-94 — agent-authored connector drafts + the approval gate.
+      'connectors:install-authored',
+      'connectors:list-authored',
+      'connectors:activate-authored',
+      'connectors:clear-authored',
     ]);
     // database:get-instance is the only hard dependency — satisfied by
     // @ax/database-postgres in the real preset (the "every calls entry is

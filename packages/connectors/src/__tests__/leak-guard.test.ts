@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  ActivateAuthoredOutputSchema,
+  ClearAuthoredOutputSchema,
   DeleteOutputSchema,
   GetOutputSchema,
+  InstallAuthoredOutputSchema,
+  ListAuthoredOutputSchema,
   ListDefaultsOutputSchema,
   ListOutputSchema,
   ResolveOutputSchema,
@@ -45,9 +49,10 @@ function topLevelKeysOutsideCapabilities(shape: Record<string, unknown>): string
       const objShape = (s as { shape: Record<string, unknown> }).shape;
       for (const [key, child] of Object.entries(objShape)) {
         keys.push(key);
-        // Do NOT descend into the `capabilities` subtree — that's where the
-        // mechanism vocabulary is allowed to live.
-        if (key === 'capabilities') continue;
+        // Do NOT descend into the `capabilities` / `proposal` subtree — that's
+        // where the mechanism vocabulary is allowed to live (the proposal IS a
+        // Capabilities spec on the authored-draft hooks).
+        if (key === 'capabilities' || key === 'proposal') continue;
         walk(child);
       }
     } else if (typeName === 'ZodArray') {
@@ -70,6 +75,10 @@ describe('@ax/connectors hook surface — no leaked backing-mechanism fields', (
     'connectors:upsert': UpsertOutputSchema,
     'connectors:delete': DeleteOutputSchema,
     'connectors:resolve': ResolveOutputSchema,
+    'connectors:install-authored': InstallAuthoredOutputSchema,
+    'connectors:list-authored': ListAuthoredOutputSchema,
+    'connectors:activate-authored': ActivateAuthoredOutputSchema,
+    'connectors:clear-authored': ClearAuthoredOutputSchema,
   };
 
   for (const [hook, schema] of Object.entries(schemas)) {

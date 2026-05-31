@@ -4623,6 +4623,103 @@ describe('chat-orchestrator', () => {
     expect(skillMd?.contents).toContain('# real default body');
     expect(skillMd?.contents).not.toContain('# builtin body');
   });
+
+  it('TASK-94: a PENDING authored connector draft fires ONE chat:permission-request connector card', async () => {
+    const proxy = buildProxyHooks();
+    const connectorDraft = {
+      connectorId: 'linear',
+      name: 'Linear',
+      usageNote: 'Drive the Linear API',
+      keyMode: 'personal' as const,
+      status: 'pending' as const,
+      proposal: {
+        allowedHosts: ['api.linear.app'],
+        credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' as const }],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      },
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, {
+      'connectors:list-authored': async () => ({ drafts: [connectorDraft] }),
+    } satisfies Record<string, ServiceHandler>);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const cards: Array<Record<string, unknown>> = [];
+    h.bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      if ((p as { kind?: string }).kind === 'connector') cards.push(p as Record<string, unknown>);
+      return undefined;
+    });
+
+    const ctxIn = (sessionId: string, conversationId: string) =>
+      makeAgentContext({
+        sessionId, agentId: 'test-agent', userId: 'test-user', conversationId,
+        logger: createLogger({ reqId: `req-${sessionId}`, writer: () => undefined }),
+      });
+
+    // First turn fires the connector card; a second turn in the SAME
+    // conversation is deduped (no second card for the same shown surface).
+    await h.bus.call<unknown, AgentOutcome>('agent:invoke', ctxIn('s1', 'conv-A'), { message: { role: 'user', content: 'hi' } });
+    await h.bus.call<unknown, AgentOutcome>('agent:invoke', ctxIn('s2', 'conv-A'), { message: { role: 'user', content: 'hi' } });
+
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toEqual({
+      kind: 'connector', connectorId: 'linear', name: 'Linear', authored: true,
+      hosts: ['api.linear.app'],
+      slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', haveExisting: false }],
+      packages: { npm: [], pypi: [] },
+    });
+  });
+
+  it('TASK-94: an ACTIVE authored connector draft fires NO card (already approved)', async () => {
+    const proxy = buildProxyHooks();
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: { ...TEST_AGENT, allowedHosts: ['api.anthropic.com'], requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } }, skillAttachments: [] },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, {
+      'connectors:list-authored': async () => ({
+        drafts: [{
+          connectorId: 'linear', name: 'Linear', usageNote: '', keyMode: 'personal', status: 'active',
+          proposal: { allowedHosts: ['api.linear.app'], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+        }],
+      }),
+    } satisfies Record<string, ServiceHandler>);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+    const cards: unknown[] = [];
+    h.bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      if ((p as { kind?: string }).kind === 'connector') cards.push(p);
+      return undefined;
+    });
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      makeAgentContext({ sessionId: 's1', agentId: 'test-agent', userId: 'test-user', conversationId: 'conv-A', logger: createLogger({ reqId: 'r', writer: () => undefined }) }),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(cards).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------

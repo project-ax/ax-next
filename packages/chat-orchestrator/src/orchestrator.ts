@@ -9,6 +9,11 @@ import type { AgentConfig, ProxyConfig } from '@ax/sandbox-protocol';
 import { foldAuthoredSkillCaps } from './authored-egress.js';
 import { buildAuthoredCardPayload, authoredCardDedupKey, hasShownDelta } from './authored-card.js';
 import {
+  buildAuthoredConnectorCard,
+  authoredConnectorCardDedupKey,
+  hasConnectorShownSurface,
+} from './connector-card.js';
+import {
   skillCredentialEnvName,
   projectEnvMapToBareNames,
 } from './credential-namespace.js';
@@ -174,6 +179,48 @@ export interface ApplyAuthoredCapabilityGrantInput {
 export type ApplyAuthoredCapabilityGrantOutput =
   | { applied: true; respawned: boolean }
   | { applied: false; reason: 'not-authored' };
+
+// TASK-94 — authored-CONNECTOR approval grant I/O. Mirrors the authored-skill
+// grant exactly (the same TOCTOU `shown` guard semantics), but the SUBJECT is a
+// connector: the grant writes connector-subject approved-caps rows (the TASK-93
+// wall, `skills:approved-caps-set` with `connectorId`) and flips the connector
+// draft pending→active (`connectors:activate-authored`). `applied:false,
+// reason:'not-authored'` signals an unknown connectorId (not one of this
+// agent's authored drafts).
+export interface ApplyAuthoredConnectorGrantInput {
+  /** OPTIONAL — present for the in-chat card (retires the warm session so the
+   *  next turn re-spawns with the now-active connector); absent for an
+   *  approve-ahead path that has no live conversation. */
+  conversationId?: string;
+  userId: string;
+  agentId: string;
+  connectorId: string;
+  /** What the card displayed — absent ⟹ approve the full current proposal. */
+  shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
+}
+export type ApplyAuthoredConnectorGrantOutput =
+  | { applied: true; respawned: boolean }
+  | { applied: false; reason: 'not-authored' };
+
+// connectors:list-authored — registered by @ax/connectors (TASK-94). Duplicated
+// structurally per I2 (no @ax/connectors import). Conditionally called via
+// bus.hasService — NOT declared in the manifest, same convention as the
+// authored-skill / conversations peers.
+interface ConnectorsListAuthoredOutput {
+  drafts: Array<{
+    connectorId: string;
+    name: string;
+    usageNote: string;
+    keyMode: 'personal' | 'workspace';
+    status: 'pending' | 'active';
+    proposal: {
+      allowedHosts: string[];
+      credentials: Array<{ slot: string; kind: string; account?: string; description?: string }>;
+      mcpServers: unknown[];
+      packages: { npm: string[]; pypi: string[] };
+    };
+  }>;
+}
 
 // Shapes of the peer hooks we bus.call. Duplicated structurally on purpose —
 // I2 forbids cross-plugin imports. Drift would surface as a runtime shape
@@ -694,6 +741,10 @@ export function createOrchestrator(
     ctx: AgentContext,
     input: ApplyAuthoredCapabilityGrantInput,
   ): Promise<ApplyAuthoredCapabilityGrantOutput>;
+  applyAuthoredConnectorGrant(
+    ctx: AgentContext,
+    input: ApplyAuthoredConnectorGrantInput,
+  ): Promise<ApplyAuthoredConnectorGrantOutput>;
   onHttpEgress(ctx: AgentContext, payload: HttpEgressEventLike): Promise<void>;
   onSkillsProposed(ctx: AgentContext, event: SkillsProposedLike): Promise<void>;
 } {
@@ -727,6 +778,11 @@ export function createOrchestrator(
   // post-approve spawn re-evaluates the smaller delta. In-memory, single-replica
   // (same posture as wallCardsByHost / respawnSessions).
   const upfrontCardsByConv = new Map<string, Set<string>>();
+  // TASK-94 — the twin of upfrontCardsByConv for authored CONNECTOR cards,
+  // keyed conversationId → set of shown-surface dedup keys. Same conversation-
+  // scoped survives-respawn posture; cleared by applyAuthoredConnectorGrant on
+  // apply so a post-approve spawn re-evaluates.
+  const upfrontConnectorCardsByConv = new Map<string, Set<string>>();
   // TASK-86 — the conversation that PROPOSED each still-pending authored skill.
   // A pending cap-skill's upfront "Connect …" card used to fire in EVERY
   // conversation (the projection resolves the user's pending skills on every
@@ -1614,6 +1670,27 @@ export function createOrchestrator(
       }
     }
 
+    // TASK-94 — resolve the agent's authored CONNECTOR drafts (best-effort). A
+    // PENDING connector draft contributes NOTHING to this spawn's reach
+    // (connectors:resolve, the projection seam TASK-97 will read, never returns
+    // a pending draft); it only drives the approval card below. hasService-
+    // gated — a preset without @ax/connectors (CLI canary) just has no drafts.
+    let authoredConnectorDrafts: ConnectorsListAuthoredOutput['drafts'] = [];
+    if (bus.hasService('connectors:list-authored')) {
+      try {
+        const r = await bus.call<
+          { ownerUserId: string; agentId: string },
+          ConnectorsListAuthoredOutput
+        >('connectors:list-authored', ctx, { ownerUserId: ctx.userId, agentId: agent.id });
+        authoredConnectorDrafts = r.drafts;
+      } catch (err) {
+        ctx.logger.warn('resolve_authored_connectors_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+        authoredConnectorDrafts = [];
+      }
+    }
+
     // §D3 "no bytes project, no caps inject" (TASK-76). A `pending` authored
     // skill — one whose declared caps a human hasn't approved yet — must
     // contribute NOTHING to this spawn: not its SKILL.md body, not its
@@ -2127,6 +2204,45 @@ export function createOrchestrator(
         // Always store back: `fired` is either a new Set or the existing
         // reference (re-set is a harmless no-op), so no size guard is needed.
         upfrontCardsByConv.set(ctx.conversationId, fired);
+      }
+    }
+
+    // TASK-94 — fire ONE upfront approval card per PENDING authored connector
+    // draft with a non-empty shown surface (hosts/slots/packages; mcp deferred),
+    // deduped per (conversation, connectorId, shown-surface). The twin of the
+    // authored-skill card block above; conversationId is the SSE match key.
+    if (ctx.conversationId !== undefined && ctx.conversationId.length > 0) {
+      const cardable = authoredConnectorDrafts.filter(
+        (d) => d.status === 'pending' && hasConnectorShownSurface(d.proposal),
+      );
+      if (cardable.length > 0) {
+        // Vaulted refs → haveExisting on account-tagged slots (mirror the skill
+        // card). Best-effort: a failed lookup just means the card prompts.
+        const vaultedRefs = new Set<string>();
+        if (bus.hasService('credentials:list')) {
+          try {
+            const list = await bus.call<
+              { scope: 'user'; ownerId: string },
+              { credentials: Array<{ ref: string }> }
+            >('credentials:list', ctx, { scope: 'user', ownerId: ctx.userId });
+            for (const c of list.credentials) vaultedRefs.add(c.ref);
+          } catch {
+            /* a failed lookup just means the card prompts — never block it */
+          }
+        }
+        const fired = upfrontConnectorCardsByConv.get(ctx.conversationId) ?? new Set<string>();
+        for (const d of cardable) {
+          const key = authoredConnectorCardDedupKey(d.connectorId, d.proposal);
+          if (fired.has(key)) continue;
+          const card = buildAuthoredConnectorCard(
+            { connectorId: d.connectorId, name: d.name, proposal: d.proposal },
+            vaultedRefs,
+          );
+          if (card === null) continue;
+          fired.add(key);
+          await bus.fire('chat:permission-request', ctx, card);
+        }
+        upfrontConnectorCardsByConv.set(ctx.conversationId, fired);
       }
     }
 
@@ -2734,6 +2850,163 @@ export function createOrchestrator(
     return { applied: true, respawned: false };
   }
 
+  // TASK-94 — apply a user-approved authored-CONNECTOR capability grant. The
+  // twin of applyAuthoredCapabilityGrant, but the SUBJECT is a connector: the
+  // host re-resolves the agent's authored connector drafts (server-authoritative
+  // — an unknown connectorId returns not-authored), approves the proposal
+  // (host/slot/npm/pypi; mcp deferred — the wall rejects kind:'mcp') under the
+  // TASK-93 wall with a `connectorId` subject, then flips the draft active. A
+  // credential slot → re-spawn next turn; host/pkg-only → live widen.
+  async function applyAuthoredConnectorGrant(
+    ctx: AgentContext,
+    input: ApplyAuthoredConnectorGrantInput,
+  ): Promise<ApplyAuthoredConnectorGrantOutput> {
+    // 1. Re-resolve the agent's authored connector drafts — the HOST is the
+    //    authority on which connectorIds are this agent's drafts. A resolve
+    //    failure (DB hiccup) → not-authored so the caller doesn't mis-apply.
+    let drafts: ConnectorsListAuthoredOutput['drafts'] = [];
+    if (bus.hasService('connectors:list-authored')) {
+      try {
+        const r = await bus.call<
+          { ownerUserId: string; agentId: string },
+          ConnectorsListAuthoredOutput
+        >('connectors:list-authored', ctx, {
+          ownerUserId: input.userId,
+          agentId: input.agentId,
+        });
+        drafts = r.drafts;
+      } catch (err) {
+        ctx.logger.warn('authored_connector_grant_resolve_failed', {
+          agentId: input.agentId,
+          connectorId: input.connectorId,
+          err: err instanceof Error ? err.message : String(err),
+        });
+        return { applied: false, reason: 'not-authored' };
+      }
+    }
+    const draft = drafts.find((d) => d.connectorId === input.connectorId);
+    if (draft === undefined) return { applied: false, reason: 'not-authored' };
+
+    // 2. Build the approval rows from the proposal, applying the same `shown`
+    //    TOCTOU intersection guard as the skill grant: anything in the current
+    //    proposal but NOT in `shown` is silently skipped (the client `shown`
+    //    can only NARROW, never expand). When `shown` is absent, approve the
+    //    full current proposal.
+    const proposal = draft.proposal;
+    const proposalNpm = proposal.packages?.npm ?? [];
+    const proposalPypi = proposal.packages?.pypi ?? [];
+
+    const shownHostSet = input.shown !== undefined ? new Set(input.shown.hosts) : null;
+    const shownSlotSet = input.shown !== undefined ? new Set(input.shown.slots) : null;
+    const shownNpmSet  = input.shown !== undefined ? new Set(input.shown.npm)   : null;
+    const shownPypiSet = input.shown !== undefined ? new Set(input.shown.pypi)  : null;
+
+    const approvedHosts = shownHostSet !== null
+      ? proposal.allowedHosts.filter((h) => shownHostSet.has(h))
+      : proposal.allowedHosts;
+    const approvedCreds = shownSlotSet !== null
+      ? proposal.credentials.filter((c) => shownSlotSet.has(c.slot))
+      : proposal.credentials;
+    const approvedNpm = shownNpmSet !== null
+      ? proposalNpm.filter((p) => shownNpmSet.has(p))
+      : proposalNpm;
+    const approvedPypi = shownPypiSet !== null
+      ? proposalPypi.filter((p) => shownPypiSet.has(p))
+      : proposalPypi;
+
+    const rows: Array<{
+      kind: 'host' | 'slot' | 'npm' | 'pypi';
+      value: string;
+      detail?: { kind: 'api-key'; account?: string };
+    }> = [
+      ...approvedHosts.map((h) => ({ kind: 'host' as const, value: h })),
+      ...approvedCreds.map((c) => ({
+        kind: 'slot' as const,
+        value: c.slot,
+        detail: { kind: 'api-key' as const, ...(c.account !== undefined ? { account: c.account } : {}) },
+      })),
+      ...approvedNpm.map((p) => ({ kind: 'npm' as const, value: p })),
+      ...approvedPypi.map((p) => ({ kind: 'pypi' as const, value: p })),
+    ];
+
+    // 3. Write the approval rows under the TASK-93 connector-subject wall
+    //    (`skills:approved-caps-set` with `connectorId`). Fail-loud (propagate)
+    //    + idempotent, same posture as the skill grant. hasService-guarded.
+    if (bus.hasService('skills:approved-caps-set')) {
+      for (const row of rows) {
+        await bus.call('skills:approved-caps-set', ctx, {
+          ownerUserId: input.userId,
+          agentId: input.agentId,
+          connectorId: input.connectorId,
+          kind: row.kind,
+          value: row.value,
+          ...(row.detail !== undefined ? { detail: row.detail } : {}),
+        });
+      }
+    }
+
+    // 3b. Flip the connector draft pending→active. Status-guarded + idempotent
+    //     in the store; fail-loud here. hasService-guarded.
+    if (bus.hasService('connectors:activate-authored')) {
+      await bus.call('connectors:activate-authored', ctx, {
+        ownerUserId: input.userId,
+        agentId: input.agentId,
+        connectorId: input.connectorId,
+      });
+    }
+
+    // 4. Drop the per-conversation card dedup so a post-approve spawn re-fires
+    //    only if something remains unapproved.
+    const convId = input.conversationId;
+    if (convId !== undefined) upfrontConnectorCardsByConv.delete(convId);
+
+    // 5. Re-spawn vs live-widen (same asymmetry as the skill grant): an
+    //    approved credential slot is frozen at spawn → retire the warm session
+    //    so the next turn re-spawns; host/pkg-only → live widen the warm
+    //    session. With no conversation there's nothing live — the rows +
+    //    activate are the whole effect and the next turn cold-spawns approved.
+    const needsRespawn = approvedCreds.length > 0;
+    if (needsRespawn) {
+      const warm =
+        convId !== undefined
+          ? await activeAliveSession(ctx, convId, input.userId)
+          : null;
+      let respawned = false;
+      if (warm !== null) {
+        try {
+          await bus.call('session:terminate', ctx, { sessionId: warm });
+          respawned = true;
+        } catch (err) {
+          ctx.logger.warn('authored_connector_grant_retire_failed', {
+            conversationId: input.conversationId,
+            err: err instanceof Error ? err : new Error(String(err)),
+          });
+        }
+      }
+      return { applied: true, respawned };
+    }
+
+    const liveHosts = [...approvedHosts];
+    if (approvedNpm.length > 0) liveHosts.push('registry.npmjs.org');
+    if (approvedPypi.length > 0) liveHosts.push('pypi.org', 'files.pythonhosted.org');
+    if (liveHosts.length > 0 && bus.hasService('proxy:add-host') && convId !== undefined) {
+      const warm = await activeAliveSession(ctx, convId, input.userId);
+      if (warm !== null) {
+        for (const host of liveHosts) {
+          try {
+            await bus.call('proxy:add-host', ctx, { sessionId: warm, host });
+          } catch (err) {
+            ctx.logger.warn('authored_connector_grant_add_host_failed', {
+              host,
+              err: err instanceof Error ? err : new Error(String(err)),
+            });
+          }
+        }
+      }
+    }
+    return { applied: true, respawned: false };
+  }
+
   return {
     runAgentInvoke,
     onChatEnd,
@@ -2741,6 +3014,7 @@ export function createOrchestrator(
     onSessionTerminate,
     applyCapabilityGrant,
     applyAuthoredCapabilityGrant,
+    applyAuthoredConnectorGrant,
     onHttpEgress,
     onSkillsProposed,
   };
