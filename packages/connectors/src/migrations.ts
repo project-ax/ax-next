@@ -11,6 +11,12 @@ import { sql, type Kysely } from 'kysely';
  * Tables:
  *   connectors_v1_connectors — the connector entity, owned by `owner_user_id`.
  *
+ * `default_attached` (TASK-97) flags a connector as a workspace DEFAULT — it
+ * flows into every agent's effective connector set the same way a
+ * `default_attached` skill does (mirrors `skills_v1_skills.default_attached`).
+ * The orchestrator reads it via `connectors:list-defaults`. Added as an
+ * idempotent in-place `ADD COLUMN IF NOT EXISTS` (greenfield — no v1→v2 split).
+ *
  * No FK to auth/agents/skills tables — a cross-plugin FK would require a shared
  * schema migration, which violates I4. Ownership is enforced at hook time by
  * the `owner_user_id` predicate (the tenant-scope helper in `scope.ts`), not by
@@ -49,6 +55,15 @@ export async function runConnectorsMigration<DB>(
       ON connectors_v1_connectors (owner_user_id)
       WHERE deleted_at IS NULL
   `.execute(db);
+
+  // TASK-97 — workspace-default flag. A default-attached connector flows into
+  // every agent's effective connector set (the orchestrator reads these via
+  // `connectors:list-defaults`). Idempotent ADD COLUMN; NOT NULL DEFAULT false
+  // so every pre-existing row is "not a default" until explicitly flagged.
+  await sql`
+    ALTER TABLE connectors_v1_connectors
+      ADD COLUMN IF NOT EXISTS default_attached BOOLEAN NOT NULL DEFAULT false
+  `.execute(db);
 }
 
 /**
@@ -66,6 +81,8 @@ export interface ConnectorsRow {
   key_mode: string;
   visibility: string;
   capabilities: unknown;
+  /** TASK-97 — workspace-default flag (see migration). */
+  default_attached: boolean;
   deleted_at: Date | null;
   created_at: Date;
   updated_at: Date;

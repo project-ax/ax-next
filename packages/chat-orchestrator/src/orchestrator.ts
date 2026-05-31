@@ -12,6 +12,12 @@ import {
   skillCredentialEnvName,
   projectEnvMapToBareNames,
 } from './credential-namespace.js';
+import {
+  resolveEffectiveConnectors,
+  foldConnectorCaps,
+  connectorCredentialEnvName,
+  type FoldConnectorResult,
+} from './connector-union.js';
 
 // ---------------------------------------------------------------------------
 // @ax/chat-orchestrator — per-chat control plane
@@ -1702,13 +1708,40 @@ export function createOrchestrator(
       ...(config.builtinSkills ?? []).filter((s) => !presentIds.has(s.id)),
     ];
 
-    // D: auto-allowlist public package registries for any skill in the union —
-    // explicit attachments AND default-attached skills (both are materialized into
-    // the sandbox, so the agent may run npx/uvx for either). Specific hosts only,
-    // gated on skill installation (I5 — no blanket egress). Computed here (after the
-    // defaults union) so default-attached skills' declared ecosystems are covered.
-    let needsNpmRegistry = false;
-    let needsPypiRegistry = false;
+    // TASK-97 — CONNECTOR union. Resolve the agent's effective connector set
+    // (workspace defaults ∪ the owner's own connectors; see connector-union.ts on
+    // why manager-added attachment is a deferred follow-up) and fold each
+    // connector's Capabilities through the SAME materialization path skills use:
+    // hosts → baseAllowSet, credential slots → baseCreds (namespaced
+    // `connector:<id>:<slot>`), packages → the registry auto-allow below,
+    // mcpServers → installed-skill entries (synthetic SKILL.md + per-dir
+    // `.mcp.json`). Deduped against skill caps: hosts via the shared Set, slots via
+    // the per-subject namespace. NON-FATAL throughout — a connector resolve failure
+    // yields fewer connectors, never terminates (connectors are additive reach).
+    const effectiveConnectors = await resolveEffectiveConnectors(bus, ctx);
+    const connectorFold: FoldConnectorResult = foldConnectorCaps(
+      effectiveConnectors,
+      baseAllowSet,
+      baseCreds,
+      slotOwners,
+    );
+    // Append connector slots AFTER the skill slots so the bare-env projection's
+    // first-writer-wins keeps SKILL precedence on a shared bare name (a connector
+    // and a skill both reading `LINEAR_API_KEY` → the skill wins the flat-env
+    // stamp; the connector's own credential still reaches the proxy under its
+    // namespaced placeholder).
+    for (const slot of connectorFold.connectorSlotEnvNames) {
+      skillSlotEnvNames.push(slot);
+    }
+
+    // D: auto-allowlist public package registries for any skill OR connector in
+    // the union — explicit attachments AND default-attached skills AND connectors
+    // (all are materialized into the sandbox, so the agent may run npx/uvx for
+    // any). Specific hosts only, gated on installation (I5 — no blanket egress).
+    // Computed here (after the defaults union + connector fold) so every declared
+    // ecosystem is covered.
+    let needsNpmRegistry = connectorFold.needsNpmRegistry;
+    let needsPypiRegistry = connectorFold.needsPypiRegistry;
     for (const skill of unionedSkills) {
       const pkgs = skill.capabilities.packages;
       if (pkgs?.npm?.length) needsNpmRegistry = true;
@@ -1782,6 +1815,23 @@ export function createOrchestrator(
       })),
     }));
 
+    // TASK-97 — connector installed-skill entries (synthetic SKILL.md +
+    // mcpServers) from the connector fold. Kept SEPARATE from the skill entries
+    // because a connector entry's credential placeholders key off
+    // `connector:<connectorId>:<slot>` (not `skill:<id>:<slot>`), so they need
+    // their own stamping loop below. The entry `id` is the sandbox-safe derived
+    // dir id; `connectorId` is the original id used for the namespaced lookup.
+    const connectorInstalledEntries: Array<
+      InstalledSkillForSandbox & { connectorId: string }
+    > = connectorFold.installedEntries.map((e) => ({
+      id: e.id,
+      files: e.files,
+      mcpServers: e.mcpServers,
+      allowedHosts: e.allowedHosts,
+      credentials: e.credentials,
+      connectorId: e.connectorId,
+    }));
+
     try {
       const opened = await bus.call<ProxyOpenSessionInput, ProxyOpenSessionOutput>(
         'proxy:open-session',
@@ -1804,6 +1854,16 @@ export function createOrchestrator(
       for (const skill of installedSkillsForSandbox) {
         for (const cred of skill.credentials) {
           const ph = opened.envMap[skillCredentialEnvName(skill.id, cred.slot)];
+          if (typeof ph === 'string') cred.placeholder = ph;
+        }
+      }
+      // TASK-97 — connector twin of the above: stamp each connector's OWN
+      // placeholder (keyed `connector:<connectorId>:<slot>`) onto its sandbox
+      // credential entry, so connector git HTTP-Basic wiring resolves the right
+      // credential regardless of which subject won the flat-env stamp.
+      for (const entry of connectorInstalledEntries) {
+        for (const cred of entry.credentials) {
+          const ph = opened.envMap[connectorCredentialEnvName(entry.connectorId, cred.slot)];
           if (typeof ph === 'string') cred.placeholder = ph;
         }
       }
@@ -1912,6 +1972,13 @@ export function createOrchestrator(
     //    workspaceRef is silently dropped.
     let handle: OpenSessionHandle;
     try {
+      // TASK-97 — the sandbox materializes skill AND connector entries through
+      // the same `installedSkills` field. Strip the connector entries' internal
+      // `connectorId` (a stamping-loop join key, not part of the wire shape).
+      const allInstalledSkills: InstalledSkillForSandbox[] = [
+        ...installedSkillsForSandbox,
+        ...connectorInstalledEntries.map(({ connectorId: _cid, ...e }) => e),
+      ];
       const sandboxInput: OpenSessionInput = {
         sessionId,
         workspaceRoot: ctx.workspace.rootPath,
@@ -1932,7 +1999,7 @@ export function createOrchestrator(
         // by the time we reach this point (the !proxyOpenLoaded gate above
         // returns early with `proxy-not-loaded` otherwise).
         proxyConfig,
-        ...(installedSkillsForSandbox.length > 0 ? { installedSkills: installedSkillsForSandbox } : {}),
+        ...(allInstalledSkills.length > 0 ? { installedSkills: allInstalledSkills } : {}),
       };
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
         'sandbox:open-session',

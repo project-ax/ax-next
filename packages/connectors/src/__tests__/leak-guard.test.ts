@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   DeleteOutputSchema,
   GetOutputSchema,
+  ListDefaultsOutputSchema,
   ListOutputSchema,
   ResolveOutputSchema,
   UpsertOutputSchema,
@@ -64,6 +65,7 @@ function topLevelKeysOutsideCapabilities(shape: Record<string, unknown>): string
 describe('@ax/connectors hook surface — no leaked backing-mechanism fields', () => {
   const schemas = {
     'connectors:list': ListOutputSchema,
+    'connectors:list-defaults': ListDefaultsOutputSchema,
     'connectors:get': GetOutputSchema,
     'connectors:upsert': UpsertOutputSchema,
     'connectors:delete': DeleteOutputSchema,

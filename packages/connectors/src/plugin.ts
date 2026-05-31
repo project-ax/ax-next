@@ -23,6 +23,7 @@ import {
 import {
   DeleteOutputSchema,
   GetOutputSchema,
+  ListDefaultsOutputSchema,
   ListOutputSchema,
   ResolveOutputSchema,
   UpsertOutputSchema,
@@ -30,6 +31,8 @@ import {
   type DeleteOutput,
   type GetInput,
   type GetOutput,
+  type ListDefaultsInput,
+  type ListDefaultsOutput,
   type ListInput,
   type ListOutput,
   type ResolveInput,
@@ -84,6 +87,7 @@ export function createConnectorsPlugin(_config: ConnectorsConfig = {}): Plugin {
       version: '0.0.0',
       registers: [
         'connectors:list',
+        'connectors:list-defaults',
         'connectors:get',
         'connectors:upsert',
         'connectors:delete',
@@ -115,6 +119,13 @@ export function createConnectorsPlugin(_config: ConnectorsConfig = {}): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => listConnectors(localStore, input),
         { returns: ListOutputSchema },
+      );
+
+      bus.registerService<ListDefaultsInput, ListDefaultsOutput>(
+        'connectors:list-defaults',
+        PLUGIN_NAME,
+        async (_ctx, input) => listDefaultConnectors(localStore, input),
+        { returns: ListDefaultsOutputSchema },
       );
 
       bus.registerService<GetInput, GetOutput>(
@@ -180,6 +191,20 @@ async function listConnectors(
   return { connectors };
 }
 
+async function listDefaultConnectors(
+  store: ConnectorStore,
+  input: ListDefaultsInput,
+): Promise<ListDefaultsOutput> {
+  // userId is OPTIONAL on the input (the routing surface may evolve to a
+  // per-user overlay, mirroring skills:list-defaults' ownerUserId). In this
+  // slice an absent userId yields no defaults — defaults are owner-scoped, so
+  // there's nothing to list without an owner.
+  if (input.userId === undefined) return { connectors: [] };
+  const userId = requireUserId(input.userId, 'connectors:list-defaults');
+  const connectors = await store.listDefaults(userId);
+  return { connectors };
+}
+
 async function getConnector(
   store: ConnectorStore,
   input: GetInput,
@@ -224,6 +249,20 @@ async function upsertConnector(
   const keyMode = validateKeyMode(input.keyMode);
   const visibility = validateVisibility(input.visibility);
   const capabilities = validateCapabilities(input.capabilities);
+  // defaultAttached is an optional boolean — validate the type at the boundary
+  // (an arbitrary truthy value must not slip into the DB). Absent ⟹ undefined,
+  // which the store reads as "preserve existing on update / false on insert".
+  if (
+    input.defaultAttached !== undefined &&
+    typeof input.defaultAttached !== 'boolean'
+  ) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: 'defaultAttached must be a boolean if provided',
+    });
+  }
   const { connector, created } = await store.upsert({
     userId,
     connectorId,
@@ -233,6 +272,9 @@ async function upsertConnector(
     keyMode,
     visibility,
     capabilities,
+    ...(input.defaultAttached !== undefined
+      ? { defaultAttached: input.defaultAttached }
+      : {}),
   });
   return { connector, created };
 }

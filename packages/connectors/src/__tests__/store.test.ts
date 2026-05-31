@@ -129,6 +129,106 @@ describe('createConnectorStore', () => {
     expect(await store.softDelete('u', 'c')).toBe(false);
   });
 
+  it('defaultAttached round-trips; upsert preserves it on a content-only update, clears on explicit false', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+
+    // Fresh connector — absent flag defaults to false.
+    const fresh = await store.upsert({
+      userId: 'u',
+      connectorId: 'c',
+      name: 'C',
+      description: '',
+      usageNote: '',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: caps(),
+    });
+    expect(fresh.connector.defaultAttached).toBe(false);
+
+    // Flip it default-on.
+    const flagged = await store.upsert({
+      userId: 'u',
+      connectorId: 'c',
+      name: 'C',
+      description: '',
+      usageNote: '',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: caps(),
+      defaultAttached: true,
+    });
+    expect(flagged.connector.defaultAttached).toBe(true);
+
+    // A content-only re-upsert (flag ABSENT) must PRESERVE default-on.
+    const preserved = await store.upsert({
+      userId: 'u',
+      connectorId: 'c',
+      name: 'C renamed',
+      description: 'd',
+      usageNote: '',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: caps(),
+    });
+    expect(preserved.connector.name).toBe('C renamed');
+    expect(preserved.connector.defaultAttached).toBe(true);
+
+    // Explicit false clears it.
+    const cleared = await store.upsert({
+      userId: 'u',
+      connectorId: 'c',
+      name: 'C renamed',
+      description: 'd',
+      usageNote: '',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: caps(),
+      defaultAttached: false,
+    });
+    expect(cleared.connector.defaultAttached).toBe(false);
+  });
+
+  it('listDefaults returns only default-flagged, non-tombstoned, owner-scoped FULL connectors sorted by id', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+
+    const base = (over: {
+      userId: string;
+      connectorId: string;
+      defaultAttached?: boolean;
+    }) => ({
+      name: over.connectorId.toUpperCase(),
+      description: '',
+      usageNote: '',
+      keyMode: 'personal' as const,
+      visibility: 'private' as const,
+      capabilities: caps(),
+      ...over,
+    });
+
+    // u1: two defaults ('b','a') + one non-default ('z').
+    await store.upsert(base({ userId: 'u1', connectorId: 'b', defaultAttached: true }));
+    await store.upsert(base({ userId: 'u1', connectorId: 'a', defaultAttached: true }));
+    await store.upsert(base({ userId: 'u1', connectorId: 'z', defaultAttached: false }));
+    // u1: a default that gets tombstoned — must NOT appear.
+    await store.upsert(base({ userId: 'u1', connectorId: 'gone', defaultAttached: true }));
+    await store.softDelete('u1', 'gone');
+    // u2: a default owned by another user — must NOT appear for u1.
+    await store.upsert(base({ userId: 'u2', connectorId: 'other', defaultAttached: true }));
+
+    const defaults = await store.listDefaults('u1');
+    // Sorted by id asc; only u1's live defaults; full connectors (capabilities present).
+    expect(defaults.map((c) => c.id)).toEqual(['a', 'b']);
+    expect(defaults[0]!.capabilities).toEqual(caps());
+    expect(defaults.every((c) => c.defaultAttached)).toBe(true);
+
+    expect((await store.listDefaults('u2')).map((c) => c.id)).toEqual(['other']);
+    expect(await store.listDefaults('nobody')).toEqual([]);
+  });
+
   it('scopedConnectors filters to owner + non-tombstoned rows', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);

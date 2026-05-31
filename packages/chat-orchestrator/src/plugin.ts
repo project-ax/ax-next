@@ -110,6 +110,15 @@ export function createChatOrchestratorPlugin(
       // — the terminate happens at the next turn's routing, safely between turns.
       // In-memory + single-replica. REPLACES the old workspace:applied
       // .ax/draft-skills trigger (skill authoring left git).
+      //
+      // TASK-97 (connectors-first-class) adds `connectors:list-defaults`,
+      // `connectors:list`, and `connectors:resolve` to the conditionally-called
+      // category — the connector union resolves the agent's effective connector
+      // set and folds each connector's Capabilities into the sandbox the same
+      // way skills do. All three are `bus.hasService(...)`-gated and NON-FATAL
+      // (a throw/absent yields fewer connectors, never terminates the session),
+      // so they stay OUT of `calls`: a preset without @ax/connectors (the CLI
+      // canary, single-tenant) drives the orchestrator with zero connectors.
       subscribes: [
         'chat:end',
         'chat:turn-end',

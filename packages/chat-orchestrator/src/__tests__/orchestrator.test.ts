@@ -2890,6 +2890,264 @@ describe('chat-orchestrator', () => {
     );
   });
 
+  // -------------------------------------------------------------------------
+  // TASK-97 — connector union into the sandbox. The orchestrator resolves the
+  // agent's effective connector set (defaults + the owner's own) and folds each
+  // connector's Capabilities through the SAME materialization path as skills.
+  // -------------------------------------------------------------------------
+  interface ConnectorCapsLike {
+    allowedHosts: string[];
+    credentials: Array<{ slot: string; kind: 'api-key'; account?: string }>;
+    mcpServers: Array<Record<string, unknown>>;
+    packages?: { npm?: string[]; pypi?: string[] };
+  }
+  /** Stubs the connector hooks the orchestrator soft-couples to. `defaults` are
+   *  returned full from connectors:list-defaults; `owned` are listed (id-only)
+   *  + resolved on demand. `listDefaultsThrows` exercises the non-fatal path. */
+  function buildConnectorHooks(opts: {
+    defaults?: Record<string, { capabilities: ConnectorCapsLike; usageNote?: string }>;
+    owned?: Record<string, { capabilities: ConnectorCapsLike; usageNote?: string }>;
+    listDefaultsThrows?: Error;
+  }): Record<string, ServiceHandler> {
+    const defaults = opts.defaults ?? {};
+    const owned = opts.owned ?? {};
+    return {
+      'connectors:list-defaults': async () => {
+        if (opts.listDefaultsThrows !== undefined) throw opts.listDefaultsThrows;
+        return {
+          connectors: Object.entries(defaults).map(([id, c]) => ({
+            id,
+            capabilities: c.capabilities,
+            ...(c.usageNote !== undefined ? { usageNote: c.usageNote } : {}),
+          })),
+        };
+      },
+      'connectors:list': async () => ({
+        connectors: Object.keys(owned).map((id) => ({ id })),
+      }),
+      'connectors:resolve': async (_c, input) => {
+        const id = (input as { connectorId: string }).connectorId;
+        const c = owned[id];
+        if (c === undefined) throw new Error(`no connector ${id}`);
+        return {
+          id,
+          capabilities: c.capabilities,
+          ...(c.usageNote !== undefined ? { usageNote: c.usageNote } : {}),
+        };
+      },
+    };
+  }
+
+  it('TASK-97: unions default + owned connector hosts/creds/packages into proxy:open-session and mcpServers into sandbox installedSkills', async () => {
+    const proxy = buildProxyHooks();
+    const connectorHooks = buildConnectorHooks({
+      defaults: {
+        gdrive: {
+          usageNote: 'Use this to read Drive docs.',
+          capabilities: {
+            allowedHosts: ['drive.googleapis.com'],
+            credentials: [{ slot: 'GDRIVE', kind: 'api-key', account: 'google' }],
+            mcpServers: [
+              {
+                name: 'gdrive',
+                transport: 'http',
+                url: 'https://mcp.example.com/gdrive',
+                allowedHosts: ['mcp.example.com'],
+                credentials: [],
+              },
+            ],
+            packages: { npm: [], pypi: [] },
+          },
+        },
+      },
+      owned: {
+        sf: {
+          capabilities: {
+            allowedHosts: ['login.salesforce.com'],
+            credentials: [{ slot: 'SF_TOKEN', kind: 'api-key' }],
+            mcpServers: [],
+            packages: { npm: ['@salesforce/cli'], pypi: [] },
+          },
+        },
+      },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, connectorHooks);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('connector-union-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    const openIn = proxy.state.lastOpenInput as {
+      allowlist: string[];
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    // Hosts from BOTH connectors land in the allowlist.
+    expect(openIn.allowlist).toContain('drive.googleapis.com');
+    expect(openIn.allowlist).toContain('login.salesforce.com');
+    // The owned connector declared an npm package → registry auto-allowed.
+    expect(openIn.allowlist).toContain('registry.npmjs.org');
+    // Credential slot env-names are namespaced under the CONNECTOR namespace; the
+    // REF is the `account:<service>` vault key TASK-96's connect flow writes —
+    // account-tagged GDRIVE → account:google; untagged SF_TOKEN → account:sf
+    // (the connector-id service-tag fallback, one source of truth).
+    expect(openIn.credentials).toMatchObject({
+      ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+      'connector:gdrive:GDRIVE': { ref: 'account:google', kind: 'api-key' },
+      'connector:sf:SF_TOKEN': { ref: 'account:sf', kind: 'api-key' },
+    });
+
+    // The connector's mcpServers reach the sandbox as an installed-skill entry
+    // (synthetic SKILL.md = usage note). The dir id is the sandbox-safe form.
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{
+        id: string;
+        files: Array<{ path: string; contents: string }>;
+        mcpServers: Array<unknown>;
+      }>;
+    };
+    const entries = sandboxIn.installedSkills ?? [];
+    const gdriveEntry = entries.find((e) => e.id.startsWith('cx-gdrive-'));
+    expect(gdriveEntry).toBeTruthy();
+    expect(gdriveEntry!.mcpServers).toHaveLength(1);
+    const skillMd = gdriveEntry!.files.find((f) => f.path === 'SKILL.md');
+    expect(skillMd!.contents).toContain('Use this to read Drive docs.');
+  });
+
+  it('TASK-97: a connector host dedups against a skill host (one allowlist entry); shared bare slot coexists', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        gh: {
+          id: 'gh',
+          capabilities: {
+            allowedHosts: ['api.shared.example.com'],
+            credentials: [{ slot: 'SHARED_KEY', kind: 'api-key' }],
+          },
+          bodyMd: 'gh',
+          manifestYaml: 'name: gh\nversion: 1\n',
+        },
+      },
+    });
+    const connectorHooks = buildConnectorHooks({
+      defaults: {
+        cx: {
+          capabilities: {
+            // Same host the skill declares → must dedup to ONE allowlist entry.
+            allowedHosts: ['api.shared.example.com'],
+            // Same BARE slot name the skill declares → must coexist (namespaced).
+            credentials: [{ slot: 'SHARED_KEY', kind: 'api-key' }],
+            mcpServers: [],
+            packages: { npm: [], pypi: [] },
+          },
+        },
+      },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [{ skillId: 'gh', credentialBindings: { SHARED_KEY: 'skill-ref' } }],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services, connectorHooks);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('connector-dedup-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    const openIn = proxy.state.lastOpenInput as {
+      allowlist: string[];
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    // Host dedups: appears exactly once despite both subjects declaring it.
+    expect(openIn.allowlist.filter((h2) => h2 === 'api.shared.example.com')).toHaveLength(1);
+    // The skill slot and the connector slot COEXIST under distinct namespaces;
+    // the connector's REF is its `account:<connectorId>` vault key.
+    expect(openIn.credentials).toMatchObject({
+      'skill:gh:SHARED_KEY': { ref: 'skill-ref', kind: 'api-key' },
+      'connector:cx:SHARED_KEY': { ref: 'account:cx', kind: 'api-key' },
+    });
+  });
+
+  it('TASK-97: a throwing connectors:list-defaults is NON-FATAL — session opens, skill caps intact', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        gh: {
+          id: 'gh',
+          capabilities: { allowedHosts: ['api.github.com'], credentials: [] },
+          bodyMd: 'gh',
+          manifestYaml: 'name: gh\nversion: 1\n',
+        },
+      },
+    });
+    const connectorHooks = buildConnectorHooks({
+      listDefaultsThrows: new Error('connectors db down'),
+      // No owned connectors registered either — but list/resolve still present.
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [{ skillId: 'gh', credentialBindings: {} }],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services, connectorHooks);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('connector-nonfatal-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    // Session NOT terminated — the connector failure is non-fatal.
+    expect(outcome.kind).toBe('complete');
+    // The skill host still reached the sandbox (skill caps unaffected).
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).toContain('api.github.com');
+  });
+
   it('threads installedSkills into sandbox:open-session with correct SKILL.md content', async () => {
     const proxy = buildProxyHooks();
     const manifestYaml = 'name: github\nversion: 1.0.0\n';
