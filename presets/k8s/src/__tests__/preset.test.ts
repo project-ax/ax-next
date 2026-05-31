@@ -155,6 +155,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/blob-store-fs',
         '@ax/channel-web',
         '@ax/chat-orchestrator',
+        '@ax/connectors',
         '@ax/conversations',
         '@ax/credential-proxy',
         '@ax/credentials',
@@ -211,6 +212,25 @@ describe('@ax/preset-k8s wiring', () => {
       'host-grants:list',
       'host-grants:revoke',
     ]);
+  });
+
+  it('loads @ax/connectors and registers the five connectors:* hooks (TASK-91)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const connectors = plugins.find(
+      (p) => p.manifest.name === '@ax/connectors',
+    );
+    expect(connectors).toBeDefined();
+    expect(connectors!.manifest.registers).toEqual([
+      'connectors:list',
+      'connectors:get',
+      'connectors:upsert',
+      'connectors:delete',
+      'connectors:resolve',
+    ]);
+    // database:get-instance is the only hard dependency — satisfied by
+    // @ax/database-postgres in the real preset (the "every calls entry is
+    // satisfied" test above derives this dynamically; this pins the edge).
+    expect(connectors!.manifest.calls).toEqual(['database:get-instance']);
   });
 
   it('loads @ax/skills and registers the quarantine services (Phase 2)', () => {

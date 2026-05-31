@@ -32,6 +32,7 @@
     "@ax/channel-web": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/conversation-titles": "workspace:*",
+    "@ax/connectors": "workspace:*",
     "@ax/conversations": "workspace:*",
     "@ax/core": "workspace:*",
     "@ax/credential-proxy": "workspace:*",
