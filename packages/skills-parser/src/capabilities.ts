@@ -26,9 +26,25 @@ export interface PackagesSpec {
   pypi: string[];
 }
 
-export interface SkillCapabilities {
+/**
+ * The neutral capability shape: what a unit of work is allowed to reach
+ * (`allowedHosts` / `credentials` / `mcpServers` / `packages`). Named without
+ * a `Skill` prefix on purpose — skills are the first consumer, but a future
+ * connector object references the SAME shape, and per CLAUDE.md invariant #2
+ * it must do so without a cross-plugin import. This type IS that shared
+ * contract; it lives in `@ax/skills-parser` (a pure, dependency-free parser
+ * package both sides may import).
+ */
+export interface Capabilities {
   allowedHosts: string[];
   credentials: CapabilitySlot[];
   mcpServers: McpServerSpec[];   // always present, defaults to []
   packages: PackagesSpec;        // always present; empty arrays when none declared
 }
+
+/**
+ * Back-compat alias for {@link Capabilities}. Skills (and everything already
+ * importing this name) keep working unchanged. New code referencing the
+ * shared shape should prefer the neutral `Capabilities`.
+ */
+export type SkillCapabilities = Capabilities;

@@ -60,11 +60,15 @@
 //                           several. Routines imports only the parser; no
 //                           plugin runtime is reached.
 //   @ax/skills-parser     — pure-function SKILL.md parser (parseSkillManifest,
-//                           splitSkillMd) + capability types (CapabilitySlot,
-//                           McpServerSpec, SkillCapabilities). No @ax/core
-//                           dependency — shared between @ax/skills (host-side
-//                           store) and @ax/agents (future scanner). No manifest,
-//                           no hooks, no runtime behavior beyond parsing.
+//                           splitSkillMd) + the neutral capability shape
+//                           (Capabilities, plus CapabilitySlot, McpServerSpec,
+//                           PackagesSpec; SkillCapabilities is a back-compat
+//                           alias of Capabilities). No @ax/core dependency —
+//                           shared between @ax/skills (host-side store) and
+//                           @ax/agents (future scanner), and the home of the
+//                           shared shape a future connector references without
+//                           a cross-plugin import. No manifest, no hooks, no
+//                           runtime behavior beyond parsing.
 //
 // These shared-import expansions of the kernel-only allowlist form the
 // documented one-way boundary between host-side plugins and sandbox-side

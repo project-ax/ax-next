@@ -1,5 +1,5 @@
 import { dump as yamlDump } from 'js-yaml';
-import type { SkillCapabilities } from './capabilities.js';
+import type { Capabilities } from './capabilities.js';
 
 /**
  * Serialize a skill manifest (the YAML that goes BETWEEN the --- fences).
@@ -14,7 +14,7 @@ export function buildSkillManifestYaml(input: {
   id: string;
   description: string;
   version: number;
-  capabilities: SkillCapabilities;
+  capabilities: Capabilities;
 }): string {
   const doc: Record<string, unknown> = {
     name: input.id,
