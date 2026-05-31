@@ -22,6 +22,7 @@ import type {
   SkillDetail,
   SkillSummary,
   CatalogSubmitOutput,
+  AuthoredSkillListing,
 } from '@ax/skills';
 
 const writeHeaders = {
@@ -43,6 +44,18 @@ async function handleResponse(res: Response): Promise<unknown> {
 export async function listUserSkills(): Promise<SkillSummary[]> {
   const res = await fetch('/settings/skills', { credentials: 'include' });
   const body = (await handleResponse(res)) as { skills: SkillSummary[] };
+  return body.skills;
+}
+
+/**
+ * List the caller's agent-AUTHORED skills (TASK-85). The host aggregates
+ * `skills_v1_authored` across the caller's personal agents and returns the
+ * user-facing `active` + `pending` rows (quarantined drafts are withheld).
+ * "My Skills" surfaces these alongside the user's catalog skills.
+ */
+export async function listAuthoredSkills(): Promise<AuthoredSkillListing[]> {
+  const res = await fetch('/settings/skills/authored', { credentials: 'include' });
+  const body = (await handleResponse(res)) as { skills: AuthoredSkillListing[] };
   return body.skills;
 }
 

@@ -634,6 +634,24 @@ export const SkillsListAuthoredOutputSchema = z.object({
   ),
 }) as unknown as ZodType<SkillsListAuthoredOutput>;
 
+// `GET /settings/skills/authored` listing (TASK-85). The user-facing "My Skills"
+// panel surfaces the caller's agent-authored skills (across their personal
+// agents) alongside their catalog skills. This is a SUMMARY surface — no manifest
+// /body bytes — so the listing carries only the display fields + the owning
+// agent + the lifecycle status. Quarantined drafts are excluded by the route
+// (not user-facing "installed" skills); only `active` + `pending` are listed.
+export interface AuthoredSkillListing {
+  skillId: string;
+  /** The personal agent this skill was authored for. */
+  agentId: string;
+  description: string;
+  /** Lifecycle status: `active` (live) or `pending` (awaiting human approval). */
+  status: 'active' | 'pending';
+}
+export interface SettingsAuthoredSkillsOutput {
+  skills: AuthoredSkillListing[];
+}
+
 // `skills:scan` — the subscriber-hook home of the validator-skill veto/scan
 // (TASK-74). Fired by `skills:propose` BEFORE the gate classifies. A subscriber
 // (e.g. @ax/validator-skill) inspects the untrusted bundle text and returns a

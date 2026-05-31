@@ -134,9 +134,13 @@ function requireOwner(ownerUserId: string | undefined): string {
 // Manifest decisions:
 //   - `calls: ['database:get-instance', 'http:register-route', 'auth:require-user']`
 //     are the hard deps. We DO NOT declare `agents:any-attached-to-skill`
-//     because it may not be present in stripped presets. The delete path
-//     checks via `bus.hasService` and degrades gracefully when @ax/agents
-//     isn't loaded. Similarly, `credentials:list` / `credentials:delete`
+//     (delete-path in-use guard) or `agents:list-for-user` (TASK-85, the
+//     /settings/skills/authored aggregation) because @ax/agents already declares
+//     `optionalCalls: skills:list-authored` — declaring the reverse edge here
+//     (even as optionalCalls) would form a skills↔agents call-graph CYCLE that
+//     boot's cycle detection rejects. Both are `bus.hasService`-guarded and
+//     degrade gracefully (no in-use check / no authored listing) when @ax/agents
+//     is absent. Similarly, `credentials:list` / `credentials:delete`
 //     are soft deps — guarded via `bus.hasService` inside purgeSkillCredentials
 //     so stripped presets that omit @ax/credentials don't wedge skill operations.
 //     They are NOT listed in `calls:` because that would make them hard deps

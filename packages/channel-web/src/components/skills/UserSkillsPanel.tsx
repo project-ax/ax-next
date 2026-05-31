@@ -30,15 +30,17 @@ import {
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
+import { Separator } from '@/components/ui/separator';
 import {
   listUserSkills,
+  listAuthoredSkills,
   getUserSkill,
   createUserSkill,
   updateUserSkill,
   deleteUserSkill,
   shareUserSkill,
 } from '@/lib/user-skills';
-import type { SkillSummary } from '@ax/skills';
+import type { SkillSummary, AuthoredSkillListing } from '@ax/skills';
 import { SkillEditor } from '@/components/admin/SkillEditor';
 import type { SkillEditorApi } from '@/components/admin/SkillEditor';
 
@@ -61,6 +63,9 @@ export function UserSkillsPanel({
   onClose: () => void;
 }) {
   const [skills, setSkills] = useState<SkillSummary[] | null>(null);
+  // Agent-authored skills (TASK-85): surfaced read-only alongside catalog skills
+  // so authored/approved work doesn't read as "No skills installed".
+  const [authored, setAuthored] = useState<AuthoredSkillListing[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -75,12 +80,21 @@ export function UserSkillsPanel({
 
   async function refresh() {
     setError(null);
+    // Fetch catalog + authored skills together. Authored is a soft surface — a
+    // failure there must not blank out the catalog list, so it's caught
+    // independently (an absent @ax/agents already returns [] without erroring).
     try {
       const items = await listUserSkills();
       setSkills(items);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
       setSkills([]);
+    }
+    try {
+      const items = await listAuthoredSkills();
+      setAuthored(items);
+    } catch {
+      setAuthored([]);
     }
   }
 
@@ -165,11 +179,12 @@ export function UserSkillsPanel({
 
             {skills === null ? (
               <p className="text-sm text-muted-foreground">Loading…</p>
-            ) : skills.length === 0 ? (
+            ) : skills.length === 0 &&
+              (authored === null || authored.length === 0) ? (
               <p className="text-sm text-muted-foreground">
                 No skills installed. Click "New skill" to add one.
               </p>
-            ) : (
+            ) : skills.length === 0 ? null : (
               <Table>
                 <TableHeader>
                   <TableRow>
@@ -259,6 +274,54 @@ export function UserSkillsPanel({
                   ))}
                 </TableBody>
               </Table>
+            )}
+
+            {/* Agent-authored skills (TASK-85) — read-only here; these are
+                authored in chat, "My Skills" only surfaces them. */}
+            {authored !== null && authored.length > 0 && (
+              <div className="flex flex-col gap-2">
+                {skills !== null && skills.length > 0 && <Separator />}
+                <div className="flex flex-col gap-1">
+                  <h3 className="text-sm font-medium">Authored by your agents</h3>
+                  <p className="text-sm text-muted-foreground">
+                    Skills your agents created. Pending ones are waiting on your
+                    approval before they go live.
+                  </p>
+                </div>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>ID</TableHead>
+                      <TableHead>Agent</TableHead>
+                      <TableHead>Description</TableHead>
+                      <TableHead>Status</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {authored.map((s) => (
+                      <TableRow key={`${s.agentId}/${s.skillId}`}>
+                        <TableCell className="font-mono text-xs">
+                          {s.skillId}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-muted-foreground">
+                          {s.agentId}
+                        </TableCell>
+                        <TableCell className="text-sm">{s.description}</TableCell>
+                        <TableCell>
+                          <Badge
+                            variant={
+                              s.status === 'active' ? 'secondary' : 'outline'
+                            }
+                            className="text-xs"
+                          >
+                            {s.status === 'active' ? 'active' : 'pending review'}
+                          </Badge>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </div>
             )}
           </div>
         </DialogContent>
