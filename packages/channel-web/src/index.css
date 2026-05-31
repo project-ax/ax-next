@@ -120,52 +120,6 @@ body {
   /* Mirrors Tailwind `boxShadow.sm` — appended to the composer halo stack so
      the field keeps its baseline lift beneath the new accent bloom. */
   --shadow-sm: 0 1px 2px hsl(0 0% 0% / 0.04), 0 1px 1px hsl(0 0% 0% / 0.03);
-  /* Accent "pool of light" mix strengths — deepened for dark mode below. */
-  --composer-glow-center: 22%;
-  --composer-glow-mid: 9%;
-}
-
-/* Dark mode strengthens the pool. Gate on an explicit dark theme, and on the
-   system preference only when no explicit theme is set — mirrors the token
-   blocks in the @layer base above. */
-:root[data-theme='dark'] {
-  --composer-glow-center: 36%;
-  --composer-glow-mid: 14%;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme='light']) {
-    --composer-glow-center: 36%;
-    --composer-glow-mid: 14%;
-  }
-}
-
-/* Ambient accent "pool of light": a fixed, full-viewport radial glow anchored
-   low-center, just below the fixed composer. It sits behind the UI (z-index 0;
-   the composer is z-20 and the sidebar/header are lifted above it) and never
-   intercepts input. A slow ~14s breath keeps it atmospheric rather than static.
-   We mix the brand `--primary` token — the shadcn `--accent` token is a
-   near-neutral gray here, so it would read as no color at all. */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  z-index: 0;
-  pointer-events: none;
-  background: radial-gradient(
-    ellipse 100% 60% at 50% 100%,
-    color-mix(in oklch, hsl(var(--primary)) var(--composer-glow-center), transparent) 0%,
-    color-mix(in oklch, hsl(var(--primary)) var(--composer-glow-mid), transparent) 32%,
-    transparent 64%
-  );
-  animation: composer-glow-breathe 14s ease-in-out infinite;
-}
-@keyframes composer-glow-breathe {
-  0%, 100% { opacity: 0.85; }
-  50%      { opacity: 1; }
-}
-/* Respect reduced-motion: hold the pool steady rather than breathing. */
-@media (prefers-reduced-motion: reduce) {
-  body::before { animation: none; }
 }
 
 /* Composer field halo — a hairline accent ring plus a soft drop + radial bloom

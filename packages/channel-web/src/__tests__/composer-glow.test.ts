@@ -22,35 +22,17 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(join(__dirname, '../index.css'), 'utf-8');
 
 describe('composer accent glow', () => {
-  it('defines the --shadow-sm baseline and accent pool strengths', () => {
+  it('defines the --shadow-sm baseline', () => {
     expect(css).toContain('--shadow-sm:');
-    // Light defaults, deepened for dark.
-    expect(css).toContain('--composer-glow-center: 22%');
-    expect(css).toContain('--composer-glow-mid: 9%');
-    expect(css).toContain('--composer-glow-center: 36%');
-    expect(css).toContain('--composer-glow-mid: 14%');
   });
 
-  it('paints a fixed, non-interactive radial pool behind the UI', () => {
-    expect(css).toContain('body::before');
-    expect(css).toMatch(/body::before\s*\{[^}]*position:\s*fixed/);
-    expect(css).toMatch(/body::before\s*\{[^}]*z-index:\s*0/);
-    expect(css).toMatch(/body::before\s*\{[^}]*pointer-events:\s*none/);
-    // Anchored low-center, mixing the brand --primary token (NOT a hardcoded
-    // hex), fading center -> mid -> transparent.
-    expect(css).toContain('at 50% 100%');
-    expect(css).toContain(
-      'color-mix(in oklch, hsl(var(--primary)) var(--composer-glow-center), transparent)',
-    );
-    expect(css).toContain(
-      'color-mix(in oklch, hsl(var(--primary)) var(--composer-glow-mid), transparent)',
-    );
-  });
-
-  it('breathes slowly (~14s) and respects reduced-motion', () => {
-    expect(css).toContain('animation: composer-glow-breathe 14s');
-    expect(css).toMatch(/@keyframes composer-glow-breathe/);
-    expect(css).toMatch(/prefers-reduced-motion: reduce/);
+  it('no longer paints the ambient body::before pool of light', () => {
+    // The bottom-of-viewport radial glow and its breathing animation were
+    // removed; the composer field keeps its own halo (below).
+    expect(css).not.toContain('body::before');
+    expect(css).not.toContain('composer-glow-breathe');
+    expect(css).not.toContain('--composer-glow-center');
+    expect(css).not.toContain('--composer-glow-mid');
   });
 
   it('gives the composer field an accent halo over --shadow-sm', () => {
