@@ -35,3 +35,27 @@ export function scopedConnectors(
     .where('owner_user_id', '=', scope.userId)
     .where('deleted_at', 'is', null);
 }
+
+/**
+ * Authored-draft scope (TASK-94). An authored connector draft is per-(owner,
+ * agent), so its scope carries BOTH the owner and the agent — every read MUST
+ * filter on both (a draft authored under one agent must never leak into
+ * another's namespace). Routed through this helper so the bare-tenant-table
+ * read of `connectors_v1_authored` lives in `scope.ts` (lint I7), same as the
+ * live-connector read above.
+ */
+export interface AuthoredConnectorScope {
+  ownerUserId: string;
+  agentId: string;
+}
+
+export function scopedAuthoredConnectors(
+  db: Kysely<ConnectorDatabase>,
+  scope: AuthoredConnectorScope,
+) {
+  return db
+    .selectFrom('connectors_v1_authored')
+    .selectAll('connectors_v1_authored')
+    .where('owner_user_id', '=', scope.ownerUserId)
+    .where('agent_id', '=', scope.agentId);
+}

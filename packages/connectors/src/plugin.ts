@@ -17,24 +17,44 @@ import {
   validateKeyMode,
   validateName,
   validateOptionalText,
+  validateSlotName,
   validateVisibility,
   type ConnectorStore,
 } from './store.js';
 import {
+  createAuthoredConnectorsStore,
+  type AuthoredConnectorsStore,
+} from './authored-store.js';
+import {
+  ActivateAuthoredOutputSchema,
+  ClearAuthoredOutputSchema,
   DeleteOutputSchema,
   GetOutputSchema,
+  InstallAuthoredOutputSchema,
+  ListAuthoredOutputSchema,
   ListDefaultsOutputSchema,
   ListOutputSchema,
   ResolveOutputSchema,
   UpsertOutputSchema,
+  type ActivateAuthoredInput,
+  type ActivateAuthoredOutput,
+  type AuthoredConnectorSlot,
+  type Capabilities,
+  type ClearAuthoredInput,
+  type ClearAuthoredOutput,
   type DeleteInput,
   type DeleteOutput,
   type GetInput,
   type GetOutput,
+  type InstallAuthoredInput,
+  type InstallAuthoredOutput,
+  type ListAuthoredInput,
+  type ListAuthoredOutput,
   type ListDefaultsInput,
   type ListDefaultsOutput,
   type ListInput,
   type ListOutput,
+  type McpServerSpec,
   type ResolveInput,
   type ResolveOutput,
   type UpsertInput,
@@ -80,6 +100,7 @@ export type ConnectorsConfig = Record<string, never>;
 export function createConnectorsPlugin(_config: ConnectorsConfig = {}): Plugin {
   let db: Kysely<ConnectorDatabase> | undefined;
   let _store: ConnectorStore | undefined;
+  let _authored: AuthoredConnectorsStore | undefined;
 
   return {
     manifest: {
@@ -92,6 +113,14 @@ export function createConnectorsPlugin(_config: ConnectorsConfig = {}): Plugin {
         'connectors:upsert',
         'connectors:delete',
         'connectors:resolve',
+        // TASK-94 — agent-authored connector drafts + the approval gate's
+        // activate/clear. install-authored persists a PENDING draft (zero
+        // reach); the orchestrator fires ONE approval card; activate-authored
+        // flips it active on a human grant; clear-authored is the reject path.
+        'connectors:install-authored',
+        'connectors:list-authored',
+        'connectors:activate-authored',
+        'connectors:clear-authored',
       ],
       // database:get-instance is hard — we run our own migration on init.
       calls: ['database:get-instance'],
@@ -113,6 +142,8 @@ export function createConnectorsPlugin(_config: ConnectorsConfig = {}): Plugin {
       await runConnectorsMigration(db);
       const localStore = createConnectorStore(db);
       _store = localStore;
+      const localAuthored = createAuthoredConnectorsStore(db);
+      _authored = localAuthored;
 
       bus.registerService<ListInput, ListOutput>(
         'connectors:list',
@@ -155,6 +186,34 @@ export function createConnectorsPlugin(_config: ConnectorsConfig = {}): Plugin {
         async (_ctx, input) => resolveConnector(localStore, input),
         { returns: ResolveOutputSchema },
       );
+
+      bus.registerService<InstallAuthoredInput, InstallAuthoredOutput>(
+        'connectors:install-authored',
+        PLUGIN_NAME,
+        async (_ctx, input) => installAuthoredConnector(localAuthored, input),
+        { returns: InstallAuthoredOutputSchema },
+      );
+
+      bus.registerService<ListAuthoredInput, ListAuthoredOutput>(
+        'connectors:list-authored',
+        PLUGIN_NAME,
+        async (_ctx, input) => listAuthoredConnectors(localAuthored, input),
+        { returns: ListAuthoredOutputSchema },
+      );
+
+      bus.registerService<ActivateAuthoredInput, ActivateAuthoredOutput>(
+        'connectors:activate-authored',
+        PLUGIN_NAME,
+        async (_ctx, input) => activateAuthoredConnector(localAuthored, input),
+        { returns: ActivateAuthoredOutputSchema },
+      );
+
+      bus.registerService<ClearAuthoredInput, ClearAuthoredOutput>(
+        'connectors:clear-authored',
+        PLUGIN_NAME,
+        async (_ctx, input) => clearAuthoredConnector(localAuthored, input),
+        { returns: ClearAuthoredOutputSchema },
+      );
     },
 
     async shutdown() {
@@ -162,6 +221,7 @@ export function createConnectorsPlugin(_config: ConnectorsConfig = {}): Plugin {
       // here. Drop our references so a re-init doesn't read a stale store.
       db = undefined;
       _store = undefined;
+      _authored = undefined;
     },
   };
 }
@@ -317,6 +377,10 @@ async function resolveConnector(
   // the deterministic `account:<service>` ref. requiresSharedKeyConsent gates the
   // "act as you" consent moment (workspace mode or a shared connector). Reach
   // derives PURELY from this scope — no visibility flag on the credential itself.
+  //
+  // ZERO-REACH (TASK-94): resolve reads ONLY the LIVE connectors table. A
+  // pending authored draft lives in `connectors_v1_authored` and is therefore
+  // never returned here — an unapproved authored connector grants no reach.
   return {
     id: connector.id,
     keyMode: connector.keyMode,
@@ -324,4 +388,136 @@ async function resolveConnector(
     credentialPlan: deriveCredentialPlan(connector),
     requiresSharedKeyConsent: requiresSharedKeyConsent(connector),
   };
+}
+
+// ---------------------------------------------------------------------------
+// Authored-connector draft handlers (TASK-94). These mirror the authored-skill
+// flow: install persists a PENDING draft; the orchestrator fires ONE approval
+// card from the proposal; on a human grant the orchestrator writes
+// connector-subject approved-caps rows (the TASK-93 wall) + calls activate.
+// ---------------------------------------------------------------------------
+
+function requireScope(
+  input: { ownerUserId: unknown; agentId: unknown },
+  hookName: string,
+): { ownerUserId: string; agentId: string } {
+  const ownerUserId = requireField(input.ownerUserId, 'ownerUserId', hookName);
+  const agentId = requireField(input.agentId, 'agentId', hookName);
+  return { ownerUserId, agentId };
+}
+
+function requireField(value: unknown, field: string, hookName: string): string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > 256) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `${field} must be a non-empty string`,
+    });
+  }
+  return value;
+}
+
+/**
+ * Assemble + validate a canonical {@link Capabilities} proposal from the flat
+ * authored-install args. Slot NAMES are re-checked against SLOT_RE at the
+ * boundary (defense-in-depth on untrusted model output); the whole assembled
+ * spec is then parsed against the canonical schema (the same don't-trust-input
+ * posture the store uses on upsert/read).
+ */
+function assembleProposal(input: InstallAuthoredInput): Capabilities {
+  const hosts = Array.isArray(input.hosts) ? input.hosts : [];
+  const rawSlots: AuthoredConnectorSlot[] = Array.isArray(input.slots)
+    ? input.slots
+    : [];
+  const credentials = rawSlots.map((s) => ({
+    slot: validateSlotName(s?.slot),
+    kind: 'api-key' as const,
+    ...(typeof s?.description === 'string' ? { description: s.description } : {}),
+    ...(typeof s?.account === 'string' ? { account: s.account } : {}),
+  }));
+  const mcpServers: McpServerSpec[] = Array.isArray(input.mcpServers)
+    ? input.mcpServers
+    : [];
+  const packages = {
+    npm: Array.isArray(input.packages?.npm) ? input.packages!.npm : [],
+    pypi: Array.isArray(input.packages?.pypi) ? input.packages!.pypi : [],
+  };
+  // validateCapabilities re-parses the whole assembled spec against the
+  // canonical schema — a malformed host / mcpServer surfaces as invalid-payload.
+  return validateCapabilities({
+    allowedHosts: hosts,
+    credentials,
+    mcpServers,
+    packages,
+  });
+}
+
+async function installAuthoredConnector(
+  store: AuthoredConnectorsStore,
+  input: InstallAuthoredInput,
+): Promise<InstallAuthoredOutput> {
+  const hookName = 'connectors:install-authored';
+  const { ownerUserId, agentId } = requireScope(input, hookName);
+  const connectorId = validateConnectorId(input.connectorId);
+  const name = validateName(input.name);
+  const usageNote = validateOptionalText(
+    input.usageNote,
+    'usageNote',
+    USAGE_NOTE_MAX,
+  );
+  const keyMode = validateKeyMode(input.keyMode);
+  const proposal = assembleProposal(input);
+  await store.upsert({
+    ownerUserId,
+    agentId,
+    connectorId,
+    name,
+    usageNote,
+    keyMode,
+    proposal,
+  });
+  return { connectorId, status: 'pending' };
+}
+
+async function listAuthoredConnectors(
+  store: AuthoredConnectorsStore,
+  input: ListAuthoredInput,
+): Promise<ListAuthoredOutput> {
+  const { ownerUserId, agentId } = requireScope(input, 'connectors:list-authored');
+  const drafts = await store.list(ownerUserId, agentId);
+  return {
+    drafts: drafts.map((d) => ({
+      connectorId: d.connectorId,
+      name: d.name,
+      usageNote: d.usageNote,
+      keyMode: d.keyMode,
+      status: d.status,
+      proposal: d.proposal,
+    })),
+  };
+}
+
+async function activateAuthoredConnector(
+  store: AuthoredConnectorsStore,
+  input: ActivateAuthoredInput,
+): Promise<ActivateAuthoredOutput> {
+  const { ownerUserId, agentId } = requireScope(
+    input,
+    'connectors:activate-authored',
+  );
+  const connectorId = validateConnectorId(input.connectorId);
+  return store.activate({ ownerUserId, agentId, connectorId });
+}
+
+async function clearAuthoredConnector(
+  store: AuthoredConnectorsStore,
+  input: ClearAuthoredInput,
+): Promise<ClearAuthoredOutput> {
+  const { ownerUserId, agentId } = requireScope(
+    input,
+    'connectors:clear-authored',
+  );
+  const connectorId = validateConnectorId(input.connectorId);
+  return store.clear({ ownerUserId, agentId, connectorId });
 }

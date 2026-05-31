@@ -27,6 +27,14 @@ const NAME_MAX = 200;
 export const DESCRIPTION_MAX = 2000;
 export const USAGE_NOTE_MAX = 4000;
 
+// Credential-slot grammar — SCREAMING_SNAKE, mirrors the skills-parser
+// `SLOT_RE` (re-declared per I2; @ax/skills-parser is a type-only dep). A slot
+// name flows into the credential namespace, so an authored (untrusted) draft
+// declaring a malformed slot must be a LOUD reject, not a silent bad key
+// (defense-in-depth on the credential boundary, I5 — same posture as TASK-87's
+// admin-validator `invalid-slot`).
+const SLOT_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
 function invalid(message: string): PluginError {
   return new PluginError({
     code: 'invalid-payload',
@@ -79,6 +87,21 @@ export function validateOptionalText(
 export function validateKeyMode(value: unknown): KeyMode {
   if (value !== 'personal' && value !== 'workspace') {
     throw invalid("keyMode must be 'personal' or 'workspace'");
+  }
+  return value;
+}
+
+/**
+ * Validate one authored credential-slot name against {@link SLOT_RE}. Used by
+ * the `connectors:install-authored` handler before a model-authored slot is
+ * folded into the capability proposal — an untrusted draft declaring a
+ * malformed slot is rejected at the boundary rather than persisted as a bad key.
+ */
+export function validateSlotName(value: unknown): string {
+  if (typeof value !== 'string' || !SLOT_RE.test(value)) {
+    throw invalid(
+      `credential slot must match ${SLOT_RE.source} (SCREAMING_SNAKE)`,
+    );
   }
   return value;
 }

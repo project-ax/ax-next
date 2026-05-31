@@ -1,24 +1,38 @@
 export { createConnectorsPlugin } from './plugin.js';
 export type { ConnectorsConfig } from './plugin.js';
 export {
+  ActivateAuthoredOutputSchema,
   CapabilitiesSchema,
+  ClearAuthoredOutputSchema,
   DeleteOutputSchema,
   GetOutputSchema,
+  InstallAuthoredOutputSchema,
+  ListAuthoredOutputSchema,
   ListDefaultsOutputSchema,
   ListOutputSchema,
   ResolveOutputSchema,
   UpsertOutputSchema,
 } from './types.js';
 export type {
+  ActivateAuthoredInput,
+  ActivateAuthoredOutput,
+  AuthoredConnectorDraftDescriptor,
+  AuthoredConnectorSlot,
   Capabilities,
   CapabilitySlot,
+  ClearAuthoredInput,
+  ClearAuthoredOutput,
   Connector,
   ConnectorSummary,
   DeleteInput,
   DeleteOutput,
   GetInput,
   GetOutput,
+  InstallAuthoredInput,
+  InstallAuthoredOutput,
   KeyMode,
+  ListAuthoredInput,
+  ListAuthoredOutput,
   ListDefaultsInput,
   ListDefaultsOutput,
   ListInput,
@@ -32,11 +46,22 @@ export type {
   Visibility,
 } from './types.js';
 export { runConnectorsMigration } from './migrations.js';
-export type { ConnectorDatabase, ConnectorsRow } from './migrations.js';
+export type {
+  ConnectorDatabase,
+  ConnectorsAuthoredRow,
+  ConnectorsRow,
+} from './migrations.js';
 export { createConnectorStore } from './store.js';
 export type { ConnectorStore, UpsertArgs } from './store.js';
-export { scopedConnectors } from './scope.js';
-export type { ConnectorScope } from './scope.js';
+export { createAuthoredConnectorsStore } from './authored-store.js';
+export type {
+  AuthoredConnectorDraft,
+  AuthoredConnectorsStore,
+  AuthoredConnectorStatus,
+  UpsertAuthoredConnectorInput,
+} from './authored-store.js';
+export { scopedConnectors, scopedAuthoredConnectors } from './scope.js';
+export type { ConnectorScope, AuthoredConnectorScope } from './scope.js';
 export {
   deriveCredentialPlan,
   requiresSharedKeyConsent,

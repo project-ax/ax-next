@@ -265,6 +265,93 @@ export interface ListDefaultsOutput {
 }
 
 // ---------------------------------------------------------------------------
+// Authored-connector drafts (TASK-94 — install_authored_connector + the
+// approval gate). The hook fields are FLAT (hosts / slots / packages /
+// mcpServers) so the model-authored caller declares its surface without
+// nesting a Capabilities object; the handler assembles + validates the
+// canonical Capabilities from them. Backing-mechanism vocabulary stays inside
+// `mcpServers` (the spec object), never as a first-class field. `status` is
+// the gate verdict; a draft is `pending` (zero reach) until a human approves.
+// ---------------------------------------------------------------------------
+
+/** A single declared credential slot — public metadata, never a secret. */
+export interface AuthoredConnectorSlot {
+  slot: string;
+  kind: 'api-key';
+  description?: string;
+  account?: string;
+}
+
+/**
+ * `install_authored_connector` — an agent submits a connector draft for
+ * approval. (owner, agent) come from the trusted host context (the caller
+ * passes them; a runner can never author into a foreign namespace because the
+ * IPC server stamps them from the bound session — see the IPC seam in TASK-95).
+ */
+export interface InstallAuthoredInput {
+  ownerUserId: string;
+  agentId: string;
+  connectorId: string;
+  name: string;
+  /** Direct-API + CLI network reach. */
+  hosts: string[];
+  /** Declared credential slots (names only — never values). */
+  slots: AuthoredConnectorSlot[];
+  /** CLI/binary backing (public registries). Defaults to empty. */
+  packages?: { npm?: string[]; pypi?: string[] };
+  /** MCP backing (http/stdio). Defaults to empty. */
+  mcpServers?: McpServerSpec[];
+  /** Light "how to use me" blurb. Defaults to ''. */
+  usageNote?: string;
+  keyMode: KeyMode;
+}
+export interface InstallAuthoredOutput {
+  connectorId: string;
+  /** Always `pending` — a freshly installed draft grants zero reach until a
+   *  human approves it at the capability wall. */
+  status: 'pending';
+}
+
+/** One authored connector draft, as surfaced for the approval card + the grant
+ *  re-resolution. `proposal` is the declared, UNAPPROVED capability surface. */
+export interface AuthoredConnectorDraftDescriptor {
+  connectorId: string;
+  name: string;
+  usageNote: string;
+  keyMode: KeyMode;
+  status: 'pending' | 'active';
+  proposal: Capabilities;
+}
+
+export interface ListAuthoredInput {
+  ownerUserId: string;
+  agentId: string;
+}
+export interface ListAuthoredOutput {
+  drafts: AuthoredConnectorDraftDescriptor[];
+}
+
+export interface ActivateAuthoredInput {
+  ownerUserId: string;
+  agentId: string;
+  connectorId: string;
+}
+export interface ActivateAuthoredOutput {
+  /** True iff THIS call flipped a `pending` draft to `active`. */
+  activated: boolean;
+}
+
+export interface ClearAuthoredInput {
+  ownerUserId: string;
+  agentId: string;
+  connectorId: string;
+}
+export interface ClearAuthoredOutput {
+  /** True iff a draft row was removed. */
+  cleared: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // Return schemas — registered with the hooks so the bus validates the response
 // shape (a mismatch becomes PluginError('invalid-return')).
 // ---------------------------------------------------------------------------
@@ -339,3 +426,29 @@ export const ResolveOutputSchema = z.object({
 export const ListDefaultsOutputSchema = z.object({
   connectors: z.array(ConnectorSchema),
 }) as unknown as ZodType<ListDefaultsOutput>;
+
+const AuthoredConnectorDraftSchema = z.object({
+  connectorId: z.string(),
+  name: z.string(),
+  usageNote: z.string(),
+  keyMode: KeyModeSchema,
+  status: z.union([z.literal('pending'), z.literal('active')]),
+  proposal: CapabilitiesSchema,
+});
+
+export const InstallAuthoredOutputSchema = z.object({
+  connectorId: z.string(),
+  status: z.literal('pending'),
+}) as unknown as ZodType<InstallAuthoredOutput>;
+
+export const ListAuthoredOutputSchema = z.object({
+  drafts: z.array(AuthoredConnectorDraftSchema),
+}) as unknown as ZodType<ListAuthoredOutput>;
+
+export const ActivateAuthoredOutputSchema = z.object({
+  activated: z.boolean(),
+}) as unknown as ZodType<ActivateAuthoredOutput>;
+
+export const ClearAuthoredOutputSchema = z.object({
+  cleared: z.boolean(),
+}) as unknown as ZodType<ClearAuthoredOutput>;
