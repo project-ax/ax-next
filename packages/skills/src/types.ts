@@ -647,6 +647,29 @@ export interface AuthoredSkillListing {
   description: string;
   /** Lifecycle status: `active` (live) or `pending` (awaiting human approval). */
   status: 'active' | 'pending';
+  /**
+   * JIT discoverability (TASK-83). A SUMMARY of the capabilities a `pending`
+   * cap-bearing skill is waiting on a human to approve — the same hosts/slots/
+   * packages the just-in-time approval card would show on first use. Present
+   * ONLY for a `pending` skill whose manifest declares at least one of these
+   * (hosts, credential slots, or package egress); omitted for an inert pending
+   * skill (nothing to approve) and for every `active` skill (already approved).
+   *
+   * This is public manifest data only — hostnames + slot NAMES, NEVER a secret
+   * (the secret posts straight to the host credential store, never crossing
+   * this read surface). It drives the "approve early" affordance in My Skills so
+   * a user can approve + enter a key BEFORE the agent's first use, instead of
+   * waiting for the JIT card to fire on the first `request_capability`.
+   *
+   * `slots[].account` (JIT P2) tags a slot to the user's shared service vault;
+   * `slots[].haveExisting` is true when that vault entry already exists, so the
+   * affordance offers "use your existing key" with no re-entry.
+   */
+  pendingCapabilities?: {
+    hosts: string[];
+    slots: Array<{ slot: string; kind: 'api-key'; account?: string; haveExisting?: boolean }>;
+    packages: { npm: string[]; pypi: string[] };
+  };
 }
 export interface SettingsAuthoredSkillsOutput {
   skills: AuthoredSkillListing[];

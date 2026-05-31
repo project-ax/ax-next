@@ -9,6 +9,7 @@ import {
 } from '@ax/core';
 import type { ContentBlock } from '@ax/ipc-protocol';
 import {
+  ApproveAuthoredSkillRequest,
   extractText,
   GetConversationQuery,
   ListConversationsQuery,
@@ -196,7 +197,8 @@ interface AgentInvokeInput {
 // the orchestrator uses it to intersect the re-resolved proposalDelta so
 // only caps the user actually saw get approved.
 interface ApplyAuthoredGrantInput {
-  conversationId: string;
+  /** Optional (TASK-83): the early-approve path from My Skills has no conversation. */
+  conversationId?: string;
   userId: string;
   agentId: string;
   skillId: string;
@@ -712,6 +714,127 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       }
     },
 
+    /**
+     * POST /api/chat/approve-authored-skill — approve a PENDING agent-authored
+     * cap-skill EARLY, from the "My Skills" panel, before the agent's first use
+     * (TASK-83 / JIT discoverability). The twin of postPermissionDecision, minus
+     * the conversation: the user supplies the `agentId` (it owns the listing),
+     * the server ACL-checks it, then fires the SAME authored grant with NO
+     * conversationId — so it writes the approval rows + flips the skill active,
+     * and the user's next turn cold-spawns with the skill already approved.
+     *
+     * Security (I5): the grant target is host-authoritative. The agentId IS
+     * accepted from the body (there's no conversation to resolve it from), but
+     * it is then ACL'd via `agents:resolve` (forbidden → 403, not-found → 404),
+     * so a user can never approve caps onto an agent they don't own. The grant
+     * itself re-resolves the skill as one of THIS agent's authored drafts
+     * (D-B7) — a catalog skill returns not-authored (409, not a silent attach),
+     * because early-approval is only for the agent's own pending drafts. No
+     * secret crosses this wire: the key was already POSTed to the credential
+     * store by the panel. `shown` is the same TOCTOU guard as the card.
+     */
+    async postApproveAuthoredSkill(
+      req: RouteRequest,
+      res: RouteResponse,
+    ): Promise<void> {
+      // 1) Auth.
+      let userId: string;
+      try {
+        const result = await bus.call<
+          AuthRequireUserInput,
+          AuthRequireUserOutput
+        >('auth:require-user', initCtx, { req });
+        userId = result.user.id;
+      } catch (err) {
+        if (err instanceof PluginError || isRejection(err)) {
+          res.status(401).json({ error: 'unauthenticated' });
+          return;
+        }
+        throw err;
+      }
+
+      // 2) Parse + validate the body ({ agentId, skillId, shown? }).
+      let body: ApproveAuthoredSkillRequest;
+      try {
+        const raw =
+          req.body.length === 0
+            ? {}
+            : (JSON.parse(req.body.toString('utf8')) as unknown);
+        const parsed = ApproveAuthoredSkillRequest.safeParse(raw);
+        if (!parsed.success) {
+          res.status(400).json({ error: 'invalid-payload' });
+          return;
+        }
+        body = parsed.data;
+      } catch {
+        res.status(400).json({ error: 'invalid-payload' });
+        return;
+      }
+
+      // 3) Agent ACL gate (same posture as postMessage / postPermissionDecision):
+      // forbidden → 403, not-found → 404. This is the ownership check — a user
+      // can only ever approve caps onto an agent they can reach.
+      try {
+        await bus.call<AgentsResolveInput, AgentsResolveOutput>(
+          'agents:resolve',
+          initCtx,
+          { agentId: body.agentId, userId },
+        );
+      } catch (err) {
+        if (err instanceof PluginError) {
+          if (err.code === 'forbidden') {
+            res.status(403).json({ error: 'forbidden' });
+            return;
+          }
+          res.status(404).json({ error: 'agent-not-found' });
+          return;
+        }
+        throw err;
+      }
+
+      // 4) The authored grant must be wired (it's the only path here — there is
+      // no catalog fallback for early approval: My Skills lists the agent's OWN
+      // authored drafts, never catalog skills).
+      if (!bus.hasService('agent:apply-authored-capability-grant')) {
+        res.status(501).json({ error: 'not-supported' });
+        return;
+      }
+
+      // 5) Fire the authored grant with NO conversationId (early approval).
+      const grantCtx = makeAgentContext({
+        sessionId: makeReqId(),
+        agentId: body.agentId,
+        userId,
+        reqId: makeReqId(),
+      });
+      try {
+        const a = await bus.call<ApplyAuthoredGrantInput, ApplyAuthoredGrantOutput>(
+          'agent:apply-authored-capability-grant',
+          grantCtx,
+          {
+            userId,
+            agentId: body.agentId,
+            skillId: body.skillId,
+            ...(body.shown !== undefined ? { shown: body.shown } : {}),
+          },
+        );
+        if (a.applied) {
+          res.status(200).json({ ok: true });
+          return;
+        }
+        // not-authored: the skillId isn't one of this agent's pending drafts.
+        // Early approval only applies to the agent's own authored drafts.
+        res.status(409).json({ error: 'not-authored' });
+      } catch (err) {
+        grantCtx.logger.warn('approve_authored_skill_grant_failed', {
+          agentId: body.agentId,
+          skillId: body.skillId,
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+        res.status(500).json({ error: 'grant-failed' });
+      }
+    },
+
     /** GET /api/chat/conversations — list user's conversations. */
     async listConversations(
       req: RouteRequest,
@@ -952,6 +1075,11 @@ export async function registerChatRoutes(
       method: 'POST',
       path: '/api/chat/permission-decision',
       handler: handlers.postPermissionDecision as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/chat/approve-authored-skill',
+      handler: handlers.postApproveAuthoredSkill as unknown as RouteHandler,
     },
     {
       method: 'GET',

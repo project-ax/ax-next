@@ -135,6 +135,70 @@ describe('agent:apply-authored-capability-grant', () => {
     expect(mocks.trace.addHost).toEqual([]);
   });
 
+  it('TASK-83: early approval with NO conversationId writes rows + activates, retires nothing', async () => {
+    // The My Skills "approve early" path has no conversation — the user approves a
+    // pending cap-skill BEFORE first use. The grant must still write the approval
+    // rows and flip the skill active, but must NOT try to retire/widen a warm
+    // session (there is none to look up).
+    const mocks = buildMocks({
+      draft: {
+        id: 'linear',
+        proposalDelta: {
+          ...EMPTY_CAPS,
+          allowedHosts: ['api.linear.app'],
+          credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+        },
+      },
+      // A warm session exists for some OTHER conversation, but with no
+      // conversationId we must never look it up or retire it.
+      activeSessionId: 'sess-warm',
+      liveSessions: new Set(['sess-warm']),
+    });
+    const h = await harnessFor(mocks);
+    const out = await h.bus.call('agent:apply-authored-capability-grant', ctx(), {
+      // conversationId intentionally omitted (early approval).
+      userId: 'user-1',
+      agentId: 'agent-1',
+      skillId: 'linear',
+    });
+    // A credential delta still reports respawned:false (nothing retired) — the
+    // next turn cold-spawns with the now-approved credential.
+    expect(out).toEqual({ applied: true, respawned: false });
+    expect(mocks.trace.setRows).toEqual([
+      { skillId: 'linear', kind: 'host', value: 'api.linear.app' },
+      { skillId: 'linear', kind: 'slot', value: 'LINEAR_API_KEY' },
+    ]);
+    // The pending→active flip still fires — the whole point of approving early.
+    expect(mocks.trace.activate).toEqual([
+      { ownerUserId: 'user-1', agentId: 'agent-1', skillId: 'linear' },
+    ]);
+    // Crucially: no warm session was retired or widened (no conversation).
+    expect(mocks.trace.terminate).toEqual([]);
+    expect(mocks.trace.addHost).toEqual([]);
+  });
+
+  it('TASK-83: early approval of a host-only delta with NO conversationId does not live-widen', async () => {
+    const mocks = buildMocks({
+      draft: { id: 'tool', proposalDelta: { ...EMPTY_CAPS, allowedHosts: ['api.example.com'] } },
+      activeSessionId: 'sess-warm',
+      liveSessions: new Set(['sess-warm']),
+    });
+    const h = await harnessFor(mocks);
+    const out = await h.bus.call('agent:apply-authored-capability-grant', ctx(), {
+      userId: 'user-1',
+      agentId: 'agent-1',
+      skillId: 'tool',
+    });
+    expect(out).toEqual({ applied: true, respawned: false });
+    expect(mocks.trace.setRows).toEqual([
+      { skillId: 'tool', kind: 'host', value: 'api.example.com' },
+    ]);
+    // Host-only normally live-widens the warm session — but with no conversation
+    // there is no live session to widen.
+    expect(mocks.trace.addHost).toEqual([]);
+    expect(mocks.trace.terminate).toEqual([]);
+  });
+
   it('a non-draft skillId returns not-authored and writes nothing', async () => {
     const mocks = buildMocks({ draft: null, activeSessionId: null, liveSessions: new Set() });
     const h = await harnessFor(mocks);

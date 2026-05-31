@@ -807,6 +807,57 @@ describe('/settings/skills handlers', () => {
     expect(pending?.status).toBe('pending');
   });
 
+  it('GET /settings/skills/authored surfaces pendingCapabilities for a pending cap-skill (TASK-83 discoverability)', async () => {
+    // The JIT discoverability gap: a pending cap-bearing authored skill must be
+    // visibly approvable from My Skills BEFORE first use. The listing carries a
+    // summary of the hosts/slots/packages awaiting approval (public manifest
+    // data only — never a secret) so the panel can render an approve + key
+    // affordance.
+    const h = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    // Inert pending skill — has nothing to approve, so NO pendingCapabilities.
+    const inert = await propose(h, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml:
+        'name: inert-pending\ndescription: Inert authored skill.\nversion: 1',
+      bodyMd: 'No caps.',
+    });
+    expect(inert.status).toBe('active'); // zero-cap authored → active, not pending
+
+    // Cap-bearing pending skill — declares a host + a credential slot.
+    const cap = await propose(h, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml:
+        'name: needs-key\ndescription: Wants a host and a key.\nversion: 1\ncapabilities:\n  allowedHosts:\n    - api.linear.app\n  credentials:\n    - slot: LINEAR_API_KEY\n      kind: api-key',
+      bodyMd: 'Wants reach + key.',
+    });
+    expect(cap.status).toBe('pending');
+
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.listAuthored(mkReq({}), res);
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as SettingsAuthoredSkillsOutput;
+
+    const pending = body.skills.find((s) => s.skillId === 'needs-key');
+    expect(pending?.status).toBe('pending');
+    expect(pending?.pendingCapabilities).toBeDefined();
+    expect(pending?.pendingCapabilities?.hosts).toEqual(['api.linear.app']);
+    expect(pending?.pendingCapabilities?.slots).toEqual([
+      { slot: 'LINEAR_API_KEY', kind: 'api-key', haveExisting: false },
+    ]);
+    expect(pending?.pendingCapabilities?.packages).toEqual({ npm: [], pypi: [] });
+
+    // The inert skill (now active) carries no pendingCapabilities.
+    const inertListing = body.skills.find((s) => s.skillId === 'inert-pending');
+    expect(inertListing?.pendingCapabilities).toBeUndefined();
+  });
+
   it('GET /settings/skills/authored EXCLUDES quarantined drafts', async () => {
     const h = await makeHarness({
       authedUser: { id: 'alice', isAdmin: false },

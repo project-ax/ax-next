@@ -1197,6 +1197,109 @@ describe('@ax/channel-web POST /api/chat/permission-decision', () => {
 });
 
 // ---------------------------------------------------------------------------
+// POST /api/chat/approve-authored-skill — early approval from "My Skills"
+// (TASK-83). Auth-gated + agent-ACL'd (agentId from the body, then resolved) +
+// CSRF-guarded. Fires the authored grant with NO conversationId.
+// ---------------------------------------------------------------------------
+
+async function postApprove(
+  port: number,
+  body: unknown,
+  opts: { headers?: Record<string, string> } = {},
+): Promise<Response> {
+  return fetch(`http://127.0.0.1:${port}/api/chat/approve-authored-skill`, {
+    method: 'POST',
+    headers: opts.headers ?? HEADERS_OK,
+    body: typeof body === 'string' ? body : JSON.stringify(body),
+  });
+}
+
+describe('@ax/channel-web POST /api/chat/approve-authored-skill', () => {
+  it('auths, ACL-checks the agent, and fires the authored grant with NO conversationId', async () => {
+    grantTrace.authored.length = 0;
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+
+    const r = await postApprove(booted.port, {
+      agentId: 'agt_test',
+      skillId: 'authored-draft',
+      shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: [], pypi: [] },
+    });
+    expect(r.status).toBe(200);
+    expect(await r.json()).toEqual({ ok: true });
+    expect(grantTrace.authored).toContain('authored-draft');
+  });
+
+  it('401 when unauthenticated', async () => {
+    const booted = await boot({ user: null, allowedFor: new Set() });
+    harnesses.push(booted.harness);
+    const r = await postApprove(booted.port, { agentId: 'agt_test', skillId: 'authored-draft' });
+    expect(r.status).toBe(401);
+  });
+
+  it('400 on a malformed body (missing skillId)', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+    const r = await postApprove(booted.port, { agentId: 'agt_test' });
+    expect(r.status).toBe(400);
+  });
+
+  it('403 when the actor cannot reach the agent (ownership gate)', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(), // userA is allowed for nothing → forbidden
+    });
+    harnesses.push(booted.harness);
+    const r = await postApprove(booted.port, { agentId: 'agt_test', skillId: 'authored-draft' });
+    expect(r.status).toBe(403);
+  });
+
+  it('404 when the agent is not found', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      notFound: new Set(['agt_missing']),
+    });
+    harnesses.push(booted.harness);
+    const r = await postApprove(booted.port, { agentId: 'agt_missing', skillId: 'authored-draft' });
+    expect(r.status).toBe(404);
+  });
+
+  it('409 (not-authored) when the skill is not one of the agent\'s pending drafts', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+    // 'catalog-skill' → the authored grant returns {applied:false}; early
+    // approval has no catalog fallback, so the route surfaces 409.
+    const r = await postApprove(booted.port, { agentId: 'agt_test', skillId: 'catalog-skill' });
+    expect(r.status).toBe(409);
+    expect(await r.json()).toEqual({ error: 'not-authored' });
+  });
+
+  it('403 (CSRF) on a foreign Origin', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+    });
+    harnesses.push(booted.harness);
+    const r = await postApprove(
+      booted.port,
+      { agentId: 'agt_test', skillId: 'authored-draft' },
+      { headers: { 'content-type': 'application/json', origin: 'https://evil.example' } },
+    );
+    expect(r.status).toBe(403);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // GET /api/chat/conversations — list user's conversations (Task 10).
 // ---------------------------------------------------------------------------
 
