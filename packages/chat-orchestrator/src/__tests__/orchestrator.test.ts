@@ -2462,10 +2462,11 @@ describe('chat-orchestrator', () => {
     // Allowlist must contain both the agent host AND the skill host.
     expect(openIn.allowlist).toContain('api.anthropic.com');
     expect(openIn.allowlist).toContain('api.github.com');
-    // Credentials must carry both the agent cred and the skill binding.
+    // Credentials must carry both the agent cred and the skill binding. TASK-86
+    // — the skill slot is keyed by its PER-SKILL namespace (`skill:<id>:<slot>`).
     expect(openIn.credentials).toMatchObject({
       ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
-      GITHUB_TOKEN: { ref: 'gh-pat', kind: 'api-key' },
+      'skill:github:GITHUB_TOKEN': { ref: 'gh-pat', kind: 'api-key' },
     });
   });
 
@@ -2538,8 +2539,9 @@ describe('chat-orchestrator', () => {
     // Per-user-only skill's host is unioned in.
     expect(openIn.allowlist).toContain('api.linear.app');
     expect(openIn.allowlist).toContain('api.github.com');
-    // Per-user binding WINS over the agent-global binding for the same skill+slot.
-    expect(openIn.credentials.GITHUB_TOKEN).toEqual({ ref: 'per-user-pat', kind: 'api-key' });
+    // Per-user binding WINS over the agent-global binding for the same skill+slot
+    // (TASK-86 — keyed by the per-skill namespace).
+    expect(openIn.credentials['skill:github:GITHUB_TOKEN']).toEqual({ ref: 'per-user-pat', kind: 'api-key' });
   });
 
   it('TASK-33: with no per-user attachments, agent-global behavior is unchanged', async () => {
@@ -2587,8 +2589,9 @@ describe('chat-orchestrator', () => {
       credentials: Record<string, { ref: string; kind: string }>;
     };
     expect(openIn.allowlist).toContain('api.github.com');
-    // The agent-global binding is used unchanged when there's no per-user layer.
-    expect(openIn.credentials.GITHUB_TOKEN).toEqual({ ref: 'agent-global-pat', kind: 'api-key' });
+    // The agent-global binding is used unchanged when there's no per-user layer
+    // (TASK-86 — keyed by the per-skill namespace).
+    expect(openIn.credentials['skill:github:GITHUB_TOKEN']).toEqual({ ref: 'agent-global-pat', kind: 'api-key' });
   });
 
   it('TASK-33: a thrown skills:list-user-attachments FAILS CLOSED (does not silently use agent-global creds)', async () => {
@@ -3120,7 +3123,8 @@ describe('chat-orchestrator', () => {
 
     const openIn = proxy.state.lastOpenInput as { allowlist: string[]; credentials: Record<string, unknown> };
     expect(openIn.allowlist).toContain('api.github.com');
-    expect(openIn.credentials).toHaveProperty('GITHUB_TOKEN');
+    // TASK-86 — the skill slot is keyed by its per-skill namespace.
+    expect(openIn.credentials).toHaveProperty('skill:github:GITHUB_TOKEN');
   });
 
   it('terminates with skill-binding-missing when a required slot has no binding', async () => {
@@ -3182,8 +3186,20 @@ describe('chat-orchestrator', () => {
     expect(endFires).toHaveLength(1);
   });
 
-  it('terminates with skill-slot-collision when two skills declare the same slot', async () => {
-    const proxy = buildProxyHooks();
+  it('TASK-86: two catalog skills declaring the same slot COEXIST (no collision, namespaced creds)', async () => {
+    // Namespaced envMap so the orchestrator's env projection has placeholders to
+    // map back to bare names.
+    const proxy = buildProxyHooks({
+      openOutput: {
+        proxyEndpoint: 'tcp://127.0.0.1:54321',
+        caCertPem: 'TEST-CA-PEM',
+        envMap: {
+          ANTHROPIC_API_KEY: 'ax-cred:00000000000000000000000000000000',
+          'skill:skill-a:OPENAI_API_KEY': 'ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+          'skill:skill-b:OPENAI_API_KEY': 'ax-cred:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+        },
+      },
+    });
     const skillsHooks = buildSkillsHooks({
       skills: {
         'skill-a': {
@@ -3206,6 +3222,7 @@ describe('chat-orchestrator', () => {
         },
       },
     });
+    let busRefA: HookBus | null = null;
     const mocks = buildMocks({
       agentsResolve: async () => ({
         agent: {
@@ -3220,6 +3237,24 @@ describe('chat-orchestrator', () => {
           ],
         },
       }),
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        const originatingReqId = ctx.reqId;
+        setImmediate(() => {
+          void busRefA!.fire(
+            'chat:end',
+            makeAgentContext({
+              sessionId, agentId: 'a', userId: 'u', reqId: originatingReqId,
+              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+            }),
+            { outcome: { kind: 'complete', messages: [] } },
+          );
+        });
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+        };
+      },
     });
     Object.assign(mocks.services, proxy.services, skillsHooks.services);
     const h = await createTestHarness({
@@ -3228,20 +3263,64 @@ describe('chat-orchestrator', () => {
         createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
       ],
     });
+    busRefA = h.bus;
 
     const outcome = await h.bus.call<unknown, AgentOutcome>(
       'agent:invoke',
-      silentCtx('slot-collision-session'),
+      silentCtx('slot-coexist-session'),
       { message: { role: 'user', content: 'hi' } },
     );
-    expect(outcome.kind).toBe('terminated');
-    expect((outcome as { reason: string }).reason).toBe('skill-slot-collision');
-    expect(proxy.state.openCalls).toBe(0);
-    expect(mocks.calls.sandboxOpen).toBe(0);
+    // No lockout: the turn completes instead of terminating.
+    expect(outcome.kind).toBe('complete');
+    expect(proxy.state.openCalls).toBe(1);
+    // Each skill's credential is present under its OWN namespaced key, with its
+    // OWN ref — each resolves its own credential.
+    const openIn = proxy.state.lastOpenInput as {
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    expect(openIn.credentials['skill:skill-a:OPENAI_API_KEY']).toEqual({
+      ref: 'ref-a',
+      kind: 'api-key',
+    });
+    expect(openIn.credentials['skill:skill-b:OPENAI_API_KEY']).toEqual({
+      ref: 'ref-b',
+      kind: 'api-key',
+    });
+    // The sandbox sees the BARE env-var name (the skill reads $OPENAI_API_KEY).
+    // Among two skills sharing the bare name, the FIRST (skill-a) wins the flat
+    // env stamp; skill-b's credential still reached the proxy (above) and rides
+    // its own per-skill git placeholder (asserted via installedSkills below).
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      proxyConfig?: { envMap: Record<string, string> };
+      installedSkills?: Array<{
+        id: string;
+        credentials: Array<{ slot: string; placeholder?: string }>;
+      }>;
+    };
+    expect(sandboxIn.proxyConfig?.envMap['OPENAI_API_KEY']).toBe(
+      'ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    );
+    // No namespaced key leaks into the flat sandbox env.
+    expect(sandboxIn.proxyConfig?.envMap['skill:skill-a:OPENAI_API_KEY']).toBeUndefined();
+    expect(sandboxIn.proxyConfig?.envMap['skill:skill-b:OPENAI_API_KEY']).toBeUndefined();
+    // Each skill carries its OWN placeholder for per-skill git wiring.
+    const skillB = sandboxIn.installedSkills?.find((s) => s.id === 'skill-b');
+    expect(skillB?.credentials[0]?.placeholder).toBe(
+      'ax-cred:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
+    );
   });
 
-  it('terminates with skill-slot-collision when skill slot collides with agent.requiredCredentials', async () => {
-    const proxy = buildProxyHooks();
+  it('TASK-86: a skill slot colliding with agent.requiredCredentials no longer terminates (trusted wins)', async () => {
+    const proxy = buildProxyHooks({
+      openOutput: {
+        proxyEndpoint: 'tcp://127.0.0.1:54321',
+        caCertPem: 'TEST-CA-PEM',
+        envMap: {
+          ANTHROPIC_API_KEY: 'ax-cred:00000000000000000000000000000000',
+          'skill:badskill:ANTHROPIC_API_KEY': 'ax-cred:ffffffffffffffffffffffffffffffff',
+        },
+      },
+    });
     const skillsHooks = buildSkillsHooks({
       skills: {
         badskill: {
@@ -3249,7 +3328,7 @@ describe('chat-orchestrator', () => {
           capabilities: {
             allowedHosts: ['api.example.com'],
             credentials: [
-              { slot: 'ANTHROPIC_API_KEY', kind: 'api-key' }, // collides with agent default
+              { slot: 'ANTHROPIC_API_KEY', kind: 'api-key' }, // same name as agent default
             ],
           },
           bodyMd: 'Bad skill',
@@ -3257,6 +3336,7 @@ describe('chat-orchestrator', () => {
         },
       },
     });
+    let busRefB: HookBus | null = null;
     const mocks = buildMocks({
       agentsResolve: async () => ({
         agent: {
@@ -3273,6 +3353,24 @@ describe('chat-orchestrator', () => {
           ],
         },
       }),
+      openSession: async (ctx, input: unknown) => {
+        const sessionId = (input as { sessionId: string }).sessionId;
+        const originatingReqId = ctx.reqId;
+        setImmediate(() => {
+          void busRefB!.fire(
+            'chat:end',
+            makeAgentContext({
+              sessionId, agentId: 'a', userId: 'u', reqId: originatingReqId,
+              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+            }),
+            { outcome: { kind: 'complete', messages: [] } },
+          );
+        });
+        return {
+          runnerEndpoint: 'unix:///tmp/x.sock',
+          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+        };
+      },
     });
     Object.assign(mocks.services, proxy.services, skillsHooks.services);
     const h = await createTestHarness({
@@ -3281,18 +3379,38 @@ describe('chat-orchestrator', () => {
         createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
       ],
     });
+    busRefB = h.bus;
 
     const outcome = await h.bus.call<unknown, AgentOutcome>(
       'agent:invoke',
-      silentCtx('agent-slot-collision-session'),
+      silentCtx('agent-slot-coexist-session'),
       { message: { role: 'user', content: 'hi' } },
     );
-    expect(outcome.kind).toBe('terminated');
-    expect((outcome as { reason: string }).reason).toBe('skill-slot-collision');
-    // Error message must name <agent.requiredCredentials> as the existing owner.
-    expect((outcome as { error?: Error }).error?.message).toContain('<agent.requiredCredentials>');
-    expect(proxy.state.openCalls).toBe(0);
-    expect(mocks.calls.sandboxOpen).toBe(0);
+    // No lockout — the trusted credential simply wins; the skill can't hijack it.
+    expect(outcome.kind).toBe('complete');
+    expect(proxy.state.openCalls).toBe(1);
+    const openIn = proxy.state.lastOpenInput as {
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    // The trusted bare credential is untouched; the skill's slot lives under its
+    // own namespaced key (so it can't overwrite the trusted one).
+    expect(openIn.credentials['ANTHROPIC_API_KEY']).toEqual({
+      ref: 'provider:anthropic',
+      kind: 'api-key',
+    });
+    expect(openIn.credentials['skill:badskill:ANTHROPIC_API_KEY']).toEqual({
+      ref: 'some-other-ref',
+      kind: 'api-key',
+    });
+    // The sandbox's flat ANTHROPIC_API_KEY is the TRUSTED placeholder — never the
+    // skill's. The skill cannot hijack the trusted credential.
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      proxyConfig?: { envMap: Record<string, string> };
+    };
+    expect(sandboxIn.proxyConfig?.envMap['ANTHROPIC_API_KEY']).toBe(
+      'ax-cred:00000000000000000000000000000000',
+    );
+    expect(mocks.calls.sandboxOpen).toBe(1);
   });
 
   it('terminates with skill-resolve-failed when skills:resolve throws', async () => {
@@ -3656,6 +3774,78 @@ describe('chat-orchestrator', () => {
     expect(openIn.allowlist).not.toContain('api.linear.app');
   });
 
+  it('TASK-86: a PENDING cap-skill card fires ONLY in its proposing conversation', async () => {
+    const proxy = buildProxyHooks();
+    const pendingDraft = {
+      id: 'linear',
+      capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
+      proposalDelta: {
+        allowedHosts: ['api.linear.app'],
+        credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' as const }],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      },
+      description: 'Work with Linear issues.',
+      bodyMd: 'pending body',
+      manifestYaml: 'name: linear\ndescription: Work with Linear issues.\nversion: 1\n',
+      files: [],
+      status: 'pending' as const,
+    };
+    const authoredServices: Record<string, ServiceHandler> = {
+      'agents:resolve-authored-skills': async () => ({ skills: [pendingDraft] }),
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, authoredServices);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    // Capture skill cards per conversation.
+    const cardConvs: string[] = [];
+    h.bus.subscribe('chat:permission-request', 'test/capture', async (c, p) => {
+      if ((p as { kind?: string }).kind === 'skill') cardConvs.push(c.conversationId ?? '');
+      return undefined;
+    });
+
+    const ctxIn = (sessionId: string, conversationId: string) =>
+      makeAgentContext({
+        sessionId, agentId: 'test-agent', userId: 'test-user', conversationId,
+        logger: createLogger({ reqId: `req-${sessionId}`, writer: () => undefined }),
+      });
+
+    // The skill was proposed in conversation A (the runner fires skills:proposed
+    // on the proposing ctx; status pending).
+    await h.bus.fire('skills:proposed', ctxIn('sess-a', 'conv-A'), {
+      ownerUserId: 'test-user', agentId: 'test-agent', skillId: 'linear', status: 'pending',
+    });
+
+    // A turn in conversation A fires the card...
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke', ctxIn('sess-a2', 'conv-A'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    // ...a turn in an UNRELATED conversation B does NOT.
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke', ctxIn('sess-b', 'conv-B'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(cardConvs).toEqual(['conv-A']);
+  });
+
   it('§D3: an ACTIVE authored skill DOES project its bytes (the flip target)', async () => {
     const proxy = buildProxyHooks();
     const activeDraft = {
@@ -3704,6 +3894,103 @@ describe('chat-orchestrator', () => {
     expect(entry).toBeDefined();
     const skillMd = entry!.files.find((f) => f.path === 'SKILL.md');
     expect(skillMd?.contents).toContain('ACTIVE BODY the model should see');
+  });
+
+  it('TASK-86 regression: two ACTIVE authored skills sharing a slot name → turn succeeds, each resolves its own credential', async () => {
+    // The exact TASK-72 walk repro: two approved authored skills both declare
+    // `LINEAR_API_KEY`. Before the fix this terminated EVERY turn with
+    // skill-slot-collision (the all-chat lockout).
+    const proxy = buildProxyHooks({
+      openOutput: {
+        proxyEndpoint: 'tcp://127.0.0.1:54321',
+        caCertPem: 'TEST-CA-PEM',
+        envMap: {
+          ANTHROPIC_API_KEY: 'ax-cred:00000000000000000000000000000000',
+          'skill:linear-issues-helper:LINEAR_API_KEY':
+            'ax-cred:11111111111111111111111111111111',
+          'skill:walk4-linear:LINEAR_API_KEY':
+            'ax-cred:22222222222222222222222222222222',
+        },
+      },
+    });
+    const mkDraft = (id: string) => ({
+      id,
+      capabilities: {
+        allowedHosts: ['api.linear.app'],
+        credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      },
+      proposalDelta: {
+        allowedHosts: [],
+        credentials: [],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      },
+      description: `${id} body`,
+      bodyMd: `${id} instructions`,
+      manifestYaml: `name: ${id}\ndescription: ${id}\nversion: 1\n`,
+      files: [],
+      status: 'active' as const,
+    });
+    const authoredServices: Record<string, ServiceHandler> = {
+      'agents:resolve-authored-skills': async () => ({
+        skills: [mkDraft('linear-issues-helper'), mkDraft('walk4-linear')],
+      }),
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
+          skillAttachments: [],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, authoredServices);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('two-authored-linear-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    // No lockout — the turn completes.
+    expect(outcome.kind).toBe('complete');
+    expect(proxy.state.openCalls).toBe(1);
+    // Each authored skill's credential is present under its OWN namespaced key
+    // with its OWN per-skill ref — each resolves its own credential.
+    const openIn = proxy.state.lastOpenInput as {
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    expect(openIn.credentials['skill:linear-issues-helper:LINEAR_API_KEY']).toEqual({
+      ref: 'skill:linear-issues-helper:LINEAR_API_KEY',
+      kind: 'api-key',
+    });
+    expect(openIn.credentials['skill:walk4-linear:LINEAR_API_KEY']).toEqual({
+      ref: 'skill:walk4-linear:LINEAR_API_KEY',
+      kind: 'api-key',
+    });
+    // The sandbox sees the BARE LINEAR_API_KEY (first authored skill wins the
+    // flat-env stamp); the other skill carries its own git placeholder.
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      proxyConfig?: { envMap: Record<string, string> };
+      installedSkills?: Array<{ id: string; credentials: Array<{ slot: string; placeholder?: string }> }>;
+    };
+    expect(sandboxIn.proxyConfig?.envMap['LINEAR_API_KEY']).toBe(
+      'ax-cred:11111111111111111111111111111111',
+    );
+    const walk4 = sandboxIn.installedSkills?.find((s) => s.id === 'walk4-linear');
+    expect(walk4?.credentials[0]?.placeholder).toBe(
+      'ax-cred:22222222222222222222222222222222',
+    );
   });
 
   it('§D3: a PENDING draft does NOT suppress a same-id default attachment', async () => {

@@ -138,7 +138,15 @@ export interface BuildPodSpecInput {
      * pre-TASK-14 callers (tests, ad-hoc) still build a valid spec.
      */
     allowedHosts?: string[];
-    credentials?: Array<{ slot: string; kind: 'api-key' }>;
+    /**
+     * TASK-86 — `slot` is the BARE env-var name; the optional `placeholder` is
+     * the skill's OWN `ax-cred:<hex>` token, so per-skill git wiring uses the
+     * skill's own credential even when another skill won the flat-env stamp for
+     * the same bare slot name (see @ax/sandbox-protocol buildGitCredentialEnv).
+     * The token is opaque (no real secret) and already rides the pod env via the
+     * proxy envMap.
+     */
+    credentials?: Array<{ slot: string; kind: 'api-key'; placeholder?: string | undefined }>;
   }>;
 }
 

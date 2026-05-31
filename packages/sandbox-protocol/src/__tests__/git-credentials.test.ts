@@ -163,4 +163,65 @@ describe('buildGitCredentialEnv', () => {
     expect(values.filter((v) => v === 'https://github.com/')).toHaveLength(1);
     expect(out.GIT_CONFIG_COUNT).toBe('2');
   });
+
+  // TASK-86 — per-skill placeholder threading.
+  it('prefers the slot\'s own placeholder over envMap[slot]', () => {
+    // The flat-env envMap carries the OTHER skill's value for the shared bare
+    // slot, but this skill's own placeholder must win for its own git host.
+    const out = buildGitCredentialEnv({
+      installedSkills: [
+        {
+          allowedHosts: ['github.com'],
+          credentials: [{ slot: 'GIT_TOKEN', placeholder: PH2 }],
+        },
+      ],
+      envMap: { GIT_TOKEN: PH }, // flat-env winner is the OTHER skill (PH)
+      baseCount: 1,
+    });
+    expect(out.GIT_CONFIG_KEY_1).toBe(
+      `url.https://x-access-token:${PH2}@github.com/.insteadOf`,
+    );
+  });
+
+  it('TASK-86: two skills sharing a bare slot each wire git with their OWN credential', () => {
+    // The exact namespacing case: both skills declare `LINEAR_API_KEY`. The flat
+    // env can carry only one value; per-skill placeholders keep each skill's git
+    // egress correct for its own host.
+    const out = buildGitCredentialEnv({
+      installedSkills: [
+        {
+          allowedHosts: ['a.linear.app'],
+          credentials: [{ slot: 'LINEAR_API_KEY', placeholder: PH }],
+        },
+        {
+          allowedHosts: ['b.linear.app'],
+          credentials: [{ slot: 'LINEAR_API_KEY', placeholder: PH2 }],
+        },
+      ],
+      // Flat env collapsed to ONE value for the shared bare name.
+      envMap: { LINEAR_API_KEY: PH },
+      baseCount: 1,
+    });
+    const keys = Object.entries(out)
+      .filter(([k]) => k.startsWith('GIT_CONFIG_KEY_'))
+      .map(([, v]) => v);
+    expect(keys).toContain(`url.https://x-access-token:${PH}@a.linear.app/.insteadOf`);
+    expect(keys).toContain(`url.https://x-access-token:${PH2}@b.linear.app/.insteadOf`);
+  });
+
+  it('rejects a placeholder that is not the ax-cred:<hex> shape (falls back / skips)', () => {
+    // A malformed own-placeholder must NOT embed a real secret; with no valid
+    // fallback in envMap either, the skill is skipped.
+    const out = buildGitCredentialEnv({
+      installedSkills: [
+        {
+          allowedHosts: ['github.com'],
+          credentials: [{ slot: 'GIT_TOKEN', placeholder: 'ghp_realSecret' }],
+        },
+      ],
+      envMap: {},
+      baseCount: 1,
+    });
+    expect(out).toEqual({});
+  });
 });

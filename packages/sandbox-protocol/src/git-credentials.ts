@@ -62,8 +62,18 @@ const GIT_BASIC_USERNAME = 'x-access-token';
 export interface GitCredentialSkill {
   /** Hosts this skill is allowed to reach (`capabilities.allowedHosts`). */
   allowedHosts: string[];
-  /** Credential slots this skill declares (`capabilities.credentials`). */
-  credentials: Array<{ slot: string }>;
+  /**
+   * Credential slots this skill declares (`capabilities.credentials`).
+   *
+   * TASK-86 — `slot` is the BARE env-var name; `placeholder` is the skill's OWN
+   * resolved `ax-cred:<hex>` token. With per-skill credential-slot namespacing,
+   * two skills can share a bare slot name (e.g. both `LINEAR_API_KEY`) yet hold
+   * DIFFERENT credentials — so the flat-env `envMap[slot]` can only carry ONE of
+   * them. When `placeholder` is present we wire git auth from the skill's OWN
+   * token (correct per-skill egress regardless of which skill won the flat-env
+   * stamp). When absent we fall back to `envMap[slot]` (the pre-TASK-86 path).
+   */
+  credentials: Array<{ slot: string; placeholder?: string | undefined }>;
 }
 
 export interface GitCredentialEnvInput {
@@ -92,12 +102,14 @@ export function buildGitCredentialEnv(
   const hostToPlaceholder = new Map<string, string>();
 
   for (const skill of input.installedSkills) {
-    // The skill's first credential slot whose envMap value is a valid
-    // placeholder. Defense-in-depth: refuse anything that isn't exactly
+    // The skill's first credential slot with a usable placeholder. TASK-86 —
+    // prefer the slot's OWN `placeholder` (per-skill, set even when another skill
+    // won the bare-name flat-env stamp); fall back to `envMap[slot]` for the
+    // pre-TASK-86 path. Defense-in-depth: refuse anything that isn't exactly
     // `ax-cred:<hex>` so a regressed wiring can't embed a real secret in a URL.
     let placeholder: string | undefined;
-    for (const { slot } of skill.credentials) {
-      const v = input.envMap[slot];
+    for (const cred of skill.credentials) {
+      const v = cred.placeholder ?? input.envMap[cred.slot];
       if (typeof v === 'string' && PLACEHOLDER_RE.test(v)) {
         placeholder = v;
         break;

@@ -12,15 +12,14 @@ function emptyBase() {
 describe('foldAuthoredSkillCaps', () => {
   it('folds authored hosts into the allowlist', () => {
     const b = emptyBase();
-    const c = foldAuthoredSkillCaps(
+    foldAuthoredSkillCaps(
       [{ id: 'linear', capabilities: { allowedHosts: ['api.linear.app'], credentials: [] } }],
       b.allow, b.creds, b.owners,
     );
-    expect(c).toBeNull();
     expect([...b.allow]).toEqual(['api.linear.app']);
   });
 
-  it('binds an untagged slot to skill:<id>:<slot> and an account slot to account:<svc>', () => {
+  it('keys an untagged slot by skill:<id>:<slot> with the per-skill ref, and an account slot with the shared account ref', () => {
     const b = emptyBase();
     foldAuthoredSkillCaps(
       [{
@@ -35,58 +34,80 @@ describe('foldAuthoredSkillCaps', () => {
       }],
       b.allow, b.creds, b.owners,
     );
+    // Host-side credential map is now keyed by the NAMESPACED env name.
     expect(b.creds).toEqual({
-      LINEAR_API_KEY: { ref: 'skill:linear:LINEAR_API_KEY', kind: 'api-key' },
-      SHARED: { ref: 'account:linear', kind: 'api-key' },
+      'skill:linear:LINEAR_API_KEY': { ref: 'skill:linear:LINEAR_API_KEY', kind: 'api-key' },
+      'skill:linear:SHARED': { ref: 'account:linear', kind: 'api-key' },
     });
-    expect(b.owners.get('LINEAR_API_KEY')).toBe('linear');
+    expect(b.owners.get('skill:linear:LINEAR_API_KEY')).toBe('linear');
   });
 
-  it('returns a collision when a slot is already owned by a trusted source (no override)', () => {
+  it('lets two skills declaring the SAME bare slot COEXIST (no collision, no lockout)', () => {
     const b = emptyBase();
-    b.creds['ANTHROPIC_API_KEY'] = { ref: 'provider:anthropic', kind: 'api-key' };
-    b.owners.set('ANTHROPIC_API_KEY', '<agent.requiredCredentials>');
-    const c = foldAuthoredSkillCaps(
-      [{ id: 'evil', capabilities: { allowedHosts: [], credentials: [{ slot: 'ANTHROPIC_API_KEY', kind: 'api-key' }] } }],
-      b.allow, b.creds, b.owners,
-    );
-    expect(c).toEqual({ slot: 'ANTHROPIC_API_KEY', existingOwner: '<agent.requiredCredentials>', skillId: 'evil' });
-    // The trusted binding is untouched — no hijack.
-    expect(b.creds['ANTHROPIC_API_KEY']).toEqual({ ref: 'provider:anthropic', kind: 'api-key' });
-  });
-
-  it('keeps an earlier clean skill\'s egress when a later skill collides', () => {
-    const b = emptyBase();
-    // A trusted source already owns ANTHROPIC_API_KEY.
-    b.creds['ANTHROPIC_API_KEY'] = { ref: 'provider:anthropic', kind: 'api-key' };
-    b.owners.set('ANTHROPIC_API_KEY', '<agent.requiredCredentials>');
-    const c = foldAuthoredSkillCaps(
+    foldAuthoredSkillCaps(
       [
-        // Skill A: clean — folds before B is reached.
         {
-          id: 'alpha',
+          id: 'linear-a',
           capabilities: {
-            allowedHosts: ['api.alpha.dev'],
-            credentials: [{ slot: 'ALPHA_API_KEY', kind: 'api-key' }],
+            allowedHosts: ['api.a.dev'],
+            credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
           },
         },
-        // Skill B: collides on the trusted slot.
         {
-          id: 'beta',
+          id: 'linear-b',
           capabilities: {
-            allowedHosts: ['api.beta.dev'],
-            credentials: [{ slot: 'ANTHROPIC_API_KEY', kind: 'api-key' }],
+            allowedHosts: ['api.b.dev'],
+            credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
           },
         },
       ],
       b.allow, b.creds, b.owners,
     );
-    // The fold stops at B and reports B's collision...
-    expect(c).toEqual({ slot: 'ANTHROPIC_API_KEY', existingOwner: '<agent.requiredCredentials>', skillId: 'beta' });
-    // ...but A's egress was already applied before B was reached.
-    expect(b.allow.has('api.alpha.dev')).toBe(true);
-    expect(b.creds['ALPHA_API_KEY']).toEqual({ ref: 'skill:alpha:ALPHA_API_KEY', kind: 'api-key' });
-    // The trusted binding remains untouched — B never overrode it.
+    // Both skills' creds are present under distinct namespaced keys — each
+    // resolves its OWN credential; no fatal skill-slot-collision.
+    expect(b.creds).toEqual({
+      'skill:linear-a:LINEAR_API_KEY': { ref: 'skill:linear-a:LINEAR_API_KEY', kind: 'api-key' },
+      'skill:linear-b:LINEAR_API_KEY': { ref: 'skill:linear-b:LINEAR_API_KEY', kind: 'api-key' },
+    });
+    expect(b.allow.has('api.a.dev')).toBe(true);
+    expect(b.allow.has('api.b.dev')).toBe(true);
+  });
+
+  it('does NOT overwrite or collide with a trusted bare credential (skill is namespaced)', () => {
+    const b = emptyBase();
+    // A trusted source owns the bare ANTHROPIC_API_KEY (agent default).
+    b.creds['ANTHROPIC_API_KEY'] = { ref: 'provider:anthropic', kind: 'api-key' };
+    b.owners.set('ANTHROPIC_API_KEY', '<agent.requiredCredentials>');
+    foldAuthoredSkillCaps(
+      [{ id: 'evil', capabilities: { allowedHosts: [], credentials: [{ slot: 'ANTHROPIC_API_KEY', kind: 'api-key' }] } }],
+      b.allow, b.creds, b.owners,
+    );
+    // The trusted binding is untouched — the skill's slot lands under its OWN
+    // namespaced key, so it can't hijack the trusted env var (no terminate).
     expect(b.creds['ANTHROPIC_API_KEY']).toEqual({ ref: 'provider:anthropic', kind: 'api-key' });
+    expect(b.creds['skill:evil:ANTHROPIC_API_KEY']).toEqual({
+      ref: 'skill:evil:ANTHROPIC_API_KEY',
+      kind: 'api-key',
+    });
+  });
+
+  it('is idempotent for a single skill declaring the same slot twice', () => {
+    const b = emptyBase();
+    foldAuthoredSkillCaps(
+      [{
+        id: 'dup',
+        capabilities: {
+          allowedHosts: [],
+          credentials: [
+            { slot: 'TOKEN', kind: 'api-key' },
+            { slot: 'TOKEN', kind: 'api-key' },
+          ],
+        },
+      }],
+      b.allow, b.creds, b.owners,
+    );
+    expect(b.creds).toEqual({
+      'skill:dup:TOKEN': { ref: 'skill:dup:TOKEN', kind: 'api-key' },
+    });
   });
 });

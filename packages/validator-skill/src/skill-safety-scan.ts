@@ -39,10 +39,31 @@ const INSTRUCTION_OVERRIDE: RegExp[] = [
 
 const SECRET = '(api[_\\s-]?keys?|secret|token|password|credential|env(?:ironment)?\\s+var)';
 const EGRESS = '(send|post|upload|exfiltrate|leak|transmit|curl|wget|fetch|http\\b)';
-const CRED_EXFIL: RegExp[] = [
-  new RegExp(`${EGRESS}[^\\n]{0,80}${SECRET}`, 'i'),
+
+// TASK-86 — STRONG exfil signals: a secret sent as request DATA (a curl/http
+// body flag), or a secret routed TO an external URL / webhook / "exfil". These
+// are unambiguous and fire even inside an auth-header line.
+const CRED_EXFIL_STRONG: RegExp[] = [
+  // secret as request data/body: `-d`, `--data[-raw|-binary]`, `--form`, `body`,
+  // `payload`, or a JSON/form `data:`/`body:` field carrying the secret.
+  new RegExp(
+    `(-d\\b|--data(?:-raw|-binary|-urlencode)?\\b|--form\\b|\\b(?:body|payload|data)\\b[^\\n]{0,12}[:=])[^\\n]{0,40}${SECRET}`,
+    'i',
+  ),
+  // secret routed outward: `… token to https://…`, `… secret … webhook`, `exfil`.
   new RegExp(`${SECRET}[^\\n]{0,80}(to\\s+https?://|webhook|exfil)`, 'i'),
 ];
+
+// WEAK signal: an egress VERB sitting near a secret. High recall but it
+// false-trips on the legitimate "use my own credential via an Authorization
+// header" pattern (curl -H "Authorization: Bearer $X_API_KEY"). TASK-86 — only
+// flag this weak signal when the surrounding window is NOT an auth-header use
+// (`Authorization:`, `Bearer`, `-H`/`--header`), so a skill that simply
+// AUTHENTICATES against its own allowed host stops false-tripping
+// `credential-exfiltration` (the STRONG patterns above still catch real exfil
+// even inside an auth line).
+const EGRESS_NEAR_SECRET = new RegExp(`${EGRESS}[^\\n]{0,80}${SECRET}`, 'i');
+const AUTH_HEADER = /(authorization\s*:|bearer\b|-H\b|--header\b)/i;
 
 const OBFUSCATION_PATTERNS: RegExp[] = [
   // NOTE: These patterns match the string literal "eval" and "atob" as they
@@ -63,8 +84,18 @@ export function regexScan(text: string): ScanHit | null {
   for (const re of INSTRUCTION_OVERRIDE) {
     if (re.test(text)) return hit('instruction-override', 'possible prompt-injection / instruction override');
   }
-  for (const re of CRED_EXFIL) {
+  // STRONG exfil signals fire regardless of context (incl. auth-header lines).
+  for (const re of CRED_EXFIL_STRONG) {
     if (re.test(text)) return hit('credential-exfiltration', 'possible credential/secret exfiltration');
+  }
+  // WEAK egress-near-secret signal: evaluated PER LINE so an auth-header line
+  // (legitimate credential USE) is spared while a genuine exfil line elsewhere
+  // still trips. A line with an Authorization/Bearer/-H header is treated as
+  // benign auth, not exfiltration (TASK-86).
+  for (const line of text.split('\n')) {
+    if (EGRESS_NEAR_SECRET.test(line) && !AUTH_HEADER.test(line)) {
+      return hit('credential-exfiltration', 'possible credential/secret exfiltration');
+    }
   }
   if (HIDDEN_CHARS.test(text)) return hit('obfuscation', 'hidden zero-width/bidi control characters');
   for (const re of OBFUSCATION_PATTERNS) {
