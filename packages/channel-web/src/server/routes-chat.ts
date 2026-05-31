@@ -237,10 +237,21 @@ const MAX_PER_MESSAGE_ATTACHMENT_BYTES = 100 * 1024 * 1024;
 export interface ChatRouteDeps {
   bus: HookBus;
   initCtx: AgentContext;
+  /**
+   * TASK-82 — clear a resolved pending approval card from the replay buffer
+   * once its grant is applied, so a later SSE (re)connect doesn't re-prompt for
+   * an already-approved skill. Narrow callbacks (not the buffer itself) keep
+   * routes-chat decoupled from the chunk-buffer type. Optional: tests and
+   * presets that don't wire a buffer simply skip eviction (the only effect of
+   * skipping is a stale card could replay — harmless in those paths).
+   */
+  onCardResolved?: (conversationId: string, skillId: string) => void;
+  /** TASK-82 — drop all pending cards for a deleted conversation. */
+  onConversationDeleted?: (conversationId: string) => void;
 }
 
 export function createChatRouteHandlers(deps: ChatRouteDeps) {
-  const { bus, initCtx } = deps;
+  const { bus, initCtx, onCardResolved, onConversationDeleted } = deps;
 
   return {
     /** POST /api/chat/messages */
@@ -667,6 +678,9 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
             },
           );
           if (a.applied) {
+            // TASK-82 — the card is resolved; drop it from the replay buffer so
+            // a later SSE (re)connect doesn't re-prompt for the approved skill.
+            onCardResolved?.(body.conversationId, body.skillId);
             res.status(200).json({ ok: true });
             return;
           }
@@ -685,6 +699,8 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           agentId,
           skillId: body.skillId,
         });
+        // TASK-82 — same as the authored path: clear the resolved card.
+        onCardResolved?.(body.conversationId, body.skillId);
         res.status(200).json({ ok: true, attached: out.attached });
       } catch (err) {
         grantCtx.logger.warn('permission_decision_grant_failed', {
@@ -798,6 +814,9 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
           initCtx,
           { conversationId, userId },
         );
+        // TASK-82 — a deleted conversation can never approve a pending card;
+        // drop any from the replay buffer so they don't linger.
+        onConversationDeleted?.(conversationId);
         res.status(204).end();
       } catch (err) {
         if (err instanceof PluginError) {
@@ -899,8 +918,21 @@ function filterThinking(
 export async function registerChatRoutes(
   bus: HookBus,
   initCtx: AgentContext,
+  cardHooks?: {
+    onCardResolved?: (conversationId: string, skillId: string) => void;
+    onConversationDeleted?: (conversationId: string) => void;
+  },
 ): Promise<Array<() => void>> {
-  const handlers = createChatRouteHandlers({ bus, initCtx });
+  const handlers = createChatRouteHandlers({
+    bus,
+    initCtx,
+    ...(cardHooks?.onCardResolved !== undefined
+      ? { onCardResolved: cardHooks.onCardResolved }
+      : {}),
+    ...(cardHooks?.onConversationDeleted !== undefined
+      ? { onConversationDeleted: cardHooks.onConversationDeleted }
+      : {}),
+  });
   // Same duck-typed cast as sse.ts — http-server's HttpRequest /
   // HttpResponse are a structural superset of our adapter; the
   // exactOptionalPropertyTypes lint forces us through `unknown` to line

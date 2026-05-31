@@ -11,6 +11,7 @@ import { registerChatRoutes } from './routes-chat.js';
 import { makeConnectionsHandlers } from './routes-connections.js';
 import {
   createBufferFillSubscriber,
+  createPermissionCardFillSubscriber,
   createPhaseFillSubscriber,
   createSseHandler,
   createTurnEndEvictor,
@@ -19,7 +20,7 @@ import {
   type RouteResponse,
 } from './sse.js';
 import { createTitleEventsHandler } from './title-events.js';
-import type { PhaseEvent, StreamChunk } from './types.js';
+import type { PermissionRequest, PhaseEvent, StreamChunk } from './types.js';
 
 const PLUGIN_NAME = '@ax/channel-web';
 
@@ -213,6 +214,22 @@ export function createChannelWebServerPlugin(
         createTurnErrorFillSubscriber(localBuffer),
       );
 
+      // Permission-card fill — stores the pending JIT approval card per
+      // conversation (skill) / reqId (host) so an SSE handler that connects
+      // AFTER the card fired replays it on connect (TASK-82). Without this, a
+      // card raised during the cold-boot window (every gated turn cold-spawns a
+      // runner pod, and the SSE GET races that boot) is delivered ONLY to an
+      // already-attached live subscriber — and dropped otherwise. The
+      // orchestrator's per-conversation dedup then suppresses re-emission, so the
+      // pending cap-skill becomes permanently un-approvable. The card is cleared
+      // on grant (permission-decision) / conversation delete; host cards ride the
+      // turn boundary. The card carries only public manifest data — no secret.
+      bus.subscribe<PermissionRequest & { reqId?: string }>(
+        'chat:permission-request',
+        `${PLUGIN_NAME}/permission-card-fill`,
+        createPermissionCardFillSubscriber(localBuffer),
+      );
+
       const handler = createSseHandler({
         bus,
         initCtx,
@@ -260,7 +277,16 @@ export function createChannelWebServerPlugin(
       // conversations, GET conversations/:id, GET agents). CSRF gated
       // automatically by @ax/http-server's subscriber on state-changing
       // methods. See routes-chat.ts for per-endpoint details.
-      const chatRouteUnregisters = await registerChatRoutes(bus, initCtx);
+      //
+      // TASK-82 — pass card-eviction hooks so a resolved grant (or a deleted
+      // conversation) drops the pending approval card from the replay buffer,
+      // preventing a re-prompt on a later SSE (re)connect.
+      const chatRouteUnregisters = await registerChatRoutes(bus, initCtx, {
+        onCardResolved: (conversationId, skillId) =>
+          localBuffer.evictPermissionCard(conversationId, skillId),
+        onConversationDeleted: (conversationId) =>
+          localBuffer.evictConversationCards(conversationId),
+      });
       for (const u of chatRouteUnregisters) unregisterRoutes.push(u);
 
       // TASK-37 — the reactive egress wall's grant route. The <PermissionCard>

@@ -9,6 +9,7 @@ import {
 import { createChunkBuffer } from '../../server/chunk-buffer';
 import {
   createBufferFillSubscriber,
+  createPermissionCardFillSubscriber,
   createPhaseFillSubscriber,
   createSseHandler,
   createTurnEndEvictor,
@@ -17,7 +18,7 @@ import {
   type RouteResponse,
   type RouteStream,
 } from '../../server/sse';
-import type { PhaseEvent, StreamChunk } from '../../server/types';
+import type { PermissionRequest, PhaseEvent, StreamChunk } from '../../server/types';
 
 // ---------------------------------------------------------------------------
 // SSE handler tests. We exercise the handler by directly calling it with
@@ -214,6 +215,14 @@ function bootHandler(opts: BootOpts = {}) {
     'chat:turn-error',
     '@ax/channel-web/turn-error-fill',
     createTurnErrorFillSubscriber(buffer),
+  );
+  // Plugin-side permission-card fill — stores the pending JIT approval card so a
+  // connect AFTER the card fired (the cold-boot delivery race) replays it
+  // (TASK-82).
+  bus.subscribe(
+    'chat:permission-request',
+    '@ax/channel-web/permission-card-fill',
+    createPermissionCardFillSubscriber(buffer),
   );
 
   const handler = createSseHandler({ bus, initCtx, buffer });
@@ -967,6 +976,174 @@ describe('permission-request frame', () => {
         .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
       expect(frames.some((f) => 'permissionRequest' in f)).toBe(false);
       expect(captured.streamClosed).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+});
+
+// TASK-82 — the cold-boot delivery race. The headline regression: a
+// `chat:permission-request` (the JIT cap-skill approval card) fires onto the bus
+// BEFORE the EventSource opens and installs the live subscriber — exactly what
+// happens on a gated turn, where the runner pod is cold-spawned and the SSE GET
+// races that boot (it even 404s). Before the fix the card was delivered ONLY to
+// an already-attached live subscriber, so the pre-connect card was lost forever
+// and the orchestrator's per-conversation dedup suppressed any re-emission,
+// leaving the pending skill permanently un-approvable. The boot-level
+// permission-card fill subscriber + the SSE-open replay make it durable.
+describe('permission-request replay on (re)connect (TASK-82)', () => {
+  function skillCard(skillId = 'github-helper'): PermissionRequest {
+    return {
+      kind: 'skill',
+      skillId,
+      description: 'Reach the GitHub API on your behalf',
+      hosts: ['api.github.com'],
+      slots: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+      authored: true,
+    };
+  }
+
+  it('replays a pending cap-skill card to a stream that opens AFTER it fired', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      // 1) The card fires DURING cold boot — no SSE stream is open yet, so the
+      //    live subscriber doesn't exist. The fill subscriber buffers it.
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard(),
+      );
+
+      // 2) The browser's EventSource opens (the turn cold-spawned a pod, the
+      //    POST returned the reqId, the GET now races in).
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      // 3) The card MUST surface on connect — without the replay (the bug) the
+      //    pending skill is permanently un-approvable.
+      const frames = captured.streamWrites
+        .filter((w) => w.startsWith('data: '))
+        .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+      const card = frames.find((f) => 'permissionRequest' in f);
+      expect(card).toMatchObject({
+        reqId: 'r-test',
+        permissionRequest: {
+          kind: 'skill',
+          skillId: 'github-helper',
+          hosts: ['api.github.com'],
+          authored: true,
+        },
+      });
+      // Non-terminal — the replay must not close the stream.
+      expect(captured.streamClosed).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('replays the same pending card to a SECOND connection (reconnect)', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard(),
+      );
+
+      // First connect (sees it live-or-replay), then drops.
+      const first = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), first.res);
+      first.captured.fireClientClose();
+
+      // Reconnect — the pending card is still un-approved, so it must replay
+      // again (a refresh / tab re-focus must not lose the card).
+      const second = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), second.res);
+      const frames = second.captured.streamWrites
+        .filter((w) => w.startsWith('data: '))
+        .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+      expect(
+        frames.some(
+          (f) =>
+            (f.permissionRequest as { skillId?: string } | undefined)?.skillId ===
+            'github-helper',
+        ),
+      ).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('does NOT replay a pending card after it is resolved (grant applied)', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_test'),
+        skillCard(),
+      );
+      // The permission-decision route evicts the resolved card (TASK-82). We
+      // model that eviction directly here (the route wiring is exercised in
+      // routes-chat.test.ts).
+      buffer.evictPermissionCard('cnv_test', 'github-helper');
+
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+      const frames = captured.streamWrites
+        .filter((w) => w.startsWith('data: '))
+        .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+      expect(frames.some((f) => 'permissionRequest' in f)).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('replays a pending host card to a stream that opens after it fired', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      // Host card fires before connect, keyed by routing reqId on the payload.
+      await bus.fire('chat:permission-request', initCtx, {
+        kind: 'host',
+        host: 'status.example.com',
+        sessionId: 's1',
+        reqId: 'r-test',
+      });
+
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+      const frames = captured.streamWrites
+        .filter((w) => w.startsWith('data: '))
+        .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+      const card = frames.find((f) => 'permissionRequest' in f);
+      expect(card).toMatchObject({
+        reqId: 'r-test',
+        permissionRequest: { kind: 'host', host: 'status.example.com', sessionId: 's1' },
+      });
+      // Routing reqId must not leak into the replayed payload.
+      expect(
+        (card?.permissionRequest as Record<string, unknown>).reqId,
+      ).toBeUndefined();
+      expect(captured.streamClosed).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('does NOT replay a card raised on a DIFFERENT conversation', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      await bus.fire(
+        'chat:permission-request',
+        ctxWithConversation(initCtx, 'cnv_OTHER'),
+        skillCard(),
+      );
+
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res); // conversationId cnv_test
+      const frames = captured.streamWrites
+        .filter((w) => w.startsWith('data: '))
+        .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+      expect(frames.some((f) => 'permissionRequest' in f)).toBe(false);
     } finally {
       buffer.dispose();
     }
