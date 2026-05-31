@@ -13,7 +13,18 @@ import type { RouteRequest, RouteResponse } from '../admin-routes.js';
 import type {
   CatalogListRequestsInput,
   CatalogListRequestsOutput,
+  SkillsProposeInput,
+  SkillsProposeOutput,
+  SettingsAuthoredSkillsOutput,
 } from '../types.js';
+import type { SkillCapabilities } from '@ax/skills-parser';
+
+const EMPTY_CAPS: SkillCapabilities = {
+  allowedHosts: [],
+  credentials: [],
+  mcpServers: [],
+  packages: { npm: [], pypi: [] },
+};
 
 // ---------------------------------------------------------------------------
 // /settings/skills* CRUD handler tests.
@@ -123,28 +134,48 @@ function mkReq(opts: {
 // unregister callback shape the plugin expects.
 const httpRegisterRouteStub = async () => ({ unregister: () => {} });
 
+/** One agent row as `agents:list-for-user` returns it (only the fields the
+ * authored-listing route reads). */
+interface StubAgent {
+  id: string;
+  ownerId: string;
+  ownerType: 'user' | 'team';
+}
+
 async function makeHarness(opts: {
   authedUser?: { id: string; isAdmin: boolean } | null;
+  /** When provided, registers an `agents:list-for-user` stub returning these
+   * agents. Omit to simulate a preset WITHOUT @ax/agents (soft dep absent). */
+  agents?: StubAgent[];
 } = {}): Promise<TestHarness> {
   const authedUser = opts.authedUser === undefined
     ? { id: 'alice', isAdmin: false }
     : opts.authedUser;
 
-  const h = await createTestHarness({
-    services: {
-      ...blobStoreFakeServices(),
-      'http:register-route': httpRegisterRouteStub,
-      'auth:require-user': async () => {
-        if (authedUser === null) {
-          throw new PluginError({
-            code: 'unauthenticated',
-            plugin: 'test',
-            message: 'no session',
-          });
-        }
-        return { user: authedUser };
-      },
+  const services: Record<
+    string,
+    (ctx: unknown, input: unknown) => Promise<unknown>
+  > = {
+    ...blobStoreFakeServices(),
+    'http:register-route': httpRegisterRouteStub,
+    'auth:require-user': async () => {
+      if (authedUser === null) {
+        throw new PluginError({
+          code: 'unauthenticated',
+          plugin: 'test',
+          message: 'no session',
+        });
+      }
+      return { user: authedUser };
     },
+  };
+  if (opts.agents !== undefined) {
+    const agents = opts.agents;
+    services['agents:list-for-user'] = async () => ({ agents });
+  }
+
+  const h = await createTestHarness({
+    services,
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       createSkillsPlugin(),
@@ -178,6 +209,8 @@ afterEach(async () => {
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skill_files');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_attachments');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_user_skills');
+    // TASK-85: the authored-skills route seeds skills_v1_authored via skills:propose.
+    await cleanup.query('DROP TABLE IF EXISTS skills_v1_authored');
     await cleanup.query('DROP TABLE IF EXISTS skills_v1_skills');
   } finally {
     await cleanup.end().catch(() => {});
@@ -693,5 +726,160 @@ describe('/settings/skills handlers', () => {
     const reqRow = queue.requests.find((r) => r.skillId === 'my-github');
     expect(reqRow?.requestedByUserId).toBe('alice');
     expect(reqRow?.requestedByUserId).not.toBe('u-evil');
+  });
+
+  // -------------------------------------------------------------------------
+  // Authored skills (TASK-85) — GET /settings/skills/authored aggregates the
+  // caller's agent-authored skills across THEIR personal agents. The "My
+  // Skills" panel surfaces these alongside catalog skills.
+  // -------------------------------------------------------------------------
+
+  /** Seed one authored skill via skills:propose (the single write chokepoint).
+   * The host RE-PARSES the manifest for the capability proposal — the manifest
+   * YAML decides the gate verdict (zero-cap authored → active; caps → pending;
+   * scan hit → quarantined). */
+  async function propose(
+    h: TestHarness,
+    input: { ownerUserId: string; agentId: string; manifestYaml: string; bodyMd: string },
+  ): Promise<SkillsProposeOutput> {
+    return h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      {
+        ownerUserId: input.ownerUserId,
+        agentId: input.agentId,
+        manifestYaml: input.manifestYaml,
+        bodyMd: input.bodyMd,
+        files: [],
+        capabilityProposal: EMPTY_CAPS, // host re-parses the manifest; ignored
+        origin: 'authored',
+      },
+    );
+  }
+
+  it('GET /settings/skills/authored returns 401 when anonymous', async () => {
+    const h = await makeHarness({ authedUser: null });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+    const { res, statusOf } = mkRes();
+    await handlers.listAuthored(mkReq({}), res);
+    expect(statusOf()).toBe(401);
+  });
+
+  it('GET /settings/skills/authored lists the caller\'s ACTIVE + PENDING authored skills', async () => {
+    // This is the Bug-Fix-Policy test: before TASK-85, authored skills had no
+    // user-facing read at all, so the panel showed "No skills installed".
+    const h = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    const a = await propose(h, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml: 'name: my-authored\ndescription: An agent-authored helper.\nversion: 1',
+      bodyMd: 'Authored body.',
+    });
+    expect(a.status).toBe('active');
+    const p = await propose(h, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml:
+        'name: needs-approval\ndescription: Authored skill that wants a host.\nversion: 1\ncapabilities:\n  allowedHosts:\n    - api.example.com',
+      bodyMd: 'Wants reach.',
+    });
+    expect(p.status).toBe('pending');
+
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.listAuthored(mkReq({}), res);
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as SettingsAuthoredSkillsOutput;
+    const ids = body.skills.map((s) => s.skillId);
+    expect(ids).toContain('my-authored');
+    expect(ids).toContain('needs-approval');
+    const active = body.skills.find((s) => s.skillId === 'my-authored');
+    expect(active).toMatchObject({
+      agentId: 'agt_a',
+      status: 'active',
+      description: 'An agent-authored helper.',
+    });
+    const pending = body.skills.find((s) => s.skillId === 'needs-approval');
+    expect(pending?.status).toBe('pending');
+  });
+
+  it('GET /settings/skills/authored EXCLUDES quarantined drafts', async () => {
+    const h = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    // Register a scan that flags this one bundle → quarantined.
+    h.bus.registerService(
+      'skills:scan',
+      'test',
+      async () => ({ verdict: 'hit' as const, reason: 'nope' }),
+    );
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    const q = await propose(h, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml: 'name: flagged\ndescription: Authored skill the scanner dislikes.\nversion: 1',
+      bodyMd: 'Suspicious body.',
+    });
+    expect(q.status).toBe('quarantined');
+
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.listAuthored(mkReq({}), res);
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as SettingsAuthoredSkillsOutput;
+    expect(body.skills.find((s) => s.skillId === 'flagged')).toBeUndefined();
+  });
+
+  it('GET /settings/skills/authored only reads the caller\'s OWN personal agents (I5)', async () => {
+    // alice authors a skill on agt_a; the route is given a TEAM agent and an
+    // agent owned by someone else — both must be ignored.
+    const h = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [
+        { id: 'agt_a', ownerId: 'alice', ownerType: 'user' },
+        { id: 'agt_team', ownerId: 'team-1', ownerType: 'team' },
+        { id: 'agt_bob', ownerId: 'bob', ownerType: 'user' },
+      ],
+    });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    await propose(h, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml: 'name: my-authored\ndescription: An agent-authored helper.\nversion: 1',
+      bodyMd: 'Authored body.',
+    });
+    // Seed a skill under bob's agent owned by bob — alice must never see it,
+    // even though agt_bob appears in the (stubbed) agent list.
+    await propose(h, {
+      ownerUserId: 'bob',
+      agentId: 'agt_bob',
+      manifestYaml: 'name: bob-skill\ndescription: Bob authored this.\nversion: 1',
+      bodyMd: 'Bob body.',
+    });
+
+    const { res, bodyOf } = mkRes();
+    await handlers.listAuthored(mkReq({}), res);
+    const body = bodyOf() as SettingsAuthoredSkillsOutput;
+    const ids = body.skills.map((s) => s.skillId);
+    expect(ids).toEqual(['my-authored']);
+    // Every listing belongs to alice's own personal agent.
+    for (const s of body.skills) expect(s.agentId).toBe('agt_a');
+  });
+
+  it('GET /settings/skills/authored returns [] when @ax/agents is absent (soft dep)', async () => {
+    const h = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
+    // No `agents` option → no agents:list-for-user service registered.
+    expect(h.bus.hasService('agents:list-for-user')).toBe(false);
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.listAuthored(mkReq({}), res);
+    expect(statusOf()).toBe(200);
+    expect((bodyOf() as SettingsAuthoredSkillsOutput).skills).toEqual([]);
   });
 });

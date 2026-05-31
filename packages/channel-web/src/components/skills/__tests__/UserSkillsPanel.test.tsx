@@ -1,11 +1,12 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { UserSkillsPanel } from '../UserSkillsPanel';
-import type { SkillSummary } from '@ax/skills';
+import type { SkillSummary, AuthoredSkillListing } from '@ax/skills';
 
 // Mock the wire clients at the lib boundary — no network.
 vi.mock('@/lib/user-skills', () => ({
   listUserSkills: vi.fn(),
+  listAuthoredSkills: vi.fn(),
   getUserSkill: vi.fn(),
   createUserSkill: vi.fn(),
   updateUserSkill: vi.fn(),
@@ -33,11 +34,13 @@ vi.mock('@/components/admin/SkillEditor', () => ({
 
 import {
   listUserSkills,
+  listAuthoredSkills,
   deleteUserSkill,
   shareUserSkill,
 } from '@/lib/user-skills';
 
 const mockListUserSkills = vi.mocked(listUserSkills);
+const mockListAuthoredSkills = vi.mocked(listAuthoredSkills);
 const mockDeleteUserSkill = vi.mocked(deleteUserSkill);
 const mockShareUserSkill = vi.mocked(shareUserSkill);
 
@@ -71,9 +74,26 @@ const SKILL_B: SkillSummary = {
   updatedAt: '2026-05-20T09:00:00.000Z',
 };
 
+const AUTHORED_ACTIVE: AuthoredSkillListing = {
+  skillId: 'my-authored',
+  agentId: 'agt_a',
+  description: 'An agent-authored helper.',
+  status: 'active',
+};
+
+const AUTHORED_PENDING: AuthoredSkillListing = {
+  skillId: 'needs-approval',
+  agentId: 'agt_a',
+  description: 'Authored skill awaiting approval.',
+  status: 'pending',
+};
+
 beforeEach(() => {
   vi.resetAllMocks();
   mockDeleteUserSkill.mockResolvedValue(undefined);
+  // Default: no authored skills (most tests cover catalog skills). The authored
+  // section is opt-in per test via mockListAuthoredSkills.mockResolvedValue(...).
+  mockListAuthoredSkills.mockResolvedValue([]);
 });
 
 describe('UserSkillsPanel', () => {
@@ -355,5 +375,82 @@ describe('UserSkillsPanel', () => {
       expect(screen.queryByText('Submit to catalog?')).toBeNull();
     });
     expect(mockShareUserSkill).not.toHaveBeenCalled();
+  });
+
+  // -------------------------------------------------------------------------
+  // Authored / approved skills (TASK-85)
+  // -------------------------------------------------------------------------
+
+  it('lists agent-authored skills (the bug: they were omitted entirely)', async () => {
+    // Before TASK-85 the panel only read catalog skills, so a user with ONLY
+    // authored skills saw "No skills installed". This is the regression guard.
+    mockListUserSkills.mockResolvedValue([]);
+    mockListAuthoredSkills.mockResolvedValue([AUTHORED_ACTIVE, AUTHORED_PENDING]);
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('my-authored')).toBeTruthy();
+      expect(screen.getByText('needs-approval')).toBeTruthy();
+    });
+
+    // The authored section header + descriptions render.
+    expect(screen.getByText('Authored by your agents')).toBeTruthy();
+    expect(screen.getByText('An agent-authored helper.')).toBeTruthy();
+
+    // With authored skills present, the empty-state message must NOT show.
+    expect(screen.queryByText(/No skills installed/)).toBeNull();
+  });
+
+  it('shows a status badge per authored skill (active vs pending review)', async () => {
+    mockListUserSkills.mockResolvedValue([]);
+    mockListAuthoredSkills.mockResolvedValue([AUTHORED_ACTIVE, AUTHORED_PENDING]);
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('my-authored')).toBeTruthy();
+    });
+
+    const activeRow = screen.getByText('my-authored').closest('tr')!;
+    expect(activeRow.textContent).toMatch(/active/i);
+
+    const pendingRow = screen.getByText('needs-approval').closest('tr')!;
+    expect(pendingRow.textContent).toMatch(/pending review/i);
+  });
+
+  it('shows authored skills ALONGSIDE catalog skills', async () => {
+    mockListUserSkills.mockResolvedValue([SKILL_A]);
+    mockListAuthoredSkills.mockResolvedValue([AUTHORED_ACTIVE]);
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      // catalog skill
+      expect(screen.getByText('my-github')).toBeTruthy();
+      // authored skill
+      expect(screen.getByText('my-authored')).toBeTruthy();
+    });
+  });
+
+  it('still shows the empty state when BOTH catalog and authored are empty', async () => {
+    mockListUserSkills.mockResolvedValue([]);
+    mockListAuthoredSkills.mockResolvedValue([]);
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText(/No skills installed/)).toBeTruthy();
+    });
+    expect(screen.queryByText('Authored by your agents')).toBeNull();
+  });
+
+  it('an authored-fetch failure does not blank out the catalog list', async () => {
+    mockListUserSkills.mockResolvedValue([SKILL_A]);
+    mockListAuthoredSkills.mockRejectedValue(new Error('authored boom'));
+    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+
+    await waitFor(() => {
+      expect(screen.getByText('my-github')).toBeTruthy();
+    });
+    // No authored section, no top-level error banner from the authored failure.
+    expect(screen.queryByText('Authored by your agents')).toBeNull();
+    expect(screen.queryByText('authored boom')).toBeNull();
   });
 });

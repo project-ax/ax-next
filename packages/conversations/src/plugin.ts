@@ -674,9 +674,10 @@ async function getTranscript(
  * role-tagged event — so we collapse consecutive same-role runs on BOTH sides
  * before comparing (structural turn boundaries, not raw line/row counts).
  *
- * Best-effort: a loud `logger.error` + metric on divergence, NEVER a throw —
- * the detector must not block the append ack (B3: install the alarm only; the
- * derivation escalation is deferred / YAGNI).
+ * Best-effort: a `logger.warn` + metric on divergence, NEVER a throw — the
+ * detector must not block the append ack (B3: install the alarm only; the
+ * derivation escalation is deferred / YAGNI). WARN, not ERROR (TASK-85): the
+ * alarm never throws, so a benign by-design resume must not surface an ERROR.
  */
 async function runDivergenceDetector(
   store: ConversationStore,
@@ -699,7 +700,11 @@ async function runDivergenceDetector(
     const common = Math.min(displayRoles.length, resumeRoles.length);
     for (let i = 0; i < common; i++) {
       if (displayRoles[i] !== resumeRoles[i]) {
-        ctx.logger.error('transcript_display_divergence', {
+        // WARN, not ERROR (TASK-85): the detector is a best-effort smoke alarm
+        // that NEVER throws (B3 — derivation/escalation is deferred). A benign
+        // by-design resume must not log at ERROR; a real divergence is still
+        // visible at WARN with the full position/role payload.
+        ctx.logger.warn('transcript_display_divergence', {
           conversationId,
           position: i,
           displayRole: displayRoles[i],

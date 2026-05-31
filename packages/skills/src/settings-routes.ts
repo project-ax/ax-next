@@ -6,6 +6,10 @@ import type {
   SkillsUpsertOutput,
   CatalogSubmitInput,
   CatalogSubmitOutput,
+  SkillsListAuthoredInput,
+  SkillsListAuthoredOutput,
+  AuthoredSkillListing,
+  SettingsAuthoredSkillsOutput,
 } from './types.js';
 import {
   requireAuthenticated,
@@ -37,12 +41,25 @@ import {
 
 const PLUGIN_NAME = '@ax/skills';
 
+// Structural mirror of @ax/agents' `agents:list-for-user` output (I2 — no
+// @ax/agents import; the inter-plugin contract is the hook, not a TS import).
+// We read only the fields the authored-listing route needs.
+interface AgentsListForUserAgent {
+  id: string;
+  ownerId: string;
+  ownerType: 'user' | 'team';
+}
+interface AgentsListForUserOutput {
+  agents: AgentsListForUserAgent[];
+}
+
 export interface SettingsRouteDeps {
   bus: HookBus;
 }
 
 export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
   list: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  listAuthored: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   get: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   create: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   update: (req: RouteRequest, res: RouteResponse) => Promise<void>;
@@ -68,6 +85,78 @@ export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
           SkillsListOutput
         >('skills:list', ctx, { scope: 'user', ownerUserId: actor.id });
         res.status(200).json(out);
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
+    /**
+     * GET /settings/skills/authored — list the caller's agent-AUTHORED skills
+     * (TASK-85). The "My Skills" panel surfaces these alongside the user's
+     * catalog skills so authored/approved work doesn't read as "No skills
+     * installed".
+     *
+     * Authored skills are keyed `(ownerUserId, agentId)` and the panel is
+     * per-user with no agent selector, so we aggregate across the caller's
+     * PERSONAL agents (team agents have no single-owner authored namespace).
+     * For each personal agent we read its authored projection via the existing
+     * `skills:list-authored` hook (same plugin), keep only the user-facing
+     * `active` + `pending` rows (quarantined drafts are NOT listed — a flagged
+     * bundle is not an "installed" skill), and tag each with its owning agent.
+     *
+     * Security (I5): every authored read is forced to `ownerUserId: actor.id`,
+     * and we only ever read agents the actor OWNS (`ownerType === 'user' &&
+     * ownerId === actor.id`) — a user can never see another user's authored
+     * skills. `agents:list-for-user` is a SOFT dep (hasService-guarded): a
+     * preset without @ax/agents yields an empty authored list, not an error.
+     */
+    async listAuthored(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireAuthenticated(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      try {
+        // No agents plugin wired → no authored skills (safe default).
+        if (!deps.bus.hasService('agents:list-for-user')) {
+          res.status(200).json({ skills: [] } satisfies SettingsAuthoredSkillsOutput);
+          return;
+        }
+        const { agents } = await deps.bus.call<
+          { userId: string },
+          AgentsListForUserOutput
+        >('agents:list-for-user', ctx, { userId: actor.id });
+
+        // Only the actor's OWN personal agents have an authored namespace
+        // routable from this per-user surface.
+        const ownAgentIds = agents
+          .filter((a) => a.ownerType === 'user' && a.ownerId === actor.id)
+          .map((a) => a.id);
+
+        const listings: AuthoredSkillListing[] = [];
+        for (const agentId of ownAgentIds) {
+          const { skills } = await deps.bus.call<
+            SkillsListAuthoredInput,
+            SkillsListAuthoredOutput
+          >('skills:list-authored', ctx, { ownerUserId: actor.id, agentId });
+          for (const s of skills) {
+            // Surface only user-facing lifecycle states. A `quarantined` draft
+            // is withheld (it was flagged by the safety scan; not an installed
+            // skill).
+            if (s.status !== 'active' && s.status !== 'pending') continue;
+            listings.push({
+              skillId: s.skillId,
+              agentId,
+              description: s.description,
+              status: s.status,
+            });
+          }
+        }
+        // Deterministic order: by skill id, then agent id.
+        listings.sort(
+          (a, b) =>
+            (a.skillId < b.skillId ? -1 : a.skillId > b.skillId ? 1 : 0) ||
+            (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0),
+        );
+        res.status(200).json({ skills: listings } satisfies SettingsAuthoredSkillsOutput);
       } catch (err) {
         if (writeServiceError(res, err)) return;
         throw err;
@@ -318,6 +407,10 @@ export async function registerSettingsSkillsRoutes(
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
     { method: 'GET', path: '/settings/skills', handler: handlers.list },
+    // Literal /settings/skills/authored is an EXACT route — the router's
+    // exact-match Map is checked before the /settings/skills/:id pattern scan,
+    // so it never collides with `:id`. (Registration order is irrelevant here.)
+    { method: 'GET', path: '/settings/skills/authored', handler: handlers.listAuthored },
     { method: 'GET', path: '/settings/skills/:id', handler: handlers.get },
     { method: 'POST', path: '/settings/skills', handler: handlers.create },
     { method: 'PUT', path: '/settings/skills/:id', handler: handlers.update },

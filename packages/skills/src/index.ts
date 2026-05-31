@@ -38,6 +38,8 @@ export type {
   SkillsListAuthoredInput,
   SkillsListAuthoredOutput,
   AuthoredSkillProjection,
+  AuthoredSkillListing,
+  SettingsAuthoredSkillsOutput,
   SkillsScanInput,
   SkillsScanOutput,
   SkillsProposedEvent,

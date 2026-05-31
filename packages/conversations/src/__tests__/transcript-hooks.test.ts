@@ -299,6 +299,10 @@ describe('conversations transcript hooks (TASK-67)', () => {
     expect(fired!.rec.position).toBe(0);
     expect(fired!.rec.displayRole).toBe('assistant');
     expect(fired!.rec.resumeRole).toBe('user');
+    // TASK-85: the divergence alarm is logged at WARN, not ERROR. It is
+    // alarm-only (never throws, TASK-67/B3); a benign by-design resume must not
+    // surface an ERROR-level record.
+    expect(fired!.rec.level).toBe('warn');
   });
 
   it('B3 detector collapses consecutive same-role runs (intermediate assistant lines are not omissions)', async () => {
