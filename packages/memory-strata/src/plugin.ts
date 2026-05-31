@@ -1,6 +1,6 @@
 import type { AgentContext, AgentOutcome, HookBus, Plugin } from '@ax/core';
 import { bootstrapMemoryTree } from './bootstrap.js';
-import { runConsolidation } from './consolidator.js';
+import { runConsolidation, type ConsolidationInput, type ConsolidationResult } from './consolidator.js';
 import { createDebouncer, type Debouncer } from './debounce.js';
 import { registerInject } from './inject.js';
 import { runObserver, type LlmCallFn } from './observer.js';
@@ -59,6 +59,16 @@ export interface MemoryStrataConfig {
   testHooks?: {
     onDebouncerCreated?(debouncer: Debouncer): void;
     onConsolidationSettleReady?(settle: (agentId: string) => Promise<void>): void;
+    /**
+     * Test-only override for the consolidation pass. When provided, the
+     * plugin calls THIS instead of the real `runConsolidation`. This lets
+     * timeout/serialization tests drive a consolidation whose duration is
+     * controlled by fake timers (`vi.useFakeTimers()`), so the
+     * `raceTimeout` deadline fires DETERMINISTICALLY rather than racing the
+     * real fs work under full-suite load (the #146/TASK-5 flake class).
+     * Production code never sets this — the real `runConsolidation` runs.
+     */
+    runConsolidation?(input: ConsolidationInput): Promise<ConsolidationResult>;
   };
 }
 
@@ -136,6 +146,12 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
     }
   };
   cfg.testHooks?.onConsolidationSettleReady?.(settleConsolidation);
+
+  // Test-only consolidation override (defaults to the real fs pass in
+  // production). See MemoryStrataConfig.testHooks.runConsolidation — this
+  // is the seam timeout/serialization tests use to drive a fake-timer-
+  // controlled pass so `raceTimeout` fires deterministically under load.
+  const consolidate = cfg.testHooks?.runConsolidation ?? runConsolidation;
 
   return {
     manifest: {
@@ -242,7 +258,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
             try { await prior; } catch { /* prior pass errors already logged */ }
           }
 
-          const work = runConsolidation({
+          const work = consolidate({
             workspaceRoot: ctx.workspace.rootPath,
             now: new Date(),
             logger: {
