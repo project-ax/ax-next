@@ -8,11 +8,17 @@
  *   4. Submit POSTs the right body shape (incl. CSRF header) and refetches.
  *   5. discoveryUrl field appears only when kind === 'oidc'.
  *   6. Toggle calls PATCH and refetches.
- *   7. Delete is gated by window.confirm; declining cancels the call.
+ *   7. Delete is gated by a styled confirm dialog; Cancel cancels the call.
  *   8. Save error renders inline; the form stays open.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { AuthProvidersTab } from '../components/admin/AuthProvidersTab';
 
 const fetchMock = vi.fn();
@@ -136,29 +142,40 @@ describe('AuthProvidersTab', () => {
     expect(JSON.parse(patchCall[1].body)).toEqual({ enabled: false });
   });
 
-  it('delete is gated by window.confirm; declining cancels the request', async () => {
+  it('delete is gated by a styled dialog; Cancel cancels the request', async () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry] }));
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValueOnce(false);
+    const confirmSpy = vi.spyOn(window, 'confirm');
 
     render(<AuthProvidersTab />);
     await waitFor(() => screen.getByRole('button', { name: /Remove Google/i }));
     fireEvent.click(screen.getByRole('button', { name: /Remove Google/i }));
 
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
+    // A styled dialog appears (no OS confirm).
+    await waitFor(() => expect(screen.getByText('Remove provider?')).toBeTruthy());
+    expect(confirmSpy).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole('button', { name: /^Cancel$/i }));
+
+    await waitFor(() =>
+      expect(screen.queryByText('Remove provider?')).toBeNull(),
+    );
     // Only the initial list call — DELETE was not issued.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     confirmSpy.mockRestore();
   });
 
-  it('delete calls DELETE on confirm and refetches', async () => {
+  it('delete calls DELETE after confirming in the dialog and refetches', async () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [googleEntry] }));
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
     fetchMock.mockResolvedValueOnce(jsonOk({ providers: [] }));
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValueOnce(true);
     render(<AuthProvidersTab />);
     await waitFor(() => screen.getByRole('button', { name: /Remove Google/i }));
     fireEvent.click(screen.getByRole('button', { name: /Remove Google/i }));
+
+    // Confirm in the dialog — its action button is "Remove".
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Remove$/i }));
 
     await waitFor(() =>
       expect(screen.getByText(/No identity providers configured/i)).toBeTruthy(),
@@ -167,7 +184,6 @@ describe('AuthProvidersTab', () => {
     expect(deleteCall[0]).toBe('/admin/auth/providers/google');
     expect(deleteCall[1].method).toBe('DELETE');
     expect(deleteCall[1].headers['x-requested-with']).toBe('ax-admin');
-    confirmSpy.mockRestore();
   });
 
   it('save error renders inline; form stays open', async () => {
