@@ -157,8 +157,8 @@ describe('UserSkillsPanelBody', () => {
 
   // TASK-118 — raw connector ids are demoted behind a tooltip/disclosure: the
   // cell shows a count summary, and the raw id is reachable via the trigger's
-  // title attribute (accessible/testable fallback), not as a lead badge.
-  it('demotes raw connector ids behind a count + tooltip title', async () => {
+  // accessible name (aria-label, the testable fallback), not as a lead badge.
+  it('demotes raw connector ids behind a count + accessible name', async () => {
     mockListUserSkills.mockResolvedValue([SKILL_A]); // connectors: ['github']
     render(<UserSkillsPanelBody active />);
 

@@ -102,8 +102,9 @@ describe('CatalogTab', () => {
     expect(screen.getByText('github-api').className).toMatch(/font-mono/);
   });
 
-  // TASK-118 — raw connector ids demoted behind a count + tooltip title.
-  it('demotes raw connector ids behind a count + tooltip title', async () => {
+  // TASK-118 — raw connector ids demoted behind a count + tooltip (the raw
+  // ids are reachable via the trigger's accessible name).
+  it('demotes raw connector ids behind a count + accessible name', async () => {
     mockListSkills.mockResolvedValueOnce([SKILL_A]); // connectors: ['github']
     render(<CatalogTab />);
 
