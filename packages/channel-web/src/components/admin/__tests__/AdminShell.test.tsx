@@ -17,8 +17,20 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
-  // ConnectionsTab (the default tab) calls listChatAgents() → /api/chat/agents,
-  // which returns a bare array. An empty list is enough for the nav assertions.
+  // SkillsTab (the default tab) calls listUserSkills() → /settings/skills and
+  // listAuthoredSkills() → /settings/skills/authored on mount.
+  if (/\/settings\/skills\/authored(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ skills: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  if (/\/settings\/skills(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ skills: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
   if (/\/api\/chat\/agents(\?|$)/.test(url)) {
     return new Response(JSON.stringify([]), {
       status: 200,
@@ -75,28 +87,33 @@ function renderShell(onClose = vi.fn(), isAdmin = true) {
 }
 
 describe('AdminShell', () => {
-  it('renders the admin nav items plus the user tabs, with Connections active by default', () => {
+  it('renders the three user Settings tabs plus admin tabs, with Skills active by default', () => {
     renderShell();
-    // Scope to nav buttons — "Connections" also appears in the pane header.
-    expect(screen.getByRole('button', { name: 'Connections' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Keys' })).toBeTruthy();
+    // The agent-centric Settings tabs (every user). "Connectors" the user tab
+    // shares its label with the admin "Connector catalog" registry, so scope to
+    // the user nav button by its exact label.
+    expect(screen.getByRole('button', { name: 'Skills' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Connectors' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Credentials' })).toBeTruthy();
     // Admin tabs (Admin section) — present for admins.
     expect(screen.getByRole('button', { name: 'Providers' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Model config' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Connectors' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Connector catalog' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Teams' })).toBeTruthy();
-    // Connections is the default active tab for everyone.
+    // Skills is the default active tab for everyone.
     expect(
-      screen.getByRole('button', { name: 'Connections' }).getAttribute('data-active'),
+      screen.getByRole('button', { name: 'Skills' }).getAttribute('data-active'),
     ).toBeTruthy();
   });
 
   it('hides admin tabs when isAdmin is false', () => {
     renderShell(vi.fn(), false);
-    expect(screen.getByRole('button', { name: 'Connections' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Skills' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Providers' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Teams' })).toBeNull();
+    // The admin connector-catalog registry is hidden for non-admins.
+    expect(screen.queryByRole('button', { name: 'Connector catalog' })).toBeNull();
   });
 
   it('clicking Model config makes it the active tab', () => {
@@ -106,7 +123,7 @@ describe('AdminShell', () => {
       screen.getByRole('button', { name: 'Model config' }).getAttribute('data-active'),
     ).toBeTruthy();
     expect(
-      screen.getByRole('button', { name: 'Connections' }).getAttribute('data-active'),
+      screen.getByRole('button', { name: 'Skills' }).getAttribute('data-active'),
     ).toBeNull();
   });
 

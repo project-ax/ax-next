@@ -10,6 +10,7 @@ import {
   Inbox,
   Plug,
   Key,
+  Wrench,
 } from 'lucide-react';
 import { BrandMark } from '../BrandMark';
 import { SidebarSectionLabel } from '../SidebarSectionLabel';
@@ -17,9 +18,11 @@ import { AdminNavItem } from './AdminNavItem';
 import { cn } from '@/lib/utils';
 
 export type AdminTabId =
-  // User tabs (every user) — the Settings surface (TASK-42).
-  | 'connections'
-  | 'keys'
+  // User tabs (every user) — the agent-centric Settings surface
+  // (connectors-first-class UI/IA reorg): Skills · Connectors · Credentials.
+  | 'skills'
+  | 'connectors-user'
+  | 'credentials'
   // Admin tabs (admins only).
   | 'providers'
   | 'model-config'
@@ -33,8 +36,9 @@ export type AdminTabId =
 type NavItem = { id: AdminTabId; label: string; icon: typeof KeyRound };
 
 const USER_NAV: NavItem[] = [
-  { id: 'connections', label: 'Connections', icon: Plug },
-  { id: 'keys', label: 'Keys', icon: Key },
+  { id: 'skills', label: 'Skills', icon: Wrench },
+  { id: 'connectors-user', label: 'Connectors', icon: Plug },
+  { id: 'credentials', label: 'Credentials', icon: Key },
 ];
 
 const ADMIN_NAV: NavItem[] = [
@@ -44,7 +48,10 @@ const ADMIN_NAV: NavItem[] = [
   { id: 'agents', label: 'Agents', icon: User },
   { id: 'catalog', label: 'Catalog', icon: Library },
   { id: 'admit-queue', label: 'Admit queue', icon: Inbox },
-  { id: 'connectors', label: 'Connectors', icon: Plug },
+  // The connector REGISTRY — admins curate shared connectors + flag default-on
+  // here (the connector half of the Catalog). Labelled distinctly from the user
+  // "Connectors" tab so the two nav entries don't collide.
+  { id: 'connectors', label: 'Connector catalog', icon: Plug },
   { id: 'teams', label: 'Teams', icon: UsersRound },
 ];
 

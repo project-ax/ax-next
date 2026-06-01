@@ -41,6 +41,7 @@ import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
+import { Checkbox } from '@/components/ui/checkbox';
 import {
   Select,
   SelectContent,
@@ -60,6 +61,13 @@ type FormState = {
   usageNote: string;
   keyMode: ConnectorKeyMode;
   visibility: ConnectorVisibility;
+  /**
+   * Default-on for every agent (the connector half of the admin Catalog). When
+   * true the connector flows into every agent's effective set via
+   * `connectors:list-defaults` (TASK-97). This is the admin "curate + flag
+   * default-on" control (design §UI/IA admin Catalog).
+   */
+  defaultAttached: boolean;
   // Mechanism (Advanced) — at most one MCP server in this form. Empty command
   // AND empty url ⟹ a non-MCP connector (CLI / direct-API), still valid.
   transport: Transport;
@@ -85,6 +93,7 @@ const emptyForm = (): FormState => ({
   usageNote: '',
   keyMode: 'personal',
   visibility: 'private',
+  defaultAttached: false,
   transport: 'stdio',
   command: '',
   args: '',
@@ -112,6 +121,7 @@ function formFromConnector(c: Connector): FormState {
     usageNote: c.usageNote,
     keyMode: c.keyMode,
     visibility: c.visibility,
+    defaultAttached: c.defaultAttached,
     transport: mcp?.transport ?? 'stdio',
     command: mcp?.command ?? '',
     args: (mcp?.args ?? []).join(' '),
@@ -241,6 +251,7 @@ export function ConnectorRegistry() {
       usageNote: form.usageNote,
       keyMode: form.keyMode,
       visibility: form.visibility,
+      defaultAttached: form.defaultAttached,
       capabilities: capabilitiesFromForm(form),
     };
     try {
@@ -442,6 +453,27 @@ export function ConnectorRegistry() {
                 </SelectItem>
               </SelectContent>
             </Select>
+          </div>
+
+          {/* Default-on (the connector half of the admin Catalog). Flowing a
+              connector on by default grants it to EVERY agent (TASK-97) — an
+              admin-only curation control. */}
+          <div className="flex items-start gap-2.5">
+            <Checkbox
+              id="connector-default"
+              checked={form.defaultAttached}
+              onCheckedChange={(v) =>
+                setForm((f) => ({ ...f, defaultAttached: v === true }))
+              }
+            />
+            <div className="flex flex-col gap-0.5">
+              <Label htmlFor="connector-default" className="cursor-pointer">
+                Default-on for all agents
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Every agent gets this connector without anyone attaching it.
+              </p>
+            </div>
           </div>
 
           {/* Advanced: the backing mechanism (hidden unless asked). */}
