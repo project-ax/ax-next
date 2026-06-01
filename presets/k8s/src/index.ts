@@ -28,6 +28,7 @@ import { createHostGrantsPlugin } from '@ax/host-grants';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createToolSkillProposePlugin } from '@ax/tool-skill-propose';
+import { createToolConnectorProposePlugin } from '@ax/tool-connector-propose';
 import { createHttpServerPlugin } from '@ax/http-server';
 import { createAuthBetterPlugin, type AuthBetterConfig } from '@ax/auth-better';
 import { createTeamsPlugin } from '@ax/teams';
@@ -896,6 +897,20 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // its allowedTools (follow-up — same broker-injection shape as TASK-51).
   if (config.allowUserInstalledSkills) {
     plugins.push(createToolSkillProposePlugin());
+  }
+
+  // TASK-95 (connectors-first-class, design Phase 2): registers the
+  // `connector_propose` HOST-executed tool (mirror of @ax/skill-broker's
+  // request_capability — pure-JSON args, no /ephemeral draft dir to read, so no
+  // sandbox executor). It calls the `connectors:install-authored` hook (TASK-94,
+  // registered by @ax/connectors above) which persists a PENDING connector draft;
+  // the chat-orchestrator then fires ONE approval card per pending draft. Gated
+  // on the SAME open-mode flag as the builtin authoring skills + skill_propose —
+  // ax-connector-creator (a builtin loaded by loadBuiltinSkills, also gated on
+  // this flag) drives it. The hard `connectors:install-authored` dep means this
+  // is only ever pushed where @ax/connectors is loaded (k8s, just above).
+  if (config.allowUserInstalledSkills) {
+    plugins.push(createToolConnectorProposePlugin());
   }
 
   // Auto-titling: @ax/llm-anthropic registers `llm:call:anthropic`,

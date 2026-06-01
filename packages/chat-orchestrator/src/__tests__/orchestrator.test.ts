@@ -1064,6 +1064,7 @@ describe('chat-orchestrator', () => {
         'search_catalog',
         'request_capability',
         'skill_propose',
+        'connector_propose',
       ],
       mcpConfigIds: ['mcp-1'],
       model: 'claude-opus-4-7',
@@ -1141,6 +1142,7 @@ describe('chat-orchestrator', () => {
       'search_catalog',
       'request_capability',
       'skill_propose',
+      'connector_propose',
     ]);
   });
 
@@ -1193,6 +1195,7 @@ describe('chat-orchestrator', () => {
       'search_catalog',
       'request_capability',
       'skill_propose',
+      'connector_propose',
     ]);
     expect(getConfig().mcpConfigIds).toEqual(['mcp-1']);
   });
@@ -1222,12 +1225,13 @@ describe('chat-orchestrator', () => {
     );
     expect(outcome.kind).toBe('complete');
     // search_catalog already present → not duplicated; request_capability +
-    // skill_propose appended (TASK-76).
+    // skill_propose + connector_propose appended (TASK-76 / TASK-95).
     expect(getConfig().allowedTools).toEqual([
       'search_catalog',
       'file.read',
       'request_capability',
       'skill_propose',
+      'connector_propose',
     ]);
   });
 
@@ -4859,8 +4863,9 @@ describe('chat-orchestrator — reactive egress wall (TASK-37)', () => {
 // ---------------------------------------------------------------------------
 describe('withBrokerDefaults', () => {
   // TASK-76 — skill_propose joins the always-on set so a non-wildcard tenant
-  // agent can author skills too (previously only wildcard agents saw it).
-  const BROKER = ['search_catalog', 'request_capability', 'skill_propose'];
+  // agent can author skills too. TASK-95 — connector_propose joins for the same
+  // reason (connector authoring), kept last in the append order.
+  const BROKER = ['search_catalog', 'request_capability', 'skill_propose', 'connector_propose'];
 
   it('returns the empty-empty wildcard unchanged', () => {
     expect(withBrokerDefaults([], [])).toEqual([]);
@@ -4887,6 +4892,7 @@ describe('withBrokerDefaults', () => {
       'request_capability',
       'search_catalog',
       'skill_propose',
+      'connector_propose',
     ]);
   });
 
@@ -4895,7 +4901,16 @@ describe('withBrokerDefaults', () => {
       'skill_propose',
       'search_catalog',
       'request_capability',
+      'connector_propose',
     ]);
+  });
+
+  it('injects connector_propose for a non-wildcard agent (TASK-95)', () => {
+    expect(withBrokerDefaults(['file.read'], [])).toContain('connector_propose');
+  });
+
+  it('does NOT inject connector_propose into a wildcard agent', () => {
+    expect(withBrokerDefaults([], [])).not.toContain('connector_propose');
   });
 
   it('is idempotent — re-applying does not duplicate', () => {

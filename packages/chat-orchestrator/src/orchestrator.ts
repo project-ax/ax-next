@@ -682,7 +682,18 @@ const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
 // without this it could never invoke skill_propose. The host `skills:propose`
 // gate (re-validate + scan + classify) is the real boundary; tool visibility
 // isn't a grant.
-const ALWAYS_ON_BROKER_TOOLS = ['search_catalog', 'request_capability', 'skill_propose'] as const;
+//
+// TASK-95: `connector_propose` joins for the SAME reason — a non-wildcard tenant
+// agent must be able to author CONNECTORS (the access the connectors-first-class
+// split lifts out of skills). The host `connectors:install-authored` hook
+// (persists a PENDING draft, zero reach until the one approval card) is the real
+// boundary; tool visibility isn't a grant. Mirror of the skill_propose addition.
+const ALWAYS_ON_BROKER_TOOLS = [
+  'search_catalog',
+  'request_capability',
+  'skill_propose',
+  'connector_propose',
+] as const;
 
 /**
  * "default+locked" broker tools, computed at session-open (TASK-51).

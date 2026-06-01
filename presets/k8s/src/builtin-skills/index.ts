@@ -10,7 +10,7 @@ import type { ResolvedSkillForOrch } from '@ax/chat-orchestrator';
  * a parse/read failure here is a build/packaging bug, so we throw at boot.
  */
 export function loadBuiltinSkills(): ResolvedSkillForOrch[] {
-  return [loadOne('ax-skill-creator')];
+  return [loadOne('ax-skill-creator'), loadOne('ax-connector-creator')];
 }
 
 function loadOne(id: string): ResolvedSkillForOrch {
