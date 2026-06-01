@@ -292,6 +292,16 @@ function connectorsMiddleware(
           send(res, 400, { error: rejected });
           return true;
         }
+        // POST is create-or-update; a re-POST of an existing catalog/shared
+        // connector's id would silently demote it to private. 403 instead.
+        const cid = body.connectorId;
+        if (typeof cid === 'string' && cid.length > 0) {
+          const existing = connectors.get(rowKey(actor.id, cid));
+          if (existing && isCatalogConnector(existing)) {
+            send(res, 403, { error: 'read-only' });
+            return true;
+          }
+        }
         body.visibility = 'private';
         body.defaultAttached = false;
       }

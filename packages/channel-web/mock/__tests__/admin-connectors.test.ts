@@ -444,6 +444,35 @@ describe('mock user connectors (/settings/connectors)', () => {
     }
   });
 
+  it('POST cannot demote an existing catalog/shared connector to private (403)', async () => {
+    const { url, close } = await startUserServer(store);
+    try {
+      // Seed a SHARED connector via the admin route.
+      await fetch(`${url}/admin/connectors`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify(
+          upsertBody({ connectorId: 'shared-conn', visibility: 'shared' }),
+        ),
+      });
+      // A re-POST of the same id via the user route must 403, not demote it.
+      const res = await fetch(`${url}/settings/connectors`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify(upsertBody({ connectorId: 'shared-conn' })),
+      });
+      expect(res.status).toBe(403);
+      // Still shared.
+      const get = await fetch(`${url}/admin/connectors/shared-conn`, {
+        headers: { cookie: ALICE },
+      });
+      const body = (await get.json()) as { connector: { visibility: string } };
+      expect(body.connector.visibility).toBe('shared');
+    } finally {
+      await close();
+    }
+  });
+
   it('cross-tenant: user cannot edit another user’s private connector (404)', async () => {
     const { url, close } = await startUserServer(store);
     try {

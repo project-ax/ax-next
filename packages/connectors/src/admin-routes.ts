@@ -363,6 +363,31 @@ export function createConnectorRouteHandlers(
           res.status(400).json({ error: rejected });
           return;
         }
+        // POST is create-OR-update (upsert by id). If the id already names a
+        // catalog/shared connector the actor owns, this would silently DEMOTE it
+        // to private — the same read-only bypass PATCH/DELETE guard against. So
+        // pre-read and 403 before the forced-private upsert can land.
+        const cid = raw.connectorId;
+        if (typeof cid === 'string' && cid.length > 0) {
+          try {
+            const got = await deps.bus.call<GetInput, GetOutput>(
+              'connectors:get',
+              ctx,
+              { userId: actor.id, connectorId: cid },
+            );
+            if (isCatalogConnector(got.connector)) {
+              res.status(403).json({ error: 'read-only' });
+              return;
+            }
+          } catch (err) {
+            // not-found ⟹ a genuine create — fall through. Any other hook error
+            // (e.g. invalid id) surfaces here with the right status.
+            if (!(err instanceof PluginError && err.code === 'not-found')) {
+              handleHookError(err, res);
+              return;
+            }
+          }
+        }
         raw.visibility = 'private';
         raw.defaultAttached = false;
       }

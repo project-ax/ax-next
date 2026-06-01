@@ -816,6 +816,47 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(captured.body).toEqual({ error: 'read-only' });
   });
 
+  it('POST cannot demote an existing catalog/shared connector to private (read-only — 403)', async () => {
+    const h = await makeHarness();
+    currentActor = { id: 'userU', isAdmin: true };
+    // Admin-seed a SHARED connector owned by userU.
+    await adminSeed(h.bus, {
+      connectorId: 'demote-target',
+      name: 'Shared',
+      keyMode: 'workspace',
+      visibility: 'shared',
+      capabilities: mcpCaps(),
+    });
+    // The same user POSTs the SAME id via the user route — create-or-update must
+    // NOT silently demote the shared connector to private; it 403s (read-only).
+    currentActor = { id: 'userU', isAdmin: false };
+    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    const { res, captured } = makeRes();
+    await userHandlers.create(
+      makeReq({
+        body: {
+          connectorId: 'demote-target',
+          name: 'Sneaky private',
+          keyMode: 'personal',
+          capabilities: mcpCaps(),
+        },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(403);
+    expect(captured.body).toEqual({ error: 'read-only' });
+    // The connector is STILL shared — the demote never landed.
+    currentActor = { id: 'userU', isAdmin: true };
+    const { res: gRes, captured: gCap } = makeRes();
+    await createAdminConnectorRouteHandlers({ bus: h.bus }).show(
+      makeReq({ params: { id: 'demote-target' } }),
+      gRes,
+    );
+    expect(
+      (gCap.body as { connector: { visibility: string } }).connector.visibility,
+    ).toBe('shared');
+  });
+
   it('PATCH on a DEFAULT-ON connector is read-only — 403', async () => {
     const h = await makeHarness();
     currentActor = { id: 'userU', isAdmin: true };
