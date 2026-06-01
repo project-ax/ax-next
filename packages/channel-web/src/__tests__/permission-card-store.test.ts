@@ -49,4 +49,60 @@ describe('permission-card-store', () => {
     unsub();
     expect(hits).toBe(2);
   });
+
+  // -------------------------------------------------------------------------
+  // TASK-113 — card precedence. On a WARM turn both the upfront `connector`
+  // connect card and a reactive `host` egress-wall frame can fire in the same
+  // turn. The single-slot store's blind last-write-wins showed the wall ("npm
+  // 403") instead of the actionable "Connect <service>" card. The connect card
+  // is the root cause; the wall is downstream of the same missing connector, so
+  // the connector card must WIN.
+  // -------------------------------------------------------------------------
+  const connector: PermissionRequest = {
+    kind: 'connector',
+    connectorId: 'linear',
+    name: 'Linear',
+    hosts: ['api.linear.app'],
+    slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' as const }],
+    authored: true,
+  };
+  const wall: PermissionRequest = {
+    kind: 'host',
+    host: 'registry.npmjs.org',
+    sessionId: 's1',
+  };
+
+  it('a reactive host wall does NOT clobber a showing connector card', () => {
+    permissionCardActions.show(connector);
+    permissionCardActions.show(wall);
+    // The connector card survives — the user still sees "Connect Linear".
+    expect(getPermissionCardSnapshot().request).toEqual(connector);
+  });
+
+  it('a connector card DOES replace a showing host wall (connector wins both directions)', () => {
+    permissionCardActions.show(wall);
+    permissionCardActions.show(connector);
+    expect(getPermissionCardSnapshot().request).toEqual(connector);
+  });
+
+  it('a host wall still replaces a prior host/skill card (unchanged behavior)', () => {
+    permissionCardActions.show(sample); // skill
+    permissionCardActions.show(wall);
+    expect(getPermissionCardSnapshot().request).toEqual(wall);
+    permissionCardActions.show({ kind: 'host', host: 'other.example.com', sessionId: 's2' });
+    expect(getPermissionCardSnapshot().request).toEqual({
+      kind: 'host',
+      host: 'other.example.com',
+      sessionId: 's2',
+    });
+  });
+
+  it('a connector card replaces a prior skill/connector card (unchanged behavior)', () => {
+    permissionCardActions.show(sample); // skill
+    permissionCardActions.show(connector);
+    expect(getPermissionCardSnapshot().request).toEqual(connector);
+    const other: PermissionRequest = { ...connector, connectorId: 'sf', name: 'Salesforce' };
+    permissionCardActions.show(other);
+    expect(getPermissionCardSnapshot().request).toEqual(other);
+  });
 });
