@@ -59,6 +59,41 @@ export async function listAuthoredSkills(): Promise<AuthoredSkillListing[]> {
   return body.skills;
 }
 
+/** Wire shape of the adopt-&-edit result (TASK-134). Declared locally — invariant
+ * I2 (no @ax/skills runtime import; the inter-plugin contract is the route, not a
+ * TS import). */
+export interface AdoptAuthoredResult {
+  /** The id of the user-scoped skill the draft was copied into. */
+  skillId: string;
+  /** Whether the user-scoped copy was created (false = overwrote an existing one). */
+  created: boolean;
+  /** Whether this call flipped the draft to `adopted`. */
+  adopted: boolean;
+}
+
+/**
+ * Adopt-&-edit (TASK-134): copy an agent-authored draft into the caller's OWN
+ * editable user-scoped skill (manifest + body + extra files), then mark the draft
+ * adopted so it drops off the "Authored by your agents" listing. The server forces
+ * the owner from the session and ACL-checks that `agentId` is one of the caller's
+ * own personal agents; nothing is sent in the body. On success the caller opens
+ * the form-first editor on the returned `skillId` (a user-scoped skill).
+ */
+export async function adoptAuthoredSkill(
+  agentId: string,
+  skillId: string,
+): Promise<AdoptAuthoredResult> {
+  const res = await fetch(
+    `/settings/skills/authored/${encodeURIComponent(agentId)}/${encodeURIComponent(skillId)}/adopt`,
+    {
+      method: 'POST',
+      headers: csrfHeader,
+      credentials: 'include',
+    },
+  );
+  return (await handleResponse(res)) as AdoptAuthoredResult;
+}
+
 export async function getUserSkill(skillId: string): Promise<SkillDetail> {
   const res = await fetch(`/settings/skills/${encodeURIComponent(skillId)}`, {
     credentials: 'include',

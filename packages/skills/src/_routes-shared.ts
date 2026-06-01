@@ -115,6 +115,17 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
       res.status(409).json({ error: err.message, code: 'request-already-decided' });
       return true;
     }
+    // TASK-134 (adopt-&-edit): the named draft isn't a draft of this agent at
+    // all (404), or it exists but isn't in a user-facing adoptable state —
+    // quarantined / already adopted (409, like other lifecycle-conflict codes).
+    if (err.code === 'not-authored') {
+      res.status(404).json({ error: err.message, code: 'not-authored' });
+      return true;
+    }
+    if (err.code === 'not-adoptable') {
+      res.status(409).json({ error: err.message, code: 'not-adoptable' });
+      return true;
+    }
     const badRequestCodes = new Set([
       'invalid-name',
       'invalid-description',
@@ -126,6 +137,12 @@ export function writeServiceError(res: RouteResponse, err: unknown): boolean {
       'invalid-manifest',
       'invalid-version',
       'inline-secret-forbidden',
+      // TASK-134 — a user-scoped skill (incl. an adopted authored draft) may not
+      // declare a capability block or a malformed connector reference; the parse
+      // gate inside skills:upsert hard-rejects these. Map to 400 so the adopt /
+      // user-skill write surfaces a clean client error instead of a 500.
+      'capability-block-forbidden',
+      'invalid-connector',
       'invalid-mcp-command',
       'invalid-mcp-transport',
       'invalid-payload',

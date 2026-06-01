@@ -243,7 +243,11 @@ export async function runSkillsMigration<DB>(db: Kysely<DB>): Promise<void> {
   // 'authored' (the runner only ever proposes this) | 'imported' | 'attached'
   // (reserved for future host-side provenance). `status` ∈ 'active' (materializes
   // next spawn) | 'pending' (awaits the approval card) | 'quarantined' (scan hit,
-  // omitted from the projection). `scan_verdict` is the validator's reason text,
+  // omitted from the projection) | 'adopted' (TASK-134: the user copied this draft
+  // into their own editable user-scoped skill, so it's no longer presented as a
+  // pending/approve-only item — also omitted from the projection). The column is a
+  // plain TEXT with no CHECK constraint, so the new 'adopted' value needs no schema
+  // change. `scan_verdict` is the validator's reason text,
   // NULL when clean. The hybrid materialization gate (design §D3) writes exactly
   // ONE of these per skill at propose time. Additive-only.
   await sql`

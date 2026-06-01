@@ -19,7 +19,7 @@ import {
 } from './blob-bundle-store.js';
 import type { BundleFile } from './types.js';
 
-export type AuthoredStatus = 'active' | 'pending' | 'quarantined';
+export type AuthoredStatus = 'active' | 'pending' | 'quarantined' | 'adopted';
 export type AuthoredOrigin = 'authored' | 'imported' | 'attached';
 
 export interface AuthoredSkill {
@@ -65,6 +65,24 @@ export interface AuthoredSkillsStore {
     agentId: string;
     skillId: string;
   }): Promise<{ activated: boolean }>;
+  /**
+   * Flip a draft to `adopted` once the user has copied it into their own
+   * editable (user-scoped) skill (TASK-134, adopt-&-edit). Status-guarded so an
+   * adopt only ever transitions a draft the user can actually see + take: the
+   * UPDATE matches `status IN ('active','pending')` only, so a `quarantined`
+   * draft (flagged by the safety scan, never user-facing) is never adopted and
+   * an already-`adopted` row is a no-op. Idempotent — a duplicate adopt flips
+   * zero rows the second time. Returns whether THIS call flipped a row.
+   *
+   * `adopted` drops the draft from the `/settings/skills/authored` projection
+   * (it lists only `active` + `pending`), so the original stops being presented
+   * as a pending/approve-only item — the user now owns an editable copy.
+   */
+  markAdopted(input: {
+    ownerUserId: string;
+    agentId: string;
+    skillId: string;
+  }): Promise<{ adopted: boolean }>;
 }
 
 function rowToAuthored(
@@ -182,6 +200,24 @@ export function createAuthoredSkillsStore(
         .where('status', '=', 'pending')
         .executeTakeFirst();
       return { activated: Number(res.numUpdatedRows ?? 0n) > 0 };
+    },
+
+    async markAdopted({ ownerUserId, agentId, skillId }) {
+      // Status-guarded flip: only a user-facing draft (`active` or `pending`)
+      // transitions to `adopted`. A `quarantined` row is left alone (it was
+      // never presented to the user, so there's nothing to "take a copy of"),
+      // and an already-`adopted` row is a no-op. The `status IN (…)` predicate
+      // makes the call idempotent + race-safe (a concurrent duplicate adopt
+      // flips zero rows the second time).
+      const res = await db
+        .updateTable('skills_v1_authored')
+        .set({ status: 'adopted', updated_at: new Date() })
+        .where('owner_user_id', '=', ownerUserId)
+        .where('agent_id', '=', agentId)
+        .where('skill_id', '=', skillId)
+        .where('status', 'in', ['active', 'pending'])
+        .executeTakeFirst();
+      return { adopted: Number(res.numUpdatedRows ?? 0n) > 0 };
     },
   };
 }

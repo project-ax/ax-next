@@ -50,6 +50,7 @@ import {
   SkillsProposeOutputSchema,
   SkillsListAuthoredOutputSchema,
   SkillsAuthoredActivateOutputSchema,
+  SkillsAdoptAuthoredOutputSchema,
 } from './types.js';
 import type {
   SkillsCheckForUpdatesInput,
@@ -104,6 +105,8 @@ import type {
   AuthoredSkillProjection,
   SkillsAuthoredActivateInput,
   SkillsAuthoredActivateOutput,
+  SkillsAdoptAuthoredInput,
+  SkillsAdoptAuthoredOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/skills';
@@ -220,6 +223,11 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
         // TASK-76 (§D3): flip a pending authored skill → active once a human
         // approves its caps (called by the orchestrator's authored-grant flow).
         'skills:authored-activate',
+        // TASK-134 (design card 11): copy an agent-authored draft into the
+        // caller's own editable user-scoped skill, then mark the draft adopted
+        // (the user-facing "adopt-&-edit" of authored work; called by the
+        // /settings/skills/authored/:agentId/:skillId/adopt route).
+        'skills:adopt-authored',
       ],
       calls: [
         'database:get-instance',
@@ -1152,15 +1160,25 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => {
           const rows = await authoredStore.list(input.ownerUserId, input.agentId);
-          const skills: AuthoredSkillProjection[] = rows.map((r) => ({
-            skillId: r.skillId,
-            description: r.description,
-            manifestYaml: r.manifestYaml,
-            bodyMd: r.bodyMd,
-            files: r.files,
-            status: r.status,
-            ...(r.scanVerdict !== null ? { reason: r.scanVerdict } : {}),
-          }));
+          const skills: AuthoredSkillProjection[] = rows
+            // TASK-134 — an `adopted` draft has been replaced by the user's own
+            // editable user-scoped copy, so it must not project to the agent's
+            // runtime (nor to the user-facing authored listing): drop it here.
+            // This narrows the row's wide AuthoredStatus to the projection's
+            // three-value `status` union for the rows that remain.
+            .filter(
+              (r): r is typeof r & { status: AuthoredSkillProjection['status'] } =>
+                r.status !== 'adopted',
+            )
+            .map((r) => ({
+              skillId: r.skillId,
+              description: r.description,
+              manifestYaml: r.manifestYaml,
+              bodyMd: r.bodyMd,
+              files: r.files,
+              status: r.status,
+              ...(r.scanVerdict !== null ? { reason: r.scanVerdict } : {}),
+            }));
           return { skills };
         },
         { returns: SkillsListAuthoredOutputSchema },
@@ -1185,6 +1203,85 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
             skillId: input.skillId,
           }),
         { returns: SkillsAuthoredActivateOutputSchema },
+      );
+
+      // -----------------------------------------------------------------------
+      // skills:adopt-authored (TASK-134, design card 11) — copy an agent-authored
+      // draft into the caller's OWN editable user-scoped skill, then mark the
+      // draft adopted. The user-facing "adopt-&-edit" of authored work: the user
+      // takes a copy they own (manifest + body + extra files) and then edits it
+      // in the form-first editor. Replaces the admin-only "promote" affordance.
+      //
+      // Order matters: COPY FIRST (it can throw — a draft whose frontmatter still
+      // declares a capability block fails the parse gate inside skills:upsert),
+      // and only mark the draft adopted once the copy actually landed. So a
+      // failed adopt leaves the draft exactly as it was (still pending/active),
+      // never a half-state where the draft is hidden but no copy exists.
+      //
+      // Security: the copy goes through skills:upsert scope:'user', which runs the
+      // FULL parseSkillManifest + validateBundleFiles gate on the untrusted draft
+      // content. The user-owned copy therefore can never carry self-granted reach
+      // (a cap-bearing manifest hard-fails); reach lives only on the connectors it
+      // references. `ownerUserId` is host-forced at the route — never a client
+      // field — and the store mark is status-guarded (only a user-facing
+      // active/pending draft of THIS owner+agent flips; idempotent on re-adopt).
+      // -----------------------------------------------------------------------
+      bus.registerService<SkillsAdoptAuthoredInput, SkillsAdoptAuthoredOutput>(
+        'skills:adopt-authored',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const ownerUserId = requireOwner(input.ownerUserId);
+          const { agentId, skillId } = input;
+
+          // Locate the specific draft in the owner+agent's authored namespace.
+          // `list` returns all statuses; we only adopt a user-facing one
+          // (active/pending) — a quarantined draft was never shown to the user.
+          const drafts = await authoredStore.list(ownerUserId, agentId);
+          const draft = drafts.find((d) => d.skillId === skillId);
+          if (draft === undefined) {
+            throw new PluginError({
+              code: 'not-authored',
+              plugin: PLUGIN_NAME,
+              message: `no authored draft '${skillId}' for this agent`,
+            });
+          }
+          if (draft.status !== 'active' && draft.status !== 'pending') {
+            // 'quarantined' (never user-facing) or 'adopted' (already taken).
+            throw new PluginError({
+              code: 'not-adoptable',
+              plugin: PLUGIN_NAME,
+              message: `authored draft '${skillId}' is not adoptable (status: ${draft.status})`,
+            });
+          }
+
+          // Copy through skills:upsert (same plugin, but routed via the bus so it
+          // reuses the ONE validation gate — parse + validateBundleFiles — rather
+          // than re-implementing it). `files` is the draft's full extra-file set;
+          // sending it (even `[]`) REPLACES the user copy's bundle, so the copy is
+          // a faithful snapshot of the draft.
+          const upserted = await bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+            'skills:upsert',
+            ctx,
+            {
+              manifestYaml: draft.manifestYaml,
+              bodyMd: draft.bodyMd,
+              files: draft.files,
+              scope: 'user',
+              ownerUserId,
+            },
+          );
+
+          // Only now (copy landed) flip the draft to `adopted` so it drops from
+          // the authored projection. Status-guarded + idempotent in the store.
+          const { adopted } = await authoredStore.markAdopted({
+            ownerUserId,
+            agentId,
+            skillId,
+          });
+
+          return { skillId: upserted.skillId, created: upserted.created, adopted };
+        },
+        { returns: SkillsAdoptAuthoredOutputSchema },
       );
 
       // Register admin + settings HTTP routes. Both batches are pushed into

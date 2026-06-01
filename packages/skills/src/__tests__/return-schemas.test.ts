@@ -18,8 +18,10 @@ import {
   SkillsApprovedCapsRevokeOutputSchema,
   SkillsProposeOutputSchema,
   SkillsListAuthoredOutputSchema,
+  SkillsAdoptAuthoredOutputSchema,
   type SkillsProposeOutput,
   type SkillsListAuthoredOutput,
+  type SkillsAdoptAuthoredOutput,
   type ResolvedSkill,
   type SkillDetail,
   type SkillSummary,
@@ -300,5 +302,16 @@ describe('skills return schemas', () => {
         },
       ],
     });
+  });
+
+  it('skills:adopt-authored output round-trips + strips (TASK-134)', () => {
+    const v: SkillsAdoptAuthoredOutput = { skillId: 'drafted', created: true, adopted: true };
+    expect(SkillsAdoptAuthoredOutputSchema.parse(v)).toEqual(v);
+    // A stray field is stripped (storage details never leak the wire surface).
+    const parsed = SkillsAdoptAuthoredOutputSchema.parse({
+      ...v,
+      bundle_tree_sha: 'LEAK',
+    });
+    expect(parsed).not.toHaveProperty('bundle_tree_sha');
   });
 });

@@ -22,10 +22,15 @@
  */
 import type { AuthoredStatus, AuthoredOrigin } from './authored-store.js';
 
+// The gate only ever produces a propose-time verdict — never 'adopted' (that's a
+// later user action, TASK-134). Narrow the return so it stays assignable to the
+// projection / propose-output `status` unions even though AuthoredStatus is wider.
+export type ProposeVerdict = Exclude<AuthoredStatus, 'adopted'>;
+
 export function classifyProposal(args: {
   origin: AuthoredOrigin;
   scanClean: boolean;
-}): AuthoredStatus {
+}): ProposeVerdict {
   if (!args.scanClean) return 'quarantined';
   if (args.origin === 'authored') return 'active';
   return 'pending';

@@ -929,4 +929,190 @@ describe('/settings/skills handlers', () => {
     expect(statusOf()).toBe(200);
     expect((bodyOf() as SettingsAuthoredSkillsOutput).skills).toEqual([]);
   });
+
+  // -------------------------------------------------------------------------
+  // Adopt-&-edit (TASK-134) — POST /settings/skills/authored/:agentId/:skillId/
+  // adopt copies an agent-authored draft into the caller's OWN editable
+  // user-scoped skill (manifest + body + files), then marks the draft adopted
+  // so it drops off the authored listing.
+  // -------------------------------------------------------------------------
+
+  /** Seed one authored skill WITH extra bundle files via skills:propose. */
+  async function proposeWithFiles(
+    h: TestHarness,
+    input: {
+      ownerUserId: string;
+      agentId: string;
+      manifestYaml: string;
+      bodyMd: string;
+      files: Array<{ path: string; contents: string }>;
+      origin?: 'authored' | 'imported' | 'attached';
+    },
+  ): Promise<SkillsProposeOutput> {
+    return h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      {
+        ownerUserId: input.ownerUserId,
+        agentId: input.agentId,
+        manifestYaml: input.manifestYaml,
+        bodyMd: input.bodyMd,
+        files: input.files,
+        capabilityProposal: EMPTY_CAPS,
+        origin: input.origin ?? 'authored',
+      },
+    );
+  }
+
+  it('POST adopt returns 401 when anonymous', async () => {
+    const h = await makeHarness({ authedUser: null });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+    const { res, statusOf } = mkRes();
+    await handlers.adoptAuthored(
+      mkReq({ params: { agentId: 'agt_a', skillId: 'x' } }),
+      res,
+    );
+    expect(statusOf()).toBe(401);
+  });
+
+  it('POST adopt copies the draft (manifest + body + FILES) into a user skill and marks the draft adopted', async () => {
+    // The Bug-Fix-Policy / acceptance test: the copy carries additional files AND
+    // the draft is removed from the authored listing once adopted.
+    const h = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    const seeded = await proposeWithFiles(h, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml:
+        'name: drafted\ndescription: An agent-authored draft.\nversion: 1\nconnectors:\n  - github',
+      bodyMd: 'Drafted body.\n',
+      files: [
+        { path: 'notes.md', contents: 'reference notes\n' },
+        { path: 'scripts/run.py', contents: 'print("hi")\n' },
+      ],
+    });
+    expect(seeded.status).toBe('active');
+
+    // Adopt it.
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.adoptAuthored(
+      mkReq({ params: { agentId: 'agt_a', skillId: 'drafted' } }),
+      res,
+    );
+    expect(statusOf()).toBe(200);
+    expect(bodyOf()).toMatchObject({ skillId: 'drafted', created: true, adopted: true });
+
+    // The user-scoped copy now exists with the SAME body + files.
+    const detail = await h.bus.call<
+      { skillId: string; scope: 'user'; ownerUserId: string },
+      { id: string; scope: string; ownerUserId: string; bodyMd: string; files: { path: string; contents: string }[] }
+    >('skills:get', h.ctx(), { skillId: 'drafted', scope: 'user', ownerUserId: 'alice' });
+    expect(detail.id).toBe('drafted');
+    expect(detail.scope).toBe('user');
+    expect(detail.ownerUserId).toBe('alice');
+    expect(detail.bodyMd).toContain('Drafted body.');
+    // Files round-trip faithfully (sorted by path for a stable compare).
+    const sorted = [...detail.files].sort((a, b) => a.path.localeCompare(b.path));
+    expect(sorted).toEqual([
+      { path: 'notes.md', contents: 'reference notes\n' },
+      { path: 'scripts/run.py', contents: 'print("hi")\n' },
+    ]);
+
+    // The draft is now adopted → it drops off the authored listing.
+    const { res: r2, bodyOf: b2 } = mkRes();
+    await handlers.listAuthored(mkReq({}), r2);
+    const listing = b2() as SettingsAuthoredSkillsOutput;
+    expect(listing.skills.find((s) => s.skillId === 'drafted')).toBeUndefined();
+  });
+
+  it('POST adopt is idempotent — a second adopt re-copies but reports adopted:false', async () => {
+    const h = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    await proposeWithFiles(h, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml: 'name: drafted\ndescription: A draft.\nversion: 1',
+      bodyMd: 'Body.\n',
+      files: [],
+    });
+
+    const { res: rA, bodyOf: bA } = mkRes();
+    await handlers.adoptAuthored(mkReq({ params: { agentId: 'agt_a', skillId: 'drafted' } }), rA);
+    expect((bA() as { adopted: boolean }).adopted).toBe(true);
+
+    // Second adopt: the draft is already adopted (not user-facing) → 409.
+    const { res: rB, statusOf: sB, bodyOf: bB } = mkRes();
+    await handlers.adoptAuthored(mkReq({ params: { agentId: 'agt_a', skillId: 'drafted' } }), rB);
+    expect(sB()).toBe(409);
+    expect((bB() as { code?: string }).code).toBe('not-adoptable');
+  });
+
+  it('POST adopt of an unknown draft id returns 404 (not-authored)', async () => {
+    const h = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.adoptAuthored(
+      mkReq({ params: { agentId: 'agt_a', skillId: 'no-such-draft' } }),
+      res,
+    );
+    expect(statusOf()).toBe(404);
+    expect((bodyOf() as { code?: string }).code).toBe('not-authored');
+  });
+
+  it('POST adopt of a draft on an agent the caller does NOT own returns 404 (I5 ACL)', async () => {
+    // alice authors a draft on agt_a. bob — even with agt_a appearing in his
+    // (spoofed) agent list under someone else's ownership — cannot adopt it.
+    const hAlice = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    await proposeWithFiles(hAlice, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml: 'name: drafted\ndescription: A draft.\nversion: 1',
+      bodyMd: 'Body.\n',
+      files: [],
+    });
+
+    // bob's session: agt_a is presented but owned by alice, not bob.
+    const hBob = await makeHarness({
+      authedUser: { id: 'bob', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    const handlersBob = createSettingsSkillsHandlers({ bus: hBob.bus });
+    const { res, statusOf } = mkRes();
+    await handlersBob.adoptAuthored(
+      mkReq({ params: { agentId: 'agt_a', skillId: 'drafted' } }),
+      res,
+    );
+    expect(statusOf()).toBe(404);
+
+    // bob got no user-scoped copy.
+    const { res: rGet, statusOf: sGet } = mkRes();
+    await handlersBob.get(mkReq({ params: { id: 'drafted' } }), rGet);
+    expect(sGet()).toBe(404);
+  });
+
+  it('POST adopt returns 404 when @ax/agents is absent (no ownable agent)', async () => {
+    const h = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
+    expect(h.bus.hasService('agents:list-for-user')).toBe(false);
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+    const { res, statusOf } = mkRes();
+    await handlers.adoptAuthored(
+      mkReq({ params: { agentId: 'agt_a', skillId: 'drafted' } }),
+      res,
+    );
+    expect(statusOf()).toBe(404);
+  });
 });

@@ -157,6 +157,7 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'skills:propose',
         'skills:list-authored',
         'skills:authored-activate',
+        'skills:adopt-authored',
       ],
       calls: [
         'database:get-instance',
