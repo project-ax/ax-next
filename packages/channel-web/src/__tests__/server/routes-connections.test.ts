@@ -258,13 +258,14 @@ describe('channel-web Connections BFF', () => {
   });
 
   describe('GET /api/chat/account-usage (TASK-54)', () => {
-    it('derives service → referencing skill ids from skills:list', async () => {
+    it('TASK-100: reports no skill-derived account usage (a skill declares no credential slots)', async () => {
       const h = makeConnectionsHandlers({ bus, initCtx });
       const { res, captured } = mkRes();
       await h.accountUsage(mkReq({}), res);
       expect(captured.statusCode).toBe(200);
-      // Two skills declare account: linear; sorted, deduped per service.
-      expect(captured.body).toEqual({ usage: { linear: ['linear', 'linear-search'] } });
+      // A skill declares no credentials, so it never references an account:<svc>
+      // vault entry — per-account usage now belongs to the connector surface.
+      expect(captured.body).toEqual({ usage: {} });
     });
 
     it('401s an unauthenticated caller', async () => {

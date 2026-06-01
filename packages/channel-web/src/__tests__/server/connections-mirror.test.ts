@@ -27,16 +27,12 @@ import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 // bar.
 // ---------------------------------------------------------------------------
 
+// TASK-100 — a skill carries no capability block; it references a connector.
 const SAMPLE_MANIFEST = `name: github
-description: Access the GitHub REST API with a personal access token.
+description: Know-how for driving the GitHub connector.
 version: 1
-capabilities:
-  allowedHosts:
-    - api.github.com
-  credentials:
-    - slot: GITHUB_TOKEN
-      kind: api-key
-      description: GitHub PAT.
+connectors:
+  - github
 `;
 const SAMPLE_BODY = '# GitHub\n\nGitHub skill body.\n';
 
@@ -152,7 +148,7 @@ describe('Connections mirror property (TASK-42)', () => {
       userId: 'u1',
       agentId: 'a1',
       skillId: 'github',
-      credentialBindings: { GITHUB_TOKEN: 'ref1' },
+      credentialBindings: {},
     });
 
     const handlers = makeConnectionsHandlers({ bus: h.bus, initCtx });

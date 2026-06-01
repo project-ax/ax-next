@@ -60,7 +60,7 @@ const SKILL_A: SkillSummary = {
   description: 'Personal GitHub integration.',
   version: 1,
   scope: 'user',
-  connectors: [],
+  connectors: ['github'],
   defaultAttached: false,
   updatedAt: '2026-05-20T10:00:00.000Z',
 };
@@ -140,8 +140,8 @@ describe('UserSkillsPanel', () => {
 
     expect(screen.getByText('Personal GitHub integration.')).toBeTruthy();
     expect(screen.getByText('Personal helper skill.')).toBeTruthy();
-    expect(screen.getByText('api.github.com')).toBeTruthy();
-    expect(screen.getByText('GITHUB_TOKEN')).toBeTruthy();
+    // TASK-100 — the table shows the skill's connector references (not hosts/slots).
+    expect(screen.getByText('github')).toBeTruthy();
   });
 
   it('shows loading state before promise resolves', () => {

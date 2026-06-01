@@ -43,7 +43,7 @@ const SKILL_A: SkillSummary = {
   description: 'Interacts with the GitHub REST API.',
   version: 1,
   scope: 'global',
-  connectors: [],
+  connectors: ['github'],
   defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
 };
@@ -82,8 +82,8 @@ describe('CatalogTab', () => {
 
     expect(screen.getByText('Interacts with the GitHub REST API.')).toBeTruthy();
     expect(screen.getByText('Posts messages to Slack channels.')).toBeTruthy();
-    expect(screen.getByText('api.github.com')).toBeTruthy();
-    expect(screen.getByText('GITHUB_TOKEN')).toBeTruthy();
+    // TASK-100 — the table shows the skill's connector references (not hosts/slots).
+    expect(screen.getByText('github')).toBeTruthy();
   });
 
   it('shows empty state when no skills are installed', async () => {
@@ -239,14 +239,16 @@ describe('CatalogTab', () => {
     await waitFor(() => expect(mockSetDefault).toHaveBeenCalledWith('slack-notify', true));
   });
 
-  it('disables the default toggle for a credential-bearing skill', async () => {
-    // SKILL_A declares GITHUB_TOKEN → cannot be a default.
-    mockListSkills.mockResolvedValueOnce([{ ...SKILL_A, tier: 'bounded' as const }]);
+  it('TASK-100: the default toggle is always enabled (a skill declares no credentials)', async () => {
+    // A skill is always instruction-only now, so the default-attach toggle is
+    // never disabled (the old credential-bearing-skill lockout is gone).
+    mockListSkills.mockResolvedValueOnce([{ ...SKILL_A, tier: 'inert' as const }]);
     render(<CatalogTab />);
     const toggle = (await screen.findByRole('checkbox', {
       name: /default for github-api/i,
     })) as HTMLButtonElement;
-    expect(toggle.disabled || toggle.getAttribute('data-disabled') !== null).toBeTruthy();
+    expect(toggle.disabled).toBeFalsy();
+    expect(toggle.getAttribute('data-disabled')).toBeNull();
   });
 
   describe('source-url update flow', () => {
