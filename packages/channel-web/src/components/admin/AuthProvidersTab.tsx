@@ -9,6 +9,12 @@
 import { useEffect, useState } from 'react';
 import { Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { PaneStatus } from '../PaneStatus';
 import {
   listAuthProviders,
@@ -31,6 +37,11 @@ export function AuthProvidersTab() {
   const [loadError, setLoadError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
+  // The provider awaiting delete confirmation (null = no dialog). Styled-confirm
+  // pattern (mirrors UserSkillsPanelBody) — no OS `window.confirm`.
+  const [pendingDelete, setPendingDelete] = useState<AuthProviderEntry | null>(
+    null,
+  );
 
   const fetchProviders = async () => {
     setLoading(true);
@@ -59,14 +70,16 @@ export function AuthProvidersTab() {
     }
   };
 
-  const handleDelete = async (p: AuthProviderEntry) => {
-    if (!window.confirm(`Remove the ${KIND_LABEL[p.kind]} provider?`)) return;
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
     setActionError(null);
     try {
-      await deleteAuthProvider(p.kind);
+      await deleteAuthProvider(pendingDelete.kind);
       await fetchProviders();
+      setPendingDelete(null);
     } catch (err) {
       setActionError(err instanceof Error ? err.message : String(err));
+      setPendingDelete(null);
     }
   };
 
@@ -146,7 +159,7 @@ export function AuthProvidersTab() {
               variant="ghost"
               size="icon"
               aria-label={`Remove ${KIND_LABEL[p.kind]}`}
-              onClick={() => void handleDelete(p)}
+              onClick={() => setPendingDelete(p)}
             >
               <Trash2 className="w-3.5 h-3.5" strokeWidth={1.6} />
             </Button>
@@ -170,6 +183,37 @@ export function AuthProvidersTab() {
             </Button>
           </div>
         )
+      )}
+
+      {/* Delete confirmation dialog (styled — no OS confirm). */}
+      {pendingDelete !== null && (
+        <Dialog
+          open={true}
+          onOpenChange={(v) => {
+            if (!v) setPendingDelete(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Remove provider?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              Remove the{' '}
+              <span className="font-medium text-foreground">
+                {KIND_LABEL[pendingDelete.kind]}
+              </span>{' '}
+              identity provider? Users will no longer be able to sign in with it.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setPendingDelete(null)}>
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={() => void confirmDelete()}>
+                Remove
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
     </div>
   );

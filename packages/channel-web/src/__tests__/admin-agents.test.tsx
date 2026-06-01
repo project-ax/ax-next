@@ -33,7 +33,13 @@
  * (regression for a 403 caused by the missing X-Requested-With).
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { AgentForm } from '../components/admin/AgentForm';
 import { AdminShell } from '../components/admin/AdminShell';
 import { UserProvider } from '../lib/user-context';
@@ -294,10 +300,16 @@ describe('AdminSettings — agents tab', () => {
     fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
     fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
 
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmSpy = vi.spyOn(window, 'confirm');
     render(<AgentForm />);
     await waitFor(() => screen.getByText('probe'));
     fireEvent.click(screen.getByText(/^delete$/i));
+
+    // A styled dialog gates the delete — no OS confirm.
+    const dialog = await screen.findByRole('dialog');
+    expect(confirmSpy).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Delete$/i }));
+
     await waitFor(() => {
       const del = fetchMock.mock.calls.find(
         ([url, opts]) =>

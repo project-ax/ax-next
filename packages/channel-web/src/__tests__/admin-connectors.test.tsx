@@ -20,7 +20,13 @@
  *   6. Delete sends DELETE with the CSRF header.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import {
+  render,
+  screen,
+  fireEvent,
+  waitFor,
+  within,
+} from '@testing-library/react';
 import { ConnectorRegistry } from '../components/admin/ConnectorRegistry';
 
 const fetchMock = vi.fn();
@@ -276,7 +282,7 @@ describe('Admin — Connectors registry', () => {
     );
   });
 
-  it('delete sends DELETE with X-Requested-With: ax-admin', async () => {
+  it('delete confirms in a styled dialog, then sends DELETE with X-Requested-With: ax-admin', async () => {
     let deleted: RequestInit | null = null;
     fetchMock.mockImplementation((url: RequestInfo | URL, opts?: RequestInit) => {
       const u = String(url);
@@ -286,11 +292,17 @@ describe('Admin — Connectors registry', () => {
       }
       return Promise.resolve(jsonOk({ connectors: [sampleConnector()] }));
     });
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const confirmSpy = vi.spyOn(window, 'confirm');
 
     render(<ConnectorRegistry />);
     await waitFor(() => screen.getByText('Google Drive'));
     fireEvent.click(screen.getByText(/^delete$/i));
+
+    // A styled dialog gates the delete — no OS confirm.
+    const dialog = await screen.findByRole('dialog');
+    expect(confirmSpy).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole('button', { name: /^Delete$/i }));
+
     await waitFor(() => expect(deleted).toBeTruthy());
     const headers = deleted!.headers as Record<string, string>;
     expect(headers['x-requested-with']).toBe('ax-admin');

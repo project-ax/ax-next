@@ -43,6 +43,12 @@ import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { RoleCard } from './RoleCard';
 
 const MODELS = [
@@ -101,6 +107,9 @@ export function AgentForm() {
   const [form, setForm] = useState<FormState>(() => emptyForm());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The agent awaiting delete confirmation (null = no dialog). Styled-confirm
+  // pattern (mirrors UserSkillsPanelBody) — no OS `window.confirm`.
+  const [pendingDelete, setPendingDelete] = useState<AdminAgent | null>(null);
 
   const refresh = async () => {
     try {
@@ -219,15 +228,15 @@ export function AgentForm() {
     }
   };
 
-  const remove = async (a: AdminAgent) => {
-    // `confirm()` is fine for the mock — the design has us using inline
-    // confirm rows like the session list, but that's deferred polish.
-    if (!confirm(`Delete agent "${a.displayName}"?`)) return;
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
     try {
-      await deleteAgent(a.id);
+      await deleteAgent(pendingDelete.id);
       await refresh();
+      setPendingDelete(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setPendingDelete(null);
     }
   };
 
@@ -280,7 +289,7 @@ export function AgentForm() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => void remove(a)}
+                    onClick={() => setPendingDelete(a)}
                   >
                     delete
                   </Button>
@@ -288,6 +297,40 @@ export function AgentForm() {
               </RoleCard>
             ))}
           </div>
+        )}
+
+        {/* Delete confirmation dialog (styled — no OS confirm). */}
+        {pendingDelete !== null && (
+          <Dialog
+            open={true}
+            onOpenChange={(v) => {
+              if (!v) setPendingDelete(null);
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Delete agent?</DialogTitle>
+              </DialogHeader>
+              <p className="text-sm text-muted-foreground">
+                Delete{' '}
+                <span className="font-medium text-foreground">
+                  {pendingDelete.displayName}
+                </span>
+                ? This cannot be undone.
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setPendingDelete(null)}
+                >
+                  Cancel
+                </Button>
+                <Button variant="destructive" onClick={() => void confirmDelete()}>
+                  Delete
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
         )}
       </div>
     );

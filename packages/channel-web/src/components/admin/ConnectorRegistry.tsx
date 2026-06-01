@@ -41,6 +41,12 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
@@ -240,6 +246,11 @@ export function ConnectorRegistry() {
   // Per-row Test probe state — keyed by connector id so rows probe
   // independently without one row's badge clobbering another's (TASK-108).
   const [testState, setTestState] = useState<Record<string, TestState>>({});
+  // The connector awaiting delete confirmation (null = no dialog). Mirrors the
+  // styled-confirm pattern in UserSkillsPanelBody — no OS `window.confirm`.
+  const [pendingDelete, setPendingDelete] = useState<ConnectorSummary | null>(
+    null,
+  );
 
   const refresh = async () => {
     try {
@@ -325,13 +336,15 @@ export function ConnectorRegistry() {
     }
   };
 
-  const remove = async (c: ConnectorSummary) => {
-    if (!confirm(`Delete connector "${c.name}"?`)) return;
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
     try {
-      await deleteConnector(c.id);
+      await deleteConnector(pendingDelete.id);
       await refresh();
+      setPendingDelete(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+      setPendingDelete(null);
     }
   };
 
@@ -411,7 +424,7 @@ export function ConnectorRegistry() {
                   <Button
                     variant="ghost"
                     size="sm"
-                    onClick={() => void remove(c)}
+                    onClick={() => setPendingDelete(c)}
                   >
                     delete
                   </Button>
@@ -419,6 +432,40 @@ export function ConnectorRegistry() {
               </RoleCard>
             ))}
           </div>
+        )}
+
+        {/* Delete confirmation dialog (styled — no OS confirm). */}
+        {pendingDelete !== null && (
+          <Dialog
+            open={true}
+            onOpenChange={(v) => {
+              if (!v) setPendingDelete(null);
+            }}
+          >
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>Delete connector?</DialogTitle>
+              </DialogHeader>
+              <p className="text-sm text-muted-foreground">
+                Delete{' '}
+                <span className="font-medium text-foreground">
+                  {pendingDelete.name}
+                </span>
+                ? This cannot be undone. Agents that rely on it will lose access.
+              </p>
+              <div className="flex justify-end gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => setPendingDelete(null)}
+                >
+                  Cancel
+                </Button>
+                <Button variant="destructive" onClick={() => void confirmDelete()}>
+                  Delete
+                </Button>
+              </div>
+            </DialogContent>
+          </Dialog>
         )}
       </div>
     );
