@@ -132,8 +132,45 @@ describe('UserSkillsPanelBody', () => {
 
     expect(screen.getByText('Personal GitHub integration.')).toBeTruthy();
     expect(screen.getByText('Personal helper skill.')).toBeTruthy();
-    // TASK-100 — the table shows the skill's connector references (not hosts/slots).
-    expect(screen.getByText('github')).toBeTruthy();
+  });
+
+  // TASK-118 — the friendly description LEADS the row (first cell); the raw
+  // font-mono id is demoted to a muted subline within that same primary cell,
+  // not the lead column.
+  it('leads each row with the description; demotes the raw id to a subline', async () => {
+    mockListUserSkills.mockResolvedValue([SKILL_A]);
+    render(<UserSkillsPanelBody active />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Personal GitHub integration.')).toBeTruthy();
+    });
+
+    const row = screen.getByText('Personal GitHub integration.').closest('tr')!;
+    const firstCell = row.querySelector('td')!;
+    // The lead (first) cell carries the friendly description AND the id subline.
+    expect(firstCell.textContent).toContain('Personal GitHub integration.');
+    expect(firstCell.textContent).toContain('my-github');
+    // The id renders font-mono (the demoted-subline marker), the description does not.
+    const idEl = screen.getByText('my-github');
+    expect(idEl.className).toMatch(/font-mono/);
+  });
+
+  // TASK-118 — raw connector ids are demoted behind a tooltip/disclosure: the
+  // cell shows a count summary, and the raw id is reachable via the trigger's
+  // title attribute (accessible/testable fallback), not as a lead badge.
+  it('demotes raw connector ids behind a count + tooltip title', async () => {
+    mockListUserSkills.mockResolvedValue([SKILL_A]); // connectors: ['github']
+    render(<UserSkillsPanelBody active />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Personal GitHub integration.')).toBeTruthy();
+    });
+
+    // A count summary stands in for the bare id-badge.
+    expect(screen.getByText('1 connector')).toBeTruthy();
+    // The raw id is still reachable, behind the disclosure's title.
+    const trigger = screen.getByText('1 connector');
+    expect(trigger.closest('[title]')?.getAttribute('title')).toContain('github');
   });
 
   it('shows loading state before promise resolves', () => {

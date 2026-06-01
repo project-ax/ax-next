@@ -82,8 +82,38 @@ describe('CatalogTab', () => {
 
     expect(screen.getByText('Interacts with the GitHub REST API.')).toBeTruthy();
     expect(screen.getByText('Posts messages to Slack channels.')).toBeTruthy();
-    // TASK-100 — the table shows the skill's connector references (not hosts/slots).
-    expect(screen.getByText('github')).toBeTruthy();
+  });
+
+  // TASK-118 — the friendly description LEADS the row (first cell); the raw
+  // font-mono id is demoted to a muted subline within that same primary cell.
+  it('leads each row with the description; demotes the raw id to a subline', async () => {
+    mockListSkills.mockResolvedValueOnce([SKILL_A]);
+    render(<CatalogTab />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Interacts with the GitHub REST API.')).toBeTruthy();
+    });
+
+    const row = screen.getByText('Interacts with the GitHub REST API.').closest('tr')!;
+    const firstCell = row.querySelector('td')!;
+    expect(firstCell.textContent).toContain('Interacts with the GitHub REST API.');
+    expect(firstCell.textContent).toContain('github-api');
+    // The id renders font-mono (the demoted-subline marker).
+    expect(screen.getByText('github-api').className).toMatch(/font-mono/);
+  });
+
+  // TASK-118 — raw connector ids demoted behind a count + tooltip title.
+  it('demotes raw connector ids behind a count + tooltip title', async () => {
+    mockListSkills.mockResolvedValueOnce([SKILL_A]); // connectors: ['github']
+    render(<CatalogTab />);
+
+    await waitFor(() => {
+      expect(screen.getByText('Interacts with the GitHub REST API.')).toBeTruthy();
+    });
+
+    expect(screen.getByText('1 connector')).toBeTruthy();
+    const trigger = screen.getByText('1 connector');
+    expect(trigger.closest('[title]')?.getAttribute('title')).toContain('github');
   });
 
   it('shows empty state when no skills are installed', async () => {

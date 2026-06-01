@@ -43,7 +43,9 @@ import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Separator } from '@/components/ui/separator';
+import { TooltipProvider } from '@/components/ui/tooltip';
 import { SourceBadge, skillSource } from '@/components/SourceBadge';
+import { ConnectorRefsCell } from '@/components/skills/ConnectorRefsCell';
 import {
   listUserSkills,
   listAuthoredSkills,
@@ -219,7 +221,7 @@ export function UserSkillsPanelBody({ active }: { active: boolean }) {
   }
 
   return (
-    <>
+    <TooltipProvider>
       <div className="flex flex-col gap-4 mt-2 max-h-[70vh] overflow-y-auto">
         <div className="flex items-center justify-between">
           <p className="text-sm text-muted-foreground">
@@ -267,7 +269,6 @@ export function UserSkillsPanelBody({ active }: { active: boolean }) {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>ID</TableHead>
                 <TableHead>Description</TableHead>
                 <TableHead>Connectors</TableHead>
                 <TableHead>Updated</TableHead>
@@ -277,30 +278,24 @@ export function UserSkillsPanelBody({ active }: { active: boolean }) {
             <TableBody>
               {skills.map((s) => (
                 <TableRow key={s.id}>
-                  <TableCell className="font-mono text-xs">
-                    {s.id}
-                    <SourceBadge source={skillSource(s.scope)} />
-                    {s.defaultAttached && (
-                      <Badge variant="outline" className="ml-2 text-[10px]">
-                        default
-                      </Badge>
-                    )}
+                  {/* Lead with the friendly description; demote the raw
+                      font-mono id to a muted subline (TASK-118). */}
+                  <TableCell className="text-sm">
+                    <div className="flex flex-col gap-0.5">
+                      <span>{s.description}</span>
+                      <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <span className="font-mono">{s.id}</span>
+                        <SourceBadge source={skillSource(s.scope)} />
+                        {s.defaultAttached && (
+                          <Badge variant="outline" className="text-[10px]">
+                            default
+                          </Badge>
+                        )}
+                      </span>
+                    </div>
                   </TableCell>
-                  <TableCell className="text-sm">{s.description}</TableCell>
                   <TableCell>
-                    {s.connectors.length === 0 ? (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    ) : (
-                      s.connectors.map((c) => (
-                        <Badge
-                          key={c}
-                          variant="secondary"
-                          className="text-xs mr-1"
-                        >
-                          {c}
-                        </Badge>
-                      ))
-                    )}
+                    <ConnectorRefsCell connectors={s.connectors} />
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {new Date(s.updatedAt).toLocaleString()}
@@ -369,9 +364,8 @@ export function UserSkillsPanelBody({ active }: { active: boolean }) {
             <Table>
               <TableHeader>
                 <TableRow>
-                  <TableHead>ID</TableHead>
-                  <TableHead>Agent</TableHead>
                   <TableHead>Description</TableHead>
+                  <TableHead>Agent</TableHead>
                   <TableHead>Status</TableHead>
                   <TableHead className="w-[110px]"></TableHead>
                 </TableRow>
@@ -383,13 +377,19 @@ export function UserSkillsPanelBody({ active }: { active: boolean }) {
                     s.pendingCapabilities !== undefined;
                   return (
                     <TableRow key={`${s.agentId}/${s.skillId}`}>
-                      <TableCell className="font-mono text-xs">
-                        {s.skillId}
+                      {/* Lead with the friendly description; demote the raw
+                          font-mono skill id to a muted subline (TASK-118). */}
+                      <TableCell className="text-sm">
+                        <div className="flex flex-col gap-0.5">
+                          <span>{s.description}</span>
+                          <span className="font-mono text-xs text-muted-foreground">
+                            {s.skillId}
+                          </span>
+                        </div>
                       </TableCell>
                       <TableCell className="font-mono text-xs text-muted-foreground">
                         {s.agentId}
                       </TableCell>
-                      <TableCell className="text-sm">{s.description}</TableCell>
                       <TableCell>
                         <Badge
                           variant={
@@ -646,6 +646,6 @@ export function UserSkillsPanelBody({ active }: { active: boolean }) {
           </DialogContent>
         </Dialog>
       )}
-    </>
+    </TooltipProvider>
   );
 }
