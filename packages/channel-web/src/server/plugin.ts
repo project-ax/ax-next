@@ -127,10 +127,13 @@ export function createChannelWebServerPlugin(
           // TASK-44 — when the user clicks "Always for this agent" on the
           // reactive-wall card, the allow-host route persists a durable
           // per-(user, agent) grant via host-grants:grant (after the live
-          // proxy:add-host widen).
+          // proxy:add-host widen). TASK-131 — the Settings "Allowed sites"
+          // section's proactive "Add a site" also grants through this hook
+          // (POST /api/chat/allowed-sites/:agentId); without host-grants that
+          // add returns 503 (the grant cannot persist — no silent success).
           hook: 'host-grants:grant',
           degradation:
-            'the reactive-wall "Always for this agent" button persists nothing across sessions; the live proxy:add-host grant still applies for the current session',
+            'the reactive-wall "Always for this agent" button persists nothing across sessions (the live proxy:add-host grant still applies for the current session); the Settings "Add a site" control returns 503',
         },
         {
           // TASK-54 — the Settings "Allowed sites" panel reads the durable
@@ -347,6 +350,14 @@ export function createChannelWebServerPlugin(
           method: 'GET' as const,
           path: '/api/chat/allowed-sites/:agentId',
           handler: connections.listAllowedSites,
+        },
+        // TASK-131 — proactive "Add a site" (host-grants:grant). Ships with its
+        // consumer (the ConnectorsTab Allowed-sites section) in the same PR
+        // (I3 — no half-wired surface).
+        {
+          method: 'POST' as const,
+          path: '/api/chat/allowed-sites/:agentId',
+          handler: connections.addAllowedSite,
         },
         {
           method: 'DELETE' as const,

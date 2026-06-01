@@ -107,6 +107,51 @@ export async function getAllowedSites(agentId: string): Promise<AllowedSitesResp
   return (await res.json()) as AllowedSitesResponse;
 }
 
+// TASK-131 — proactive "Add a site". POSTs a host to the agent's durable
+// "always allow" egress allowlist (host-grants:grant). The browser-supplied
+// host is UNTRUSTED — the server (@ax/host-grants store) is the authoritative
+// validator; this wrapper just relays the host and surfaces the server's
+// rejection so the UI can show it inline.
+
+/** Friendly message per known route-error code (the rest fall back to status). */
+function addSiteErrorMessage(status: number, code: unknown): string {
+  if (status === 400 && code === 'invalid-host') {
+    return 'That doesn’t look like a valid hostname (no http://, ports, or wildcards).';
+  }
+  if (status === 400) return 'Enter a valid hostname.';
+  if (status === 409) return 'You’ve hit the limit of allowed sites for this agent.';
+  if (status === 503) return 'Allowed sites aren’t available in this deployment.';
+  return `Couldn’t add the site (${status}).`;
+}
+
+/**
+ * Add a durable host grant (the Settings twin of the reactive wall's "Always
+ * for this agent"). On a non-2xx the thrown Error carries a friendly,
+ * user-facing message derived from the server's error code. Returns whether a
+ * new grant row was created (false = already allowed; idempotent).
+ */
+export async function addAllowedSite(
+  agentId: string,
+  host: string,
+): Promise<{ created: boolean }> {
+  const res = await fetch(`/api/chat/allowed-sites/${encodeURIComponent(agentId)}`, {
+    method: 'POST',
+    headers: writeHeaders,
+    credentials: 'include',
+    body: JSON.stringify({ host }),
+  });
+  if (!res.ok) {
+    let code: unknown;
+    try {
+      code = ((await res.json()) as { error?: unknown }).error;
+    } catch {
+      // Non-JSON body → fall back to the status-only message.
+    }
+    throw new Error(addSiteErrorMessage(res.status, code));
+  }
+  return (await res.json()) as { created: boolean };
+}
+
 /**
  * Revoke a durable host grant. The server removes the persisted grant so it is
  * not re-loaded into the next session's allowlist (the mirror of the in-chat

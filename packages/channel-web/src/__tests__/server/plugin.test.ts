@@ -456,7 +456,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'host-grants:grant',
           degradation:
-            'the reactive-wall "Always for this agent" button persists nothing across sessions; the live proxy:add-host grant still applies for the current session',
+            'the reactive-wall "Always for this agent" button persists nothing across sessions (the live proxy:add-host grant still applies for the current session); the Settings "Add a site" control returns 503',
         },
         {
           hook: 'host-grants:list',
@@ -505,6 +505,32 @@ describe('@ax/channel-web server plugin (integration)', () => {
       harness = booted.harness;
       const r = await fetch(
         `http://127.0.0.1:${booted.port}/api/chat/allowed-sites/agt_test`,
+      );
+      expect(r.status).toBe(401);
+    });
+
+    it('declares the host-grants grant hook in manifest.optionalCalls (TASK-131)', () => {
+      const plugin = createChannelWebServerPlugin();
+      const hooks = (plugin.manifest.optionalCalls ?? []).map((o) => o.hook);
+      expect(hooks).toContain('host-grants:grant');
+    });
+
+    it('registers POST /api/chat/allowed-sites/:agentId at boot (401, not 404) (TASK-131)', async () => {
+      const booted = await boot({ user: null });
+      harness = booted.harness;
+      // user=null → auth throws → 401 (a 404 would mean the route is missing).
+      // The X-Requested-With header passes the CSRF subscriber so the request
+      // reaches the route handler (otherwise it'd short-circuit to 403 first).
+      const r = await fetch(
+        `http://127.0.0.1:${booted.port}/api/chat/allowed-sites/agt_test`,
+        {
+          method: 'POST',
+          headers: {
+            'content-type': 'application/json',
+            'x-requested-with': 'ax-admin',
+          },
+          body: JSON.stringify({ host: 'example.com' }),
+        },
       );
       expect(r.status).toBe(401);
     });

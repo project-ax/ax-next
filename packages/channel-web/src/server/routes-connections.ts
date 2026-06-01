@@ -81,6 +81,20 @@ interface HostGrantsRevokeOutput {
   revoked: boolean;
 }
 
+// TASK-131 — proactive "Add a site". The durable grant write that mirrors the
+// reactive wall's "Always for this agent" but initiated from Settings, not a
+// mid-task wall. host-grants:grant is host-internal (the untrusted runner can
+// never widen its own persistent egress — same posture as proxy:add-host); this
+// authenticated, CSRF-gated route is its only Settings caller.
+interface HostGrantsGrantInput {
+  ownerUserId: string;
+  agentId: string;
+  host: string;
+}
+interface HostGrantsGrantOutput {
+  created: boolean;
+}
+
 interface ListUserAttachmentsInput {
   userId: string;
   agentId: string;
@@ -383,6 +397,84 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
     // persistent egress — same reasoning as proxy:add-host); this CSRF-gated
     // route is the only settings caller. Conditionally called + hasService-gated:
     // a preset without @ax/host-grants degrades to empty / idempotent-204.
+
+    /**
+     * POST /api/chat/allowed-sites/:agentId  body: { host }
+     *
+     * Proactive "Add a site" (TASK-131): durably grant a host to the agent's
+     * "always allow" egress allowlist — the Settings-initiated twin of the
+     * reactive wall's "Always for this agent" (TASK-44). The persisted grant
+     * loads into a FUTURE session's allowlist at open; it never widens a LIVE
+     * session out of band (mirror property, design P6).
+     *
+     * Security (invariant #5; the one widening surface here): identity is the
+     * AUTHENTICATED user (auth:require-user → 401); the agent ACL is enforced
+     * (agents:resolve → 404, no existence leak); ownerUserId is SERVER-FORCED
+     * from auth — never the body (no cross-user grant / IDOR). The browser-
+     * supplied host is UNTRUSTED — the @ax/host-grants store is the authoritative
+     * validator (assertValidHost: exact-match hostname only, no wildcards/ports/
+     * schemes) and cap (256/agent); a client field is convenience, never the gate.
+     * Store PluginErrors map to honest statuses (invalid-host → 400, grant-limit
+     * → 409). Unlike list/revoke (which degrade to empty / idempotent-204),
+     * a grant that can't persist must NOT report success — without @ax/host-grants
+     * this returns 503 (never silently a no-op).
+     */
+    async addAllowedSite(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      // ACL: a not-accessible agent → 404 (no cross-user grant, no leak).
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      let host: string;
+      try {
+        const raw =
+          req.body.length === 0
+            ? {}
+            : (JSON.parse(req.body.toString('utf8')) as unknown);
+        const candidate = (raw as { host?: unknown }).host;
+        if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+          res.status(400).json({ error: 'missing-host' });
+          return;
+        }
+        host = candidate.trim();
+      } catch {
+        res.status(400).json({ error: 'invalid-body' });
+        return;
+      }
+
+      // The grant MUST persist — without @ax/host-grants the add cannot succeed.
+      // 503 (not a silent success) so the UI surfaces an honest failure.
+      if (!bus.hasService('host-grants:grant')) {
+        res.status(503).json({ error: 'host-grants-unavailable' });
+        return;
+      }
+      try {
+        // ownerUserId SERVER-FORCED from auth — never from the request body.
+        // The store re-validates the host (defense in depth) + enforces the cap.
+        const out = await bus.call<HostGrantsGrantInput, HostGrantsGrantOutput>(
+          'host-grants:grant',
+          initCtx,
+          { ownerUserId: userId, agentId, host },
+        );
+        res.status(201).json({ created: out.created });
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'invalid-host') {
+          res.status(400).json({ error: 'invalid-host' });
+          return;
+        }
+        if (err instanceof PluginError && err.code === 'grant-limit') {
+          res.status(409).json({ error: 'grant-limit' });
+          return;
+        }
+        throw err;
+      }
+    },
 
     /** GET /api/chat/allowed-sites/:agentId */
     async listAllowedSites(req: RouteRequest, res: RouteResponse): Promise<void> {
