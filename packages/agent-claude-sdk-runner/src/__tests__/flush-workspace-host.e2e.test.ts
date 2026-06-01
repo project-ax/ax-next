@@ -33,7 +33,7 @@ interface GitResult {
   stderr: string;
 }
 
-function git(args: readonly string[], cwd?: string): Promise<GitResult> {
+function gitOnce(args: readonly string[], cwd?: string): Promise<GitResult> {
   return new Promise((resolve, reject) => {
     const child = spawn('git', [...args], { cwd });
     let stdout = '';
@@ -43,6 +43,84 @@ function git(args: readonly string[], cwd?: string): Promise<GitResult> {
     child.once('error', reject);
     child.once('close', (code) => resolve({ code, stdout, stderr }));
   });
+}
+
+// ---------------------------------------------------------------------------
+// TASK-137 — de-flake the BUG-W2 resync assertion.
+//
+// This file's helper mock (`makeHostClient`) runs REAL git subprocesses INSIDE
+// its IPC handlers (commit-notify → rev-parse + fetch; export-baseline-bundle →
+// bundle create), and the assertions run git too (cat-file -e). Under the full
+// push-to-main suite's multi-package + testcontainer starvation, a single git
+// fork can transiently fail — spawn EAGAIN ("Resource temporarily unavailable"
+// / "cannot fork"), or a starved ref/index lock ("Unable to create
+// '.../index.lock'" / "cannot lock ref"). Production `commitNotifyWithResync`
+// then CORRECTLY degrades that one hiccup to `kept`/`rolled-back`, and the test's
+// `expect(outcome).toBe('accepted')` reds — an assertion flake, not a timeout.
+//
+// The git LOGIC is deterministic; only the subprocess scheduling under
+// starvation is not. So we make the TEST's git invocations settle: retry ONLY
+// genuine transient INFRASTRUCTURE failures to completion, never a legitimate
+// non-zero exit a caller interprets via `.code` (e.g. `cat-file -e` → 1 means
+// "absent"; `diff --cached --quiet` → 1 means "dirty"). A real result is
+// returned on the first non-transient close.
+// ---------------------------------------------------------------------------
+
+const GIT_RETRY_ATTEMPTS = 5;
+const GIT_RETRY_BACKOFF_MS = 10;
+
+// Transient infrastructure failure signatures (NOT a meaningful `.code`):
+// fork/spawn exhaustion and ref/index lock contention under load. A non-zero
+// exit whose stderr matches one of these is the starved-infra class we retry.
+const TRANSIENT_GIT_STDERR =
+  /resource temporarily unavailable|cannot fork|unable to fork|unable to create '[^']*\.lock'|cannot lock ref|index\.lock|file exists.*\.lock/i;
+
+function isTransientSpawnError(err: unknown): boolean {
+  const code = (err as NodeJS.ErrnoException)?.code;
+  // EAGAIN: fork()/posix_spawn ran out of process slots under starvation.
+  // ENOMEM: out of memory mid-spawn. Both are retryable infra hiccups, not a
+  // wrong git invocation.
+  return code === 'EAGAIN' || code === 'ENOMEM';
+}
+
+type GitRunner = (args: readonly string[], cwd?: string) => Promise<GitResult>;
+
+/**
+ * Bounded retry around a single git invocation. The public `git` (below) pins
+ * `gitOnce` as the runner; the injectable `runner` param exists so the
+ * regression test can feed a controlled transient-then-success sequence and
+ * prove the seam deterministically (no flaky real-git lock race).
+ */
+async function gitWithRetry(
+  runner: GitRunner,
+  args: readonly string[],
+  cwd?: string,
+): Promise<GitResult> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < GIT_RETRY_ATTEMPTS; attempt++) {
+    try {
+      const r = await runner(args, cwd);
+      // A clean exit, or a non-zero exit that is NOT a transient-infra
+      // signature, is an authoritative result — return it as-is so callers
+      // keep interpreting `.code` (e.g. cat-file -e absent → 1).
+      if (r.code === 0 || !TRANSIENT_GIT_STDERR.test(r.stderr)) return r;
+      lastErr = new Error(`transient git failure (code=${r.code}): ${r.stderr}`);
+    } catch (err) {
+      // A spawn 'error' (fork failed). Retry only the transient-infra class;
+      // a genuinely broken invocation (e.g. ENOENT for git) rethrows below.
+      if (!isTransientSpawnError(err)) throw err;
+      lastErr = err;
+    }
+    // Settle: brief backoff, then re-attempt the same git op to completion.
+    await new Promise((res) => setTimeout(res, GIT_RETRY_BACKOFF_MS * (attempt + 1)));
+  }
+  throw lastErr instanceof Error
+    ? lastErr
+    : new Error(`git failed after ${GIT_RETRY_ATTEMPTS} attempts: ${String(lastErr)}`);
+}
+
+function git(args: readonly string[], cwd?: string): Promise<GitResult> {
+  return gitWithRetry(gitOnce, args, cwd);
 }
 
 async function expectOk(r: GitResult, label: string): Promise<void> {
@@ -360,5 +438,200 @@ describe('flushWorkspaceBeforeCall host tool (BUG-W2 real path)', () => {
       .access(path.join(runnerRoot, '.ax', 'scratch', 'foo.txt'))
       .then(() => true, () => false);
     expect(fileInRunnerTree).toBe(false);
+  }, E2E_TIMEOUT_MS);
+});
+
+// ---------------------------------------------------------------------------
+// TASK-137 regression — the BUG-W2 resync assertion above flaked NOT because the
+// git logic is racy (it is deterministic) but because the test's `makeHostClient`
+// mock runs REAL git subprocesses inside its IPC handlers, and under the full
+// push-to-main suite's starvation a single git fork could transiently fail (spawn
+// EAGAIN / ref-lock contention). Production `commitNotifyWithResync` then
+// correctly degraded that hiccup to `kept`/`rolled-back`, and `expect(outcome)
+// .toBe('accepted')` red. These tests pin the `gitWithRetry` settle seam that
+// fixes it: a transient infra failure is retried to completion, so the resync
+// still lands `accepted`; a legitimate non-zero exit is NOT retried.
+// ---------------------------------------------------------------------------
+describe('TASK-137 — gitWithRetry settle seam (transient-git resilience)', () => {
+  const transient = (msg: string): GitResult => ({ code: 128, stdout: '', stderr: msg });
+  const okResult = (stdout = ''): GitResult => ({ code: 0, stdout, stderr: '' });
+
+  it('retries a transient ref/index-lock failure to a clean success', async () => {
+    let calls = 0;
+    const runner: GitRunner = async () => {
+      calls++;
+      // First two attempts hit a starved lock; the third succeeds.
+      if (calls < 3) return transient(`fatal: Unable to create '/x/.git/index.lock': File exists`);
+      return okResult('deadbeef\n');
+    };
+    const r = await gitWithRetry(runner, ['-C', '/x', 'rev-parse', 'HEAD']);
+    expect(calls).toBe(3);
+    expect(r.code).toBe(0);
+    expect(r.stdout).toBe('deadbeef\n');
+  });
+
+  it('retries a spawn EAGAIN (fork failed) to success', async () => {
+    let calls = 0;
+    const runner: GitRunner = async () => {
+      calls++;
+      if (calls < 2) {
+        const err = new Error('spawn git EAGAIN') as NodeJS.ErrnoException;
+        err.code = 'EAGAIN';
+        throw err;
+      }
+      return okResult('ok\n');
+    };
+    const r = await gitWithRetry(runner, ['status']);
+    expect(calls).toBe(2);
+    expect(r.code).toBe(0);
+  });
+
+  it('does NOT retry a legitimate non-zero exit (e.g. cat-file -e absent → 1)', async () => {
+    let calls = 0;
+    const runner: GitRunner = async () => {
+      calls++;
+      // `git cat-file -e <missing>` exits 1 with empty/non-transient stderr —
+      // that is the authoritative "absent" answer, not an infra hiccup.
+      return { code: 1, stdout: '', stderr: '' };
+    };
+    const r = await gitWithRetry(runner, ['cat-file', '-e', 'main:nope']);
+    expect(calls).toBe(1);
+    expect(r.code).toBe(1);
+  });
+
+  it('rethrows a non-transient spawn error without retrying (e.g. git not found)', async () => {
+    let calls = 0;
+    const runner: GitRunner = async () => {
+      calls++;
+      const err = new Error('spawn git ENOENT') as NodeJS.ErrnoException;
+      err.code = 'ENOENT';
+      throw err;
+    };
+    await expect(gitWithRetry(runner, ['version'])).rejects.toThrow(/ENOENT/);
+    expect(calls).toBe(1);
+  });
+
+  it('gives up after the bounded attempt budget on a persistent transient failure', async () => {
+    let calls = 0;
+    const runner: GitRunner = async () => {
+      calls++;
+      return transient('fatal: cannot fork: Resource temporarily unavailable');
+    };
+    await expect(gitWithRetry(runner, ['gc'])).rejects.toThrow(/transient git failure/);
+    expect(calls).toBe(GIT_RETRY_ATTEMPTS);
+  });
+
+  // The integration proof: drive the FULL host-delete → flush → runner-commit →
+  // resync sequence through a host client whose commit-notify git ops transiently
+  // fail on their first attempt. WITHOUT the seam, the first failed `mirrorMain`
+  // rev-parse (null head) makes the mock omit `actualParent` → resync can't engage
+  // → `rolled-back`; or a thrown fetch → `kept`. WITH the seam, the transient
+  // failure is retried to completion and the resync lands `accepted`.
+  it('the BUG-W2 resync still lands accepted when commit-notify git transiently fails first try', async () => {
+    const { runnerRoot, mirrorDir, baselineOid } = await setupWorkspace();
+    await fs.mkdir(path.join(runnerRoot, '.ax', 'scratch'), { recursive: true });
+    await fs.writeFile(path.join(runnerRoot, '.ax', 'scratch', 'foo.txt'), SCRATCH_BODY);
+
+    // A git runner that injects ONE transient lock failure on the first invocation
+    // of each distinct git verb, then delegates to the real spawn. This mimics a
+    // starvation hiccup hitting whichever git op happens to run first.
+    const seenVerb = new Set<string>();
+    const flakyRunner: GitRunner = async (args, cwd) => {
+      const verb = args[args.indexOf('-C') >= 0 ? args.indexOf('-C') + 2 : 0] ?? '';
+      if (!seenVerb.has(verb)) {
+        seenVerb.add(verb);
+        return { code: 128, stdout: '', stderr: `fatal: Unable to create '${cwd}/.git/index.lock': File exists` };
+      }
+      return gitOnce(args, cwd);
+    };
+    const flakyGit: GitRunner = (args, cwd) => gitWithRetry(flakyRunner, args, cwd);
+
+    // Same shape as makeHostClient, but its internal git goes through flakyGit so
+    // the seam is exercised on the commit-notify path that flaked.
+    const norm = (h: string | null | undefined): string | null => (h && h.length ? h : null);
+    const flakyMirrorMain = async (): Promise<string | null> => {
+      const r = await flakyGit(['-C', mirrorDir, 'rev-parse', '--quiet', '--verify', 'refs/heads/main']);
+      return r.code === 0 && r.stdout.trim().length > 0 ? r.stdout.trim() : null;
+    };
+    const client: IpcClient = {
+      call: async (action: string, payload: unknown) => {
+        if (action === 'workspace.commit-notify') {
+          const { parentVersion, bundleBytes } = payload as { parentVersion: string | null; bundleBytes: string };
+          const head = await flakyMirrorMain();
+          if (norm(parentVersion) === norm(head)) {
+            const bundleFile = path.join(scratch, `in-${Date.now()}-${Math.random().toString(36).slice(2)}.bundle`);
+            await fs.writeFile(bundleFile, Buffer.from(bundleBytes, 'base64'));
+            try {
+              await expectOk(
+                await flakyGit(['-C', mirrorDir, 'fetch', bundleFile, '+refs/heads/main:refs/heads/main']),
+                'mirror fetch bundle',
+              );
+              return { accepted: true, version: (await flakyMirrorMain())! };
+            } finally {
+              await fs.rm(bundleFile, { force: true });
+            }
+          }
+          return { accepted: false, actualParent: head, reason: 'parent-mismatch' };
+        }
+        if (action === 'tool.execute-host') {
+          const found = (await flakyGit(['-C', mirrorDir, 'cat-file', '-e', 'refs/heads/main:.ax/scratch/foo.txt'])).code === 0;
+          return { output: { found } };
+        }
+        throw new Error(`unexpected IPC action: ${action}`);
+      },
+      callGet: async () => {
+        throw new Error('callGet not expected');
+      },
+      callBinary: async (action: string, payload: unknown) => {
+        if (action === 'workspace.export-baseline-bundle') {
+          const { version } = payload as { version: string };
+          expect(version).toBe(await flakyMirrorMain());
+          const f = path.join(tmpdir(), `ax-e2e-baseline-${Date.now()}-${Math.random().toString(36).slice(2)}.bundle`);
+          await expectOk(await flakyGit(['-C', mirrorDir, 'bundle', 'create', f, 'main']), 'mirror bundle main');
+          const stat = await fs.stat(f);
+          return { path: f, bytes: stat.size };
+        }
+        throw new Error(`unexpected binary IPC action: ${action}`);
+      },
+      event: async () => {
+        throw new Error('event not expected');
+      },
+      close: async () => {
+        /* no-op */
+      },
+    };
+
+    let parentVersion: string | null = baselineOid;
+    const flushWorkspace = async () => {
+      const r = await flushWorkspaceToHost({ client, root: runnerRoot, parentVersion, reason: 'turn' });
+      parentVersion = r.parentVersion;
+      return r.outcome;
+    };
+    const entries = buildHostToolEntries(client, [FLUSH_TOOL], () => 'id-1', flushWorkspace);
+
+    const r1 = await (entries[0] as ToolEntry).handler({ path: 'foo.txt' }, {});
+    expect(hostFound(r1)).toBe(true);
+
+    await hostRetire(mirrorDir, '.ax/scratch/foo.txt');
+
+    await fs.mkdir(path.join(runnerRoot, '.claude', 'projects'), { recursive: true });
+    await fs.writeFile(path.join(runnerRoot, '.claude', 'projects', 'sess.jsonl'), '{"turn":1}\n');
+    const bundle = await commitTurnAndBundle({ root: runnerRoot, reason: 'turn' });
+    expect(bundle).not.toBeNull();
+    const res = await commitNotifyWithResync({
+      client,
+      root: runnerRoot,
+      bundleBytes: bundle!,
+      parentVersion,
+      reason: 'turn',
+    });
+    // The transient git failures were retried to completion — the resync landed.
+    expect(res.outcome).toBe('accepted');
+    const fileInMirror =
+      (await git(['-C', mirrorDir, 'cat-file', '-e', 'refs/heads/main:.ax/scratch/foo.txt'])).code === 0;
+    expect(fileInMirror).toBe(false);
+    const jsonlInMirror =
+      (await git(['-C', mirrorDir, 'cat-file', '-e', 'refs/heads/main:.claude/projects/sess.jsonl'])).code === 0;
+    expect(jsonlInMirror).toBe(true);
   }, E2E_TIMEOUT_MS);
 });
