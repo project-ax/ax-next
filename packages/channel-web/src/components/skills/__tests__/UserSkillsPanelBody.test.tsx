@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { UserSkillsPanel } from '../UserSkillsPanel';
+import { UserSkillsPanelBody } from '../UserSkillsPanelBody';
 import type { SkillSummary, AuthoredSkillListing } from '@ax/skills';
 
 // Mock the wire clients at the lib boundary — no network.
@@ -113,25 +113,17 @@ beforeEach(() => {
   mockListAuthoredSkills.mockResolvedValue([]);
 });
 
-describe('UserSkillsPanel', () => {
-  it('is not rendered when open=false', () => {
+describe('UserSkillsPanelBody', () => {
+  it('does not fetch when active=false', () => {
     mockListUserSkills.mockResolvedValue([]);
-    render(<UserSkillsPanel open={false} onClose={vi.fn()} />);
-    // Dialog content should not be visible.
-    expect(screen.queryByText('My Skills')).toBeNull();
-  });
-
-  it('renders the title when open=true', async () => {
-    mockListUserSkills.mockResolvedValue([]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
-    await waitFor(() => {
-      expect(screen.getByText('My Skills')).toBeTruthy();
-    });
+    render(<UserSkillsPanelBody active={false} />);
+    // With active=false the body skips its data fetch entirely.
+    expect(mockListUserSkills).not.toHaveBeenCalled();
   });
 
   it('lists the user skills', async () => {
     mockListUserSkills.mockResolvedValue([SKILL_A, SKILL_B]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-github')).toBeTruthy();
@@ -146,13 +138,13 @@ describe('UserSkillsPanel', () => {
 
   it('shows loading state before promise resolves', () => {
     mockListUserSkills.mockReturnValue(new Promise(() => {}));
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
     expect(screen.getByText('Loading…')).toBeTruthy();
   });
 
   it('shows empty state when no skills exist', async () => {
     mockListUserSkills.mockResolvedValue([]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
     await waitFor(() => {
       expect(screen.getByText(/No skills installed/)).toBeTruthy();
     });
@@ -160,7 +152,7 @@ describe('UserSkillsPanel', () => {
 
   it('shows error alert when fetch fails', async () => {
     mockListUserSkills.mockRejectedValue(new Error('Network failure'));
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
     await waitFor(() => {
       expect(screen.getByText('Network failure')).toBeTruthy();
     });
@@ -168,7 +160,7 @@ describe('UserSkillsPanel', () => {
 
   it('renders "default" badge for default-attached skills', async () => {
     mockListUserSkills.mockResolvedValue([SKILL_A, SKILL_B]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-github')).toBeTruthy();
@@ -184,7 +176,7 @@ describe('UserSkillsPanel', () => {
 
   it('clicking "New skill" opens the editor dialog', async () => {
     mockListUserSkills.mockResolvedValue([]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText(/No skills installed/)).toBeTruthy();
@@ -200,7 +192,7 @@ describe('UserSkillsPanel', () => {
 
   it('clicking edit button opens the editor with that skill id', async () => {
     mockListUserSkills.mockResolvedValue([SKILL_A]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-github')).toBeTruthy();
@@ -216,7 +208,7 @@ describe('UserSkillsPanel', () => {
 
   it('delete button → confirmation dialog → calls deleteUserSkill', async () => {
     mockListUserSkills.mockResolvedValue([SKILL_A]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-github')).toBeTruthy();
@@ -238,7 +230,7 @@ describe('UserSkillsPanel', () => {
   it('delete error surfaces in the alert', async () => {
     mockListUserSkills.mockResolvedValue([SKILL_A]);
     mockDeleteUserSkill.mockRejectedValueOnce(new Error('skill still attached'));
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-github')).toBeTruthy();
@@ -258,14 +250,14 @@ describe('UserSkillsPanel', () => {
   });
 
   it('editor saves via the injected api (createUserSkill is called, not admin upsertSkill)', async () => {
-    // This test verifies the api injection seam: UserSkillsPanel passes
+    // This test verifies the api injection seam: UserSkillsPanelBody passes
     // userSkillsApi to SkillEditor. Since we mock SkillEditor, we verify
     // the createUserSkill mock is NOT called by the panel itself — the
     // real integration test is that SkillEditor receives the `api` prop.
     // We validate indirectly: after onSaved() fires, listUserSkills is
     // re-fetched (refresh is triggered).
     mockListUserSkills.mockResolvedValue([]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText(/No skills installed/)).toBeTruthy();
@@ -300,7 +292,7 @@ describe('UserSkillsPanel', () => {
       created: true,
       status: 'pending',
     });
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-github')).toBeTruthy();
@@ -329,7 +321,7 @@ describe('UserSkillsPanel', () => {
       created: false,
       status: 'pending',
     });
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-github')).toBeTruthy();
@@ -353,7 +345,7 @@ describe('UserSkillsPanel', () => {
   it('share error surfaces in the alert', async () => {
     mockListUserSkills.mockResolvedValue([SKILL_A]);
     mockShareUserSkill.mockRejectedValueOnce(new Error('share failed'));
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-github')).toBeTruthy();
@@ -374,7 +366,7 @@ describe('UserSkillsPanel', () => {
 
   it('cancelling the share dialog does NOT call shareUserSkill', async () => {
     mockListUserSkills.mockResolvedValue([SKILL_A]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-github')).toBeTruthy();
@@ -403,7 +395,7 @@ describe('UserSkillsPanel', () => {
     // authored skills saw "No skills installed". This is the regression guard.
     mockListUserSkills.mockResolvedValue([]);
     mockListAuthoredSkills.mockResolvedValue([AUTHORED_ACTIVE, AUTHORED_PENDING]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-authored')).toBeTruthy();
@@ -421,7 +413,7 @@ describe('UserSkillsPanel', () => {
   it('shows a status badge per authored skill (active vs pending review)', async () => {
     mockListUserSkills.mockResolvedValue([]);
     mockListAuthoredSkills.mockResolvedValue([AUTHORED_ACTIVE, AUTHORED_PENDING]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-authored')).toBeTruthy();
@@ -437,7 +429,7 @@ describe('UserSkillsPanel', () => {
   it('shows authored skills ALONGSIDE catalog skills', async () => {
     mockListUserSkills.mockResolvedValue([SKILL_A]);
     mockListAuthoredSkills.mockResolvedValue([AUTHORED_ACTIVE]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       // catalog skill
@@ -450,7 +442,7 @@ describe('UserSkillsPanel', () => {
   it('still shows the empty state when BOTH catalog and authored are empty', async () => {
     mockListUserSkills.mockResolvedValue([]);
     mockListAuthoredSkills.mockResolvedValue([]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText(/No skills installed/)).toBeTruthy();
@@ -461,7 +453,7 @@ describe('UserSkillsPanel', () => {
   it('an authored-fetch failure does not blank out the catalog list', async () => {
     mockListUserSkills.mockResolvedValue([SKILL_A]);
     mockListAuthoredSkills.mockRejectedValue(new Error('authored boom'));
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('my-github')).toBeTruthy();
@@ -484,7 +476,7 @@ describe('UserSkillsPanel', () => {
       AUTHORED_PENDING, // pending, no pendingCapabilities → no Approve button
       AUTHORED_PENDING_CAP, // pending + caps → Approve button
     ]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('needs-key')).toBeTruthy();
@@ -503,7 +495,7 @@ describe('UserSkillsPanel', () => {
   it('approve a pending cap-skill: enter key → writes credential → calls approveAuthoredSkill with shown', async () => {
     mockListUserSkills.mockResolvedValue([]);
     mockListAuthoredSkills.mockResolvedValue([AUTHORED_PENDING_CAP]);
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('needs-key')).toBeTruthy();
@@ -558,7 +550,7 @@ describe('UserSkillsPanel', () => {
     mockListUserSkills.mockResolvedValue([]);
     mockListAuthoredSkills.mockResolvedValue([AUTHORED_PENDING_CAP]);
     mockApproveAuthoredSkill.mockRejectedValueOnce(new Error('grant boom'));
-    render(<UserSkillsPanel open={true} onClose={vi.fn()} />);
+    render(<UserSkillsPanelBody active />);
 
     await waitFor(() => {
       expect(screen.getByText('needs-key')).toBeTruthy();

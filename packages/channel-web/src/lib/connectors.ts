@@ -60,7 +60,9 @@ export type ConnectorKeyMode = 'personal' | 'workspace';
 export type ConnectorVisibility = 'private' | 'shared';
 
 /** Metadata-only descriptor for the list view (no capabilities — those load on
- *  demand via {@link getConnector}). */
+ *  demand via {@link getConnector}). `defaultAttached` is the admin
+ *  workspace-default flag, surfaced here (TASK-110) so the user list can badge a
+ *  default-on connector as "Catalog" even when its `visibility` is `private`. */
 export interface ConnectorSummary {
   id: string;
   name: string;
@@ -68,6 +70,7 @@ export interface ConnectorSummary {
   usageNote: string;
   keyMode: ConnectorKeyMode;
   visibility: ConnectorVisibility;
+  defaultAttached: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -75,7 +78,6 @@ export interface ConnectorSummary {
 /** The full connector, including the opaque capabilities fill. */
 export interface Connector extends ConnectorSummary {
   capabilities: ConnectorCapabilities;
-  defaultAttached: boolean;
 }
 
 /** Create/update body. `connectorId` is the stable slug; required on create. */

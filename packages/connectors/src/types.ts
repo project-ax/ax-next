@@ -151,6 +151,15 @@ export interface ConnectorSummary {
   usageNote: string;
   keyMode: KeyMode;
   visibility: Visibility;
+  /**
+   * TASK-97/110 — the workspace-default flag, surfaced on the LIST shape too so
+   * the user connector list can badge an admin default-on connector as "Catalog"
+   * even when its `visibility` is `private` (the badge derives from
+   * `defaultAttached || visibility === 'shared'`; before TASK-110 the summary
+   * dropped this field, so a default-on private connector wrongly showed no
+   * badge). Storage-agnostic boolean — never a backing-mechanism field.
+   */
+  defaultAttached: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -375,6 +384,7 @@ const ConnectorSummarySchema = z.object({
   usageNote: z.string(),
   keyMode: KeyModeSchema,
   visibility: VisibilitySchema,
+  defaultAttached: z.boolean(),
   createdAt: z.string(),
   updatedAt: z.string(),
 });

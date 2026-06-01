@@ -144,6 +144,24 @@ describe('@ax/connectors hooks — CRUD round-trip', () => {
     // The summary deliberately omits the capabilities spec (mechanism behind
     // Advanced; list stays cheap).
     expect(list.connectors[0]).not.toHaveProperty('capabilities');
+    // TASK-110 — the summary DOES carry the workspace-default flag so the user
+    // list can badge an admin default-on connector. A non-default connector
+    // reports false.
+    expect(list.connectors[0]!.defaultAttached).toBe(false);
+
+    // A default-flagged connector surfaces defaultAttached:true on its summary.
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({ connectorId: 'org-github', name: 'Org GitHub', defaultAttached: true }),
+    );
+    const list2 = await h.bus.call<ListInput, ListOutput>(
+      'connectors:list',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA' },
+    );
+    const flagged = list2.connectors.find((c) => c.id === 'org-github');
+    expect(flagged?.defaultAttached).toBe(true);
   });
 
   it('upsert updates an existing connector (created=false) and overwrites fields', async () => {
