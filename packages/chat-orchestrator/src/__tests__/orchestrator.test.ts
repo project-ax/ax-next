@@ -4511,7 +4511,9 @@ describe('chat-orchestrator', () => {
     expect(cards[0]).toEqual({
       kind: 'connector', connectorId: 'linear', name: 'Linear', authored: true,
       hosts: ['api.linear.app'],
-      slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', haveExisting: false }],
+      // TASK-124 — single-slot connector keeps the collapsed ref; `service` is the
+      // connectorId fallback (the untagged slot), no slotTag.
+      slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', service: 'linear', haveExisting: false }],
       packages: { npm: [], pypi: [] },
     });
   });

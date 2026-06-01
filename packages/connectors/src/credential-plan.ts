@@ -44,8 +44,26 @@ export interface CredentialPlanEntry {
   slot: string;
   /** The credential scope the key binds to — reach derives from this alone. */
   scope: Extract<CredentialScope, 'user' | 'global'>;
-  /** The deterministic vault ref the proxy resolves (`account:<service>`). */
+  /**
+   * The deterministic vault ref the proxy resolves. `account:<service>` for a
+   * single-slot connector (back-compat); `account:<service>:<slot>` for a
+   * multi-slot connector (TASK-124 — per-slot refs, no collision).
+   */
   ref: string;
+  /**
+   * The `<service>` tag inside the ref (the slot's `account` or the connector
+   * id). Carried structurally (TASK-124) so the connect-flow UI can rebuild the
+   * `{kind:'account', service, slot?}` destination WITHOUT string-parsing the
+   * `:`-bearing ref (a per-slot ref would otherwise slice into an invalid
+   * account service). Always present.
+   */
+  service: string;
+  /**
+   * The `<slot>` tag inside the ref, present IFF the per-slot ref form is used
+   * (multi-slot connector). The UI passes it as the optional `slot` on the
+   * account destination; absent ⟹ the collapsed `account:<service>` ref.
+   */
+  slotTag?: string;
 }
 
 /**
@@ -63,9 +81,14 @@ export function serviceTagForSlot(slot: CapabilitySlot, connectorId: string): st
  * @ax/credentials import) — identical to `refForDestination({kind:'account', …})`
  * and to the ref `applyCapabilityGrant` binds for an `account`-tagged slot, so the
  * key a connector resolves and the key a skill stored always address the same row.
+ *
+ * TASK-124 — adaptive per-slot ref. Pass `slot` (the connector's declared
+ * SCREAMING_SNAKE capability slot) for a multi-slot connector → the distinct
+ * `account:<service>:<slot>` row; omit it for a single-slot connector → the
+ * collapsed `account:<service>` ref (back-compat by construction).
  */
-export function accountRef(service: string): string {
-  return `account:${service}`;
+export function accountRef(service: string, slot?: string): string {
+  return slot !== undefined ? `account:${service}:${slot}` : `account:${service}`;
 }
 
 /** keyMode → the credential scope the key attaches to (reach-by-attachment). */
@@ -80,14 +103,27 @@ function scopeForKeyMode(keyMode: KeyMode): Extract<CredentialScope, 'user' | 'g
  * connector to the single company key (`scope:'global'`). A connector with no
  * credential slots yields an empty plan (nothing to prompt — e.g. an MCP server
  * that needs no key).
+ *
+ * TASK-124 — per-slot credential refs (adaptive, back-compat by construction).
+ * The collapse-vs-expand rule keys on the connector's slot COUNT: a connector
+ * with exactly ONE slot keeps the collapsed `account:<service>` ref (existing
+ * keys resolve unchanged); a connector with TWO OR MORE slots derives a distinct
+ * `account:<service>:<slot>` ref per slot, fixing the prior collision where two
+ * slots that fall back to the same service tag overwrote each other on one row.
  */
 export function deriveCredentialPlan(connector: Connector): CredentialPlanEntry[] {
   const scope = scopeForKeyMode(connector.keyMode);
-  return connector.capabilities.credentials.map((slot) => ({
-    slot: slot.slot,
-    scope,
-    ref: accountRef(serviceTagForSlot(slot, connector.id)),
-  }));
+  const isMulti = connector.capabilities.credentials.length >= 2;
+  return connector.capabilities.credentials.map((slot) => {
+    const service = serviceTagForSlot(slot, connector.id);
+    return {
+      slot: slot.slot,
+      scope,
+      ref: accountRef(service, isMulti ? slot.slot : undefined),
+      service,
+      ...(isMulti ? { slotTag: slot.slot } : {}),
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

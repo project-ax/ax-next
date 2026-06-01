@@ -235,7 +235,9 @@ describe('@ax/connectors hooks — resolve', () => {
       { userId: 'admin', connectorId: 'sf' },
     );
     expect(resolved.credentialPlan).toEqual([
-      { slot: 'SF_TOKEN', scope: 'global', ref: 'account:salesforce' },
+      // TASK-124 — single-slot connector keeps the collapsed ref + carries the
+      // structured `service` tag (no slotTag).
+      { slot: 'SF_TOKEN', scope: 'global', ref: 'account:salesforce', service: 'salesforce' },
     ]);
     expect(resolved.requiresSharedKeyConsent).toBe(true);
   });
@@ -255,7 +257,8 @@ describe('@ax/connectors hooks — resolve', () => {
       { userId: 'userA', connectorId: 'gdrive' },
     );
     expect(resolved.credentialPlan).toEqual([
-      { slot: 'gdrive', scope: 'user', ref: 'account:google' },
+      // TASK-124 — single-slot connector keeps the collapsed ref + `service` tag.
+      { slot: 'gdrive', scope: 'user', ref: 'account:google', service: 'google' },
     ]);
     expect(resolved.requiresSharedKeyConsent).toBe(false);
   });

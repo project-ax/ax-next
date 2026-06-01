@@ -432,6 +432,12 @@ const CredentialPlanEntrySchema = z.object({
   slot: z.string(),
   scope: z.union([z.literal('user'), z.literal('global')]),
   ref: z.string(),
+  // TASK-124 — structured destination bits so the connect-flow UI rebuilds the
+  // `{kind:'account', service, slot?}` destination without string-parsing the
+  // `:`-bearing per-slot ref. `service` is always present; `slotTag` is present
+  // only for a multi-slot connector's per-slot ref. Storage-agnostic.
+  service: z.string(),
+  slotTag: z.string().optional(),
 });
 
 export const ResolveOutputSchema = z.object({

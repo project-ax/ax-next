@@ -148,7 +148,13 @@ export function refForDestination(dest: Destination): string {
     case 'routine-hmac':
       return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
     case 'account':
-      return `account:${dest.service}`;
+      // TASK-124 — adaptive per-slot ref (mirrors @ax/credentials/refs.ts). A
+      // multi-slot connector supplies `slot` so each slot addresses a distinct
+      // vault row; a single-slot / bare account key omits it and keeps the
+      // collapsed `account:<service>` ref (back-compat by construction).
+      return dest.slot !== undefined
+        ? `account:${dest.service}:${dest.slot}`
+        : `account:${dest.service}`;
   }
 }
 

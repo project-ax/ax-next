@@ -235,8 +235,24 @@ export interface ConnectorCredentialPlanEntry {
   slot: string;
   /** The credential scope the key binds to — reach derives from this alone. */
   scope: ConnectorCredentialScope;
-  /** The deterministic vault ref the proxy resolves (`account:<service>`). */
+  /**
+   * The deterministic vault ref the proxy resolves. `account:<service>` for a
+   * single-slot connector (back-compat); `account:<service>:<slot>` for a
+   * multi-slot connector (TASK-124 — per-slot refs, no collision).
+   */
   ref: string;
+  /**
+   * The `<service>` tag inside the ref. Carried structurally (TASK-124) so the
+   * connect dialog rebuilds the `{kind:'account', service, slot?}` destination
+   * WITHOUT string-parsing the `:`-bearing ref. Always present.
+   */
+  service: string;
+  /**
+   * The `<slot>` tag inside the ref, present IFF the per-slot ref form is used
+   * (multi-slot connector). Passed as the optional `slot` on the account
+   * destination; absent ⟹ the collapsed `account:<service>` ref.
+   */
+  slotTag?: string;
 }
 
 /**
@@ -254,10 +270,12 @@ export function serviceTagForSlot(
     : connectorId;
 }
 
-/** Build the per-user / company vault ref for a service (`account:<service>`).
- *  Identical to `refForDestination({kind:'account', service})`. */
-export function accountRef(service: string): string {
-  return `account:${service}`;
+/** Build the per-user / company vault ref for a service. Identical to
+ *  `refForDestination({kind:'account', service, slot?})`. TASK-124 — pass `slot`
+ *  for a multi-slot connector (→ `account:<service>:<slot>`); omit it for a
+ *  single-slot connector (→ collapsed `account:<service>`, back-compat). */
+export function accountRef(service: string, slot?: string): string {
+  return slot !== undefined ? `account:${service}:${slot}` : `account:${service}`;
 }
 
 /** keyMode → the credential scope the key attaches to (reach-by-attachment). */
@@ -277,11 +295,20 @@ export function deriveCredentialPlan(
   connector: Connector,
 ): ConnectorCredentialPlanEntry[] {
   const scope = scopeForKeyMode(connector.keyMode);
-  return connector.capabilities.credentials.map((slot) => ({
-    slot: slot.slot,
-    scope,
-    ref: accountRef(serviceTagForSlot(slot, connector.id)),
-  }));
+  // TASK-124 — the collapse-vs-expand rule keys on the connector's slot COUNT
+  // (mirrors @ax/connectors): exactly 1 slot keeps `account:<service>`; ≥2 slots
+  // derive a distinct `account:<service>:<slot>` per slot (fixes the collision).
+  const isMulti = connector.capabilities.credentials.length >= 2;
+  return connector.capabilities.credentials.map((slot) => {
+    const service = serviceTagForSlot(slot, connector.id);
+    return {
+      slot: slot.slot,
+      scope,
+      ref: accountRef(service, isMulti ? slot.slot : undefined),
+      service,
+      ...(isMulti ? { slotTag: slot.slot } : {}),
+    };
+  });
 }
 
 /**

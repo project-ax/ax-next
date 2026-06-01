@@ -213,14 +213,22 @@ function ConnectKeyForms({
   return (
     <div className="flex flex-col gap-5">
       {plan.map((entry) => {
-        // ref is `account:<service>`; strip the prefix back to the service tag.
-        const service = entry.ref.slice('account:'.length);
+        // TASK-124 — build the destination from the plan's STRUCTURED fields, not
+        // by slicing the ref: a multi-slot connector's ref is
+        // `account:<service>:<slot>`, which `.slice('account:')` would mangle into
+        // an invalid `service`. `entry.service` is the bare tag; `entry.slotTag`
+        // (present only for a multi-slot connector) becomes the optional `slot` so
+        // the WRITE lands in the SAME row the host resolver READS.
         const slotMeta = slotByName(entry.slot);
         return (
           <div key={entry.slot} className="flex flex-col gap-2">
             <p className="text-xs font-medium text-foreground">{entry.slot}</p>
             <CredentialSlotForm
-              destination={{ kind: 'account', service }}
+              destination={{
+                kind: 'account',
+                service: entry.service,
+                ...(entry.slotTag !== undefined ? { slot: entry.slotTag } : {}),
+              }}
               slot={{
                 label: entry.slot,
                 kind: 'api-key',

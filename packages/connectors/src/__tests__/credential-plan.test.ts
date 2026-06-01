@@ -55,6 +55,10 @@ describe('accountRef', () => {
   it('builds the account:<service> vault ref', () => {
     expect(accountRef('google')).toBe('account:google');
   });
+  // TASK-124 — a supplied slot expands the ref to the per-slot form.
+  it('builds account:<service>:<slot> when a slot is supplied', () => {
+    expect(accountRef('google', 'CLIENT_ID')).toBe('account:google:CLIENT_ID');
+  });
 });
 
 describe('deriveCredentialPlan — personal keyMode binds the per-user vault (scope=user)', () => {
@@ -70,7 +74,9 @@ describe('deriveCredentialPlan — personal keyMode binds the per-user vault (sc
         },
       }),
     );
-    expect(plan).toEqual([{ slot: 'SF_TOKEN', scope: 'user', ref: 'account:salesforce' }]);
+    expect(plan).toEqual([
+      { slot: 'SF_TOKEN', scope: 'user', ref: 'account:salesforce', service: 'salesforce' },
+    ]);
   });
 
   it('uses the connector id as the service tag when a slot omits account', () => {
@@ -86,7 +92,9 @@ describe('deriveCredentialPlan — personal keyMode binds the per-user vault (sc
         },
       }),
     );
-    expect(plan).toEqual([{ slot: 'SF_TOKEN', scope: 'user', ref: 'account:salesforce' }]);
+    expect(plan).toEqual([
+      { slot: 'SF_TOKEN', scope: 'user', ref: 'account:salesforce', service: 'salesforce' },
+    ]);
   });
 });
 
@@ -103,7 +111,9 @@ describe('deriveCredentialPlan — workspace keyMode spends the single company k
         },
       }),
     );
-    expect(plan).toEqual([{ slot: 'SF_TOKEN', scope: 'global', ref: 'account:salesforce' }]);
+    expect(plan).toEqual([
+      { slot: 'SF_TOKEN', scope: 'global', ref: 'account:salesforce', service: 'salesforce' },
+    ]);
   });
 });
 
@@ -122,9 +132,72 @@ describe('deriveCredentialPlan — edges', () => {
     expect(plan).toEqual([]);
   });
 
-  it('produces one plan entry per declared slot, preserving order', () => {
+  // TASK-124 — a connector with exactly ONE slot keeps the COLLAPSED ref (no
+  // slotTag), byte-identical to today's behaviour. This is the back-compat
+  // contract: an existing single-slot connector's stored key resolves unchanged.
+  it('single-slot connector keeps the collapsed account:<service> ref (no slotTag)', () => {
     const plan = deriveCredentialPlan(
       connector({
+        id: 'gh',
+        keyMode: 'personal',
+        capabilities: {
+          allowedHosts: [],
+          credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+          mcpServers: [],
+          packages: { npm: [], pypi: [] },
+        },
+      }),
+    );
+    expect(plan).toEqual([
+      { slot: 'GITHUB_TOKEN', scope: 'user', ref: 'account:gh', service: 'gh' },
+    ]);
+    // No slotTag on a single-slot connector (drives the collapsed destination).
+    expect(plan[0]).not.toHaveProperty('slotTag');
+  });
+
+  // TASK-124 — the collision fix. Two slots that BOTH fall back to the same
+  // service tag (the connector id) used to collapse to ONE row and overwrite each
+  // other; now each gets a distinct per-slot ref.
+  it('multi-slot connector derives a distinct per-slot ref (the collision fix)', () => {
+    const plan = deriveCredentialPlan(
+      connector({
+        id: 'oauthsvc',
+        keyMode: 'personal',
+        capabilities: {
+          allowedHosts: [],
+          credentials: [
+            { slot: 'CLIENT_ID', kind: 'api-key' },
+            { slot: 'CLIENT_SECRET', kind: 'api-key' },
+          ],
+          mcpServers: [],
+          packages: { npm: [], pypi: [] },
+        },
+      }),
+    );
+    expect(plan).toEqual([
+      {
+        slot: 'CLIENT_ID',
+        scope: 'user',
+        ref: 'account:oauthsvc:CLIENT_ID',
+        service: 'oauthsvc',
+        slotTag: 'CLIENT_ID',
+      },
+      {
+        slot: 'CLIENT_SECRET',
+        scope: 'user',
+        ref: 'account:oauthsvc:CLIENT_SECRET',
+        service: 'oauthsvc',
+        slotTag: 'CLIENT_SECRET',
+      },
+    ]);
+    // The two refs MUST differ — the whole point of the fix.
+    expect(plan[0]!.ref).not.toBe(plan[1]!.ref);
+  });
+
+  it('multi-slot connector keeps per-slot refs even when slots name distinct accounts', () => {
+    const plan = deriveCredentialPlan(
+      connector({
+        id: 'gdrive',
         keyMode: 'personal',
         capabilities: {
           allowedHosts: [],
@@ -138,8 +211,8 @@ describe('deriveCredentialPlan — edges', () => {
       }),
     );
     expect(plan).toEqual([
-      { slot: 'A', scope: 'user', ref: 'account:svc-a' },
-      { slot: 'B', scope: 'user', ref: 'account:salesforce' },
+      { slot: 'A', scope: 'user', ref: 'account:svc-a:A', service: 'svc-a', slotTag: 'A' },
+      { slot: 'B', scope: 'user', ref: 'account:gdrive:B', service: 'gdrive', slotTag: 'B' },
     ]);
   });
 });

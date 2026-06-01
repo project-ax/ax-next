@@ -42,16 +42,25 @@ import {
 import { getAccountUsage } from '@/lib/connections';
 
 const SKILL_REF = /^skill:([^:]+):(.+)$/;
-const ACCOUNT_REF = /^account:(.+)$/;
+// TASK-124 — per-slot credential refs. An account ref is either the collapsed
+// `account:<service>` (single-slot connector / standalone key) or the per-slot
+// `account:<service>:<slot>` (multi-slot connector). Both `<service>` (lowercase
+// slug) and `<slot>` (SCREAMING_SNAKE) carry no ':', so a single optional capture
+// splits them unambiguously.
+const ACCOUNT_REF = /^account:([a-z][a-z0-9-]*)(?::([A-Z][A-Z0-9_]*))?$/;
 
 type ParsedRef =
-  | { shape: 'account'; service: string }
+  | { shape: 'account'; service: string; slot?: string }
   | { shape: 'skill'; skillId: string; slot: string }
   | { shape: 'other'; kind: string };
 
 function parseRef(ref: string): ParsedRef {
   const acct = ref.match(ACCOUNT_REF);
-  if (acct) return { shape: 'account', service: acct[1]! };
+  if (acct) {
+    return acct[2] !== undefined
+      ? { shape: 'account', service: acct[1]!, slot: acct[2] }
+      : { shape: 'account', service: acct[1]! };
+  }
   const skill = ref.match(SKILL_REF);
   if (skill) return { shape: 'skill', skillId: skill[1]!, slot: skill[2]! };
   // Unknown ref shape (provider/mcp/routine/…). Keep ONLY the kind segment for
@@ -119,10 +128,15 @@ export function KeysTab() {
   }, [load]);
 
   // --- account (service-keyed) writes ------------------------------------
-  const addAccountKey = async (service: string, payload: string) => {
+  // TASK-124 — `slot` is optional: a per-slot account ref
+  // (`account:<service>:<slot>`, a multi-slot connector) threads it through so
+  // the Replace/Remove writes address the SAME row, never collapsing it back to
+  // `account:<service>`. The free-typed "Add a key" path always omits it (the
+  // standalone single-key case).
+  const addAccountKey = async (service: string, payload: string, slot?: string) => {
     try {
       await setDestinationCredential({
-        destination: { kind: 'account', service },
+        destination: { kind: 'account', service, ...(slot !== undefined ? { slot } : {}) },
         slot: { kind: 'api-key' },
         scope: { scope: 'user', ownerId: null }, // server forces ownerId = actor.id
         payload,
@@ -132,10 +146,10 @@ export function KeysTab() {
       setError(humanError(e));
     }
   };
-  const removeAccountKey = async (service: string) => {
+  const removeAccountKey = async (service: string, slot?: string) => {
     try {
       await clearDestinationCredential({
-        destination: { kind: 'account', service },
+        destination: { kind: 'account', service, ...(slot !== undefined ? { slot } : {}) },
         scope: { scope: 'user', ownerId: null },
       });
       load();
@@ -202,10 +216,15 @@ export function KeysTab() {
           if (parsed.shape === 'account') {
             const referencing = usage[parsed.service] ?? [];
             const usedBy = referencing.length > 0 ? referencing.join(', ') : parsed.service;
+            // TASK-124 — a per-slot ref shows the service with its slot name as a
+            // mono subtitle (`github · GITHUB_TOKEN`); a collapsed ref shows just
+            // the service.
+            const label =
+              parsed.slot !== undefined ? `${parsed.service} · ${parsed.slot}` : parsed.service;
             return (
               <div key={c.ref} className="flex items-center gap-3 px-4 py-2.5">
                 <span className="flex flex-1 min-w-0 flex-col">
-                  <span className="truncate text-sm text-foreground">{parsed.service}</span>
+                  <span className="truncate text-sm text-foreground">{label}</span>
                   <span className="truncate text-[11px] text-muted-foreground">
                     used by: {usedBy}
                   </span>
@@ -213,13 +232,13 @@ export function KeysTab() {
                 <span className="text-xs tracking-widest text-muted-foreground">••••••</span>
                 <Badge variant="secondary">set</Badge>
                 <ReplaceSheet
-                  title={`Replace ${parsed.service} key`}
-                  onSave={(p) => addAccountKey(parsed.service, p)}
+                  title={`Replace ${label} key`}
+                  onSave={(p) => addAccountKey(parsed.service, p, parsed.slot)}
                 />
                 <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => removeAccountKey(parsed.service)}
+                  onClick={() => removeAccountKey(parsed.service, parsed.slot)}
                 >
                   Remove
                 </Button>

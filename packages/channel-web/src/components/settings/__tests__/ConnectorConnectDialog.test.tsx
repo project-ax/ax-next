@@ -51,6 +51,24 @@ const NO_KEY = fullConnector({
   capabilities: connectorsLib.emptyCapabilities(),
 });
 
+// TASK-124 — a multi-slot connector. Both slots fall back to the connector id as
+// the service tag; the per-slot ref form keeps them on DISTINCT vault rows
+// (`account:<id>:<SLOT>`), and the dialog must build the destination from the
+// plan's structured `service`/`slotTag`, never by slicing the `:`-bearing ref.
+const MULTI_SLOT = fullConnector({
+  id: 'oauthsvc',
+  name: 'OAuth Service',
+  keyMode: 'personal',
+  visibility: 'private',
+  capabilities: {
+    ...connectorsLib.emptyCapabilities(),
+    credentials: [
+      { slot: 'CLIENT_ID', kind: 'api-key' },
+      { slot: 'CLIENT_SECRET', kind: 'api-key' },
+    ],
+  },
+});
+
 describe('ConnectorConnectDialog', () => {
   beforeEach(() => {
     vi.spyOn(credLib, 'setDestinationCredential').mockResolvedValue();
@@ -84,6 +102,46 @@ describe('ConnectorConnectDialog', () => {
       ),
     );
     await waitFor(() => expect(onConnected).toHaveBeenCalled());
+  });
+
+  it('multi-slot connector writes a DISTINCT per-slot account destination per slot (TASK-124)', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(MULTI_SLOT);
+    render(
+      <ConnectorConnectDialog
+        connectorId="oauthsvc"
+        connectorName="OAuth Service"
+        isAdmin={false}
+        open
+        onOpenChange={() => {}}
+        onConnected={() => {}}
+      />,
+    );
+    // One key field per slot, headed by the slot name; the slots render in
+    // declaration order (CLIENT_ID then CLIENT_SECRET).
+    expect(await screen.findByText('CLIENT_ID')).toBeInTheDocument();
+    expect(screen.getByText('CLIENT_SECRET')).toBeInTheDocument();
+    const fields = screen.getAllByLabelText(/API key/i);
+    expect(fields).toHaveLength(2);
+    fireEvent.change(fields[0]!, { target: { value: 'the-id' } });
+    fireEvent.change(fields[1]!, { target: { value: 'the-secret' } });
+    // Each slot's form has its own Save button; saving both writes two refs.
+    const saves = screen.getAllByRole('button', { name: /^Save$|^Connect$/i });
+    fireEvent.click(saves[0]!);
+    fireEvent.click(saves[1]!);
+    await waitFor(() => {
+      expect(credLib.setDestinationCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          destination: { kind: 'account', service: 'oauthsvc', slot: 'CLIENT_ID' },
+          payload: 'the-id',
+        }),
+      );
+      expect(credLib.setDestinationCredential).toHaveBeenCalledWith(
+        expect.objectContaining({
+          destination: { kind: 'account', service: 'oauthsvc', slot: 'CLIENT_SECRET' },
+          payload: 'the-secret',
+        }),
+      );
+    });
   });
 
   it('workspace connector shows the shared-key CONSENT gate before the key form', async () => {

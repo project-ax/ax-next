@@ -372,15 +372,19 @@ export function foldConnectorCaps(
     // Credential slots → namespaced host-side credential map. The env-NAME key
     // stays per-connector (`connector:<id>:<slot>`) so two subjects' same-named
     // slots coexist and the env projection can restore the bare name; but the
-    // REF is the `account:<service>` vault key TASK-96's connect flow WRITES, so
-    // the orchestrator resolves the SAME row the user's connect stored.
+    // REF is the `account:<service>[:<slot>]` vault key TASK-96's connect flow
+    // WRITES, so the orchestrator resolves the SAME row the user's connect stored.
     //
-    // ONE SOURCE OF TRUTH (invariant #4): the service tag MUST match
-    // @ax/connectors' `serviceTagForSlot` / `deriveCredentialPlan` — slot.account
-    // when present, else the connector id. Re-derived locally (I2 — no
-    // @ax/connectors runtime import), the same posture as foldAuthoredSkillCaps'
-    // local `account:${account}` derivation. `connector-union.test.ts` pins the
-    // shape; a drift here would silently address an empty vault row.
+    // ONE SOURCE OF TRUTH (invariant #4): the service tag + per-slot rule MUST
+    // match @ax/connectors' `serviceTagForSlot` / `deriveCredentialPlan` — service
+    // = slot.account when present, else the connector id; and (TASK-124) the ref
+    // COLLAPSES to `account:<service>` for a single-slot connector but EXPANDS to
+    // `account:<service>:<slot>` per slot for a ≥2-slot connector. Re-derived
+    // locally (I2 — no @ax/connectors runtime import), the same posture as
+    // foldAuthoredSkillCaps' local `account:${account}` derivation.
+    // `connector-union.test.ts` pins the shape; a drift here would silently
+    // address an empty (or colliding) vault row.
+    const isMulti = c.capabilities.credentials.length >= 2;
     for (const slotDef of c.capabilities.credentials) {
       const envName = connectorCredentialEnvName(c.id, slotDef.slot);
       if (slotOwners.has(envName)) continue; // idempotent on a duplicate slot
@@ -388,7 +392,7 @@ export function foldConnectorCaps(
         slotDef.account !== undefined && slotDef.account.length > 0
           ? slotDef.account
           : c.id;
-      const ref = `account:${service}`;
+      const ref = isMulti ? `account:${service}:${slotDef.slot}` : `account:${service}`;
       baseCreds[envName] = { ref, kind: slotDef.kind };
       slotOwners.set(envName, `connector:${c.id}`);
       connectorSlotEnvNames.push({ envName, bareSlot: slotDef.slot });

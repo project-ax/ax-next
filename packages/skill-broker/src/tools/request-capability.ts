@@ -98,10 +98,21 @@ interface PermissionRequestEvent {
   description: string;
   hosts: string[];
   // `account` (JIT P2): the service slug, present iff the manifest slot declares
-  // it. `haveExisting`: the user already has the `account:<service>` vault entry,
-  // so the card offers "use your existing key" instead of prompting. Both are
-  // per-request card hints — never persisted on a manifest/store type.
-  slots: { slot: string; kind: 'api-key'; account?: string; haveExisting?: boolean }[];
+  // it. `haveExisting`: the user already has the matching vault entry, so the card
+  // offers "use your existing key" instead of prompting. `service`/`slotTag`
+  // (TASK-124): the resolved vault-key tags the card's WRITE path uses to build
+  // `{kind:'account', service, slot?}` — `service` is the slot's account (else the
+  // connector id), `slotTag` is present only for a multi-slot connector's per-slot
+  // `account:<service>:<slot>` ref. All per-request card hints — never persisted
+  // on a manifest/store type.
+  slots: {
+    slot: string;
+    kind: 'api-key';
+    account?: string;
+    service?: string;
+    slotTag?: string;
+    haveExisting?: boolean;
+  }[];
   // Package registry egress the skill declares — shown to the user so they can
   // see which registries will be used. Empty arrays when the skill has no
   // package deps.
@@ -191,7 +202,20 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
       // connector contributes ZERO reach here (the security invariant TASK-111
       // established and TASK-100 must preserve).
       const connectorHosts: string[] = [];
-      const connectorSlots: { slot: string; kind: 'api-key'; account?: string }[] = [];
+      // TASK-124 — each accumulated slot carries the RESOLVED vault-key tags
+      // (service / slotTag / ref) computed AT resolve time, where the connector id
+      // + its slot count are in hand. The per-slot ref rule keys on the resolved
+      // connector's slot COUNT (mirrors @ax/connectors' deriveCredentialPlan):
+      // exactly 1 slot keeps `account:<service>`, ≥2 slots expand to
+      // `account:<service>:<slot>` per slot.
+      const connectorSlots: {
+        slot: string;
+        kind: 'api-key';
+        account?: string;
+        service: string;
+        slotTag?: string;
+        ref: string;
+      }[] = [];
       const connectorNpm: string[] = [];
       const connectorPypi: string[] = [];
       if (bus.hasService('connectors:resolve')) {
@@ -204,7 +228,22 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
               ConnectorsResolveOutput
             >('connectors:resolve', toolCtx, { userId: toolCtx.userId, connectorId });
             for (const h of resolved.capabilities.allowedHosts) connectorHosts.push(h);
-            for (const c of resolved.capabilities.credentials) connectorSlots.push(c);
+            const isMulti = resolved.capabilities.credentials.length >= 2;
+            for (const c of resolved.capabilities.credentials) {
+              // service = the slot's account, else the connector id (mirrors
+              // @ax/connectors' serviceTagForSlot fallback).
+              const service =
+                c.account !== undefined && c.account.length > 0 ? c.account : resolved.id;
+              const ref = isMulti ? `account:${service}:${c.slot}` : `account:${service}`;
+              connectorSlots.push({
+                slot: c.slot,
+                kind: 'api-key',
+                ...(c.account !== undefined ? { account: c.account } : {}),
+                service,
+                ...(isMulti ? { slotTag: c.slot } : {}),
+                ref,
+              });
+            }
             for (const p of resolved.capabilities.packages?.npm ?? []) connectorNpm.push(p);
             for (const p of resolved.capabilities.packages?.pypi ?? []) connectorPypi.push(p);
           } catch {
@@ -215,9 +254,9 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
 
       // The card surface is purely connector-derived now, deduped: a host or
       // package declared by multiple connectors appears once; a slot is keyed by
-      // name (first declaration wins its account/haveExisting).
+      // name (first declaration wins its account/service/slotTag/haveExisting).
       const allHosts = dedup(connectorHosts);
-      const slotByName = new Map<string, { slot: string; kind: 'api-key'; account?: string }>();
+      const slotByName = new Map<string, (typeof connectorSlots)[number]>();
       for (const c of connectorSlots) {
         if (!slotByName.has(c.slot)) slotByName.set(c.slot, c);
       }
@@ -253,7 +292,12 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
           slot: c.slot,
           kind: 'api-key' as const,
           ...(c.account !== undefined ? { account: c.account } : {}),
-          haveExisting: c.account !== undefined && vaulted.has(`account:${c.account}`),
+          service: c.service,
+          ...(c.slotTag !== undefined ? { slotTag: c.slotTag } : {}),
+          // TASK-124 — presence is checked against the RESOLVED per-slot ref so a
+          // multi-slot connector offers "use existing" only when THAT slot's row
+          // is vaulted (not a collapsed sibling).
+          haveExisting: vaulted.has(c.ref),
         })),
         packages: { npm: allNpm, pypi: allPypi },
       };

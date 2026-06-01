@@ -42,6 +42,11 @@ describe('connector credential-plan derivation (TASK-96 parity, local re-decl)',
     expect(accountRef('salesforce')).toBe('account:salesforce');
   });
 
+  // TASK-124 — a supplied slot expands the ref to the per-slot form.
+  it('accountRef builds account:<service>:<slot> when a slot is supplied', () => {
+    expect(accountRef('salesforce', 'CLIENT_ID')).toBe('account:salesforce:CLIENT_ID');
+  });
+
   it('serviceTagForSlot prefers the slot account, falls back to connectorId', () => {
     expect(
       serviceTagForSlot({ slot: 'token', kind: 'api-key', account: 'gmail' }, 'my-conn'),
@@ -64,7 +69,8 @@ describe('connector credential-plan derivation (TASK-96 parity, local re-decl)',
         },
       });
       expect(deriveCredentialPlan(c)).toEqual([
-        { slot: 'token', scope: 'user', ref: 'account:notion' },
+        // TASK-124 — single-slot connector keeps the collapsed ref + `service`.
+        { slot: 'token', scope: 'user', ref: 'account:notion', service: 'notion' },
       ]);
     });
 
@@ -78,12 +84,58 @@ describe('connector credential-plan derivation (TASK-96 parity, local re-decl)',
         },
       });
       expect(deriveCredentialPlan(c)).toEqual([
-        { slot: 'sf-key', scope: 'global', ref: 'account:company-sf' },
+        { slot: 'sf-key', scope: 'global', ref: 'account:company-sf', service: 'company-sf' },
       ]);
     });
 
     it('a connector with no credential slots yields an empty plan', () => {
       expect(deriveCredentialPlan(connector({}))).toEqual([]);
+    });
+
+    // TASK-124 — parity with @ax/connectors: ≥2 slots derive a distinct per-slot
+    // ref each (the collision fix), and the structured slotTag is carried so the
+    // connect dialog builds `{kind:'account', service, slot}` without ref parsing.
+    it('multi-slot connector → distinct account:<service>:<slot> per slot (collision fix)', () => {
+      const c = connector({
+        id: 'oauthsvc',
+        keyMode: 'personal',
+        capabilities: {
+          ...emptyCapabilities(),
+          credentials: [
+            { slot: 'CLIENT_ID', kind: 'api-key' },
+            { slot: 'CLIENT_SECRET', kind: 'api-key' },
+          ],
+        },
+      });
+      expect(deriveCredentialPlan(c)).toEqual([
+        {
+          slot: 'CLIENT_ID',
+          scope: 'user',
+          ref: 'account:oauthsvc:CLIENT_ID',
+          service: 'oauthsvc',
+          slotTag: 'CLIENT_ID',
+        },
+        {
+          slot: 'CLIENT_SECRET',
+          scope: 'user',
+          ref: 'account:oauthsvc:CLIENT_SECRET',
+          service: 'oauthsvc',
+          slotTag: 'CLIENT_SECRET',
+        },
+      ]);
+    });
+
+    it('single-slot connector carries no slotTag (drives the collapsed destination)', () => {
+      const c = connector({
+        id: 'gh',
+        capabilities: {
+          ...emptyCapabilities(),
+          credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+        },
+      });
+      const plan = deriveCredentialPlan(c);
+      expect(plan[0]).not.toHaveProperty('slotTag');
+      expect(plan[0]!.service).toBe('gh');
     });
   });
 

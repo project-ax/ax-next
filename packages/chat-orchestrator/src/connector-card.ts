@@ -45,7 +45,22 @@ export interface AuthoredConnectorCard {
   connectorId: string;
   name: string;
   hosts: string[];
-  slots: Array<{ slot: string; kind: 'api-key'; account?: string; haveExisting?: boolean }>;
+  slots: Array<{
+    slot: string;
+    kind: 'api-key';
+    account?: string;
+    /**
+     * TASK-124 — the resolved `<service>` tag the key binds (slot.account, else
+     * the connectorId) + the optional `<slot>` tag for a multi-slot connector's
+     * per-slot ref. The card's WRITE path builds `{kind:'account', service,
+     * slot?}` from these so it addresses the SAME `account:<service>[:<slot>]`
+     * row the orchestrator fold resolves — never re-deriving the service from
+     * the raw slot name.
+     */
+    service?: string;
+    slotTag?: string;
+    haveExisting?: boolean;
+  }>;
   authored: true;
   packages: { npm: string[]; pypi: string[] };
 }
@@ -60,12 +75,25 @@ export function buildAuthoredConnectorCard(
     return null; // nothing the card can show/approve (mcp-only or empty)
   }
   const hosts = proposal.allowedHosts;
-  const slots = proposal.credentials.map((c) => ({
-    slot: c.slot,
-    kind: 'api-key' as const,
-    ...(c.account !== undefined ? { account: c.account } : {}),
-    haveExisting: c.account !== undefined && vaultedRefs.has(`account:${c.account}`),
-  }));
+  // TASK-124 — the per-slot rule keys on the proposal's slot COUNT (mirrors
+  // @ax/connectors' deriveCredentialPlan): exactly 1 slot keeps the collapsed
+  // `account:<service>` ref; ≥2 slots expand to `account:<service>:<slot>` per
+  // slot so two slots that share a service tag no longer collide.
+  const isMulti = proposal.credentials.length >= 2;
+  const slots = proposal.credentials.map((c) => {
+    // The service tag the key binds: the slot's declared account, else the
+    // connectorId (the same fallback @ax/connectors' serviceTagForSlot uses).
+    const service = c.account !== undefined && c.account.length > 0 ? c.account : connectorId;
+    const ref = isMulti ? `account:${service}:${c.slot}` : `account:${service}`;
+    return {
+      slot: c.slot,
+      kind: 'api-key' as const,
+      ...(c.account !== undefined ? { account: c.account } : {}),
+      service,
+      ...(isMulti ? { slotTag: c.slot } : {}),
+      haveExisting: vaultedRefs.has(ref),
+    };
+  });
   return {
     kind: 'connector',
     connectorId,
