@@ -12,6 +12,7 @@ import { validateBundleFiles } from './bundle-files.js';
 import { classifyTier } from './catalog-tier.js';
 import { parseSkillManifest } from './manifest.js';
 import { runSkillsMigration, type SkillsDatabase } from './migrations.js';
+import { migrateSkillCapabilitiesToConnectors } from './cap-migration.js';
 import { createSkillsStore } from './store.js';
 import { createUserSkillsStore } from './user-store.js';
 import { createUserAttachmentsStore } from './user-attachments-store.js';
@@ -234,6 +235,20 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
         'blob:put',
         'blob:get',
       ],
+      optionalCalls: [
+        {
+          // TASK-100 — the cap→connector data migration (run at init) lifts each
+          // legacy skill `capabilities:` block into a connector via this hook.
+          // Optional (init-ordering edge so @ax/connectors is up first); when the
+          // connectors plugin is absent the migration still STRIPS the cap block
+          // so the manifest stays schema-valid (the skill loses that reach until
+          // a connector is created). No call-graph cycle: connectors never calls
+          // skills.
+          hook: 'connectors:upsert',
+          degradation:
+            'the TASK-100 cap→connector migration strips the legacy capability block but cannot create the connector (no connectors store) — the skill loses that reach until a connector is authored',
+        },
+      ],
       subscribes: [],
     },
 
@@ -252,6 +267,19 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
       );
       db = shared as Kysely<SkillsDatabase>;
       await runSkillsMigration(db);
+
+      // TASK-100 — split any stored skill's legacy `capabilities:` block into a
+      // connector (via the connectors:upsert HOOK — invariant #4) and rewrite the
+      // skill to reference it. Idempotent + re-runnable; greenfield typically
+      // migrates zero rows. Best-effort: a failure logs + never wedges boot (so a
+      // connector hiccup can't block the skills store coming up).
+      try {
+        await migrateSkillCapabilitiesToConnectors(db, bus, initCtx);
+      } catch (err) {
+        initCtx.logger.warn('skill_cap_migration_failed', {
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
 
       // Construct the content-addressed bundle byte-store ONCE and inject the
       // SAME instance into every store so identical bytes dedup across scopes.
