@@ -14,11 +14,9 @@ import { UserMenu } from './UserMenu';
 export function Sidebar({
   onOpenAdminSettings,
   onOpenRoutines,
-  onOpenUserSkills,
 }: {
   onOpenAdminSettings?: (() => void) | undefined;
   onOpenRoutines?: (() => void) | undefined;
-  onOpenUserSkills?: (() => void) | undefined;
 } = {}) {
   return (
     <aside
@@ -60,7 +58,6 @@ export function Sidebar({
       <UserMenu
         onOpenAdminSettings={onOpenAdminSettings}
         onOpenRoutines={onOpenRoutines}
-        onOpenUserSkills={onOpenUserSkills}
       />
     </aside>
   );

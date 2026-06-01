@@ -70,7 +70,9 @@ interface Capabilities {
   packages: { npm: string[]; pypi: string[] };
 }
 
-/** Metadata-only descriptor for the list view — omits `capabilities`. */
+/** Metadata-only descriptor for the list view — omits `capabilities`.
+ *  `defaultAttached` is the admin workspace-default flag, on the summary
+ *  (TASK-110) so the user list can badge a default-on connector as "Catalog". */
 export interface ConnectorSummary {
   id: string;
   name: string;
@@ -78,6 +80,7 @@ export interface ConnectorSummary {
   usageNote: string;
   keyMode: KeyMode;
   visibility: Visibility;
+  defaultAttached: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -85,7 +88,6 @@ export interface ConnectorSummary {
 /** The full connector, including the opaque capability fill. */
 export interface Connector extends ConnectorSummary {
   capabilities: Capabilities;
-  defaultAttached: boolean;
 }
 
 /**
@@ -123,13 +125,14 @@ function toSummary(row: StoredConnector): ConnectorSummary {
     usageNote: row.usageNote,
     keyMode: row.keyMode,
     visibility: row.visibility,
+    defaultAttached: row.defaultAttached,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
 }
 
 function toConnector(row: StoredConnector): Connector {
-  return { ...toSummary(row), capabilities: row.capabilities, defaultAttached: row.defaultAttached };
+  return { ...toSummary(row), capabilities: row.capabilities };
 }
 
 async function readJsonBody(req: IncomingMessage): Promise<unknown> {

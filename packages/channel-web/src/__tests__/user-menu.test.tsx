@@ -35,6 +35,23 @@ describe('UserMenu', () => {
     expect(screen.queryByText(/Admin · Credentials/)).toBeNull();
     // Standalone Credentials entry removed (now lives inside admin Settings).
     expect(screen.queryByRole('menuitem', { name: 'Credentials' })).toBeNull();
+    // TASK-110 — the redundant "My Skills" modal entry is retired; the Skills
+    // settings tab is the sole entry.
+    expect(screen.queryByRole('menuitem', { name: 'My Skills' })).toBeNull();
+  });
+
+  it('does NOT show a "My Skills" entry (retired in TASK-110)', () => {
+    render(
+      <UserProvider value={regularUser}>
+        <UserMenu />
+      </UserProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
+    // The modal entry is gone for every user — the Skills settings tab is the
+    // single surface now (UserSkillsPanelBody is shared between the old modal +
+    // the tab, so removing the modal entry loses nothing).
+    expect(screen.queryByRole('menuitem', { name: 'My Skills' })).toBeNull();
+    expect(screen.queryByText('My Skills')).toBeNull();
   });
 
   it('"Settings" entry calls onOpenAdminSettings', () => {

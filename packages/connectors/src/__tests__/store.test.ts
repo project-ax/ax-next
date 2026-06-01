@@ -191,6 +191,37 @@ describe('createConnectorStore', () => {
     expect(cleared.connector.defaultAttached).toBe(false);
   });
 
+  it('listForUser summaries carry defaultAttached (TASK-110 — the user list badges admin default-on connectors)', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createConnectorStore(db);
+
+    const base = (over: { connectorId: string; defaultAttached?: boolean }) => ({
+      userId: 'u',
+      name: over.connectorId.toUpperCase(),
+      description: '',
+      usageNote: '',
+      keyMode: 'personal' as const,
+      visibility: 'private' as const,
+      capabilities: caps(),
+      ...over,
+    });
+
+    // A default-on (admin-curated) connector and a plain private one.
+    await store.upsert(base({ connectorId: 'flagged', defaultAttached: true }));
+    await store.upsert(base({ connectorId: 'plain', defaultAttached: false }));
+
+    const summaries = await store.listForUser('u');
+    const byId = new Map(summaries.map((s) => [s.id, s]));
+    // The dropped-field bug: the summary mapper omitted defaultAttached entirely,
+    // so the user list could never badge a default-on, visibility:'private'
+    // connector as "Catalog". The summary must carry the flag faithfully.
+    expect(byId.get('flagged')!.defaultAttached).toBe(true);
+    expect(byId.get('plain')!.defaultAttached).toBe(false);
+    // The summary still omits the capabilities spec (mechanism behind Advanced).
+    expect(byId.get('flagged')).not.toHaveProperty('capabilities');
+  });
+
   it('listDefaults returns only default-flagged, non-tombstoned, owner-scoped FULL connectors sorted by id', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);

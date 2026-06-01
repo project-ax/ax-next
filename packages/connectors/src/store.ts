@@ -164,6 +164,10 @@ function rowToSummary(
     usageNote: row.usage_note,
     keyMode: validateKeyMode(row.key_mode),
     visibility: validateVisibility(row.visibility),
+    // TASK-110 — surface the workspace-default flag on the summary so the user
+    // list can badge an admin default-on connector as "Catalog". Same NULL-safe
+    // coercion as rowToConnector (a pre-column NULL reads as false).
+    defaultAttached: row.default_attached === true,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
   };

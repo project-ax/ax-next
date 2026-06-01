@@ -14,6 +14,7 @@ const PRIVATE_CONN: ConnectorSummary = {
   usageNote: 'Ask the agent to read or update Notion pages.',
   keyMode: 'personal',
   visibility: 'private',
+  defaultAttached: false,
   createdAt: '2026-05-20T00:00:00Z',
   updatedAt: '2026-05-20T00:00:00Z',
 };
@@ -27,6 +28,23 @@ const SHARED_CONN: ConnectorSummary = {
   usageNote: 'Drive the sf CLI for our workflows.',
   keyMode: 'workspace',
   visibility: 'shared',
+  defaultAttached: false,
+  createdAt: '2026-05-20T00:00:00Z',
+  updatedAt: '2026-05-20T00:00:00Z',
+};
+
+// An admin default-on connector that is still visibility:'private'. TASK-110:
+// the user list must badge it "Catalog" via `defaultAttached`. Before TASK-110
+// the LIST summary dropped `defaultAttached`, so this connector wrongly showed
+// no badge (the badge keyed off `visibility` alone).
+const DEFAULT_ON_PRIVATE_CONN: ConnectorSummary = {
+  id: 'org-github',
+  name: 'Org GitHub',
+  description: 'The org GitHub, attached to every agent by default.',
+  usageNote: 'Read and write org repos.',
+  keyMode: 'workspace',
+  visibility: 'private',
+  defaultAttached: true,
   createdAt: '2026-05-20T00:00:00Z',
   updatedAt: '2026-05-20T00:00:00Z',
 };
@@ -92,6 +110,23 @@ describe('ConnectorsTab', () => {
     // The private connector's tile carries no "Catalog" copy.
     const privateTile = screen.getByTestId('connector-tile-my-notion');
     expect(privateTile.textContent).not.toMatch(/Catalog/);
+  });
+
+  it('badges an admin default-on connector "Catalog" even when its visibility is private (TASK-110)', async () => {
+    vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
+      PRIVATE_CONN,
+      DEFAULT_ON_PRIVATE_CONN,
+    ]);
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('Org GitHub');
+    // The default-on connector wears the single "Catalog" badge (sourced via
+    // defaultAttached), the plain private one does not.
+    const defaultTile = screen.getByTestId('connector-tile-org-github');
+    expect(defaultTile.textContent).toMatch(/Catalog/);
+    const privateTile = screen.getByTestId('connector-tile-my-notion');
+    expect(privateTile.textContent).not.toMatch(/Catalog/);
+    // Exactly one Catalog badge on the tab (only the default-on connector).
+    expect(screen.getAllByText('Catalog')).toHaveLength(1);
   });
 
   it('keeps the default view mechanism-free (no transport/command/url/args)', async () => {
