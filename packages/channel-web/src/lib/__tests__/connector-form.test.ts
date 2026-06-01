@@ -365,8 +365,25 @@ describe('connector-form helpers', () => {
     expect(caps.mcpServers[0]!.allowedHosts).toEqual(['inner.example']);
     // beyond-first server untouched
     expect(caps.mcpServers[1]!.name).toBe('second');
-    // packages preserved as-is for an MCP connector (un-surfaced)
-    expect(caps.packages).toEqual({ npm: ['@org/cli', '@org/extra'], pypi: [] });
+    // packages: the LEADING package is dropped (it belongs to the cli mechanism,
+    // not mcp), beyond-first un-surfaced packages preserved.
+    expect(caps.packages).toEqual({ npm: ['@org/extra'], pypi: [] });
+  });
+
+  it('switching away from CLI to direct-api drops the leading package (no egress+exec leak)', () => {
+    const base = {
+      ...emptyCapabilities(),
+      packages: { npm: ['leftover-cli'], pypi: [] },
+    };
+    const f: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'Now Direct',
+      mechanism: 'direct-api',
+      allowedHosts: 'api.example.com',
+      baseCapabilities: base,
+    };
+    const caps = capabilitiesFromForm(f);
+    expect(caps.packages).toEqual({ npm: [], pypi: [] });
   });
 
   it('cli edit preserves a beyond-first package, overlays the leading one', () => {

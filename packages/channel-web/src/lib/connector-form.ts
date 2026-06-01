@@ -254,24 +254,21 @@ export function capabilitiesFromForm(
     }
   }
 
-  // packages — only a Command-line connector keeps a LEADING package. Beyond-
-  // first packages (per registry) are preserved; the leading one is edited /
-  // cleared. We treat npm[0]/pypi[0] as the "leading" slot of each list.
-  let packages = { npm: base.packages.npm, pypi: base.packages.pypi };
+  // packages — only a Command-line connector keeps a LEADING package. We treat
+  // npm[0]/pypi[0] as the "leading" slot of each registry list; beyond-first
+  // entries (index ≥ 1) are un-surfaced fill and always preserved, while the
+  // leading slot is the edited / cleared one. This mirrors the mcpServers rule:
+  // switching AWAY from cli drops the leading package so a Direct API / MCP
+  // connector doesn't silently retain an egress+exec package from a prior cli
+  // shape (and the empty Direct-API / MCP package surface the design intends).
+  const packages = {
+    npm: base.packages.npm.slice(1),
+    pypi: base.packages.pypi.slice(1),
+  };
   if (form.mechanism === 'cli') {
     const name = form.packageName.trim();
     const reg = form.packageRegistry;
-    // Replace the leading entry of the chosen registry; clear the OTHER
-    // registry's leading entry (a connector declares one leading package).
-    const other: PackageRegistry = reg === 'npm' ? 'pypi' : 'npm';
-    const chosenRest = base.packages[reg].slice(1);
-    const otherRest = base.packages[other].slice(1);
-    packages = {
-      npm: [],
-      pypi: [],
-    };
-    packages[reg] = name ? [name, ...chosenRest] : chosenRest;
-    packages[other] = otherRest;
+    if (name) packages[reg] = [name, ...packages[reg]];
   }
 
   return {
