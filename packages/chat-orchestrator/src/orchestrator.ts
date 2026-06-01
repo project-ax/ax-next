@@ -982,7 +982,7 @@ export function createOrchestrator(
   // re-spawn is cheaper than special-casing.
   async function onSkillsProposed(
     ctx: AgentContext,
-    event: SkillsProposedLike,
+    _event: SkillsProposedLike,
   ): Promise<void> {
     const sid = ctx.sessionId;
     if (sid !== undefined && sid.length > 0 && sid !== 'ipc-server') {

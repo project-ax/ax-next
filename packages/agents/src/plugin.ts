@@ -8,7 +8,7 @@ import {
 import { sql, type Kysely } from 'kysely';
 import { checkAccess } from './acl.js';
 import { listAuthoredSkills } from './authored-skills.js';
-import { projectAuthoredBundle, type ApprovedCapEntry } from './authored-caps.js';
+import { projectAuthoredBundle } from './authored-caps.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
 import { runAgentsMigration, type AgentsDatabase } from './migrations.js';
 import {

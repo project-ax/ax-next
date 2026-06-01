@@ -9,7 +9,6 @@
  */
 import { z, type ZodType } from 'zod';
 import type { Transaction } from 'kysely';
-import type { SkillCapabilities } from '@ax/skills-parser';
 
 /**
  * A single installed skill attached to an agent, with its credential slot

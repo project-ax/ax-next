@@ -1,7 +1,6 @@
 import {
   makeAgentContext,
   PluginError,
-  type AgentContext,
   type HookBus,
   type Plugin,
 } from '@ax/core';
