@@ -311,6 +311,31 @@ export function deriveCredentialPlan(
   });
 }
 
+/** Where a connector's secret actually lands — the truthful, plain-language
+ *  hint shown beneath each per-slot key field on the Credentials "Add a key"
+ *  surface (TASK-132). */
+export type MechanismHint = 'env var' | 'header' | 'request auth';
+
+/**
+ * Derive the truthful mechanism hint for a connector's credential slots
+ * (TASK-132). A connector's backing mechanism is connector-level — the admin
+ * Connector registry form edits a SINGLE leading mcpServer — so the hint keys off
+ * that leading server's transport, or falls back to Direct API when the connector
+ * has no MCP backing at all:
+ *   - stdio MCP → the secret is injected as an environment variable ("env var");
+ *   - http MCP  → the secret is sent as an HTTP request header ("header");
+ *   - no MCP    → Direct API: the secret is used in the request's auth ("request auth").
+ *
+ * This is a USER-FACING security-relevant label: it tells the keyholder where
+ * their secret is actually used. Pinned by `connectors-credential-plan.test.ts`.
+ */
+export function mechanismHint(connector: Connector): MechanismHint {
+  const transport = connector.capabilities.mcpServers[0]?.transport;
+  if (transport === 'stdio') return 'env var';
+  if (transport === 'http') return 'header';
+  return 'request auth';
+}
+
 /**
  * Whether connecting this connector must surface the shared-key consent moment
  * BEFORE the key becomes spendable. True iff the resolved key is spendable by an

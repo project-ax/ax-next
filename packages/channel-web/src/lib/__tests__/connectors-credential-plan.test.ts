@@ -7,6 +7,7 @@ import {
   sharedKeyConsentMessage,
   SHARED_KEY_CONSENT_COPY,
   emptyCapabilities,
+  mechanismHint,
   type Connector,
 } from '../connectors';
 
@@ -167,6 +168,61 @@ describe('connector credential-plan derivation (TASK-96 parity, local re-decl)',
       expect(sharedKeyConsentMessage('Salesforce')).toBe(
         "Sharing this key lets their assistant act as you on Salesforce. They can't copy the key — but they can use it.",
       );
+    });
+  });
+
+  // TASK-132 — the per-slot field's mechanism hint MUST be truthful per mechanism
+  // (it tells the user where their secret actually lands: an env var, an HTTP
+  // header, or a request-auth field). A connector's mechanism is connector-level
+  // — keyed off the single leading mcpServer's transport (the same model the
+  // admin Connector registry form edits), or Direct API when there's no MCP
+  // backing at all.
+  describe('mechanismHint — truthful per mechanism', () => {
+    it('stdio MCP → "env var"', () => {
+      const c = connector({
+        capabilities: {
+          ...emptyCapabilities(),
+          mcpServers: [
+            {
+              name: 's',
+              transport: 'stdio',
+              command: 'foo',
+              allowedHosts: [],
+              credentials: [],
+            },
+          ],
+        },
+      });
+      expect(mechanismHint(c)).toBe('env var');
+    });
+
+    it('http MCP → "header"', () => {
+      const c = connector({
+        capabilities: {
+          ...emptyCapabilities(),
+          mcpServers: [
+            {
+              name: 's',
+              transport: 'http',
+              url: 'https://example.com',
+              allowedHosts: ['example.com'],
+              credentials: [],
+            },
+          ],
+        },
+      });
+      expect(mechanismHint(c)).toBe('header');
+    });
+
+    it('no MCP backing (Direct API) → "request auth"', () => {
+      const c = connector({
+        capabilities: {
+          ...emptyCapabilities(),
+          allowedHosts: ['api.example.com'],
+          credentials: [{ slot: 'API_KEY', kind: 'api-key' }],
+        },
+      });
+      expect(mechanismHint(c)).toBe('request auth');
     });
   });
 });
