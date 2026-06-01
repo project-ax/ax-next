@@ -4,7 +4,8 @@ import { ConnectorsTab } from '../ConnectorsTab';
 import * as connectorsLib from '@/lib/connectors';
 import * as agentsLib from '@/lib/agents';
 import * as connLib from '@/lib/connections';
-import type { ConnectorSummary } from '@/lib/connectors';
+import * as credLib from '@/lib/credentials';
+import type { ConnectorSummary, Connector } from '@/lib/connectors';
 
 const PRIVATE_CONN: ConnectorSummary = {
   id: 'my-notion',
@@ -30,12 +31,39 @@ const SHARED_CONN: ConnectorSummary = {
   updatedAt: '2026-05-20T00:00:00Z',
 };
 
+/** Build the full connector a `getConnector` mock returns (carries capabilities). */
+function fullOf(summary: ConnectorSummary, slotAccount?: string): Connector {
+  return {
+    ...summary,
+    defaultAttached: false,
+    capabilities: {
+      ...connectorsLib.emptyCapabilities(),
+      credentials: [
+        {
+          slot: 'token',
+          kind: 'api-key',
+          ...(slotAccount !== undefined ? { account: slotAccount } : {}),
+        },
+      ],
+    },
+  };
+}
+
 describe('ConnectorsTab', () => {
   beforeEach(() => {
     vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
       PRIVATE_CONN,
       SHARED_CONN,
     ]);
+    // Each tile derives connected-state + the connect plan from the full
+    // connector. Default: a single api-key slot, account keyed off the id.
+    vi.spyOn(connectorsLib, 'getConnector').mockImplementation(async (id: string) => {
+      if (id === PRIVATE_CONN.id) return fullOf(PRIVATE_CONN, 'notion');
+      return fullOf(SHARED_CONN);
+    });
+    // No stored credentials by default → every connector reads "not connected".
+    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([]);
+    vi.spyOn(credLib.adminCredentials, 'list').mockResolvedValue([]);
     // Allowed-sites section deps — default empty so most tests focus on the
     // connector list. Tests that exercise allowed-sites override these.
     vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([]);
@@ -103,6 +131,61 @@ describe('ConnectorsTab', () => {
     await waitFor(() => {
       expect(screen.getByText('connectors boom')).toBeInTheDocument();
     });
+  });
+
+  it('shows a Connect action on each tile and opens the connect dialog', async () => {
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    const privateTile = screen.getByTestId('connector-tile-my-notion');
+    const connectBtn = privateTile.querySelector('button');
+    expect(connectBtn).not.toBeNull();
+    fireEvent.click(connectBtn!);
+    // The dialog loads the full connector and (personal) shows the key form.
+    expect(await screen.findByText(/Connect My Notion/i)).toBeInTheDocument();
+    expect(await screen.findByLabelText(/API key/i)).toBeInTheDocument();
+  });
+
+  it('a personal connector with NO stored key reads "not connected"', async () => {
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    await waitFor(() => expect(tile.textContent).toMatch(/not connected/i));
+  });
+
+  it('a connector whose plan slot HAS a stored credential reads "connected"', async () => {
+    // notion key stored at the per-user account vault → connected.
+    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([
+      {
+        scope: 'user',
+        ownerId: 'u1',
+        ref: 'account:notion',
+        kind: 'api-key',
+        createdAt: '2026-05-20T00:00:00Z',
+      },
+    ]);
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    await waitFor(() => {
+      expect(tile.textContent).toMatch(/connected/i);
+      expect(tile.textContent).not.toMatch(/not connected/i);
+    });
+    // The action reads "Reconnect" once connected.
+    expect(tile.querySelector('button')?.textContent).toMatch(/reconnect/i);
+  });
+
+  it('the workspace connect dialog shows the shared-key consent gate (admin)', async () => {
+    render(<ConnectorsTab isAdmin />);
+    await screen.findByText('Salesforce');
+    const tile = screen.getByTestId('connector-tile-company-salesforce');
+    fireEvent.click(tile.querySelector('button')!);
+    expect(
+      await screen.findByText(
+        /Sharing this key lets their assistant act as you on Salesforce/i,
+      ),
+    ).toBeInTheDocument();
+    // Key form blocked until consent.
+    expect(screen.queryByLabelText(/API key/i)).toBeNull();
   });
 
   it('shows the per-agent Allowed sites mirror and revokes a host', async () => {
