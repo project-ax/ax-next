@@ -50,6 +50,7 @@
     { "path": "packages/validator-routine" },
     { "path": "packages/routines" },
     { "path": "packages/tool-artifact-publish" },
+    { "path": "packages/tool-connector-propose" },
     { "path": "packages/tool-skill-propose" },
     { "path": "packages/skill-broker" },
     { "path": "packages/skills" },

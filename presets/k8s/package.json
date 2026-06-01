@@ -60,6 +60,7 @@
     "@ax/storage-postgres": "workspace:*",
     "@ax/teams": "workspace:*",
     "@ax/tool-artifact-publish": "workspace:*",
+    "@ax/tool-connector-propose": "workspace:*",
     "@ax/tool-skill-propose": "workspace:*",
     "@ax/validator-routine": "workspace:*",
     "@ax/validator-skill": "workspace:*",
