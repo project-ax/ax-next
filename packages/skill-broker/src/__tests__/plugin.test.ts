@@ -389,7 +389,9 @@ describe('request_capability — bundled approval card (chat:permission-request)
       skillId: 'linear',
       description: 'Read your Linear issues',
       hosts: ['api.linear.app'],
-      slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: false }],
+      // TASK-124 — single-slot connector keeps the collapsed ref; `service` is
+      // the connectorId fallback (slot has no account), no slotTag.
+      slots: [{ slot: 'api_key', kind: 'api-key', service: 'linear', haveExisting: false }],
       packages: { npm: [], pypi: [] },
     });
   });
@@ -422,7 +424,58 @@ describe('request_capability — bundled approval card (chat:permission-request)
       input: { skillId: 'linear' },
     });
     expect(cards[0]?.slots).toEqual([
-      { slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear', haveExisting: true },
+      // TASK-124 — single-slot connector: collapsed ref, `service` = the account
+      // tag, no slotTag; haveExisting matches `account:linear`.
+      { slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear', service: 'linear', haveExisting: true },
+    ]);
+  });
+
+  // TASK-124 — a ≥2-slot referenced connector yields one card slot per slot, each
+  // carrying its own slotTag + per-slot haveExisting (`account:<service>:<slot>`).
+  it('card builds per-slot tags for a multi-slot referenced connector', async () => {
+    const { bus, setVault } = busWithStubs({
+      linearConnectors: ['oauthsvc'],
+      withVault: true,
+      connectorsResolve: (id) => ({
+        id,
+        capabilities: {
+          allowedHosts: [],
+          credentials: [
+            { slot: 'CLIENT_ID', kind: 'api-key' },
+            { slot: 'CLIENT_SECRET', kind: 'api-key' },
+          ],
+          mcpServers: [],
+          packages: { npm: [], pypi: [] },
+        },
+      }),
+    });
+    // Only the CLIENT_ID row is vaulted.
+    setVault(['account:oauthsvc:CLIENT_ID']);
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: Array<{ slots: Array<Record<string, unknown>> }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(cards[0]?.slots).toEqual([
+      {
+        slot: 'CLIENT_ID',
+        kind: 'api-key',
+        service: 'oauthsvc',
+        slotTag: 'CLIENT_ID',
+        haveExisting: true,
+      },
+      {
+        slot: 'CLIENT_SECRET',
+        kind: 'api-key',
+        service: 'oauthsvc',
+        slotTag: 'CLIENT_SECRET',
+        haveExisting: false,
+      },
     ]);
   });
 

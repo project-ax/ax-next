@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useId, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -25,6 +25,10 @@ export function CredentialSlotForm({
   const [payload, setPayload] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // TASK-124 — a multi-slot connector renders one CredentialSlotForm PER slot, so
+  // a static input id would collide across slots (ambiguous <label htmlFor>). A
+  // per-instance id keeps each field's label association unique and accessible.
+  const inputId = useId();
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -53,11 +57,11 @@ export function CredentialSlotForm({
         </Alert>
       )}
       <div className="grid gap-1.5">
-        <Label htmlFor="cred-payload">
+        <Label htmlFor={inputId}>
           {current.set ? 'Replace ' : ''}API key
         </Label>
         <Input
-          id="cred-payload"
+          id={inputId}
           type="password"
           autoComplete="off"
           value={payload}

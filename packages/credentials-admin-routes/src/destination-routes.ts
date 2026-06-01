@@ -77,6 +77,14 @@ export function refForDestination(dest: Destination): string {
       return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
     case 'account':
       assertNoColon('service', dest.service);
+      // TASK-124 — adaptive per-slot ref (mirrors @ax/credentials/refs.ts). A
+      // multi-slot connector supplies `slot` so each slot addresses a distinct
+      // vault row; a single-slot / bare account key omits it and keeps the
+      // collapsed `account:<service>` ref (back-compat by construction).
+      if (dest.slot !== undefined) {
+        assertNoColon('slot', dest.slot);
+        return `account:${dest.service}:${dest.slot}`;
+      }
       return `account:${dest.service}`;
   }
 }
@@ -121,6 +129,12 @@ const DestinationSchema = z.discriminatedUnion('kind', [
   // independently here (no shared import — invariant I2): lowercase slug,
   // starts with a letter, no ':' (also re-asserted by refForDestination's
   // assertNoColon). Identical to ACCOUNT_RE in @ax/skills-parser.
+  //
+  // TASK-124 — optional `slot` for a multi-slot connector. Bounded to the
+  // connector SLOT grammar (SCREAMING_SNAKE, @ax/connectors `SLOT_RE`) so a
+  // browser-supplied slot is constrained and carries no ':' (re-asserted by
+  // refForDestination's assertNoColon). Absent ⟹ the collapsed
+  // `account:<service>` ref; present ⟹ `account:<service>:<slot>`.
   z
     .object({
       kind: z.literal('account'),
@@ -129,6 +143,12 @@ const DestinationSchema = z.discriminatedUnion('kind', [
         .min(1)
         .max(64)
         .regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid account service'),
+      slot: z
+        .string()
+        .min(1)
+        .max(64)
+        .regex(/^[A-Z][A-Z0-9_]{0,63}$/, 'invalid account slot')
+        .optional(),
     })
     .strict(),
 ]);

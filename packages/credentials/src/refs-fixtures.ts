@@ -53,7 +53,18 @@ export const KNOWN_DESTINATION_FIXTURES: ReadonlyArray<DestinationFixture> = [
     expectedRef: 'routine:agt-1:.ax/routines/cron.md:hmac',
   },
   {
+    // Single-slot connector / standalone account key: the ref STAYS
+    // `account:<service>` (back-compat by construction — TASK-124). Existing
+    // stored keys resolve unchanged; "one key per service" preserved.
     destination: { kind: 'account', service: 'linear' },
     expectedRef: 'account:linear',
+  },
+  {
+    // Multi-slot connector: a `slot` on the account destination expands the ref
+    // to `account:<service>:<slot>` (TASK-124) so two slots that resolve to the
+    // same service tag no longer collide on one vault row. `slot` is the
+    // connector's declared SCREAMING_SNAKE capability slot name (no ':').
+    destination: { kind: 'account', service: 'github', slot: 'GITHUB_TOKEN' },
+    expectedRef: 'account:github:GITHUB_TOKEN',
   },
 ];

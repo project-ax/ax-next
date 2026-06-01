@@ -8,7 +8,12 @@ export type Destination =
   | { kind: 'mcp-env'; serverId: string; envName: string }
   | { kind: 'mcp-header'; serverId: string; headerName: string }
   | { kind: 'routine-hmac'; agentId: string; routinePath: string }
-  | { kind: 'account'; service: string }; // JIT P2 — service-keyed user vault
+  // JIT P2 — service-keyed user vault. `slot` (TASK-124, per-slot credential
+  // refs) is OPTIONAL and adaptive: omit it for a single-slot connector / a
+  // standalone account key (ref stays `account:<service>` — back-compat by
+  // construction); supply it for a ≥2-slot connector so each slot gets a
+  // distinct `account:<service>:<slot>` row instead of colliding on one.
+  | { kind: 'account'; service: string; slot?: string };
 
 function assertNoColon(field: string, value: string): void {
   if (value.includes(':')) {
@@ -43,6 +48,13 @@ export function refForDestination(dest: Destination): string {
       return `routine:${dest.agentId}:${dest.routinePath}:hmac`;
     case 'account':
       assertNoColon('service', dest.service);
+      // TASK-124 — adaptive per-slot ref. A multi-slot connector supplies the
+      // slot so each slot addresses a distinct vault row; a single-slot / bare
+      // account key omits it and keeps the collapsed `account:<service>` ref.
+      if (dest.slot !== undefined) {
+        assertNoColon('slot', dest.slot);
+        return `account:${dest.service}:${dest.slot}`;
+      }
       return `account:${dest.service}`;
   }
 }

@@ -133,7 +133,15 @@ export type PermissionRequest =
         kind: 'api-key';
         /** JIT P2 — service slug; when set, the key binds the shared vault entry. */
         account?: string;
-        /** JIT P2 — the user already has account:<service>; card shows "use existing". */
+        /**
+         * TASK-124 — the resolved vault-key tags the card's WRITE path uses to
+         * build `{kind:'account', service, slot?}`: `service` = the slot's account
+         * (else the connector id); `slotTag` present only for a multi-slot
+         * connector's per-slot `account:<service>:<slot>` ref. Public, no secret.
+         */
+        service?: string;
+        slotTag?: string;
+        /** JIT P2 — the user already has the matching ref; card shows "use existing". */
         haveExisting?: boolean;
       }[];
       /**
@@ -161,7 +169,15 @@ export type PermissionRequest =
         kind: 'api-key';
         /** service slug; when set, the key binds the shared `account:<service>` vault. */
         account?: string;
-        /** the user already has `account:<service>`; card shows "use existing". */
+        /**
+         * TASK-124 — the resolved vault-key tags the card's WRITE path uses to
+         * build `{kind:'account', service, slot?}`: `service` = the slot's account
+         * (else the connector id); `slotTag` present only for a multi-slot
+         * connector's per-slot `account:<service>:<slot>` ref. Public, no secret.
+         */
+        service?: string;
+        slotTag?: string;
+        /** the user already has the matching ref; card shows "use existing". */
         haveExisting?: boolean;
       }[];
       /** Open-mode banner — the agent just authored this connector (TASK-94 → true). */

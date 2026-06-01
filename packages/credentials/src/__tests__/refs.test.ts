@@ -62,4 +62,32 @@ describe('refForDestination', () => {
       /must not contain/,
     );
   });
+
+  // TASK-124 — per-slot credential refs (adaptive, back-compat by construction).
+  it('single-slot account ref is BYTE-IDENTICAL to today (back-compat)', () => {
+    // The acceptance contract: a one-slot connector's stored key still resolves
+    // with no migration. An account destination with no `slot` must produce the
+    // exact same string the pre-TASK-124 code did.
+    expect(refForDestination({ kind: 'account', service: 'linear' })).toBe('account:linear');
+    expect(refForDestination({ kind: 'account', service: 'github' })).toBe('account:github');
+  });
+
+  it('mints account:<service>:<slot> for a multi-slot account destination', () => {
+    expect(
+      refForDestination({ kind: 'account', service: 'github', slot: 'GITHUB_TOKEN' }),
+    ).toBe('account:github:GITHUB_TOKEN');
+    // Two slots on the SAME service tag resolve to DISTINCT rows (the collision fix).
+    expect(refForDestination({ kind: 'account', service: 'oauthsvc', slot: 'CLIENT_ID' })).toBe(
+      'account:oauthsvc:CLIENT_ID',
+    );
+    expect(refForDestination({ kind: 'account', service: 'oauthsvc', slot: 'CLIENT_SECRET' })).toBe(
+      'account:oauthsvc:CLIENT_SECRET',
+    );
+  });
+
+  it('rejects an account slot containing the ref separator', () => {
+    expect(() =>
+      refForDestination({ kind: 'account', service: 'svc', slot: 'A:B' }),
+    ).toThrow(/must not contain/);
+  });
 });

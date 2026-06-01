@@ -20,7 +20,9 @@ describe('buildAuthoredConnectorCard', () => {
     expect(card).toEqual({
       kind: 'connector', connectorId: 'linear', name: 'Linear', authored: true,
       hosts: ['api.linear.app'],
-      slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', haveExisting: false }],
+      // TASK-124 — single-slot connector keeps the collapsed ref; `service` is the
+      // connectorId fallback (slot has no account), no slotTag.
+      slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', service: 'linear', haveExisting: false }],
       packages: { npm: [], pypi: [] },
     });
   });
@@ -30,7 +32,59 @@ describe('buildAuthoredConnectorCard', () => {
       { connectorId: 'gdrive', name: 'Drive', proposal: { ...EMPTY, credentials: [{ slot: 'KEY', kind: 'api-key', account: 'google' }] } },
       new Set(['account:google']),
     );
-    expect(card!.slots).toEqual([{ slot: 'KEY', kind: 'api-key', account: 'google', haveExisting: true }]);
+    expect(card!.slots).toEqual([
+      { slot: 'KEY', kind: 'api-key', account: 'google', service: 'google', haveExisting: true },
+    ]);
+  });
+
+  // TASK-124 — a single-slot connector WITHOUT an account tag now also resolves
+  // haveExisting against the connectorId-fallback ref (`account:<connectorId>`),
+  // which the pre-TASK-124 card never checked.
+  it('marks a single-slot untagged slot haveExisting via the connectorId-fallback ref', () => {
+    const card = buildAuthoredConnectorCard(
+      { connectorId: 'linear', name: 'Linear', proposal: { ...EMPTY, credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }] } },
+      new Set(['account:linear']),
+    );
+    expect(card!.slots).toEqual([
+      { slot: 'LINEAR_API_KEY', kind: 'api-key', service: 'linear', haveExisting: true },
+    ]);
+  });
+
+  // TASK-124 — a ≥2-slot connector derives a DISTINCT per-slot ref per slot
+  // (`account:<service>:<slot>`) so two slots that share the connectorId service
+  // tag no longer collide; each slot carries its own slotTag + haveExisting.
+  it('builds per-slot refs for a multi-slot connector (the collision fix)', () => {
+    const card = buildAuthoredConnectorCard(
+      {
+        connectorId: 'oauthsvc',
+        name: 'OAuth',
+        proposal: {
+          ...EMPTY,
+          credentials: [
+            { slot: 'CLIENT_ID', kind: 'api-key' },
+            { slot: 'CLIENT_SECRET', kind: 'api-key' },
+          ],
+        },
+      },
+      // Only the CLIENT_ID row is vaulted.
+      new Set(['account:oauthsvc:CLIENT_ID']),
+    );
+    expect(card!.slots).toEqual([
+      {
+        slot: 'CLIENT_ID',
+        kind: 'api-key',
+        service: 'oauthsvc',
+        slotTag: 'CLIENT_ID',
+        haveExisting: true,
+      },
+      {
+        slot: 'CLIENT_SECRET',
+        kind: 'api-key',
+        service: 'oauthsvc',
+        slotTag: 'CLIENT_SECRET',
+        haveExisting: false,
+      },
+    ]);
   });
 
   it('returns null for an empty surface', () => {

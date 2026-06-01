@@ -324,6 +324,69 @@ describe('destination credential handlers', () => {
     expect(stored).toMatchObject({ ref: 'account:linear', scope: 'user', ownerId: 'alice', kind: 'api-key' });
   });
 
+  // TASK-124 — per-slot credential refs. A multi-slot connector supplies a
+  // `slot` so the key lands under the distinct `account:<service>:<slot>` row.
+  it('POST /settings/destinations/account: stores under account:<service>:<slot> when slot is supplied', async () => {
+    const bus = await makeBus({ id: 'alice', isAdmin: false });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.createSettings(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          destination: { kind: 'account', service: 'github', slot: 'GITHUB_TOKEN' },
+          scope: 'user',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('gh-secret').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(204);
+
+    const out = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string; scope: string; ownerId: string | null; kind: string }> }
+    >(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    const stored = out.credentials.find((c) => c.ref === 'account:github:GITHUB_TOKEN');
+    expect(stored).toMatchObject({
+      ref: 'account:github:GITHUB_TOKEN',
+      scope: 'user',
+      ownerId: 'alice',
+      kind: 'api-key',
+    });
+  });
+
+  it('POST /settings/destinations/account: rejects an invalid slot grammar (400)', async () => {
+    const bus = await makeBus({ id: 'alice', isAdmin: false });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.createSettings(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          // lowercase slot — rejected by the SCREAMING_SNAKE slot grammar.
+          destination: { kind: 'account', service: 'github', slot: 'github_token' },
+          scope: 'user',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: 'eA==',
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(400);
+  });
+
   it('POST /settings/destinations/account: rejects when destination.kind mismatches route param (400)', async () => {
     const bus = await makeBus({ id: 'alice', isAdmin: false });
     const handlers = createDestinationHandlers({ bus });

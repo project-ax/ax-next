@@ -173,4 +173,43 @@ describe('KeysTab', () => {
     render(<KeysTab />);
     expect(await screen.findByText(/no keys yet/i)).toBeInTheDocument();
   });
+
+  // TASK-124 — per-slot credential refs (`account:<service>:<slot>`, a
+  // multi-slot connector). The list must label the row with the slot and the
+  // Replace/Remove writes must thread the slot back so they address the SAME
+  // row (never collapsing it to `account:<service>`, which would also throw on
+  // the server's assertNoColon if the service were the mis-parsed
+  // `<service>:<slot>`).
+  describe('per-slot account ref (TASK-124)', () => {
+    beforeEach(() => {
+      vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([
+        {
+          scope: 'user',
+          ownerId: 'u1',
+          ref: 'account:github:GITHUB_TOKEN',
+          kind: 'api-key',
+          createdAt: '2026-06-01T00:00:00Z',
+        },
+      ]);
+      vi.spyOn(connLib, 'getAccountUsage').mockResolvedValue({});
+    });
+
+    it('labels the row with `service · SLOT`', async () => {
+      render(<KeysTab />);
+      expect(await screen.findByText('github · GITHUB_TOKEN')).toBeInTheDocument();
+    });
+
+    it('Remove threads the slot into the account destination', async () => {
+      const clear = vi.spyOn(credLib, 'clearDestinationCredential').mockResolvedValue();
+      render(<KeysTab />);
+      await screen.findByText('github · GITHUB_TOKEN');
+      fireEvent.click(screen.getAllByRole('button', { name: /^remove$/i })[0]!);
+      await waitFor(() =>
+        expect(clear).toHaveBeenCalledWith({
+          destination: { kind: 'account', service: 'github', slot: 'GITHUB_TOKEN' },
+          scope: { scope: 'user', ownerId: null },
+        }),
+      );
+    });
+  });
 });

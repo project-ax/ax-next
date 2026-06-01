@@ -19,6 +19,56 @@ import {
 } from '@/lib/permission-card-store';
 import { resumeActions } from '@/lib/resume-actions';
 import { useConversationId } from '@/lib/use-conversation-id';
+import type { Destination } from '@ax/credentials';
+
+/**
+ * One card slot row, as the WRITE paths read it. `service`/`slotTag` (TASK-124)
+ * are the resolved vault-key tags the producer (orchestrator / skill-broker) set;
+ * `account` is the legacy pre-TASK-124 field kept for back-compat with a card that
+ * predates the new tags.
+ */
+interface CardSlot {
+  slot: string;
+  account?: string;
+  service?: string;
+  slotTag?: string;
+}
+
+/**
+ * TASK-124 — build the account destination for a CONNECTOR slot. Prefer the
+ * resolved `service`/`slotTag` (so a multi-slot connector hits its distinct
+ * per-slot `account:<service>:<slot>` row); fall back to the legacy
+ * `account ?? connectorId` collapsed shape for a card without the new tags.
+ */
+function accountDestinationForConnectorSlot(s: CardSlot, connectorId: string): Destination {
+  const service = s.service ?? s.account ?? connectorId;
+  return {
+    kind: 'account',
+    service,
+    ...(s.slotTag !== undefined ? { slot: s.slotTag } : {}),
+  };
+}
+
+/**
+ * TASK-124 — build the destination for a SKILL-card slot. A connector-derived
+ * slot carries `service` (always set by the producer) → the
+ * `account:<service>[:<slot>]` vault row; a legacy slot with only `account` keeps
+ * the collapsed account route; an untagged slot keeps the per-skill `skill-slot`
+ * destination.
+ */
+function accountOrSkillDestination(s: CardSlot, skillId: string): Destination {
+  if (s.service !== undefined) {
+    return {
+      kind: 'account',
+      service: s.service,
+      ...(s.slotTag !== undefined ? { slot: s.slotTag } : {}),
+    };
+  }
+  if (s.account !== undefined) {
+    return { kind: 'account', service: s.account };
+  }
+  return { kind: 'skill-slot', skillId, slot: s.slot };
+}
 
 /**
  * The ONE bundled approval card (JIT design §11.3/§6B, decision #6) — the
@@ -94,18 +144,19 @@ export function PermissionCard() {
     setError(null);
     try {
       // (TASK-35) write each entered key straight to the host credential store.
-      // Route by destination kind (JIT P2): a slot tagged `account: <svc>` posts
-      // to the shared `account:<service>` vault entry; an untagged slot keeps the
-      // per-skill `skill-slot` destination. A slot already in the vault
-      // (haveExisting) writes nothing — the key is already there.
+      // Route by destination kind: a connector-derived slot carries the resolved
+      // `service` tag (TASK-124 — always set by the producers; = the slot's account
+      // else the connector id) and, for a multi-slot connector, a `slotTag`, so it
+      // posts to the SAME `account:<service>[:<slot>]` vault row the orchestrator
+      // fold resolves. A legacy slot with only `account` keeps the collapsed
+      // `account:<service>` route; an untagged slot keeps the per-skill
+      // `skill-slot` destination. A slot already in the vault (haveExisting) writes
+      // nothing — the key is already there.
       for (const s of request.slots) {
         if (s.haveExisting === true) continue; // already in the vault — nothing to write
         const payload = (values[s.slot] ?? '').trim();
         if (payload.length === 0) continue;
-        const destination =
-          s.account !== undefined
-            ? ({ kind: 'account', service: s.account } as const)
-            : ({ kind: 'skill-slot', skillId: request.skillId, slot: s.slot } as const);
+        const destination = accountOrSkillDestination(s, request.skillId);
         await setDestinationCredential({
           destination,
           slot: { kind: 'api-key' },
@@ -158,18 +209,19 @@ export function PermissionCard() {
     setError(null);
     try {
       // Write each entered key straight to the host credential store under the
-      // connector's `account:<service>` vault row. service = the slot's `account`
-      // tag when present, else the connectorId — the SAME ref the connector
-      // resolver reads (`account:<slot.account ?? connectorId>`), so the approved
-      // key lands in the row the next spawn will pick up. A slot already in the
-      // vault (haveExisting) writes nothing — the key is already there. No secret
-      // crosses the decision POST below (§10).
+      // connector's `account:<service>[:<slot>]` vault row. service = the resolved
+      // `service` tag (TASK-124 — always set by the producer; = the slot's account
+      // tag else the connectorId); `slotTag` is present for a multi-slot connector
+      // so the key lands on the SAME per-slot row the connector resolver / fold
+      // reads (no collision). A slot already in the vault (haveExisting) writes
+      // nothing — the key is already there. No secret crosses the decision POST
+      // below (§10).
       for (const s of request.slots) {
         if (s.haveExisting === true) continue;
         const payload = (values[s.slot] ?? '').trim();
         if (payload.length === 0) continue;
         await setDestinationCredential({
-          destination: { kind: 'account', service: s.account ?? request.connectorId },
+          destination: accountDestinationForConnectorSlot(s, request.connectorId),
           slot: { kind: 'api-key' },
           scope: { scope: 'user', ownerId: null },
           payload,

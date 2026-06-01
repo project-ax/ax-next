@@ -345,6 +345,60 @@ describe('foldConnectorCaps', () => {
     expect(creds[connectorCredentialEnvName('drive', 'GDRIVE')]!.ref).toBe('account:google');
   });
 
+  // TASK-124 — a ≥2-slot connector expands each slot to a DISTINCT per-slot ref
+  // (`account:<service>:<slot>`) instead of collapsing two slots that share the
+  // connectorId service tag onto one row (the collision the fold previously had).
+  it('a multi-slot connector folds DISTINCT per-slot refs (the collision fix)', () => {
+    const creds: Record<string, { ref: string; kind: string }> = {};
+    foldConnectorCaps(
+      [
+        {
+          id: 'oauthsvc',
+          capabilities: {
+            allowedHosts: [],
+            credentials: [
+              { slot: 'CLIENT_ID', kind: 'api-key' },
+              { slot: 'CLIENT_SECRET', kind: 'api-key' },
+            ],
+            mcpServers: [],
+            packages: { npm: [], pypi: [] },
+          },
+        },
+      ],
+      new Set(),
+      creds,
+      new Map(),
+    );
+    const idRef = creds[connectorCredentialEnvName('oauthsvc', 'CLIENT_ID')]!.ref;
+    const secretRef = creds[connectorCredentialEnvName('oauthsvc', 'CLIENT_SECRET')]!.ref;
+    expect(idRef).toBe('account:oauthsvc:CLIENT_ID');
+    expect(secretRef).toBe('account:oauthsvc:CLIENT_SECRET');
+    // The two refs MUST differ — pre-TASK-124 both collapsed to account:oauthsvc.
+    expect(idRef).not.toBe(secretRef);
+  });
+
+  // TASK-124 — a single-slot connector keeps the COLLAPSED ref (back-compat).
+  it('a single-slot connector keeps the collapsed account:<service> ref', () => {
+    const creds: Record<string, { ref: string; kind: string }> = {};
+    foldConnectorCaps(
+      [
+        {
+          id: 'gh',
+          capabilities: {
+            allowedHosts: [],
+            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+            mcpServers: [],
+            packages: { npm: [], pypi: [] },
+          },
+        },
+      ],
+      new Set(),
+      creds,
+      new Map(),
+    );
+    expect(creds[connectorCredentialEnvName('gh', 'GITHUB_TOKEN')]!.ref).toBe('account:gh');
+  });
+
   it('dedups against a skill slot of the same bare name (coexist, never collide)', () => {
     // Simulate the skill loop having already claimed `skill:gh:LINEAR_API_KEY`.
     const creds: Record<string, { ref: string; kind: string }> = {

@@ -36,7 +36,11 @@ export type PermissionRequest =
         kind: 'api-key';
         /** JIT P2 — service slug; when set, the key binds the shared vault entry. */
         account?: string;
-        /** JIT P2 — the user already has account:<service>; card shows "use existing". */
+        /** TASK-124 — resolved vault-key tags the write path uses (service = account
+         *  else connector id; slotTag present only for a multi-slot per-slot ref). */
+        service?: string;
+        slotTag?: string;
+        /** JIT P2 — the user already has the matching ref; card shows "use existing". */
         haveExisting?: boolean;
       }[];
       /** TASK-39: open-mode banner — the agent just wrote this skill. */
@@ -55,7 +59,11 @@ export type PermissionRequest =
         kind: 'api-key';
         /** service slug; when set, the key binds the shared `account:<service>` vault. */
         account?: string;
-        /** the user already has `account:<service>`; card shows "use existing". */
+        /** TASK-124 — resolved vault-key tags the write path uses (service = account
+         *  else connector id; slotTag present only for a multi-slot per-slot ref). */
+        service?: string;
+        slotTag?: string;
+        /** the user already has the matching ref; card shows "use existing". */
         haveExisting?: boolean;
       }[];
       /** Open-mode banner — the agent just authored this connector (TASK-94 fires true). */

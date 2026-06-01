@@ -399,6 +399,44 @@ describe('PermissionCard — connector approval (TASK-112)', () => {
     expect(credCall?.[1]?.body).toContain('"service":"google"');
   });
 
+  // TASK-124 — a multi-slot connector card carries per-slot `service`+`slotTag`
+  // (set by the orchestrator producer). Each slot's Connect write must address its
+  // DISTINCT `account:<service>:<slot>` row — never collapse the two onto one.
+  it('a multi-slot connector writes each slot to its DISTINCT per-slot account row', async () => {
+    vi.spyOn(resumeActions, 'continueAfterGrant').mockImplementation(() => undefined);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    render(<PermissionCard />);
+    permissionCardActions.show({
+      kind: 'connector',
+      connectorId: 'oauthsvc',
+      name: 'OAuth Service',
+      hosts: [],
+      slots: [
+        { slot: 'CLIENT_ID', kind: 'api-key', service: 'oauthsvc', slotTag: 'CLIENT_ID', haveExisting: false },
+        { slot: 'CLIENT_SECRET', kind: 'api-key', service: 'oauthsvc', slotTag: 'CLIENT_SECRET', haveExisting: false },
+      ],
+      packages: { npm: [], pypi: [] },
+    });
+    fireEvent.change(await screen.findByLabelText('CLIENT_ID'), { target: { value: 'the-id' } });
+    fireEvent.change(screen.getByLabelText('CLIENT_SECRET'), { target: { value: 'the-secret' } });
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+    await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
+
+    const credBodies = fetchMock.mock.calls
+      .filter((c) => c[0] === '/settings/destinations/account/credential')
+      .map((c) => String(c[1]?.body ?? ''));
+    expect(credBodies).toHaveLength(2);
+    const idBody = credBodies.find((b) => b.includes('"slot":"CLIENT_ID"'));
+    const secretBody = credBodies.find((b) => b.includes('"slot":"CLIENT_SECRET"'));
+    // Both rows carry the SAME service but DISTINCT slot → distinct vault rows.
+    expect(idBody).toContain('"service":"oauthsvc"');
+    expect(idBody).toContain('"slot":"CLIENT_ID"');
+    expect(secretBody).toContain('"service":"oauthsvc"');
+    expect(secretBody).toContain('"slot":"CLIENT_SECRET"');
+  });
+
   it('Not now dismisses a connector card without writing or posting', async () => {
     const continueSpy = vi
       .spyOn(resumeActions, 'continueAfterGrant')

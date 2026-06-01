@@ -113,5 +113,10 @@ describe('@ax/connectors hook surface — no leaked backing-mechanism fields', (
     expect(keys).toContain('slot');
     expect(keys).toContain('scope');
     expect(keys).toContain('ref');
+    // TASK-124 — structured destination bits (service + optional slotTag) are
+    // neutral: `service` is a slug, `slotTag` is the connector's declared slot
+    // name. Neither is backing-mechanism vocabulary.
+    expect(keys).toContain('service');
+    expect(keys).toContain('slotTag');
   });
 });
