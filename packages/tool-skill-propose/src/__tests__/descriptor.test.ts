@@ -17,28 +17,22 @@ describe('SKILL_PROPOSE_DESCRIPTOR', () => {
     expect(d).toMatch(/not.*invoke it now|Do not try to invoke it now/i);
   });
 
-  it('carries the propose-time JIT hint (cap-skill prompts for a key; approve early from My Skills) — TASK-83', () => {
+  it('carries the propose-time JIT hint (reach comes from connectors; approval/key)', () => {
     const d = SKILL_PROPOSE_DESCRIPTOR.description ?? '';
-    // The model must tell the user a cap-skill is waiting on their approval / a key.
+    // The model must tell the user about approval / a key when reach is involved.
     expect(d).toMatch(/key/i);
     expect(d).toMatch(/approv/i);
-    // And point them at the early-approval affordance in the My Skills panel.
-    expect(d).toMatch(/My Skills/);
   });
 
-  it('documents the parser frontmatter contract (name, integer version, capabilities: nesting)', () => {
-    // TASK-79: docs must match the skills-parser contract — `name` (NOT `id`),
-    // an integer `version`, and capability keys nested under `capabilities:`.
+  it('documents the cap-free frontmatter contract (name, integer version, connectors[]; NO capabilities block) — TASK-100', () => {
     const d = SKILL_PROPOSE_DESCRIPTOR.description ?? '';
     expect(d).toMatch(/\bname\b/);
     expect(d).toMatch(/NOT "id"/);
     expect(d).toMatch(/INTEGER/);
-    expect(d).toMatch(/capabilities:/);
-    // The capability keys must be described as nested under capabilities:, not
-    // top-level — the exact mismatch that caused the silent capability-loss bug.
-    expect(d).toMatch(/nested UNDER capabilities:/i);
-    // And it must NOT instruct the model to write a top-level `id` field as the
-    // skill identifier (the old broken contract).
-    expect(d).not.toMatch(/frontmatter \(id/);
+    // The model references connectors, not a capabilities block.
+    expect(d).toMatch(/connectors:/);
+    expect(d).toMatch(/connector_propose|ax-connector-creator/);
+    // It must STEER AWAY from writing a capabilities block (rejected now).
+    expect(d).toMatch(/not write a "?capabilities"? block|REJECTED/i);
   });
 });

@@ -564,9 +564,12 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
       const uniqueSkillIds = [...new Set(attachments.map((a) => a.skillId))];
       // Resolve referenced skills via the bus. A missing skills plugin surfaces
       // as 'no-service'; treat it the same as zero skills found.
+      // TASK-100 — a skill declares no capabilities; skills:resolve returns id +
+      // body + manifest + connector references only. The attachment validator
+      // confirms the skill exists and rejects any credential binding.
       let resolvedSkills: Array<{
         id: string;
-        capabilities: { allowedHosts: string[]; credentials: Array<{ slot: string; kind: 'api-key'; description?: string }> };
+        connectors?: string[];
         bodyMd: string;
         manifestYaml: string;
       }> = [];

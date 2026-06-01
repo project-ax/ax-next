@@ -73,17 +73,14 @@ function bundlePathHint(path: string): string | null {
 
 const defaultApi: SkillEditorApi = { getSkill, upsertSkill, updateSkill };
 
+// TASK-100 — a skill manifest carries NO capability block (reach lives on the
+// connectors it references). The template references a connector instead.
 const EMPTY_TEMPLATE = [
   '---',
   'name: example',
   'description: Short description of what this skill does.',
-  'capabilities:',
-  '  allowedHosts:',
-  '    - api.example.com',
-  '  credentials:',
-  '    - slot: EXAMPLE_TOKEN',
-  '      kind: api-key',
-  '      description: API token for example.com.',
+  'connectors:',
+  '  - example-connector',
   '---',
   '# Body',
   '',
