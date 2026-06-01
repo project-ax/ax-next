@@ -16,7 +16,7 @@ export function ProvidersPanel() {
   return (
     <div className="max-w-[640px] mx-auto font-sans">
       <div className="mb-5">
-        <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">Providers</h2>
+        <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">AI model keys</h2>
         <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
           Manage the API keys for the model providers wired into this deployment.
           Keys are encrypted at rest and never returned in plaintext.

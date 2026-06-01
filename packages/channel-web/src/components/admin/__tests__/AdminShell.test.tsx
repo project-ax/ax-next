@@ -96,8 +96,8 @@ describe('AdminShell', () => {
     expect(screen.getByRole('button', { name: 'Connectors' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Credentials' })).toBeTruthy();
     // Admin tabs (Admin section) — present for admins.
-    expect(screen.getByRole('button', { name: 'Providers' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Model config' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'AI model keys' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Default AI model' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Connector catalog' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Teams' })).toBeTruthy();
@@ -110,17 +110,17 @@ describe('AdminShell', () => {
   it('hides admin tabs when isAdmin is false', () => {
     renderShell(vi.fn(), false);
     expect(screen.getByRole('button', { name: 'Skills' })).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Providers' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'AI model keys' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Teams' })).toBeNull();
     // The admin connector-catalog registry is hidden for non-admins.
     expect(screen.queryByRole('button', { name: 'Connector catalog' })).toBeNull();
   });
 
-  it('clicking Model config makes it the active tab', () => {
+  it('clicking Default AI model makes it the active tab', () => {
     renderShell();
-    fireEvent.click(screen.getByRole('button', { name: 'Model config' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Default AI model' }));
     expect(
-      screen.getByRole('button', { name: 'Model config' }).getAttribute('data-active'),
+      screen.getByRole('button', { name: 'Default AI model' }).getAttribute('data-active'),
     ).toBeTruthy();
     expect(
       screen.getByRole('button', { name: 'Skills' }).getAttribute('data-active'),
@@ -134,10 +134,10 @@ describe('AdminShell', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('shows the Catalog and Admit queue nav items for admins', () => {
+  it('shows the Catalog and Skills awaiting review nav items for admins', () => {
     renderShell();
     expect(screen.getByRole('button', { name: 'Catalog' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Admit queue' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Skills awaiting review' })).toBeTruthy();
   });
 
   it('clicking Catalog makes it the active tab', () => {
@@ -148,9 +148,9 @@ describe('AdminShell', () => {
     ).toBeTruthy();
   });
 
-  it('hides Catalog and Admit queue when isAdmin is false', () => {
+  it('hides Catalog and Skills awaiting review when isAdmin is false', () => {
     renderShell(vi.fn(), false);
     expect(screen.queryByRole('button', { name: 'Catalog' })).toBeNull();
-    expect(screen.queryByRole('button', { name: 'Admit queue' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Skills awaiting review' })).toBeNull();
   });
 });

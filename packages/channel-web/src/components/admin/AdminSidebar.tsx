@@ -42,12 +42,12 @@ const USER_NAV: NavItem[] = [
 ];
 
 const ADMIN_NAV: NavItem[] = [
-  { id: 'providers', label: 'Providers', icon: KeyRound },
-  { id: 'model-config', label: 'Model config', icon: Cpu },
-  { id: 'auth-providers', label: 'Auth providers', icon: ShieldCheck },
+  { id: 'providers', label: 'AI model keys', icon: KeyRound },
+  { id: 'model-config', label: 'Default AI model', icon: Cpu },
+  { id: 'auth-providers', label: 'Sign-in methods', icon: ShieldCheck },
   { id: 'agents', label: 'Agents', icon: User },
   { id: 'catalog', label: 'Catalog', icon: Library },
-  { id: 'admit-queue', label: 'Admit queue', icon: Inbox },
+  { id: 'admit-queue', label: 'Skills awaiting review', icon: Inbox },
   // The connector REGISTRY — admins curate shared connectors + flag default-on
   // here (the connector half of the Catalog). Labelled distinctly from the user
   // "Connectors" tab so the two nav entries don't collide.
