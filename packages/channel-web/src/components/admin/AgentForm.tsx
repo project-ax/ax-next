@@ -14,17 +14,20 @@
  *
  * Visibility radio toggles the team picker. The teams list comes from
  * `/admin/teams`. `allowedTools` stays a dumb comma-separated text field;
- * the old raw `mcpConfigIds` chip field is replaced (TASK-98) by a connector
- * PICKER — a checkbox list over `/admin/connectors`. Selected connector ids
- * are written into the agent's `mcpConfigIds` field, which stays the live
- * binding the orchestrator / sandbox read (the field is kept load-bearing;
- * only the UI changes from a jargon chip to a named picker).
+ * connectors are attached via a PICKER — a checkbox list over
+ * `/admin/connectors`. TASK-107 — selected connector ids are now written to the
+ * FIRST-CLASS per-agent connector-attachment store
+ * (PATCH /admin/agents/:id/connector-attachments), NOT `mcpConfigIds` (which
+ * reverts to MCP-only meaning). The orchestrator's connector union reads that
+ * store; the picker save runs AFTER the agent create/PATCH so the agent id
+ * exists (mirroring the SkillAttachmentsSection two-step save).
  */
 import { useEffect, useState } from 'react';
 import {
   listAdminAgents,
   createAgent,
   patchAgent,
+  patchAgentConnectorAttachments,
   deleteAgent,
   listTeams,
   type AdminAgent,
@@ -55,8 +58,9 @@ type FormState = {
   systemPrompt: string;
   model: string;
   allowedTools: string;
-  /** The connectors attached to this agent, by id. Written into the agent's
-   *  `mcpConfigIds` field (kept load-bearing) on submit. */
+  /** The connectors attached to this agent, by id. Saved to the first-class
+   *  per-agent connector-attachment store (TASK-107) after the agent create/PATCH
+   *  resolves — NOT written into `mcpConfigIds`. */
   connectorIds: string[];
 };
 
@@ -77,7 +81,7 @@ const formFromAgent = (a: AdminAgent): FormState => ({
   systemPrompt: a.systemPrompt,
   model: a.model || MODELS[0] || 'claude-sonnet-4-6',
   allowedTools: (a.allowedTools ?? []).join(', '),
-  connectorIds: a.mcpConfigIds ?? [],
+  connectorIds: a.connectorAttachments ?? [],
 });
 
 const splitChips = (s: string): string[] =>
@@ -157,12 +161,16 @@ export function AgentForm() {
     setBusy(true);
     setError(null);
     const allowedTools = splitChips(form.allowedTools);
-    // Selected connector ids ARE the agent's mcpConfigIds (kept load-bearing —
-    // the orchestrator / sandbox read this field for the agent's MCP backing).
-    const mcpConfigIds = form.connectorIds;
-    if (allowedTools.length === 0 && mcpConfigIds.length === 0) {
+    // TASK-107 — `mcpConfigIds` reverts to MCP-only meaning. Connectors are
+    // saved to the first-class attachment store AFTER create/PATCH (below), not
+    // here. The wildcard sentinel (`allowedTools=[] && mcpConfigIds=[]`) is
+    // reserved for the dev-mode bypass and rejected by the admin API, so the
+    // form requires at least one explicit tool — connector attachments don't
+    // participate (exactly like skill attachments).
+    const mcpConfigIds: string[] = [];
+    if (allowedTools.length === 0) {
       setBusy(false);
-      setError('agent must list at least one tool or one connector');
+      setError('agent must list at least one tool');
       return;
     }
     const base: AdminAgentInput = {
@@ -175,8 +183,12 @@ export function AgentForm() {
       ...(form.visibility === 'team' ? { teamId: form.teamId } : {}),
     };
     try {
+      // The agent id we attach connectors to: the freshly created id for a new
+      // agent, or the edited agent's id.
+      let agentId: string;
       if (editing === 'new') {
-        await createAgent(base);
+        const created = await createAgent(base);
+        agentId = created.id;
       } else if (editing) {
         // PATCH cannot change visibility/teamId; send only fields the
         // backend accepts on update.
@@ -188,7 +200,16 @@ export function AgentForm() {
           mcpConfigIds: base.mcpConfigIds,
         };
         await patchAgent(editing.id, patch);
+        agentId = editing.id;
+      } else {
+        // Unreachable (form view requires editing !== null), but keeps the
+        // type-narrowing honest.
+        setBusy(false);
+        return;
       }
+      // TASK-107 — save the connector attachments to the first-class store. A
+      // separate PATCH so the agent id exists (new agents are created first).
+      await patchAgentConnectorAttachments(agentId, form.connectorIds);
       await refresh();
       setEditing(null);
     } catch (err) {

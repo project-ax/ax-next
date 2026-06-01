@@ -5,10 +5,12 @@
  * (camelCase: displayName / systemPrompt / allowedTools / mcpConfigIds /
  * model / visibility / teamId / ...).
  *
- * TASK-98: the raw `mcpConfigIds` chip field is replaced by a connector
- * PICKER (a checkbox list over `/admin/connectors`). Selected connector ids
- * are written into the agent's `mcpConfigIds` field (kept load-bearing), so
- * the wire shape is unchanged — only the input control differs.
+ * TASK-98/107: the raw `mcpConfigIds` chip field was replaced by a connector
+ * PICKER (a checkbox list over `/admin/connectors`). TASK-107 — selected
+ * connector ids are now saved to the FIRST-CLASS per-agent connector-attachment
+ * store (PATCH /admin/agents/:id/connector-attachments) AFTER the agent
+ * create/PATCH, NOT into `mcpConfigIds` (which reverts to MCP-only meaning and
+ * is sent as []).
  *
  * Strategy: render AgentForm directly (no shell wrapper) for all content
  * tests. AdminShell (wrapped in UserProvider) is used only for the
@@ -55,6 +57,7 @@ const sampleAgent = (over: Partial<Record<string, unknown>> = {}) => ({
   systemPrompt: 'be helpful',
   allowedTools: ['bash'],
   mcpConfigIds: [],
+  connectorAttachments: [],
   model: 'claude-sonnet-4-6',
   workspaceRef: null,
   createdAt: '2026-01-01T00:00:00.000Z',
@@ -112,7 +115,9 @@ describe('AdminSettings — agents tab', () => {
     // teams + connectors lookup on form open
     fetchMock.mockResolvedValueOnce(jsonOk({ teams: [] }));
     fetchMock.mockResolvedValueOnce(jsonOk({ connectors: [] }));
-    // POST response
+    // POST response (returns the created agent w/ its id)
+    fetchMock.mockResolvedValueOnce(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
+    // TASK-107 — connector-attachments PATCH after create
     fetchMock.mockResolvedValueOnce(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
     // re-fetch agents after save
     fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
@@ -143,10 +148,81 @@ describe('AdminSettings — agents tab', () => {
       expect(body.displayName).toBe('new-bot');
       expect(body.systemPrompt).toBe('be helpful');
       expect(body.allowedTools).toEqual(['bash']);
+      // TASK-107 — connectors no longer ride mcpConfigIds (MCP-only meaning).
       expect(body.mcpConfigIds).toEqual([]);
       expect(body.visibility).toBe('personal');
       const headers = opts.headers as Record<string, string>;
       expect(headers['x-requested-with']).toBe('ax-admin');
+    });
+    // TASK-107 — the connector-attachments PATCH was issued against the new id.
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        ([url, opts]) =>
+          String(url) === '/admin/agents/agent-x/connector-attachments' &&
+          (opts as RequestInit | undefined)?.method === 'PATCH',
+      );
+      expect(patch).toBeTruthy();
+      const body = JSON.parse(String((patch![1] as RequestInit).body));
+      // No connectors were checked in this test → empty attachment list.
+      expect(body.connectorAttachments).toEqual([]);
+    });
+  });
+
+  it('TASK-107: saving with a connector checked PATCHes the connector-attachment store with the id', async () => {
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (/\/admin\/connectors(\?|$)/.test(url)) {
+        return Promise.resolve(
+          jsonOk({
+            connectors: [
+              {
+                id: 'gh',
+                name: 'GitHub',
+                description: '',
+                usageNote: '',
+                keyMode: 'personal',
+                visibility: 'private',
+                createdAt: '2026-01-01T00:00:00.000Z',
+                updatedAt: '2026-01-01T00:00:00.000Z',
+              },
+            ],
+          }),
+        );
+      }
+      if (url === '/admin/agents' && method === 'POST') {
+        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-y' }) }));
+      }
+      if (/connector-attachments/.test(url)) {
+        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-y' }) }));
+      }
+      if (/\/admin\/teams(\?|$)/.test(url)) return Promise.resolve(jsonOk({ teams: [] }));
+      return Promise.resolve(jsonOk({ agents: [] }));
+    });
+
+    render(<AgentForm />);
+    await waitFor(() => screen.getByText(/New agent/i));
+    fireEvent.click(screen.getByText(/New agent/i));
+    fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'cbot' } });
+    fireEvent.change(screen.getByLabelText(/allowed tools/i), {
+      target: { value: 'bash' },
+    });
+    // Check the GitHub connector.
+    const ghCheckbox = await screen.findByRole('checkbox', { name: /Attach GitHub/i });
+    fireEvent.click(ghCheckbox);
+    fireEvent.click(screen.getByText(/Save/i));
+
+    await waitFor(() => {
+      const patch = fetchMock.mock.calls.find(
+        ([url, opts]) =>
+          String(url) === '/admin/agents/agent-y/connector-attachments' &&
+          (opts as RequestInit | undefined)?.method === 'PATCH',
+      );
+      expect(patch).toBeTruthy();
+      const body = JSON.parse(String((patch![1] as RequestInit).body));
+      expect(body.connectorAttachments).toEqual(['gh']);
     });
   });
 
@@ -160,7 +236,8 @@ describe('AdminSettings — agents tab', () => {
             displayName: 'probe',
             systemPrompt: 'reply ok',
             allowedTools: ['bash', 'read_file'],
-            mcpConfigIds: ['gh'],
+            // TASK-107 — the attached connector lives in the first-class store now.
+            connectorAttachments: ['gh'],
           }),
         ],
       }),

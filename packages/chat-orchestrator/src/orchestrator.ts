@@ -314,6 +314,16 @@ interface AgentRecord {
     skillId: string;
     credentialBindings: Record<string, string>;
   }>;
+  /**
+   * TASK-107 — the connector ids this agent is attached to (the agent row's
+   * `connector_attachments` store, replacing TASK-98's `mcpConfigIds` stopgap).
+   * The orchestrator resolves each via `connectors:resolve` and folds its
+   * Capabilities into the session (the THIRD source of resolveEffectiveConnectors,
+   * alongside defaults + the owner's own). Opaque connector-id slugs — no backing
+   * mechanism vocab. Empty/absent ⟹ no attached connectors (back-compat with a
+   * resolve impl predating the field).
+   */
+  connectorAttachments?: string[];
 }
 interface AgentsResolveOutput {
   agent: AgentRecord;
@@ -1799,17 +1809,23 @@ export function createOrchestrator(
       ...(config.builtinSkills ?? []).filter((s) => !presentIds.has(s.id)),
     ];
 
-    // TASK-97 — CONNECTOR union. Resolve the agent's effective connector set
-    // (workspace defaults ∪ the owner's own connectors; see connector-union.ts on
-    // why manager-added attachment is a deferred follow-up) and fold each
-    // connector's Capabilities through the SAME materialization path skills use:
-    // hosts → baseAllowSet, credential slots → baseCreds (namespaced
-    // `connector:<id>:<slot>`), packages → the registry auto-allow below,
-    // mcpServers → installed-skill entries (synthetic SKILL.md + per-dir
-    // `.mcp.json`). Deduped against skill caps: hosts via the shared Set, slots via
-    // the per-subject namespace. NON-FATAL throughout — a connector resolve failure
-    // yields fewer connectors, never terminates (connectors are additive reach).
-    const effectiveConnectors = await resolveEffectiveConnectors(bus, ctx);
+    // TASK-97/107 — CONNECTOR union. Resolve the agent's effective connector set
+    // (workspace defaults ∪ the agent's per-agent ATTACHMENTS ∪ the owner's own
+    // connectors) and fold each connector's Capabilities through the SAME
+    // materialization path skills use: hosts → baseAllowSet, credential slots →
+    // baseCreds (namespaced `connector:<id>:<slot>`), packages → the registry
+    // auto-allow below, mcpServers → installed-skill entries (synthetic SKILL.md +
+    // per-dir `.mcp.json`). Deduped against skill caps: hosts via the shared Set,
+    // slots via the per-subject namespace. NON-FATAL throughout — a connector
+    // resolve failure yields fewer connectors, never terminates (connectors are
+    // additive reach). TASK-107 — the per-agent attachment ids (the agent row's
+    // `connector_attachments` store, replacing TASK-98's `mcpConfigIds` stopgap)
+    // are the THIRD source; an agent row predating the column reads [].
+    const effectiveConnectors = await resolveEffectiveConnectors(
+      bus,
+      ctx,
+      agent.connectorAttachments ?? [],
+    );
 
     // TASK-111 — the skill→connector cap-resolution bridge. A skill declares the
     // connectors it uses via its top-level `connectors[]` reference list (TASK-92);

@@ -39,6 +39,7 @@ function makePersonalAgent(overrides: Partial<Agent> = {}): Agent {
     model: 'claude-opus-4-7',
     workspaceRef: null,
     skillAttachments: [],
+    connectorAttachments: [],
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,

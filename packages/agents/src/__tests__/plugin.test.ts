@@ -122,6 +122,7 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
         'agents:ensure-webhook-token',
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
+        'agents:set-connector-attachments',
         'agents:list-ids',
         'agents:list-personal-owners',
         'agents:list-authored-skills',

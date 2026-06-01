@@ -37,6 +37,17 @@ export interface Agent {
   model: string;
   workspaceRef: string | null;
   skillAttachments: SkillAttachment[];
+  /**
+   * TASK-107 — the connector ids this agent is attached to. A first-class
+   * per-agent connector-attachment store replacing the TASK-98 stopgap that
+   * overloaded `mcpConfigIds`. A plain list of opaque connector-id slugs (no
+   * credential bindings — a connector owns its own slots; the credential ref
+   * derives from keyMode→scope, TASK-96). Written exclusively via
+   * PATCH /admin/agents/:id/connector-attachments / agents:set-connector-attachments,
+   * never agents:create / agents:update. Empty/absent ⟹ no attached connectors.
+   * The orchestrator resolves each via connectors:resolve into sandbox reach.
+   */
+  connectorAttachments: string[];
   createdAt: Date;
   updatedAt: Date;
 }
@@ -125,6 +136,7 @@ const AgentSchema = z.object({
   model: z.string(),
   workspaceRef: z.string().nullable(),
   skillAttachments: z.array(SkillAttachmentSchema),
+  connectorAttachments: z.array(z.string()),
   createdAt: z.date(),
   updatedAt: z.date(),
 });
@@ -227,6 +239,25 @@ export interface EnsureWebhookTokenOutput {
 export type ListPersonalOwnersInput = Record<string, never>;
 export interface ListPersonalOwnersOutput {
   agents: Array<{ agentId: string; ownerUserId: string }>;
+}
+
+// --- agents:set-connector-attachments (TASK-107) -----------------------------
+//
+// Replace the agent's connector-attachment id list wholesale. ACL: owner OR
+// admin (same as agents:update / agents:set-skill-attachments). Storage- and
+// transport-agnostic: `connectorIds` are opaque connector-id slugs, no backing-
+// mechanism vocab (no `mcp`/`url`/`transport`). A dangling id is tolerated — it
+// simply never resolves at session open (the orchestrator's NON-FATAL union),
+// mirroring skill_attachments' orphan tolerance.
+
+export interface SetConnectorAttachmentsInput {
+  actor: Actor;
+  agentId: string;
+  connectorIds: string[];
+}
+
+export interface SetConnectorAttachmentsOutput {
+  agent: Agent;
 }
 
 // --- Subscriber payloads -----------------------------------------------------

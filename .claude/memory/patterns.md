@@ -181,3 +181,44 @@ The package-local `packages/<plugin>/src/__tests__/plugin.test.ts` `calls` asser
 usually constructs the plugin WITHOUT `mountAdminRoutes`, so a mount-only conditional call
 (`if (mountAdminRoutes) calls.push(...)`) does NOT affect it — only the preset test sees
 the mounted manifest. Don't forget the preset test just because the package test is green.
+
+## 2026-06-01 — Per-agent attachment store pattern (skill_attachments → connector_attachments)
+
+- `@ax/agents` owns per-agent attachment stores as JSONB columns on `agents_v1_agents`,
+  written by a dedicated `agents:set-<thing>-attachments` hook + a
+  `PATCH /admin/agents/:id/<thing>-attachments` admin route, NEVER via
+  `agents:create`/`agents:update`. The orchestrator reads the column off the
+  resolved `agent` (it's on `agents:resolve` output + `ResolveOutputSchema`).
+  TASK-107 added `connector_attachments` (a plain `string[]` of connector-id slugs)
+  mirroring `skill_attachments` exactly — store method `setConnectorAttachments`,
+  validator `validateConnectorAttachmentIds` (slug/dedup/count, exported for the route).
+  To add a new attachment store: copy ALL of: migration column (NOT NULL DEFAULT '[]'),
+  `AgentsRow` field, `rowToAgent` corrupt-row guard + return, `create` insert, the
+  THREE `.returning([...])` column lists (create/update/setSkillAttachments — use
+  replace_all), store interface+impl, hook registration + manifest `registers[]` entry
+  (+ the plugin.test.ts manifest snapshot!), route handler + route registration +
+  `serializeAgent` field, the `AgentSchema`/`Agent` type, and EVERY test `Agent`/
+  `AdminAgent`/`SerializedAgent` fixture (acl.test, return-schemas.test,
+  admin-routes.test SerializedAgent iface, admin-agents.test.tsx sampleAgent,
+  SkillAttachmentsSection.test mockPatch, channel-web lib/admin AdminAgent + a
+  `patchAgent<Thing>Attachments` wire helper). tsc --build catches the fixtures.
+
+- Connector attachments do NOT participate in the wildcard sentinel
+  (`allowedTools=[] && mcpConfigIds=[]`) — same as skill_attachments. `mcpConfigIds`
+  is the HOST tool-dispatcher MCP catalog binding (`filterByAgentScope` →
+  `mcp.<configId>.<tool>`), an ORTHOGONAL mechanism from a connector's MCP servers
+  (which reach the agent as sandbox `.mcp.json` installed-entries via foldConnectorCaps).
+  TASK-98's stopgap that stuffed connector ids into mcpConfigIds mis-typed them as host
+  MCP config ids; TASK-107 reverted that — the new store routes through the owner-scoped
+  `connectors:resolve` gate, a net security tightening.
+
+## 2026-06-01 — yolo-ship in an isolated worktree: ALWAYS prefix the worktree path
+
+- auto-ship dispatches with `isolation: worktree`; the Bash cwd resets to the SHARED
+  main checkout between calls, and Edit/Write/Read track state per EXACT absolute path.
+  Reading `packages/.../foo.ts` (shared path) then `Edit`-ing it FAILS with "Edit the
+  worktree copy instead" / "File has not been read yet". Fix: prefix EVERY Read/Edit/Write
+  with the worktree root (`.claude/worktrees/<id>/packages/...`). The worktree starts with
+  NO node_modules — run `pnpm install --frozen-lockfile` + `pnpm build` (full workspace,
+  so `@ax/test-harness` etc. have dist) before any `pnpm test`, or tests fail with
+  "Failed to resolve entry for package @ax/test-harness".

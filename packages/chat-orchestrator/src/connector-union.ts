@@ -13,14 +13,15 @@ import { createHash } from 'node:crypto';
 // out of the skill (design: "Connector = access… the existing SkillCapabilities
 // shape, lifted out of the skill"), so it folds through the SAME path.
 //
-// EFFECTIVE SET (this slice). The design's effective set = catalog defaults +
-// manager-added catalog items + private items. The two sources with a backing
-// store TODAY are wired here: workspace DEFAULTS (`connectors:list-defaults`) and
-// the owner's PRIVATE items (`connectors:list` + `connectors:resolve`). The
-// manager-added per-agent ATTACHMENT has no store yet (the AgentForm
-// connector-attachment work is the other half of design Phase 4) and is a
-// FOLLOW-UP — not half-wired here. `resolveEffectiveConnectors` dedupes the two
-// live sources by id; an attachment source slots in cleanly later.
+// EFFECTIVE SET. The design's effective set = catalog defaults + manager-added
+// per-agent attachments + the owner's private items. ALL THREE are wired here
+// (TASK-107 added the third): workspace DEFAULTS (`connectors:list-defaults`),
+// the manager-added per-agent ATTACHMENTS (the connector ids the agent row's
+// `connector_attachments` store carries, resolved via `connectors:resolve`), and
+// the owner's PRIVATE items (`connectors:list` + `connectors:resolve`).
+// `resolveEffectiveConnectors` dedupes all three by id. (TASK-97 wired defaults +
+// private with the attachment slot left for TASK-107 to fill — which it now does;
+// the per-agent attachment store replaced TASK-98's `mcpConfigIds` stopgap.)
 //
 // NON-FATAL. Connectors are ADDITIVE reach. Every resolve here fails OPEN (log +
 // skip): a throwing/absent `connectors:list-defaults` or a per-connector resolve
@@ -93,18 +94,26 @@ interface ConnectorsResolveOutput {
 }
 
 /**
- * Resolve the agent's effective connector set (this slice: workspace defaults ∪
- * the owner's own connectors), deduped by id. All reads are hasService-gated and
- * NON-FATAL — a failure logs + yields fewer connectors, never terminates.
+ * Resolve the agent's effective connector set (workspace defaults ∪ the agent's
+ * per-agent ATTACHMENTS ∪ the owner's own connectors), deduped by id. All reads
+ * are hasService-gated and NON-FATAL — a failure logs + yields fewer connectors,
+ * never terminates.
  *
- * Defaults come first so they win the dedupe on an id collision; an owner's own
- * connector of the same id carries the same capabilities (the store keys both by
- * (owner, id)), so precedence here only affects which copy is folded, not the
- * resulting reach.
+ * Defaults come first so they win the dedupe on an id collision; the attachments
+ * and the owner's own connectors of the same id carry the same capabilities (the
+ * store keys by (owner, id)), so precedence here only affects which copy is
+ * folded, not the resulting reach.
+ *
+ * `attachmentIds` is the agent row's `connector_attachments` store (TASK-107):
+ * the connector ids a manager attached to THIS agent. Resolved via
+ * `connectors:resolve` under the chat user, deduped against the defaults. This
+ * replaced TASK-98's stopgap that overloaded `mcpConfigIds`; an empty/absent
+ * list contributes nothing.
  */
 export async function resolveEffectiveConnectors(
   bus: HookBus,
   ctx: AgentContext,
+  attachmentIds: readonly string[] = [],
 ): Promise<ResolvedConnectorForOrch[]> {
   const byId = new Map<string, ResolvedConnectorForOrch>();
 
@@ -129,7 +138,34 @@ export async function resolveEffectiveConnectors(
     }
   }
 
-  // 2. The owner's PRIVATE items — every connector they own. `connectors:list`
+  // 2. The manager-added per-agent ATTACHMENTS (TASK-107) — the connector ids
+  //    this agent's `connector_attachments` store carries. Resolve each id (skip
+  //    ones already folded as a default). A per-connector resolve failure skips
+  //    that one connector (non-fatal): a dangling/unapproved attachment id grants
+  //    NO reach (connectors:resolve reads only the LIVE owner-scoped table).
+  if (attachmentIds.length > 0 && bus.hasService('connectors:resolve')) {
+    for (const connectorId of attachmentIds) {
+      if (byId.has(connectorId)) continue; // already folded as a default
+      try {
+        const resolved = await bus.call<
+          { userId: string; connectorId: string },
+          ConnectorsResolveOutput
+        >('connectors:resolve', ctx, { userId: ctx.userId, connectorId });
+        byId.set(resolved.id, {
+          id: resolved.id,
+          capabilities: resolved.capabilities,
+          ...(resolved.usageNote !== undefined ? { usageNote: resolved.usageNote } : {}),
+        });
+      } catch (err) {
+        ctx.logger.warn('connector_attachment_resolve_failed', {
+          connectorId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
+  // 3. The owner's PRIVATE items — every connector they own. `connectors:list`
   //    is metadata-only, so resolve each id for its capabilities. A per-connector
   //    resolve failure skips that one connector (non-fatal), never the session.
   if (bus.hasService('connectors:list') && bus.hasService('connectors:resolve')) {

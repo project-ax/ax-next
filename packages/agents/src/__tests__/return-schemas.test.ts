@@ -14,12 +14,25 @@ describe('agents return schemas', () => {
     model: 'claude',
     workspaceRef: 'v123',
     skillAttachments: [{ skillId: 's1', credentialBindings: { slotA: 'ref1' } }],
+    connectorAttachments: ['salesforce', 'gh'],
     createdAt: new Date('2026-01-01T00:00:00.000Z'),
     updatedAt: new Date('2026-01-02T00:00:00.000Z'),
   };
 
   it('accepts a fully-populated agent', () => {
     expect(ResolveOutputSchema.safeParse({ agent }).success).toBe(true);
+  });
+
+  it('requires connectorAttachments on the resolve output (TASK-107)', () => {
+    const { connectorAttachments: _omit, ...withoutConnectors } = agent;
+    expect(
+      ResolveOutputSchema.safeParse({ agent: withoutConnectors }).success,
+    ).toBe(false);
+    expect(
+      ResolveOutputSchema.safeParse({
+        agent: { ...agent, connectorAttachments: 'gh' },
+      }).success,
+    ).toBe(false);
   });
 
   it('accepts a null workspaceRef and empty skillAttachments', () => {

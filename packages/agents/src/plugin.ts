@@ -51,6 +51,8 @@ import type {
   ResolveOutput,
   RotateWebhookTokenInput,
   RotateWebhookTokenOutput,
+  SetConnectorAttachmentsInput,
+  SetConnectorAttachmentsOutput,
   SkillAttachment,
   UpdateInput,
   UpdateOutput,
@@ -103,6 +105,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
         'agents:ensure-webhook-token',
         'agents:any-attached-to-skill',
         'agents:set-skill-attachments',
+        'agents:set-connector-attachments',
         'agents:list-ids',
         'agents:list-personal-owners',
         'agents:list-authored-skills',
@@ -319,6 +322,33 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           const updated = await localStore.setSkillAttachments(
             input.agentId,
             input.attachments,
+          );
+          return { agent: updated };
+        },
+      );
+
+      // TASK-107 — per-agent connector attachments. Replaces the agent's
+      // connector_attachments id list wholesale. Same ACL as
+      // agents:set-skill-attachments (owner OR admin). The id shape is validated
+      // by the admin route (validateConnectorAttachmentIds) before this call; a
+      // dangling-but-well-formed id is tolerated (it simply never resolves at
+      // session open — the orchestrator's NON-FATAL union).
+      bus.registerService<SetConnectorAttachmentsInput, SetConnectorAttachmentsOutput>(
+        'agents:set-connector-attachments',
+        PLUGIN_NAME,
+        async (ctx, input) => {
+          const existing = await localStore.getById(input.agentId);
+          if (existing === null) {
+            throw new PluginError({
+              code: 'not-found',
+              plugin: PLUGIN_NAME,
+              message: `agent '${input.agentId}' not found`,
+            });
+          }
+          await assertWriteAllowed(existing, bus, ctx, input.actor);
+          const updated = await localStore.setConnectorAttachments(
+            input.agentId,
+            input.connectorIds,
           );
           return { agent: updated };
         },

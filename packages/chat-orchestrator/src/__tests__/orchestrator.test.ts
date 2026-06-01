@@ -3235,6 +3235,108 @@ describe('chat-orchestrator', () => {
     expect(skillMd!.contents).toContain('Use this to read Drive docs.');
   });
 
+  it('TASK-107: a per-agent connectorAttachments id folds its host + slot into proxy:open-session', async () => {
+    const proxy = buildProxyHooks();
+    // Only `connectors:resolve` is registered (NO list-defaults, NO connectors:list)
+    // so the ONLY way this connector folds is via the per-agent attachment path.
+    const connHook = buildConnectorResolveHook({
+      salesforce: {
+        allowedHosts: ['login.salesforce.com'],
+        credentials: [{ slot: 'SF_TOKEN', kind: 'api-key' }],
+        packages: { npm: ['@salesforce/cli'], pypi: [] },
+      },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          // The first-class per-agent connector-attachment store (TASK-107),
+          // replacing TASK-98's mcpConfigIds stopgap.
+          connectorAttachments: ['salesforce'],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, connHook.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('connector-attachment-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    // The attached connector was resolved via connectors:resolve.
+    expect(connHook.resolveCalls).toEqual(['salesforce']);
+
+    const openIn = proxy.state.lastOpenInput as {
+      allowlist: string[];
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    // The attached connector's host + (npm) registry + slot reach the sandbox.
+    expect(openIn.allowlist).toContain('login.salesforce.com');
+    expect(openIn.allowlist).toContain('registry.npmjs.org');
+    expect(openIn.credentials['connector:salesforce:SF_TOKEN']).toEqual({
+      ref: 'account:salesforce',
+      kind: 'api-key',
+    });
+    // A synthetic installed-skill entry for the connector reached the spawn.
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{ id: string }>;
+    };
+    const ids = (sandboxIn.installedSkills ?? []).map((s) => s.id);
+    expect(ids.some((id) => id.startsWith('cx-salesforce-'))).toBe(true);
+  });
+
+  it('TASK-107: an empty connectorAttachments folds no connector (mcpConfigIds reverted)', async () => {
+    const proxy = buildProxyHooks();
+    const connHook = buildConnectorResolveHook({
+      salesforce: { allowedHosts: ['login.salesforce.com'], credentials: [] },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          // mcpConfigIds carries a REAL MCP config id (its MCP-only meaning); it
+          // must NOT be treated as a connector id by the union.
+          mcpConfigIds: ['salesforce'],
+          connectorAttachments: [],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, connHook.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef.current = h.bus;
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('connector-attachment-empty-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    // The mcpConfigIds value was NOT resolved as a connector.
+    expect(connHook.resolveCalls).toEqual([]);
+    const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
+    expect(openIn.allowlist).not.toContain('login.salesforce.com');
+  });
+
   it('TASK-97/TASK-100: a connector folds its host + slot; the cap-free skill that references it contributes none', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
