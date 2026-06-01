@@ -53,6 +53,8 @@ interface SkillSummaryLite {
   id: string;
   description: string;
   defaultAttached: boolean;
+  /** Declared connector-id references (TASK-100: a skill's reach is its connectors). */
+  connectors?: string[];
   capabilities?: { credentials?: SkillCapabilitySlotLite[] };
 }
 interface SkillsListOutput {
@@ -96,6 +98,24 @@ interface DetachOutput {
   removed: boolean;
 }
 
+// TASK-126 (Skills app-store) — self-install. The attach HOOK
+// (`skills:attach-for-user`) is host-internal (NOT an IPC action — the untrusted
+// runner must never self-attach a skill); this authenticated, CSRF-gated route
+// is its only browser caller. A skill declares no capability block (TASK-100) —
+// its reach is the connectors it references — so a self-install needs NO
+// credential bindings (`{}`). The skillId is validated to be a real GLOBAL
+// catalog id before the attach, so a browser can only ever install one of the
+// workspace's vetted catalog skills (capability-minimization, invariant #5).
+interface AttachInput {
+  userId: string;
+  agentId: string;
+  skillId: string;
+  credentialBindings: Record<string, string>;
+}
+interface AttachOutput {
+  created: boolean;
+}
+
 export interface ConnectionSkill {
   skillId: string;
   description: string;
@@ -110,6 +130,17 @@ export interface ConnectionsResponse {
 export interface AllowedSitesResponse {
   agentId: string;
   hosts: Array<{ host: string; grantedAt: string }>;
+}
+
+/** One installable global-catalog skill for the app-store "Not installed" shelf. */
+export interface CatalogSkillListing {
+  skillId: string;
+  description: string;
+  defaultAttached: boolean;
+  connectors: string[];
+}
+export interface CatalogSkillsResponse {
+  skills: CatalogSkillListing[];
 }
 
 /** service → sorted, deduped skill ids whose manifest declares `account: <service>`. */
@@ -244,6 +275,104 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
         skillId,
       });
       res.status(204).end(); // idempotent — 204 whether or not a row existed
+    },
+
+    /**
+     * GET /api/chat/catalog-skills — the every-user read backing the Skills
+     * app-store "Not installed · available in your workspace" shelf (TASK-126).
+     * Returns the GLOBAL catalog as installable listings (id + description +
+     * default flag + the connector-id references a skill declares).
+     *
+     * Why not reuse `/admin/skills`? That route is admin-gated (defense in depth
+     * stays). The app-store shelf is every-user (a non-admin can self-install),
+     * so it needs its own non-admin read. The data is metadata-only (no secrets,
+     * no manifest bytes) — the public catalog surface.
+     */
+    async listCatalog(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const listed = await bus.call<SkillsListInput, SkillsListOutput>(
+        'skills:list',
+        initCtx,
+        // The store's `scope:'global'` overload returns only admin-curated rows;
+        // ownerUserId is unused for a pure-global read but required by the type.
+        { scope: 'global' } as unknown as SkillsListInput,
+      );
+      const skills: CatalogSkillListing[] = listed.skills.map((s) => ({
+        skillId: s.id,
+        description: s.description,
+        defaultAttached: s.defaultAttached,
+        connectors: s.connectors ?? [],
+      }));
+      res.status(200).json({ skills } satisfies CatalogSkillsResponse);
+    },
+
+    /**
+     * POST /api/chat/connections/:agentId/skills  body: { skillId }
+     *
+     * Self-install (TASK-126): attach a vetted GLOBAL catalog skill to the
+     * caller's accessible agent (a per-(user, agent) user-scoped attachment).
+     * The out-of-band twin of the in-chat grant — but for an admin-vetted catalog
+     * item, so no approval wall (decision §#5): the UI shows a consent card and
+     * this writes the attachment directly.
+     *
+     * Security (invariant #5): identity is SERVER-FORCED from auth (never the
+     * body); the agent ACL is enforced via agents:resolve (404, no existence
+     * leak); and the skillId MUST be a real global-catalog id (rejected 404
+     * otherwise) so a browser can only ever install one of the workspace's vetted
+     * skills — not an arbitrary id. A skill declares no capability block
+     * (TASK-100), so the attachment carries empty credentialBindings.
+     */
+    async attach(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      // ACL: a not-accessible agent → 404 (no cross-user attach, no leak).
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      let skillId: string;
+      try {
+        const raw =
+          req.body.length === 0
+            ? {}
+            : (JSON.parse(req.body.toString('utf8')) as unknown);
+        const candidate = (raw as { skillId?: unknown }).skillId;
+        if (typeof candidate !== 'string' || candidate.trim().length === 0) {
+          res.status(400).json({ error: 'missing-skill-id' });
+          return;
+        }
+        skillId = candidate.trim();
+      } catch {
+        res.status(400).json({ error: 'invalid-payload' });
+        return;
+      }
+
+      // Capability-min gate: the requested id MUST be a real GLOBAL catalog
+      // skill. A browser may only self-install one of the workspace's vetted
+      // catalog skills — never an arbitrary or user-private id.
+      const listed = await bus.call<SkillsListInput, SkillsListOutput>(
+        'skills:list',
+        initCtx,
+        { scope: 'global' } as unknown as SkillsListInput,
+      );
+      if (!listed.skills.some((s) => s.id === skillId)) {
+        res.status(404).json({ error: 'skill-not-found' });
+        return;
+      }
+
+      // userId is SERVER-FORCED from auth — never from the request. A skill
+      // declares no caps (TASK-100) → empty bindings.
+      const out = await bus.call<AttachInput, AttachOutput>(
+        'skills:attach-for-user',
+        initCtx,
+        { userId, agentId, skillId, credentialBindings: {} },
+      );
+      res.status(201).json({ created: out.created });
     },
 
     // TASK-54 — Allowed-sites panel (design P3/P6/P7.3). The Settings mirror of

@@ -1,19 +1,22 @@
 /**
- * SkillsTab — the Settings "Skills" surface (connectors-first-class UI/IA
- * reorg). This collapses the audit's "My Skills" + "Catalog" into one **Skills**
- * tab under the single source badge: a catalog-sourced skill wears the calm
- * "Catalog" tag; a private one shows none (see {@link SourceBadge}).
+ * SkillsTab — the Settings "Skills" surface as an app-store (TASK-126,
+ * settings-unified epic). INSTALLED (active on the current agent) vs
+ * NOT INSTALLED · available in your workspace (the catalog you can self-install
+ * from). Admin catalog curation + the awaiting-review admit queue fold INLINE,
+ * gated on `isAdmin` — there is no separate Catalog / Awaiting-review nav surface
+ * anymore (TASK-125 dropped them).
  *
- * The content IS the shared {@link UserSkillsPanelBody} — one source of truth
- * (invariant #4) with the user-menu "My Skills" modal. The tab is always
- * active, so the body fetches on mount.
+ * The body IS {@link SkillsAppStore} — one source of truth (invariant #4). The
+ * tab is just chrome around it; `isAdmin` is passed through from AdminShell to
+ * gate the inline curation affordances (UX convenience — every /admin/* route is
+ * role-gated server-side regardless).
  */
-import { UserSkillsPanelBody } from '@/components/skills/UserSkillsPanelBody';
+import { SkillsAppStore } from './SkillsAppStore';
 
-export function SkillsTab() {
+export function SkillsTab({ isAdmin }: { isAdmin: boolean }) {
   return (
     <div className="font-sans">
-      <UserSkillsPanelBody active />
+      <SkillsAppStore isAdmin={isAdmin} />
     </div>
   );
 }

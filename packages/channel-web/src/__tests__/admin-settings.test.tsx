@@ -54,6 +54,26 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
+  // SkillsAppStore (TASK-126) also reads the workspace catalog + per-agent
+  // connections (the app-store shelves) and, for an admin, the admit queue.
+  if (/\/api\/chat\/catalog-skills(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ skills: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  if (/\/admin\/catalog\/requests(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ requests: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  if (/\/api\/chat\/connections\//.test(url)) {
+    return new Response(JSON.stringify({ agentId: 'a1', skills: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
   if (/\/api\/chat\/agents(\?|$)/.test(url)) {
     return new Response(JSON.stringify([]), {
       status: 200,
