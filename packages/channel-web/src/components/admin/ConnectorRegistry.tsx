@@ -27,6 +27,7 @@ import {
   createConnector,
   patchConnector,
   deleteConnector,
+  testConnector,
   emptyCapabilities,
   type ConnectorSummary,
   type Connector,
@@ -34,6 +35,7 @@ import {
   type ConnectorKeyMode,
   type ConnectorVisibility,
   type ConnectorMcpServerSpec,
+  type ConnectorTestStatus,
 } from '../../lib/connectors';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -50,7 +52,8 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { RoleCard } from './RoleCard';
-import { StatusDot } from './StatusDot';
+import { StatusDot, type StatusDotVariant } from './StatusDot';
+import { cn } from '@/lib/utils';
 
 type Transport = 'stdio' | 'http';
 
@@ -185,6 +188,48 @@ function needsCaption(c: ConnectorSummary): string {
   return `Needs ${key}`;
 }
 
+// --- Test action (TASK-108) ------------------------------------------------
+//
+// Per-row probe state, the connector equivalent of the old McpServerForm Test
+// button. `idle` = not yet probed (no claim either way — we no longer pretend
+// every connector is "connected"); `testing` = round-trip in flight; the rest
+// are the server's verdict. Stored per-row so rows probe independently.
+
+type TestState = 'idle' | 'testing' | ConnectorTestStatus;
+
+/** Map a probe state to the existing StatusDot variant (semantic tokens only —
+ *  StatusDot owns the actual colors). */
+function testDotVariant(state: TestState | undefined): StatusDotVariant {
+  switch (state) {
+    case 'reachable':
+      return 'ok';
+    case 'unreachable':
+      return 'bad';
+    case 'needs-key':
+      return 'bad';
+    case 'testing':
+      return 'pending';
+    default:
+      return 'empty';
+  }
+}
+
+/** Human label for the status caption next to the dot. */
+function testLabel(state: TestState | undefined): string {
+  switch (state) {
+    case 'reachable':
+      return 'reachable';
+    case 'unreachable':
+      return 'unreachable';
+    case 'needs-key':
+      return 'needs key';
+    case 'testing':
+      return 'testing…';
+    default:
+      return 'not tested';
+  }
+}
+
 export function ConnectorRegistry() {
   const [connectors, setConnectors] = useState<ConnectorSummary[]>([]);
   const [editing, setEditing] = useState<ConnectorSummary | 'new' | null>(null);
@@ -192,6 +237,9 @@ export function ConnectorRegistry() {
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Per-row Test probe state — keyed by connector id so rows probe
+  // independently without one row's badge clobbering another's (TASK-108).
+  const [testState, setTestState] = useState<Record<string, TestState>>({});
 
   const refresh = async () => {
     try {
@@ -200,6 +248,14 @@ export function ConnectorRegistry() {
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
+  };
+
+  const onTest = async (id: string) => {
+    setTestState((prev) => ({ ...prev, [id]: 'testing' }));
+    // `testConnector` folds HTTP/network errors into `{ status: 'unreachable' }`,
+    // so this never throws and the badge can't get stuck on "testing…".
+    const result = await testConnector(id);
+    setTestState((prev) => ({ ...prev, [id]: result.status }));
   };
 
   useEffect(() => {
@@ -320,15 +376,31 @@ export function ConnectorRegistry() {
                 caption={needsCaption(c)}
               >
                 <div className="flex items-center justify-end gap-2">
-                  <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground mr-auto">
-                    <StatusDot variant="ok" />
-                    connected
+                  <span
+                    className={cn(
+                      'flex items-center gap-1.5 text-[12.5px] mr-auto',
+                      testState[c.id] === 'unreachable' ||
+                        testState[c.id] === 'needs-key'
+                        ? 'text-destructive'
+                        : 'text-muted-foreground',
+                    )}
+                  >
+                    <StatusDot variant={testDotVariant(testState[c.id])} />
+                    {testLabel(testState[c.id])}
                   </span>
                   {c.visibility === 'shared' && (
                     <Badge variant="secondary" className="text-[10px]">
                       shared
                     </Badge>
                   )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => void onTest(c.id)}
+                    disabled={testState[c.id] === 'testing'}
+                  >
+                    test
+                  </Button>
                   <Button
                     variant="outline"
                     size="sm"

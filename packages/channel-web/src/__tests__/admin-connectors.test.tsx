@@ -77,8 +77,11 @@ describe('Admin — Connectors registry', () => {
     );
     render(<ConnectorRegistry />);
     await waitFor(() => expect(screen.getByText('Google Drive')).toBeTruthy());
-    // Default view shows connected state, not the mechanism.
-    expect(screen.getByText(/^connected$/i)).toBeTruthy();
+    // Default view shows the row + an un-probed Test status, not the mechanism.
+    // We no longer claim every connector is "connected" — the row starts as
+    // "not tested" until the Test action probes it (TASK-108).
+    expect(screen.getByText(/^not tested$/i)).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^test$/i })).toBeTruthy();
     expect(screen.queryByText(/transport/i)).toBeNull();
   });
 
@@ -292,5 +295,100 @@ describe('Admin — Connectors registry', () => {
     const headers = deleted!.headers as Record<string, string>;
     expect(headers['x-requested-with']).toBe('ax-admin');
     confirmSpy.mockRestore();
+  });
+
+  // --- Test action (TASK-108) ---------------------------------------------
+
+  /** Mock the list GET + the per-id /test POST returning a chosen verdict. */
+  function mockListAndTest(
+    verdictById: Record<string, { status: string; detail?: string }>,
+    connectors = [sampleConnector()],
+    capture?: (id: string, opts: RequestInit) => void,
+  ) {
+    fetchMock.mockImplementation((url: RequestInfo | URL, opts?: RequestInit) => {
+      const u = String(url);
+      const m = /^\/admin\/connectors\/([^/]+)\/test$/.exec(u);
+      if (m && opts?.method === 'POST') {
+        const id = decodeURIComponent(m[1]!);
+        capture?.(id, opts);
+        return Promise.resolve(jsonOk(verdictById[id] ?? { status: 'reachable' }));
+      }
+      return Promise.resolve(jsonOk({ connectors }));
+    });
+  }
+
+  it('Test action POSTs /admin/connectors/:id/test with the CSRF header and shows reachable', async () => {
+    let captured: { id: string; opts: RequestInit } | null = null;
+    mockListAndTest({ gdrive: { status: 'reachable' } }, [sampleConnector()], (id, opts) => {
+      captured = { id, opts };
+    });
+
+    render(<ConnectorRegistry />);
+    await waitFor(() => screen.getByText('Google Drive'));
+    // Starts un-probed.
+    expect(screen.getByText(/^not tested$/i)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /^test$/i }));
+
+    await waitFor(() => expect(screen.getByText(/^reachable$/i)).toBeTruthy());
+    expect(captured).toBeTruthy();
+    expect(captured!.id).toBe('gdrive');
+    expect(captured!.opts.method).toBe('POST');
+    const headers = captured!.opts.headers as Record<string, string>;
+    expect(headers['x-requested-with']).toBe('ax-admin');
+  });
+
+  it('Test action surfaces needs-key', async () => {
+    mockListAndTest({ gdrive: { status: 'needs-key', detail: 'missing key for slot "gdrive"' } });
+    render(<ConnectorRegistry />);
+    await waitFor(() => screen.getByText('Google Drive'));
+    fireEvent.click(screen.getByRole('button', { name: /^test$/i }));
+    await waitFor(() => expect(screen.getByText(/^needs key$/i)).toBeTruthy());
+  });
+
+  it('Test action surfaces unreachable', async () => {
+    mockListAndTest({ gdrive: { status: 'unreachable' } });
+    render(<ConnectorRegistry />);
+    await waitFor(() => screen.getByText('Google Drive'));
+    fireEvent.click(screen.getByRole('button', { name: /^test$/i }));
+    await waitFor(() => expect(screen.getByText(/^unreachable$/i)).toBeTruthy());
+  });
+
+  it('a non-OK HTTP response folds into unreachable (non-throwing client)', async () => {
+    fetchMock.mockImplementation((url: RequestInfo | URL, opts?: RequestInit) => {
+      const u = String(url);
+      if (/\/test$/.test(u) && opts?.method === 'POST') {
+        return Promise.resolve(new Response('nope', { status: 500 }));
+      }
+      return Promise.resolve(jsonOk({ connectors: [sampleConnector()] }));
+    });
+    render(<ConnectorRegistry />);
+    await waitFor(() => screen.getByText('Google Drive'));
+    fireEvent.click(screen.getByRole('button', { name: /^test$/i }));
+    await waitFor(() => expect(screen.getByText(/^unreachable$/i)).toBeTruthy());
+  });
+
+  it('rows probe independently — testing one does not change another', async () => {
+    const two = [
+      sampleConnector({ id: 'gdrive', name: 'Google Drive' }),
+      sampleConnector({ id: 'sf', name: 'Salesforce' }),
+    ];
+    mockListAndTest(
+      { gdrive: { status: 'reachable' }, sf: { status: 'needs-key' } },
+      two,
+    );
+    render(<ConnectorRegistry />);
+    await waitFor(() => screen.getByText('Google Drive'));
+    await waitFor(() => screen.getByText('Salesforce'));
+
+    const testButtons = screen.getAllByRole('button', { name: /^test$/i });
+    // Both rows start "not tested".
+    expect(screen.getAllByText(/^not tested$/i)).toHaveLength(2);
+    // Probe only the first row (Google Drive).
+    fireEvent.click(testButtons[0]!);
+    await waitFor(() => expect(screen.getByText(/^reachable$/i)).toBeTruthy());
+    // The second row is untouched.
+    expect(screen.getByText(/^not tested$/i)).toBeTruthy();
+    expect(screen.queryByText(/^needs key$/i)).toBeNull();
   });
 });

@@ -115,10 +115,12 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
 
   // The `calls` list is built once at construction so the manifest is stable and
   // matches what init actually uses. The admin-route bridge calls
-  // `http:register-route` + `auth:require-user` only when mounted.
+  // `http:register-route` + `auth:require-user` only when mounted; the connector
+  // Test probe (TASK-108) additionally reads credential METADATA via
+  // `credentials:list` (presence-only — never `credentials:get`, never a value).
   const calls: string[] = ['database:get-instance'];
   if (mountAdminRoutes) {
-    calls.push('http:register-route', 'auth:require-user');
+    calls.push('http:register-route', 'auth:require-user', 'credentials:list');
   }
 
   return {
