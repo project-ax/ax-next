@@ -211,16 +211,16 @@ connectors:
     expect(resolved?.connectors).toEqual(['github-connector', 'gitlab_ce']);
   });
 
-  it('surfaces connectors as [] for a pre-connector skill (manifest with no connectors:)', async () => {
+  it('surfaces connectors as [] for a skill with no connectors: (additive default)', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);
     const store = createSkillsStore(db);
 
-    // SAMPLE_MANIFEST declares no connectors: — the additive default is [].
+    // A bare cap-free manifest that declares no connectors: → the default is [].
     await store.upsert({
       id: 'github',
-      description: 'GitHub.',
-      manifestYaml: SAMPLE_MANIFEST,
+      description: 'GitHub know-how.',
+      manifestYaml: 'name: github\ndescription: GitHub know-how.\nversion: 1\n',
       bodyMd: SAMPLE_BODY,
       version: 1,
     });
@@ -644,24 +644,10 @@ version: 1
       expect(await store.get('nope')).toBeNull();
     });
 
-    it('rejects flip to true on a credentialed manifest (I-S2) and does NOT mutate the row', async () => {
-      const db = makeKysely();
-      await runSkillsMigration(db);
-      const store = createSkillsStore(db);
-      await store.upsert({
-        id: 'github',
-        description: 'd',
-        manifestYaml: SAMPLE_MANIFEST, // declares GITHUB_TOKEN
-        bodyMd: SAMPLE_BODY,
-        version: 1,
-      });
-
-      await expect(store.setDefaultAttached('github', true)).rejects.toThrow(
-        /default-attached-requires-no-credentials/,
-      );
-      // Untouched.
-      expect((await store.get('github'))!.defaultAttached).toBe(false);
-    });
+    // TASK-100 — a skill manifest can no longer declare credential slots, so the
+    // old "setDefaultAttached rejects flip on a credentialed manifest (I-S2)"
+    // test is obsolete and was removed; a default-attached skill is always
+    // instruction-only by construction.
 
     it('writes ONLY the flag + updated_at — manifest/body/bundle bytes are identical before & after (race-safe)', async () => {
       const db = makeKysely();
