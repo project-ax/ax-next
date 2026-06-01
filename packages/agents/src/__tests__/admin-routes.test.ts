@@ -247,6 +247,7 @@ interface SerializedAgent {
   model: string;
   workspaceRef: string | null;
   skillAttachments: SerializedSkillAttachment[];
+  connectorAttachments: string[];
 }
 
 describe('@ax/agents admin routes', () => {
@@ -721,5 +722,118 @@ describe('@ax/agents admin routes', () => {
     expect(r.status).toBe(200);
     const agent = (r.body as { agent: SerializedAgent }).agent;
     expect(agent.skillAttachments).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // PATCH /admin/agents/:id/connector-attachments (TASK-107)
+  // -------------------------------------------------------------------------
+
+  it('a freshly created agent serializes connectorAttachments: []', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    expect((created.body as { agent: SerializedAgent }).agent.connectorAttachments).toEqual(
+      [],
+    );
+  });
+
+  it('PATCH /admin/agents/:id/connector-attachments with valid ids → 200 + connectorAttachments persisted', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    const r = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/connector-attachments`,
+      { cookie, body: { connectorAttachments: ['salesforce', 'gh'] } },
+    );
+    expect(r.status).toBe(200);
+    const agent = (r.body as { agent: SerializedAgent }).agent;
+    expect(agent.connectorAttachments).toEqual(['salesforce', 'gh']);
+    // mcpConfigIds is unaffected — it reverts to MCP-only meaning.
+    expect(agent.mcpConfigIds).toEqual(makeBody().mcpConfigIds);
+
+    // Re-read via GET to prove durability.
+    const show = await http(stack.port, 'GET', `/admin/agents/${id}`, { cookie });
+    expect((show.body as { agent: SerializedAgent }).agent.connectorAttachments).toEqual([
+      'salesforce',
+      'gh',
+    ]);
+  });
+
+  it('PATCH /admin/agents/:id/connector-attachments with empty array → 200 + connectorAttachments: []', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    // Attach then detach.
+    await http(stack.port, 'PATCH', `/admin/agents/${id}/connector-attachments`, {
+      cookie,
+      body: { connectorAttachments: ['gh'] },
+    });
+    const r = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/connector-attachments`,
+      { cookie, body: { connectorAttachments: [] } },
+    );
+    expect(r.status).toBe(200);
+    expect((r.body as { agent: SerializedAgent }).agent.connectorAttachments).toEqual([]);
+  });
+
+  it('PATCH /admin/agents/:id/connector-attachments with a malformed id → 400', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    const r = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/connector-attachments`,
+      { cookie, body: { connectorAttachments: ['Bad Id'] } },
+    );
+    expect(r.status).toBe(400);
+  });
+
+  it('PATCH /admin/agents/:id/connector-attachments non-admin → 403', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    const { cookie: cookieB } = await mintSecondUserCookie();
+    const r = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/connector-attachments`,
+      { cookie: cookieB, body: { connectorAttachments: [] } },
+    );
+    expect(r.status).toBe(403);
+  });
+
+  it('PATCH /admin/agents/:id/connector-attachments missing field → 400', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    const r = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/connector-attachments`,
+      { cookie, body: { notTheRightField: [] } },
+    );
+    expect(r.status).toBe(400);
   });
 });

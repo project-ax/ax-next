@@ -12,6 +12,7 @@ import {
   resolveAllowedModels,
   validateCreateInput,
   validateUpdatePatch,
+  validateConnectorAttachmentIds,
 } from '../store.js';
 import { scopedAgents } from '../scope.js';
 import type { AgentInput } from '../types.js';
@@ -328,5 +329,102 @@ describe('store + scopedAgents', () => {
     expect(await store.deleteById(created.id)).toBe(true);
     expect(await store.deleteById(created.id)).toBe(false);
     expect(await store.getById(created.id)).toBeNull();
+  });
+});
+
+// TASK-107 — per-agent connector-attachment store.
+describe('validateConnectorAttachmentIds', () => {
+  it('accepts a deduped list of well-formed connector-id slugs', () => {
+    expect(validateConnectorAttachmentIds(['salesforce', 'my-drive', 'gh_2'])).toEqual([
+      'salesforce',
+      'my-drive',
+      'gh_2',
+    ]);
+  });
+
+  it('accepts an empty list', () => {
+    expect(validateConnectorAttachmentIds([])).toEqual([]);
+  });
+
+  it('rejects a non-array', () => {
+    expect(() => validateConnectorAttachmentIds('nope')).toThrow(/must be an array/);
+  });
+
+  it('rejects a non-string entry', () => {
+    expect(() => validateConnectorAttachmentIds([1])).toThrow(/entries must be strings/);
+  });
+
+  it('rejects a malformed slug', () => {
+    expect(() => validateConnectorAttachmentIds(['Bad Id'])).toThrow(/must match/);
+    expect(() => validateConnectorAttachmentIds(['-leading'])).toThrow(/must match/);
+  });
+
+  it('rejects a duplicate', () => {
+    expect(() => validateConnectorAttachmentIds(['gh', 'gh'])).toThrow(/duplicated/);
+  });
+
+  it('rejects more than 50 entries', () => {
+    const many = Array.from({ length: 51 }, (_, i) => `c${i}`);
+    expect(() => validateConnectorAttachmentIds(many)).toThrow(/at most 50/);
+  });
+});
+
+describe('store connector attachments', () => {
+  it('defaults a freshly created agent to an empty connectorAttachments list', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    const created = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(makeInput(), { allowedModels: ALLOWED }),
+    });
+    expect(created.connectorAttachments).toEqual([]);
+    const round = await store.getById(created.id);
+    expect(round!.connectorAttachments).toEqual([]);
+  });
+
+  it('setConnectorAttachments replaces the list wholesale and round-trips', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    const created = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(makeInput(), { allowedModels: ALLOWED }),
+    });
+    const updated = await store.setConnectorAttachments(created.id, ['salesforce', 'gh']);
+    expect(updated.connectorAttachments).toEqual(['salesforce', 'gh']);
+    // Wholesale replace — a second call with a different set overwrites, not appends.
+    const replaced = await store.setConnectorAttachments(created.id, ['gh']);
+    expect(replaced.connectorAttachments).toEqual(['gh']);
+    const round = await store.getById(created.id);
+    expect(round!.connectorAttachments).toEqual(['gh']);
+  });
+
+  it('setConnectorAttachments throws not-found for a missing agent', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    await expect(store.setConnectorAttachments('agt_missing', ['gh'])).rejects.toThrow(
+      /not found/,
+    );
+  });
+
+  it('does not touch mcpConfigIds (mcpConfigIds reverts to MCP-only)', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    const created = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(makeInput({ mcpConfigIds: ['real-mcp'] }), {
+        allowedModels: ALLOWED,
+      }),
+    });
+    const updated = await store.setConnectorAttachments(created.id, ['gh']);
+    // The connector attach store is orthogonal to the MCP binding.
+    expect(updated.mcpConfigIds).toEqual(['real-mcp']);
+    expect(updated.connectorAttachments).toEqual(['gh']);
   });
 });

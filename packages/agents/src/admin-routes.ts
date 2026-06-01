@@ -11,6 +11,7 @@ import {
   validateNewAttachments,
   type NewAttachmentInput,
 } from './skill-attachments-validation.js';
+import { validateConnectorAttachmentIds } from './store.js';
 import type {
   Actor,
   Agent,
@@ -24,6 +25,8 @@ import type {
   ListForUserOutput,
   ResolveInput,
   ResolveOutput,
+  SetConnectorAttachmentsInput,
+  SetConnectorAttachmentsOutput,
   SkillAttachment,
   UpdateInput,
   UpdateOutput,
@@ -211,6 +214,19 @@ const patchAttachmentsBodySchema = z
   .strict();
 
 /**
+ * Body schema for `PATCH /admin/agents/:id/connector-attachments` (TASK-107).
+ * Replaces the entire connector_attachments id list. An empty array detaches
+ * all connectors. The wire is a plain list of connector-id strings; the full
+ * slug/dedup/count validation lives in `validateConnectorAttachmentIds` (the
+ * single source of truth, shared with the store), called by the handler.
+ */
+const patchConnectorAttachmentsBodySchema = z
+  .object({
+    connectorAttachments: z.array(z.string()),
+  })
+  .strict();
+
+/**
  * Body schema for `POST /admin/agents/:id/authored-skills/promote`.
  *
  * TASK-100 — a promoted skill carries NO capability block; its reach is the
@@ -363,6 +379,7 @@ function serializeAgent(a: Agent): Record<string, unknown> {
     model: a.model,
     workspaceRef: a.workspaceRef,
     skillAttachments: a.skillAttachments,
+    connectorAttachments: a.connectorAttachments,
     createdAt: a.createdAt.toISOString(),
     updatedAt: a.updatedAt.toISOString(),
   };
@@ -614,6 +631,59 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
       }
     },
 
+    /** PATCH /admin/agents/:id/connector-attachments (TASK-107) */
+    async setConnectorAttachments(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      // Admin-only: attaching a connector grants the agent that connector's
+      // network reach + credential slots in the sandbox (TASK-97 fold), so it
+      // must not be set by arbitrary authenticated users — same posture as
+      // skill attachments.
+      if (!actor.isAdmin) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const agentId = req.params.id;
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const parsed = parseAndValidate(req.body, patchConnectorAttachmentsBodySchema);
+      if (!parsed.ok) {
+        res.status(parsed.status).json({ error: parsed.message });
+        return;
+      }
+      // Slug/dedup/count validation (the single source of truth, shared with
+      // the store). Connector EXISTENCE is intentionally NOT checked: a dangling
+      // id is tolerated and simply never resolves at session open (the
+      // orchestrator's NON-FATAL union) — mirroring skill_attachments' orphan
+      // tolerance and keeping this route decoupled from @ax/connectors.
+      let connectorIds: string[];
+      try {
+        connectorIds = validateConnectorAttachmentIds(parsed.value.connectorAttachments);
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'invalid-payload') {
+          res.status(400).json({ error: err.message });
+          return;
+        }
+        throw err;
+      }
+      try {
+        const out = await deps.bus.call<
+          SetConnectorAttachmentsInput,
+          SetConnectorAttachmentsOutput
+        >('agents:set-connector-attachments', ctx, {
+          actor: { userId: actor.id, isAdmin: actor.isAdmin } satisfies Actor,
+          agentId,
+          connectorIds,
+        });
+        res.status(200).json({ agent: serializeAgent(out.agent) });
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
     /** GET /admin/agents/:id/authored-skills */
     async listAuthoredSkills(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireUser(deps.bus, ctx, req, res);
@@ -772,6 +842,11 @@ export async function registerAdminAgentRoutes(
       method: 'PATCH',
       path: '/admin/agents/:id/skill-attachments',
       handler: handlers.setSkillAttachments,
+    },
+    {
+      method: 'PATCH',
+      path: '/admin/agents/:id/connector-attachments',
+      handler: handlers.setConnectorAttachments,
     },
     {
       method: 'GET',

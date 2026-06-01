@@ -150,6 +150,52 @@ function validateMcpConfigIds(value: unknown): string[] {
   return out;
 }
 
+// TASK-107 — connector-id grammar, re-declared per I2 (no @ax/connectors import).
+// MUST stay in lockstep with @ax/connectors store.ts `ID_RE` / `ID_MAX`; the
+// attach store only references a connector id, never interprets it. A bad shape
+// is a LOUD reject at the write boundary (a dangling-but-well-formed id is fine
+// — it simply never resolves at session open).
+const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
+const CONNECTOR_ID_MAX = 128;
+const CONNECTOR_ATTACHMENTS_MAX = 50;
+
+/**
+ * Validate a per-agent connector-attachment id list: bounded count, each a
+ * well-formed connector-id slug, deduped. Returns the deduped, validated list.
+ * Used by the admin route before calling agents:set-connector-attachments.
+ */
+export function validateConnectorAttachmentIds(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    throw invalid('connectorAttachments must be an array');
+  }
+  if (value.length > CONNECTOR_ATTACHMENTS_MAX) {
+    throw invalid(
+      `connectorAttachments must have at most ${CONNECTOR_ATTACHMENTS_MAX} entries`,
+    );
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const entry of value) {
+    if (typeof entry !== 'string') {
+      throw invalid('connectorAttachments entries must be strings');
+    }
+    if (entry.length === 0 || entry.length > CONNECTOR_ID_MAX) {
+      throw invalid(`connectorAttachments entry must be 1-${CONNECTOR_ID_MAX} chars`);
+    }
+    if (!CONNECTOR_ID_RE.test(entry)) {
+      throw invalid(
+        `connectorAttachments entry '${entry}' must match ${CONNECTOR_ID_RE.source}`,
+      );
+    }
+    if (seen.has(entry)) {
+      throw invalid(`connectorAttachments entry '${entry}' duplicated`);
+    }
+    seen.add(entry);
+    out.push(entry);
+  }
+  return out;
+}
+
 function validateModel(value: unknown, allowed: readonly string[]): string {
   if (typeof value !== 'string') {
     throw invalid('model must be a string');
@@ -348,6 +394,22 @@ function rowToAgent(row: AgentsRow): Agent {
     });
   }
   const skillAttachments = skillAttachmentsRaw as SkillAttachment[];
+  // TASK-107 — connector attachments are a plain string[] of connector ids.
+  // A row predating the column is impossible (NOT NULL DEFAULT '[]'), but a
+  // corrupt JSONB (non-array / non-string entries) is a LOUD reject, mirroring
+  // the skill_attachments / mcp_config_ids guards above.
+  const connectorAttachmentsRaw = row.connector_attachments;
+  if (
+    !Array.isArray(connectorAttachmentsRaw) ||
+    !connectorAttachmentsRaw.every((s) => typeof s === 'string')
+  ) {
+    throw new PluginError({
+      code: 'corrupt-row',
+      plugin: PLUGIN_NAME,
+      message: `agents_v1_agents.${row.agent_id} has invalid connector_attachments JSONB`,
+    });
+  }
+  const connectorAttachments = connectorAttachmentsRaw as string[];
   return {
     id: row.agent_id,
     ownerId: row.owner_id,
@@ -360,6 +422,7 @@ function rowToAgent(row: AgentsRow): Agent {
     model: row.model,
     workspaceRef: row.workspace_ref,
     skillAttachments,
+    connectorAttachments,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -417,6 +480,14 @@ export interface AgentStore {
    */
   setSkillAttachments(agentId: string, attachments: SkillAttachment[]): Promise<Agent>;
   /**
+   * TASK-107 — replace the connector_attachments id list wholesale for an
+   * agent. The caller (agents:set-connector-attachments) pre-validates the ids
+   * with validateConnectorAttachmentIds before calling. Throws
+   * PluginError(not-found) when the agent row doesn't exist. Mirrors
+   * setSkillAttachments.
+   */
+  setConnectorAttachments(agentId: string, connectorIds: string[]): Promise<Agent>;
+  /**
    * Read-only enumeration of every agent id. Used by callers that need to
    * iterate the agent set without paying for full row hydration — e.g.,
    * the @ax/routines tick loop's lazy materialization of default rows. No
@@ -470,6 +541,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           model: validated.model,
           workspace_ref: validated.workspaceRef,
           skill_attachments: JSON.stringify([]) as unknown,
+          connector_attachments: JSON.stringify([]) as unknown,
           created_at: now,
           updated_at: now,
         } as never)
@@ -486,6 +558,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'workspace_ref',
           'webhook_token',
           'skill_attachments',
+          'connector_attachments',
           'created_at',
           'updated_at',
         ])
@@ -524,6 +597,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'workspace_ref',
           'webhook_token',
           'skill_attachments',
+          'connector_attachments',
           'created_at',
           'updated_at',
         ])
@@ -634,6 +708,43 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'workspace_ref',
           'webhook_token',
           'skill_attachments',
+          'connector_attachments',
+          'created_at',
+          'updated_at',
+        ])
+        .executeTakeFirst();
+      if (row === undefined) {
+        throw new PluginError({
+          code: 'not-found',
+          plugin: PLUGIN_NAME,
+          message: `agent '${agentId}' not found`,
+        });
+      }
+      return rowToAgent(row as AgentsRow);
+    },
+
+    async setConnectorAttachments(agentId, connectorIds) {
+      const row = await db
+        .updateTable('agents_v1_agents')
+        .set({
+          connector_attachments: JSON.stringify(connectorIds) as unknown,
+          updated_at: new Date(),
+        } as never)
+        .where('agent_id', '=', agentId)
+        .returning([
+          'agent_id',
+          'owner_id',
+          'owner_type',
+          'visibility',
+          'display_name',
+          'system_prompt',
+          'allowed_tools',
+          'mcp_config_ids',
+          'model',
+          'workspace_ref',
+          'webhook_token',
+          'skill_attachments',
+          'connector_attachments',
           'created_at',
           'updated_at',
         ])

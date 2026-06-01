@@ -67,6 +67,7 @@ beforeEach(() => {
     model: 'claude-sonnet-4-6',
     workspaceRef: null,
     skillAttachments: [],
+    connectorAttachments: [],
     createdAt: '2026-05-18T00:00:00.000Z',
     updatedAt: '2026-05-18T00:00:00.000Z',
   });

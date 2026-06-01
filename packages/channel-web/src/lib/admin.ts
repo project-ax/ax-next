@@ -43,6 +43,10 @@ export interface AdminAgent {
   model: string;
   workspaceRef: string | null;
   skillAttachments: Array<{ skillId: string; credentialBindings: Record<string, string> }>;
+  /** TASK-107 — the connector ids attached to this agent (the first-class
+   *  per-agent connector-attachment store, replacing TASK-98's mcpConfigIds
+   *  stopgap). Written via PATCH /admin/agents/:id/connector-attachments. */
+  connectorAttachments: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -115,6 +119,33 @@ export async function patchAgentSkillAttachments(
   if (!res.ok) {
     const excerpt = await res.text().catch(() => '');
     throw new Error(`patch skill attachments: ${res.status} ${excerpt.slice(0, 200)}`);
+  }
+  const out = (await res.json()) as { agent: AdminAgent };
+  return out.agent;
+}
+
+/**
+ * TASK-107 — replace the agent's connector attachments wholesale. PATCHes the
+ * first-class per-agent connector-attachment store (NOT `mcpConfigIds`, which
+ * reverts to MCP-only meaning). An empty list detaches all connectors. Mirrors
+ * `patchAgentSkillAttachments`.
+ */
+export async function patchAgentConnectorAttachments(
+  agentId: string,
+  connectorAttachments: string[],
+): Promise<AdminAgent> {
+  const res = await fetch(
+    `/admin/agents/${encodeURIComponent(agentId)}/connector-attachments`,
+    {
+      method: 'PATCH',
+      headers: writeHeaders,
+      credentials: 'include',
+      body: JSON.stringify({ connectorAttachments }),
+    },
+  );
+  if (!res.ok) {
+    const excerpt = await res.text().catch(() => '');
+    throw new Error(`patch connector attachments: ${res.status} ${excerpt.slice(0, 200)}`);
   }
   const out = (await res.json()) as { agent: AdminAgent };
   return out.agent;

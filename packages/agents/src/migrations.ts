@@ -79,6 +79,21 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
     ALTER TABLE agents_v1_agents
       ADD COLUMN IF NOT EXISTS skill_attachments JSONB NOT NULL DEFAULT '[]'
   `.execute(db);
+
+  // TASK-107: per-agent connector attachments — the connector ids this agent
+  // is attached to. A FIRST-CLASS store replacing the TASK-98 stopgap that
+  // overloaded `mcp_config_ids` (which reverts to MCP-only meaning). A plain
+  // array of connector-id slugs (no credential bindings — the connector owns
+  // its own slots; the credential ref derives from keyMode→scope, TASK-96).
+  // NOT NULL DEFAULT '[]' so every existing row reads safely — this additive
+  // column IS the idempotent migration (no lossy mcp_config_ids reclassification:
+  // a real MCP config id and a TASK-98 connector id are indistinguishable, and
+  // ax-next has no prod data). Owned exclusively by PATCH
+  // /admin/agents/:id/connector-attachments (never the generic update path).
+  await sql`
+    ALTER TABLE agents_v1_agents
+      ADD COLUMN IF NOT EXISTS connector_attachments JSONB NOT NULL DEFAULT '[]'
+  `.execute(db);
 }
 
 /**
@@ -98,6 +113,7 @@ export interface AgentsRow {
   workspace_ref: string | null;
   webhook_token: string | null;
   skill_attachments: unknown; // JSONB; validated by store
+  connector_attachments: unknown; // JSONB; validated by store (TASK-107)
   created_at: Date;
   updated_at: Date;
 }
