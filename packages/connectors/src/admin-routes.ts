@@ -17,6 +17,7 @@ import type {
   UpsertInput,
   UpsertOutput,
 } from './types.js';
+import { deriveCredentialPlan } from './credential-plan.js';
 
 // ---------------------------------------------------------------------------
 // HTTP route handlers for /admin/connectors[/:id].
@@ -140,6 +141,106 @@ function handleHookError(err: unknown, res: RouteResponse): void {
     }
   }
   throw err;
+}
+
+// --- connector Test probe (TASK-108) --------------------------------------
+//
+// The connector equivalent of the old McpServerForm `/test`. The deleted MCP
+// form opened a REAL outbound MCP connection; a connector's backing mechanism
+// is deliberately hidden (a connector may be MCP, a CLI/package, or a direct
+// API), so a connector-level probe stays at the right altitude: it reports
+// whether the connector is set up to work, WITHOUT opening any network
+// connection. Two checks, both derivable from data the connectors plugin
+// already owns plus a metadata-only credential read:
+//
+//   needs-key   — a declared credential slot has no key in the vault yet
+//                 (`credentials:list` is metadata-only — it NEVER returns a
+//                 secret value; we only check whether a row at the derived
+//                 `(scope, ref)` exists).
+//   unreachable — the config is malformed: an MCP-backed connector whose
+//                 leading server declares neither a `url` (http) nor a
+//                 `command` (stdio), so it can't connect to anything.
+//   reachable   — required slots filled + config sane (covers CLI/package and
+//                 direct-API connectors, which need only slot presence).
+//
+// I1: the verdict (`reachable`/`unreachable`/`needs-key`) is a neutral status —
+// no `transport`/`url`/`pod`/`sha` leaks into it. I2: credential presence is
+// read over the EXISTING `credentials:list` bus hook — no @ax/credentials or
+// @ax/mcp-client runtime import. I5: metadata-only (no `credentials:get`, no
+// secret values reach the probe). A real outbound-connection probe (what the
+// old MCP /test did) is a deferred follow-up — it would need a new host-side
+// network-egress hook + untrusted-remote-response handling.
+
+export type ProbeStatus = 'reachable' | 'unreachable' | 'needs-key';
+
+export interface ProbeResult {
+  status: ProbeStatus;
+  /** Optional human-readable hint (e.g. the first unfilled slot). Neutral —
+   *  never echoes a secret or a backend-specific identifier. */
+  detail?: string;
+}
+
+/** Minimal shape of a `credentials:list` row we read — METADATA ONLY. The
+ *  full @ax/credentials `CredentialMeta` carries more, but the probe only needs
+ *  `(scope, ref)` to decide presence; we never touch a value. */
+interface CredentialMetaLike {
+  scope: string;
+  ownerId: string | null;
+  ref: string;
+}
+
+/**
+ * Probe a connector for setup-completeness. Owner-scoped: `actorId` is the
+ * authenticated caller, used to look up `scope:'user'` (personal) keys in the
+ * caller's own vault; `scope:'global'` (workspace) keys live under `ownerId:null`.
+ *
+ * Returns `needs-key` the moment a required slot has no key, otherwise checks
+ * config sanity, otherwise `reachable`. Never throws on a missing credential —
+ * a `credentials:list` failure is folded into a conservative `unreachable`.
+ */
+export async function probeConnector(
+  connector: Connector,
+  deps: { bus: HookBus; ctx: AgentContext; actorId: string },
+): Promise<ProbeResult> {
+  const plan = deriveCredentialPlan(connector);
+  for (const entry of plan) {
+    // `scope:'user'` keys are owned by the caller; `scope:'global'` (workspace)
+    // keys live under ownerId:null. The credential store scopes its read by
+    // (scope, ownerId) — we then check the derived ref is present.
+    const ownerId = entry.scope === 'global' ? null : deps.actorId;
+    let rows: CredentialMetaLike[];
+    try {
+      const out = await deps.bus.call<
+        { scope: string; ownerId: string | null },
+        { credentials: CredentialMetaLike[] }
+      >('credentials:list', deps.ctx, { scope: entry.scope, ownerId });
+      rows = out.credentials;
+    } catch {
+      // A read failure can't prove the key exists — conservatively report the
+      // connector as not-yet-usable rather than a false "reachable".
+      return { status: 'unreachable', detail: 'could not verify credentials' };
+    }
+    const present = rows.some((r) => r.ref === entry.ref && r.scope === entry.scope);
+    if (!present) {
+      return { status: 'needs-key', detail: `missing key for slot "${entry.slot}"` };
+    }
+  }
+
+  // Config sanity: an MCP-backed connector must give its leading server a way to
+  // reach something — an http `url` or a stdio `command`. A connector with no
+  // mcpServers is CLI/package/direct-API backed and passes this check (its reach
+  // is the allowedHosts + the now-verified slots).
+  const leadServer = connector.capabilities.mcpServers[0];
+  if (leadServer !== undefined) {
+    const hasUrl = typeof leadServer.url === 'string' && leadServer.url.trim().length > 0;
+    const hasCommand =
+      typeof leadServer.command === 'string' && leadServer.command.trim().length > 0;
+    if (!hasUrl && !hasCommand) {
+      return { status: 'unreachable', detail: 'MCP server has no url or command' };
+    }
+  }
+
+  return { status: 'reachable' };
 }
 
 // --- handler factory ------------------------------------------------------
@@ -306,13 +407,46 @@ export function createAdminConnectorRouteHandlers(deps: AdminRouteDeps) {
         handleHookError(err, res);
       }
     },
+
+    /**
+     * POST /admin/connectors/:id/test — probe an owned connector for setup
+     * completeness (TASK-108). 200 `{ status, detail? }` where status is
+     * `reachable` | `unreachable` | `needs-key`. A foreign / missing connector
+     * 404s (same leak posture as the owner-scoped read). No request body.
+     */
+    async test(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      const id = req.params.id;
+      if (typeof id !== 'string' || id.length === 0) {
+        res.status(400).json({ error: 'missing-id' });
+        return;
+      }
+      let connector: Connector;
+      try {
+        const got = await deps.bus.call<GetInput, GetOutput>('connectors:get', ctx, {
+          userId: actor.id,
+          connectorId: id,
+        });
+        connector = got.connector;
+      } catch (err) {
+        handleHookError(err, res);
+        return;
+      }
+      const result = await probeConnector(connector, {
+        bus: deps.bus,
+        ctx,
+        actorId: actor.id,
+      });
+      res.status(200).json(result);
+    },
   };
 }
 
 // --- registration ---------------------------------------------------------
 
 /**
- * Register all five admin routes against @ax/http-server. Returned unregister
+ * Register all six admin routes against @ax/http-server. Returned unregister
  * callbacks should be tracked by the plugin and called on shutdown so a re-init
  * (tests) doesn't trip duplicate-route.
  */
@@ -331,6 +465,7 @@ export async function registerAdminConnectorRoutes(
     { method: 'GET', path: '/admin/connectors/:id', handler: handlers.show },
     { method: 'PATCH', path: '/admin/connectors/:id', handler: handlers.update },
     { method: 'DELETE', path: '/admin/connectors/:id', handler: handlers.destroy },
+    { method: 'POST', path: '/admin/connectors/:id/test', handler: handlers.test },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {

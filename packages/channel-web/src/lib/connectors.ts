@@ -150,6 +150,46 @@ export async function deleteConnector(id: string): Promise<void> {
   if (!res.ok) throw new Error(`delete connector: ${res.status}`);
 }
 
+/**
+ * The connector Test probe verdict (TASK-108 — the connector equivalent of the
+ * old MCP `/test`). `reachable` = set up to work; `unreachable` = config is
+ * malformed or its keys couldn't be verified; `needs-key` = a required
+ * credential slot is still empty. The server probes credential PRESENCE +
+ * config sanity — it never opens an outbound connection, and the response never
+ * carries a secret.
+ */
+export type ConnectorTestStatus = 'reachable' | 'unreachable' | 'needs-key';
+
+export interface ConnectorTestResult {
+  status: ConnectorTestStatus;
+  detail?: string;
+}
+
+/**
+ * Probe a connector. Like the old `testMcpServer`, this is NON-throwing: an HTTP
+ * or network failure folds into `{ status: 'unreachable', detail }` so the Test
+ * badge can surface it inline instead of becoming an unhandled rejection.
+ */
+export async function testConnector(id: string): Promise<ConnectorTestResult> {
+  try {
+    const res = await fetch(`/admin/connectors/${encodeURIComponent(id)}/test`, {
+      method: 'POST',
+      headers: { 'x-requested-with': 'ax-admin' },
+      credentials: 'include',
+    });
+    if (!res.ok) {
+      return { status: 'unreachable', detail: `HTTP ${res.status}` };
+    }
+    const body = (await res.json()) as ConnectorTestResult;
+    return body;
+  } catch (err) {
+    return {
+      status: 'unreachable',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
 /** An empty capability fill — the default for a fresh connector. */
 export function emptyCapabilities(): ConnectorCapabilities {
   return {

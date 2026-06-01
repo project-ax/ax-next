@@ -239,10 +239,14 @@ describe('@ax/preset-k8s wiring', () => {
     // TASK-98: the preset mounts the admin-route bridge, so the connector
     // plugin also calls http:register-route + auth:require-user (both already
     // loaded — @ax/http-server + @ax/auth-better).
+    // TASK-108: the connector Test probe (POST /admin/connectors/:id/test)
+    // additionally reads credential PRESENCE via credentials:list (metadata
+    // only — never a value), satisfied by @ax/credentials in the preset.
     expect(connectors!.manifest.calls).toEqual([
       'database:get-instance',
       'http:register-route',
       'auth:require-user',
+      'credentials:list',
     ]);
   });
 

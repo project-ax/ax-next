@@ -70,11 +70,55 @@ function authStubPlugin(): Plugin {
   };
 }
 
+// Stubbed credential metadata the connector Test probe reads via
+// `credentials:list` (TASK-108). METADATA ONLY — the probe never touches a
+// secret value, and neither does this stub. Each row is `{ scope, ownerId,
+// ref }`; the stub filters by the (scope, ownerId) the probe asks for, mirroring
+// the real @ax/credentials list scoping. Mutable so a test can seed / clear the
+// vault. `credentialsListThrows` lets a test force the read-failure branch.
+let credentialRows: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
+let credentialsListThrows = false;
+
+function credentialsStubPlugin(): Plugin {
+  return {
+    manifest: {
+      name: 'credentials-stub',
+      version: '0.0.0',
+      registers: ['credentials:list'],
+      calls: [],
+      subscribes: [],
+    },
+    async init({ bus }) {
+      bus.registerService(
+        'credentials:list',
+        'credentials-stub',
+        async (_ctx, input: { scope?: string; ownerId?: string | null }) => {
+          if (credentialsListThrows) {
+            throw new PluginError({
+              code: 'unavailable',
+              plugin: 'credentials-stub',
+              hookName: 'credentials:list',
+              message: 'vault down',
+            });
+          }
+          const credentials = credentialRows.filter(
+            (r) =>
+              (input.scope === undefined || r.scope === input.scope) &&
+              (input.ownerId === undefined || r.ownerId === input.ownerId),
+          );
+          return { credentials };
+        },
+      );
+    },
+  };
+}
+
 async function makeHarness(): Promise<TestHarness> {
   const h = await createTestHarness({
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       authStubPlugin(),
+      credentialsStubPlugin(),
       createConnectorsPlugin(),
     ],
   });
@@ -95,6 +139,8 @@ afterAll(async () => {
 
 afterEach(async () => {
   currentActor = null;
+  credentialRows = [];
+  credentialsListThrows = false;
   while (harnesses.length > 0) {
     const h = harnesses.pop();
     if (h) await h.close();
@@ -380,5 +426,182 @@ describe('admin connector routes', () => {
       res,
     );
     expect(captured.status).toBe(400);
+  });
+
+  // --- connector Test probe (TASK-108) ------------------------------------
+  //
+  // POST /admin/connectors/:id/test → 200 { status, detail? } where status is
+  // reachable | unreachable | needs-key. Probe = credential-slot presence (read
+  // metadata-only via the stubbed credentials:list) + config sanity. NO outbound
+  // connection is opened.
+
+  async function seedConnector(
+    handlers: ReturnType<typeof createAdminConnectorRouteHandlers>,
+    body: Record<string, unknown>,
+  ): Promise<void> {
+    const { res, captured } = makeRes();
+    await handlers.create(makeReq({ body }), res);
+    if (captured.status !== 201 && captured.status !== 200) {
+      throw new Error(`seed failed: ${captured.status} ${JSON.stringify(captured.body)}`);
+    }
+  }
+
+  it('test: 401 when unauthenticated', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = null;
+    const { res, captured } = makeRes();
+    await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
+    expect(captured.status).toBe(401);
+  });
+
+  it('test: 404 for a connector the actor does not own', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'userA', isAdmin: true };
+    await seedConnector(handlers, {
+      connectorId: 'gdrive',
+      name: 'Google Drive',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: mcpCaps(),
+    });
+    // userB cannot probe userA's connector.
+    currentActor = { id: 'userB', isAdmin: true };
+    const { res, captured } = makeRes();
+    await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
+    expect(captured.status).toBe(404);
+  });
+
+  it('test: needs-key when a declared slot has no key in the vault', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'userA', isAdmin: true };
+    await seedConnector(handlers, {
+      connectorId: 'gdrive',
+      name: 'Google Drive',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: mcpCaps(),
+    });
+    // No credential rows seeded ⟹ the `gdrive` slot is unfilled.
+    const { res, captured } = makeRes();
+    await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
+    expect(captured.status).toBe(200);
+    expect((captured.body as { status: string }).status).toBe('needs-key');
+    expect((captured.body as { detail?: string }).detail).toContain('gdrive');
+  });
+
+  it('test: reachable when the personal slot is filled in the actor vault', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'userA', isAdmin: true };
+    await seedConnector(handlers, {
+      connectorId: 'gdrive',
+      name: 'Google Drive',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: mcpCaps(),
+    });
+    // The slot `gdrive` declares account 'google' → ref account:google; a
+    // personal connector resolves it at scope:'user' under the actor's id.
+    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:google' }];
+    const { res, captured } = makeRes();
+    await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
+    expect(captured.status).toBe(200);
+    expect((captured.body as { status: string }).status).toBe('reachable');
+  });
+
+  it('test: a workspace connector resolves its slot at scope:global (ownerId:null)', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'userA', isAdmin: true };
+    await seedConnector(handlers, {
+      connectorId: 'gdrive',
+      name: 'Google Drive',
+      keyMode: 'workspace',
+      visibility: 'private',
+      capabilities: mcpCaps(),
+    });
+    // A user-scoped row under the actor must NOT satisfy a workspace slot — the
+    // workspace key lives at scope:'global' / ownerId:null.
+    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:google' }];
+    const { res: r1, captured: c1 } = makeRes();
+    await handlers.test(makeReq({ params: { id: 'gdrive' } }), r1);
+    expect((c1.body as { status: string }).status).toBe('needs-key');
+    // Seed the global key → now reachable.
+    credentialRows = [{ scope: 'global', ownerId: null, ref: 'account:google' }];
+    const { res: r2, captured: c2 } = makeRes();
+    await handlers.test(makeReq({ params: { id: 'gdrive' } }), r2);
+    expect((c2.body as { status: string }).status).toBe('reachable');
+  });
+
+  it('test: reachable for a slotless CLI/package connector (no key required)', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'userA', isAdmin: true };
+    await seedConnector(handlers, {
+      connectorId: 'sf',
+      name: 'Salesforce',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: {
+        allowedHosts: ['login.salesforce.com'],
+        credentials: [],
+        mcpServers: [],
+        packages: { npm: ['@salesforce/cli'], pypi: [] },
+      },
+    });
+    const { res, captured } = makeRes();
+    await handlers.test(makeReq({ params: { id: 'sf' } }), res);
+    expect(captured.status).toBe(200);
+    expect((captured.body as { status: string }).status).toBe('reachable');
+  });
+
+  it('test: unreachable when an MCP-backed connector has neither url nor command', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'userA', isAdmin: true };
+    await seedConnector(handlers, {
+      connectorId: 'broken',
+      name: 'Broken MCP',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: {
+        allowedHosts: [],
+        credentials: [],
+        mcpServers: [
+          {
+            name: 'broken',
+            transport: 'stdio',
+            allowedHosts: [],
+            credentials: [],
+          },
+        ],
+        packages: { npm: [], pypi: [] },
+      },
+    });
+    const { res, captured } = makeRes();
+    await handlers.test(makeReq({ params: { id: 'broken' } }), res);
+    expect(captured.status).toBe(200);
+    expect((captured.body as { status: string }).status).toBe('unreachable');
+  });
+
+  it('test: unreachable when the credential read fails (conservative — never a false reachable)', async () => {
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'userA', isAdmin: true };
+    await seedConnector(handlers, {
+      connectorId: 'gdrive',
+      name: 'Google Drive',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: mcpCaps(),
+    });
+    credentialsListThrows = true;
+    const { res, captured } = makeRes();
+    await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
+    expect(captured.status).toBe(200);
+    expect((captured.body as { status: string }).status).toBe('unreachable');
   });
 });

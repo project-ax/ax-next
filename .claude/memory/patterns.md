@@ -160,3 +160,24 @@ Symptom if you only do (2): `TypeError: Cannot read properties of undefined (rea
 
 - `2026-06-01` (TASK-113) — **The TASK-94 authored-connector approval flow GATED reach but never PROJECTED it — the gap the TASK-101 walk hit.** `applyAuthoredConnectorGrant` wrote approved-caps wall rows (`skills:approved-caps-set` w/ connectorId) + flipped the draft `pending→active`, but a connector's reach is FOLDED into the sandbox by `resolveEffectiveConnectors → foldConnectorCaps`, which reads ONLY the curated registry `connectors_v1_connectors` (so do all 3 UI surfaces: Connectors tab, admin catalog, AgentForm attach). The authored draft activating in `connectors_v1_authored` is invisible to all of them → approved connector = npm 403 + reactive wall + invisible/unattachable. **The wall ROWS are a gate, not a reach source — don't confuse "approved-caps row written" with "connector usable".** Fix (path A, invariant #4): on approval, PROMOTE into the registry via `connectors:upsert` (the same hook TASK-100's migration + cap-migration.ts use), carrying the **`shown`-narrowed APPROVED** sets (`approvedHosts/approvedCreds/approvedNpm/approvedPypi` already computed for the wall rows) + `proposal.mcpServers` + `keyMode/usageNote/name` from the resolved draft, `visibility:'private'`, owner-scoped to `input.userId`. Then the EXISTING registry reads pick it up with ZERO new code (`resolveEffectiveConnectors` reads the owner's `connectors:list` private items → folds). The authored row stays draft/proposal staging (flipped active = audit only; nothing reads it for active reach/UI) → no second read path → invariant #4 holds. **Order: upsert BEFORE the activate flip** so a promotion failure leaves the draft re-approvable. hasService-guard `connectors:upsert` (back-compat w/ a preset that strips @ax/connectors). Mirror the `ConnectorsUpsertInput` shape structurally (I2 — no @ax/connectors import), like the existing `ConnectorsListAuthoredOutput` mirror. Cred-ref consistency for free: promoted slots carry the proposal's `account`, fold derives `account:<slot.account ?? connectorId>` identically → same vault row the JIT stored. Security: promoted caps == human-gated approved caps (never the full proposal — the `shown` TOCTOU narrowing flows through); `connectors:upsert` re-validates against CapabilitiesSchema; promotion runs only inside the human grant (pending draft never promoted → zero reach).
 - `2026-06-01` (TASK-113 secondary) — **The single-slot `permission-card-store` (channel-web) last-write-wins clobbers the upfront connector connect card with a same-turn reactive `host` egress-wall frame on a WARM turn** (user sees "npm 403" wall instead of "Connect <service>"). Fix in `permissionCardActions.show()`: drop an incoming `kind:'host'` frame when the current card is `kind:'connector'` (connector wins; a `connector` frame still replaces anything). Client-store fix, NOT server-side — the wall fires legitimately; the connect card is just the actionable root cause. Server-side card *eviction* (routes-chat-card-eviction.test) is a separate concern (clears after a grant decision) and is untouched.
+
+## Adding a new bus `calls` entry to a plugin → update presets/k8s/src/__tests__/preset.test.ts (2026-06-01, TASK-108)
+
+When a plugin gains a new `calls: [...]` entry (e.g. the connectors Test probe added
+`credentials:list` to `@ax/connectors` under `mountAdminRoutes`), TWO things in
+`presets/k8s/src/__tests__/preset.test.ts` matter:
+
+1. There's a per-plugin `expect(<plugin>!.manifest.calls).toEqual([...])` pin (search the
+   plugin name). It's an EXACT-array assertion — a new call reds it with a `+ "your:hook"`
+   diff. Update that array (it's the human-readable edge pin).
+2. There's a dynamic `every "calls" entry is satisfied by some plugin's "registers"` test
+   (×2 — base + titles-enabled). This is the invariant-#3 guard: it FAILS if your new call
+   isn't registered by ANY loaded plugin in the preset. If it stays green, your call is
+   wired end-to-end (here `credentials:list` is registered by `@ax/credentials`, already in
+   the preset, loaded before connectors). If it reds, you added a half-wired call — either
+   the providing plugin isn't in the preset or you typo'd the hook name.
+
+The package-local `packages/<plugin>/src/__tests__/plugin.test.ts` `calls` assertion
+usually constructs the plugin WITHOUT `mountAdminRoutes`, so a mount-only conditional call
+(`if (mountAdminRoutes) calls.push(...)`) does NOT affect it — only the preset test sees
+the mounted manifest. Don't forget the preset test just because the package test is green.
