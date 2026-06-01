@@ -38,7 +38,7 @@ export function AuthProvidersTab() {
   const [adding, setAdding] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   // The provider awaiting delete confirmation (null = no dialog). Styled-confirm
-  // pattern (mirrors UserSkillsPanelBody) — no OS `window.confirm`.
+  // pattern (TASK-117: project-wide styled Dialog) — no OS `window.confirm`.
   const [pendingDelete, setPendingDelete] = useState<AuthProviderEntry | null>(
     null,
   );

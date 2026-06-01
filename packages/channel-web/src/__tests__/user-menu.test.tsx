@@ -48,8 +48,8 @@ describe('UserMenu', () => {
     );
     fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
     // The modal entry is gone for every user — the Skills settings tab is the
-    // single surface now (UserSkillsPanelBody is shared between the old modal +
-    // the tab, so removing the modal entry loses nothing).
+    // single surface now (its content lived in the shared body that backed both
+    // the old modal and the tab, so removing the modal entry lost nothing).
     expect(screen.queryByRole('menuitem', { name: 'My Skills' })).toBeNull();
     expect(screen.queryByText('My Skills')).toBeNull();
   });
