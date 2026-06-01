@@ -279,10 +279,16 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
           → React text nodes (auto-escaped); never raw inner HTML. */}
       {agents.length > 0 && (
         <>
-          <div className="flex items-center justify-between gap-3 pt-2">
-            <h3 className="text-sm font-medium text-foreground">
-              Allowed sites
-            </h3>
+          <div className="flex items-start justify-between gap-3 pt-2">
+            <div>
+              <h3 className="text-sm font-medium text-foreground">
+                Allowed sites
+              </h3>
+              <p className="text-xs text-muted-foreground">
+                Not connectors — these are individual hosts you granted this
+                agent “always allow” when it asked to reach one mid-task.
+              </p>
+            </div>
             <Select value={agentId} onValueChange={setAgentId}>
               <SelectTrigger className="w-[200px]">
                 <SelectValue placeholder="Select an agent" />
