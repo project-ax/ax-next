@@ -6,10 +6,7 @@ import { ProvidersPanel } from './ProvidersPanel';
 import { ModelConfigTab } from './ModelConfigTab';
 import { AuthProvidersTab } from './AuthProvidersTab';
 import { AgentForm } from './AgentForm';
-import { ConnectorRegistry } from './ConnectorRegistry';
 import { TeamList } from './TeamList';
-import { CatalogTab } from './CatalogTab';
-import { AdmitQueueTab } from './AdmitQueueTab';
 import { SkillsTab } from '../settings/SkillsTab';
 import { ConnectorsTab } from '../settings/ConnectorsTab';
 import { CredentialsTab } from '../settings/CredentialsTab';
@@ -39,9 +36,6 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   'model-config': { eyebrow: 'Admin', title: 'Default AI model' },
   'auth-providers': { eyebrow: 'Admin', title: 'Sign-in methods' },
   agents: { eyebrow: 'Admin', title: 'Agents' },
-  catalog: { eyebrow: 'Admin', title: 'Catalog' },
-  'admit-queue': { eyebrow: 'Admin', title: 'Skills awaiting review' },
-  connectors: { eyebrow: 'Admin', title: 'Connector catalog' },
   teams: { eyebrow: 'Admin', title: 'Teams' },
 };
 
@@ -67,9 +61,6 @@ export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
         {activeTab === 'model-config' && <ModelConfigTab />}
         {activeTab === 'auth-providers' && <AuthProvidersTab />}
         {activeTab === 'agents' && <AgentForm />}
-        {activeTab === 'catalog' && <CatalogTab />}
-        {activeTab === 'admit-queue' && <AdmitQueueTab />}
-        {activeTab === 'connectors' && <ConnectorRegistry />}
         {activeTab === 'teams' && <TeamList />}
       </AdminPane>
     </div>

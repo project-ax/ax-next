@@ -6,8 +6,6 @@ import {
   User,
   UsersRound,
   ShieldCheck,
-  Library,
-  Inbox,
   Plug,
   Key,
   Wrench,
@@ -23,14 +21,14 @@ export type AdminTabId =
   | 'skills'
   | 'connectors-user'
   | 'credentials'
-  // Admin tabs (admins only).
+  // Admin tabs (admins only) — genuinely workspace-level config with no user
+  // counterpart. The former catalog / admit-queue / connector-registry surfaces
+  // were folded out of the nav (settings-unified epic); their admin curation
+  // now lives inline inside the user Skills/Connectors tabs.
   | 'providers'
   | 'model-config'
   | 'auth-providers'
   | 'agents'
-  | 'catalog'
-  | 'admit-queue'
-  | 'connectors'
   | 'teams';
 
 type NavItem = { id: AdminTabId; label: string; icon: typeof KeyRound };
@@ -46,12 +44,6 @@ const ADMIN_NAV: NavItem[] = [
   { id: 'model-config', label: 'Default AI model', icon: Cpu },
   { id: 'auth-providers', label: 'Sign-in methods', icon: ShieldCheck },
   { id: 'agents', label: 'Agents', icon: User },
-  { id: 'catalog', label: 'Catalog', icon: Library },
-  { id: 'admit-queue', label: 'Skills awaiting review', icon: Inbox },
-  // The connector REGISTRY — admins curate shared connectors + flag default-on
-  // here (the connector half of the Catalog). Labelled distinctly from the user
-  // "Connectors" tab so the two nav entries don't collide.
-  { id: 'connectors', label: 'Connector catalog', icon: Plug },
   { id: 'teams', label: 'Teams', icon: UsersRound },
 ];
 

@@ -139,9 +139,16 @@ describe('AdminShell', () => {
     expect(screen.getByRole('button', { name: /^AI model keys$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^Default AI model$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^agents$/i })).toBeTruthy();
-    // The admin connector registry is now labelled "Connector catalog" to
-    // disambiguate from the user "Connectors" Settings tab.
-    expect(screen.getByRole('button', { name: /^connector catalog$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^teams$/i })).toBeTruthy();
+  });
+
+  it('the folded admin surfaces (Catalog / Skills awaiting review / Connector catalog) are gone from the nav', () => {
+    // settings-unified epic: the duplicate admin Skills/Connectors curation
+    // surfaces were folded out of the nav; their controls move inline into the
+    // user Skills/Connectors tabs. No nav entry remains for any of them.
+    renderShell();
+    expect(screen.queryByRole('button', { name: /^catalog$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^skills awaiting review$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^connector catalog$/i })).toBeNull();
   });
 });
