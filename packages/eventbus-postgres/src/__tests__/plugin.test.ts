@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { createTestHarness } from '@ax/test-harness';
+import { createTestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { PluginError } from '@ax/core';
 import {
   createEventbusPostgresPlugin,
@@ -39,7 +39,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 // Tiny helper: wait until `predicate()` is true (or fail at timeout).

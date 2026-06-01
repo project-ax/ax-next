@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { stopPostgresContainer } from '@ax/test-harness';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
@@ -53,7 +54,7 @@ afterEach(async () => {
 
 afterAll(async () => {
   await db.destroy();
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 }, 60_000);
 
 describe('canary — defaults materialize → claim → fire → override → admin-edit (I-R8)', () => {

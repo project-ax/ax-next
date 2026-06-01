@@ -13,7 +13,7 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import type { AuthBetterDatabase } from '../migrations.js';
 
@@ -90,7 +90,7 @@ afterAll(async () => {
   // Release any context the test left pending so no promise dangles, then
   // stop the container.
   for (const d of contexts) d.resolve({});
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 async function dropTables(): Promise<void> {

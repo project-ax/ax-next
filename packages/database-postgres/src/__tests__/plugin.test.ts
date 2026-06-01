@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { sql, type Kysely } from 'kysely';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { createTestHarness } from '@ax/test-harness';
+import { createTestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { PluginError } from '@ax/core';
 import { createDatabasePostgresPlugin } from '../plugin.js';
 
@@ -29,7 +29,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 describe('@ax/database-postgres', () => {

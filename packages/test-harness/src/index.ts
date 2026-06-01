@@ -9,6 +9,10 @@ export { createTestHostToolPlugin } from './test-host-tool.js';
 export { createTestProxyPlugin } from './test-proxy-plugin.js';
 export { runWorkspaceContract } from './workspace-contract.js';
 export {
+  stopPostgresContainer,
+  type StoppableContainer,
+} from './stop-postgres-container.js';
+export {
   StubRunnerScriptSchema,
   type StubRunnerScript,
   encodeScript,

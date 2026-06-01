@@ -4,7 +4,7 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConversationsPlugin } from '../plugin.js';
 import type { CreateInput, CreateOutput } from '../types.js';
@@ -87,7 +87,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 describe('conversations:create — Phase B freezing', () => {

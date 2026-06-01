@@ -19,8 +19,7 @@ import {
   createTestHarness,
   createMockWorkspacePlugin,
   mockBlobStoreServices,
-  type TestHarness,
-} from '@ax/test-harness';
+  type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { makeAgentContext } from '@ax/core';
 import { createSkillsPlugin } from '@ax/skills';
@@ -43,7 +42,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 afterEach(async () => {

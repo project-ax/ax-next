@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { stopPostgresContainer } from '@ax/test-harness';
 import { randomBytes } from 'node:crypto';
 import {
   PostgreSqlContainer,
@@ -42,7 +43,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
   if (ORIGINAL_CREDENTIALS_KEY === undefined) {
     delete process.env.AX_CREDENTIALS_KEY;
   } else {

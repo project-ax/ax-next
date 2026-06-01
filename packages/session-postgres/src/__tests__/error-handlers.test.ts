@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { createTestHarness } from '@ax/test-harness';
+import { createTestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createSessionPostgresPlugin } from '../plugin.js';
 
 // ---------------------------------------------------------------------------
@@ -44,7 +44,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 interface LoggedRecord {

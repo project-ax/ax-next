@@ -53,8 +53,7 @@ import {
 import {
   createTestHarness,
   mockBlobStoreServices as blobStoreFakeServices,
-  type TestHarness,
-} from '@ax/test-harness';
+  type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import {
   makeAgentContext,
@@ -102,7 +101,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 afterEach(async () => {

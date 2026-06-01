@@ -20,8 +20,7 @@ import type { CreateInput, CreateOutput } from '@ax/conversations';
 import {
   createMockWorkspacePlugin,
   createTestHarness,
-  type TestHarness,
-} from '@ax/test-harness';
+  type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createChannelWebServerPlugin } from '../../server/plugin';
 
 // ---------------------------------------------------------------------------
@@ -211,7 +210,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 interface BootArgs {

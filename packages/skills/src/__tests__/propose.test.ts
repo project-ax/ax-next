@@ -3,7 +3,7 @@ import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createSkillsPlugin } from '../plugin.js';
 import { blobStoreFakeServices } from './_blob-fake.js';
@@ -104,7 +104,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 const baseProposal = (manifestYaml: string): Omit<SkillsProposeInput, 'capabilityProposal'> => ({

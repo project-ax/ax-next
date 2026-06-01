@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import { createHmac } from 'node:crypto';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createRoutinesPlugin } from '../plugin.js';
 import { asWorkspaceVersion, type WorkspaceDelta } from '@ax/core';
@@ -127,7 +127,7 @@ afterEach(async () => {
   }
 });
 
-afterAll(async () => { if (container) await container.stop(); }, 60_000);
+afterAll(async () => { if (container) await stopPostgresContainer(container); }, 60_000);
 
 describe('Phase B canary — routine creates → fires → silence path closes window', () => {
   it('indexes a routine when workspace:applied carries .ax/routines/r.md', async () => {

@@ -6,7 +6,7 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { createTestHarness, signInAsAdmin, type TestHarness } from '@ax/test-harness';
+import { createTestHarness, signInAsAdmin, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
@@ -48,7 +48,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
   if (ORIGINAL_CREDENTIALS_KEY === undefined) {
     delete process.env.AX_CREDENTIALS_KEY;
   } else {

@@ -2,7 +2,7 @@ import { describe, expect, it, beforeAll, afterAll, afterEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createRoutinesPlugin } from '../plugin.js';
 import type { RoutinesDatabase } from '../migrations.js';
@@ -65,7 +65,7 @@ afterEach(async () => {
   }
 });
 
-afterAll(async () => { if (container) await container.stop(); }, 60_000);
+afterAll(async () => { if (container) await stopPostgresContainer(container); }, 60_000);
 
 describe('routines:list', () => {
   it('returns rows in the mirror, filtered by agent', async () => {

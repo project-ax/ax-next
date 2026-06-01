@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { createTestHarness } from '@ax/test-harness';
+import { createTestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { PluginError } from '@ax/core';
 import {
   createSessionPostgresPlugin,
@@ -73,7 +73,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 const TOKEN_RE = /^[A-Za-z0-9_-]{43}$/;

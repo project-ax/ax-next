@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { stopPostgresContainer } from '@ax/test-harness';
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { Kysely, PostgresDialect } from 'kysely';
 import {
@@ -101,7 +102,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 describe('attachments:commit handler (blob-backed)', () => {

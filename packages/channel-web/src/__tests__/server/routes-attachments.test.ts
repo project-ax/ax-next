@@ -22,8 +22,7 @@ import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import {
   createTestHarness,
-  type TestHarness,
-} from '@ax/test-harness';
+  type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { registerAttachmentsRoutes } from '../../server/routes-attachments.js';
 
 // TASK-68: @ax/attachments now calls blob:put/blob:get (not workspace:apply/
@@ -180,7 +179,7 @@ beforeAll(async () => {
 }, 120_000);
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 interface BootArgs {
