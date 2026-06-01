@@ -286,17 +286,94 @@ describe('ConnectorsTab', () => {
     expect(screen.queryByLabelText(/API key/i)).toBeNull();
   });
 
-  // --- admin inline curation (TASK-127) ------------------------------------
+  // --- user authoring (TASK-129) -------------------------------------------
 
-  it('hides ALL curation controls (New/Edit/Delete/set-default/Test) from a non-admin', async () => {
+  it('a non-admin gets "New connector" + Edit/Delete on a PRIVATE owned connector', async () => {
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('My Notion');
-    expect(screen.queryByRole('button', { name: /new connector/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^edit$/i })).toBeNull();
-    expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull();
+    // The authoring entry point is open to every user now.
+    expect(
+      screen.getByRole('button', { name: /new connector/i }),
+    ).toBeInTheDocument();
+    const privateTile = screen.getByTestId('connector-tile-my-notion');
+    expect(
+      within(privateTile).getByRole('button', { name: /^edit$/i }),
+    ).toBeInTheDocument();
+    expect(
+      within(privateTile).getByRole('button', { name: /^delete$/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('a non-admin sees NO Edit/Delete on a catalog/shared connector (read-only)', async () => {
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('Salesforce');
+    const sharedTile = screen.getByTestId('connector-tile-company-salesforce');
+    expect(
+      within(sharedTile).queryByRole('button', { name: /^edit$/i }),
+    ).toBeNull();
+    expect(
+      within(sharedTile).queryByRole('button', { name: /^delete$/i }),
+    ).toBeNull();
+    // It still offers Connect/Reconnect — read-only ≠ unusable.
+    expect(
+      within(sharedTile).getByRole('button', { name: /^connect$/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('a non-admin sees NO Edit/Delete on an admin default-on (catalog) connector', async () => {
+    vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
+      PRIVATE_CONN,
+      DEFAULT_ON_PRIVATE_CONN,
+    ]);
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('Org GitHub');
+    const defaultTile = screen.getByTestId('connector-tile-org-github');
+    expect(
+      within(defaultTile).queryByRole('button', { name: /^edit$/i }),
+    ).toBeNull();
+    expect(
+      within(defaultTile).queryByRole('button', { name: /^delete$/i }),
+    ).toBeNull();
+    // …but the user's own private connector remains editable.
+    const privateTile = screen.getByTestId('connector-tile-my-notion');
+    expect(
+      within(privateTile).getByRole('button', { name: /^edit$/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('a non-admin gets NO admin-only controls (set-default / Test)', async () => {
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
     expect(screen.queryByRole('button', { name: /set default/i })).toBeNull();
     expect(screen.queryByRole('button', { name: /^test$/i })).toBeNull();
   });
+
+  it('non-admin "New connector" opens the user-variant create form (no Sharing field)', async () => {
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    fireEvent.click(screen.getByRole('button', { name: /new connector/i }));
+    expect(await screen.findByLabelText(/service name/i)).toBeInTheDocument();
+    // The user variant hides the admin-only Sharing field.
+    expect(screen.queryByLabelText(/^sharing$/i)).toBeNull();
+  });
+
+  it('non-admin Delete on a private connector deletes via the /settings/connectors route', async () => {
+    const del = vi.spyOn(connectorsLib, 'deleteConnector').mockResolvedValue();
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(tile).getByRole('button', { name: /^delete$/i }));
+    expect(await screen.findByText(/delete connector\?/i)).toBeInTheDocument();
+    const dialogDelete = screen
+      .getAllByRole('button', { name: /^delete$/i })
+      .at(-1)!;
+    fireEvent.click(dialogDelete);
+    await waitFor(() =>
+      expect(del).toHaveBeenCalledWith('my-notion', '/settings/connectors'),
+    );
+  });
+
+  // --- admin inline curation (TASK-127) ------------------------------------
 
   it('shows admin curation controls (New + per-row Edit/Delete/set-default/Test) for an admin', async () => {
     render(<ConnectorsTab isAdmin />);
@@ -334,7 +411,12 @@ describe('ConnectorsTab', () => {
     const tile = screen.getByTestId('connector-tile-my-notion');
     fireEvent.click(within(tile).getByRole('button', { name: /set default/i }));
     await waitFor(() =>
-      expect(patch).toHaveBeenCalledWith('my-notion', { defaultAttached: true }),
+      // The admin variant writes via the /admin/connectors route base (TASK-129).
+      expect(patch).toHaveBeenCalledWith(
+        'my-notion',
+        { defaultAttached: true },
+        '/admin/connectors',
+      ),
     );
   });
 
@@ -350,7 +432,9 @@ describe('ConnectorsTab', () => {
       .getAllByRole('button', { name: /^delete$/i })
       .at(-1)!;
     fireEvent.click(dialogDelete);
-    await waitFor(() => expect(del).toHaveBeenCalledWith('my-notion'));
+    await waitFor(() =>
+      expect(del).toHaveBeenCalledWith('my-notion', '/admin/connectors'),
+    );
   });
 
   it('admin Test probes the connector and shows the verdict', async () => {

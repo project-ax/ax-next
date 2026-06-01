@@ -1,24 +1,45 @@
 /**
- * Connector admin client — typed wrappers around `/admin/connectors`.
+ * Connector client — typed wrappers around the connector REST routes.
  *
  * The connector registry's wire surface. Bridges the `connectors:*` hooks via
- * the `/admin/connectors[/:id]` REST routes registered by `@ax/connectors`
- * (TASK-98). Same path convention + CSRF posture as `lib/admin.ts`:
+ * REST routes registered by `@ax/connectors`. There are TWO owner-scoped route
+ * bundles, selected by {@link ConnectorRouteBase} (TASK-129):
  *
- *   GET    /admin/connectors        → { connectors: ConnectorSummary[] }
- *   POST   /admin/connectors        body: ConnectorUpsertInput → { connector, created }
- *   GET    /admin/connectors/:id    → { connector: Connector }
- *   PATCH  /admin/connectors/:id    body: Partial<ConnectorUpsertInput> → { connector, created }
- *   DELETE /admin/connectors/:id    → 204
+ *   - `/admin/connectors`    — the folded admin Connector registry (TASK-98).
+ *     The admin may set `visibility: 'shared'` + `defaultAttached: true`.
+ *   - `/settings/connectors` — user authoring (TASK-129). Owner forced to the
+ *     caller, `visibility` forced `private`, admin-only fields REJECTED
+ *     server-side, catalog/shared connectors read-only (403).
+ *
+ * Both bundles share the same path shape + CSRF posture as `lib/admin.ts`:
+ *
+ *   GET    <base>        → { connectors: ConnectorSummary[] }
+ *   POST   <base>        body: ConnectorUpsertInput → { connector, created }
+ *   GET    <base>/:id    → { connector: Connector }
+ *   PATCH  <base>/:id    body: Partial<ConnectorUpsertInput> → { connector, created }
+ *   DELETE <base>/:id    → 204
+ *
+ * `base` defaults to `/admin/connectors` for back-compat; the user surface
+ * passes `/settings/connectors`. (The Test probe is admin-only — it lives only
+ * under `/admin/connectors/:id/test`, never the user base.)
  *
  * SECURITY — every endpoint is guarded server-side by `auth:require-user`; the
  * connector is owner-scoped to the calling user. The actor id is forced from the
- * session server-side, never the body. A connector declares credential SLOT
- * names only — never values; the secret resolves inside the sandbox proxy.
+ * session server-side, never the body. The user routes additionally force
+ * `visibility: private` + reject admin-only fields server-side, so the UI
+ * forcing is belt-and-braces, not the security boundary. A connector declares
+ * credential SLOT names only — never values; the secret resolves inside the
+ * sandbox proxy.
  *
  * CSRF — state-changing methods carry `X-Requested-With: ax-admin`, same as
  * `lib/admin.ts`.
  */
+
+/** Which owner-scoped route bundle a call targets (TASK-129). */
+export type ConnectorRouteBase = '/admin/connectors' | '/settings/connectors';
+
+/** Default route bundle — the admin registry (back-compat). */
+const DEFAULT_BASE: ConnectorRouteBase = '/admin/connectors';
 
 const writeHeaders = {
   'content-type': 'application/json',
@@ -92,15 +113,20 @@ export interface ConnectorUpsertInput {
   defaultAttached?: boolean;
 }
 
-export async function listConnectors(): Promise<ConnectorSummary[]> {
-  const res = await fetch('/admin/connectors', { credentials: 'include' });
+export async function listConnectors(
+  base: ConnectorRouteBase = DEFAULT_BASE,
+): Promise<ConnectorSummary[]> {
+  const res = await fetch(base, { credentials: 'include' });
   if (!res.ok) throw new Error(`list connectors: ${res.status}`);
   const body = (await res.json()) as { connectors: ConnectorSummary[] };
   return body.connectors;
 }
 
-export async function getConnector(id: string): Promise<Connector> {
-  const res = await fetch(`/admin/connectors/${encodeURIComponent(id)}`, {
+export async function getConnector(
+  id: string,
+  base: ConnectorRouteBase = DEFAULT_BASE,
+): Promise<Connector> {
+  const res = await fetch(`${base}/${encodeURIComponent(id)}`, {
     credentials: 'include',
   });
   if (!res.ok) throw new Error(`get connector: ${res.status}`);
@@ -110,8 +136,9 @@ export async function getConnector(id: string): Promise<Connector> {
 
 export async function createConnector(
   input: ConnectorUpsertInput,
+  base: ConnectorRouteBase = DEFAULT_BASE,
 ): Promise<Connector> {
-  const res = await fetch('/admin/connectors', {
+  const res = await fetch(base, {
     method: 'POST',
     headers: writeHeaders,
     credentials: 'include',
@@ -128,8 +155,9 @@ export async function createConnector(
 export async function patchConnector(
   id: string,
   patch: Partial<ConnectorUpsertInput>,
+  base: ConnectorRouteBase = DEFAULT_BASE,
 ): Promise<Connector> {
-  const res = await fetch(`/admin/connectors/${encodeURIComponent(id)}`, {
+  const res = await fetch(`${base}/${encodeURIComponent(id)}`, {
     method: 'PATCH',
     headers: writeHeaders,
     credentials: 'include',
@@ -143,8 +171,11 @@ export async function patchConnector(
   return body.connector;
 }
 
-export async function deleteConnector(id: string): Promise<void> {
-  const res = await fetch(`/admin/connectors/${encodeURIComponent(id)}`, {
+export async function deleteConnector(
+  id: string,
+  base: ConnectorRouteBase = DEFAULT_BASE,
+): Promise<void> {
+  const res = await fetch(`${base}/${encodeURIComponent(id)}`, {
     method: 'DELETE',
     headers: { 'x-requested-with': 'ax-admin' },
     credentials: 'include',

@@ -5,7 +5,10 @@ import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 import { Store } from '../store';
 import { authMiddleware } from '../auth';
-import { adminConnectorsMiddleware } from '../admin/connectors';
+import {
+  adminConnectorsMiddleware,
+  settingsConnectorsMiddleware,
+} from '../admin/connectors';
 
 async function startServer(
   store: Store,
@@ -272,6 +275,191 @@ describe('mock admin connectors', () => {
       expect(adminGet.status).toBe(404);
       const aliceGet = await fetch(`${url}/admin/connectors/gdrive`, { headers: { cookie: ALICE } });
       expect(aliceGet.status).toBe(200);
+    } finally {
+      await close();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// User-authoring mock — /settings/connectors[/:id] (TASK-129). Same offline UI
+// parity as the admin mock, but the user-mode policy: forces private, rejects
+// admin-only fields (400), and 403s on a catalog/shared connector.
+// ---------------------------------------------------------------------------
+
+async function startUserServer(
+  store: Store,
+): Promise<{ url: string; close: () => Promise<void> }> {
+  const auth = authMiddleware(store);
+  const settingsConnectors = settingsConnectorsMiddleware(store);
+  // Mount the admin mock too so a test can SEED a catalog/shared connector the
+  // user route must treat as read-only (the user route can't create one).
+  const adminConnectors = adminConnectorsMiddleware(store);
+  const server = createServer(async (req, res) => {
+    if (await auth(req, res)) return;
+    if (await settingsConnectors(req, res)) return;
+    if (await adminConnectors(req, res)) return;
+    res.statusCode = 404;
+    res.end();
+  });
+  await new Promise<void>((r) => server.listen(0, r));
+  const port = (server.address() as { port: number }).port;
+  return {
+    url: `http://127.0.0.1:${port}`,
+    close: () => new Promise<void>((r) => server.close(() => r())),
+  };
+}
+
+describe('mock user connectors (/settings/connectors)', () => {
+  let dir: string;
+  let store: Store;
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'mock-user-connectors-'));
+    store = new Store(dir);
+    store.seed();
+  });
+
+  afterEach(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('401s without a session', async () => {
+    const { url, close } = await startUserServer(store);
+    try {
+      const res = await fetch(`${url}/settings/connectors`);
+      expect(res.status).toBe(401);
+    } finally {
+      await close();
+    }
+  });
+
+  it('POST forces the connector private (a body with no visibility is fine)', async () => {
+    const { url, close } = await startUserServer(store);
+    try {
+      const res = await fetch(`${url}/settings/connectors`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify(upsertBody({ visibility: undefined })),
+      });
+      expect(res.status).toBe(201);
+      const body = (await res.json()) as { connector: { visibility: string } };
+      expect(body.connector.visibility).toBe('private');
+    } finally {
+      await close();
+    }
+  });
+
+  it('POST rejects visibility:shared (admin-only) with 400', async () => {
+    const { url, close } = await startUserServer(store);
+    try {
+      const res = await fetch(`${url}/settings/connectors`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify(upsertBody({ visibility: 'shared' })),
+      });
+      expect(res.status).toBe(400);
+      const body = (await res.json()) as { error: string };
+      expect(body.error).toMatch(/admin-only/);
+    } finally {
+      await close();
+    }
+  });
+
+  it('POST rejects defaultAttached:true (admin-only) with 400', async () => {
+    const { url, close } = await startUserServer(store);
+    try {
+      const res = await fetch(`${url}/settings/connectors`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify(upsertBody({ defaultAttached: true })),
+      });
+      expect(res.status).toBe(400);
+    } finally {
+      await close();
+    }
+  });
+
+  it('full CRUD on an owned private connector', async () => {
+    const { url, close } = await startUserServer(store);
+    try {
+      const create = await fetch(`${url}/settings/connectors`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify(upsertBody()),
+      });
+      expect(create.status).toBe(201);
+
+      const patch = await fetch(`${url}/settings/connectors/gdrive`, {
+        method: 'PATCH',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'Renamed Drive' }),
+      });
+      expect(patch.status).toBe(200);
+      const patched = (await patch.json()) as {
+        connector: { name: string; visibility: string };
+      };
+      expect(patched.connector.name).toBe('Renamed Drive');
+      expect(patched.connector.visibility).toBe('private');
+
+      const del = await fetch(`${url}/settings/connectors/gdrive`, {
+        method: 'DELETE',
+        headers: { cookie: ALICE },
+      });
+      expect(del.status).toBe(204);
+      const get = await fetch(`${url}/settings/connectors/gdrive`, {
+        headers: { cookie: ALICE },
+      });
+      expect(get.status).toBe(404);
+    } finally {
+      await close();
+    }
+  });
+
+  it('PATCH / DELETE on a catalog (shared) connector is read-only — 403', async () => {
+    const { url, close } = await startUserServer(store);
+    try {
+      // Seed a SHARED connector via the admin route (the user route can't make one).
+      const seed = await fetch(`${url}/admin/connectors`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify(
+          upsertBody({ connectorId: 'shared-conn', visibility: 'shared' }),
+        ),
+      });
+      expect(seed.status).toBe(201);
+
+      const patch = await fetch(`${url}/settings/connectors/shared-conn`, {
+        method: 'PATCH',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'hijack' }),
+      });
+      expect(patch.status).toBe(403);
+
+      const del = await fetch(`${url}/settings/connectors/shared-conn`, {
+        method: 'DELETE',
+        headers: { cookie: ALICE },
+      });
+      expect(del.status).toBe(403);
+    } finally {
+      await close();
+    }
+  });
+
+  it('cross-tenant: user cannot edit another user’s private connector (404)', async () => {
+    const { url, close } = await startUserServer(store);
+    try {
+      // Alice creates a private connector.
+      await fetch(`${url}/settings/connectors`, {
+        method: 'POST',
+        headers: { cookie: ALICE, 'content-type': 'application/json' },
+        body: JSON.stringify(upsertBody({ connectorId: 'alice-conn' })),
+      });
+      // The admin user (u1, a different session) cannot touch it.
+      const patch = await fetch(`${url}/settings/connectors/alice-conn`, {
+        method: 'PATCH',
+        headers: { cookie: ADMIN, 'content-type': 'application/json' },
+        body: JSON.stringify({ name: 'hijack' }),
+      });
+      expect(patch.status).toBe(404);
     } finally {
       await close();
     }

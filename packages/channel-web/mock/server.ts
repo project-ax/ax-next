@@ -6,7 +6,10 @@ import { chatMiddleware } from './chat';
 import { agentsMiddleware } from './agents';
 import { adminAgentsMiddleware } from './admin/agents';
 import { adminMcpServersMiddleware } from './admin/mcp-servers';
-import { adminConnectorsMiddleware } from './admin/connectors';
+import {
+  adminConnectorsMiddleware,
+  settingsConnectorsMiddleware,
+} from './admin/connectors';
 import { adminTeamsMiddleware } from './admin/teams';
 
 export function createMockHandler(dataDir?: string): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
@@ -20,6 +23,7 @@ export function createMockHandler(dataDir?: string): (req: IncomingMessage, res:
     adminAgentsMiddleware(store),
     adminMcpServersMiddleware(store),
     adminConnectorsMiddleware(store),
+    settingsConnectorsMiddleware(store),
     adminTeamsMiddleware(store),
   ];
   return async (req, res) => {

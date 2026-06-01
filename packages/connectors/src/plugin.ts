@@ -25,7 +25,10 @@ import {
   createAuthoredConnectorsStore,
   type AuthoredConnectorsStore,
 } from './authored-store.js';
-import { registerAdminConnectorRoutes } from './admin-routes.js';
+import {
+  registerAdminConnectorRoutes,
+  registerUserConnectorRoutes,
+} from './admin-routes.js';
 import {
   ActivateAuthoredOutputSchema,
   ClearAuthoredOutputSchema,
@@ -243,9 +246,16 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       // TASK-98 — the connector registry's HTTP bridge. Mounted only when the
       // host configures it (the k8s preset) and an http-server is present. The
       // routes delegate straight back to the `connectors:*` hooks above.
+      //
+      // TASK-129 — the user-authoring bridge (`/settings/connectors`) mounts on
+      // the SAME http-server gate. It's the locked-down sibling of the admin
+      // registry routes (forces private, rejects admin-only fields, catalog/
+      // shared read-only) — both delegate to the same `connectors:*` hooks.
       if (mountAdminRoutes) {
-        const unregisters = await registerAdminConnectorRoutes(bus, initCtx);
-        unregisterRoutes.push(...unregisters);
+        const adminUnregisters = await registerAdminConnectorRoutes(bus, initCtx);
+        unregisterRoutes.push(...adminUnregisters);
+        const userUnregisters = await registerUserConnectorRoutes(bus, initCtx);
+        unregisterRoutes.push(...userUnregisters);
       }
     },
 
