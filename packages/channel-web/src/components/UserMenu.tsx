@@ -1,8 +1,10 @@
 /**
  * UserMenu — popover at the bottom of the sidebar.
  *
- * Click the user row → opens a popover with: Credentials, Settings (every
- * user — TASK-42), theme tri-toggle, Sign out.
+ * Click the user row → opens a popover with: Routines, Settings (every
+ * user — TASK-42), a theme tri-toggle (Light / Dark / System), and Sign out.
+ * (Credentials is no longer a top-level entry — it lives inside admin
+ * Settings now.)
  *
  * SECURITY NOTE — UI affordance only. Every user can now open Settings; the
  * admin-only *tabs* inside it are gated in-shell. That in-shell gating is a UX
@@ -12,7 +14,7 @@
  * caller's own id (a user can only ever read/change their own data).
  */
 import { useEffect, useRef, useState } from 'react';
-import { ListChecks, LogOut, Moon, Settings, Sun } from 'lucide-react';
+import { ListChecks, LogOut, Monitor, Moon, Settings, Sun } from 'lucide-react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
@@ -27,6 +29,8 @@ interface ThemeOption {
 const THEME_OPTIONS: ThemeOption[] = [
   { value: 'light', label: 'Light', Icon: Sun },
   { value: 'dark', label: 'Dark', Icon: Moon },
+  // 'auto' lets the OS preference drive (prefers-color-scheme); see lib/theme.ts.
+  { value: 'auto', label: 'System', Icon: Monitor },
 ];
 
 export function UserMenu({

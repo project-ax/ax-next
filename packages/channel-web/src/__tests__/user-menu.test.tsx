@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 import { UserMenu } from '../components/UserMenu';
 import { UserProvider } from '../lib/user-context';
 
@@ -108,6 +108,37 @@ describe('UserMenu', () => {
     fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
     fireEvent.click(screen.getByRole('menuitem', { name: 'Routines' }));
     expect(onOpenRoutines).toHaveBeenCalledTimes(1);
+  });
+
+  it('theme toggle offers Light, Dark, and System (TASK-119 — tri-toggle matches the auto-capable provider)', () => {
+    render(
+      <UserProvider value={regularUser}>
+        <UserMenu />
+      </UserProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
+    const group = screen.getByRole('radiogroup', { name: 'Theme' });
+    // Three options, one per Theme mode the provider supports ('light' | 'dark' | 'auto').
+    expect(within(group).getByRole('radio', { name: 'Light' })).toBeTruthy();
+    expect(within(group).getByRole('radio', { name: 'Dark' })).toBeTruthy();
+    expect(within(group).getByRole('radio', { name: 'System' })).toBeTruthy();
+    expect(within(group).getAllByRole('radio')).toHaveLength(3);
+  });
+
+  it('selecting System clears the persisted theme (provider auto mode)', () => {
+    render(
+      <UserProvider value={regularUser}>
+        <UserMenu />
+      </UserProvider>,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
+    const group = screen.getByRole('radiogroup', { name: 'Theme' });
+    // Pin dark first so there is something to clear.
+    fireEvent.click(within(group).getByRole('radio', { name: 'Dark' }));
+    expect(document.documentElement.getAttribute('data-theme')).toBe('dark');
+    fireEvent.click(within(group).getByRole('radio', { name: 'System' }));
+    // 'auto' removes the attribute entirely so prefers-color-scheme takes over.
+    expect(document.documentElement.getAttribute('data-theme')).toBeNull();
   });
 
   it('outside click closes the menu', () => {
