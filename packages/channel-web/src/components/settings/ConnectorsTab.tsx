@@ -1,35 +1,48 @@
 /**
- * ConnectorsTab — the Settings "Connectors" surface (connectors-first-class
- * UI/IA reorg). The user's connector library: connected services their agents
- * can reach, each behind a single calm name.
+ * ConnectorsTab — the Settings "Connectors" surface, an app-store split
+ * (TASK-127, settings-unified epic). The user's connector library presented as
+ * two shelves, mirroring the Skills tab's Installed / Not-installed:
  *
- * This collapses the audit's mislabeled "Connections" tab + the jargon-heavy
- * "MCP servers" form into one **Connectors** surface. A connector is the
- * first-class ACCESS object; whether it's backed by MCP, a CLI, or a direct
- * API is a MECHANISM that NEVER shows here — the default view names only the
- * service, what it needs (a key / nothing), and connected state. Editing the
- * mechanism lives in the admin Connector registry (behind its Advanced
- * disclosure); a non-admin manages the library and connects, not the wiring.
+ *   - **Connected** — services every credential slot has a stored key for; the
+ *     assistant can reach them now. Per-row Reconnect.
+ *   - **Available** — services in your library still missing a key. Per-row
+ *     **Connect** opens the capability-consent handshake (ConnectorConnectDialog)
+ *     before the user-scoped key write completes — the self-connect path.
  *
- * Source badge (design §UI/IA): a connector wears the single "Catalog" tag iff
- * it's admin-curated default-on OR shared into the workspace; a private own
- * connector shows none. A solo user with only private connectors sees no badges
- * and no "catalog" language.
+ * A connector is the first-class ACCESS object; whether it's backed by MCP, a
+ * CLI, or a direct API is a MECHANISM that NEVER shows on the default shelf —
+ * each row names only the service, what it needs (a key), and its connected
+ * state.
  *
- * Wire: reuses `/admin/connectors` (lib/connectors) — that route is
- * `auth:require-user`-gated + owner-scoped (TASK-98), so a non-admin lists their
- * OWN connectors through it. No new BFF endpoint. Per-agent connector
- * ATTACHMENT stays deferred (design Out of scope).
+ * ADMIN CURATION (gated on `isAdmin`): the standalone admin Connector Registry
+ * is gone (TASK-125). Admins now curate the workspace's Available shelf inline —
+ * New connector, plus per-row Edit / set-default / Delete / Test — via the
+ * shared connector form (ConnectorEditDialog, reusing `lib/connector-form`, the
+ * one source of truth for the form logic, invariant #4). Catalog/shared
+ * connectors are read-only for non-admins: they see the source badge +
+ * Connect/Reconnect only, never edit/delete.
  *
- * Untrusted text (connector name / description / usageNote) renders through
- * React text nodes (auto-escaped) — never raw HTML.
+ * SCOPE NOTE: the connector store is owner-scoped at every layer — `listConnectors`
+ * (`/admin/connectors`) returns only the caller's own connectors. There is no
+ * cross-owner workspace-catalog read (deferred per the design's Out-of-scope §);
+ * so the Available shelf is "owned-but-not-yet-connected", and admin curation
+ * edits the caller's own catalog rows. Connected/Available derive from REAL
+ * credential presence, not a separate attach state.
+ *
+ * Untrusted text (connector name / description) renders through React text
+ * nodes (auto-escaped) — never raw HTML. shadcn primitives + semantic tokens
+ * only (invariant #6).
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
   listConnectors,
   getConnector,
+  deleteConnector,
+  patchConnector,
+  testConnector,
   deriveCredentialPlan,
   type ConnectorSummary,
+  type ConnectorTestStatus,
 } from '@/lib/connectors';
 import {
   myCredentials,
@@ -37,12 +50,19 @@ import {
   type CredentialMeta,
 } from '@/lib/credentials';
 import { ConnectorConnectDialog } from './ConnectorConnectDialog';
+import { ConnectorEditDialog } from './ConnectorEditDialog';
 import { SourceBadge, connectorSource } from '@/components/SourceBadge';
 import { RoleCard } from '@/components/admin/RoleCard';
-import { StatusDot } from '@/components/admin/StatusDot';
+import { StatusDot, type StatusDotVariant } from '@/components/admin/StatusDot';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import {
   Select,
   SelectContent,
@@ -69,16 +89,47 @@ function shortDate(iso: string): string {
 }
 
 /**
- * Per-connector connected state, derived from REAL credential presence (design
- * Phase 3: "Connected/not state reflects real credential presence; reach derives
- * from scope"). `undefined` while the connector's plan is still loading.
+ * Per-connector connected state, derived from REAL credential presence.
+ * `undefined` while the connector's plan is still loading.
  *   - `'connected'` — every credential slot in the connector's plan has a stored
  *     key at its derived scope/ref (an empty plan ⇒ needs no key ⇒ connected).
  *   - `'disconnected'` — at least one plan slot has no stored key.
  *   - `'unknown'` — the connector's full record failed to load (presence
- *     undeterminable; the tile still offers Connect).
+ *     undeterminable; the connector still appears on the Available shelf).
  */
 type ConnectedState = 'connected' | 'disconnected' | 'unknown';
+
+/** Per-row Test probe state (admin Test action). */
+type TestState = 'idle' | 'testing' | ConnectorTestStatus;
+
+function testDotVariant(state: TestState | undefined): StatusDotVariant {
+  switch (state) {
+    case 'reachable':
+      return 'ok';
+    case 'unreachable':
+    case 'needs-key':
+      return 'bad';
+    case 'testing':
+      return 'pending';
+    default:
+      return 'empty';
+  }
+}
+
+function testLabel(state: TestState | undefined): string {
+  switch (state) {
+    case 'reachable':
+      return 'reachable';
+    case 'unreachable':
+      return 'unreachable';
+    case 'needs-key':
+      return 'needs key';
+    case 'testing':
+      return 'testing…';
+    default:
+      return 'not tested';
+  }
+}
 
 export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   const [connectors, setConnectors] = useState<ConnectorSummary[] | null>(null);
@@ -87,10 +138,16 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   const [connected, setConnected] = useState<Record<string, ConnectedState>>({});
   // The connector whose connect dialog is open (null = closed).
   const [connecting, setConnecting] = useState<ConnectorSummary | null>(null);
-  // Allowed sites — the durable per-(user, agent) "always allow" host grants
-  // (design P3/P6; backed by @ax/host-grants, TASK-54). A service an agent
-  // reaches is a connection too, so the host-grant mirror lives under
-  // Connectors. An agent switcher scopes the list.
+  // Admin curation: the connector being created/edited (null = closed).
+  const [editing, setEditing] = useState<ConnectorSummary | 'new' | null>(null);
+  // Admin curation: the connector awaiting delete confirmation (null = none).
+  const [pendingDelete, setPendingDelete] = useState<ConnectorSummary | null>(
+    null,
+  );
+  // Per-row Test probe state, keyed by connector id (admin Test action).
+  const [testState, setTestState] = useState<Record<string, TestState>>({});
+
+  // Allowed sites — the durable per-(user, agent) "always allow" host grants.
   const [agents, setAgents] = useState<ChatAgentSummary[]>([]);
   const [agentId, setAgentId] = useState<string>('');
   const [sites, setSites] = useState<AllowedSite[] | null>(null);
@@ -98,12 +155,9 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   /**
    * Derive connected-state for a set of connectors from REAL credential presence.
    * Reads the user / global credential lists ONCE (presence is metadata, never a
-   * secret value), then for each connector loads its full record (the LIST is
-   * metadata-only — capabilities load on demand) to derive its credential plan
-   * and check every plan slot has a stored key at its derived scope+ref. A
-   * connector whose full record fails to load reads `'unknown'` (still
-   * connectable). Best-effort: a list failure leaves every connector
-   * `'disconnected'` rather than crashing the tab.
+   * secret value), then for each connector loads its full record to derive its
+   * credential plan and check every plan slot has a stored key at its derived
+   * scope+ref. A connector whose full record fails to load reads `'unknown'`.
    */
   const refreshConnectedState = useCallback(
     async (list: ConnectorSummary[]) => {
@@ -145,6 +199,21 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
     },
     [isAdmin],
   );
+
+  /** Reload the connector list + re-derive connected-state (after a curation
+   *  write or a successful connect). */
+  const refreshConnectors = useCallback(() => {
+    setError(null);
+    return listConnectors()
+      .then((list) => {
+        setConnectors(list);
+        void refreshConnectedState(list);
+      })
+      .catch((e: unknown) => {
+        setError(e instanceof Error ? e.message : String(e));
+        setConnectors([]);
+      });
+  }, [refreshConnectedState]);
 
   useEffect(() => {
     let cancelled = false;
@@ -196,14 +265,129 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
     }
   };
 
+  // --- admin curation actions ----------------------------------------------
+
+  const onTest = async (id: string) => {
+    setTestState((prev) => ({ ...prev, [id]: 'testing' }));
+    // testConnector folds HTTP/network errors into { status: 'unreachable' },
+    // so this never throws and the badge can't get stuck on "testing…".
+    const result = await testConnector(id);
+    setTestState((prev) => ({ ...prev, [id]: result.status }));
+  };
+
+  const onToggleDefault = async (c: ConnectorSummary) => {
+    try {
+      await patchConnector(c.id, { defaultAttached: !c.defaultAttached });
+      await refreshConnectors();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  const confirmDelete = async () => {
+    if (!pendingDelete) return;
+    try {
+      await deleteConnector(pendingDelete.id);
+      setPendingDelete(null);
+      await refreshConnectors();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+      setPendingDelete(null);
+    }
+  };
+
+  // --- sectioning -----------------------------------------------------------
+  // A connector is "Connected" only once its presence is confirmed; everything
+  // else (disconnected / unknown / still-loading) lands on the Available shelf,
+  // because until proven otherwise it has no usable key to spend.
+  const list = connectors ?? [];
+  const isConnected = (c: ConnectorSummary) => connected[c.id] === 'connected';
+  const connectedList = list.filter(isConnected);
+  const availableList = list.filter((c) => !isConnected(c));
+
+  /** One connector row. `section` tweaks the primary action label. */
+  const renderTile = (c: ConnectorSummary, section: 'connected' | 'available') => {
+    const state = connected[c.id];
+    const connectedNow = state === 'connected';
+    const source = connectorSource(c);
+    // Catalog/shared connectors are read-only for non-admins (no edit/delete).
+    const canCurate = isAdmin;
+    return (
+      <div key={c.id} data-testid={`connector-tile-${c.id}`}>
+        <RoleCard pill="service" title={c.name} caption={needsCaption(c)}>
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground mr-auto">
+              <StatusDot variant={connectedNow ? 'ok' : 'empty'} />
+              {state === undefined
+                ? 'checking…'
+                : connectedNow
+                  ? 'connected'
+                  : 'not connected'}
+            </span>
+            {canCurate && testState[c.id] !== undefined && (
+              <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+                <StatusDot variant={testDotVariant(testState[c.id])} />
+                {testLabel(testState[c.id])}
+              </span>
+            )}
+            <SourceBadge source={source} />
+            {canCurate && (
+              <>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void onTest(c.id)}
+                  disabled={testState[c.id] === 'testing'}
+                >
+                  Test
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void onToggleDefault(c)}
+                >
+                  {c.defaultAttached ? 'Unset default' : 'Set default'}
+                </Button>
+                <Button variant="outline" size="sm" onClick={() => setEditing(c)}>
+                  Edit
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => setPendingDelete(c)}
+                >
+                  Delete
+                </Button>
+              </>
+            )}
+            <Button
+              size="sm"
+              variant={section === 'connected' ? 'outline' : 'default'}
+              onClick={() => setConnecting(c)}
+            >
+              {section === 'connected' ? 'Reconnect' : 'Connect'}
+            </Button>
+          </div>
+        </RoleCard>
+      </div>
+    );
+  };
+
   return (
     <div className="flex flex-col gap-4 max-w-2xl">
-      <div>
-        <h3 className="text-sm font-medium text-foreground">Connected services</h3>
-        <p className="text-xs text-muted-foreground">
-          Services your assistant can reach. Each one bundles what it needs —
-          a key, the data it talks to — behind a single name.
-        </p>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-sm font-medium text-foreground">Connectors</h3>
+          <p className="text-xs text-muted-foreground">
+            Services your assistant can reach. Each one bundles what it needs —
+            a key, the data it talks to — behind a single name.
+          </p>
+        </div>
+        {isAdmin && (
+          <Button size="sm" onClick={() => setEditing('new')}>
+            New connector
+          </Button>
+        )}
       </div>
 
       {error && (
@@ -216,48 +400,50 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         <p className="text-sm text-muted-foreground">Loading…</p>
       )}
 
-      {connectors !== null && connectors.length === 0 && !error && (
+      {connectors !== null && list.length === 0 && !error && (
         <p className="text-sm text-muted-foreground">
-          No connected services yet. {isAdmin ? 'Add one from the connector registry to get started.' : 'Your assistant will offer to connect a service when it needs one.'}
+          No connectors yet.{' '}
+          {isAdmin
+            ? 'Add one to make it available to the workspace.'
+            : 'Your assistant will offer to connect a service when it needs one.'}
         </p>
       )}
 
-      {connectors !== null && connectors.length > 0 && (
-        <div className="flex flex-col gap-3.5">
-          {connectors.map((c) => {
-            const state = connected[c.id];
-            const isConnected = state === 'connected';
-            return (
-              <div key={c.id} data-testid={`connector-tile-${c.id}`}>
-                <RoleCard pill="service" title={c.name} caption={needsCaption(c)}>
-                  <div className="flex items-center justify-end gap-2">
-                    <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground mr-auto">
-                      <StatusDot variant={isConnected ? 'ok' : 'empty'} />
-                      {state === undefined
-                        ? 'checking…'
-                        : isConnected
-                          ? 'connected'
-                          : 'not connected'}
-                    </span>
-                    <SourceBadge source={connectorSource(c)} />
-                    <Button
-                      size="sm"
-                      variant={isConnected ? 'outline' : 'default'}
-                      onClick={() => setConnecting(c)}
-                    >
-                      {isConnected ? 'Reconnect' : 'Connect'}
-                    </Button>
-                  </div>
-                </RoleCard>
-              </div>
-            );
-          })}
-        </div>
+      {/* Connected shelf */}
+      {connectors !== null && list.length > 0 && (
+        <section className="flex flex-col gap-3.5">
+          <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Connected ({connectedList.length})
+          </h4>
+          {connectedList.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nothing connected yet — connect a service from Available below.
+            </p>
+          ) : (
+            connectedList.map((c) => renderTile(c, 'connected'))
+          )}
+        </section>
+      )}
+
+      {/* Available shelf */}
+      {connectors !== null && list.length > 0 && (
+        <section className="flex flex-col gap-3.5 pt-1">
+          <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Available ({availableList.length})
+          </h4>
+          {availableList.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              Nothing left to connect.
+            </p>
+          ) : (
+            availableList.map((c) => renderTile(c, 'available'))
+          )}
+        </section>
       )}
 
       {/* The keyMode-aware connect handshake (personal JIT vs workspace shared
           key + consent gate). Re-derives connected-state on a successful store
-          so the tile flips. */}
+          so the tile moves to the Connected shelf. */}
       {connecting && (
         <ConnectorConnectDialog
           connectorId={connecting.id}
@@ -273,10 +459,57 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         />
       )}
 
-      {/* Allowed sites — the durable "always for this agent" host grants
-          (design P3/P6). Revoking removes the durable grant so it is not
-          re-loaded into the next session's allowlist. Hosts are untrusted text
-          → React text nodes (auto-escaped); never raw inner HTML. */}
+      {/* Admin curation: create / edit the connector definition. */}
+      {editing !== null && (
+        <ConnectorEditDialog
+          target={editing}
+          open
+          onOpenChange={(o) => {
+            if (!o) setEditing(null);
+          }}
+          onSaved={() => {
+            setEditing(null);
+            void refreshConnectors();
+          }}
+        />
+      )}
+
+      {/* Admin curation: styled delete confirmation (no OS confirm). */}
+      {pendingDelete !== null && (
+        <Dialog
+          open
+          onOpenChange={(v) => {
+            if (!v) setPendingDelete(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete connector?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              Delete{' '}
+              <span className="font-medium text-foreground">
+                {pendingDelete.name}
+              </span>
+              ? This cannot be undone. Agents that rely on it will lose access.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setPendingDelete(null)}>
+                Cancel
+              </Button>
+              <Button variant="destructive" onClick={() => void confirmDelete()}>
+                Delete
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Allowed sites — the durable "always for this agent" host grants. Not
+          connectors; individual hosts the agent was granted "always allow"
+          mid-task. Revoking removes the durable grant. Hosts are untrusted text
+          → React text nodes (auto-escaped); never raw inner HTML. (TASK-131
+          will move this into its own section with a proactive add.) */}
       {agents.length > 0 && (
         <>
           <div className="flex items-start justify-between gap-3 pt-2">
