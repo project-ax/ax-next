@@ -105,8 +105,11 @@ type EditorTarget =
   | { mode: 'edit-admin'; skillId: string };
 
 export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
-  // Agent selector (the app-store is per-agent).
+  // Agent selector (the app-store is per-agent). `agentsLoaded` distinguishes
+  // "still fetching the agent list" from "fetched, and there are none" so a
+  // zero-agent account doesn't get stuck on a permanent INSTALLED spinner.
   const [agents, setAgents] = useState<ChatAgentSummary[]>([]);
+  const [agentsLoaded, setAgentsLoaded] = useState(false);
   const [agentId, setAgentId] = useState<string>('');
 
   const [installed, setInstalled] = useState<ConnectionSkill[] | null>(null);
@@ -170,10 +173,14 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
       .then((a) => {
         if (cancelled) return;
         setAgents(a);
+        setAgentsLoaded(true);
         if (a[0]) setAgentId(a[0].agentId);
       })
       .catch((e: unknown) => {
-        if (!cancelled) setError(e instanceof Error ? e.message : String(e));
+        if (!cancelled) {
+          setAgentsLoaded(true);
+          setError(e instanceof Error ? e.message : String(e));
+        }
       });
     void refreshCatalog();
     void refreshOwn();
@@ -337,7 +344,11 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
             </Button>
           </div>
 
-          {installed === null ? (
+          {agentsLoaded && agents.length === 0 ? (
+            <p className="text-sm text-muted-foreground">
+              No assistant yet — create one to install skills.
+            </p>
+          ) : installed === null ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : installed.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -467,7 +478,9 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
         <section className="flex flex-col gap-3">
           <div className="flex items-center justify-between gap-3">
             <h3 className="text-sm font-medium text-foreground">
-              {catalog !== null && installed !== null
+              {catalog !== null &&
+              agentsLoaded &&
+              (installed !== null || agents.length === 0)
                 ? `Not installed · available in your workspace (${notInstalledCount})`
                 : 'Not installed · available in your workspace'}
             </h3>
@@ -494,10 +507,13 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
             />
           </div>
 
-          {catalog === null || installed === null ? (
-            // Wait for BOTH the catalog and the installed set so we never flash
-            // an already-installed skill as "installable" before the exclusion
-            // lands.
+          {catalog === null ||
+          !agentsLoaded ||
+          (agents.length > 0 && installed === null) ? (
+            // Wait for the catalog, the agent list, and — when there's an agent —
+            // the installed set, so we never flash an already-installed skill as
+            // "installable" before the exclusion lands. With no agent, the catalog
+            // is browsable (Install is disabled until an agent exists).
             <p className="text-sm text-muted-foreground">Loading…</p>
           ) : notInstalled.length === 0 ? (
             <p className="text-sm text-muted-foreground">
@@ -558,7 +574,11 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                         </Button>
                       </>
                     )}
-                    <Button size="sm" onClick={() => setInstalling(c)}>
+                    <Button
+                      size="sm"
+                      onClick={() => setInstalling(c)}
+                      disabled={agentId === ''}
+                    >
                       Install
                     </Button>
                   </div>
