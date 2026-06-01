@@ -20,6 +20,8 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
+import { TooltipProvider } from '@/components/ui/tooltip';
+import { ConnectorRefsCell } from '@/components/skills/ConnectorRefsCell';
 import {
   listSkills,
   getSkill,
@@ -147,6 +149,7 @@ export function CatalogTab() {
   }
 
   return (
+    <TooltipProvider>
     <Card>
       <CardHeader className="flex flex-row items-center justify-between">
         <CardTitle>Catalog</CardTitle>
@@ -187,7 +190,6 @@ export function CatalogTab() {
           <Table>
             <TableHeader>
               <TableRow>
-                <TableHead>ID</TableHead>
                 <TableHead>Description</TableHead>
                 <TableHead>Tier</TableHead>
                 <TableHead>Default</TableHead>
@@ -202,15 +204,21 @@ export function CatalogTab() {
                 const updateAvailable = update?.available === true;
                 return (
                 <TableRow key={s.id}>
-                  <TableCell className="font-mono text-xs">
-                    {s.id}
-                    {updateAvailable && (
-                      <Badge variant="secondary" className="ml-2 text-xs">
-                        Update available: v{update?.latestVersion}
-                      </Badge>
-                    )}
+                  {/* Lead with the friendly description; demote the raw
+                      font-mono id to a muted subline (TASK-118). */}
+                  <TableCell className="text-sm">
+                    <div className="flex flex-col gap-0.5">
+                      <span>{s.description}</span>
+                      <span className="flex items-center gap-2 text-xs text-muted-foreground">
+                        <span className="font-mono">{s.id}</span>
+                        {updateAvailable && (
+                          <Badge variant="secondary" className="text-xs">
+                            Update available: v{update?.latestVersion}
+                          </Badge>
+                        )}
+                      </span>
+                    </div>
                   </TableCell>
-                  <TableCell className="text-sm">{s.description}</TableCell>
                   <TableCell>
                     {s.tier ? (
                       <Badge variant="outline" className="text-[10px] capitalize">
@@ -230,19 +238,7 @@ export function CatalogTab() {
                     />
                   </TableCell>
                   <TableCell>
-                    {s.connectors.length === 0 ? (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    ) : (
-                      s.connectors.map((c) => (
-                        <Badge
-                          key={c}
-                          variant="secondary"
-                          className="text-xs mr-1"
-                        >
-                          {c}
-                        </Badge>
-                      ))
-                    )}
+                    <ConnectorRefsCell connectors={s.connectors} />
                   </TableCell>
                   <TableCell className="text-xs text-muted-foreground">
                     {new Date(s.updatedAt).toLocaleString()}
@@ -365,5 +361,6 @@ export function CatalogTab() {
         )}
       </CardContent>
     </Card>
+    </TooltipProvider>
   );
 }
