@@ -225,6 +225,36 @@ export async function promoteAuthoredSkill(
   return res.json() as Promise<{ promoted: true; skillId: string; targetScope: string }>;
 }
 
+/**
+ * Delete an agent-authored draft (the Delete affordance on AuthoredSkillsSection).
+ * Admin-only on the server; the server resolves the agent's owner and removes the
+ * draft via @ax/skills' delete-authored hook. 204 on success (idempotent).
+ */
+export async function deleteAuthoredSkill(
+  agentId: string,
+  skillId: string,
+): Promise<void> {
+  const res = await fetch(
+    `/admin/agents/${encodeURIComponent(agentId)}/authored-skills/${encodeURIComponent(skillId)}`,
+    {
+      method: 'DELETE',
+      headers: { 'x-requested-with': 'ax-admin' },
+      credentials: 'include',
+    },
+  );
+  if (!res.ok) {
+    const excerpt = await res.text().catch(() => '');
+    const msg = (() => {
+      try {
+        return (JSON.parse(excerpt) as { error?: string }).error ?? excerpt;
+      } catch {
+        return excerpt;
+      }
+    })();
+    throw new Error(msg || `delete authored-skill: ${res.status}`);
+  }
+}
+
 // Teams ------------------------------------------------------------------
 // Task 24 swaps the placeholder for a real list/edit panel. Listing today
 // is enough so AgentForm can populate the team-owner dropdown.
