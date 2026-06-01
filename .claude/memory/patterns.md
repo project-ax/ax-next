@@ -230,3 +230,28 @@ the mounted manifest. Don't forget the preset test just because the package test
 - `2026-06-01` (TASK-126) — **Self-install / user-scoped attach: the HOOK existed, the HTTP route did not.** `skills:attach-for-user` / `skills:detach-for-user` are host-internal hooks (NOT IPC actions — the untrusted runner must never self-attach). To expose self-install to the browser, add a THIN channel-web BFF route (`POST /api/chat/connections/:agentId/skills {skillId}`) in `routes-connections.ts` mirroring the existing `detach` handler: `authOr401` → `resolveAgentOr404` (ACL, 404 no-leak) → parse body → **validate `skillId ∈ skills:list{scope:'global'}` BEFORE the attach** (capability-min: a browser may only install a vetted catalog id, never an arbitrary/user-private one) → `skills:attach-for-user{userId(server-forced),agentId,skillId,credentialBindings:{}}`. Skills declare no caps post-TASK-100 → empty bindings, so the consent card carries NO key entry (it just lists the skill's referenced connectors + "connect any keys under Connectors"). The every-user catalog shelf needs its OWN read (`GET /api/chat/catalog-skills` → `skills:list{scope:'global'}`) because `/admin/skills` is admin-gated (defense-in-depth) and the shelf is every-user. Consent dialog mirrors `ConnectorConnectDialog`'s blocking-accept posture but is informational (admin-vetted → no approval wall).
 
 - `2026-06-01` (TASK-126) — **Folding an orphaned admin tab INLINE (the TASK-125→126/127 pattern).** TASK-125 dropped catalog/admit-queue/connectors-registry from `AdminTabId`+nav but LEFT the components (`CatalogTab`/`AdmitQueueTab`/`ConnectorRegistry`/`BundleReviewDialog`) orphaned-in-place. To fold their curation into the user app-store tab: reuse the LOGIC (the lib calls — `setSkillDefaultAttached`/`deleteSkill`/`listCatalogRequests`/`decideCatalogRequest`, `BundleReviewDialog` component) in NEW inline components gated on `isAdmin`, do NOT re-add nav entries. The admit queue folds as a collapsible `AwaitingReviewSection` ("Awaiting review (n)"). The old orphaned tabs stay orphaned-but-present (deletion deferred to a follow-up to keep the fold PR small). `SkillsTab` gains an `isAdmin` prop passed from `AdminShell` (which already has it from `user.role==='admin'`). **Regression watch:** any test that mounts `AdminShell`/`App` with the Skills tab as default (AdminShell.test, admin-settings.test, golden-path, etc.) uses a GLOBAL fetch mock — adding new on-mount fetches (`/api/chat/catalog-skills`, `/api/chat/connections/`, `/admin/catalog/requests`) means those mocks' catch-all must return the right shape or the tab crashes/spins; add explicit route branches.
+
+- **Connectors are owner-scoped at EVERY layer; there is no cross-owner workspace
+  catalog (unlike Skills).** `connectors:list`/`listForUser`/`listDefaults` and the
+  `/admin/connectors` routes all key on the calling `userId`; `listDefaults` lists the
+  *owner's own* default-flagged rows, not a system-wide overlay. Skills, by contrast,
+  has a real catalog (`catalog-tier.ts`, `catalog-routes.ts`, `catalog-requests-store.ts`,
+  `user-attachments-store.ts`, `skills:attach-for-user`). So the Connectors "app-store"
+  Available shelf (TASK-127) = owned-but-not-yet-connected (no key stored), derived from
+  REAL credential presence — NOT a separate-owner catalog. The cross-owner shared-connector
+  catalog wire surface is explicitly deferred (2026-06-01 settings-unified design, Out-of-scope §).
+  If a future card needs a true workspace connector catalog, it must ADD that read hook +
+  boundary review — don't assume `listConnectors` already returns shared/other-owner rows.
+
+- **Connector form logic lives in `packages/channel-web/src/lib/connector-form.ts`**
+  (TASK-127) — `ConnectorFormState`, `emptyConnectorForm`, `formFromConnector`,
+  `capabilitiesFromForm` (merges edited fields onto base caps, preserving `packages`/`env`/
+  beyond-first mcpServers), `summaryToForm`, `connectorIdFromName`. Both the inline
+  `ConnectorEditDialog` (settings) and the orphaned `ConnectorRegistry` (admin) import it —
+  one source of truth (invariant #4). TASK-128 reshapes this into the mechanism-first form.
+
+- **Connector self-connect + consent reuses `ConnectorConnectDialog` verbatim** — it already
+  derives the credential plan client-side (`deriveCredentialPlan`) and renders the BLOCKING
+  shared-key consent gate (`requiresSharedKeyConsent`) for workspace/shared keys. Don't build
+  a second consent card; the consent copy is a security contract pinned by
+  `connectors-credential-plan.test.ts`.
