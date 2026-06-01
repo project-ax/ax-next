@@ -641,22 +641,10 @@ function FormFields({
                   onValueChange={setConnectorQuery}
                 />
                 <CommandList>
-                  <CommandEmpty>
-                    {connectorQuery.trim().length > 0 ? (
-                      <button
-                        type="button"
-                        className="w-full px-2 py-1.5 text-left text-xs hover:bg-accent rounded-sm"
-                        onClick={() => {
-                          addConnector(connectorQuery);
-                          setConnectorPickerOpen(false);
-                        }}
-                      >
-                        Add “{connectorQuery.trim()}”
-                      </button>
-                    ) : (
-                      'No connectors found.'
-                    )}
-                  </CommandEmpty>
+                  {/* Empty state — shown only when there is no query AND no
+                      suggestions. With a query, the "Custom" group below always
+                      offers an Add item, so the list is never truly empty then. */}
+                  <CommandEmpty>No connectors found.</CommandEmpty>
                   {connectorSuggestions.length > 0 && (
                     <CommandGroup heading="Your connectors">
                       {connectorSuggestions.map((id) => (
