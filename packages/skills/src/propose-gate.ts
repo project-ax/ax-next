@@ -1,43 +1,32 @@
 /**
- * The hybrid materialization gate (TASK-74, design §D3). Pure function: given
- * the trust provenance, the declared capability proposal, and the safety-scan
- * verdict, classify a proposed skill into one of three materialization states.
+ * The materialization gate (TASK-74, design §D3; narrowed by TASK-100). Pure
+ * function: given the trust provenance and the safety-scan verdict, classify a
+ * proposed skill into one of three materialization states.
  *
- *   clean scan  AND  origin = authored  AND  capabilityProposal = ∅
+ *   clean scan  AND  origin = authored
  *       → 'active'       (materialize freely next spawn, no human)
  *
- *   otherwise (any capability, OR origin ∈ {imported, attached})
+ *   origin ∈ {imported, attached}
  *       → 'pending'      (approve-before-materialize; nothing projects)
  *
  *   scan hit (any class)
  *       → 'quarantined'  (omit from projection; reason returned to the agent)
  *
- * The free path is deliberately the narrowest: self-authored instruction
- * scaffolding with zero reach. Anything with hosts/credentials/mcp/packages, or
- * anything pulled from outside, waits for a human; a scan hit is quarantined
- * regardless of provenance.
+ * TASK-100 — a skill manifest no longer declares capabilities at all (reach
+ * lives only on the connectors a skill references). A self-authored skill is
+ * therefore ALWAYS zero-reach instruction scaffolding, so the free path no
+ * longer needs a capability check — the only approvable reach is a connector,
+ * gated by the connector approval card (TASK-94), not this skill gate. The
+ * origin axis is preserved: anything pulled from outside still waits for a
+ * human, and a scan hit is quarantined regardless of provenance.
  */
-import type { SkillCapabilities } from '@ax/skills-parser';
 import type { AuthoredStatus, AuthoredOrigin } from './authored-store.js';
-
-export function hasAnyCapability(caps: SkillCapabilities): boolean {
-  return (
-    caps.allowedHosts.length > 0 ||
-    caps.credentials.length > 0 ||
-    caps.mcpServers.length > 0 ||
-    caps.packages.npm.length > 0 ||
-    caps.packages.pypi.length > 0
-  );
-}
 
 export function classifyProposal(args: {
   origin: AuthoredOrigin;
-  capabilityProposal: SkillCapabilities;
   scanClean: boolean;
 }): AuthoredStatus {
   if (!args.scanClean) return 'quarantined';
-  if (args.origin === 'authored' && !hasAnyCapability(args.capabilityProposal)) {
-    return 'active';
-  }
+  if (args.origin === 'authored') return 'active';
   return 'pending';
 }

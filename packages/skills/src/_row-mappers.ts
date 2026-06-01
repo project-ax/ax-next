@@ -13,47 +13,33 @@ import { parseSkillManifest } from './manifest.js';
 import type {
   BundleFile,
   ResolvedSkill,
-  SkillCapabilities,
   SkillDetail,
   SkillSummary,
 } from './types.js';
 
-// ---------------------------------------------------------------------------
-// Shared capability-parse fallback (copied by value from store.ts)
-// ---------------------------------------------------------------------------
-export const EMPTY_CAPABILITIES: SkillCapabilities = {
-  allowedHosts: [],
-  credentials: [],
-  mcpServers: [],
-  packages: { npm: [], pypi: [] },
-};
-
-export function parseCapabilities(
+/**
+ * Derive the skill's connector-id reference list from its manifest YAML
+ * (connectors-first-class design). The manifest YAML is the single source of
+ * truth, re-parsed on read — there is no stored `connectors` column. A corrupt
+ * manifest degrades to `[]` (logged once so a bad row never breaks list/resolve).
+ * A manifest with no `connectors:` parses to `[]`.
+ *
+ * TASK-100 — this is the ONLY reach a skill declares now (the capability block
+ * was removed): the connectors a skill names are resolved into sandbox caps by
+ * the orchestrator (the skill→connector bridge). The manifest YAML stays the
+ * single source of truth, re-parsed on read (no stored column).
+ */
+export function parseConnectors(
   manifestYaml: string,
   skillId: string,
-): SkillCapabilities {
+): string[] {
   const result = parseSkillManifest(manifestYaml);
   if (!result.ok) {
     process.stderr.write(
       `[@ax/skills/store] corrupt_manifest skillId=${JSON.stringify(skillId)} code=${result.code} message=${JSON.stringify(result.message)}\n`,
     );
-    return EMPTY_CAPABILITIES;
+    return [];
   }
-  return result.value.capabilities;
-}
-
-/**
- * Derive the skill's connector-id reference list from its manifest YAML
- * (connectors-first-class design, Phasing step 1). Same derived-from-manifest
- * posture as {@link parseCapabilities}: the manifest YAML is the single source
- * of truth, re-parsed on read — there is no stored `connectors` column.
- * A corrupt manifest degrades to `[]` (logged once via parseCapabilities; we
- * don't double-log here). Additive: a manifest with no `connectors:` parses to
- * `[]`, so pre-connector skills surface an empty list unchanged.
- */
-export function parseConnectors(manifestYaml: string): string[] {
-  const result = parseSkillManifest(manifestYaml);
-  if (!result.ok) return [];
   return result.value.connectors;
 }
 
@@ -80,8 +66,7 @@ export function rowToGlobalSummary(row: BaseSkillRow): SkillSummary {
     id: row.skill_id,
     description: row.description,
     version: row.version,
-    capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
-    connectors: parseConnectors(row.manifest_yaml),
+    connectors: parseConnectors(row.manifest_yaml, row.skill_id),
     defaultAttached: row.default_attached,
     ...(row.source_url !== null ? { sourceUrl: row.source_url } : {}),
     updatedAt: row.updated_at.toISOString(),
@@ -107,8 +92,7 @@ export function rowToGlobalResolved(
 ): ResolvedSkill {
   return {
     id: row.skill_id,
-    capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
-    connectors: parseConnectors(row.manifest_yaml),
+    connectors: parseConnectors(row.manifest_yaml, row.skill_id),
     bodyMd: row.body_md,
     manifestYaml: row.manifest_yaml,
     files,
@@ -127,8 +111,7 @@ export function rowToUserSummary(
     id: row.skill_id,
     description: row.description,
     version: row.version,
-    capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
-    connectors: parseConnectors(row.manifest_yaml),
+    connectors: parseConnectors(row.manifest_yaml, row.skill_id),
     defaultAttached: row.default_attached,
     ...(row.source_url !== null ? { sourceUrl: row.source_url } : {}),
     updatedAt: row.updated_at.toISOString(),
@@ -156,8 +139,7 @@ export function rowToUserResolved(
 ): ResolvedSkill {
   return {
     id: row.skill_id,
-    capabilities: parseCapabilities(row.manifest_yaml, row.skill_id),
-    connectors: parseConnectors(row.manifest_yaml),
+    connectors: parseConnectors(row.manifest_yaml, row.skill_id),
     bodyMd: row.body_md,
     manifestYaml: row.manifest_yaml,
     files,

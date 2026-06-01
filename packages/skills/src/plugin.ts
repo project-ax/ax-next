@@ -105,7 +105,6 @@ import type {
   SkillsAuthoredActivateInput,
   SkillsAuthoredActivateOutput,
 } from './types.js';
-import type { SkillCapabilities } from '@ax/skills-parser';
 
 const PLUGIN_NAME = '@ax/skills';
 
@@ -164,62 +163,15 @@ function resolveApprovedCapSubject(input: {
 //     (even as optionalCalls) would form a skills↔agents call-graph CYCLE that
 //     boot's cycle detection rejects. Both are `bus.hasService`-guarded and
 //     degrade gracefully (no in-use check / no authored listing) when @ax/agents
-//     is absent. Similarly, `credentials:list` / `credentials:delete`
-//     are soft deps — guarded via `bus.hasService` inside purgeSkillCredentials
-//     so stripped presets that omit @ax/credentials don't wedge skill operations.
-//     They are NOT listed in `calls:` because that would make them hard deps
-//     and break bootstrap when the credentials plugin is absent.
+//     is absent. (TASK-100 removed the `credentials:list` / `credentials:delete`
+//     soft-dep usage — a skill no longer owns credential rows to purge.)
 // ---------------------------------------------------------------------------
 
-// ---------------------------------------------------------------------------
-// Credential purge helper
-//
-// Called by skills:delete (all slots) and skills:upsert (removed slots only).
-// Fetches all credentials rows and filters by ref prefix locally — fine for
-// v1 (small N). Wrapped in try/catch at call sites so a credential hiccup
-// never wedges a skill operation.
-// ---------------------------------------------------------------------------
-interface CredentialRow {
-  scope: 'global' | 'user' | 'agent';
-  ownerId: string | null;
-  ref: string;
-}
-
-async function purgeSkillCredentials(
-  bus: HookBus,
-  ctx: AgentContext,
-  skillId: string,
-  slots: string[],
-): Promise<void> {
-  if (slots.length === 0) return;
-  if (!bus.hasService('credentials:list') || !bus.hasService('credentials:delete')) return;
-
-  const refsToDelete = new Set(slots.map((s) => `skill:${skillId}:${s}`));
-  const { credentials } = await bus.call<
-    Record<string, never>,
-    { credentials: CredentialRow[] }
-  >('credentials:list', ctx, {});
-
-  for (const c of credentials) {
-    if (!refsToDelete.has(c.ref)) continue;
-    // Per-row try/catch: one failed delete must not abort the rest. The caller
-    // wraps the whole purge in its own try/catch for the list-phase errors.
-    try {
-      await bus.call<CredentialRow, void>('credentials:delete', ctx, {
-        scope: c.scope,
-        ownerId: c.ownerId,
-        ref: c.ref,
-      });
-    } catch (err) {
-      ctx.logger.warn('skills_purge_credential_delete_failed', {
-        ref: c.ref,
-        scope: c.scope,
-        ownerId: c.ownerId,
-        err: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
-}
+// TASK-100 — the skill credential-purge helper was removed: a skill manifest no
+// longer declares credential slots (its reach is the connectors it references),
+// so a skill upsert/delete never owns `skill:<id>:<slot>` credential rows to
+// purge. A connector's credential lifecycle is owned by @ax/connectors /
+// @ax/credentials, not the skill store.
 
 // SkillsPluginConfig is intentionally empty: the bundle byte-store is now the
 // shared content-addressed `blob:*` store (out-of-git Part D2 — the TASK-40
@@ -424,20 +376,12 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
               message: parsed.message,
             });
           }
-          // I-S2: default-attached skills are instruction-only in v1. Credential
-          // slots imply per-agent bindings, which "everyone gets this" cannot
-          // supply. Loud rejection at the host so the admin sees the cause.
-          // Applies to BOTH global and user scopes.
-          if (
-            input.defaultAttached === true &&
-            parsed.value.capabilities.credentials.length > 0
-          ) {
-            throw new PluginError({
-              code: 'default-attached-requires-no-credentials',
-              plugin: PLUGIN_NAME,
-              message: `skill '${parsed.value.id}' declares credential slots; default-attached skills must be instruction-only`,
-            });
-          }
+          // I-S2 (TASK-100): default-attached skills are instruction-only — but a
+          // skill manifest can no longer declare credential slots at ALL (reach
+          // lives only on the connectors it references), so the old "default-on
+          // skill must not carry credentials" reject is now trivially satisfied
+          // and has been removed. A connector's reach-by-attachment is its own
+          // gated path; a default-attached skill simply names connectors.
 
           // JIT Phase 1a — validate the optional bundle extra files (path
           // safety + veto list + caps) BEFORE any write, but ONLY when the
@@ -492,24 +436,14 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
             return { skillId, created: r.created };
           }
 
-          // scope === 'global' — existing path UNCHANGED (incl. credential purge).
-
-          // Capture the previous slot list so we can purge credentials for
-          // any slots that are removed by this manifest edit.
+          // scope === 'global'.
           //
-          // KNOWN LIMITATION: `previous` is read outside any transaction. If
-          // two concurrent upserts race, the second may read a `previous` that
-          // reflects the first's changes rather than the pre-upsert state, and
-          // may therefore skip purging some now-removed slots. The concurrency
-          // window is small and the purge is already best-effort (a missed
-          // purge leaves orphan credential rows but doesn't cause data loss or
-          // incorrect behavior). Fixing this properly requires a store-layer
-          // atomic read/compare/upsert primitive that doesn't yet exist.
-          // Revisit when the store gains transactional support.
+          // TASK-100 — a skill manifest no longer declares credential slots, so
+          // there is nothing to purge on a manifest edit (the old
+          // remove-slots → purgeSkillCredentials dance is gone). A skill's reach
+          // is its connectors; a connector's credential lifecycle is owned by
+          // @ax/connectors / @ax/credentials, not the skill upsert.
           const skillId = parsed.value.id;
-          const previous = await store.get(skillId);
-          const oldSlots = previous?.capabilities.credentials.map((c) => c.slot) ?? [];
-          const newSlots = parsed.value.capabilities.credentials.map((c) => c.slot);
 
           const r = await store.upsert({
             id: skillId,
@@ -525,17 +459,6 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
             sourceUrl: parsed.value.sourceUrl ?? null,
             ...filesPatch,
           });
-
-          // Purge credentials for slots that no longer exist in the manifest.
-          const removedSlots = oldSlots.filter((s) => !newSlots.includes(s));
-          try {
-            await purgeSkillCredentials(bus, ctx, skillId, removedSlots);
-          } catch (err) {
-            ctx.logger.warn('skills_credential_purge_failed', {
-              skillId,
-              err: err instanceof Error ? err.message : String(err),
-            });
-          }
 
           return { skillId, created: r.created };
         },
@@ -590,33 +513,12 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
             }
           }
 
-          // Read the skill's credential slots BEFORE deletion (we need
-          // the capability list). Then delete the row first — if store.delete
-          // throws, no purge has run yet and the caller can retry cleanly.
-          // After a successful row deletion the purge is best-effort: a
-          // failure is logged but does not surface as an error.
-          //
-          // Note: agents:delete keeps the opposite order (purge-first) because
-          // an orphaned agent-scope credential row can never be cleaned up once
-          // the agent row is gone. Skills credentials are keyed by skillId and
-          // slot only, so they can always be cleaned up by re-running the
-          // purge — making delete-first safe here.
-          const existing = await store.get(input.skillId);
-          const slots = existing?.capabilities.credentials.map((c) => c.slot) ?? [];
-
+          // TASK-100 — a skill no longer declares credential slots (its reach is
+          // its connectors), so deleting a skill never leaves orphan skill-keyed
+          // credential rows: the old read-slots → delete → purgeSkillCredentials
+          // dance is gone. A connector's credentials are owned + cleaned up by
+          // @ax/connectors / @ax/credentials, independent of the skill row.
           await store.delete(input.skillId);
-
-          // Best-effort purge — skill row is already gone at this point.
-          if (slots.length > 0) {
-            try {
-              await purgeSkillCredentials(bus, ctx, input.skillId, slots);
-            } catch (err) {
-              ctx.logger.warn('skills_credential_purge_failed', {
-                skillId: input.skillId,
-                err: err instanceof Error ? err.message : String(err),
-              });
-            }
-          }
           return {};
         },
         { returns: SkillsDeleteOutputSchema },
@@ -702,7 +604,7 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => {
           // Resolve the skill (user-scoped content wins over global of the same
-          // id — same precedence as skills:resolve) to read its declared slots.
+          // id — same precedence as skills:resolve) to confirm it exists.
           const resolved =
             (await userStore.resolve(input.userId, [input.skillId]))[0] ??
             (await store.resolve([input.skillId]))[0];
@@ -714,10 +616,13 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
             });
           }
 
-          const check = validateAttachmentBindings(
-            resolved.capabilities.credentials.map((c) => c.slot),
-            input.credentialBindings,
-          );
+          // TASK-100 — a skill declares NO credential slots (its reach is the
+          // connectors it references), so the attachment must carry no bindings.
+          // Validate against an EMPTY declared-slot set: any supplied binding is a
+          // `binding-orphan` (a skill has nothing to bind to). The attachment row
+          // still records WHICH skill is attached; credential reach is the
+          // connector's, gated by the connector approval flow.
+          const check = validateAttachmentBindings([], input.credentialBindings);
           if (!check.ok) {
             throw new PluginError({
               code: check.code,
@@ -773,9 +678,10 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
       // backing the model-facing skill broker (JIT surfacing spine, design
       // §11.1). The untrusted `intent` is matched IN MEMORY over the global
       // catalog (store.list()) so it never reaches SQL — a SQL-injection-shaped
-      // string is just a no-match. `tier` is DERIVED from declared capabilities
-      // (classifyTier — one source of truth, no stored column); `hosts`/`slots`
-      // are already public in the manifest.
+      // string is just a no-match. TASK-100 — a skill declares no capabilities,
+      // so `tier` is always 'inert' and `hosts`/`slots` are empty (a skill's
+      // reach is the connectors it references; the broker surfaces those
+      // separately via the connector approval card).
       // -----------------------------------------------------------------------
       bus.registerService<SkillsSearchCatalogInput, SkillsSearchCatalogOutput>(
         'skills:search-catalog',
@@ -804,9 +710,9 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
             skills: scored.map(({ s }) => ({
               id: s.id,
               description: s.description,
-              tier: classifyTier(s.capabilities),
-              hosts: s.capabilities.allowedHosts,
-              slots: s.capabilities.credentials.map((c) => c.slot),
+              tier: classifyTier(),
+              hosts: [],
+              slots: [],
             })),
           };
         },
@@ -1121,12 +1027,11 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
           }
           const skillId = parsed.value.id;
 
-          // The capability PROPOSAL is the parsed frontmatter — the single
-          // source of truth the gate classifies on. We re-parse it host-side
-          // (never trust the runner's separately-supplied capabilityProposal):
-          // the manifest IS the proposal. The wire `capabilityProposal` is a
-          // redundant hint the runner sends for symmetry; we ignore it here.
-          const proposal: SkillCapabilities = parsed.value.capabilities;
+          // TASK-100 — a skill manifest declares NO capabilities (reach lives
+          // only on the connectors a skill references). So there is no capability
+          // proposal to classify on: the gate now keys only on origin + scan. We
+          // still re-parse the manifest host-side (above) as the structural
+          // source of truth and ignore the wire `capabilityProposal` hint.
 
           // 2. Safety scan (the validator-skill veto, now at the propose
           // chokepoint). A missing scanner degrades to 'clean' — the regex
@@ -1165,10 +1070,9 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
             }
           }
 
-          // 3. Hybrid materialization gate.
+          // 3. Materialization gate (origin + scan only — a skill has no caps).
           const status = classifyProposal({
             origin: input.origin,
-            capabilityProposal: proposal,
             scanClean,
           });
 

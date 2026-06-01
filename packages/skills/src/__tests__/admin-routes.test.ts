@@ -26,18 +26,14 @@ let container: StartedPostgreSqlContainer;
 let connectionString: string;
 const harnesses: TestHarness[] = [];
 
-// A well-formed SKILL.md (frontmatter fence + body).
+// A well-formed SKILL.md (frontmatter fence + body). TASK-100 — a skill carries
+// no capability block; it references the connector(s) it uses instead.
 const SAMPLE_SKILL_MD = `---
 name: github
-description: Access the GitHub REST API with a personal access token.
+description: Know-how for driving the GitHub connector.
 version: 1
-capabilities:
-  allowedHosts:
-    - api.github.com
-  credentials:
-    - slot: GITHUB_TOKEN
-      kind: api-key
-      description: GitHub PAT.
+connectors:
+  - github
 ---
 # GitHub
 
@@ -197,13 +193,14 @@ describe('/admin/skills handlers', () => {
     expect(body.code).toBe('inline-secret-forbidden');
   });
 
-  // 4. POST with mcpServers → persists and round-trips through GET
-  it('POST /admin/skills with capabilities.mcpServers persists and returns it on GET', async () => {
+  // 4. POST with a connectors[] reference → persists and round-trips through GET.
+  // TASK-100 — a skill names connectors (mechanism lives on the connector now).
+  it('POST /admin/skills with a connectors[] list persists and returns it on GET', async () => {
     const h = await makeHarness();
     const handlers = createAdminSkillsHandlers({ bus: h.bus });
 
     // Create
-    const skillMd = `---\nname: ghub\ndescription: GitHub\ncapabilities:\n  mcpServers:\n    - name: github\n      transport: stdio\n      command: npx\n      args: ['-y', '@modelcontextprotocol/server-github']\n---\nbody`;
+    const skillMd = `---\nname: ghub\ndescription: GitHub know-how\nconnectors:\n  - github\n---\nbody`;
     const { res: r1, statusOf: s1 } = mkRes();
     await handlers.create(mkReq({ body: { skillMd } }), r1);
     expect(s1()).toBe(201);
@@ -212,9 +209,8 @@ describe('/admin/skills handlers', () => {
     const { res: r2, statusOf: s2, bodyOf: b2 } = mkRes();
     await handlers.get(mkReq({ params: { id: 'ghub' } }), r2);
     expect(s2()).toBe(200);
-    const detail = b2() as { capabilities: { mcpServers: Array<{ name: string }> } };
-    expect(detail.capabilities.mcpServers).toHaveLength(1);
-    expect(detail.capabilities.mcpServers[0]?.name).toBe('github');
+    const detail = b2() as { connectors: string[] };
+    expect(detail.connectors).toEqual(['github']);
   });
 
   // 5. PUT with new body → 200, created: false, GET returns new body
@@ -425,7 +421,7 @@ describe('/admin/skills handlers', () => {
     const body = bodyOf() as { id: string; bodyMd: string; manifestYaml: string };
     expect(body.id).toBe('github');
     expect(body.bodyMd).toContain('GitHub skill body');
-    expect(body.manifestYaml).toContain('api.github.com');
+    expect(body.manifestYaml).toContain('github'); // the connector reference
   });
 
   // 9. GET /admin/skills/nonexistent → 404
@@ -640,19 +636,10 @@ When asked, say hi.
     expect(skills.map((s) => s.id)).toEqual(['greeter']);
   });
 
-  // 19. POST with defaultAttached: true on a credentialed manifest → 400
-  it('POST /admin/skills with defaultAttached: true on a credentialed manifest returns 400', async () => {
-    const h = await makeHarness();
-    const handlers = createAdminSkillsHandlers({ bus: h.bus });
-    const { res, statusOf, bodyOf } = mkRes();
-    await handlers.create(
-      mkReq({ body: { skillMd: SAMPLE_SKILL_MD, defaultAttached: true } }),
-      res,
-    );
-    expect(statusOf()).toBe(400);
-    expect((bodyOf() as { code?: string }).code).toBe('default-attached-requires-no-credentials');
-  });
-
+  // 19. TASK-100 — a skill manifest can no longer declare credentials, so a
+  // default-attached skill is always instruction-only by construction; the old
+  // `default-attached-requires-no-credentials` reject was removed. We still
+  // assert that a default-attached skill (always cap-free now) persists its flag.
   it('PUT /admin/skills/:id with defaultAttached: true persists the flag', async () => {
     const h = await makeHarness();
     const handlers = createAdminSkillsHandlers({ bus: h.bus });
@@ -720,30 +707,6 @@ version: 1
     await handlers.get(mkReq({ params: { id: 'src2' } }), r3);
     const detail = b3() as { sourceUrl?: string };
     expect(detail.sourceUrl).toBeUndefined();
-  });
-
-  it('PUT /admin/skills/:id with defaultAttached: true on a credentialed manifest returns 400', async () => {
-    const h = await makeHarness();
-    const handlers = createAdminSkillsHandlers({ bus: h.bus });
-
-    // Seed first (without the default flag).
-    const { res: createRes, statusOf: createStatus } = mkRes();
-    await handlers.create(mkReq({ body: { skillMd: SAMPLE_SKILL_MD } }), createRes);
-    expect(createStatus()).toBe(201);
-
-    // Update with defaultAttached: true on the credentialed manifest — should 400.
-    const { res: updateRes, statusOf: updateStatus, bodyOf: updateBody } = mkRes();
-    await handlers.update(
-      mkReq({
-        params: { id: 'github' },
-        body: { skillMd: SAMPLE_SKILL_MD, defaultAttached: true },
-      }),
-      updateRes,
-    );
-    expect(updateStatus()).toBe(400);
-    expect((updateBody() as { code?: string }).code).toBe(
-      'default-attached-requires-no-credentials',
-    );
   });
 
   it('POST /admin/skills/:id/check-update returns the hook output (no sourceUrl → available:false)', async () => {
@@ -841,14 +804,13 @@ version: 1
   // TASK-45: derived tier, bundle-preserving PATCH, PUT file preservation.
   // -------------------------------------------------------------------------
 
-  it('list annotates each skill with a derived tier', async () => {
+  it("list annotates each skill with its tier (always 'inert' — a skill declares no caps)", async () => {
     const h = await makeHarness();
     const handlers = createAdminSkillsHandlers({ bus: h.bus });
 
-    // A 'bounded' skill (declares an allowed host, no packages).
+    // TASK-100 — a skill carries no capability block; it references connectors.
     await h.bus.call('skills:upsert', h.ctx(), {
-      manifestYaml:
-        'name: gh\ndescription: GitHub.\nversion: 1\ncapabilities:\n  allowedHosts:\n    - api.github.com\n',
+      manifestYaml: 'name: gh\ndescription: GitHub know-how.\nversion: 1\nconnectors:\n  - github\n',
       bodyMd: '# gh\n',
       scope: 'global',
     });
@@ -857,7 +819,7 @@ version: 1
     await handlers.list(mkReq({}), res);
     expect(statusOf()).toBe(200);
     const body = bodyOf() as { skills: Array<{ id: string; tier: string }> };
-    expect(body.skills.find((s) => s.id === 'gh')?.tier).toBe('bounded');
+    expect(body.skills.find((s) => s.id === 'gh')?.tier).toBe('inert');
   });
 
   it('PATCH flips defaultAttached and preserves the bundle extra files', async () => {
@@ -888,23 +850,10 @@ version: 1
     expect(detail.files).toEqual([{ path: 'scripts/run.py', contents: 'print(1)' }]);
   });
 
-  it('PATCH on a credential-bearing skill is rejected 400 (cannot be default)', async () => {
-    const h = await makeHarness();
-    const handlers = createAdminSkillsHandlers({ bus: h.bus });
-    await h.bus.call('skills:upsert', h.ctx(), {
-      manifestYaml:
-        'name: gh\ndescription: GitHub.\nversion: 1\ncapabilities:\n  credentials:\n    - slot: GITHUB_TOKEN\n      kind: api-key\n',
-      bodyMd: '# gh\n',
-      scope: 'global',
-    });
-    const { res, statusOf, bodyOf } = mkRes();
-    await handlers.setDefaultAttached(
-      mkReq({ params: { id: 'gh' }, body: { defaultAttached: true } }),
-      res,
-    );
-    expect(statusOf()).toBe(400);
-    expect((bodyOf() as { code?: string }).code).toBe('default-attached-requires-no-credentials');
-  });
+  // TASK-100 — a skill can no longer declare credentials (upsert hard-rejects a
+  // `capabilities:` block), so the old "PATCH on a credential-bearing skill is
+  // rejected 400" test is obsolete and was removed; a default-attached skill is
+  // always instruction-only by construction.
 
   it('PATCH on an unknown id is 404', async () => {
     const h = await makeHarness();
@@ -984,23 +933,8 @@ version: 1
     expect(detail.version).toBe(2);
   });
 
-  it('PATCH (store path) on a credential-bearing skill is rejected 400', async () => {
-    const h = await makeHarness();
-    const handlers = createAdminSkillsHandlers({ bus: h.bus, store: await storeFor(h) });
-    await h.bus.call('skills:upsert', h.ctx(), {
-      manifestYaml:
-        'name: gh\ndescription: GitHub.\nversion: 1\ncapabilities:\n  credentials:\n    - slot: GITHUB_TOKEN\n      kind: api-key\n',
-      bodyMd: '# gh\n',
-      scope: 'global',
-    });
-    const { res, statusOf, bodyOf } = mkRes();
-    await handlers.setDefaultAttached(
-      mkReq({ params: { id: 'gh' }, body: { defaultAttached: true } }),
-      res,
-    );
-    expect(statusOf()).toBe(400);
-    expect((bodyOf() as { code?: string }).code).toBe('default-attached-requires-no-credentials');
-  });
+  // TASK-100 — see above: a skill cannot declare credentials, so the store-path
+  // credential-bearing reject test is obsolete and was removed.
 
   it('PATCH (store path) on an unknown id is 404', async () => {
     const h = await makeHarness();

@@ -99,13 +99,15 @@ export function createAdminSkillsHandlers(deps: AdminRouteDeps): {
           ctx,
           { scope: 'global' },
         );
-        // Annotate each summary with its server-derived supply-chain tier
-        // (classifyTier is the single source of truth — never a stored column,
-        // never re-derived on the client). This is the set the broker proposes
-        // from (design §3).
+        // Annotate each summary with its supply-chain tier. TASK-100 — a skill
+        // declares no capabilities (its reach is the connectors it references),
+        // so a skill is always instruction-only ('inert'); classifyTier() is the
+        // single source of truth for the tier label (never a stored column, never
+        // re-derived on the client). This is the set the broker proposes from
+        // (design §3).
         const skills = out.skills.map((s) => ({
           ...s,
-          tier: classifyTier(s.capabilities) satisfies SkillTier,
+          tier: classifyTier() satisfies SkillTier,
         }));
         res.status(200).json({ skills });
       } catch (err) {
