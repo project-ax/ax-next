@@ -788,3 +788,27 @@ export const SkillsAdoptAuthoredOutputSchema = z.object({
   created: z.boolean(),
   adopted: z.boolean(),
 }) as unknown as ZodType<SkillsAdoptAuthoredOutput>;
+
+// `skills:delete-authored` — hard-delete an agent-authored draft (the user-facing
+// "remove this draft"; the authored shelf's Delete button). Symmetric with the
+// user-scope `skills:delete`: the draft row is dropped outright. There is NO
+// tombstone — if the agent re-authors a skill with the same id on a future run
+// (a user-driven event, via the `skills:propose` chokepoint), a fresh draft
+// re-appears and can be deleted again. `ownerUserId` is host-forced from the
+// session at the route — never a client field — and the store delete is scoped to
+// `(ownerUserId, agentId, skillId)`, so a caller can only ever remove THEIR OWN
+// draft. Ids only — storage-agnostic (no row/blob/git vocab on the wire).
+// `deleted` reports whether THIS call removed a row (false = no such draft for
+// this owner+agent — the call is still a success, mirroring an idempotent delete).
+export interface SkillsDeleteAuthoredInput {
+  ownerUserId: string;
+  agentId: string;
+  skillId: string;
+}
+export interface SkillsDeleteAuthoredOutput {
+  deleted: boolean;
+}
+
+export const SkillsDeleteAuthoredOutputSchema = z.object({
+  deleted: z.boolean(),
+}) as unknown as ZodType<SkillsDeleteAuthoredOutput>;

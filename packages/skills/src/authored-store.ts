@@ -83,6 +83,21 @@ export interface AuthoredSkillsStore {
     agentId: string;
     skillId: string;
   }): Promise<{ adopted: boolean }>;
+  /**
+   * Hard-delete one authored draft row (the user-facing "remove this draft").
+   * Scoped to `(ownerUserId, agentId, skillId)`. Silent if the row doesn't
+   * exist — the store is the dumb persistence layer (mirrors user-store/store
+   * `delete`), and orphaned bundle objects are content-addressed + harmless.
+   * Returns whether THIS call removed a row (false = no such draft), so a
+   * route/test can distinguish a real delete from a no-op without it being an
+   * error. NOT status-guarded: a `quarantined` draft is removable too (the user
+   * is clearing it out, not approving it).
+   */
+  delete(
+    ownerUserId: string,
+    agentId: string,
+    skillId: string,
+  ): Promise<{ deleted: boolean }>;
 }
 
 function rowToAuthored(
@@ -218,6 +233,20 @@ export function createAuthoredSkillsStore(
         .where('status', 'in', ['active', 'pending'])
         .executeTakeFirst();
       return { adopted: Number(res.numUpdatedRows ?? 0n) > 0 };
+    },
+
+    async delete(ownerUserId, agentId, skillId) {
+      // Just drop the row, scoped to the owner+agent+id. Silent if the row
+      // doesn't exist (idempotent); the extra-file bundle bytes are content-
+      // addressed (dedup-shared, GC-reclaimable) so no explicit cleanup is
+      // needed at the per-(user,agent) draft scale.
+      const res = await db
+        .deleteFrom('skills_v1_authored')
+        .where('owner_user_id', '=', ownerUserId)
+        .where('agent_id', '=', agentId)
+        .where('skill_id', '=', skillId)
+        .executeTakeFirst();
+      return { deleted: Number(res.numDeletedRows ?? 0n) > 0 };
     },
   };
 }

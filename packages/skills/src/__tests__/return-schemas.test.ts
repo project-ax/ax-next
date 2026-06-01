@@ -19,9 +19,11 @@ import {
   SkillsProposeOutputSchema,
   SkillsListAuthoredOutputSchema,
   SkillsAdoptAuthoredOutputSchema,
+  SkillsDeleteAuthoredOutputSchema,
   type SkillsProposeOutput,
   type SkillsListAuthoredOutput,
   type SkillsAdoptAuthoredOutput,
+  type SkillsDeleteAuthoredOutput,
   type ResolvedSkill,
   type SkillDetail,
   type SkillSummary,
@@ -310,6 +312,19 @@ describe('skills return schemas', () => {
     // A stray field is stripped (storage details never leak the wire surface).
     const parsed = SkillsAdoptAuthoredOutputSchema.parse({
       ...v,
+      bundle_tree_sha: 'LEAK',
+    });
+    expect(parsed).not.toHaveProperty('bundle_tree_sha');
+  });
+
+  it('skills:delete-authored output round-trips both deleted values', () => {
+    const yes: SkillsDeleteAuthoredOutput = { deleted: true };
+    const no: SkillsDeleteAuthoredOutput = { deleted: false };
+    expect(SkillsDeleteAuthoredOutputSchema.parse(yes)).toEqual(yes);
+    expect(SkillsDeleteAuthoredOutputSchema.parse(no)).toEqual(no);
+    // A stray storage detail is stripped — the wire surface stays minimal.
+    const parsed = SkillsDeleteAuthoredOutputSchema.parse({
+      deleted: true,
       bundle_tree_sha: 'LEAK',
     });
     expect(parsed).not.toHaveProperty('bundle_tree_sha');

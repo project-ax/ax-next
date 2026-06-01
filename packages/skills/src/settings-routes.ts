@@ -12,6 +12,8 @@ import type {
   SettingsAuthoredSkillsOutput,
   SkillsAdoptAuthoredInput,
   SkillsAdoptAuthoredOutput,
+  SkillsDeleteAuthoredInput,
+  SkillsDeleteAuthoredOutput,
 } from './types.js';
 import {
   requireAuthenticated,
@@ -87,6 +89,7 @@ export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
   list: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   listAuthored: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   adoptAuthored: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  destroyAuthored: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   get: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   create: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   update: (req: RouteRequest, res: RouteResponse) => Promise<void>;
@@ -257,6 +260,61 @@ export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
           skillId,
         });
         res.status(200).json(out);
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
+    /**
+     * DELETE /settings/skills/authored/:agentId/:skillId — hard-delete an
+     * agent-authored draft (the user-facing "remove this draft"; the authored
+     * shelf's Delete button). Symmetric with the user-scope DELETE
+     * /settings/skills/:id, but for the per-(user, agent) authored namespace.
+     *
+     * Security (invariant I5): identical ACL to `adoptAuthored`. `ownerUserId` is
+     * ALWAYS the authenticated actor — never a request field. We resolve the
+     * caller's own personal agents and reject any `agentId` that isn't one of
+     * them (404), so a user can never delete another user's authored draft by
+     * guessing an agent id. The body is ignored (ids come from the path).
+     * Idempotent: deleting an already-gone draft still returns 204.
+     */
+    async destroyAuthored(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireAuthenticated(deps.bus, ctx, req, res);
+      if (actor === null) return;
+
+      const { agentId, skillId } = req.params;
+      if (!agentId || !skillId) {
+        res.status(400).json({ error: 'missing agent id or skill id' });
+        return;
+      }
+
+      try {
+        // ACL: a user can only delete a draft of an agent they OWN. Mirror
+        // adoptAuthored / listAuthored scoping exactly. No agents plugin → no
+        // authored namespace → the agent can't be owned → 404 (not an error).
+        if (!deps.bus.hasService('agents:list-for-user')) {
+          res.status(404).json({ error: 'agent not accessible' });
+          return;
+        }
+        const { agents } = await deps.bus.call<
+          { userId: string },
+          AgentsListForUserOutput
+        >('agents:list-for-user', ctx, { userId: actor.id });
+        const ownsAgent = agents.some(
+          (a) => a.id === agentId && a.ownerType === 'user' && a.ownerId === actor.id,
+        );
+        if (!ownsAgent) {
+          res.status(404).json({ error: 'agent not accessible' });
+          return;
+        }
+
+        await deps.bus.call<SkillsDeleteAuthoredInput, SkillsDeleteAuthoredOutput>(
+          'skills:delete-authored',
+          ctx,
+          { ownerUserId: actor.id, agentId, skillId }, // ownerUserId host-forced (I5)
+        );
+        res.status(204).end();
       } catch (err) {
         if (writeServiceError(res, err)) return;
         throw err;
@@ -520,6 +578,16 @@ export async function registerSettingsSkillsRoutes(
       method: 'POST',
       path: '/settings/skills/authored/:agentId/:skillId/adopt',
       handler: handlers.adoptAuthored,
+    },
+    // DELETE /settings/skills/authored/:agentId/:skillId — a 5-segment pattern.
+    // The router matches by exact segment count, so it never collides with the
+    // 3-segment /settings/skills/:id DELETE, and the 3-segment EXACT
+    // /settings/skills/authored route is checked before any pattern scan.
+    // Registration order is therefore irrelevant.
+    {
+      method: 'DELETE',
+      path: '/settings/skills/authored/:agentId/:skillId',
+      handler: handlers.destroyAuthored,
     },
     { method: 'GET', path: '/settings/skills/:id', handler: handlers.get },
     { method: 'POST', path: '/settings/skills', handler: handlers.create },

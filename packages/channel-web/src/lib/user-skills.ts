@@ -94,6 +94,29 @@ export async function adoptAuthoredSkill(
   return (await handleResponse(res)) as AdoptAuthoredResult;
 }
 
+/**
+ * Delete an agent-authored draft (the authored shelf's Delete button). The
+ * server forces the owner from the session and ACL-checks that `agentId` is one
+ * of the caller's own personal agents; nothing is sent in the body. Symmetric
+ * with `deleteUserSkill` — the draft row is removed outright (no tombstone), so
+ * if the agent re-authors the same id later it can re-appear and be deleted
+ * again. 204 on success (idempotent).
+ */
+export async function deleteAuthoredSkill(
+  agentId: string,
+  skillId: string,
+): Promise<void> {
+  const res = await fetch(
+    `/settings/skills/authored/${encodeURIComponent(agentId)}/${encodeURIComponent(skillId)}`,
+    {
+      method: 'DELETE',
+      headers: csrfHeader,
+      credentials: 'include',
+    },
+  );
+  await handleResponse(res);
+}
+
 export async function getUserSkill(skillId: string): Promise<SkillDetail> {
   const res = await fetch(`/settings/skills/${encodeURIComponent(skillId)}`, {
     credentials: 'include',
