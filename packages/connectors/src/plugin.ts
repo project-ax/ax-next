@@ -209,7 +209,11 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       bus.registerService<InstallAuthoredInput, InstallAuthoredOutput>(
         'connectors:install-authored',
         PLUGIN_NAME,
-        async (_ctx, input) => installAuthoredConnector(localAuthored, input),
+        // The live registry store is passed alongside the authored-draft store so
+        // the handler can dedup a re-propose against an already-active connector
+        // (TASK-114) — both stores are this plugin's, so no cross-plugin import.
+        async (_ctx, input) =>
+          installAuthoredConnector(localAuthored, localStore, input),
         { returns: InstallAuthoredOutputSchema },
       );
 
@@ -491,6 +495,7 @@ function assembleProposal(input: InstallAuthoredInput): Capabilities {
 
 async function installAuthoredConnector(
   store: AuthoredConnectorsStore,
+  registry: ConnectorStore,
   input: InstallAuthoredInput,
 ): Promise<InstallAuthoredOutput> {
   const hookName = 'connectors:install-authored';
@@ -503,6 +508,27 @@ async function installAuthoredConnector(
     USAGE_NOTE_MAX,
   );
   const keyMode = validateKeyMode(input.keyMode);
+
+  // TASK-114 — re-propose dedup. TASK-113 made approval PROMOTE the authored
+  // draft into the LIVE registry (`connectors_v1_connectors`). A warm-turn
+  // re-propose of an already-approved connector would otherwise reset the draft
+  // back to `pending` and re-fire the orchestrator's upfront approval card every
+  // turn (the card path keys off a pending draft). If an equivalent connector is
+  // already active in the owner's registry, the install is a NO-OP: we write
+  // nothing and report `active` so the model learns it already works.
+  //
+  // Equivalence rule (simplest-correct, per the card's scoping note): an active
+  // (not-deleted) registry connector OWNED BY THE SAME USER with the SAME id.
+  // Pure id match — not a capability-fill comparison. The check is owner-scoped
+  // (getByIdNotDeleted filters on owner), so it never dedups against a different
+  // user's connector. SECURITY: this only short-circuits when an ALREADY-APPROVED
+  // (human-gated) connector exists — it can never let a re-propose escalate or
+  // bypass approval, and grants zero new reach (it writes nothing).
+  const alreadyActive = await registry.getByIdNotDeleted(ownerUserId, connectorId);
+  if (alreadyActive !== null) {
+    return { connectorId, status: 'active' };
+  }
+
   const proposal = assembleProposal(input);
   await store.upsert({
     ownerUserId,

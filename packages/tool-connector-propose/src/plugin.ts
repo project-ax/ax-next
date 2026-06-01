@@ -38,7 +38,12 @@ interface ConnectorProposeInput {
 
 interface ConnectorProposeOutput {
   connectorId: string;
-  status: 'pending';
+  // `pending` — a fresh draft awaiting human approval at the capability wall.
+  // `active` — TASK-114 re-propose dedup: the connector is ALREADY approved +
+  // active in the owner's registry, so this propose was a no-op. Surfacing it
+  // (rather than re-firing the approval card every turn) tells the model the
+  // connector already works.
+  status: 'pending' | 'active';
 }
 
 // Structural-validation PluginError codes the connectors:install-authored hook

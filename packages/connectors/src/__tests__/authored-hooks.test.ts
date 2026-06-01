@@ -18,6 +18,8 @@ import type {
   ListAuthoredOutput,
   ResolveInput,
   ResolveOutput,
+  UpsertInput,
+  UpsertOutput,
 } from '../types.js';
 
 // ---------------------------------------------------------------------------
@@ -219,5 +221,153 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
       { ownerUserId: 'userA', agentId: 'agent1' },
     );
     expect(a1.drafts.map((d) => d.name)).toEqual(['A1']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-114 item 1 — re-propose dedup against the live registry.
+//
+// TASK-113 made approval PROMOTE the authored draft into the LIVE registry
+// (`connectors_v1_connectors`). After that, a warm-turn re-propose of the SAME
+// connector must NOT re-create a pending authored draft (and so must NOT re-fire
+// the orchestrator's upfront approval card, which keys off pending drafts). The
+// equivalence rule is the simplest-correct one: an active (not-deleted) registry
+// connector owned by the same user with the SAME connector id.
+// ---------------------------------------------------------------------------
+
+/** Seed an active connector into the LIVE registry (the post-approval state). */
+async function seedRegistryConnector(
+  h: TestHarness,
+  over: Partial<UpsertInput> = {},
+): Promise<void> {
+  await h.bus.call<UpsertInput, UpsertOutput>(
+    'connectors:upsert',
+    h.ctx({ userId: 'userA' }),
+    {
+      userId: 'userA',
+      connectorId: 'linear',
+      name: 'Linear',
+      keyMode: 'personal',
+      visibility: 'private',
+      capabilities: {
+        allowedHosts: ['api.linear.app'],
+        credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', account: 'linear' }],
+        mcpServers: [],
+        packages: { npm: [], pypi: [] },
+      },
+      ...over,
+    },
+  );
+}
+
+describe('@ax/connectors — install_authored_connector re-propose dedup (TASK-114)', () => {
+  it('is a NO-OP when an equivalent active registry connector already exists', async () => {
+    const h = await makeHarness();
+    await seedRegistryConnector(h);
+
+    const out = await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+      'connectors:install-authored',
+      h.ctx({ userId: 'userA' }),
+      installInput(),
+    );
+    // Reports the connector is already active — not a fresh pending draft.
+    expect(out).toEqual({ connectorId: 'linear', status: 'active' });
+
+    // And it must NOT have created a pending authored draft (so the orchestrator
+    // card path, which fires on a pending draft, never re-cards).
+    const list = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
+      'connectors:list-authored',
+      h.ctx({ userId: 'userA' }),
+      { ownerUserId: 'userA', agentId: 'agent1' },
+    );
+    expect(list.drafts).toEqual([]);
+  });
+
+  it('does NOT reset a pre-existing pending draft to a new pending when the registry already has it', async () => {
+    const h = await makeHarness();
+    // A draft exists pending (the pre-approval state), THEN it gets promoted into
+    // the registry (approval). A re-propose afterwards must leave the draft as-is.
+    await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+      'connectors:install-authored',
+      h.ctx({ userId: 'userA' }),
+      installInput(),
+    );
+    await seedRegistryConnector(h);
+    const before = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
+      'connectors:list-authored',
+      h.ctx({ userId: 'userA' }),
+      { ownerUserId: 'userA', agentId: 'agent1' },
+    );
+    const beforeUpdatedAt = (before.drafts[0] as { updatedAt?: string }).updatedAt;
+
+    const out = await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+      'connectors:install-authored',
+      h.ctx({ userId: 'userA' }),
+      installInput({ name: 'Linear (re-proposed)' }),
+    );
+    expect(out.status).toBe('active');
+
+    const after = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
+      'connectors:list-authored',
+      h.ctx({ userId: 'userA' }),
+      { ownerUserId: 'userA', agentId: 'agent1' },
+    );
+    // The draft is untouched — same single row, name NOT overwritten by the
+    // re-propose (the no-op short-circuits before any write).
+    expect(after.drafts).toHaveLength(1);
+    expect(after.drafts[0]!.name).toBe('Linear');
+    if (beforeUpdatedAt !== undefined) {
+      expect((after.drafts[0] as { updatedAt?: string }).updatedAt).toBe(beforeUpdatedAt);
+    }
+  });
+
+  it('still writes a pending draft for a DIFFERENT id with no registry match (control)', async () => {
+    const h = await makeHarness();
+    await seedRegistryConnector(h); // registers 'linear'
+
+    const out = await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+      'connectors:install-authored',
+      h.ctx({ userId: 'userA' }),
+      installInput({ connectorId: 'gmail', name: 'Gmail', hosts: ['gmail.googleapis.com'] }),
+    );
+    expect(out).toEqual({ connectorId: 'gmail', status: 'pending' });
+
+    const list = await h.bus.call<ListAuthoredInput, ListAuthoredOutput>(
+      'connectors:list-authored',
+      h.ctx({ userId: 'userA' }),
+      { ownerUserId: 'userA', agentId: 'agent1' },
+    );
+    expect(list.drafts.map((d) => d.connectorId)).toEqual(['gmail']);
+    expect(list.drafts[0]!.status).toBe('pending');
+  });
+
+  it('does NOT dedup against ANOTHER user’s registry connector (owner-scoped)', async () => {
+    const h = await makeHarness();
+    // userB owns a 'linear' registry connector; userA's re-propose is unaffected.
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userB' }),
+      {
+        userId: 'userB',
+        connectorId: 'linear',
+        name: 'Linear',
+        keyMode: 'personal',
+        visibility: 'private',
+        capabilities: {
+          allowedHosts: ['api.linear.app'],
+          credentials: [],
+          mcpServers: [],
+          packages: { npm: [], pypi: [] },
+        },
+      },
+    );
+
+    const out = await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+      'connectors:install-authored',
+      h.ctx({ userId: 'userA' }),
+      installInput(),
+    );
+    // userA has no registry 'linear' → normal pending draft.
+    expect(out).toEqual({ connectorId: 'linear', status: 'pending' });
   });
 });

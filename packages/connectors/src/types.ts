@@ -307,9 +307,18 @@ export interface InstallAuthoredInput {
 }
 export interface InstallAuthoredOutput {
   connectorId: string;
-  /** Always `pending` — a freshly installed draft grants zero reach until a
-   *  human approves it at the capability wall. */
-  status: 'pending';
+  /**
+   * `pending` — a freshly installed draft grants zero reach until a human
+   * approves it at the capability wall (the common case).
+   *
+   * `active` — the install was a NO-OP because an equivalent connector is
+   * ALREADY approved + active in the owner's live registry (TASK-114 re-propose
+   * dedup). No pending draft was (re)created and no approval card re-fires; the
+   * model learns the connector already works rather than re-proposing it every
+   * turn. NOTE: this never grants new reach — it only reports an existing,
+   * human-approved connector.
+   */
+  status: 'pending' | 'active';
 }
 
 /** One authored connector draft, as surfaced for the approval card + the grant
@@ -438,7 +447,9 @@ const AuthoredConnectorDraftSchema = z.object({
 
 export const InstallAuthoredOutputSchema = z.object({
   connectorId: z.string(),
-  status: z.literal('pending'),
+  // `active` is returned only by the TASK-114 re-propose dedup no-op (an
+  // equivalent connector is already approved/active in the live registry).
+  status: z.union([z.literal('pending'), z.literal('active')]),
 }) as unknown as ZodType<InstallAuthoredOutput>;
 
 export const ListAuthoredOutputSchema = z.object({
