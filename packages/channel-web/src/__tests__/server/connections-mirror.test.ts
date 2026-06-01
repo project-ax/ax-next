@@ -7,8 +7,7 @@ import {
 import {
   createTestHarness,
   mockBlobStoreServices,
-  type TestHarness,
-} from '@ax/test-harness';
+  type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createSkillsPlugin } from '@ax/skills';
 import { makeAgentContext, type AgentContext } from '@ax/core';
@@ -136,7 +135,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 describe('Connections mirror property (TASK-42)', () => {

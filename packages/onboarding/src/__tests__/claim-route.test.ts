@@ -13,7 +13,7 @@ import {
 } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createHttpServerPlugin, type HttpServerPlugin } from '@ax/http-server';
 import { createOnboardingPlugin } from '../plugin.js';
@@ -30,7 +30,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 interface BootedStack {

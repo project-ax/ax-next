@@ -13,7 +13,7 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import pg from 'pg';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createAuthBetterPlugin } from '../plugin.js';
 import type { AuthBetterDatabase } from '../migrations.js';
@@ -32,7 +32,7 @@ beforeAll(async () => {
 }, 60_000);
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 async function dropTables(): Promise<void> {

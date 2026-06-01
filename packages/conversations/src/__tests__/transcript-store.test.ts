@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { stopPostgresContainer } from '@ax/test-harness';
 import { createHash } from 'node:crypto';
 import { Kysely, PostgresDialect } from 'kysely';
 import {
@@ -62,7 +63,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 // Verbatim sample jsonl lines — includes unicode + a tool_result echo so the

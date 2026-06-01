@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { stopPostgresContainer } from '@ax/test-harness';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import {
   PostgreSqlContainer,
@@ -59,7 +60,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 describe('Phase B migration', () => {

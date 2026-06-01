@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConversationsPlugin } from '../plugin.js';
 import type {
@@ -110,7 +110,7 @@ afterEach(async () => {
   } finally { await cleanup.end().catch(() => {}); }
 });
 
-afterAll(async () => { if (container) await container.stop(); });
+afterAll(async () => { if (container) await stopPostgresContainer(container); });
 
 describe('conversations:drop-turn (TASK-75 — transcript-row rewrite)', () => {
   it('drops the line whose uuid matches turnId from the transcript rows', async () => {

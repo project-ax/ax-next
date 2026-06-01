@@ -4,7 +4,7 @@ import {
   type StartedPostgreSqlContainer,
 } from '@testcontainers/postgresql';
 import { HookBus, PluginError, makeAgentContext } from '@ax/core';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createTeamsPlugin } from '@ax/teams';
 import type {
@@ -219,7 +219,7 @@ describe('@ax/agents acl with @ax/teams loaded', () => {
   });
 
   afterAll(async () => {
-    if (container) await container.stop();
+    if (container) await stopPostgresContainer(container);
   });
 
   it('resolves a team agent for a team member', async () => {

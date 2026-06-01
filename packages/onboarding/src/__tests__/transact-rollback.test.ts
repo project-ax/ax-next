@@ -5,7 +5,7 @@ import {
 } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
-import { createTestHarness, type TestHarness } from '@ax/test-harness';
+import { createTestHarness, type TestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createStoragePostgresPlugin } from '@ax/storage-postgres';
 import { createCredentialsPlugin } from '@ax/credentials';
@@ -41,7 +41,7 @@ afterEach(async () => {
 });
 
 afterAll(async () => {
-  if (container) await container.stop();
+  if (container) await stopPostgresContainer(container);
 });
 
 async function bootStack(): Promise<TestHarness> {

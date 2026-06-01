@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
-import { createTestHarness } from '@ax/test-harness';
+import { createTestHarness, stopPostgresContainer } from '@ax/test-harness';
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createMemoryStrataIndexPostgresPlugin } from '../plugin.js';
 import type { UpsertInput, SearchInput, SearchOutput } from '@ax/memory-strata-index-contract';
@@ -37,7 +37,7 @@ afterAll(async () => {
     await k.destroy().catch(() => {});
   }
   await adminDb?.destroy().catch(() => {});
-  await container?.stop();
+  await stopPostgresContainer(container);
 });
 
 // ---------------------------------------------------------------------------

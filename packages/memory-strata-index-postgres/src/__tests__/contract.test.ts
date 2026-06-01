@@ -1,4 +1,5 @@
 import { beforeAll, afterAll } from 'vitest';
+import { stopPostgresContainer } from '@ax/test-harness';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import { Kysely, PostgresDialect } from 'kysely';
 import pg from 'pg';
@@ -30,7 +31,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await adminDb?.destroy().catch(() => {});
-  await container?.stop();
+  await stopPostgresContainer(container);
 });
 
 // ---------------------------------------------------------------------------
