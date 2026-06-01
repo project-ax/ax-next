@@ -6,7 +6,7 @@ import { ProvidersPanel } from './ProvidersPanel';
 import { ModelConfigTab } from './ModelConfigTab';
 import { AuthProvidersTab } from './AuthProvidersTab';
 import { AgentForm } from './AgentForm';
-import { McpServerForm } from './McpServerForm';
+import { ConnectorRegistry } from './ConnectorRegistry';
 import { TeamList } from './TeamList';
 import { CatalogTab } from './CatalogTab';
 import { AdmitQueueTab } from './AdmitQueueTab';
@@ -38,7 +38,7 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   agents: { eyebrow: 'Admin', title: 'Agents' },
   catalog: { eyebrow: 'Admin', title: 'Catalog' },
   'admit-queue': { eyebrow: 'Admin', title: 'Admit queue' },
-  'mcp-servers': { eyebrow: 'Admin', title: 'MCP servers' },
+  connectors: { eyebrow: 'Admin', title: 'Connectors' },
   teams: { eyebrow: 'Admin', title: 'Teams' },
 };
 
@@ -65,7 +65,7 @@ export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
         {activeTab === 'agents' && <AgentForm />}
         {activeTab === 'catalog' && <CatalogTab />}
         {activeTab === 'admit-queue' && <AdmitQueueTab />}
-        {activeTab === 'mcp-servers' && <McpServerForm />}
+        {activeTab === 'connectors' && <ConnectorRegistry />}
         {activeTab === 'teams' && <TeamList />}
       </AdminPane>
     </div>

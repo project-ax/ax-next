@@ -39,7 +39,14 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
-  return new Response(JSON.stringify({ providers: [], agents: [], teams: [], servers: [] }), {
+  // ConnectorRegistry (listConnectors → /admin/connectors) fetches on mount.
+  if (/\/admin\/connectors(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ connectors: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  return new Response(JSON.stringify({ providers: [], agents: [], teams: [], connectors: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
@@ -77,7 +84,7 @@ describe('AdminShell', () => {
     expect(screen.getByRole('button', { name: 'Providers' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Model config' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'MCP servers' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Connectors' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Teams' })).toBeTruthy();
     // Connections is the default active tab for everyone.
     expect(

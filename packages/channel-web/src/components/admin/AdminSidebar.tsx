@@ -4,7 +4,6 @@ import {
   KeyRound,
   Cpu,
   User,
-  Server,
   UsersRound,
   ShieldCheck,
   Library,
@@ -28,7 +27,7 @@ export type AdminTabId =
   | 'agents'
   | 'catalog'
   | 'admit-queue'
-  | 'mcp-servers'
+  | 'connectors'
   | 'teams';
 
 type NavItem = { id: AdminTabId; label: string; icon: typeof KeyRound };
@@ -45,7 +44,7 @@ const ADMIN_NAV: NavItem[] = [
   { id: 'agents', label: 'Agents', icon: User },
   { id: 'catalog', label: 'Catalog', icon: Library },
   { id: 'admit-queue', label: 'Admit queue', icon: Inbox },
-  { id: 'mcp-servers', label: 'MCP servers', icon: Server },
+  { id: 'connectors', label: 'Connectors', icon: Plug },
   { id: 'teams', label: 'Teams', icon: UsersRound },
 ];
 

@@ -22,7 +22,6 @@
  * regardless of how `allowedOrigins` is configured. Same posture as
  * `lib/auth.ts` and `components/SessionRow.tsx`.
  */
-import type { McpServer } from '../../mock/admin/mcp-servers';
 import type { Team } from '../../mock/admin/teams';
 
 const writeHeaders = {
@@ -122,98 +121,13 @@ export async function patchAgentSkillAttachments(
 }
 
 // MCP servers ------------------------------------------------------------
-// Task 23 wires create/patch/delete/test for the McpServerForm.
-// `listMcpServers` is also called from AgentForm's chip-input placeholder.
-
-export interface McpServerInput {
-  name: string;
-  transport: 'http' | 'stdio' | 'sse' | 'streamable-http';
-  // stdio fields
-  command?: string;
-  args?: string[];
-  env?: Record<string, string>;
-  credentialRefs?: Record<string, string>;
-  // http/sse/streamable-http fields
-  url?: string;
-  headerCredentialRefs?: Record<string, string>;
-}
-
-export async function listMcpServers(): Promise<McpServer[]> {
-  const res = await fetch('/admin/mcp-servers', { credentials: 'include' });
-  if (!res.ok) throw new Error(`list mcp: ${res.status}`);
-  return (await res.json()).servers;
-}
-
-export async function getMcpServer(id: string): Promise<McpServer> {
-  const res = await fetch(`/admin/mcp-servers/${encodeURIComponent(id)}`, {
-    credentials: 'include',
-  });
-  if (!res.ok) throw new Error(`get mcp: ${res.status}`);
-  return (await res.json()).server;
-}
-
-export async function createMcpServer(
-  input: McpServerInput,
-): Promise<{ id: string }> {
-  const res = await fetch('/admin/mcp-servers', {
-    method: 'POST',
-    headers: writeHeaders,
-    credentials: 'include',
-    body: JSON.stringify(input),
-  });
-  if (!res.ok) throw new Error(`create mcp: ${res.status}`);
-  return res.json();
-}
-
-export async function patchMcpServer(
-  id: string,
-  patch: Partial<McpServerInput>,
-): Promise<void> {
-  const res = await fetch(
-    `/admin/mcp-servers/${encodeURIComponent(id)}`,
-    {
-      method: 'PATCH',
-      headers: writeHeaders,
-      credentials: 'include',
-      body: JSON.stringify(patch),
-    },
-  );
-  if (!res.ok) throw new Error(`patch mcp: ${res.status}`);
-}
-
-export async function deleteMcpServer(id: string): Promise<void> {
-  const res = await fetch(
-    `/admin/mcp-servers/${encodeURIComponent(id)}`,
-    {
-      method: 'DELETE',
-      headers: { 'x-requested-with': 'ax-admin' },
-      credentials: 'include',
-    },
-  );
-  if (!res.ok) throw new Error(`delete mcp: ${res.status}`);
-}
-
-// `testMcpServer` is unusual: it doesn't throw on HTTP failure — it folds
-// the error into the returned shape. The Test button surfaces ok/error
-// inline, and a thrown error would just become an unhandled rejection.
-export async function testMcpServer(
-  id: string,
-): Promise<{ ok: boolean; error?: string }> {
-  try {
-    const res = await fetch(
-      `/admin/mcp-servers/${encodeURIComponent(id)}/test`,
-      {
-        method: 'POST',
-        headers: { 'x-requested-with': 'ax-admin' },
-        credentials: 'include',
-      },
-    );
-    if (!res.ok) return { ok: false, error: `HTTP ${res.status}` };
-    return res.json();
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
-  }
-}
+// TASK-98 collapsed the standalone admin MCP-server surface into the
+// connector registry (invariant #4 — one source of truth). The client
+// wrappers that hit `/admin/mcp-servers` lived here; they're gone. An
+// MCP-backed connector is now just a connector whose capabilities.mcpServers
+// is non-empty, managed via `lib/connectors.ts` + `/admin/connectors`. The
+// agent↔MCP binding still flows through `agent.mcpConfigIds` (above) — the
+// AgentForm connector picker writes connector ids into it.
 
 // Authored skills --------------------------------------------------------
 // E3: list the skills an agent has written in its workspace and promote

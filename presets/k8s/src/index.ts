@@ -869,7 +869,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // `database:get-instance` provider (it's Postgres-free — sqlite KV only), so
   // loading connectors there would crash bootstrap, exactly like
   // @ax/skills / @ax/routines / @ax/conversations are deliberately CLI-absent.
-  plugins.push(createConnectorsPlugin());
+  //
+  // TASK-98: `mountAdminRoutes: true` registers the `/admin/connectors[/:id]`
+  // REST bridge so channel-web's connector registry UI can drive the
+  // `connectors:*` hooks (adds `http:register-route` + `auth:require-user` to
+  // its calls — both already loaded above; topo-sort orders them).
+  plugins.push(createConnectorsPlugin({ mountAdminRoutes: true }));
 
   // ----- 9a. attachments ----------------------------------------------------
   // The attachments & artifacts subsystem. Service hooks

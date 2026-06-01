@@ -5,6 +5,11 @@
  * (camelCase: displayName / systemPrompt / allowedTools / mcpConfigIds /
  * model / visibility / teamId / ...).
  *
+ * TASK-98: the raw `mcpConfigIds` chip field is replaced by a connector
+ * PICKER (a checkbox list over `/admin/connectors`). Selected connector ids
+ * are written into the agent's `mcpConfigIds` field (kept load-bearing), so
+ * the wire shape is unchanged — only the input control differs.
+ *
  * Strategy: render AgentForm directly (no shell wrapper) for all content
  * tests. AdminShell (wrapped in UserProvider) is used only for the
  * "Back to chat" shell-behavior test.
@@ -69,7 +74,9 @@ beforeEach(() => {
   globalThis.fetch = fetchMock as unknown as typeof fetch;
   // Default: stub all fetches with empty responses.
   fetchMock.mockImplementation(() =>
-    Promise.resolve(jsonOk({ providers: [], agents: [], teams: [], servers: [] })),
+    Promise.resolve(
+      jsonOk({ providers: [], agents: [], teams: [], connectors: [] }),
+    ),
   );
 });
 
@@ -88,7 +95,7 @@ describe('AdminSettings — agents tab', () => {
   it('clicking + New agent reveals the form', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    fetchMock.mockResolvedValue(jsonOk({ agents: [], teams: [], servers: [] }));
+    fetchMock.mockResolvedValue(jsonOk({ agents: [], teams: [], connectors: [] }));
 
     render(<AgentForm />);
     await waitFor(() => screen.getByText(/New agent/i));
@@ -102,9 +109,9 @@ describe('AdminSettings — agents tab', () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     // agents list on mount
     fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
-    // teams + mcp lookup on form open
+    // teams + connectors lookup on form open
     fetchMock.mockResolvedValueOnce(jsonOk({ teams: [] }));
-    fetchMock.mockResolvedValueOnce(jsonOk({ servers: [] }));
+    fetchMock.mockResolvedValueOnce(jsonOk({ connectors: [] }));
     // POST response
     fetchMock.mockResolvedValueOnce(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
     // re-fetch agents after save
@@ -143,7 +150,7 @@ describe('AdminSettings — agents tab', () => {
     });
   });
 
-  it('clicking edit populates the form from the camelCase wire shape (regression)', async () => {
+  it('clicking edit populates the form + pre-checks the attached connector', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     fetchMock.mockResolvedValueOnce(
@@ -158,20 +165,47 @@ describe('AdminSettings — agents tab', () => {
         ],
       }),
     );
-    fetchMock.mockResolvedValue(jsonOk({ teams: [], servers: [] }));
+    // Form-open lookups: teams + the connector list. `gh` is the attached
+    // connector — its checkbox must render checked. The edit view also renders
+    // SkillAttachmentsSection (fetches /admin/skills) + AuthoredSkillsSection
+    // (fetches authored-skills); return empty shapes so neither crashes.
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (/\/admin\/connectors(\?|$)/.test(url)) {
+        return Promise.resolve(
+          jsonOk({
+            connectors: [
+              {
+                id: 'gh',
+                name: 'GitHub',
+                description: '',
+                usageNote: '',
+                keyMode: 'personal',
+                visibility: 'private',
+                createdAt: '2026-01-01T00:00:00.000Z',
+                updatedAt: '2026-01-01T00:00:00.000Z',
+              },
+            ],
+          }),
+        );
+      }
+      if (/\/admin\/skills(\?|$)/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
+      if (/authored-skills/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
+      return Promise.resolve(jsonOk({ teams: [] }));
+    });
 
     render(<AgentForm />);
     await waitFor(() => screen.getByText('probe'));
-    // Before the fix this threw "Cannot read properties of undefined
-    // (reading 'join')" inside formFromAgent because the form read
-    // snake_case (allowed_tools) on a camelCase wire object.
+    // Before the camelCase fix this threw "Cannot read properties of
+    // undefined (reading 'join')" inside formFromAgent.
     fireEvent.click(screen.getByText(/^edit$/i));
     const nameInput = screen.getByLabelText(/name/i) as HTMLInputElement;
     expect(nameInput.value).toBe('probe');
     const tools = screen.getByLabelText(/allowed tools/i) as HTMLInputElement;
     expect(tools.value).toBe('bash, read_file');
-    const mcps = screen.getByLabelText(/MCP servers/i) as HTMLInputElement;
-    expect(mcps.value).toBe('gh');
+    // The attached connector `gh` renders pre-checked in the picker.
+    const ghCheckbox = await screen.findByRole('checkbox', { name: /Attach GitHub/i });
+    expect(ghCheckbox.getAttribute('data-state')).toBe('checked');
   });
 
   it('delete sends DELETE with X-Requested-With: ax-admin (CSRF regression)', async () => {
