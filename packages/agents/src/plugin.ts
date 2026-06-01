@@ -8,7 +8,7 @@ import {
 import { sql, type Kysely } from 'kysely';
 import { checkAccess } from './acl.js';
 import { listAuthoredSkills } from './authored-skills.js';
-import { projectAuthoredBundle, type ApprovedCapEntry } from './authored-caps.js';
+import { projectAuthoredBundle } from './authored-caps.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
 import { runAgentsMigration, type AgentsDatabase } from './migrations.js';
 import {
@@ -348,26 +348,23 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       );
 
       // Authored-skill discovery projection (TASK-74 re-backing). The source is
-      // now the @ax/skills DB store (skills:list-authored) — the
-      // .ax/draft-skills git workspace projection (listAuthoredBundles) is
-      // RETIRED (one source of truth, I4). The shape returned is unchanged, so
-      // the orchestrator union + the approval-card flow are untouched.
+      // the @ax/skills DB store (skills:list-authored). The shape returned feeds
+      // the orchestrator union.
       //
-      // The frontmatter capabilities block is the agent's PROPOSAL; only the
-      // human-approved subset (proposal ∩ approved-store) projects as live
-      // capabilities; the unapproved remainder (proposalDelta) drives the
-      // approval card. The materialized manifestYaml is caps-stripped so the
-      // SKILL.md the SDK sees never carries a capabilities block.
+      // TASK-100 — a skill manifest carries NO capability block; its only
+      // declared reach is the `connectors` it references (resolved into sandbox
+      // caps by the orchestrator's skill→connector bridge, gated by the connector
+      // approval wall). So there is no per-skill capability proposal to intersect
+      // with an approved set, no proposalDelta, and no per-skill capability
+      // approval card — we project the skill's connector references verbatim.
       //
-      // QUARANTINE is now the row's `status === 'quarantined'` (set by the
-      // skills:propose gate when skills:scan flagged it) — a quarantined skill
-      // is OMITTED so the model never sees its name/description. `pending` /
-      // `active` both project (a `pending` skill has a non-empty proposalDelta →
-      // the orchestrator fires the card; nothing in its delta is approved yet, so
-      // it grants no live reach until the human approves and the row flips to
-      // `active`). skills:list-authored / skills:approved-caps-list are soft deps
-      // (hasService-guarded): a preset without the skills store yields no
-      // authored skills / empty approved caps — the safe defaults.
+      // QUARANTINE is the row's `status === 'quarantined'` (set by the
+      // skills:propose gate when skills:scan flagged it) — a quarantined skill is
+      // OMITTED so the model never sees its name/description. `pending` / `active`
+      // both project; a `pending` skill's bytes are withheld by the orchestrator
+      // until it flips to `active`. skills:list-authored is a soft dep
+      // (hasService-guarded): a preset without the skills store yields no authored
+      // skills — the safe default.
       bus.registerService<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
         'agents:resolve-authored-skills',
         PLUGIN_NAME,
@@ -398,37 +395,13 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           for (const b of rows) {
             if (b.status === 'quarantined') continue; // omit — model never sees it
 
-            // Read what the human approved (soft dep). Absent store / error →
-            // [] → the safe empty-caps default (the proxy blocks everything).
-            let approved: ApprovedCapEntry[] = [];
-            if (bus.hasService('skills:approved-caps-list')) {
-              try {
-                const r = await bus.call<
-                  { ownerUserId: string; agentId: string; skillId: string },
-                  { capabilities: ApprovedCapEntry[] }
-                >('skills:approved-caps-list', _ctx, {
-                  ownerUserId: input.ownerUserId,
-                  agentId: input.agentId,
-                  skillId: b.skillId,
-                });
-                approved = r.capabilities;
-              } catch (err) {
-                _ctx.logger.warn('resolve_authored_caps_list_failed', {
-                  skillId: b.skillId,
-                  error: err instanceof Error ? err.message : String(err),
-                });
-                approved = [];
-              }
-            }
-
-            const proj = projectAuthoredBundle(b.manifestYaml, approved);
+            const proj = projectAuthoredBundle(b.manifestYaml);
             if (proj === null) continue; // unparseable — skip (defensive)
 
             skills.push({
               id: b.skillId,
               description: proj.description,
-              capabilities: proj.capabilities,
-              proposalDelta: proj.delta,
+              connectors: proj.connectors,
               bodyMd: b.bodyMd,
               manifestYaml: proj.manifestYaml,
               files: b.files,

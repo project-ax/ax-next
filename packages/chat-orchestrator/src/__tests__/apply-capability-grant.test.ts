@@ -15,8 +15,6 @@ interface Trace {
 }
 
 function buildMocks(opts: {
-  /** declared credential slots of the skill being granted */
-  slots: string[];
   activeSessionId: string | null;
   liveSessions: Set<string>;
 }): { trace: Trace; services: Record<string, ServiceHandler> } {
@@ -36,20 +34,12 @@ function buildMocks(opts: {
         workspaceRef: null,
       },
     }),
+    // TASK-100 — a skill declares no capabilities; it resolves to id + body +
+    // manifest only (its reach is the connectors it references).
     'skills:resolve': async (_c, input: unknown) => {
       const ids = (input as { skillIds: string[] }).skillIds;
       return {
-        skills: ids.map((id) => ({
-          id,
-          manifestYaml: '',
-          bodyMd: '',
-          capabilities: {
-            allowedHosts: ['api.linear.app'],
-            credentials: opts.slots.map((s) => ({ slot: s, kind: 'api-key' as const })),
-            mcpServers: [],
-            packages: { npm: [], pypi: [] },
-          },
-        })),
+        skills: ids.map((id) => ({ id, manifestYaml: '', bodyMd: '', connectors: [] })),
       };
     },
     'skills:attach-for-user': async (_c, input: unknown) => {
@@ -106,9 +96,8 @@ async function harnessFor(mocks: ReturnType<typeof buildMocks>) {
 }
 
 describe('agent:apply-capability-grant', () => {
-  it('attaches the skill with all declared slots bound to skill:<id>:<slot>', async () => {
+  it('attaches the skill with NO credential bindings (TASK-100 — a skill declares no slots)', async () => {
     const mocks = buildMocks({
-      slots: ['api_key'],
       activeSessionId: 'sess-warm',
       liveSessions: new Set(['sess-warm']),
     });
@@ -125,14 +114,13 @@ describe('agent:apply-capability-grant', () => {
         userId: 'user-1',
         agentId: 'agent-1',
         skillId: 'linear',
-        credentialBindings: { api_key: 'skill:linear:api_key' },
+        credentialBindings: {},
       },
     ]);
   });
 
   it('terminates the warm session so the next turn re-spawns', async () => {
     const mocks = buildMocks({
-      slots: [],
       activeSessionId: 'sess-warm',
       liveSessions: new Set(['sess-warm']),
     });
@@ -146,8 +134,8 @@ describe('agent:apply-capability-grant', () => {
     expect(mocks.trace.terminate).toEqual(['sess-warm']);
   });
 
-  it('binds {} for a slotless skill and does not terminate a dead/absent session', async () => {
-    const mocks = buildMocks({ slots: [], activeSessionId: null, liveSessions: new Set() });
+  it('binds {} and does not terminate a dead/absent session', async () => {
+    const mocks = buildMocks({ activeSessionId: null, liveSessions: new Set() });
     const h = await harnessFor(mocks);
     await h.bus.call('agent:apply-capability-grant', ctx(), {
       conversationId: 'cnv-1',
@@ -161,7 +149,6 @@ describe('agent:apply-capability-grant', () => {
 
   it('does not terminate a session that is-alive reports dead', async () => {
     const mocks = buildMocks({
-      slots: [],
       activeSessionId: 'sess-stale',
       liveSessions: new Set(), // stale id present on row but not alive
     });
@@ -176,45 +163,8 @@ describe('agent:apply-capability-grant', () => {
     expect(mocks.trace.terminate).toEqual([]);
   });
 
-  // JIT P2/P7.2, decision #13 — a slot tagged `account: <svc>` binds the SHARED
-  // user vault entry `account:<svc>`; an untagged slot keeps the per-skill ref.
-  // The card POSTs the IDENTICAL ref, so stored key and binding always agree.
-  it('binds an account-tagged slot to account:<service> and a plain slot to skill:<id>:<slot>', async () => {
-    const mocks = buildMocks({
-      slots: [],
-      activeSessionId: null,
-      liveSessions: new Set(),
-    });
-    // Override skills:resolve to return one account-tagged slot + one plain slot.
-    mocks.services['skills:resolve'] = async (_c, input: unknown) => {
-      const ids = (input as { skillIds: string[] }).skillIds;
-      return {
-        skills: ids.map((id) => ({
-          id,
-          manifestYaml: '',
-          bodyMd: '',
-          capabilities: {
-            allowedHosts: ['api.linear.app'],
-            credentials: [
-              { slot: 'LINEAR_TOKEN', kind: 'api-key' as const, account: 'linear' },
-              { slot: 'EXTRA', kind: 'api-key' as const },
-            ],
-            mcpServers: [],
-            packages: { npm: [], pypi: [] },
-          },
-        })),
-      };
-    };
-    const h = await harnessFor(mocks);
-    await h.bus.call('agent:apply-capability-grant', ctx(), {
-      conversationId: 'cnv-1',
-      userId: 'user-1',
-      agentId: 'agent-1',
-      skillId: 'linear',
-    });
-    expect(mocks.trace.attach[0]?.credentialBindings).toEqual({
-      LINEAR_TOKEN: 'account:linear',
-      EXTRA: 'skill:linear:EXTRA',
-    });
-  });
+  // TASK-100 — the account-tagged / per-skill slot-binding test was removed: a
+  // skill declares no credential slots, so the catalog grant always binds {}. A
+  // connector's account-tagged credential binding is covered by the connector
+  // connect-flow + connector-union tests.
 });

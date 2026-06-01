@@ -21,12 +21,6 @@ const DETAIL: SkillDetail = {
   description: 'Interacts with the GitHub REST API.',
   version: 1,
   scope: 'global',
-  capabilities: {
-    allowedHosts: ['api.github.com'],
-    credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key', description: 'Personal access token' }],
-    mcpServers: [],
-    packages: { npm: [], pypi: [] },
-  },
   connectors: [],
   defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
@@ -35,13 +29,8 @@ const DETAIL: SkillDetail = {
     'name: github-api',
     'description: Interacts with the GitHub REST API.',
     'version: 1',
-    'capabilities:',
-    '  allowedHosts:',
-    '    - api.github.com',
-    '  credentials:',
-    '    - slot: GITHUB_TOKEN',
-    '      kind: api-key',
-    '      description: Personal access token',
+    'connectors:',
+    '  - github',
   ].join('\n'),
   files: [],
 };
@@ -50,12 +39,8 @@ const VALID_MD = [
   '---',
   'name: my-skill',
   'description: Does something useful.',
-  'capabilities:',
-  '  allowedHosts:',
-  '    - api.example.com',
-  '  credentials:',
-  '    - slot: MY_TOKEN',
-  '      kind: api-key',
+  'connectors:',
+  '  - example-connector',
   '---',
   '# Body',
   '',
@@ -127,7 +112,7 @@ describe('SkillEditor', () => {
     });
   });
 
-  it('shows host badges and slot list in preview when content parses correctly', async () => {
+  it('shows the connectors[] reference list in preview when content parses correctly', async () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
 
     await waitFor(() => {
@@ -138,8 +123,8 @@ describe('SkillEditor', () => {
     fireEvent.change(textarea, { target: { value: VALID_MD } });
 
     await waitFor(() => {
-      expect(screen.getByText('api.example.com')).toBeTruthy();
-      expect(screen.getByText('MY_TOKEN')).toBeTruthy();
+      // TASK-100 — the preview shows the connector references, not hosts/slots.
+      expect(screen.getByText('example-connector')).toBeTruthy();
       expect(screen.getByText('my-skill')).toBeTruthy();
       expect(screen.getByText('Does something useful.')).toBeTruthy();
     });
@@ -249,22 +234,21 @@ describe('SkillEditor', () => {
     });
   });
 
-  it('default-attached checkbox is disabled when the parsed manifest declares credentials', async () => {
+  it('TASK-100: the default-attached checkbox is enabled for any parsed manifest (a skill declares no credentials)', async () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
 
     const textarea = await screen.findByRole('textbox');
     fireEvent.change(textarea, { target: { value: VALID_MD } });
-    // VALID_MD already declares a MY_TOKEN credential slot — lock-out should engage.
+    // VALID_MD references a connector, no credentials → the box is never disabled.
 
     const checkbox = await screen.findByLabelText(/default-attached/i);
-    expect(checkbox).toBeDisabled();
+    await waitFor(() => expect(checkbox).not.toBeDisabled());
   });
 
   it('loads existing defaultAttached state on edit', async () => {
     mockGetSkill.mockResolvedValueOnce({
       ...DETAIL,
       // Override to instruction-only + default-attached.
-      capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
       manifestYaml: 'name: github-api\ndescription: Interacts with the GitHub REST API.\nversion: 1\n',
       defaultAttached: true,
     });
@@ -307,7 +291,7 @@ describe('SkillEditor', () => {
     expect(checkbox).toBeChecked();
   });
 
-  it('auto-clears the flag when the user adds credential slots', async () => {
+  it('TASK-100: the flag stays checked when the user adds a connector reference (no credential lock-out)', async () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
 
     const textarea = await screen.findByRole('textbox');
@@ -324,11 +308,12 @@ describe('SkillEditor', () => {
     fireEvent.click(checkbox);
     expect(checkbox).toBeChecked();
 
-    // Add a credential slot — the flag must be auto-cleared.
+    // Add a connector reference — a skill declares no credentials, so the flag is
+    // NOT auto-cleared and the box stays enabled.
     fireEvent.change(textarea, { target: { value: VALID_MD } });
 
-    await waitFor(() => expect(checkbox).toBeDisabled());
-    expect(checkbox).not.toBeChecked();
+    await waitFor(() => expect(checkbox).not.toBeDisabled());
+    expect(checkbox).toBeChecked();
   });
 
   // ── Bundle multi-file authoring (TASK-59) ────────────────────────────────

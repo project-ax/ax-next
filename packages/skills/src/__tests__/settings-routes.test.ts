@@ -50,13 +50,8 @@ const ALICE_SKILL_MD = `---
 name: my-github
 description: Alice personal GitHub skill.
 version: 1
-capabilities:
-  allowedHosts:
-    - api.github.com
-  credentials:
-    - slot: GITHUB_TOKEN
-      kind: api-key
-      description: GitHub PAT.
+connectors:
+  - github
 ---
 # My GitHub
 
@@ -740,7 +735,13 @@ describe('/settings/skills handlers', () => {
    * scan hit → quarantined). */
   async function propose(
     h: TestHarness,
-    input: { ownerUserId: string; agentId: string; manifestYaml: string; bodyMd: string },
+    input: {
+      ownerUserId: string;
+      agentId: string;
+      manifestYaml: string;
+      bodyMd: string;
+      origin?: 'authored' | 'imported' | 'attached';
+    },
   ): Promise<SkillsProposeOutput> {
     return h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
       'skills:propose',
@@ -751,8 +752,10 @@ describe('/settings/skills handlers', () => {
         manifestYaml: input.manifestYaml,
         bodyMd: input.bodyMd,
         files: [],
-        capabilityProposal: EMPTY_CAPS, // host re-parses the manifest; ignored
-        origin: 'authored',
+        capabilityProposal: EMPTY_CAPS, // host re-parses the manifest; ignored (TASK-100)
+        // TASK-100 — a skill declares no caps, so a non-authored origin is the
+        // only way to land `pending` (a self-authored skill is always active).
+        origin: input.origin ?? 'authored',
       },
     );
   }
@@ -785,8 +788,9 @@ describe('/settings/skills handlers', () => {
       ownerUserId: 'alice',
       agentId: 'agt_a',
       manifestYaml:
-        'name: needs-approval\ndescription: Authored skill that wants a host.\nversion: 1\ncapabilities:\n  allowedHosts:\n    - api.example.com',
+        'name: needs-approval\ndescription: Imported skill awaiting approval.\nversion: 1\nconnectors:\n  - example-connector',
       bodyMd: 'Wants reach.',
+      origin: 'imported', // a non-authored origin lands pending (TASK-100)
     });
     expect(p.status).toBe('pending');
 
@@ -807,37 +811,35 @@ describe('/settings/skills handlers', () => {
     expect(pending?.status).toBe('pending');
   });
 
-  it('GET /settings/skills/authored surfaces pendingCapabilities for a pending cap-skill (TASK-83 discoverability)', async () => {
-    // The JIT discoverability gap: a pending cap-bearing authored skill must be
-    // visibly approvable from My Skills BEFORE first use. The listing carries a
-    // summary of the hosts/slots/packages awaiting approval (public manifest
-    // data only — never a secret) so the panel can render an approve + key
-    // affordance.
+  it('GET /settings/skills/authored never carries pendingCapabilities (TASK-100 — a skill declares no caps)', async () => {
+    // TASK-100 — a skill manifest declares no capabilities (its reach is the
+    // connectors it references), so a skill has nothing of its own to approve:
+    // the listing never carries `pendingCapabilities`. A connector's reach is
+    // approved via the connector approval card, not the skill listing.
     const h = await makeHarness({
       authedUser: { id: 'alice', isAdmin: false },
       agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
     });
     const handlers = createSettingsSkillsHandlers({ bus: h.bus });
 
-    // Inert pending skill — has nothing to approve, so NO pendingCapabilities.
-    const inert = await propose(h, {
+    // A self-authored skill is always active (zero reach of its own).
+    const active = await propose(h, {
       ownerUserId: 'alice',
       agentId: 'agt_a',
-      manifestYaml:
-        'name: inert-pending\ndescription: Inert authored skill.\nversion: 1',
+      manifestYaml: 'name: inert-pending\ndescription: Authored skill.\nversion: 1',
       bodyMd: 'No caps.',
     });
-    expect(inert.status).toBe('active'); // zero-cap authored → active, not pending
+    expect(active.status).toBe('active');
 
-    // Cap-bearing pending skill — declares a host + a credential slot.
-    const cap = await propose(h, {
+    // A pending skill (imported origin) — still no pendingCapabilities.
+    const pendingProp = await propose(h, {
       ownerUserId: 'alice',
       agentId: 'agt_a',
-      manifestYaml:
-        'name: needs-key\ndescription: Wants a host and a key.\nversion: 1\ncapabilities:\n  allowedHosts:\n    - api.linear.app\n  credentials:\n    - slot: LINEAR_API_KEY\n      kind: api-key',
-      bodyMd: 'Wants reach + key.',
+      manifestYaml: 'name: needs-key\ndescription: Imported skill.\nversion: 1\nconnectors:\n  - linear',
+      bodyMd: 'References a connector.',
+      origin: 'imported',
     });
-    expect(cap.status).toBe('pending');
+    expect(pendingProp.status).toBe('pending');
 
     const { res, statusOf, bodyOf } = mkRes();
     await handlers.listAuthored(mkReq({}), res);
@@ -846,16 +848,10 @@ describe('/settings/skills handlers', () => {
 
     const pending = body.skills.find((s) => s.skillId === 'needs-key');
     expect(pending?.status).toBe('pending');
-    expect(pending?.pendingCapabilities).toBeDefined();
-    expect(pending?.pendingCapabilities?.hosts).toEqual(['api.linear.app']);
-    expect(pending?.pendingCapabilities?.slots).toEqual([
-      { slot: 'LINEAR_API_KEY', kind: 'api-key', haveExisting: false },
-    ]);
-    expect(pending?.pendingCapabilities?.packages).toEqual({ npm: [], pypi: [] });
+    expect(pending?.pendingCapabilities).toBeUndefined();
 
-    // The inert skill (now active) carries no pendingCapabilities.
-    const inertListing = body.skills.find((s) => s.skillId === 'inert-pending');
-    expect(inertListing?.pendingCapabilities).toBeUndefined();
+    const activeListing = body.skills.find((s) => s.skillId === 'inert-pending');
+    expect(activeListing?.pendingCapabilities).toBeUndefined();
   });
 
   it('GET /settings/skills/authored EXCLUDES quarantined drafts', async () => {

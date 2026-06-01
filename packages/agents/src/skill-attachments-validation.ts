@@ -27,28 +27,17 @@
  * TASK-86 for the same reason.
  */
 
-// A valid credential slot id: SCREAMING_SNAKE_CASE, starts with A-Z. This is the
-// manifest parser's contract (`@ax/skills-parser` manifest.ts SLOT_RE), re-checked
-// here so a drifted upstream (or an untrusted, possibly model-authored skill shape)
-// can't smuggle a malformed slot id into the per-skill credential namespace
-// (`skill:<id>:<garbage>`). Kept structurally in sync, not imported (invariant #2).
-const SLOT_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
-
 // Types are structurally inlined rather than imported from @ax/skills to avoid
 // a cross-plugin runtime import (Invariant I2). The shapes must stay in sync;
-// a breaking change in CapabilitySlot or ResolvedSkill will surface as a tsc
-// error here.
-interface CapabilitySlotShape {
-  slot: string;
-  kind: 'api-key';
-  description?: string;
-}
+// a breaking change in ResolvedSkill will surface as a tsc error here.
+//
+// TASK-100 — a skill manifest declares NO capabilities (its reach is the
+// connectors it references), so a skill has NO credential slots: an attachment
+// must carry no bindings (any binding is a `binding-orphan`). The validator no
+// longer reads a per-skill slot set; it confirms the skill exists and rejects
+// stray bindings.
 interface ResolvedSkillShape {
   id: string;
-  capabilities: {
-    allowedHosts: string[];
-    credentials: CapabilitySlotShape[];
-  };
   bodyMd: string;
   manifestYaml: string;
 }
@@ -100,48 +89,18 @@ export function validateNewAttachments(
       };
     }
 
-    // invalid-slot: a declared slot id must be SCREAMING_SNAKE (the manifest
-    // parser's contract). Re-checked here as a defense-in-depth drift guard — a
-    // malformed slot must never flow into the per-skill credential namespace
-    // (`skill:<id>:<garbage>`). Slot values are untrusted (a skill manifest may be
-    // model-authored), so this is enforced before any binding check.
-    for (const declared of skill.capabilities.credentials) {
-      if (!SLOT_RE.test(declared.slot)) {
-        return {
-          ok: false,
-          code: 'invalid-slot',
-          message: `attachment for skill '${skill.id}' declares malformed credential slot '${declared.slot}' (must match /^[A-Z][A-Z0-9_]{0,63}$/)`,
-        };
-      }
-    }
-
-    const declaredSlots = new Set(skill.capabilities.credentials.map((c) => c.slot));
-
-    // binding-orphan: a binding key not declared by the skill
+    // TASK-100 — a skill declares NO credential slots, so an attachment must
+    // carry no bindings. binding-orphan: any binding key is rejected (the skill
+    // declares nothing to bind to). There is no binding-missing / invalid-slot
+    // check anymore (a skill has no declared slots). A skill's credential reach
+    // is its connectors', gated by the connector approval flow.
     for (const slot of Object.keys(attachment.credentialBindings)) {
-      if (!declaredSlots.has(slot)) {
-        return {
-          ok: false,
-          code: 'binding-orphan',
-          message: `attachment for skill '${skill.id}' includes binding for slot '${slot}' which the skill does not declare`,
-        };
-      }
+      return {
+        ok: false,
+        code: 'binding-orphan',
+        message: `attachment for skill '${skill.id}' includes binding for slot '${slot}' which the skill does not declare (a skill declares no credentials; use a connector)`,
+      };
     }
-
-    // binding-missing: a declared slot without a binding
-    for (const declared of skill.capabilities.credentials) {
-      if (!(declared.slot in attachment.credentialBindings)) {
-        return {
-          ok: false,
-          code: 'binding-missing',
-          message: `attachment for skill '${skill.id}' is missing binding for required slot '${declared.slot}'`,
-        };
-      }
-    }
-
-    // NO slot-collision check (TASK-87) — two skills (or a skill + a trusted
-    // reserved slot) sharing a bare slot name coexist: TASK-86 namespaces them
-    // per-skill at runtime, and a trusted bare name always wins the env stamp.
   }
 
   return { ok: true, validated: attachments };

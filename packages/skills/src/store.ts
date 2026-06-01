@@ -5,7 +5,6 @@ import {
   type BlobBundleStore,
 } from './blob-bundle-store.js';
 import {
-  parseCapabilities,
   rowToGlobalDetail,
   rowToGlobalResolved,
   rowToGlobalSummary,
@@ -18,23 +17,20 @@ import type {
 } from './types.js';
 
 // ---------------------------------------------------------------------------
-// Capability re-parse on read.
+// Connector-reference re-parse on read.
 //
 // `skills:upsert` validates the manifest at write time via parseSkillManifest;
-// the row's `manifest_yaml` is the canonical store. On read we re-parse
-// rather than denormalize into separate JSONB columns — for the v1
-// admin-managed scale (~10s of skills), the parse cost is negligible.
+// the row's `manifest_yaml` is the canonical store. On read we re-parse the
+// top-level `connectors:` list rather than denormalize it into a column — for
+// the v1 admin-managed scale (~10s of skills), the parse cost is negligible.
+// A corrupt row degrades to an empty connector list (logged, never thrown), so
+// one bad row never freezes skills:list / the admin UI.
 //
-// Defensive fallback for parse-failure: log loud (stderr) but DO NOT throw.
-// A corrupt row would otherwise crash skills:list and freeze the admin UI;
-// the design doc explicitly tolerates this state (a `skills:resolve` of a
-// silently-malformed row drops it from the union, matching the "deleted-
-// skill-still-attached" policy). The loud log lets the operator find and
-// fix the row; the empty caps keep the rest of the system live.
-//
-// The actual parseCapabilities helper and row mappers live in _row-mappers.ts
-// so both store.ts and user-store.ts share the same logic (DRY without
-// violating I4 — the mapper module is internal to @ax/skills).
+// TASK-100 — a skill manifest no longer carries a capability block, so there is
+// nothing to re-parse beyond the connector references; the parseConnectors
+// helper + row mappers live in _row-mappers.ts so both store.ts and
+// user-store.ts share the same logic (DRY without violating I4 — the mapper
+// module is internal to @ax/skills).
 // ---------------------------------------------------------------------------
 
 export interface UpsertInput {
@@ -226,21 +222,12 @@ export function createSkillsStore(
           return { found: false, defaultAttached };
         }
 
-        // I-S2: default-attached skills are instruction-only — a skill that
-        // declares credential slots can't be "everyone gets this". Enforced
-        // inside the lock against the row's own (just-read) manifest so a
-        // concurrent edit that adds slots can't slip a credentialed skill into
-        // the defaults set. The plugin layer re-wraps this Error as the
-        // matching PluginError (single source of truth for the code string).
-        if (defaultAttached) {
-          const caps = parseCapabilities(row.manifest_yaml, skillId);
-          if (caps.credentials.length > 0) {
-            throw new Error(
-              `default-attached-requires-no-credentials: skill '${skillId}' declares ` +
-                `credential slots; default-attached skills must be instruction-only`,
-            );
-          }
-        }
+        // TASK-100 — a skill manifest can no longer declare credential slots
+        // (reach lives only on the connectors it references), so the old
+        // "default-attached skills must be instruction-only (no credentials)"
+        // guard is trivially satisfied and has been removed. A default-attached
+        // skill simply names connectors; the connector's reach-by-attachment is
+        // its own gated path.
 
         await tx
           .updateTable('skills_v1_skills')

@@ -1,79 +1,22 @@
 import { describe, it, expect } from 'vitest';
-import { classifyProposal, hasAnyCapability } from '../propose-gate.js';
-import type { SkillCapabilities } from '@ax/skills-parser';
+import { classifyProposal } from '../propose-gate.js';
 
-const empty: SkillCapabilities = {
-  allowedHosts: [],
-  credentials: [],
-  mcpServers: [],
-  packages: { npm: [], pypi: [] },
-};
+// TASK-100 — a skill manifest declares no capabilities (reach lives on the
+// connectors it references), so the gate keys only on origin + scan. The old
+// `hasAnyCapability` helper + capability-proposal axis were removed.
 
-describe('hasAnyCapability', () => {
-  it('false for zero-capability', () => {
-    expect(hasAnyCapability(empty)).toBe(false);
-  });
-  it('true for hosts / credentials / mcp / packages', () => {
-    expect(hasAnyCapability({ ...empty, allowedHosts: ['api.linear.app'] })).toBe(true);
-    expect(
-      hasAnyCapability({ ...empty, credentials: [{ slot: 'K', kind: 'api-key' }] }),
-    ).toBe(true);
-    expect(
-      hasAnyCapability({
-        ...empty,
-        mcpServers: [
-          { name: 'm', transport: 'http', allowedHosts: [], credentials: [], url: 'x' },
-        ],
-      }),
-    ).toBe(true);
-    expect(hasAnyCapability({ ...empty, packages: { npm: ['x'], pypi: [] } })).toBe(true);
-    expect(hasAnyCapability({ ...empty, packages: { npm: [], pypi: ['y'] } })).toBe(true);
-  });
-});
-
-describe('classifyProposal — the hybrid materialization gate (design §D3)', () => {
-  it('FREE: clean + authored + zero-cap → active', () => {
-    expect(
-      classifyProposal({ origin: 'authored', capabilityProposal: empty, scanClean: true }),
-    ).toBe('active');
+describe('classifyProposal — the materialization gate (origin + scan)', () => {
+  it('FREE: clean + authored → active', () => {
+    expect(classifyProposal({ origin: 'authored', scanClean: true })).toBe('active');
   });
 
-  it('GATED: any capability → pending (even authored + clean)', () => {
-    expect(
-      classifyProposal({
-        origin: 'authored',
-        capabilityProposal: { ...empty, allowedHosts: ['api.linear.app'] },
-        scanClean: true,
-      }),
-    ).toBe('pending');
-    expect(
-      classifyProposal({
-        origin: 'authored',
-        capabilityProposal: { ...empty, credentials: [{ slot: 'K', kind: 'api-key' }] },
-        scanClean: true,
-      }),
-    ).toBe('pending');
+  it('GATED: a non-authored origin → pending (provenance gate)', () => {
+    expect(classifyProposal({ origin: 'imported', scanClean: true })).toBe('pending');
+    expect(classifyProposal({ origin: 'attached', scanClean: true })).toBe('pending');
   });
 
-  it('GATED: non-authored origin → pending even at zero-cap (provenance gate)', () => {
-    expect(
-      classifyProposal({ origin: 'imported', capabilityProposal: empty, scanClean: true }),
-    ).toBe('pending');
-    expect(
-      classifyProposal({ origin: 'attached', capabilityProposal: empty, scanClean: true }),
-    ).toBe('pending');
-  });
-
-  it('QUARANTINE: a scan hit quarantines regardless of provenance/caps', () => {
-    expect(
-      classifyProposal({ origin: 'authored', capabilityProposal: empty, scanClean: false }),
-    ).toBe('quarantined');
-    expect(
-      classifyProposal({
-        origin: 'authored',
-        capabilityProposal: { ...empty, allowedHosts: ['x'] },
-        scanClean: false,
-      }),
-    ).toBe('quarantined');
+  it('QUARANTINE: a scan hit quarantines regardless of provenance', () => {
+    expect(classifyProposal({ origin: 'authored', scanClean: false })).toBe('quarantined');
+    expect(classifyProposal({ origin: 'imported', scanClean: false })).toBe('quarantined');
   });
 });

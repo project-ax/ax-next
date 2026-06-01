@@ -17,15 +17,17 @@ export interface SkillSummary {
   id: string;
   description: string;
   version: number;
-  capabilities: SkillCapabilities;
   /**
    * Soft-dependency reference list: the connector ids this skill declares it
-   * uses (connectors-first-class design, Phasing step 1). Always present;
-   * defaults to `[]` for a skill that declares none. A DECLARED REFERENCE only
-   * — the connector definitions live in @ax/connectors, and the skill's
-   * `capabilities` block above stays AUTHORITATIVE during the half-wired window
-   * (TASK-100 closes it). Derived from the manifest YAML (one source of truth)
-   * on read, exactly like `capabilities` — never a stored column.
+   * uses (connectors-first-class design). Always present; defaults to `[]` for a
+   * skill that declares none. A DECLARED REFERENCE only — the connector
+   * definitions (allowedHosts / credentials / mcpServers / packages) live in
+   * @ax/connectors. A skill no longer carries a capability block at all
+   * (TASK-100 closed the half-wired window): ALL of a skill's reach flows from
+   * the connectors it references, resolved through `connectors:resolve` (the
+   * human-approved/curated table — a pending connector grants ZERO reach).
+   * Derived from the manifest YAML (one source of truth) on read — never a
+   * stored column.
    */
   connectors: string[];
   defaultAttached: boolean;
@@ -52,11 +54,11 @@ export interface SkillDetail extends SkillSummary {
 
 export interface ResolvedSkill {
   id: string;
-  capabilities: SkillCapabilities;
   /**
    * Soft-dependency connector-id reference list (see {@link SkillSummary}).
-   * Always present; defaults to `[]`. Derived from the manifest on read; the
-   * capability block stays authoritative until the half-wired window closes.
+   * Always present; defaults to `[]`. Derived from the manifest on read. A skill
+   * carries no capability block (TASK-100); its reach flows from these
+   * connectors, resolved by the orchestrator (the skill→connector bridge).
    */
   connectors: string[];
   bodyMd: string;
@@ -238,39 +240,16 @@ export interface SkillsSearchCatalogOutput {
 // won't prove directly assignable to the interface; `return-schemas.test.ts` is
 // the drift guard.
 // ---------------------------------------------------------------------------
-const CapabilitySlotSchema = z.object({
-  slot: z.string(),
-  kind: z.literal('api-key'),
-  description: z.string().optional(),
-  account: z.string().optional(), // JIT P2/P7.2 — service-keyed vault tag
-});
-
-const McpServerSpecSchema = z.object({
-  name: z.string(),
-  transport: z.union([z.literal('stdio'), z.literal('http')]),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string()).optional(),
-  url: z.string().optional(),
-  allowedHosts: z.array(z.string()),
-  credentials: z.array(CapabilitySlotSchema),
-});
-
-const SkillCapabilitiesSchema = z.object({
-  allowedHosts: z.array(z.string()),
-  credentials: z.array(CapabilitySlotSchema),
-  mcpServers: z.array(McpServerSpecSchema),
-  packages: z.object({
-    npm: z.array(z.string()),
-    pypi: z.array(z.string()),
-  }),
-});
+// TASK-100 — the SkillCapabilities / CapabilitySlot / McpServerSpec zod schemas
+// were removed: a skill's hook payloads (SkillSummary / ResolvedSkill / the
+// catalog candidate) no longer carry a capability block. The Capabilities shape
+// is still validated where it belongs — on the CONNECTOR, by @ax/connectors'
+// own CapabilitiesSchema.
 
 const SkillSummarySchema = z.object({
   id: z.string(),
   description: z.string(),
   version: z.number(),
-  capabilities: SkillCapabilitiesSchema,
   connectors: z.array(z.string()),
   defaultAttached: z.boolean(),
   sourceUrl: z.string().optional(),
@@ -296,7 +275,6 @@ const SkillDetailSchema = SkillSummarySchema.extend({
 
 const ResolvedSkillSchema = z.object({
   id: z.string(),
-  capabilities: SkillCapabilitiesSchema,
   connectors: z.array(z.string()),
   bodyMd: z.string(),
   manifestYaml: z.string(),
@@ -601,13 +579,20 @@ export const SkillsApprovedCapsRevokeOutputSchema = z.object({
 // `skills:propose` is the single write chokepoint for agent-authored skills.
 // The runner (via the skill.propose IPC action → host handler) hands the host a
 // structurally-validated bundle; the host re-validates, fires the `skills:scan`
-// veto/scan hook, runs the hybrid materialization gate (propose-gate.ts), and
-// writes ONE skills_v1_authored row. Storage-agnostic: no row/blob/git vocab.
+// veto/scan hook, runs the materialization gate (propose-gate.ts — origin + scan
+// only now that a skill declares no caps), and writes ONE skills_v1_authored
+// row. Storage-agnostic: no row/blob/git vocab.
 //
 // `origin` is the trust provenance ('authored' from the runner; 'imported' /
-// 'attached' reserved for host-side flows). `capabilityProposal` is the parsed
-// frontmatter — the proposal source of truth the gate classifies on. `files`
-// are the bundle EXTRA files (host writes them to the blob store).
+// 'attached' reserved for host-side flows). `files` are the bundle EXTRA files
+// (host writes them to the blob store).
+//
+// TASK-100 — `capabilityProposal` is DEPRECATED and IGNORED by the host: a skill
+// manifest no longer declares capabilities (its reach is the connectors it
+// references), so there is nothing to propose. The field is retained on the wire
+// (the runner sends an empty `Capabilities`) for IPC-schema stability; the host
+// gate keys only on origin + scan. A skill that wants reach authors a connector
+// (the connector-propose flow), which is gated by the connector approval card.
 
 export interface SkillsProposeInput {
   ownerUserId: string;
@@ -615,6 +600,7 @@ export interface SkillsProposeInput {
   manifestYaml: string;
   bodyMd: string;
   files: BundleFile[];
+  /** @deprecated TASK-100 — ignored by the host (a skill declares no caps). */
   capabilityProposal: SkillCapabilities;
   origin: 'authored' | 'imported' | 'attached';
 }

@@ -26,12 +26,6 @@ const GITHUB_SKILL: SkillSummary = {
   description: 'Interacts with the GitHub REST API.',
   version: 1,
   scope: 'global',
-  capabilities: {
-    allowedHosts: ['api.github.com'],
-    credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key', description: 'PAT' }],
-    mcpServers: [],
-    packages: { npm: [], pypi: [] },
-  },
   connectors: [],
   defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
@@ -42,12 +36,6 @@ const SLACK_SKILL: SkillSummary = {
   description: 'Posts to Slack.',
   version: 0,
   scope: 'global',
-  capabilities: {
-    allowedHosts: [],
-    credentials: [],
-    mcpServers: [],
-    packages: { npm: [], pypi: [] },
-  },
   connectors: [],
   defaultAttached: false,
   updatedAt: '2026-05-17T08:00:00.000Z',
@@ -85,27 +73,18 @@ beforeEach(() => {
 });
 
 describe('SkillAttachmentsSection', () => {
-  it('renders a CredentialSlotRow per skill slot (not a credential dropdown)', async () => {
+  it('TASK-100: renders NO per-skill credential row (a skill declares no slots)', async () => {
     vi.mocked(listSkills).mockResolvedValue([
       {
         id: 'linear-tracker',
         description: 'tracks linear issues',
         version: 1,
         scope: 'global' as const,
-        capabilities: {
-          allowedHosts: [],
-          credentials: [{ slot: 'LINEAR_TOKEN', kind: 'api-key' }],
-          mcpServers: [],
-          packages: { npm: [], pypi: [] },
-        },
-        connectors: [],
+        connectors: ['linear'],
         defaultAttached: false,
         updatedAt: new Date().toISOString(),
       },
     ]);
-    vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ credentials: [] }), { status: 200 }),
-    );
     render(
       <SkillAttachmentsSection
         agentId="agt-1"
@@ -113,18 +92,19 @@ describe('SkillAttachmentsSection', () => {
       />,
     );
     await waitFor(() => {
-      expect(screen.queryByText(/select credential/i)).not.toBeInTheDocument();
+      expect(screen.getByText('linear-tracker')).toBeInTheDocument();
     });
-    expect(screen.getByText('LINEAR_TOKEN')).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /set credential/i })).toBeInTheDocument();
+    // A skill declares no credential slots → no "Set credential" affordance.
+    expect(screen.queryByRole('button', { name: /set credential/i })).not.toBeInTheDocument();
+    expect(screen.queryByText('LINEAR_TOKEN')).not.toBeInTheDocument();
   });
 
-  it('renders existing attachments with their slot labels', async () => {
+  it('renders existing attachments (skill id only — no slot labels)', async () => {
     render(
       <SkillAttachmentsSection
         agentId={AGENT_ID}
         initialAttachments={[
-          { skillId: 'github-api', credentialBindings: { GITHUB_TOKEN: 'skill:github-api:GITHUB_TOKEN' } },
+          { skillId: 'github-api', credentialBindings: {} },
         ]}
         onSaved={vi.fn()}
       />,
@@ -132,8 +112,8 @@ describe('SkillAttachmentsSection', () => {
 
     await waitFor(() => {
       expect(screen.getByText('github-api')).toBeTruthy();
-      expect(screen.getByText('GITHUB_TOKEN')).toBeTruthy();
     });
+    expect(screen.queryByText('GITHUB_TOKEN')).toBeNull();
   });
 
   it('clicking "Attach skill" shows a picker with skills not already attached', async () => {
@@ -160,7 +140,7 @@ describe('SkillAttachmentsSection', () => {
     });
   });
 
-  it('clicking Save attachments calls patchAgentSkillAttachments with deterministic refs', async () => {
+  it('TASK-100: clicking Save attachments calls patchAgentSkillAttachments with EMPTY bindings', async () => {
     const onSaved = vi.fn();
     render(
       <SkillAttachmentsSection
@@ -179,11 +159,9 @@ describe('SkillAttachmentsSection', () => {
     fireEvent.click(screen.getByRole('button', { name: /save attachments/i }));
 
     await waitFor(() => {
+      // A skill declares no credential slots → the attachment carries no bindings.
       expect(mockPatch).toHaveBeenCalledWith(AGENT_ID, [
-        {
-          skillId: 'github-api',
-          credentialBindings: { GITHUB_TOKEN: 'skill:github-api:GITHUB_TOKEN' },
-        },
+        { skillId: 'github-api', credentialBindings: {} },
       ]);
       expect(onSaved).toHaveBeenCalledTimes(1);
     });

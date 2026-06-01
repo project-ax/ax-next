@@ -332,18 +332,15 @@ function mkReq(opts: { body?: unknown; params?: Record<string, string> }): Route
   };
 }
 
-// A GitHub skill manifest declaring one credentialed host + one slot. The
-// orchestrator must union api.github.com into the allowlist and
-// GITHUB_TOKEN into the credentials map.
+// A GitHub skill manifest. TASK-100 — a skill declares NO capabilities; its
+// reach is the connector it references. The orchestrator materializes its
+// SKILL.md body but contributes NO skill host/credential to the proxy (caps flow
+// via the connector path, covered by connector-union.test.ts).
 const GITHUB_MANIFEST = `name: github
 description: GitHub
 version: 1
-capabilities:
-  allowedHosts:
-    - api.github.com
-  credentials:
-    - slot: GITHUB_TOKEN
-      kind: api-key
+connectors:
+  - github
 `;
 
 // ---------------------------------------------------------------------------
@@ -351,7 +348,7 @@ capabilities:
 // ---------------------------------------------------------------------------
 
 describe('skill-install canary: install → attach → invoke (real plugins)', () => {
-  it('unioned allowlist + credentials reach proxy:open-session, SKILL.md reaches sandbox:open-session', async () => {
+  it('SKILL.md reaches sandbox:open-session; a cap-free skill contributes no host/credential to proxy:open-session', async () => {
     const busRef: { current: HookBus | null } = { current: null };
     const fakes = buildCaptureFakes(busRef);
 
@@ -380,11 +377,10 @@ describe('skill-install canary: install → attach → invoke (real plugins)', (
     expect(upsert.skillId).toBe('github');
     expect(upsert.created).toBe(true);
 
-    // 2. Create alice's agent and attach the installed skill with a binding.
+    // 2. Create alice's agent and attach the installed skill (no bindings — a
+    //    skill declares no credential slots, TASK-100).
     const agentId = await createPersonalAgent(h, 'alice');
-    await attachSkill(h, agentId, 'alice', 'github', {
-      GITHUB_TOKEN: 'cred-ref-alice-gh',
-    });
+    await attachSkill(h, agentId, 'alice', 'github', {});
 
     // 3. Invoke the agent through the REAL orchestrator. ctx carries alice's
     //    owner triple so the real agents:resolve ACL gate passes, and OMITS
@@ -396,15 +392,13 @@ describe('skill-install canary: install → attach → invoke (real plugins)', (
     );
     expect(outcome.kind).toBe('complete');
 
-    // 4. proxy:open-session received the UNIONED allowlist + credentials.
+    // 4. proxy:open-session received NO skill-derived host or credential — a
+    //    skill carries no caps now (its reach is its connector, folded via the
+    //    connector path, which is covered by connector-union.test.ts).
     expect(fakes.proxyOpenInputs).toHaveLength(1);
     const proxyIn = fakes.proxyOpenInputs[0]!;
-    expect(proxyIn.allowlist).toContain('api.github.com');
-    // TASK-86 — the skill slot is keyed by its per-skill namespace.
-    expect(proxyIn.credentials['skill:github:GITHUB_TOKEN']).toEqual({
-      ref: 'cred-ref-alice-gh',
-      kind: 'api-key',
-    });
+    expect(proxyIn.allowlist).not.toContain('api.github.com');
+    expect(proxyIn.credentials['skill:github:GITHUB_TOKEN']).toBeUndefined();
 
     // 5. sandbox:open-session received the installed bundle as a file tree
     //    whose SKILL.md (reconstructed from the manifest columns) carries the
@@ -449,9 +443,7 @@ describe('skill-install canary: install → attach → invoke (real plugins)', (
     });
 
     const agentId = await createPersonalAgent(h, 'alice');
-    await attachSkill(h, agentId, 'alice', 'github', {
-      GITHUB_TOKEN: 'cred-ref-alice-gh',
-    });
+    await attachSkill(h, agentId, 'alice', 'github', {});
 
     const outcome = await h.bus.call<unknown, AgentOutcome>(
       'agent:invoke',
@@ -495,12 +487,8 @@ describe('skill-install canary: install → attach → invoke (real plugins)', (
 const LINEAR_MANIFEST = `name: linear
 description: Linear
 version: 1
-capabilities:
-  allowedHosts:
-    - api.linear.app
-  credentials:
-    - slot: LINEAR_TOKEN
-      kind: api-key
+connectors:
+  - linear
 `;
 
 describe('skill-install canary: per-user attachment union (TASK-33, real plugins)', () => {
@@ -521,7 +509,7 @@ describe('skill-install canary: per-user attachment union (TASK-33, real plugins
     }).then((h) => ({ h, fakes }));
   }
 
-  it('per-user attachment host + credential reach proxy:open-session', async () => {
+  it('a per-user attached skill materializes its body but contributes NO skill caps to proxy (TASK-100)', async () => {
     const busRef: { current: HookBus | null } = { current: null };
     const { h, fakes } = await buildRealHarness(busRef);
     harnesses.push(h);
@@ -536,11 +524,12 @@ describe('skill-install canary: per-user attachment union (TASK-33, real plugins
     // 2. Create alice's agent. NO agent-global attachment — purely per-user.
     const agentId = await createPersonalAgent(h, 'alice');
 
-    // 3. Alice self-serve activates linear on HER agent with her own binding.
+    // 3. Alice self-serve activates linear on HER agent (no bindings — a skill
+    //    declares no credential slots).
     const attached = await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
       'skills:attach-for-user',
       h.ctx({ userId: 'alice' }),
-      { userId: 'alice', agentId, skillId: 'linear', credentialBindings: { LINEAR_TOKEN: 'user-linear-ref' } },
+      { userId: 'alice', agentId, skillId: 'linear', credentialBindings: {} },
     );
     expect(attached.created).toBe(true);
 
@@ -552,49 +541,13 @@ describe('skill-install canary: per-user attachment union (TASK-33, real plugins
     );
     expect(outcome.kind).toBe('complete');
 
-    // 5. proxy:open-session received the per-user host + binding.
-    expect(fakes.proxyOpenInputs).toHaveLength(1);
+    // 5. The skill's SKILL.md materialized, but it contributed NO host/credential
+    //    to the proxy — a skill's reach is its connector (folded via the connector
+    //    path, covered by connector-union.test.ts).
+    expect(fakes.sandboxOpenInputs[0]!.installedSkills?.some((s) => s.id === 'linear')).toBe(true);
     const proxyIn = fakes.proxyOpenInputs[0]!;
-    expect(proxyIn.allowlist).toContain('api.linear.app');
-    // TASK-86 — the skill slot is keyed by its per-skill namespace.
-    expect(proxyIn.credentials['skill:linear:LINEAR_TOKEN']).toEqual({ ref: 'user-linear-ref', kind: 'api-key' });
-  }, 60_000);
-
-  it('per-user binding wins over an agent-global binding for the same skill', async () => {
-    const busRef: { current: HookBus | null } = { current: null };
-    const { h, fakes } = await buildRealHarness(busRef);
-    harnesses.push(h);
-    busRef.current = h.bus;
-
-    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
-      manifestYaml: LINEAR_MANIFEST,
-      bodyMd: 'Body.',
-    });
-    const agentId = await createPersonalAgent(h, 'alice');
-
-    // Agent-global attaches linear with one ref; per-user attaches it with another.
-    await attachSkill(h, agentId, 'alice', 'linear', { LINEAR_TOKEN: 'agent-global-ref' });
-    await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
-      'skills:attach-for-user',
-      h.ctx({ userId: 'alice' }),
-      { userId: 'alice', agentId, skillId: 'linear', credentialBindings: { LINEAR_TOKEN: 'user-linear-ref' } },
-    );
-
-    const outcome = await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      ctxFor(agentId, 'alice', 'per-user-precedence-walk'),
-      { message: { role: 'user', content: 'hi' } },
-    );
-    expect(outcome.kind).toBe('complete');
-
-    expect(fakes.proxyOpenInputs).toHaveLength(1);
-    // Per-user ref wins; the agent-global copy of the same skill id is dropped
-    // (so no slot-collision termination — the skill never collides with itself).
-    // TASK-86 — keyed by the per-skill namespace.
-    expect(fakes.proxyOpenInputs[0]!.credentials['skill:linear:LINEAR_TOKEN']).toEqual({
-      ref: 'user-linear-ref',
-      kind: 'api-key',
-    });
+    expect(proxyIn.allowlist).not.toContain('api.linear.app');
+    expect(proxyIn.credentials['skill:linear:LINEAR_TOKEN']).toBeUndefined();
   }, 60_000);
 
   it('a user-scoped skill of the same id overrides the global content (skills:resolve ownerUserId)', async () => {
@@ -603,16 +556,17 @@ describe('skill-install canary: per-user attachment union (TASK-33, real plugins
     harnesses.push(h);
     busRef.current = h.bus;
 
-    // Global `gh` (one body) AND a user-scoped `gh` for alice (different body
-    // + different host). The user-scoped content must win at session open.
+    // Global `gh` (one body) AND a user-scoped `gh` for alice (different body).
+    // The user-scoped content must win at session open. TASK-100 — manifests are
+    // cap-free; this asserts the BODY override (the surviving precedence behavior).
     await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
-      manifestYaml: 'name: gh\ndescription: global gh\nversion: 1\ncapabilities:\n  allowedHosts:\n    - global.example.com\n',
+      manifestYaml: 'name: gh\ndescription: global gh\nversion: 1\nconnectors:\n  - global-connector\n',
       bodyMd: 'GLOBAL BODY',
     });
     await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
       scope: 'user',
       ownerUserId: 'alice',
-      manifestYaml: 'name: gh\ndescription: alice gh\nversion: 1\ncapabilities:\n  allowedHosts:\n    - user.example.com\n',
+      manifestYaml: 'name: gh\ndescription: alice gh\nversion: 1\nconnectors:\n  - user-connector\n',
       bodyMd: 'USER BODY',
     });
 
@@ -630,9 +584,7 @@ describe('skill-install canary: per-user attachment union (TASK-33, real plugins
     );
     expect(outcome.kind).toBe('complete');
 
-    // The sandbox got the USER-scoped body + host, not the global one. JIT
-    // Phase 1a — the SKILL.md content lives in the bundle file tree's
-    // `SKILL.md` entry, not a top-level skillMd string.
+    // The sandbox got the USER-scoped body, not the global one.
     const installed = fakes.sandboxOpenInputs[0]!.installedSkills ?? [];
     const gh = installed.find((s) => s.id === 'gh');
     expect(gh).toBeDefined();
@@ -640,8 +592,9 @@ describe('skill-install canary: per-user attachment union (TASK-33, real plugins
     expect(ghSkillMd).toContain('name: gh');
     expect(ghSkillMd).toContain('USER BODY');
     expect(ghSkillMd).not.toContain('GLOBAL BODY');
-    expect(fakes.proxyOpenInputs[0]!.allowlist).toContain('user.example.com');
-    expect(fakes.proxyOpenInputs[0]!.allowlist).not.toContain('global.example.com');
+    // The user-scoped manifest references user-connector (the precedence winner).
+    expect(ghSkillMd).toContain('user-connector');
+    expect(ghSkillMd).not.toContain('global-connector');
   }, 60_000);
 });
 
@@ -783,7 +736,7 @@ new body from remote
 // for the search_catalog path: the broker is reachable from the canary.
 // ---------------------------------------------------------------------------
 describe('skill-broker canary: search_catalog + request_capability reach the real catalog', () => {
-  it('search_catalog derives tier/hosts and request_capability validates against the catalog', async () => {
+  it('search_catalog returns the candidate (inert, no hosts/slots) and request_capability validates against the catalog', async () => {
     const h = await createTestHarness({
       services: {
         // @ax/skills mounts admin + settings HTTP routes at init; we don't boot
@@ -801,8 +754,8 @@ describe('skill-broker canary: search_catalog + request_capability reach the rea
     });
     harnesses.push(h);
 
-    // Install a bounded GitHub skill (host + credential slot) into the global
-    // catalog so tier derives to "bounded".
+    // Install a GitHub skill into the global catalog. TASK-100 — a skill declares
+    // no caps, so its tier is 'inert' and it surfaces no hosts/slots of its own.
     await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
       manifestYaml: GITHUB_MANIFEST,
       bodyMd: 'Body.',
@@ -816,11 +769,13 @@ describe('skill-broker canary: search_catalog + request_capability reach the rea
     const hit = (search as { skills: Array<{ id: string; tier: string; hosts: string[]; slots: string[] }> }).skills.find(
       (s) => s.id === 'github',
     );
-    expect(hit?.tier).toBe('bounded');
-    expect(hit?.hosts).toContain('api.github.com');
-    expect(hit?.slots).toContain('GITHUB_TOKEN');
+    expect(hit?.tier).toBe('inert');
+    expect(hit?.hosts).toEqual([]);
+    expect(hit?.slots).toEqual([]);
 
-    // request_capability for a real catalog skill → structured ack.
+    // request_capability for a real catalog skill → structured ack (the skill
+    // references a connector that isn't resolvable here, so no card fires, but
+    // the ack is still 'requested').
     const ok = await h.bus.call('tool:execute:request_capability', h.ctx(), {
       name: 'request_capability',
       input: { skillId: 'github' },
@@ -854,7 +809,13 @@ describe('skill-broker canary: search_catalog + request_capability reach the rea
     expect(coldStart?.files).toEqual([]);
   }, 60_000);
 
-  it('request_capability surfaces the bundled approval card (chat:permission-request) over the real catalog', async () => {
+  it('request_capability fires NO card for a skill whose referenced connector is not resolvable (TASK-100)', async () => {
+    // TASK-100 — a skill's approval card is built ENTIRELY from the connectors it
+    // references (resolved via connectors:resolve). Here @ax/connectors is NOT
+    // loaded, so the referenced connector resolves to no reach → the card surface
+    // is empty → NO card fires (request_capability is a no-op approval surface).
+    // The connector-derived card is exercised in the @ax/connectors + broker
+    // tests where connectors:resolve is live.
     const h = await createTestHarness({
       services: {
         'http:register-route': httpRegisterRouteStub,
@@ -870,47 +831,34 @@ describe('skill-broker canary: search_catalog + request_capability reach the rea
     });
     harnesses.push(h);
 
-    // Bounded GitHub skill: host + key slot (reuse the file's manifest).
+    // A skill referencing the github connector (no caps of its own).
     await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
       manifestYaml: GITHUB_MANIFEST,
       bodyMd: 'Body.',
     });
 
-    const cards: Array<{
-      skillId: string;
-      description: string;
-      hosts: string[];
-      slots: { slot: string; kind: string }[];
-    }> = [];
+    const cards: unknown[] = [];
     h.bus.subscribe('chat:permission-request', 'canary/card-capture', async (_c, p) => {
-      cards.push(p as never);
+      cards.push(p);
       return undefined;
     });
 
-    // The fire forwards the firing ctx's conversationId; stamp one so the
-    // channel-web SSE handler (which matches by conversationId) would route it.
     const convCtx = h.ctx({ conversationId: 'cnv_canary' });
-
     const ack = await h.bus.call('tool:execute:request_capability', convCtx, {
       name: 'request_capability',
       input: { skillId: 'github' },
     });
+    // The ack is 'requested' (the skill exists), but no card fires (no reach).
     expect(ack).toEqual({ status: 'requested', skillId: 'github' });
-    expect(cards).toHaveLength(1);
-    expect(cards[0]).toMatchObject({
-      kind: 'skill',
-      skillId: 'github',
-      hosts: ['api.github.com'],
-      slots: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
-    });
+    expect(cards).toHaveLength(0);
 
-    // A not-found request raises NO card.
+    // A not-found request also raises no card.
     const noCard = await h.bus.call('tool:execute:request_capability', convCtx, {
       name: 'request_capability',
       input: { skillId: 'does-not-exist' },
     });
     expect(noCard).toEqual({ status: 'not-found', skillId: 'does-not-exist' });
-    expect(cards).toHaveLength(1);
+    expect(cards).toHaveLength(0);
   }, 60_000);
 });
 
@@ -960,7 +908,10 @@ describe('skill-install canary: approve → apply-capability-grant → fresh re-
     const agentId = await createPersonalAgent(h, 'alice');
     const convCtx = ctxFor(agentId, 'alice', 'jit-walk');
 
-    // 3. (TASK-34/35) request_capability validates the id + raises the card.
+    // 3. (TASK-34/35) request_capability validates the id + acks. TASK-100 — the
+    //    skill references a connector that isn't resolvable in this harness (no
+    //    @ax/connectors), so NO card fires (the connector-derived card is tested
+    //    where connectors:resolve is live).
     const cards: Array<{ skillId: string; hosts: string[]; slots: unknown[] }> = [];
     h.bus.subscribe('chat:permission-request', 'canary/grant-card', async (_c, p) => {
       cards.push(p as never);
@@ -971,11 +922,11 @@ describe('skill-install canary: approve → apply-capability-grant → fresh re-
       input: { skillId: 'linear' },
     });
     expect(ack).toEqual({ status: 'requested', skillId: 'linear' });
-    expect(cards).toHaveLength(1);
-    expect(cards[0]).toMatchObject({ skillId: 'linear', hosts: ['api.linear.app'] });
+    expect(cards).toHaveLength(0);
 
-    // 4. (TASK-36) apply the grant over the REAL per-user attach store. Every
-    //    declared slot is bound to skill:<id>:<slot>.
+    // 4. (TASK-36) apply the grant over the REAL per-user attach store. TASK-100
+    //    — a skill declares no credential slots, so the attachment carries no
+    //    bindings ("granting" a skill = attaching its instruction body).
     const grant = await h.bus.call('agent:apply-capability-grant', convCtx, {
       conversationId: 'jit-walk',
       userId: 'alice',
@@ -993,11 +944,11 @@ describe('skill-install canary: approve → apply-capability-grant → fresh re-
         .attachments,
     ).toContainEqual({
       skillId: 'linear',
-      credentialBindings: { LINEAR_TOKEN: 'skill:linear:LINEAR_TOKEN' },
+      credentialBindings: {},
     });
 
     // 5. A FRESH agent:invoke for alice/agent re-spawns and MUST carry the
-    //    now-attached skill in sandbox:open-session.installedSkills.
+    //    now-attached skill body in sandbox:open-session.installedSkills.
     const outcome = await h.bus.call<unknown, AgentOutcome>(
       'agent:invoke',
       ctxFor(agentId, 'alice', 'jit-walk-respawn'),
@@ -1009,16 +960,12 @@ describe('skill-install canary: approve → apply-capability-grant → fresh re-
     const installed = fakes.sandboxOpenInputs[0]!.installedSkills ?? [];
     expect(installed.map((s) => s.id)).toContain('linear');
 
-    // The re-spawn also threads the per-user binding ref into proxy:open-session.
+    // The skill contributes NO host/credential of its own (its reach is the
+    // connector it references, folded via the connector path).
     expect(fakes.proxyOpenInputs).toHaveLength(1);
     const proxyIn = fakes.proxyOpenInputs[0]!;
-    expect(proxyIn.allowlist).toContain('api.linear.app');
-    // TASK-86 — the credentials map is keyed by the per-skill namespace (which
-    // for an untagged slot equals its ref).
-    expect(proxyIn.credentials['skill:linear:LINEAR_TOKEN']).toEqual({
-      ref: 'skill:linear:LINEAR_TOKEN',
-      kind: 'api-key',
-    });
+    expect(proxyIn.allowlist).not.toContain('api.linear.app');
+    expect(proxyIn.credentials['skill:linear:LINEAR_TOKEN']).toBeUndefined();
   }, 60_000);
 });
 
@@ -1062,7 +1009,7 @@ describe('skill-install canary: share-to-catalog promotion (§6D, real plugins)'
       ownerUserId: 'alice',
     });
     const agentId = await createPersonalAgent(h, 'alice');
-    await attachSkill(h, agentId, 'alice', 'github', { GITHUB_TOKEN: 'cred-ref-alice-gh' });
+    await attachSkill(h, agentId, 'alice', 'github', {});
 
     // 2. Share → admit.
     const sub = await h.bus.call<CatalogSubmitInput, CatalogSubmitOutput>('catalog:submit', h.ctx(), {
@@ -1110,171 +1057,8 @@ describe('skill-install canary: share-to-catalog promotion (§6D, real plugins)'
   }, 60_000);
 });
 
-// ---------------------------------------------------------------------------
-// TASK-43 — service-keyed credential vault (JIT P2/P7.2, decision #13),
-// end-to-end over the real catalog + real per-user attach store. Two GLOBAL
-// catalog skills each declare a slot tagged `account: linear`; a third is
-// account-free (back-compat). Walks:
-//   - request_capability (broker) → the card slot carries `account: linear`
-//     (and haveExisting:false here — no credentials:list provider in this
-//     harness, so the lookup degrades to prompt; the haveExisting:true path is
-//     unit-covered in @ax/skill-broker plugin.test.ts);
-//   - agent:apply-capability-grant (orchestrator) binds BOTH account skills to
-//     the SHARED `account:linear` ref over the real store, while the
-//     account-free skill keeps `skill:<id>:<slot>` (back-compat);
-//   - a fresh agent:invoke threads `account:linear` into proxy:open-session for
-//     both, proving the shared ref reaches the resolution boundary.
-// The credential-resolution reuse + revoke-pulls-from-all property is proven
-// over the REAL credentials store in @ax/credentials vault.test.ts (that stack
-// can't be wired here — @ax/skills doesn't depend on @ax/credentials).
-// Closes invariant #3 (no half-wired plugin) for the account-binding path.
-// ---------------------------------------------------------------------------
-const LINEAR_ACCOUNT_MANIFEST_A = `name: linear-a
-description: Linear A
-version: 1
-capabilities:
-  allowedHosts:
-    - api.linear.app
-  credentials:
-    - slot: LINEAR_TOKEN
-      kind: api-key
-      account: linear
-`;
-const LINEAR_ACCOUNT_MANIFEST_B = `name: linear-b
-description: Linear B
-version: 1
-capabilities:
-  allowedHosts:
-    - api.linear.app
-  credentials:
-    - slot: LIN_KEY
-      kind: api-key
-      account: linear
-`;
-const PLAIN_MANIFEST = `name: plain
-description: Plain
-version: 1
-capabilities:
-  allowedHosts:
-    - api.example.com
-  credentials:
-    - slot: PLAIN_TOKEN
-      kind: api-key
-`;
-
-describe('skill-install canary: account-tagged slots bind the shared vault ref (TASK-43)', () => {
-  function buildAccountHarness(busRef: { current: HookBus | null }) {
-    const fakes = buildCaptureFakes(busRef);
-    return createTestHarness({
-      services: fakes.services,
-      plugins: [
-        createDatabasePostgresPlugin({ connectionString }),
-        createAgentsPlugin(),
-        createSkillsPlugin(),
-        createToolDispatcherPlugin(),
-        createSkillBrokerPlugin(),
-        createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
-          oneShot: true,
-          chatTimeoutMs: 5_000,
-        }),
-      ],
-    }).then((h) => ({ h, fakes }));
-  }
-
-  it('two account:linear skills both bind the shared ref; an account-free skill keeps skill:<id>:<slot>', async () => {
-    const busRef: { current: HookBus | null } = { current: null };
-    const { h, fakes } = await buildAccountHarness(busRef);
-    harnesses.push(h);
-    busRef.current = h.bus;
-
-    // 1. Two account: linear catalog skills (distinct slots/ids) + a plain one.
-    for (const manifestYaml of [
-      LINEAR_ACCOUNT_MANIFEST_A,
-      LINEAR_ACCOUNT_MANIFEST_B,
-      PLAIN_MANIFEST,
-    ]) {
-      await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
-        manifestYaml,
-        bodyMd: 'Body.',
-      });
-    }
-
-    const agentId = await createPersonalAgent(h, 'alice');
-    const convCtx = ctxFor(agentId, 'alice', 'acct-walk');
-
-    // 2. request_capability for skill A → the card slot carries account: linear.
-    const cards: Array<{ skillId: string; slots: Array<Record<string, unknown>> }> = [];
-    h.bus.subscribe('chat:permission-request', 'canary/acct-card', async (_c, p) => {
-      cards.push(p as never);
-      return undefined;
-    });
-    await h.bus.call('tool:execute:request_capability', convCtx, {
-      name: 'request_capability',
-      input: { skillId: 'linear-a' },
-    });
-    expect(cards).toHaveLength(1);
-    expect(cards[0]!.slots[0]).toMatchObject({
-      slot: 'LINEAR_TOKEN',
-      account: 'linear',
-      // No credentials:list provider in this harness → degrades to prompt.
-      haveExisting: false,
-    });
-
-    // The account-free skill's card slot carries NO account tag.
-    await h.bus.call('tool:execute:request_capability', convCtx, {
-      name: 'request_capability',
-      input: { skillId: 'plain' },
-    });
-    const plainCard = cards.find((c) => c.skillId === 'plain');
-    expect(plainCard!.slots[0]).toEqual({
-      slot: 'PLAIN_TOKEN',
-      kind: 'api-key',
-      haveExisting: false,
-    });
-    expect('account' in (plainCard!.slots[0] as object)).toBe(false);
-
-    // 3. apply-capability-grant over the REAL per-user attach store: both
-    //    account skills bind the SHARED account:linear ref; plain keeps
-    //    skill:<id>:<slot>.
-    for (const skillId of ['linear-a', 'linear-b', 'plain']) {
-      const grant = await h.bus.call('agent:apply-capability-grant', convCtx, {
-        conversationId: 'acct-walk',
-        userId: 'alice',
-        agentId,
-        skillId,
-      });
-      expect(grant).toEqual({ attached: true });
-    }
-    const after = (await h.bus.call('skills:list-user-attachments', convCtx, {
-      userId: 'alice',
-      agentId,
-    })) as {
-      attachments: Array<{ skillId: string; credentialBindings: Record<string, string> }>;
-    };
-    const bindFor = (id: string): Record<string, string> =>
-      after.attachments.find((a) => a.skillId === id)!.credentialBindings;
-    expect(bindFor('linear-a')).toEqual({ LINEAR_TOKEN: 'account:linear' });
-    expect(bindFor('linear-b')).toEqual({ LIN_KEY: 'account:linear' });
-    expect(bindFor('plain')).toEqual({ PLAIN_TOKEN: 'skill:plain:PLAIN_TOKEN' });
-
-    // 4. A fresh agent:invoke threads the SHARED ref into proxy:open-session for
-    //    both account skills (they're both attached on the same agent now).
-    const outcome = await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      ctxFor(agentId, 'alice', 'acct-walk-respawn'),
-      { message: { role: 'user', content: 'check linear' } },
-    );
-    expect(outcome.kind).toBe('complete');
-    expect(fakes.proxyOpenInputs).toHaveLength(1);
-    const creds = fakes.proxyOpenInputs[0]!.credentials;
-    // TASK-86 — the proxy credential map is keyed by the PER-SKILL namespace, so
-    // two account:linear skills no longer collide on the shared bare slot name.
-    // Each keeps its OWN namespaced key but resolves the SAME shared
-    // `account:linear` ref (the account-tag semantics are unchanged). The
-    // account-free skill keeps its `skill:<id>:<slot>` ref under its own key.
-    expect(creds['skill:linear-a:LINEAR_TOKEN']).toEqual({ ref: 'account:linear', kind: 'api-key' });
-    expect(creds['skill:linear-b:LIN_KEY']).toEqual({ ref: 'account:linear', kind: 'api-key' });
-    expect(creds['skill:plain:PLAIN_TOKEN']).toEqual({ ref: 'skill:plain:PLAIN_TOKEN', kind: 'api-key' });
-  }, 60_000);
-});
+// TASK-100 — the account-tagged credential-slot canary block (TASK-43) was
+// removed: a skill manifest no longer declares credential slots (its reach is
+// the connectors it references), so per-skill account-tagged slot binding no
+// longer exists at the skill layer. A connector's account-tagged credential
+// binding is covered by the @ax/connectors connect-flow + connector-union tests.

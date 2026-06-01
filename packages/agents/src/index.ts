@@ -32,11 +32,9 @@ export type {
   UpdateInput,
   UpdateOutput,
 } from './types.js';
-// Shared pure helper: parse + intersect + caps-strip one authored bundle.
-// Used by the real resolver (plugin.ts) and the CLI dev stub (dev-agents-stub.ts).
-export {
-  projectAuthoredBundle,
-  intersectProposalWithApproved,
-  EMPTY_CAPABILITIES,
-} from './authored-caps.js';
+// Shared pure helper: parse one authored bundle into its promote/projection
+// shape (description + connectors). Used by the real resolver (plugin.ts) and
+// the CLI dev stub (dev-agents-stub.ts). TASK-100 — the proposal∩approved
+// intersect + EMPTY_CAPABILITIES are gone (a skill declares no capabilities).
+export { projectAuthoredBundle } from './authored-caps.js';
 export type { ApprovedCapEntry } from './authored-caps.js';

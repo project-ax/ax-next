@@ -21,12 +21,6 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Checkbox } from '@/components/ui/checkbox';
 import {
-  Tooltip,
-  TooltipContent,
-  TooltipProvider,
-  TooltipTrigger,
-} from '@/components/ui/tooltip';
-import {
   listSkills,
   getSkill,
   deleteSkill,
@@ -197,8 +191,7 @@ export function CatalogTab() {
                 <TableHead>Description</TableHead>
                 <TableHead>Tier</TableHead>
                 <TableHead>Default</TableHead>
-                <TableHead>Hosts</TableHead>
-                <TableHead>Slots</TableHead>
+                <TableHead>Connectors</TableHead>
                 <TableHead>Updated</TableHead>
                 <TableHead className="w-[160px]"></TableHead>
               </TableRow>
@@ -228,57 +221,25 @@ export function CatalogTab() {
                     )}
                   </TableCell>
                   <TableCell>
-                    {s.capabilities.credentials.length > 0 ? (
-                      <TooltipProvider>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <span className="inline-flex">
-                              <Checkbox
-                                checked={s.defaultAttached}
-                                disabled
-                                aria-label={`Default for ${s.id}`}
-                              />
-                            </span>
-                          </TooltipTrigger>
-                          <TooltipContent>
-                            Capability-bearing skills must be attached per agent.
-                          </TooltipContent>
-                        </Tooltip>
-                      </TooltipProvider>
-                    ) : (
-                      <Checkbox
-                        checked={s.defaultAttached}
-                        onCheckedChange={(v) => void handleToggleDefault(s.id, v === true)}
-                        aria-label={`Default for ${s.id}`}
-                      />
-                    )}
+                    {/* TASK-100 — a skill declares no credentials, so it can
+                        always be default-attached (instruction-only). */}
+                    <Checkbox
+                      checked={s.defaultAttached}
+                      onCheckedChange={(v) => void handleToggleDefault(s.id, v === true)}
+                      aria-label={`Default for ${s.id}`}
+                    />
                   </TableCell>
                   <TableCell>
-                    {s.capabilities.allowedHosts.length === 0 ? (
+                    {s.connectors.length === 0 ? (
                       <span className="text-xs text-muted-foreground">—</span>
                     ) : (
-                      s.capabilities.allowedHosts.map((h) => (
+                      s.connectors.map((c) => (
                         <Badge
-                          key={h}
+                          key={c}
                           variant="secondary"
                           className="text-xs mr-1"
                         >
-                          {h}
-                        </Badge>
-                      ))
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {s.capabilities.credentials.length === 0 ? (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    ) : (
-                      s.capabilities.credentials.map((c) => (
-                        <Badge
-                          key={c.slot}
-                          variant="outline"
-                          className="text-xs mr-1 font-mono"
-                        >
-                          {c.slot}
+                          {c}
                         </Badge>
                       ))
                     )}

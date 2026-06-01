@@ -90,35 +90,22 @@ async function bootStack(): Promise<BootedStack> {
   const harness = await createTestHarness({
     // Stub skills:resolve so the PATCH /skill-attachments route can resolve
     // skill ids without needing the full @ax/skills plugin in this test scope.
+    // TASK-100 — a skill declares NO capabilities; it resolves to id + body +
+    // manifest only (its reach is the connectors it references).
     services: {
       'skills:resolve': async (
         _ctx: unknown,
         input: { skillIds: string[] },
       ) => {
-        // Known skills: 'github'/'openai' have disjoint slots; 'linear-a' and
-        // 'linear-b' BOTH declare LINEAR_API_KEY (the shared-slot coexistence
-        // case TASK-86 namespaces per-skill at runtime).
-        const slotBySkill: Record<string, { slot: string; host: string }> = {
-          github: { slot: 'GITHUB_TOKEN', host: 'api.github.com' },
-          openai: { slot: 'OPENAI_API_KEY', host: 'api.openai.com' },
-          'linear-a': { slot: 'LINEAR_API_KEY', host: 'api.linear.app' },
-          'linear-b': { slot: 'LINEAR_API_KEY', host: 'api.linear.app' },
-        };
+        const known = new Set(['github', 'openai', 'linear-a', 'linear-b']);
         return {
           skills: input.skillIds
-            .filter((id) => id in slotBySkill)
-            .map((id) => {
-              const { slot, host } = slotBySkill[id]!;
-              return {
-                id,
-                capabilities: {
-                  allowedHosts: [host],
-                  credentials: [{ slot, kind: 'api-key' as const }],
-                },
-                bodyMd: 'body',
-                manifestYaml: 'name: x\n',
-              };
-            }),
+            .filter((id) => known.has(id))
+            .map((id) => ({
+              id,
+              bodyMd: 'body',
+              manifestYaml: `name: ${id}\n`,
+            })),
         };
       },
       'credentials:envelope-encrypt': async (_ctx, input) => ({
@@ -534,8 +521,10 @@ describe('@ax/agents admin routes', () => {
       {
         cookie,
         body: {
+          // TASK-100 — a skill declares no credential slots, so the attachment
+          // carries no bindings.
           skillAttachments: [
-            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'cred-ref-1' } },
+            { skillId: 'github', credentialBindings: {} },
           ],
         },
       },
@@ -543,11 +532,11 @@ describe('@ax/agents admin routes', () => {
     expect(r.status).toBe(200);
     const agent = (r.body as { agent: SerializedAgent }).agent;
     expect(agent.skillAttachments).toEqual([
-      { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'cred-ref-1' } },
+      { skillId: 'github', credentialBindings: {} },
     ]);
   });
 
-  it('PATCH /admin/agents/:id/skill-attachments with two skills having disjoint slots → 200 ok', async () => {
+  it('PATCH /admin/agents/:id/skill-attachments with two cap-free skills → 200 ok', async () => {
     const cookie = await signIn(stack);
     const created = await http(stack.port, 'POST', '/admin/agents', {
       cookie,
@@ -562,8 +551,8 @@ describe('@ax/agents admin routes', () => {
         cookie,
         body: {
           skillAttachments: [
-            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref1' } },
-            { skillId: 'openai', credentialBindings: { OPENAI_API_KEY: 'ref2' } },
+            { skillId: 'github', credentialBindings: {} },
+            { skillId: 'openai', credentialBindings: {} },
           ],
         },
       },
@@ -571,30 +560,6 @@ describe('@ax/agents admin routes', () => {
     expect(r.status).toBe(200);
     const agent = (r.body as { agent: SerializedAgent }).agent;
     expect(agent.skillAttachments).toHaveLength(2);
-  });
-
-  it('PATCH /admin/agents/:id/skill-attachments with missing binding → 400 binding-missing', async () => {
-    const cookie = await signIn(stack);
-    const created = await http(stack.port, 'POST', '/admin/agents', {
-      cookie,
-      body: makeBody(),
-    });
-    const id = (created.body as { agent: SerializedAgent }).agent.id;
-    const r = await http(
-      stack.port,
-      'PATCH',
-      `/admin/agents/${id}/skill-attachments`,
-      {
-        cookie,
-        body: {
-          skillAttachments: [
-            { skillId: 'github', credentialBindings: {} }, // GITHUB_TOKEN not bound
-          ],
-        },
-      },
-    );
-    expect(r.status).toBe(400);
-    expect((r.body as { code: string }).code).toBe('binding-missing');
   });
 
   it('PATCH /admin/agents/:id/skill-attachments with orphan binding → 400 binding-orphan', async () => {
@@ -645,10 +610,9 @@ describe('@ax/agents admin routes', () => {
     expect((r.body as { code: string }).code).toBe('skill-not-found');
   });
 
-  it('PATCH /admin/agents/:id/skill-attachments — two skills sharing a slot name coexist → 200 (TASK-87)', async () => {
-    // TASK-86 namespaces credential slots per-skill (`skill:<id>:<slot>`) at
-    // runtime, so attaching two skills that both declare LINEAR_API_KEY is NOT a
-    // collision. The admin agent-global attach gate must accept it (TASK-87).
+  it('PATCH /admin/agents/:id/skill-attachments — two cap-free skills coexist → 200', async () => {
+    // TASK-100 — a skill declares no credential slots, so attaching two skills is
+    // never a slot collision; the attachments carry no bindings.
     const cookie = await signIn(stack);
     const created = await http(stack.port, 'POST', '/admin/agents', {
       cookie,
@@ -663,8 +627,8 @@ describe('@ax/agents admin routes', () => {
         cookie,
         body: {
           skillAttachments: [
-            { skillId: 'linear-a', credentialBindings: { LINEAR_API_KEY: 'ref-a' } },
-            { skillId: 'linear-b', credentialBindings: { LINEAR_API_KEY: 'ref-b' } },
+            { skillId: 'linear-a', credentialBindings: {} },
+            { skillId: 'linear-b', credentialBindings: {} },
           ],
         },
       },
@@ -679,9 +643,9 @@ describe('@ax/agents admin routes', () => {
       body: makeBody(),
     });
     const id = (created.body as { agent: SerializedAgent }).agent.id;
-    const overLimit = Array.from({ length: 21 }, (_, i) => ({
+    const overLimit = Array.from({ length: 21 }, () => ({
       skillId: 'github',
-      credentialBindings: { GITHUB_TOKEN: `ref-${i}` },
+      credentialBindings: {},
     }));
     const r = await http(
       stack.port,

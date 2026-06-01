@@ -212,24 +212,31 @@ const patchAttachmentsBodySchema = z
 
 /**
  * Body schema for `POST /admin/agents/:id/authored-skills/promote`.
- * Admin-supplied capability grants REPLACE whatever the authored file declared
- * (half-trust: an agent must not grant itself reach). mcpServers is kept
- * permissive here — skills:upsert's parseSkillManifest validates it downstream.
+ *
+ * TASK-100 — a promoted skill carries NO capability block; its reach is the
+ * connectors it references. The legacy admin-supplied `grants` (hosts /
+ * credentials / mcpServers baked into the skill) are DEPRECATED and IGNORED: a
+ * skill can no longer hold capabilities, so there is nothing for an admin grant
+ * to replace. The field is kept OPTIONAL on the wire so the existing review
+ * dialog keeps compiling; the promoted manifest is built body + connectors only.
  */
 const promoteAuthoredSkillBodySchema = z
   .object({
     skillId: z.string().min(1),
     targetScope: z.enum(['global', 'user']),
-    grants: z.object({
-      allowedHosts: z.array(z.string()),
-      credentials: z.array(
-        z.object({
-          slot: z.string(),
-          kind: z.literal('api-key'),
-        }),
-      ),
-      mcpServers: z.array(z.unknown()),
-    }),
+    // @deprecated TASK-100 — ignored (a skill declares no capabilities).
+    grants: z
+      .object({
+        allowedHosts: z.array(z.string()),
+        credentials: z.array(
+          z.object({
+            slot: z.string(),
+            kind: z.literal('api-key'),
+          }),
+        ),
+        mcpServers: z.array(z.unknown()),
+      })
+      .optional(),
   })
   .strict();
 
@@ -557,9 +564,12 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
       const uniqueSkillIds = [...new Set(attachments.map((a) => a.skillId))];
       // Resolve referenced skills via the bus. A missing skills plugin surfaces
       // as 'no-service'; treat it the same as zero skills found.
+      // TASK-100 — a skill declares no capabilities; skills:resolve returns id +
+      // body + manifest + connector references only. The attachment validator
+      // confirms the skill exists and rejects any credential binding.
       let resolvedSkills: Array<{
         id: string;
-        capabilities: { allowedHosts: string[]; credentials: Array<{ slot: string; kind: 'api-key'; description?: string }> };
+        connectors?: string[];
         bodyMd: string;
         manifestYaml: string;
       }> = [];
@@ -683,18 +693,15 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         return;
       }
 
-      // Build the manifest from ADMIN grants only — the authored file's declared
-      // capabilities are intentionally IGNORED (half-trust: admin grants replace them).
+      // TASK-100 — a promoted skill carries NO capability block; its reach is the
+      // connectors it references (preserved from the authored draft). The legacy
+      // admin `grants` are ignored (a skill can't hold capabilities). A connector's
+      // reach is gated by the connector approval wall, not baked into the skill.
       const manifestYaml = buildSkillManifestYaml({
         id: target.id,
         description: target.description,
         version: target.version,
-        capabilities: {
-          allowedHosts: body.grants.allowedHosts,
-          credentials: body.grants.credentials,
-          mcpServers: body.grants.mcpServers as never[],
-          packages: { npm: [], pypi: [] },
-        },
+        connectors: target.connectors,
       });
 
       try {

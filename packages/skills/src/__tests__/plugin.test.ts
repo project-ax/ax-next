@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -49,17 +49,13 @@ let container: StartedPostgreSqlContainer;
 let connectionString: string;
 const harnesses: TestHarness[] = [];
 
-// Sample manifest matching the one in manifest.test.ts.
+// Sample manifest. TASK-100 — a skill carries no capability block; it references
+// the connector(s) it uses.
 const SAMPLE_MANIFEST = `name: github
-description: Access the GitHub REST API with a personal access token.
+description: Know-how for driving the GitHub connector.
 version: 1
-capabilities:
-  allowedHosts:
-    - api.github.com
-  credentials:
-    - slot: GITHUB_TOKEN
-      kind: api-key
-      description: GitHub PAT.
+connectors:
+  - github
 `;
 
 const SAMPLE_BODY = '# GitHub\n\nGitHub skill body.\n';
@@ -169,6 +165,18 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
         'blob:put',
         'blob:get',
       ],
+      optionalCalls: [
+        {
+          hook: 'connectors:upsert',
+          degradation:
+            'the TASK-100 cap→connector migration strips the legacy capability block but cannot create the connector (no connectors store) — the skill loses that reach until a connector is authored',
+        },
+        {
+          hook: 'connectors:get',
+          degradation:
+            'the migration cannot pre-check for an existing connector and falls back to creating one (still owner+id scoped, never cross-tenant)',
+        },
+      ],
       subscribes: [],
     });
   });
@@ -271,7 +279,7 @@ describe('@ax/skills service hooks (round-trip)', () => {
     expect((caught as PluginError).code).toBe('invalid-name');
   });
 
-  it('skills:list returns the upserted skill with parsed capabilities', async () => {
+  it('skills:list returns the upserted skill with parsed connectors', async () => {
     const h = await makeHarness();
     await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
       'skills:upsert',
@@ -287,8 +295,8 @@ describe('@ax/skills service hooks (round-trip)', () => {
     expect(skills).toHaveLength(1);
     const skill = skills[0]!;
     expect(skill.id).toBe('github');
-    expect(skill.capabilities.allowedHosts).toEqual(['api.github.com']);
-    expect(skill.capabilities.credentials[0]?.slot).toBe('GITHUB_TOKEN');
+    expect(skill.connectors).toEqual(['github']);
+    expect('capabilities' in skill).toBe(false);
   });
 
   it('skills:get returns full detail (bodyMd + manifestYaml)', async () => {
@@ -307,7 +315,7 @@ describe('@ax/skills service hooks (round-trip)', () => {
     expect(detail.id).toBe('github');
     expect(detail.bodyMd).toBe(SAMPLE_BODY);
     expect(detail.manifestYaml).toBe(SAMPLE_MANIFEST);
-    expect(detail.capabilities.allowedHosts).toEqual(['api.github.com']);
+    expect(detail.connectors).toEqual(['github']);
   });
 
   it('skills:get of nonexistent id throws PluginError with code skill-not-found', async () => {
@@ -339,7 +347,7 @@ describe('@ax/skills service hooks (round-trip)', () => {
     );
     expect(skills).toHaveLength(1);
     expect(skills[0]?.id).toBe('github');
-    expect(skills[0]?.capabilities.allowedHosts).toEqual(['api.github.com']);
+    expect(skills[0]?.connectors).toEqual(['github']);
   });
 
   it('skills:delete removes the skill; subsequent :get throws skill-not-found', async () => {
@@ -395,26 +403,10 @@ describe('@ax/skills service hooks (round-trip)', () => {
     expect(out.skills[0]?.bodyMd).toBe('# heartbeat\n');
   });
 
-  it('skills:upsert rejects defaultAttached=true when the manifest declares credential slots', async () => {
-    const h = await makeHarness();
-    let caught: unknown;
-    try {
-      await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
-        'skills:upsert',
-        h.ctx(),
-        {
-          // SAMPLE_MANIFEST has a GITHUB_TOKEN slot — not allowed as default.
-          manifestYaml: SAMPLE_MANIFEST,
-          bodyMd: SAMPLE_BODY,
-          defaultAttached: true,
-        },
-      );
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('default-attached-requires-no-credentials');
-  });
+  // TASK-100 — a skill manifest can no longer declare credential slots (the
+  // parser rejects a capabilities block), so the old "skills:upsert rejects
+  // defaultAttached=true on a credentialed manifest" reject is obsolete and was
+  // removed; a default-attached skill is always instruction-only by construction.
 
   it('skills:delete is blocked when agents:any-attached-to-skill returns { attached: true }', async () => {
     // Bootstrap a harness with a stub agents:any-attached-to-skill that
@@ -457,269 +449,23 @@ describe('@ax/skills service hooks (round-trip)', () => {
   });
 });
 
-// ---------------------------------------------------------------------------
-// Helpers for credential-purge tests
-// ---------------------------------------------------------------------------
 
-/** Build a minimal valid manifest YAML for the given skill name and slots. */
-function yamlForSkill(
-  name: string,
-  slots: Array<{ slot: string; kind: 'api-key' }>,
-): string {
-  const credLines =
-    slots.length === 0
-      ? ''
-      : [
-          '  credentials:',
-          ...slots.map((s) => `    - slot: ${s.slot}\n      kind: ${s.kind}`),
-        ].join('\n') + '\n';
-  return [
-    `name: ${name}`,
-    `description: test skill for ${name}`,
-    'version: 1',
-    'capabilities:',
-    '  allowedHosts: []',
-    credLines.trimEnd(),
-  ]
-    .filter(Boolean)
-    .join('\n') + '\n';
-}
+// TASK-100 — the @ax/skills credential-purge tests were removed: a skill
+// manifest can no longer declare credential slots (its reach is the connectors
+// it references), so skills:upsert/delete never owns skill:<id>:<slot> credential
+// rows to purge. A connector credential lifecycle is owned by @ax/connectors.
 
-interface CredentialRow {
-  scope: 'global' | 'user' | 'agent';
-  ownerId: string | null;
-  ref: string;
-}
-
-describe('@ax/skills credential purge on delete / slot removal', () => {
-  it('skills:delete fires credentials:delete for every (scope, ownerId) row at skill:<id>:*', async () => {
-    // Track which credentials:delete calls were made.
-    const deletedRefs: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
-    // In-memory credential store keyed by "scope:ownerId:ref".
-    const credStore: CredentialRow[] = [];
-
-    const credListStub = async (_ctx: unknown, input: unknown) => {
-      const inp = input as { scope?: string; ownerId?: string | null };
-      if (inp.ownerId !== undefined && inp.scope === undefined) {
-        throw new PluginError({ code: 'invalid-payload', plugin: 'stub', message: 'ownerId requires scope' });
-      }
-      let rows = [...credStore];
-      if (inp.scope !== undefined) rows = rows.filter((r) => r.scope === inp.scope);
-      if (inp.ownerId !== undefined) rows = rows.filter((r) => r.ownerId === inp.ownerId);
-      return { credentials: rows };
-    };
-
-    const credDeleteStub = vi.fn(async (_ctx: unknown, input: unknown) => {
-      const inp = input as CredentialRow;
-      deletedRefs.push({ scope: inp.scope, ownerId: inp.ownerId, ref: inp.ref });
-      const idx = credStore.findIndex(
-        (r) => r.scope === inp.scope && r.ownerId === inp.ownerId && r.ref === inp.ref,
-      );
-      if (idx !== -1) credStore.splice(idx, 1);
-    });
-
-    const h = await makeHarness({
-      services: {
-        ...blobStoreFakeServices(),
-        'credentials:list': credListStub,
-        'credentials:delete': credDeleteStub,
-      },
-    });
-
-    // 1. Seed the skill with one credential slot.
-    const manifest = yamlForSkill('linear-tracker', [{ slot: 'LINEAR_TOKEN', kind: 'api-key' }]);
-    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
-      'skills:upsert',
-      h.ctx(),
-      { manifestYaml: manifest, bodyMd: '# linear-tracker\n' },
-    );
-
-    // 2. Seed credentials at global scope and user scope for the slot ref.
-    credStore.push({ scope: 'global', ownerId: null, ref: 'skill:linear-tracker:LINEAR_TOKEN' });
-    credStore.push({ scope: 'user', ownerId: 'alice', ref: 'skill:linear-tracker:LINEAR_TOKEN' });
-
-    // 3. Delete the skill.
-    await h.bus.call<SkillsDeleteInput, SkillsDeleteOutput>(
-      'skills:delete',
-      h.ctx(),
-      { skillId: 'linear-tracker' },
-    );
-
-    // 4. Both credential rows should have been deleted.
-    expect(credDeleteStub).toHaveBeenCalledTimes(2);
-    expect(deletedRefs.map((d) => `${d.scope}:${d.ownerId}:${d.ref}`).sort()).toEqual([
-      'global:null:skill:linear-tracker:LINEAR_TOKEN',
-      'user:alice:skill:linear-tracker:LINEAR_TOKEN',
-    ]);
-    // Credential store should now be empty.
-    expect(credStore).toHaveLength(0);
-  });
-
-  it('skills:upsert fires credentials:delete for slots dropped in a manifest edit', async () => {
-    const credStore: CredentialRow[] = [];
-
-    const credListStub = async (_ctx: unknown, _input: unknown) => ({
-      credentials: [...credStore],
-    });
-
-    const credDeleteStub = vi.fn(async (_ctx: unknown, input: unknown) => {
-      const inp = input as CredentialRow;
-      const idx = credStore.findIndex(
-        (r) => r.scope === inp.scope && r.ownerId === inp.ownerId && r.ref === inp.ref,
-      );
-      if (idx !== -1) credStore.splice(idx, 1);
-    });
-
-    const h = await makeHarness({
-      services: {
-        ...blobStoreFakeServices(),
-        'credentials:list': credListStub,
-        'credentials:delete': credDeleteStub,
-      },
-    });
-
-    // 1. Upsert skill with two slots.
-    const manifest1 = yamlForSkill('gh-tool', [
-      { slot: 'OLD_SLOT', kind: 'api-key' },
-      { slot: 'KEEPER', kind: 'api-key' },
-    ]);
-    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
-      'skills:upsert',
-      h.ctx(),
-      { manifestYaml: manifest1, bodyMd: '# gh-tool\n' },
-    );
-
-    // 2. Seed credentials for both slots.
-    credStore.push({ scope: 'global', ownerId: null, ref: 'skill:gh-tool:OLD_SLOT' });
-    credStore.push({ scope: 'user', ownerId: 'bob', ref: 'skill:gh-tool:KEEPER' });
-
-    // 3. Upsert again with only KEEPER (OLD_SLOT dropped).
-    const manifest2 = yamlForSkill('gh-tool', [{ slot: 'KEEPER', kind: 'api-key' }]);
-    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
-      'skills:upsert',
-      h.ctx(),
-      { manifestYaml: manifest2, bodyMd: '# gh-tool updated\n' },
-    );
-
-    // 4. Only KEEPER's credential should survive; OLD_SLOT's should be gone.
-    expect(credDeleteStub).toHaveBeenCalledTimes(1);
-    expect(credStore).toHaveLength(1);
-    expect(credStore[0]?.ref).toBe('skill:gh-tool:KEEPER');
-  });
-
-  it('skills:delete continues purging remaining rows when one delete fails (per-row try/catch)', async () => {
-    // Seed 3 credential rows for 3 slots.  The middle delete throws; the
-    // first and last must still be deleted.
-    const credStore: CredentialRow[] = [
-      { scope: 'global', ownerId: null, ref: 'skill:multi-slot:SLOT_A' },
-      { scope: 'global', ownerId: null, ref: 'skill:multi-slot:SLOT_B' },
-      { scope: 'global', ownerId: null, ref: 'skill:multi-slot:SLOT_C' },
-    ];
-
-    let callCount = 0;
-    const credDeleteStub = vi.fn(async (_ctx: unknown, input: unknown) => {
-      callCount++;
-      const inp = input as CredentialRow;
-      if (inp.ref === 'skill:multi-slot:SLOT_B') {
-        throw new Error('middle delete exploded');
-      }
-      const idx = credStore.findIndex(
-        (r) => r.scope === inp.scope && r.ownerId === inp.ownerId && r.ref === inp.ref,
-      );
-      if (idx !== -1) credStore.splice(idx, 1);
-    });
-
-    const h = await makeHarness({
-      services: {
-        ...blobStoreFakeServices(),
-        'credentials:list': async () => ({ credentials: [...credStore] }),
-        'credentials:delete': credDeleteStub,
-      },
-    });
-
-    const manifest = yamlForSkill('multi-slot', [
-      { slot: 'SLOT_A', kind: 'api-key' },
-      { slot: 'SLOT_B', kind: 'api-key' },
-      { slot: 'SLOT_C', kind: 'api-key' },
-    ]);
-    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
-      'skills:upsert',
-      h.ctx(),
-      { manifestYaml: manifest, bodyMd: '# multi-slot\n' },
-    );
-
-    // Delete must succeed even though SLOT_B's delete threw.
-    await expect(
-      h.bus.call<SkillsDeleteInput, SkillsDeleteOutput>(
-        'skills:delete',
-        h.ctx(),
-        { skillId: 'multi-slot' },
-      ),
-    ).resolves.toEqual({});
-
-    // All 3 deletes were attempted.
-    expect(callCount).toBe(3);
-    // SLOT_A and SLOT_C were removed; SLOT_B (which threw) remains.
-    expect(credStore.map((r) => r.ref)).toEqual(['skill:multi-slot:SLOT_B']);
-  });
-
-  it('skills:delete credential purge failure does not abort the skill deletion', async () => {
-    const credListStub = async () => ({
-      credentials: [{ scope: 'global' as const, ownerId: null, ref: 'skill:bad-skill:TOKEN' }],
-    });
-    const credDeleteStub = async () => {
-      throw new Error('storage exploded');
-    };
-
-    const h = await makeHarness({
-      services: {
-        ...blobStoreFakeServices(),
-        'credentials:list': credListStub,
-        'credentials:delete': credDeleteStub,
-      },
-    });
-
-    const manifest = yamlForSkill('bad-skill', [{ slot: 'TOKEN', kind: 'api-key' }]);
-    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
-      'skills:upsert',
-      h.ctx(),
-      { manifestYaml: manifest, bodyMd: '# bad-skill\n' },
-    );
-
-    // Delete should succeed even though the credential purge throws.
-    await expect(
-      h.bus.call<SkillsDeleteInput, SkillsDeleteOutput>(
-        'skills:delete',
-        h.ctx(),
-        { skillId: 'bad-skill' },
-      ),
-    ).resolves.toEqual({});
-
-    // Skill should be gone.
-    let caught: unknown;
-    try {
-      await h.bus.call<SkillsGetInput, SkillsGetOutput>('skills:get', h.ctx(), {
-        skillId: 'bad-skill',
-      });
-    } catch (err) {
-      caught = err;
-    }
-    expect(caught).toBeInstanceOf(PluginError);
-    expect((caught as PluginError).code).toBe('skill-not-found');
-  });
-});
 
 // ---------------------------------------------------------------------------
 // User-scope tests (Phase D — scope-aware hooks)
 // ---------------------------------------------------------------------------
 
-// A minimal manifest without credential slots (safe for defaultAttached).
+// A minimal cap-free manifest (TASK-100 — a skill references connectors, not caps).
 const DEFAULT_MANIFEST = `name: github
-description: Access the GitHub REST API.
+description: GitHub know-how.
 version: 1
-capabilities:
-  allowedHosts:
-    - api.github.com
+connectors:
+  - github
 `;
 
 const DEFAULT_MANIFEST_BODY = '# GitHub skill (no creds)\n';
@@ -728,9 +474,8 @@ const DEFAULT_MANIFEST_BODY = '# GitHub skill (no creds)\n';
 const LINEAR_MANIFEST = `name: linear
 description: Linear issue tracker.
 version: 1
-capabilities:
-  allowedHosts:
-    - linear.app
+connectors:
+  - linear
 `;
 const LINEAR_BODY = '# Linear\n';
 
@@ -1120,20 +865,17 @@ describe('@ax/skills user-scope hooks (Phase D)', () => {
 });
 
 describe('@ax/skills per-user attachments', () => {
+  // TASK-100 — a skill declares no credential slots (its reach is the connectors
+  // it references), so an attachment carries NO credential bindings.
   const HOSTED_SKILL = `name: github
-description: GitHub.
+description: GitHub know-how.
 version: 1
-capabilities:
-  allowedHosts:
-    - api.github.com
-  credentials:
-    - slot: GITHUB_TOKEN
-      kind: api-key
+connectors:
+  - github
 `;
 
-  it('attach-for-user stores a binding; list-user-attachments returns it scoped', async () => {
+  it('attach-for-user stores the attachment (no bindings); list-user-attachments returns it scoped', async () => {
     const h = await makeHarness();
-    // The skill must exist (global) for the attach hook to resolve its slots.
     await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
       manifestYaml: HOSTED_SKILL,
       bodyMd: '# gh\n',
@@ -1142,7 +884,7 @@ capabilities:
     const r = await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
       'skills:attach-for-user',
       h.ctx(),
-      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref1' } },
+      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: {} },
     );
     expect(r).toEqual({ created: true });
 
@@ -1152,7 +894,7 @@ capabilities:
       { userId: 'u1', agentId: 'a1' },
     );
     expect(list.attachments).toEqual([
-      { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref1' } },
+      { skillId: 'github', credentialBindings: {} },
     ]);
 
     // A different user sees nothing.
@@ -1164,7 +906,7 @@ capabilities:
     expect(other.attachments).toEqual([]);
   });
 
-  it('attach-for-user is idempotent — re-attach replaces bindings (created:false)', async () => {
+  it('attach-for-user is idempotent — re-attach is created:false', async () => {
     const h = await makeHarness();
     await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
       manifestYaml: HOSTED_SKILL,
@@ -1174,25 +916,16 @@ capabilities:
     const first = await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
       'skills:attach-for-user',
       h.ctx(),
-      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref1' } },
+      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: {} },
     );
     expect(first.created).toBe(true);
 
     const again = await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
       'skills:attach-for-user',
       h.ctx(),
-      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref2' } },
+      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: {} },
     );
     expect(again.created).toBe(false);
-
-    const list = await h.bus.call<SkillsListUserAttachmentsInput, SkillsListUserAttachmentsOutput>(
-      'skills:list-user-attachments',
-      h.ctx(),
-      { userId: 'u1', agentId: 'a1' },
-    );
-    expect(list.attachments).toEqual([
-      { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref2' } },
-    ]);
   });
 
   it('attach-for-user rejects an unknown skill', async () => {
@@ -1204,7 +937,7 @@ capabilities:
     ).rejects.toThrow(/not installed|not-found/i);
   });
 
-  it('attach-for-user rejects a binding for an undeclared slot (orphan)', async () => {
+  it('attach-for-user rejects ANY credential binding (a skill declares no slots — orphan)', async () => {
     const h = await makeHarness();
     await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
       manifestYaml: HOSTED_SKILL,
@@ -1212,22 +945,9 @@ capabilities:
     });
     await expect(
       h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>('skills:attach-for-user', h.ctx(), {
-        userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref', BOGUS: 'x' },
+        userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref' },
       }),
     ).rejects.toThrow(/binding-orphan|does not declare/i);
-  });
-
-  it('attach-for-user rejects a missing required slot binding', async () => {
-    const h = await makeHarness();
-    await h.bus.call<SkillsUpsertInput, SkillsUpsertOutput>('skills:upsert', h.ctx(), {
-      manifestYaml: HOSTED_SKILL,
-      bodyMd: '# gh\n',
-    });
-    await expect(
-      h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>('skills:attach-for-user', h.ctx(), {
-        userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: {},
-      }),
-    ).rejects.toThrow(/binding-missing|missing binding/i);
   });
 
   it('skills:detach-for-user removes a per-user attachment and is idempotent', async () => {
@@ -1239,7 +959,7 @@ capabilities:
     await h.bus.call<SkillsAttachForUserInput, SkillsAttachForUserOutput>(
       'skills:attach-for-user',
       h.ctx(),
-      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'ref1' } },
+      { userId: 'u1', agentId: 'a1', skillId: 'github', credentialBindings: {} },
     );
 
     const before = await h.bus.call<SkillsListUserAttachmentsInput, SkillsListUserAttachmentsOutput>(
@@ -1336,11 +1056,8 @@ const CATALOG_LINEAR_MANIFEST = [
   'name: linear',
   'description: Read and update your Linear issues',
   'version: 1',
-  'capabilities:',
-  '  allowedHosts: [api.linear.app]',
-  '  credentials:',
-  '    - slot: API_KEY',
-  '      kind: api-key',
+  'connectors:',
+  '  - linear',
 ].join('\n');
 
 const CATALOG_INERT_MANIFEST = [
@@ -1350,9 +1067,10 @@ const CATALOG_INERT_MANIFEST = [
 ].join('\n');
 
 describe('@ax/skills service hooks — skills:search-catalog', () => {
-  it('matches intent, derives tier, and returns hosts/slots', async () => {
+  it('matches intent and returns the candidate (TASK-100 — a skill is always inert, no hosts/slots)', async () => {
     const h = await makeHarness();
-    // A bounded Linear skill (host + key) and an inert note-taking skill.
+    // TASK-100 — a skill declares no caps, so every candidate is 'inert' with
+    // empty hosts/slots; its reach is the connectors it references.
     await h.bus.call('skills:upsert', h.ctx(), { manifestYaml: CATALOG_LINEAR_MANIFEST, bodyMd: 'b' });
     await h.bus.call('skills:upsert', h.ctx(), { manifestYaml: CATALOG_INERT_MANIFEST, bodyMd: 'b' });
 
@@ -1365,9 +1083,9 @@ describe('@ax/skills service hooks — skills:search-catalog', () => {
     const linear = out.skills.find((s) => s.id === 'linear');
     expect(linear).toMatchObject({
       id: 'linear',
-      tier: 'bounded',
-      hosts: ['api.linear.app'],
-      slots: ['API_KEY'],
+      tier: 'inert',
+      hosts: [],
+      slots: [],
     });
     // The inert note skill does not match "linear".
     expect(out.skills.some((s) => s.id === 'notes')).toBe(false);

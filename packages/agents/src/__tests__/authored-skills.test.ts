@@ -29,17 +29,14 @@ let container: StartedPostgreSqlContainer;
 let connectionString: string;
 const harnesses: TestHarness[] = [];
 
+// TASK-100 — a skill manifest declares no capabilities (its reach is the
+// connectors it references). `withConnectors` adds a connectors[] reference list.
 function makeManifest(
   id: string,
-  opts: { withCapabilities?: boolean; withPackages?: boolean } = {},
+  opts: { withConnectors?: boolean } = {},
 ): string {
-  let capBlock = '';
-  if (opts.withCapabilities) {
-    capBlock = `capabilities:\n  allowedHosts:\n    - api.evil.com\n`;
-  } else if (opts.withPackages) {
-    capBlock = `capabilities:\n  packages:\n    npm:\n      - x\n`;
-  }
-  return ['', `name: ${id}`, `description: A skill called ${id}`, 'version: 1', capBlock]
+  const connBlock = opts.withConnectors ? `connectors:\n  - ${id}-connector\n` : '';
+  return ['', `name: ${id}`, `description: A skill called ${id}`, 'version: 1', connBlock]
     .join('\n')
     .trim();
 }
@@ -105,7 +102,7 @@ async function createPersonalAgent(h: TestHarness, userId: string): Promise<stri
   return out.agent.id;
 }
 
-function row(id: string, status: AuthoredRow['status'], opts: { withCapabilities?: boolean } = {}): AuthoredRow {
+function row(id: string, status: AuthoredRow['status'], opts: { withConnectors?: boolean } = {}): AuthoredRow {
   return {
     skillId: id,
     description: `A skill called ${id}`,
@@ -142,10 +139,12 @@ afterAll(async () => {
 });
 
 describe('agents:list-authored-skills (DB-backed promote reader)', () => {
-  it('returns summaries for each authored row, flagging capabilities', async () => {
+  it('returns summaries for each authored row; hasForbiddenCapabilities is always false (TASK-100)', async () => {
     const userId = 'u1';
+    // A cap-bearing manifest is rejected by the parser and never appears here, so
+    // every surfaced skill is cap-free → hasForbiddenCapabilities is always false.
     const h = await makeHarness({
-      rows: [row('alpha', 'active'), row('beta', 'pending', { withCapabilities: true })],
+      rows: [row('alpha', 'active'), row('beta', 'pending', { withConnectors: true })],
     });
     const agentId = await createPersonalAgent(h, userId);
     const out = await h.bus.call<AgentsListAuthoredSkillsInput, AgentsListAuthoredSkillsOutput>(
@@ -155,7 +154,8 @@ describe('agents:list-authored-skills (DB-backed promote reader)', () => {
     );
     const byId = new Map(out.skills.map((s) => [s.id, s]));
     expect(byId.get('alpha')?.hasForbiddenCapabilities).toBe(false);
-    expect(byId.get('beta')?.hasForbiddenCapabilities).toBe(true);
+    expect(byId.get('beta')?.hasForbiddenCapabilities).toBe(false);
+    expect(byId.get('beta')?.connectors).toEqual(['beta-connector']);
   });
 
   it('returns [] when no skills store is loaded', async () => {
@@ -193,11 +193,12 @@ describe('agents:resolve-authored-skills (DB-backed orchestrator projection)', (
     expect(out.skills.find((s) => s.id === 'beta')!.status).toBe('pending');
   });
 
-  it('projects EMPTY capabilities when nothing is approved (frontmatter alone grants nothing)', async () => {
+  it('projects the skill connector references (TASK-100 — no per-skill capabilities/proposalDelta)', async () => {
     const userId = 'u1';
+    // TASK-100 — a skill declares no capabilities; the projection carries its
+    // connector references (the only declared reach, resolved via the bridge).
     const h = await makeHarness({
-      rows: [row('linear', 'pending', { withCapabilities: true })],
-      approved: {}, // nothing approved
+      rows: [row('linear', 'pending', { withConnectors: true })],
     });
     const agentId = await createPersonalAgent(h, userId);
     const out = await h.bus.call<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
@@ -207,26 +208,10 @@ describe('agents:resolve-authored-skills (DB-backed orchestrator projection)', (
     );
     const s = out.skills.find((x) => x.id === 'linear');
     expect(s).toBeDefined();
-    expect(s!.capabilities.allowedHosts).toEqual([]); // none approved → none live
-    // The proposal delta carries the unapproved host so the orchestrator can card it.
-    expect(s!.proposalDelta.allowedHosts).toContain('api.evil.com');
-  });
-
-  it('folds an APPROVED host into live capabilities', async () => {
-    const userId = 'u1';
-    const h = await makeHarness({
-      rows: [row('linear', 'active', { withCapabilities: true })],
-      approved: { linear: [{ kind: 'host', value: 'api.evil.com' }] },
-    });
-    const agentId = await createPersonalAgent(h, userId);
-    const out = await h.bus.call<AgentsResolveAuthoredSkillsInput, AgentsResolveAuthoredSkillsOutput>(
-      'agents:resolve-authored-skills',
-      h.ctx({ userId }),
-      { ownerUserId: userId, agentId },
-    );
-    const s = out.skills.find((x) => x.id === 'linear')!;
-    expect(s.capabilities.allowedHosts).toContain('api.evil.com');
-    expect(s.proposalDelta.allowedHosts).toEqual([]); // fully approved → no delta
+    if (s === undefined) return;
+    expect(s.connectors).toEqual(['linear-connector']);
+    expect('capabilities' in s).toBe(false);
+    expect('proposalDelta' in s).toBe(false);
   });
 
   it('returns [] when no skills store is loaded (orchestrator guard still satisfied)', async () => {

@@ -3,160 +3,60 @@ import { buildSkillManifestYaml } from '../build.js';
 import { parseSkillManifest } from '../manifest.js';
 
 describe('buildSkillManifestYaml', () => {
-  it('emits allowedHosts but NOT credentials/mcpServers when only allowedHosts granted', () => {
+  it('never emits a capabilities: key (skills carry no capability block — TASK-100)', () => {
     const yaml = buildSkillManifestYaml({
       id: 'my-skill',
       description: 'Does something useful.',
       version: 2,
-      capabilities: {
-        allowedHosts: ['api.foo.com'],
-        credentials: [],
-        mcpServers: [],
-      },
     });
-
-    expect(yaml).toContain('allowedHosts');
-    expect(yaml).toContain('api.foo.com');
-    expect(yaml).not.toContain('credentials:');
-    expect(yaml).not.toContain('mcpServers:');
+    expect(yaml).not.toContain('capabilities');
+    expect(yaml).not.toContain('allowedHosts');
+    expect(yaml).not.toContain('credentials');
+    expect(yaml).not.toContain('mcpServers');
+    expect(yaml).not.toContain('packages');
   });
 
-  it('round-trips: parseSkillManifest(buildSkillManifestYaml(...)) returns ok:true with same id/description/capabilities', () => {
+  it('round-trips: parseSkillManifest(buildSkillManifestYaml(...)) returns ok:true with same id/description/version', () => {
     const input = {
       id: 'my-skill',
       description: 'Does something useful.',
       version: 2,
-      capabilities: {
-        allowedHosts: ['api.foo.com'],
-        credentials: [{ slot: 'MY_KEY', kind: 'api-key' as const }],
-        mcpServers: [],
-      },
     };
-
     const yaml = buildSkillManifestYaml(input);
     const result = parseSkillManifest(yaml);
-
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.id).toBe(input.id);
     expect(result.value.description).toBe(input.description);
     expect(result.value.version).toBe(input.version);
-    expect(result.value.capabilities.allowedHosts).toEqual(['api.foo.com']);
-    expect(result.value.capabilities.credentials).toEqual([
-      { slot: 'MY_KEY', kind: 'api-key' },
-    ]);
-    expect(result.value.capabilities.mcpServers).toEqual([]);
+    expect(result.value.connectors).toEqual([]);
   });
 
-  it('emits no capabilities: key when all capability arrays are empty', () => {
+  it('emits the bare name/description/version manifest', () => {
     const yaml = buildSkillManifestYaml({
       id: 'simple-skill',
-      description: 'A skill with no capabilities.',
+      description: 'A skill with no connectors.',
       version: 0,
-      capabilities: {
-        allowedHosts: [],
-        credentials: [],
-        mcpServers: [],
-      },
     });
-
-    expect(yaml).not.toContain('capabilities:');
     expect(yaml).toContain('name: simple-skill');
     expect(yaml).toContain('description:');
-
-    // Should still round-trip cleanly.
     const result = parseSkillManifest(yaml);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.id).toBe('simple-skill');
-    expect(result.value.capabilities.allowedHosts).toEqual([]);
-    expect(result.value.capabilities.credentials).toEqual([]);
-    expect(result.value.capabilities.mcpServers).toEqual([]);
   });
 
   it('round-trips version field correctly', () => {
-    const yaml = buildSkillManifestYaml({
-      id: 'versioned',
-      description: 'Has a version.',
-      version: 5,
-      capabilities: { allowedHosts: [], credentials: [], mcpServers: [] },
-    });
+    const yaml = buildSkillManifestYaml({ id: 'versioned', description: 'Has a version.', version: 5 });
     const result = parseSkillManifest(yaml);
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.value.version).toBe(5);
   });
 
-  it('serializes capabilities.packages when non-empty (round-trips)', () => {
-    const yaml = buildSkillManifestYaml({
-      id: 'demo',
-      description: 'd',
-      version: 1,
-      capabilities: {
-        allowedHosts: [],
-        credentials: [],
-        mcpServers: [],
-        packages: { npm: ['cowsay'], pypi: [] },
-      },
-    });
-    const parsed = parseSkillManifest(yaml);
-    expect(parsed.ok).toBe(true);
-    if (parsed.ok) expect(parsed.value.capabilities.packages.npm).toEqual(['cowsay']);
-  });
-
-  it('serializes pypi-only packages and suppresses the empty npm sub-key', () => {
-    const yaml = buildSkillManifestYaml({
-      id: 'demo',
-      description: 'd',
-      version: 1,
-      capabilities: {
-        allowedHosts: [],
-        credentials: [],
-        mcpServers: [],
-        packages: { npm: [], pypi: ['requests'] },
-      },
-    });
-    expect(yaml).not.toContain('npm:');
-    const parsed = parseSkillManifest(yaml);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.capabilities.packages.pypi).toEqual(['requests']);
-    expect(parsed.value.capabilities.packages.npm).toEqual([]);
-  });
-
-  it('serializes both npm and pypi packages when both are non-empty', () => {
-    const yaml = buildSkillManifestYaml({
-      id: 'demo',
-      description: 'd',
-      version: 1,
-      capabilities: {
-        allowedHosts: [],
-        credentials: [],
-        mcpServers: [],
-        packages: { npm: ['cowsay'], pypi: ['requests'] },
-      },
-    });
-    const parsed = parseSkillManifest(yaml);
-    expect(parsed.ok).toBe(true);
-    if (!parsed.ok) return;
-    expect(parsed.value.capabilities.packages.npm).toEqual(['cowsay']);
-    expect(parsed.value.capabilities.packages.pypi).toEqual(['requests']);
-  });
-
-  it('omits capabilities entirely when all kinds (incl packages) are empty', () => {
-    const yaml = buildSkillManifestYaml({
-      id: 'demo', description: 'd', version: 1,
-      capabilities: { allowedHosts: [], credentials: [], mcpServers: [],
-        packages: { npm: [], pypi: [] } },
-    });
-    expect(yaml).not.toContain('capabilities');
-  });
-
   it('round-trips a non-empty connectors[] reference list', () => {
     const yaml = buildSkillManifestYaml({
       id: 'demo', description: 'd', version: 1,
-      capabilities: { allowedHosts: [], credentials: [], mcpServers: [],
-        packages: { npm: [], pypi: [] } },
       connectors: ['salesforce', 'google-drive'],
     });
     const parsed = parseSkillManifest(yaml);
@@ -166,11 +66,7 @@ describe('buildSkillManifestYaml', () => {
   });
 
   it('omits connectors entirely when none are declared (absent ≡ [] on parse)', () => {
-    const yaml = buildSkillManifestYaml({
-      id: 'demo', description: 'd', version: 1,
-      capabilities: { allowedHosts: [], credentials: [], mcpServers: [],
-        packages: { npm: [], pypi: [] } },
-    });
+    const yaml = buildSkillManifestYaml({ id: 'demo', description: 'd', version: 1 });
     expect(yaml).not.toContain('connectors');
     const parsed = parseSkillManifest(yaml);
     expect(parsed.ok).toBe(true);

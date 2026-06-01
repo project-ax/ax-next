@@ -1,21 +1,18 @@
 import { dump as yamlDump } from 'js-yaml';
-import type { Capabilities } from './capabilities.js';
 
 /**
  * Serialize a skill manifest (the YAML that goes BETWEEN the --- fences).
- * Inverse of parseSkillManifest for the fields a promote flow controls.
+ * Inverse of parseSkillManifest for the fields a promote/migration flow controls.
  *
- * Only emits a `capabilities:` block when there is at least one host,
- * credential, MCP server, or package ecosystem — a no-capability skill has
- * no `capabilities:` key at all, which matches what the parser produces on
- * round-trip. Likewise only emits a top-level `connectors:` list when the
- * skill declares at least one connector reference (absent ≡ `[]` on parse).
+ * A skill manifest carries NO capability block (TASK-100 closed the half-wired
+ * window): reach lives only on the connectors a skill references. Only emits a
+ * top-level `connectors:` list when the skill declares at least one connector
+ * reference (absent ≡ `[]` on parse).
  */
 export function buildSkillManifestYaml(input: {
   id: string;
   description: string;
   version: number;
-  capabilities: Capabilities;
   /** Soft-dependency connector-id reference list (defaults to none). */
   connectors?: string[];
 }): string {
@@ -24,27 +21,6 @@ export function buildSkillManifestYaml(input: {
     description: input.description,
     version: input.version,
   };
-  const c = input.capabilities;
-  const pkgs = c.packages ?? { npm: [], pypi: [] };
-  const hasPackages = (pkgs.npm ?? []).length > 0 || (pkgs.pypi ?? []).length > 0;
-  const hasCaps =
-    c.allowedHosts.length > 0 ||
-    c.credentials.length > 0 ||
-    (c.mcpServers ?? []).length > 0 ||
-    hasPackages;
-  if (hasCaps) {
-    doc.capabilities = {
-      ...(c.allowedHosts.length > 0 ? { allowedHosts: c.allowedHosts } : {}),
-      ...(c.credentials.length > 0 ? { credentials: c.credentials } : {}),
-      ...((c.mcpServers ?? []).length > 0 ? { mcpServers: c.mcpServers } : {}),
-      ...(hasPackages
-        ? { packages: {
-              ...((pkgs.npm ?? []).length > 0 ? { npm: pkgs.npm } : {}),
-              ...((pkgs.pypi ?? []).length > 0 ? { pypi: pkgs.pypi } : {}),
-            } }
-        : {}),
-    };
-  }
   const connectors = input.connectors ?? [];
   if (connectors.length > 0) {
     doc.connectors = connectors;

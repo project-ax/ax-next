@@ -10,9 +10,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { listSkills } from '@/lib/skills';
-import { refForDestination } from '@/lib/credentials';
 import { patchAgentSkillAttachments } from '@/lib/admin';
-import { CredentialSlotRow } from '../credentials/CredentialSlotRow';
 import type { SkillSummary } from '@ax/skills';
 
 interface Attachment {
@@ -26,17 +24,10 @@ interface Props {
   onSaved?: (attachments: Attachment[]) => void;
 }
 
-function buildBindings(
-  skillId: string,
-  slots: { slot: string }[],
-): Record<string, string> {
-  return Object.fromEntries(
-    slots.map((s) => [
-      s.slot,
-      refForDestination({ kind: 'skill-slot', skillId, slot: s.slot }),
-    ]),
-  );
-}
+// TASK-100 — a skill declares no credential slots, so an attachment carries no
+// credential bindings (the per-slot buildBindings/refForDestination helper was
+// removed). A skill's reach is its connectors, configured under the Connectors
+// tab.
 
 export function SkillAttachmentsSection({
   agentId,
@@ -93,13 +84,13 @@ export function SkillAttachmentsSection({
         setSaving(false);
         return;
       }
-      const withBindings = attachments.map((a) => {
-        const skill = skillById.get(a.skillId)!;
-        return {
-          ...a,
-          credentialBindings: buildBindings(a.skillId, skill.capabilities.credentials),
-        };
-      });
+      // TASK-100 — a skill declares no credential slots (its reach is the
+      // connectors it references), so an attachment carries no credential
+      // bindings; the agent attaches the skill's instruction body only.
+      const withBindings = attachments.map((a) => ({
+        ...a,
+        credentialBindings: {} as Record<string, string>,
+      }));
       await patchAgentSkillAttachments(agentId, withBindings);
       onSaved?.(withBindings);
     } catch (err) {
@@ -151,18 +142,9 @@ export function SkillAttachmentsSection({
                   <Trash2 className="h-3.5 w-3.5" />
                 </Button>
               </div>
-              {skill && skill.capabilities.credentials.length > 0 && (
-                <div className="space-y-1 divide-y divide-border">
-                  {skill.capabilities.credentials.map((slotDef) => (
-                    <CredentialSlotRow
-                      key={slotDef.slot}
-                      destination={{ kind: 'skill-slot', skillId: a.skillId, slot: slotDef.slot }}
-                      slot={{ label: slotDef.slot, kind: slotDef.kind }}
-                      scope={{ scope: 'agent', ownerId: agentId }}
-                    />
-                  ))}
-                </div>
-              )}
+              {/* TASK-100 — a skill declares no credential slots; its reach is
+                  its connectors, configured under the Connectors tab. No
+                  per-skill credential rows here. */}
             </li>
           );
         })}

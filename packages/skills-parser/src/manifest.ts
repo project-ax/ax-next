@@ -1,5 +1,4 @@
 import { load as yamlLoad, YAMLException } from 'js-yaml';
-import type { Capabilities, CapabilitySlot, McpServerSpec, PackagesSpec } from './capabilities.js';
 
 export type ManifestCode =
   | 'invalid-yaml'
@@ -8,16 +7,7 @@ export type ManifestCode =
   | 'invalid-name'
   | 'invalid-description'
   | 'invalid-version'
-  | 'capability-deferred'
-  | 'invalid-host'
-  | 'invalid-slot'
-  | 'duplicate-slot'
-  | 'invalid-account'
-  | 'invalid-kind'
-  | 'invalid-mcp-command'
-  | 'invalid-mcp-transport'
-  | 'invalid-package'
-  | 'unsupported-package-ecosystem'
+  | 'capability-block-forbidden'
   | 'invalid-connector';
 
 export interface ParsedManifest {
@@ -25,16 +15,17 @@ export interface ParsedManifest {
   description: string;
   version: number;
   sourceUrl?: string;       // optional metadata pointer for refresh
-  capabilities: Capabilities;
   /**
    * Soft-dependency reference list: the IDs of the connectors this skill uses
-   * (connectors-first-class design, Phasing step 1). Always present; defaults to
-   * `[]` when absent. This is a DECLARED REFERENCE only — the connector
-   * definitions (allowedHosts / credentials / mcpServers / packages) live in the
-   * @ax/connectors store, NOT here. The skill's `capabilities` block stays
-   * authoritative during the half-wired window (closed by TASK-100); a connector
-   * id here does not yet grant anything. Backing-mechanism vocab never appears in
-   * this list — it is a flat list of opaque connector-id slugs.
+   * (connectors-first-class design). Always present; defaults to `[]` when
+   * absent. This is a DECLARED REFERENCE only — the connector definitions
+   * (allowedHosts / credentials / mcpServers / packages) live in the
+   * @ax/connectors store, NOT here. A skill no longer carries a capability
+   * block at all (TASK-100 closed the half-wired window); ALL of a skill's
+   * reach flows from the connectors it references, resolved through
+   * `connectors:resolve` (the human-approved/curated table — a pending connector
+   * grants ZERO reach). Backing-mechanism vocab never appears in this list — it
+   * is a flat list of opaque connector-id slugs.
    */
   connectors: string[];
 }
@@ -74,21 +65,14 @@ function findSecretKey(node: unknown, visited: WeakSet<object> = new WeakSet()):
 }
 
 // Hostname regex: labels of 1-63 chars (lowercase alphanum + hyphen), at least two labels.
-// Matches e.g. "api.github.com" but not bare "localhost".
+// Matches e.g. "api.github.com" but not bare "localhost". Used by `sourceUrl`
+// host validation (the only host the manifest still validates — connectors own
+// allowedHosts now).
 const HOSTNAME_RE = /^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/;
 const IPV4_RE = /^\d{1,3}(\.\d{1,3}){3}$/;
 
 // Skill name: starts with a-z, followed by up to 63 more chars of a-z0-9 or hyphen.
 const NAME_RE = /^[a-z][a-z0-9-]{0,63}$/;
-
-// Credential slot: SCREAMING_SNAKE_CASE, starts with A-Z.
-const SLOT_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
-
-// Account (service) slug: lowercase, starts with a letter, no ':' (the
-// credential-ref separator). Re-validated independently at three trust
-// boundaries (parser here, the destination route schema, refForDestination's
-// colon guard) per invariant I2 — no shared import.
-const ACCOUNT_RE = /^[a-z][a-z0-9-]{0,63}$/;
 
 // Connector id reference (connectors-first-class design). A flat list of opaque
 // connector-id slugs a skill declares as soft dependencies. The grammar +
@@ -101,423 +85,17 @@ const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]*$/;
 const CONNECTOR_ID_LEN_MAX = 128;
 const CONNECTORS_MAX = 64;
 
+// Capability keys that USED to live under the (now-removed) `capabilities:`
+// mapping. After TASK-100 a skill manifest carries NO capability block: reach
+// lives only on the connectors a skill references. These keys are REJECTED
+// (hard fail) wherever they appear — both at the top level and nested under a
+// stray `capabilities:` mapping — so an author who still writes them gets a
+// structural error instead of silently-stranded reach (invariant #4, one source
+// of truth; the human scope decision was REJECT, not ignore-with-warning).
+const FORBIDDEN_CAP_KEYS = ['allowedHosts', 'credentials', 'mcpServers', 'packages'];
+
 function err(code: ManifestCode, message: string): ParseResult {
   return { ok: false, code, message };
-}
-
-// MCP stdio commands the parser will accept. Anything else is rejected with
-// `invalid-mcp-command` at parse time so the sandbox never sees a manifest
-// that asks it to spawn `/bin/sh`, `curl`, `bash -c …`, etc. See
-// docs/plans/2026-05-20-skills-mcp-bundling-security-note.md §1.
-const MCP_COMMAND_ALLOW = new Set(['npx', 'node', 'bun', 'uvx', 'python', 'python3']);
-
-// Max servers per skill — defense-in-depth bound also enforced by the
-// sandbox zod schema (see security note §1 "Array length DoS bound").
-const MCP_SERVERS_MAX = 8;
-const MCP_ARGS_MAX = 32;
-const MCP_ARG_LEN_MAX = 256;
-// Symmetric with MCP_ARGS_* — env keys + values flow into the spawned process's
-// environment, so the grammar must cap them too. Without these the parser
-// accepted (and downstream JSON-encoded) arbitrarily large env maps.
-const MCP_ENV_MAX = 32;
-const MCP_ENV_LEN_MAX = 256;
-
-type HostValidation =
-  | { ok: true; value: string }
-  | { ok: false; code: 'invalid-host'; message: string };
-
-// Shared host-string validator (no scheme, no path, no wildcard, no IPv4,
-// must match HOSTNAME_RE). Used by both top-level `allowedHosts` and the
-// per-mcpServer `allowedHosts` list.
-function validateHost(h: unknown): HostValidation {
-  if (typeof h !== 'string') {
-    return { ok: false, code: 'invalid-host', message: `Each allowedHost must be a string, got: ${JSON.stringify(h)}` };
-  }
-  if (h.includes('*')) {
-    return { ok: false, code: 'invalid-host', message: `Wildcard hosts are not allowed: "${h}"` };
-  }
-  if (h.includes('://')) {
-    return { ok: false, code: 'invalid-host', message: `Hosts must not include a scheme: "${h}"` };
-  }
-  if (h.includes('/')) {
-    return { ok: false, code: 'invalid-host', message: `Hosts must not include a path: "${h}"` };
-  }
-  if (IPV4_RE.test(h)) {
-    return { ok: false, code: 'invalid-host', message: `IP address literals are not allowed: "${h}"` };
-  }
-  if (!HOSTNAME_RE.test(h)) {
-    return { ok: false, code: 'invalid-host', message: `"${h}" is not a valid hostname.` };
-  }
-  return { ok: true, value: h };
-}
-
-type CredentialListResult =
-  | { ok: true; value: CapabilitySlot[] }
-  | { ok: false; code: ManifestCode; message: string };
-
-// Shared credentials-list parser. Same shape rules as top-level
-// `capabilities.credentials`: each entry must have a SCREAMING_SNAKE slot
-// matching SLOT_RE, kind: 'api-key', optional string description; duplicate
-// slot names within a single list are rejected with `duplicate-slot`.
-//
-// `contextLabel` is prefixed into error messages so callers can disambiguate
-// top-level (`capabilities.credentials`) from per-server
-// (`capabilities.mcpServers[N].credentials`) failures.
-function parseCredentialList(
-  raw: unknown,
-  contextLabel: string = 'capabilities.credentials',
-): CredentialListResult {
-  if (!Array.isArray(raw)) {
-    return { ok: false, code: 'invalid-slot', message: `"${contextLabel}" must be an array.` };
-  }
-  const out: CapabilitySlot[] = [];
-  const seen = new Set<string>();
-  for (const rawCred of raw) {
-    if (rawCred === null || typeof rawCred !== 'object' || Array.isArray(rawCred)) {
-      return { ok: false, code: 'invalid-slot', message: `Each entry in "${contextLabel}" must be a mapping object.` };
-    }
-    const cred = rawCred as Record<string, unknown>;
-
-    const rawSlot = cred['slot'];
-    if (typeof rawSlot !== 'string' || !SLOT_RE.test(rawSlot)) {
-      return { ok: false, code: 'invalid-slot', message: `"${contextLabel}" entry "slot" must match /^[A-Z][A-Z0-9_]{0,63}$/, got: ${JSON.stringify(rawSlot)}` };
-    }
-    if (seen.has(rawSlot)) {
-      return { ok: false, code: 'duplicate-slot', message: `Duplicate slot name "${rawSlot}" in "${contextLabel}".` };
-    }
-    seen.add(rawSlot);
-
-    const rawKind = cred['kind'];
-    if (rawKind !== 'api-key') {
-      return { ok: false, code: 'invalid-kind', message: `"${contextLabel}" entry "kind" must be "api-key", got: ${JSON.stringify(rawKind)}` };
-    }
-
-    const rawDescription = cred['description'];
-    if (rawDescription !== undefined && typeof rawDescription !== 'string') {
-      return {
-        ok: false,
-        code: 'invalid-slot',
-        message: `"${contextLabel}" entry "description" on slot "${rawSlot}" must be a string when provided, got: ${JSON.stringify(rawDescription)}`,
-      };
-    }
-
-    // Optional `account` service tag (JIT P2/P7.2, decision #13). When present,
-    // it must be a lowercase service slug (ACCOUNT_RE) — the slot then binds the
-    // user's shared `account:<service>` vault entry instead of a per-skill ref.
-    const rawAccount = cred['account'];
-    if (
-      rawAccount !== undefined &&
-      (typeof rawAccount !== 'string' || !ACCOUNT_RE.test(rawAccount))
-    ) {
-      return {
-        ok: false,
-        code: 'invalid-account',
-        message: `"${contextLabel}" entry "account" on slot "${rawSlot}" must match /^[a-z][a-z0-9-]{0,63}$/, got: ${JSON.stringify(rawAccount)}`,
-      };
-    }
-
-    out.push({
-      slot: rawSlot,
-      kind: 'api-key',
-      ...(rawDescription !== undefined ? { description: rawDescription } : {}),
-      ...(rawAccount !== undefined ? { account: rawAccount } : {}),
-    });
-  }
-  return { ok: true, value: out };
-}
-
-type McpServersResult =
-  | { ok: true; value: McpServerSpec[] }
-  | { ok: false; code: ManifestCode; message: string };
-
-// Parses `capabilities.mcpServers`. Per-server `allowedHosts` and the http
-// transport's URL host are folded into `allowedHostsAcc` so the final union
-// at the top of parseSkillManifest picks them up (the credential-proxy gates
-// egress on the unioned skill-level list — see security note §1).
-function parseMcpServers(raw: unknown, allowedHostsAcc: Set<string>): McpServersResult {
-  if (!Array.isArray(raw)) {
-    return { ok: false, code: 'invalid-manifest', message: '"capabilities.mcpServers" must be an array.' };
-  }
-  if (raw.length > MCP_SERVERS_MAX) {
-    return { ok: false, code: 'invalid-manifest', message: `"capabilities.mcpServers" may declare at most ${MCP_SERVERS_MAX} servers, got ${raw.length}.` };
-  }
-  const out: McpServerSpec[] = [];
-  const seenNames = new Set<string>();
-
-  for (let index = 0; index < raw.length; index++) {
-    const rawEntry = raw[index];
-    if (rawEntry === null || typeof rawEntry !== 'object' || Array.isArray(rawEntry)) {
-      return { ok: false, code: 'invalid-manifest', message: 'Each mcpServers entry must be a mapping object.' };
-    }
-    const entry = rawEntry as Record<string, unknown>;
-
-    // name (required, NAME_RE, unique within manifest)
-    const rawName = entry['name'];
-    if (typeof rawName !== 'string' || !NAME_RE.test(rawName)) {
-      return { ok: false, code: 'invalid-manifest', message: `mcpServers entry "name" must match /^[a-z][a-z0-9-]{0,63}$/, got: ${JSON.stringify(rawName)}` };
-    }
-    if (seenNames.has(rawName)) {
-      return { ok: false, code: 'invalid-manifest', message: `Duplicate mcpServers name "${rawName}".` };
-    }
-    seenNames.add(rawName);
-
-    // transport (required, enum)
-    const rawTransport = entry['transport'];
-    if (rawTransport !== 'stdio' && rawTransport !== 'http') {
-      return { ok: false, code: 'invalid-mcp-transport', message: `mcpServers entry "transport" must be "stdio" or "http", got: ${JSON.stringify(rawTransport)}` };
-    }
-
-    // per-server allowedHosts (optional). Validated with the shared host
-    // validator; collected into both the per-server list and the parent
-    // accumulator for the top-level union.
-    const perServerHosts = new Set<string>();
-    if ('allowedHosts' in entry) {
-      const rawHosts = entry['allowedHosts'];
-      if (!Array.isArray(rawHosts)) {
-        return { ok: false, code: 'invalid-host', message: `mcpServers entry "allowedHosts" must be an array.` };
-      }
-      for (const h of rawHosts) {
-        const v = validateHost(h);
-        if (!v.ok) return { ok: false, code: 'invalid-host', message: v.message };
-        perServerHosts.add(v.value);
-        allowedHostsAcc.add(v.value);
-      }
-    }
-
-    // per-server credentials (optional). Same shape as top-level credentials.
-    let perServerCreds: CapabilitySlot[] = [];
-    if ('credentials' in entry) {
-      const credResult = parseCredentialList(
-        entry['credentials'],
-        `capabilities.mcpServers[${index}].credentials`,
-      );
-      if (!credResult.ok) {
-        return { ok: false, code: credResult.code, message: credResult.message };
-      }
-      perServerCreds = credResult.value;
-    }
-
-    // transport-specific fields
-    let command: string | undefined;
-    let args: string[] | undefined;
-    let env: Record<string, string> | undefined;
-    let url: string | undefined;
-
-    if (rawTransport === 'stdio') {
-      const rawCommand = entry['command'];
-      if (typeof rawCommand !== 'string' || rawCommand.length === 0) {
-        return { ok: false, code: 'invalid-mcp-command', message: `mcpServers stdio entry requires "command", got: ${JSON.stringify(rawCommand)}` };
-      }
-      if (!MCP_COMMAND_ALLOW.has(rawCommand)) {
-        return {
-          ok: false,
-          code: 'invalid-mcp-command',
-          message: `mcpServers "command" must be one of ${[...MCP_COMMAND_ALLOW].join(', ')}; got: ${JSON.stringify(rawCommand)}`,
-        };
-      }
-      command = rawCommand;
-
-      if ('args' in entry) {
-        const rawArgs = entry['args'];
-        if (!Array.isArray(rawArgs)) {
-          return { ok: false, code: 'invalid-manifest', message: `mcpServers "args" must be an array.` };
-        }
-        if (rawArgs.length > MCP_ARGS_MAX) {
-          return { ok: false, code: 'invalid-manifest', message: `mcpServers "args" may have at most ${MCP_ARGS_MAX} entries, got ${rawArgs.length}.` };
-        }
-        const parsedArgs: string[] = [];
-        for (const a of rawArgs) {
-          if (typeof a !== 'string') {
-            return { ok: false, code: 'invalid-manifest', message: `Each mcpServers "args" entry must be a string, got: ${JSON.stringify(a)}` };
-          }
-          if (a.length > MCP_ARG_LEN_MAX) {
-            return { ok: false, code: 'invalid-manifest', message: `mcpServers "args" entries must be ≤ ${MCP_ARG_LEN_MAX} chars, got ${a.length}.` };
-          }
-          parsedArgs.push(a);
-        }
-        args = parsedArgs;
-      }
-
-      if ('env' in entry) {
-        const rawEnv = entry['env'];
-        if (rawEnv === null || typeof rawEnv !== 'object' || Array.isArray(rawEnv)) {
-          return { ok: false, code: 'invalid-manifest', message: `mcpServers "env" must be a mapping object.` };
-        }
-        const envEntries = Object.entries(rawEnv as Record<string, unknown>);
-        if (envEntries.length > MCP_ENV_MAX) {
-          return {
-            ok: false,
-            code: 'invalid-manifest',
-            message: `mcpServers "env" may declare at most ${MCP_ENV_MAX} entries, got ${envEntries.length}.`,
-          };
-        }
-        const envOut: Record<string, string> = {};
-        for (const [k, v] of envEntries) {
-          if (k.length > MCP_ENV_LEN_MAX) {
-            return {
-              ok: false,
-              code: 'invalid-manifest',
-              message: `mcpServers "env" key length must be ≤ ${MCP_ENV_LEN_MAX} chars, got ${k.length}.`,
-            };
-          }
-          if (typeof v !== 'string') {
-            return { ok: false, code: 'invalid-manifest', message: `mcpServers "env.${k}" must be a string, got: ${JSON.stringify(v)}` };
-          }
-          if (v.length > MCP_ENV_LEN_MAX) {
-            return {
-              ok: false,
-              code: 'invalid-manifest',
-              message: `mcpServers "env.${k}" value length must be ≤ ${MCP_ENV_LEN_MAX} chars, got ${v.length}.`,
-            };
-          }
-          envOut[k] = v;
-        }
-        env = envOut;
-      }
-
-      // stdio entries must NOT carry a url.
-      if ('url' in entry) {
-        return { ok: false, code: 'invalid-manifest', message: 'mcpServers stdio entry must not declare "url".' };
-      }
-    } else {
-      // transport === 'http'
-      const rawUrl = entry['url'];
-      if (typeof rawUrl !== 'string' || rawUrl.length === 0) {
-        return { ok: false, code: 'invalid-host', message: `mcpServers http entry requires "url", got: ${JSON.stringify(rawUrl)}` };
-      }
-      let parsed: URL;
-      try {
-        parsed = new URL(rawUrl);
-      } catch {
-        return { ok: false, code: 'invalid-host', message: `mcpServers "url" must be a valid URL, got: ${JSON.stringify(rawUrl)}` };
-      }
-      if (parsed.protocol !== 'https:') {
-        return { ok: false, code: 'invalid-host', message: `mcpServers "url" must use https://, got: ${JSON.stringify(rawUrl)}` };
-      }
-      const host = parsed.hostname;
-      if (IPV4_RE.test(host)) {
-        return { ok: false, code: 'invalid-host', message: `mcpServers "url" host may not be an IP literal: "${host}"` };
-      }
-      if (!HOSTNAME_RE.test(host)) {
-        return { ok: false, code: 'invalid-host', message: `mcpServers "url" host "${host}" is not a valid hostname.` };
-      }
-      url = rawUrl;
-      // Fold the URL host into both the per-server list and the parent acc
-      // so the top-level union (and downstream credential-proxy) sees it.
-      perServerHosts.add(host);
-      allowedHostsAcc.add(host);
-
-      // http entries must NOT carry stdio-only fields.
-      for (const k of ['command', 'args', 'env']) {
-        if (k in entry) {
-          return { ok: false, code: 'invalid-manifest', message: `mcpServers http entry must not declare "${k}".` };
-        }
-      }
-    }
-
-    out.push({
-      name: rawName,
-      transport: rawTransport,
-      ...(command !== undefined ? { command } : {}),
-      ...(args !== undefined ? { args } : {}),
-      ...(env !== undefined ? { env } : {}),
-      ...(url !== undefined ? { url } : {}),
-      allowedHosts: [...perServerHosts],
-      credentials: perServerCreds,
-    });
-  }
-
-  return { ok: true, value: out };
-}
-
-const PACKAGES_PER_ECOSYSTEM_MAX = 32;
-const PACKAGE_NAME_LEN_MAX = 214; // npm's hard limit; generous for pypi
-const SUPPORTED_ECOSYSTEMS = ['npm', 'pypi'] as const;
-// npm: optional @scope/, then lowercase name; pypi: PEP 503-ish name. Both block whitespace
-// and shell metacharacters by construction (defense in depth on top of I4's no-shell rule).
-const NPM_NAME_RE = /^(@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/;
-const PYPI_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
-
-type PackagesResult =
-  | { ok: true; value: PackagesSpec }
-  | { ok: false; code: ManifestCode; message: string };
-
-function parsePackagesCapability(raw: unknown): PackagesResult {
-  if (raw === undefined || raw === null) return { ok: true, value: { npm: [], pypi: [] } };
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    return { ok: false, code: 'invalid-package', message: 'capabilities.packages must be a mapping of ecosystem to name list' };
-  }
-  const out: PackagesSpec = { npm: [], pypi: [] };
-  for (const [eco, names] of Object.entries(raw as Record<string, unknown>)) {
-    if (!(SUPPORTED_ECOSYSTEMS as readonly string[]).includes(eco)) {
-      return { ok: false, code: 'unsupported-package-ecosystem', message: `package ecosystem '${eco}' is not supported yet (supported: ${SUPPORTED_ECOSYSTEMS.join(', ')})` };
-    }
-    if (!Array.isArray(names)) {
-      return { ok: false, code: 'invalid-package', message: `capabilities.packages.${eco} must be an array of package names` };
-    }
-    if (names.length > PACKAGES_PER_ECOSYSTEM_MAX) {
-      return { ok: false, code: 'invalid-package', message: `capabilities.packages.${eco} exceeds ${PACKAGES_PER_ECOSYSTEM_MAX} entries` };
-    }
-    const re = eco === 'npm' ? NPM_NAME_RE : PYPI_NAME_RE;
-    for (const name of names) {
-      if (typeof name !== 'string' || name.length === 0 || name.length > PACKAGE_NAME_LEN_MAX || !re.test(name)) {
-        return { ok: false, code: 'invalid-package', message: `invalid ${eco} package name: ${JSON.stringify(name)}` };
-      }
-    }
-    out[eco as 'npm' | 'pypi'] = names as string[];
-  }
-  return { ok: true, value: out };
-}
-
-// Per-line anchor for an `allowedHosts:` key (any indent). Anchored + linear —
-// no backtracking surface. The capture is whatever follows the colon ON that
-// line (a flow seq `[...]`, or empty for a block list on the next lines).
-const ALLOWED_HOSTS_KEY_LINE = /^[ \t]*allowedHosts[ \t]*:(.*)$/;
-// A block-sequence item line (`  - ...`). Anchored + linear.
-const BLOCK_ITEM_LINE = /^[ \t]*-/;
-
-/**
- * Detect a wildcard host pattern (`*.example.com`) inside an `allowedHosts`
- * entry BEFORE YAML parsing. YAML treats a leading bare `*` as an alias sigil,
- * so the parser would throw YAMLException instead of reaching the host
- * validator — we catch it pre-parse to return the correct `invalid-host` code.
- *
- * Covers both shapes the editor / user might submit:
- *   allowedHosts: [*.example.com, ...]   (flow sequence, may span lines to `]`)
- *   allowedHosts:                        (block list)
- *     - *.example.com
- *
- * This runs on UNTRUSTED self-authored frontmatter, so it is a LINEAR line
- * scan (string ops + anchored per-line regexes) rather than one backtracking
- * regex over the whole document — no `js/polynomial-redos` surface. Worst case
- * is O(total input length).
- */
-function hasWildcardAllowedHost(yaml: string): boolean {
-  const lines = yaml.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const m = ALLOWED_HOSTS_KEY_LINE.exec(lines[i]!);
-    if (m === null) continue;
-    const rest = m[1]!;
-    const bracket = rest.indexOf('[');
-    if (bracket !== -1) {
-      // Flow sequence — accumulate from `[` across lines until the closing `]`.
-      let seg = rest.slice(bracket);
-      for (let j = i + 1; !seg.includes(']') && j < lines.length; j++) {
-        seg += '\n' + lines[j]!;
-      }
-      const end = seg.indexOf(']');
-      const inside = end === -1 ? seg : seg.slice(0, end);
-      if (inside.includes('*')) return true;
-    } else if (rest.trim() === '') {
-      // Block list — scan the contiguous `- ` item lines that follow.
-      for (let k = i + 1; k < lines.length && BLOCK_ITEM_LINE.test(lines[k]!); k++) {
-        if (lines[k]!.includes('*')) return true;
-      }
-    }
-    // An inline scalar (`allowedHosts: host`) isn't a sequence — a leading `*`
-    // there is the YAML's problem to surface; nothing to pre-detect.
-  }
-  return false;
 }
 
 type ConnectorsResult =
@@ -551,12 +129,6 @@ function parseConnectors(raw: unknown): ConnectorsResult {
 }
 
 export function parseSkillManifest(yaml: string): ParseResult {
-  // Pre-check: wildcard host patterns cause YAMLException (alias sigil).
-  // Detect them before parsing so we can return 'invalid-host' not 'invalid-yaml'.
-  if (hasWildcardAllowedHost(yaml)) {
-    return err('invalid-host', 'Wildcard hosts are not allowed in allowedHosts.');
-  }
-
   // Step 1: parse YAML
   let parsed: unknown;
   try {
@@ -575,21 +147,25 @@ export function parseSkillManifest(yaml: string): ParseResult {
 
   const doc = parsed as Record<string, unknown>;
 
-  // Step 2.5 (TASK-79, SECURITY): capability keys belong ONLY under the
-  // `capabilities:` mapping. A manifest that declares any of them at the TOP
-  // LEVEL is REJECTED, never silently ignored. Older skill_propose docs wrongly
-  // told the model to write `allowedHosts`/`credentials`/`packages` at the top
-  // level; the parser used to read only `doc['capabilities']`, so those keys
-  // were dropped → the proposal parsed to ZERO caps → the hybrid materialization
-  // gate classified the (intended cap-bearing) skill as `active` with NO approval
-  // card. That is the capability-loss bypass. Failing loud here turns a silent
-  // drop into a structural reject the author must fix.
-  const MISPLACED_CAP_KEYS = ['allowedHosts', 'credentials', 'mcpServers', 'packages'];
-  for (const k of MISPLACED_CAP_KEYS) {
+  // Step 2.5 (TASK-100, SECURITY): a skill manifest carries NO capability block.
+  // Reach lives only on the connectors a skill references (resolved through the
+  // human-approved/curated connectors table). REJECT any leftover `capabilities:`
+  // mapping AND any of the capability keys at the top level — fail loud, never
+  // silently drop. The human scope decision was REJECT (not ignore-with-warning):
+  // a silently-stranded skill is the exact capability-loss bypass TASK-79
+  // hardened against; here we go further and forbid the block entirely now that
+  // connectors are the one source of truth (invariant #4).
+  if ('capabilities' in doc) {
+    return err(
+      'capability-block-forbidden',
+      'A skill manifest must not declare a "capabilities" block — capabilities live on connectors now. Reference the connector(s) this skill uses via the top-level "connectors:" list instead.',
+    );
+  }
+  for (const k of FORBIDDEN_CAP_KEYS) {
     if (k in doc) {
       return err(
-        'invalid-manifest',
-        `"${k}" must be nested under the "capabilities:" mapping, not declared at the top level of the manifest.`,
+        'capability-block-forbidden',
+        `"${k}" is no longer a valid skill manifest field — capabilities live on connectors now. Reference the connector(s) this skill uses via the top-level "connectors:" list instead.`,
       );
     }
   }
@@ -597,7 +173,7 @@ export function parseSkillManifest(yaml: string): ParseResult {
   // Step 3: inline-secret scan at all depths
   const secretKey = findSecretKey(doc);
   if (secretKey !== undefined) {
-    return err('inline-secret-forbidden', `Field "${secretKey}" must not appear in a SKILL.md manifest. Credentials belong in capabilities.credentials slots.`);
+    return err('inline-secret-forbidden', `Field "${secretKey}" must not appear in a SKILL.md manifest. Credentials belong on a connector, never in a skill.`);
   }
 
   // Step 4: name
@@ -658,78 +234,13 @@ export function parseSkillManifest(yaml: string): ParseResult {
     sourceUrl = raw;
   }
 
-  // Step 7 & 8 & 9 & 10: capabilities
-  let allowedHosts: string[] = [];
-  let credentials: CapabilitySlot[] = [];
-  let mcpServers: McpServerSpec[] = [];
-  let packages: PackagesSpec = { npm: [], pypi: [] };
-
-  if ('capabilities' in doc) {
-    const rawCaps = doc['capabilities'];
-    if (rawCaps === null || typeof rawCaps !== 'object' || Array.isArray(rawCaps)) {
-      return err('invalid-manifest', '"capabilities" must be a mapping object.');
-    }
-    const caps = rawCaps as Record<string, unknown>;
-
-    // `connectors` is a TOP-LEVEL reference list, NOT a capability. Reject it
-    // nested under `capabilities:` (fail loud, same posture as the misplaced
-    // capability-key guard above) so an author who confuses the two gets a
-    // structural error instead of a silently-dropped reference.
-    if ('connectors' in caps) {
-      return err(
-        'invalid-connector',
-        '"connectors" is a top-level manifest field, not a capability — declare it at the top level, not under "capabilities:".',
-      );
-    }
-
-    // Accumulator: top-level allowedHosts plus every per-server allowedHosts
-    // (incl. the http transport's implicit URL host) are unioned here so the
-    // credential-proxy sees the full skill-level egress allowlist. See
-    // docs/plans/2026-05-20-skills-mcp-bundling-security-note.md §1.
-    const allowedHostsAcc = new Set<string>();
-
-    // Step 7 (was: reserved mcpServers key): parse mcpServers.
-    if ('mcpServers' in caps) {
-      const r = parseMcpServers(caps['mcpServers'], allowedHostsAcc);
-      if (!r.ok) return err(r.code, r.message);
-      mcpServers = r.value;
-    }
-
-    // Step 8: top-level allowedHosts
-    if ('allowedHosts' in caps) {
-      const rawHosts = caps['allowedHosts'];
-      if (!Array.isArray(rawHosts)) {
-        return err('invalid-host', '"capabilities.allowedHosts" must be an array.');
-      }
-      for (const h of rawHosts) {
-        const v = validateHost(h);
-        if (!v.ok) return err('invalid-host', v.message);
-        allowedHostsAcc.add(v.value);
-      }
-    }
-
-    // Materialize the unioned host list (insertion-ordered, deduped).
-    allowedHosts = [...allowedHostsAcc];
-
-    // Step 9: top-level credentials
-    if ('credentials' in caps) {
-      const r = parseCredentialList(caps['credentials']);
-      if (!r.ok) return err(r.code, r.message);
-      credentials = r.value;
-    }
-
-    // Step 10: packages (npm/pypi name-only lists)
-    const pkgResult = parsePackagesCapability(caps['packages']);
-    if (!pkgResult.ok) return err(pkgResult.code, pkgResult.message);
-    packages = pkgResult.value;
-  }
-
-  // Step 11: top-level `connectors` reference list (connectors-first-class
+  // Step 7: top-level `connectors` reference list (connectors-first-class
   // design). Additive + storage-agnostic: a soft-dependency list of opaque
-  // connector-id slugs, parsed from the manifest YAML (the source of truth)
-  // exactly like capabilities. Defaults to [] when absent so pre-connector
-  // skills load unchanged. The capability block above stays authoritative
-  // during the half-wired window (TASK-100 closes it).
+  // connector-id slugs, parsed from the manifest YAML (the source of truth).
+  // Defaults to [] when absent so a pre-connector skill loads unchanged. This is
+  // the ONLY way a skill declares reach now — the connectors it names are
+  // resolved into sandbox caps by the orchestrator (the skill→connector bridge,
+  // TASK-111) and the human-approved/curated table is the source of truth.
   const connectorsResult = parseConnectors(doc['connectors']);
   if (!connectorsResult.ok) return err(connectorsResult.code, connectorsResult.message);
   const connectors = connectorsResult.value;
@@ -741,7 +252,6 @@ export function parseSkillManifest(yaml: string): ParseResult {
       description,
       version,
       ...(sourceUrl !== undefined ? { sourceUrl } : {}),
-      capabilities: { allowedHosts, credentials, mcpServers, packages },
       connectors,
     },
   };

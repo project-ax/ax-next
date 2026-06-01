@@ -26,29 +26,26 @@ const harnesses: TestHarness[] = [];
 const httpRegisterRouteStub = async () => ({ unregister: () => {} });
 const authRequireUserStub = async () => ({ user: { id: 'admin', isAdmin: true } });
 
+// TASK-100 — a skill manifest carries NO capability block; it references the
+// connectors it uses. Every authored skill is therefore zero-reach instruction
+// scaffolding, so the gate keys on origin + scan only.
 const ZERO_CAP_MANIFEST = `name: commit-style
 description: How we write commit messages.
 version: 1
 `;
 
-const HOST_MANIFEST = `name: linear
-description: Work with Linear issues.
+const CONNECTOR_MANIFEST = `name: linear
+description: How to drive the Linear connector.
 version: 1
-capabilities:
-  allowedHosts:
-    - api.linear.app
-  credentials:
-    - slot: LINEAR_API_KEY
-      kind: api-key
+connectors:
+  - linear
 `;
 
-// TASK-79 (SECURITY repro): the capability-LOSS shape. The model followed the
-// OLD skill_propose docs and put the caps at the TOP LEVEL (and would have used
-// `id`) instead of under `capabilities:`. Before the parser fix this parsed to
-// ZERO caps → the gate classified it `active` (a cap-bearing Linear skill went
-// live with no approval card). It must now be REJECTED as malformed, never
-// silently active.
-const TOP_LEVEL_CAPS_MANIFEST = `name: linear
+// TASK-100 (SECURITY repro): a manifest still carrying a capability block (here,
+// caps at the top level, the old capability-loss shape) must now be REJECTED with
+// `capability-block-forbidden` — never silently parsed to zero caps and made
+// active. Connectors are the one source of truth for reach.
+const CAP_BLOCK_MANIFEST = `name: linear
 description: Work with Linear issues.
 version: 1
 allowedHosts:
@@ -107,26 +104,31 @@ afterAll(async () => {
   if (container) await stopPostgresContainer(container);
 });
 
-const baseProposal = (manifestYaml: string): Omit<SkillsProposeInput, 'capabilityProposal'> => ({
+// capabilityProposal is a DEPRECATED wire hint — the host ignores it (a skill has
+// no caps). Pass empty; the gate reads origin + scan only.
+const emptyCaps = { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
+
+const baseProposal = (
+  manifestYaml: string,
+  origin: SkillsProposeInput['origin'] = 'authored',
+): SkillsProposeInput => ({
   ownerUserId: 'u1',
   agentId: 'a1',
   manifestYaml,
   bodyMd: '# body\n',
   files: [],
-  origin: 'authored',
+  origin,
+  capabilityProposal: emptyCaps,
 });
 
-// capabilityProposal is a redundant wire hint — the host re-parses the manifest.
-// Pass empty; the gate reads the parsed frontmatter, not this field.
-const emptyCaps = { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } };
-
-describe('skills:propose — the chokepoint + hybrid gate (TASK-74)', () => {
-  it('FREE path: zero-cap authored skill → active, one authored row, list-authored returns it', async () => {
+describe('skills:propose — the chokepoint + gate (origin + scan)', () => {
+  it('FREE path: an authored skill → active, one authored row, list-authored returns it', async () => {
     const h = await makeHarness();
-    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(ZERO_CAP_MANIFEST),
-      capabilityProposal: emptyCaps,
-    });
+    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(ZERO_CAP_MANIFEST),
+    );
     expect(out).toEqual({ skillId: 'commit-style', status: 'active' });
 
     const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
@@ -138,29 +140,42 @@ describe('skills:propose — the chokepoint + hybrid gate (TASK-74)', () => {
     expect(listed.skills[0]).toMatchObject({ skillId: 'commit-style', status: 'active' });
   });
 
-  it('GATED path: a skill declaring hosts + a credential → pending', async () => {
+  it('FREE path: an authored skill REFERENCING a connector is still active (reach comes from the connector, not the skill)', async () => {
     const h = await makeHarness();
-    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(HOST_MANIFEST),
-      capabilityProposal: emptyCaps,
-    });
-    expect(out.skillId).toBe('linear');
+    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(CONNECTOR_MANIFEST),
+    );
+    // A connector reference grants nothing of its own — the connector's caps are
+    // gated at connectors:resolve / the connector approval card. The skill itself
+    // is instruction-only, so it lands active.
+    expect(out).toEqual({ skillId: 'linear', status: 'active' });
+  });
+
+  it('GATED path: a non-authored origin (imported) → pending', async () => {
+    const h = await makeHarness();
+    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(ZERO_CAP_MANIFEST, 'imported'),
+    );
+    expect(out.skillId).toBe('commit-style');
     expect(out.status).toBe('pending');
   });
 
-  it('SECURITY: a cap-bearing manifest with caps at the TOP LEVEL is REJECTED, never silently active', async () => {
-    // The capability-loss bypass (TASK-79): caps declared outside `capabilities:`
-    // used to be silently dropped → zero caps → gate said `active`. The propose
-    // chokepoint must now reject the malformed manifest and write NO row.
+  it('SECURITY: a manifest carrying a capability block is REJECTED, never silently active', async () => {
+    // TASK-100 — capabilities live only on connectors; a skill that still
+    // declares them is a hard parse reject and writes NO row.
     const h = await makeHarness();
     await expect(
-      h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-        ...baseProposal(TOP_LEVEL_CAPS_MANIFEST),
-        capabilityProposal: emptyCaps,
-      }),
+      h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+        'skills:propose',
+        h.ctx(),
+        baseProposal(CAP_BLOCK_MANIFEST),
+      ),
     ).rejects.toThrow();
 
-    // Crucially: nothing was written — there is NO active (or any) row for it.
     const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
       'skills:list-authored',
       h.ctx(),
@@ -169,28 +184,17 @@ describe('skills:propose — the chokepoint + hybrid gate (TASK-74)', () => {
     expect(listed.skills).toHaveLength(0);
   });
 
-  it('SECURITY: the SAME skill authored correctly (caps under capabilities:) lands pending, not active', async () => {
-    // Proves the cap-bearing skill's only safe landing is `pending` (approval
-    // card), never `active` — closing the loop on the capability-loss bug.
-    const h = await makeHarness();
-    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(HOST_MANIFEST),
-      capabilityProposal: emptyCaps,
-    });
-    expect(out.status).toBe('pending');
-    expect(out.status).not.toBe('active');
-  });
-
   it('QUARANTINE path: a skills:scan hit → quarantined with the reason; omitted from active', async () => {
     const reason = 'contains a credential exfiltration pattern';
     const h = await makeHarness({
       'skills:scan': (async (_ctx, _input) =>
         ({ verdict: 'hit', reason }) satisfies SkillsScanOutput) as never,
     });
-    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(ZERO_CAP_MANIFEST),
-      capabilityProposal: emptyCaps,
-    });
+    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(ZERO_CAP_MANIFEST),
+    );
     expect(out).toEqual({ skillId: 'commit-style', status: 'quarantined', reason });
 
     const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
@@ -209,10 +213,11 @@ describe('skills:propose — the chokepoint + hybrid gate (TASK-74)', () => {
         return { verdict: 'clean' } satisfies SkillsScanOutput;
       }) as never,
     });
-    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(ZERO_CAP_MANIFEST),
-      capabilityProposal: emptyCaps,
-    });
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(ZERO_CAP_MANIFEST),
+    );
     expect(seen?.skillId).toBe('commit-style');
     expect(seen?.manifestYaml).toContain('commit-style');
   });
@@ -224,10 +229,11 @@ describe('skills:propose — the chokepoint + hybrid gate (TASK-74)', () => {
       events.push(e);
       return undefined;
     });
-    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(ZERO_CAP_MANIFEST),
-      capabilityProposal: emptyCaps,
-    });
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(ZERO_CAP_MANIFEST),
+    );
     expect(events).toEqual([
       { ownerUserId: 'u1', agentId: 'a1', skillId: 'commit-style', status: 'active' },
     ]);
@@ -236,10 +242,11 @@ describe('skills:propose — the chokepoint + hybrid gate (TASK-74)', () => {
   it('rejects a structurally-invalid manifest (PluginError, no row written)', async () => {
     const h = await makeHarness();
     await expect(
-      h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-        ...baseProposal('this is not: [valid yaml frontmatter'),
-        capabilityProposal: emptyCaps,
-      }),
+      h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+        'skills:propose',
+        h.ctx(),
+        baseProposal('this is not: [valid yaml frontmatter'),
+      ),
     ).rejects.toThrow();
 
     const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
@@ -252,15 +259,17 @@ describe('skills:propose — the chokepoint + hybrid gate (TASK-74)', () => {
 
   it('re-propose REPLACES the row (last-write-wins per draft)', async () => {
     const h = await makeHarness();
-    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(ZERO_CAP_MANIFEST),
-      capabilityProposal: emptyCaps,
-    });
-    // Re-propose the same id but now with caps → flips to pending.
-    const out2 = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(HOST_MANIFEST.replace('name: linear', 'name: commit-style')),
-      capabilityProposal: emptyCaps,
-    });
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(ZERO_CAP_MANIFEST),
+    );
+    // Re-propose the same id but now imported → flips to pending.
+    const out2 = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(ZERO_CAP_MANIFEST, 'imported'),
+    );
     expect(out2.status).toBe('pending');
 
     const listed = await h.bus.call<SkillsListAuthoredInput, SkillsListAuthoredOutput>(
@@ -288,11 +297,12 @@ describe('skills:authored-activate — pending→active flip on approval (TASK-7
 
   it('flips a pending authored skill to active (the core regression)', async () => {
     const h = await makeHarness();
-    // A gated (host+credential) skill lands as pending.
-    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(HOST_MANIFEST),
-      capabilityProposal: emptyCaps,
-    });
+    // A non-authored (imported) origin lands as pending.
+    const out = await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(CONNECTOR_MANIFEST, 'imported'),
+    );
     expect(out.status).toBe('pending');
     expect(await listStatus(h, 'linear')).toBe('pending');
 
@@ -308,10 +318,11 @@ describe('skills:authored-activate — pending→active flip on approval (TASK-7
 
   it('is idempotent — re-activating an already-active row flips nothing', async () => {
     const h = await makeHarness();
-    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(HOST_MANIFEST),
-      capabilityProposal: emptyCaps,
-    });
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(CONNECTOR_MANIFEST, 'imported'),
+    );
     const first = await h.bus.call<SkillsAuthoredActivateInput, SkillsAuthoredActivateOutput>(
       'skills:authored-activate',
       h.ctx(),
@@ -332,10 +343,11 @@ describe('skills:authored-activate — pending→active flip on approval (TASK-7
     const h = await makeHarness({
       'skills:scan': (async () => ({ verdict: 'hit', reason }) satisfies SkillsScanOutput) as never,
     });
-    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(HOST_MANIFEST),
-      capabilityProposal: emptyCaps,
-    });
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(CONNECTOR_MANIFEST),
+    );
     expect(await listStatus(h, 'linear')).toBe('quarantined');
 
     const flip = await h.bus.call<SkillsAuthoredActivateInput, SkillsAuthoredActivateOutput>(
@@ -359,10 +371,11 @@ describe('skills:authored-activate — pending→active flip on approval (TASK-7
 
   it('is scoped to (user, agent, skill) — does not flip a sibling row', async () => {
     const h = await makeHarness();
-    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>('skills:propose', h.ctx(), {
-      ...baseProposal(HOST_MANIFEST),
-      capabilityProposal: emptyCaps,
-    });
+    await h.bus.call<SkillsProposeInput, SkillsProposeOutput>(
+      'skills:propose',
+      h.ctx(),
+      baseProposal(CONNECTOR_MANIFEST, 'imported'),
+    );
     // Activate a DIFFERENT skill id → the real one stays pending.
     await h.bus.call<SkillsAuthoredActivateInput, SkillsAuthoredActivateOutput>(
       'skills:authored-activate',

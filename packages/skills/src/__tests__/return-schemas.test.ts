@@ -21,7 +21,6 @@ import {
   type SkillsProposeOutput,
   type SkillsListAuthoredOutput,
   type ResolvedSkill,
-  type SkillCapabilities,
   type SkillDetail,
   type SkillSummary,
   type SkillsCheckForUpdatesOutput,
@@ -43,29 +42,13 @@ import {
 // field (a stripped field diverges under `toEqual`; a new required interface
 // field fails to compile here).
 
-const capabilities: SkillCapabilities = {
-  allowedHosts: ['api.github.com'],
-  credentials: [{ slot: 'token', kind: 'api-key', description: 'GitHub PAT' }],
-  mcpServers: [
-    {
-      name: 'gh',
-      transport: 'http',
-      command: 'mcp-gh',
-      args: ['--stdio'],
-      env: { GH_DEBUG: '1' },
-      url: 'https://mcp.example.com',
-      allowedHosts: ['mcp.example.com'],
-      credentials: [{ slot: 'token', kind: 'api-key' }],
-    },
-  ],
-  packages: { npm: ['@scope/pkg'], pypi: ['somepy'] },
-};
+// TASK-100 — a skill carries no capability block; its only declared reach is the
+// connectors it references.
 
 const summary: SkillSummary = {
   id: 'github',
   description: 'GitHub helper',
   version: 3,
-  capabilities,
   connectors: ['github-connector', 'gitlab_ce'],
   defaultAttached: false,
   sourceUrl: 'https://example.com/github.md',
@@ -83,7 +66,6 @@ const detail: SkillDetail = {
 
 const resolved: ResolvedSkill = {
   id: 'github',
-  capabilities,
   connectors: ['github-connector'],
   bodyMd: '# GitHub',
   manifestYaml: 'id: github',
@@ -101,35 +83,10 @@ describe('skills return schemas', () => {
     expect(SkillsGetOutputSchema.parse(full)).toEqual(full);
   });
 
-  // JIT P2/P7.2 — the credential `account` service tag must survive the
-  // return-validation strip (hook-bus strips keys absent from the schema), so
-  // skills:get / skills:resolve preserve it for the orchestrator + broker.
-  it('SkillsGetOutputSchema preserves the credential account tag', () => {
-    const detailWithAccount = {
-      id: 'linear',
-      description: 'd',
-      version: 1,
-      capabilities: {
-        allowedHosts: ['api.linear.app'],
-        credentials: [{ slot: 'LINEAR_TOKEN', kind: 'api-key', account: 'linear' }],
-        mcpServers: [],
-        packages: { npm: [], pypi: [] },
-      },
-      connectors: [],
-      defaultAttached: false,
-      updatedAt: new Date(0).toISOString(),
-      scope: 'global',
-      bodyMd: '# x',
-      manifestYaml: 'name: linear',
-      files: [],
-    };
-    const parsed = (
-      SkillsGetOutputSchema as unknown as {
-        parse: (v: unknown) => typeof detailWithAccount;
-      }
-    ).parse(detailWithAccount);
-    expect(parsed.capabilities.credentials[0]!.account).toBe('linear');
-  });
+  // TASK-100 — the skill capability block (and its credential `account` tag) was
+  // removed from the skill hook surface; the credential account tag now lives on
+  // the connector, validated by @ax/connectors' own schemas. So the old
+  // "SkillsGetOutputSchema preserves the credential account tag" test is gone.
 
   // TASK-92 — the connectors[] soft-dependency reference list must survive the
   // return-validation strip (the hook-bus strips keys absent from the schema),
@@ -185,12 +142,12 @@ describe('skills return schemas', () => {
     expect(SkillsCheckForUpdatesOutputSchema.parse(full)).toEqual(full);
   });
 
-  it('rejects a non-array allowedHosts in capabilities', () => {
-    expect(
-      SkillsListOutputSchema.safeParse({
-        skills: [{ ...summary, capabilities: { ...capabilities, allowedHosts: 'nope' } }],
-      }).success,
-    ).toBe(false);
+  it('strips a stray capabilities field from a skill summary (no longer in the schema)', () => {
+    // TASK-100 — the schema has no `capabilities` key, so the hook-bus strips it.
+    const withStray = { ...summary, capabilities: { allowedHosts: ['x'] } };
+    const parsed = SkillsListOutputSchema.parse({ skills: [withStray] }) as SkillsListOutput;
+    expect('capabilities' in parsed.skills[0]!).toBe(false);
+    expect(parsed.skills[0]!.connectors).toEqual(['github-connector', 'gitlab_ce']);
   });
 
   it('rejects an invalid scope', () => {
