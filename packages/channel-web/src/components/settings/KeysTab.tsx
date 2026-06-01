@@ -34,12 +34,29 @@ import {
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   myCredentials,
   setDestinationCredential,
   clearDestinationCredential,
   type CredentialMeta,
 } from '@/lib/credentials';
 import { getAccountUsage } from '@/lib/connections';
+import {
+  listConnectors,
+  getConnector,
+  deriveCredentialPlan,
+  mechanismHint,
+  type ConnectorSummary,
+  type Connector,
+  type ConnectorCredentialPlanEntry,
+  type MechanismHint,
+} from '@/lib/connectors';
 
 const SKILL_REF = /^skill:([^:]+):(.+)$/;
 // TASK-124 — per-slot credential refs. An account ref is either the collapsed
@@ -110,6 +127,11 @@ export function KeysTab() {
   const [creds, setCreds] = useState<CredentialMeta[] | null>(null);
   const [usage, setUsage] = useState<Record<string, string[]>>({});
   const [error, setError] = useState<string | null>(null);
+  // The user's existing connectors — the "Add a key" Service dropdown is keyed
+  // off them (TASK-132). Metadata only (no capabilities); the full record loads
+  // on demand when a connector is picked. Best-effort: a connector-list failure
+  // leaves the dropdown with just the "Custom…" fallback (today's flow).
+  const [connectors, setConnectors] = useState<ConnectorSummary[]>([]);
 
   const load = useCallback(() => {
     setError(null);
@@ -122,6 +144,10 @@ export function KeysTab() {
     getAccountUsage()
       .then(setUsage)
       .catch(() => setUsage({}));
+    // Best-effort: the Service dropdown degrades to Custom-only on a list failure.
+    listConnectors()
+      .then(setConnectors)
+      .catch(() => setConnectors([]));
   }, []);
   useEffect(() => {
     load();
@@ -191,7 +217,7 @@ export function KeysTab() {
           <h3 className="text-sm font-medium text-foreground">My keys</h3>
           <p className="text-xs text-muted-foreground">Shared across all your agents.</p>
         </div>
-        <AddByServiceSheet onSave={addAccountKey} />
+        <AddByServiceSheet connectors={connectors} onSave={addAccountKey} />
       </div>
       {error && (
         <Alert variant="destructive">
@@ -293,25 +319,56 @@ export function KeysTab() {
   );
 }
 
-/** "Add a key" (design P2): name the service (a friendly name, not a slug) +
- *  enter a value to create a shared `account:<service>` vault entry, even
- *  before any skill prompts. The friendly name is slugified on save
- *  ({@link toServiceSlug}) so the user never sees slug-grammar rules. */
+// The sentinel Select value for the free-text "Custom…" fallback — distinct from
+// any real connector id (a connector id is a lowercase slug, never starts with
+// `__`), so it can never collide with a connector in the dropdown.
+const CUSTOM_SERVICE = '__custom__';
+
+/**
+ * "Add a key" (design P2 / TASK-132): connector-aware service picker.
+ *
+ * The Service field is a dropdown of the user's existing connectors plus a
+ * "Custom…" free-text fallback:
+ *   - **Custom…** → free-type a service name (slugified to `account:<service>`)
+ *     + a single Value (today's behaviour, unchanged).
+ *   - **A connector** → reveals its declared credential slots via the TASK-124
+ *     derivation: a single-slot connector collapses to one Value field; a
+ *     multi-slot connector shows one labeled field per slot. Each per-slot field
+ *     is labeled with the slot's `description` and carries `<MACHINE_NAME> ·
+ *     <mechanism hint>` as mono subtext (the hint is truthful per mechanism —
+ *     env var / header / request auth, {@link mechanismHint}).
+ *
+ * Per-slot WRITES go through the SAME `addAccountKey(service, payload, slot?)` the
+ * vault list uses, building the destination from the plan's STRUCTURED `service`
+ * + `slotTag` (NOT by parsing the `:`-bearing ref — a per-slot ref would slice
+ * into an invalid service; the TASK-124 contract). A single-slot connector omits
+ * `slotTag`, keeping the collapsed `account:<service>` ref (back-compat).
+ */
 function AddByServiceSheet({
+  connectors,
   onSave,
 }: {
-  onSave: (service: string, payload: string) => Promise<void>;
+  connectors: ConnectorSummary[];
+  onSave: (service: string, payload: string, slot?: string) => Promise<void>;
 }) {
-  const [service, setService] = useState('');
-  const [value, setValue] = useState('');
   const [open, setOpen] = useState(false);
-  // The user types a friendly name; we slugify it for the `account:<service>`
-  // ref on save. Save is enabled iff that slug is non-empty AND there's a value
-  // — no slug-grammar rules are ever shown to the user.
-  const slug = toServiceSlug(service);
-  const canSave = slug.length > 0 && value.length > 0;
+  // The selected Service: a connector id, or CUSTOM_SERVICE for the free-text
+  // fallback. Defaults to Custom… so a user with no connectors meets exactly
+  // today's flow (one extra, pre-selected dropdown click).
+  const [selected, setSelected] = useState<string>(CUSTOM_SERVICE);
+
+  const reset = useCallback(() => {
+    setSelected(CUSTOM_SERVICE);
+  }, []);
+
   return (
-    <Sheet open={open} onOpenChange={setOpen}>
+    <Sheet
+      open={open}
+      onOpenChange={(o) => {
+        setOpen(o);
+        if (!o) reset();
+      }}
+    >
       <SheetTrigger asChild>
         <Button size="sm">Add a key</Button>
       </SheetTrigger>
@@ -321,34 +378,222 @@ function AddByServiceSheet({
         </SheetHeader>
         <div className="mt-4 flex flex-col gap-3">
           <Label htmlFor="add-key-service">Which service is this key for?</Label>
-          <Input
-            id="add-key-service"
-            value={service}
-            onChange={(e) => setService(e.target.value)}
-            placeholder="e.g. Linear, GitHub, Notion"
-          />
-          <Label htmlFor="add-key-value">Value</Label>
-          <Input
-            id="add-key-value"
-            type="password"
-            value={value}
-            onChange={(e) => setValue(e.target.value)}
-            placeholder="Secret value"
-          />
-          <Button
-            disabled={!canSave}
-            onClick={async () => {
-              await onSave(slug, value);
-              setOpen(false);
-              setService('');
-              setValue('');
-            }}
-          >
-            Save
-          </Button>
+          <Select value={selected} onValueChange={setSelected}>
+            <SelectTrigger id="add-key-service">
+              <SelectValue placeholder="Choose a service" />
+            </SelectTrigger>
+            <SelectContent>
+              {connectors.map((c) => (
+                <SelectItem key={c.id} value={c.id}>
+                  {c.name}
+                </SelectItem>
+              ))}
+              <SelectItem value={CUSTOM_SERVICE}>Custom…</SelectItem>
+            </SelectContent>
+          </Select>
+          {selected === CUSTOM_SERVICE ? (
+            <CustomServiceFields
+              onSave={async (service, value) => {
+                await onSave(service, value);
+                setOpen(false);
+                reset();
+              }}
+            />
+          ) : (
+            <ConnectorSlotFields
+              connectorId={selected}
+              onSave={onSave}
+              onDone={() => {
+                setOpen(false);
+                reset();
+              }}
+            />
+          )}
         </div>
       </SheetContent>
     </Sheet>
+  );
+}
+
+/** The "Custom…" branch — today's free-text service name + single Value. The
+ *  friendly name is slugified on save ({@link toServiceSlug}) so the user never
+ *  sees slug-grammar rules; Save is enabled iff that slug is non-empty AND a
+ *  value is present. */
+function CustomServiceFields({
+  onSave,
+}: {
+  onSave: (service: string, value: string) => Promise<void>;
+}) {
+  const [service, setService] = useState('');
+  const [value, setValue] = useState('');
+  const slug = toServiceSlug(service);
+  const canSave = slug.length > 0 && value.length > 0;
+  return (
+    <>
+      <Label htmlFor="add-key-custom-name">Service name</Label>
+      <Input
+        id="add-key-custom-name"
+        value={service}
+        onChange={(e) => setService(e.target.value)}
+        placeholder="e.g. Linear, GitHub, Notion"
+      />
+      <Label htmlFor="add-key-value">Value</Label>
+      <Input
+        id="add-key-value"
+        type="password"
+        value={value}
+        onChange={(e) => setValue(e.target.value)}
+        placeholder="Secret value"
+      />
+      <Button disabled={!canSave} onClick={() => void onSave(slug, value)}>
+        Save
+      </Button>
+    </>
+  );
+}
+
+/**
+ * The connector branch — loads the full connector record on demand (the list is
+ * metadata-only) and renders one labeled key field per credential slot derived
+ * by {@link deriveCredentialPlan}. A single-slot connector collapses to one
+ * field; a multi-slot connector shows one per slot. Each field carries the slot's
+ * `description` as its label and `<MACHINE_NAME> · <mechanism hint>` as mono
+ * subtext. Saving writes every field that has a value, threading the plan's
+ * structured `slotTag` so a multi-slot write lands in its distinct row.
+ */
+function ConnectorSlotFields({
+  connectorId,
+  onSave,
+  onDone,
+}: {
+  connectorId: string;
+  onSave: (service: string, payload: string, slot?: string) => Promise<void>;
+  onDone: () => void;
+}) {
+  const [connector, setConnector] = useState<Connector | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  // One pending secret value per plan slot (keyed by the capability slot name).
+  const [values, setValues] = useState<Record<string, string>>({});
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setConnector(null);
+    setLoadError(null);
+    setValues({});
+    getConnector(connectorId)
+      .then((c) => {
+        if (!cancelled) setConnector(c);
+      })
+      .catch((e: unknown) => {
+        if (!cancelled) setLoadError(humanError(e));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [connectorId]);
+
+  if (loadError) {
+    return (
+      <Alert variant="destructive">
+        <AlertDescription>{loadError}</AlertDescription>
+      </Alert>
+    );
+  }
+  if (connector === null) {
+    return <p className="text-sm text-muted-foreground">Loading…</p>;
+  }
+
+  const plan = deriveCredentialPlan(connector);
+  if (plan.length === 0) {
+    return (
+      <p className="text-sm text-muted-foreground">
+        This service needs no key — your assistant can already reach it.
+      </p>
+    );
+  }
+
+  const hint = mechanismHint(connector);
+  // A slot's friendly label is its declared `description`; the mono subtext pairs
+  // the machine name with the truthful mechanism hint.
+  const slotMeta = (slotName: string) =>
+    connector.capabilities.credentials.find((s) => s.slot === slotName);
+  const canSave = plan.some((entry) => (values[entry.slot] ?? '').length > 0);
+
+  const save = async () => {
+    if (saving) return;
+    setSaving(true);
+    try {
+      // Write every slot the user filled in. Structured service + slotTag from
+      // the plan — never a parsed ref (TASK-124).
+      for (const entry of plan) {
+        const value = values[entry.slot] ?? '';
+        if (value.length === 0) continue;
+        await onSave(entry.service, value, entry.slotTag);
+      }
+      onDone();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-4">
+      {plan.map((entry) => {
+        // exactOptionalPropertyTypes: only pass `description` when the slot
+        // declares one (an absent description must not become `undefined`).
+        const description = slotMeta(entry.slot)?.description;
+        return (
+          <PerSlotKeyField
+            key={entry.slot}
+            entry={entry}
+            {...(description !== undefined ? { description } : {})}
+            hint={hint}
+            value={values[entry.slot] ?? ''}
+            onChange={(v) => setValues((prev) => ({ ...prev, [entry.slot]: v }))}
+          />
+        );
+      })}
+      <Button disabled={!canSave || saving} onClick={() => void save()}>
+        {saving ? 'Saving…' : 'Save'}
+      </Button>
+    </div>
+  );
+}
+
+/** One labeled key field for a connector credential slot (TASK-132). Label = the
+ *  slot's `description` (a calm fallback when absent); subtext = `<MACHINE_NAME> ·
+ *  <mechanism hint>` in mono. Value is a password input — the secret is never
+ *  rendered. */
+function PerSlotKeyField({
+  entry,
+  description,
+  hint,
+  value,
+  onChange,
+}: {
+  entry: ConnectorCredentialPlanEntry;
+  description?: string;
+  hint: MechanismHint;
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  const inputId = `add-key-slot-${entry.slot}`;
+  return (
+    <div className="flex flex-col gap-1.5">
+      <Label htmlFor={inputId}>{description || 'API key'}</Label>
+      <span className="font-mono text-[11px] text-muted-foreground">
+        {entry.slot} · {hint}
+      </span>
+      <Input
+        id={inputId}
+        type="password"
+        autoComplete="off"
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Secret value"
+      />
+    </div>
   );
 }
 

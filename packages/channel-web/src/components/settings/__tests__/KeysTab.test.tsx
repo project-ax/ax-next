@@ -3,6 +3,25 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { KeysTab } from '../KeysTab';
 import * as credLib from '../../../lib/credentials';
 import * as connLib from '../../../lib/connections';
+import * as connectorsLib from '../../../lib/connectors';
+import type { Connector } from '../../../lib/connectors';
+
+/** Build a full connector record for the getConnector mock. */
+function connector(overrides: Partial<Connector>): Connector {
+  return {
+    id: 'c1',
+    name: 'C1',
+    description: '',
+    usageNote: '',
+    keyMode: 'personal',
+    visibility: 'private',
+    defaultAttached: false,
+    createdAt: '2026-06-01T00:00:00Z',
+    updatedAt: '2026-06-01T00:00:00Z',
+    capabilities: connectorsLib.emptyCapabilities(),
+    ...overrides,
+  };
+}
 
 describe('KeysTab', () => {
   beforeEach(() => {
@@ -13,6 +32,9 @@ describe('KeysTab', () => {
     vi.spyOn(connLib, 'getAccountUsage').mockResolvedValue({
       linear: ['linear', 'linear-search'],
     });
+    // Default: no connectors → the Service dropdown offers only "Custom…"
+    // (defaults to Custom, so the existing free-text flow is unchanged).
+    vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([]);
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -39,12 +61,13 @@ describe('KeysTab', () => {
     expect(await screen.findByText('used by: linear')).toBeInTheDocument();
   });
 
-  it('Add a key by service calls setDestinationCredential with the account destination', async () => {
+  it('Custom… add-a-key calls setDestinationCredential with the account destination', async () => {
     const set = vi.spyOn(credLib, 'setDestinationCredential').mockResolvedValue();
     render(<KeysTab />);
     await screen.findByText(/used by: linear/);
     fireEvent.click(screen.getByRole('button', { name: /^add a key$/i }));
-    fireEvent.change(await screen.findByLabelText(/which service is this key for/i), {
+    // Custom… is the default selection → the free-text Service name field is shown.
+    fireEvent.change(await screen.findByLabelText(/^service name$/i), {
       target: { value: 'github' },
     });
     fireEvent.change(screen.getByLabelText(/^value$/i), { target: { value: 'ghp_secret' } });
@@ -65,7 +88,7 @@ describe('KeysTab', () => {
     await screen.findByText(/used by: linear/);
     fireEvent.click(screen.getByRole('button', { name: /^add a key$/i }));
     // A human types a friendly, mixed-case name with spaces + punctuation.
-    fireEvent.change(await screen.findByLabelText(/which service is this key for/i), {
+    fireEvent.change(await screen.findByLabelText(/^service name$/i), {
       target: { value: 'My Service!' },
     });
     // No slug-grammar validation copy is ever surfaced to the user.
@@ -87,7 +110,7 @@ describe('KeysTab', () => {
     render(<KeysTab />);
     await screen.findByText(/used by: linear/);
     fireEvent.click(screen.getByRole('button', { name: /^add a key$/i }));
-    fireEvent.change(await screen.findByLabelText(/which service is this key for/i), {
+    fireEvent.change(await screen.findByLabelText(/^service name$/i), {
       target: { value: '   ' },
     });
     fireEvent.change(screen.getByLabelText(/^value$/i), { target: { value: 'sekret' } });
@@ -210,6 +233,197 @@ describe('KeysTab', () => {
           scope: { scope: 'user', ownerId: null },
         }),
       );
+    });
+  });
+
+  // TASK-132 — the "Add a key" Service field is a dropdown of the user's existing
+  // connectors + a Custom… free-text fallback. Selecting a connector reveals its
+  // declared slots (the TASK-124 derivation): a single-slot connector collapses to
+  // one Value; a multi-slot connector shows one labeled field per slot. Each
+  // per-slot field is labeled with the slot description + `<MACHINE_NAME> ·
+  // <mechanism hint>` mono subtext, truthful per mechanism.
+  describe('connector-aware Add-a-key (TASK-132)', () => {
+    const SINGLE = connector({
+      id: 'notion',
+      name: 'Notion',
+      keyMode: 'personal',
+      capabilities: {
+        ...connectorsLib.emptyCapabilities(),
+        mcpServers: [
+          { name: 'notion', transport: 'http', url: 'https://api.notion.com', allowedHosts: ['api.notion.com'], credentials: [] },
+        ],
+        credentials: [
+          { slot: 'NOTION_TOKEN', kind: 'api-key', description: 'Internal integration token', account: 'notion' },
+        ],
+      },
+    });
+    const MULTI = connector({
+      id: 'salesforce',
+      name: 'Salesforce',
+      keyMode: 'personal',
+      capabilities: {
+        ...connectorsLib.emptyCapabilities(),
+        mcpServers: [
+          { name: 'sf', transport: 'stdio', command: 'sf-mcp', allowedHosts: [], credentials: [] },
+        ],
+        credentials: [
+          { slot: 'CLIENT_ID', kind: 'api-key', description: 'Consumer key', account: 'salesforce' },
+          { slot: 'CLIENT_SECRET', kind: 'api-key', description: 'Consumer secret', account: 'salesforce' },
+        ],
+      },
+    });
+    const DIRECT = connector({
+      id: 'acme',
+      name: 'Acme',
+      keyMode: 'personal',
+      capabilities: {
+        ...connectorsLib.emptyCapabilities(),
+        allowedHosts: ['api.acme.test'],
+        credentials: [{ slot: 'API_KEY', kind: 'api-key', description: 'API key', account: 'acme' }],
+      },
+    });
+
+    async function openSheet() {
+      render(<KeysTab />);
+      await screen.findByText(/used by: linear/);
+      fireEvent.click(screen.getByRole('button', { name: /^add a key$/i }));
+    }
+
+    /** Pick a service from the Service dropdown (combobox → click option). */
+    async function pickService(name: RegExp) {
+      fireEvent.click(await screen.findByRole('combobox'));
+      fireEvent.click(await screen.findByRole('option', { name }));
+    }
+
+    it('lists the user connectors plus a Custom… option in the Service dropdown', async () => {
+      vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
+        { id: 'notion', name: 'Notion', description: '', usageNote: '', keyMode: 'personal', visibility: 'private', defaultAttached: false, createdAt: '', updatedAt: '' },
+      ]);
+      await openSheet();
+      fireEvent.click(await screen.findByRole('combobox'));
+      expect(await screen.findByRole('option', { name: /^Notion$/ })).toBeInTheDocument();
+      expect(screen.getByRole('option', { name: /^Custom…$/ })).toBeInTheDocument();
+    });
+
+    it('single-slot connector → one Value field; save writes the collapsed account ref', async () => {
+      vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
+        { id: 'notion', name: 'Notion', description: '', usageNote: '', keyMode: 'personal', visibility: 'private', defaultAttached: false, createdAt: '', updatedAt: '' },
+      ]);
+      vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(SINGLE);
+      const set = vi.spyOn(credLib, 'setDestinationCredential').mockResolvedValue();
+      await openSheet();
+      await pickService(/^Notion$/);
+      // The friendly label is the slot description; the mono subtext pairs the
+      // machine name with the truthful mechanism hint (http MCP → header).
+      const field = await screen.findByLabelText(/internal integration token/i);
+      expect(screen.getByText('NOTION_TOKEN · header')).toBeInTheDocument();
+      fireEvent.change(field, { target: { value: 'ntn_secret' } });
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+      await waitFor(() =>
+        expect(set).toHaveBeenCalledWith({
+          // single slot collapses → account:<service>, NO slot.
+          destination: { kind: 'account', service: 'notion' },
+          slot: { kind: 'api-key' },
+          scope: { scope: 'user', ownerId: null },
+          payload: 'ntn_secret',
+        }),
+      );
+    });
+
+    it('multi-slot connector → one labeled field per slot; each save threads its slotTag', async () => {
+      vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
+        { id: 'salesforce', name: 'Salesforce', description: '', usageNote: '', keyMode: 'personal', visibility: 'private', defaultAttached: false, createdAt: '', updatedAt: '' },
+      ]);
+      vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(MULTI);
+      const set = vi.spyOn(credLib, 'setDestinationCredential').mockResolvedValue();
+      await openSheet();
+      await pickService(/^Salesforce$/);
+      // Two labeled fields, each with the stdio MCP → env var hint.
+      const clientId = await screen.findByLabelText(/consumer key/i);
+      const clientSecret = screen.getByLabelText(/consumer secret/i);
+      expect(screen.getByText('CLIENT_ID · env var')).toBeInTheDocument();
+      expect(screen.getByText('CLIENT_SECRET · env var')).toBeInTheDocument();
+      fireEvent.change(clientId, { target: { value: 'id_val' } });
+      fireEvent.change(clientSecret, { target: { value: 'secret_val' } });
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+      // Both writes thread the per-slot ref — NEVER collapsing to account:salesforce.
+      await waitFor(() =>
+        expect(set).toHaveBeenCalledWith({
+          destination: { kind: 'account', service: 'salesforce', slot: 'CLIENT_ID' },
+          slot: { kind: 'api-key' },
+          scope: { scope: 'user', ownerId: null },
+          payload: 'id_val',
+        }),
+      );
+      expect(set).toHaveBeenCalledWith({
+        destination: { kind: 'account', service: 'salesforce', slot: 'CLIENT_SECRET' },
+        slot: { kind: 'api-key' },
+        scope: { scope: 'user', ownerId: null },
+        payload: 'secret_val',
+      });
+    });
+
+    it('Direct API connector (no MCP) → request-auth hint', async () => {
+      vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
+        { id: 'acme', name: 'Acme', description: '', usageNote: '', keyMode: 'personal', visibility: 'private', defaultAttached: false, createdAt: '', updatedAt: '' },
+      ]);
+      vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(DIRECT);
+      await openSheet();
+      await pickService(/^Acme$/);
+      await screen.findByLabelText(/^api key$/i);
+      expect(screen.getByText('API_KEY · request auth')).toBeInTheDocument();
+    });
+
+    it('only writes slots the user filled in (a blank slot is skipped)', async () => {
+      vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
+        { id: 'salesforce', name: 'Salesforce', description: '', usageNote: '', keyMode: 'personal', visibility: 'private', defaultAttached: false, createdAt: '', updatedAt: '' },
+      ]);
+      vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(MULTI);
+      const set = vi.spyOn(credLib, 'setDestinationCredential').mockResolvedValue();
+      await openSheet();
+      await pickService(/^Salesforce$/);
+      // Fill only the first slot.
+      fireEvent.change(await screen.findByLabelText(/consumer key/i), { target: { value: 'id_val' } });
+      fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+      await waitFor(() => expect(set).toHaveBeenCalledTimes(1));
+      expect(set).toHaveBeenCalledWith({
+        destination: { kind: 'account', service: 'salesforce', slot: 'CLIENT_ID' },
+        slot: { kind: 'api-key' },
+        scope: { scope: 'user', ownerId: null },
+        payload: 'id_val',
+      });
+    });
+
+    it('renders password fields and never the raw secret value', async () => {
+      vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
+        { id: 'notion', name: 'Notion', description: '', usageNote: '', keyMode: 'personal', visibility: 'private', defaultAttached: false, createdAt: '', updatedAt: '' },
+      ]);
+      vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(SINGLE);
+      await openSheet();
+      await pickService(/^Notion$/);
+      const field = await screen.findByLabelText(/internal integration token/i);
+      expect(field).toHaveAttribute('type', 'password');
+    });
+
+    it('a connector with no credential slots shows a needs-no-key note', async () => {
+      const NOKEY = connector({ id: 'open', name: 'Open Service', keyMode: 'personal' });
+      vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
+        { id: 'open', name: 'Open Service', description: '', usageNote: '', keyMode: 'personal', visibility: 'private', defaultAttached: false, createdAt: '', updatedAt: '' },
+      ]);
+      vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(NOKEY);
+      await openSheet();
+      await pickService(/^Open Service$/);
+      expect(await screen.findByText(/needs no key/i)).toBeInTheDocument();
+    });
+
+    it('surfaces a humane error when the connector record fails to load', async () => {
+      vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([
+        { id: 'notion', name: 'Notion', description: '', usageNote: '', keyMode: 'personal', visibility: 'private', defaultAttached: false, createdAt: '', updatedAt: '' },
+      ]);
+      vi.spyOn(connectorsLib, 'getConnector').mockRejectedValue(new Error('get connector: 500'));
+      await openSheet();
+      await pickService(/^Notion$/);
+      expect(await screen.findByText(/get connector: 500/i)).toBeInTheDocument();
     });
   });
 });
