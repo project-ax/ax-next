@@ -113,7 +113,7 @@ describe('CatalogTab', () => {
 
     expect(screen.getByText('1 connector')).toBeTruthy();
     const trigger = screen.getByText('1 connector');
-    expect(trigger.closest('[title]')?.getAttribute('title')).toContain('github');
+    expect(trigger.getAttribute('aria-label')).toContain('github');
   });
 
   it('shows empty state when no skills are installed', async () => {

@@ -168,9 +168,10 @@ describe('UserSkillsPanelBody', () => {
 
     // A count summary stands in for the bare id-badge.
     expect(screen.getByText('1 connector')).toBeTruthy();
-    // The raw id is still reachable, behind the disclosure's title.
+    // The raw id is still reachable, behind the disclosure's accessible name
+    // (aria-label, not title — title would fire a second native tooltip).
     const trigger = screen.getByText('1 connector');
-    expect(trigger.closest('[title]')?.getAttribute('title')).toContain('github');
+    expect(trigger.getAttribute('aria-label')).toContain('github');
   });
 
   it('shows loading state before promise resolves', () => {

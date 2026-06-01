@@ -5,9 +5,11 @@
  * M2 wants the raw ids demoted behind a tooltip/disclosure, not displayed raw.
  *
  * So this renders a calm "N connector(s)" count as the cell's visible content;
- * the raw ids live behind the shadcn `Tooltip` (hover) AND the trigger's `title`
- * attribute (the accessible/testable fallback — Radix tooltips are hover-only
- * and don't render their content in jsdom). Zero connectors renders the em-dash,
+ * the raw ids live behind the shadcn `Tooltip` (hover) AND the trigger's
+ * `aria-label` (the accessible/testable fallback — Radix tooltips are hover-only
+ * and don't render their content in jsdom). `aria-label` rather than `title`
+ * deliberately: a `title` on the trigger would fire a SECOND, native browser
+ * tooltip alongside the Radix one. Zero connectors renders the em-dash,
  * matching the prior empty state.
  *
  * One source of truth (invariant #4) for both the My Skills tables and the
@@ -30,15 +32,18 @@ export function ConnectorRefsCell({ connectors }: { connectors: string[] }) {
     return <span className="text-xs text-muted-foreground">—</span>;
   }
   const ids = connectors.join(', ');
-  const label = `${connectors.length} connector${connectors.length === 1 ? '' : 's'}`;
+  const count = `${connectors.length} connector${connectors.length === 1 ? '' : 's'}`;
+  // The accessible name carries BOTH the count and the raw ids, so a screen
+  // reader (and the test suite) can reach the ids without a hover.
+  const label = `${count}: ${ids}`;
   return (
     <Tooltip>
       <TooltipTrigger asChild>
         <span
           className="cursor-default text-xs text-muted-foreground underline decoration-dotted underline-offset-2"
-          title={ids}
+          aria-label={label}
         >
-          {label}
+          {count}
         </span>
       </TooltipTrigger>
       <TooltipContent>{ids}</TooltipContent>
