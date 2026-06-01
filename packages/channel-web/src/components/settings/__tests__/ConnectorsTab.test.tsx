@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, waitFor, fireEvent } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent, within } from '@testing-library/react';
 import { ConnectorsTab } from '../ConnectorsTab';
 import * as connectorsLib from '@/lib/connectors';
 import * as agentsLib from '@/lib/agents';
@@ -34,9 +34,7 @@ const SHARED_CONN: ConnectorSummary = {
 };
 
 // An admin default-on connector that is still visibility:'private'. TASK-110:
-// the user list must badge it "Catalog" via `defaultAttached`. Before TASK-110
-// the LIST summary dropped `defaultAttached`, so this connector wrongly showed
-// no badge (the badge keyed off `visibility` alone).
+// the user list must badge it "Catalog" via `defaultAttached`.
 const DEFAULT_ON_PRIVATE_CONN: ConnectorSummary = {
   id: 'org-github',
   name: 'Org GitHub',
@@ -53,7 +51,6 @@ const DEFAULT_ON_PRIVATE_CONN: ConnectorSummary = {
 function fullOf(summary: ConnectorSummary, slotAccount?: string): Connector {
   return {
     ...summary,
-    defaultAttached: false,
     capabilities: {
       ...connectorsLib.emptyCapabilities(),
       credentials: [
@@ -77,6 +74,7 @@ describe('ConnectorsTab', () => {
     // connector. Default: a single api-key slot, account keyed off the id.
     vi.spyOn(connectorsLib, 'getConnector').mockImplementation(async (id: string) => {
       if (id === PRIVATE_CONN.id) return fullOf(PRIVATE_CONN, 'notion');
+      if (id === DEFAULT_ON_PRIVATE_CONN.id) return fullOf(DEFAULT_ON_PRIVATE_CONN);
       return fullOf(SHARED_CONN);
     });
     // No stored credentials by default → every connector reads "not connected".
@@ -98,16 +96,53 @@ describe('ConnectorsTab', () => {
     expect(screen.getByText('Salesforce')).toBeInTheDocument();
   });
 
+  it('renders Connected and Available section headers', async () => {
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    expect(screen.getByText(/^Connected \(/)).toBeInTheDocument();
+    expect(screen.getByText(/^Available \(/)).toBeInTheDocument();
+  });
+
+  it('puts a connector with all keys present on the Connected shelf, others on Available', async () => {
+    // notion key stored → my-notion connected; salesforce missing → available.
+    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([
+      {
+        scope: 'user',
+        ownerId: 'u1',
+        ref: 'account:notion',
+        kind: 'api-key',
+        createdAt: '2026-05-20T00:00:00Z',
+      },
+    ]);
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    await waitFor(() => {
+      expect(screen.getByText('Connected (1)')).toBeInTheDocument();
+      expect(screen.getByText('Available (1)')).toBeInTheDocument();
+    });
+    // The connected tile offers Reconnect; the available tile offers Connect.
+    const notionTile = screen.getByTestId('connector-tile-my-notion');
+    expect(within(notionTile).getByRole('button', { name: /reconnect/i })).toBeInTheDocument();
+    const sfTile = screen.getByTestId('connector-tile-company-salesforce');
+    expect(within(sfTile).getByRole('button', { name: /^connect$/i })).toBeInTheDocument();
+  });
+
+  it('all connectors with no keys land on the Available shelf', async () => {
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    await waitFor(() => {
+      expect(screen.getByText('Available (2)')).toBeInTheDocument();
+      expect(screen.getByText('Connected (0)')).toBeInTheDocument();
+    });
+  });
+
   it('shows the single "Catalog" badge ONLY on the catalog-sourced (shared) connector', async () => {
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('Salesforce');
-    // Exactly one Catalog badge across the whole tab (only the shared connector).
     const badges = screen.getAllByText('Catalog');
     expect(badges).toHaveLength(1);
-    // It belongs to the Salesforce tile (the shared/catalog connector).
     const sharedTile = screen.getByTestId('connector-tile-company-salesforce');
     expect(sharedTile.textContent).toMatch(/Catalog/);
-    // The private connector's tile carries no "Catalog" copy.
     const privateTile = screen.getByTestId('connector-tile-my-notion');
     expect(privateTile.textContent).not.toMatch(/Catalog/);
   });
@@ -119,13 +154,10 @@ describe('ConnectorsTab', () => {
     ]);
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('Org GitHub');
-    // The default-on connector wears the single "Catalog" badge (sourced via
-    // defaultAttached), the plain private one does not.
     const defaultTile = screen.getByTestId('connector-tile-org-github');
     expect(defaultTile.textContent).toMatch(/Catalog/);
     const privateTile = screen.getByTestId('connector-tile-my-notion');
     expect(privateTile.textContent).not.toMatch(/Catalog/);
-    // Exactly one Catalog badge on the tab (only the default-on connector).
     expect(screen.getAllByText('Catalog')).toHaveLength(1);
   });
 
@@ -143,7 +175,6 @@ describe('ConnectorsTab', () => {
   it('captions what each connector needs (a key) without naming the mechanism', async () => {
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('Salesforce');
-    // workspace keyMode → a shared key; personal → a personal key.
     expect(screen.getByText(/shared key/i)).toBeInTheDocument();
     expect(screen.getByText(/personal key/i)).toBeInTheDocument();
   });
@@ -152,7 +183,7 @@ describe('ConnectorsTab', () => {
     vi.spyOn(connectorsLib, 'listConnectors').mockResolvedValue([]);
     render(<ConnectorsTab isAdmin={false} />);
     await waitFor(() => {
-      expect(screen.getByText(/no connected services/i)).toBeInTheDocument();
+      expect(screen.getByText(/no connectors yet/i)).toBeInTheDocument();
     });
     expect(screen.queryByText('Catalog')).toBeNull();
     expect(screen.queryByText(/catalog/i)).toBeNull();
@@ -168,13 +199,12 @@ describe('ConnectorsTab', () => {
     });
   });
 
-  it('shows a Connect action on each tile and opens the connect dialog', async () => {
+  it('shows a Connect action on an Available tile and opens the connect dialog (self-connect)', async () => {
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('My Notion');
     const privateTile = screen.getByTestId('connector-tile-my-notion');
-    const connectBtn = privateTile.querySelector('button');
-    expect(connectBtn).not.toBeNull();
-    fireEvent.click(connectBtn!);
+    const connectBtn = within(privateTile).getByRole('button', { name: /^connect$/i });
+    fireEvent.click(connectBtn);
     // The dialog loads the full connector and (personal) shows the key form.
     expect(await screen.findByText(/Connect My Notion/i)).toBeInTheDocument();
     expect(await screen.findByLabelText(/API key/i)).toBeInTheDocument();
@@ -187,33 +217,13 @@ describe('ConnectorsTab', () => {
     await waitFor(() => expect(tile.textContent).toMatch(/not connected/i));
   });
 
-  it('a connector whose plan slot HAS a stored credential reads "connected"', async () => {
-    // notion key stored at the per-user account vault → connected.
-    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([
-      {
-        scope: 'user',
-        ownerId: 'u1',
-        ref: 'account:notion',
-        kind: 'api-key',
-        createdAt: '2026-05-20T00:00:00Z',
-      },
-    ]);
-    render(<ConnectorsTab isAdmin={false} />);
-    await screen.findByText('My Notion');
-    const tile = screen.getByTestId('connector-tile-my-notion');
-    await waitFor(() => {
-      expect(tile.textContent).toMatch(/connected/i);
-      expect(tile.textContent).not.toMatch(/not connected/i);
-    });
-    // The action reads "Reconnect" once connected.
-    expect(tile.querySelector('button')?.textContent).toMatch(/reconnect/i);
-  });
-
-  it('the workspace connect dialog shows the shared-key consent gate (admin)', async () => {
+  it('the self-connect of a workspace/shared connector shows the capability-consent gate', async () => {
+    // Admin self-connecting a SHARED catalog connector. keyMode workspace → the
+    // shared-key consent gate must show before any key form.
     render(<ConnectorsTab isAdmin />);
     await screen.findByText('Salesforce');
     const tile = screen.getByTestId('connector-tile-company-salesforce');
-    fireEvent.click(tile.querySelector('button')!);
+    fireEvent.click(within(tile).getByRole('button', { name: /^connect$/i }));
     expect(
       await screen.findByText(
         /Sharing this key lets their assistant act as you on Salesforce/i,
@@ -222,6 +232,86 @@ describe('ConnectorsTab', () => {
     // Key form blocked until consent.
     expect(screen.queryByLabelText(/API key/i)).toBeNull();
   });
+
+  // --- admin inline curation (TASK-127) ------------------------------------
+
+  it('hides ALL curation controls (New/Edit/Delete/set-default/Test) from a non-admin', async () => {
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    expect(screen.queryByRole('button', { name: /new connector/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^edit$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^delete$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /set default/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /^test$/i })).toBeNull();
+  });
+
+  it('shows admin curation controls (New + per-row Edit/Delete/set-default/Test) for an admin', async () => {
+    render(<ConnectorsTab isAdmin />);
+    await screen.findByText('My Notion');
+    expect(screen.getByRole('button', { name: /new connector/i })).toBeInTheDocument();
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    expect(within(tile).getByRole('button', { name: /^edit$/i })).toBeInTheDocument();
+    expect(within(tile).getByRole('button', { name: /^delete$/i })).toBeInTheDocument();
+    expect(within(tile).getByRole('button', { name: /set default/i })).toBeInTheDocument();
+    expect(within(tile).getByRole('button', { name: /^test$/i })).toBeInTheDocument();
+  });
+
+  it('admin "New connector" opens the create form', async () => {
+    render(<ConnectorsTab isAdmin />);
+    await screen.findByText('My Notion');
+    fireEvent.click(screen.getByRole('button', { name: /new connector/i }));
+    expect(await screen.findByLabelText(/service name/i)).toBeInTheDocument();
+  });
+
+  it('admin per-row Edit opens the edit form prefilled', async () => {
+    render(<ConnectorsTab isAdmin />);
+    await screen.findByText('My Notion');
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(tile).getByRole('button', { name: /^edit$/i }));
+    const nameInput = await screen.findByLabelText(/service name/i);
+    await waitFor(() => expect(nameInput).toHaveValue('My Notion'));
+  });
+
+  it('admin set-default toggles defaultAttached via patchConnector and refreshes', async () => {
+    const patch = vi
+      .spyOn(connectorsLib, 'patchConnector')
+      .mockResolvedValue(fullOf(PRIVATE_CONN));
+    render(<ConnectorsTab isAdmin />);
+    await screen.findByText('My Notion');
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(tile).getByRole('button', { name: /set default/i }));
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith('my-notion', { defaultAttached: true }),
+    );
+  });
+
+  it('admin Delete opens a styled confirm and deletes on confirm', async () => {
+    const del = vi.spyOn(connectorsLib, 'deleteConnector').mockResolvedValue();
+    render(<ConnectorsTab isAdmin />);
+    await screen.findByText('My Notion');
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(tile).getByRole('button', { name: /^delete$/i }));
+    expect(await screen.findByText(/delete connector\?/i)).toBeInTheDocument();
+    // The dialog's Delete button (the destructive confirm) is the last one.
+    const dialogDelete = screen
+      .getAllByRole('button', { name: /^delete$/i })
+      .at(-1)!;
+    fireEvent.click(dialogDelete);
+    await waitFor(() => expect(del).toHaveBeenCalledWith('my-notion'));
+  });
+
+  it('admin Test probes the connector and shows the verdict', async () => {
+    vi.spyOn(connectorsLib, 'testConnector').mockResolvedValue({
+      status: 'needs-key',
+    });
+    render(<ConnectorsTab isAdmin />);
+    await screen.findByText('My Notion');
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(tile).getByRole('button', { name: /^test$/i }));
+    await waitFor(() => expect(tile.textContent).toMatch(/needs key/i));
+  });
+
+  // --- allowed sites (preserved verbatim, TASK-131 reshapes later) ---------
 
   it('shows the per-agent Allowed sites mirror and revokes a host', async () => {
     vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([
@@ -245,8 +335,6 @@ describe('ConnectorsTab', () => {
     ]);
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('Allowed sites');
-    // A one-line helper ties the section to the connectors above: these are
-    // hosts the agent was granted "always allow", not connectors.
     const caption = await screen.findByText(/always allow/i);
     expect(caption).toBeInTheDocument();
     expect(caption.textContent ?? '').toMatch(/connector/i);

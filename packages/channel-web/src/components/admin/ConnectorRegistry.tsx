@@ -28,15 +28,20 @@ import {
   patchConnector,
   deleteConnector,
   testConnector,
-  emptyCapabilities,
   type ConnectorSummary,
-  type Connector,
-  type ConnectorCapabilities,
   type ConnectorKeyMode,
   type ConnectorVisibility,
-  type ConnectorMcpServerSpec,
   type ConnectorTestStatus,
 } from '../../lib/connectors';
+import {
+  emptyConnectorForm as emptyForm,
+  formFromConnector,
+  capabilitiesFromForm,
+  summaryToForm,
+  connectorIdFromName,
+  type ConnectorFormState as FormState,
+  type Transport,
+} from '../../lib/connector-form';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -60,133 +65,6 @@ import {
 import { RoleCard } from './RoleCard';
 import { StatusDot, type StatusDotVariant } from './StatusDot';
 import { cn } from '@/lib/utils';
-
-type Transport = 'stdio' | 'http';
-
-type FormState = {
-  connectorId: string;
-  name: string;
-  description: string;
-  usageNote: string;
-  keyMode: ConnectorKeyMode;
-  visibility: ConnectorVisibility;
-  /**
-   * Default-on for every agent (the connector half of the admin Catalog). When
-   * true the connector flows into every agent's effective set via
-   * `connectors:list-defaults` (TASK-97). This is the admin "curate + flag
-   * default-on" control (design §UI/IA admin Catalog).
-   */
-  defaultAttached: boolean;
-  // Mechanism (Advanced) — at most one MCP server in this form. Empty command
-  // AND empty url ⟹ a non-MCP connector (CLI / direct-API), still valid.
-  transport: Transport;
-  command: string;
-  args: string; // space-separated
-  url: string;
-  allowedHosts: string; // comma-separated
-  credentialSlots: string; // comma-separated slot names
-  /**
-   * The loaded connector's full capabilities (empty for a new connector). The
-   * form only edits allowedHosts / credentials / the single leading mcpServer;
-   * `packages` (CLI/npm/pypi backing) and any beyond-first mcpServer or extra
-   * mcpServer fields (env, etc.) are NOT surfaced — so we carry the original
-   * here and MERGE onto it on submit, never wiping the un-edited fill.
-   */
-  baseCapabilities: ConnectorCapabilities;
-};
-
-const emptyForm = (): FormState => ({
-  connectorId: '',
-  name: '',
-  description: '',
-  usageNote: '',
-  keyMode: 'personal',
-  visibility: 'private',
-  defaultAttached: false,
-  transport: 'stdio',
-  command: '',
-  args: '',
-  url: '',
-  allowedHosts: '',
-  credentialSlots: '',
-  baseCapabilities: emptyCapabilities(),
-});
-
-const splitList = (s: string): string[] =>
-  s
-    .split(',')
-    .map((x) => x.trim())
-    .filter(Boolean);
-
-/** Derive form state from a fetched connector (edit mode). Reads the single
- *  leading mcpServer if present, otherwise leaves mechanism fields empty. */
-function formFromConnector(c: Connector): FormState {
-  const mcp = c.capabilities.mcpServers[0];
-  const credSlots = c.capabilities.credentials.map((s) => s.slot);
-  return {
-    connectorId: c.id,
-    name: c.name,
-    description: c.description,
-    usageNote: c.usageNote,
-    keyMode: c.keyMode,
-    visibility: c.visibility,
-    defaultAttached: c.defaultAttached,
-    transport: mcp?.transport ?? 'stdio',
-    command: mcp?.command ?? '',
-    args: (mcp?.args ?? []).join(' '),
-    url: mcp?.url ?? '',
-    allowedHosts: c.capabilities.allowedHosts.join(', '),
-    credentialSlots: credSlots.join(', '),
-    baseCapabilities: c.capabilities,
-  };
-}
-
-/**
- * Assemble the opaque capabilities fill. MERGES the form's edited fields
- * (allowedHosts / credentials / the single leading mcpServer) onto the loaded
- * connector's original capabilities so the un-surfaced fill — `packages`
- * (CLI/npm/pypi backing), any beyond-first mcpServer, extra mcpServer fields
- * (env) — is PRESERVED, never wiped on edit. For a new connector the base is
- * empty so this is a plain build.
- */
-function capabilitiesFromForm(form: FormState): ConnectorCapabilities {
-  const base = form.baseCapabilities;
-  const allowedHosts = splitList(form.allowedHosts);
-  const credentials = splitList(form.credentialSlots).map((slot) => ({
-    slot,
-    kind: 'api-key' as const,
-  }));
-  const hasMcp =
-    (form.transport === 'http' && form.url.trim().length > 0) ||
-    (form.transport === 'stdio' && form.command.trim().length > 0);
-  let mcpServers = base.mcpServers;
-  if (hasMcp) {
-    const existing = base.mcpServers[0];
-    // Preserve any extra mcpServer fields (env, the server's own allowedHosts /
-    // credentials) the form doesn't surface; overlay transport/command/args/url.
-    const server: ConnectorMcpServerSpec = {
-      name: existing?.name ?? form.connectorId ?? form.name.trim().toLowerCase(),
-      allowedHosts: existing?.allowedHosts ?? [],
-      credentials: existing?.credentials ?? [],
-      ...(existing?.env !== undefined ? { env: existing.env } : {}),
-      transport: form.transport,
-      ...(form.transport === 'stdio'
-        ? {
-            command: form.command.trim(),
-            args: form.args.trim() ? form.args.trim().split(/\s+/) : [],
-          }
-        : { url: form.url.trim() }),
-    };
-    // Replace the leading server; keep any beyond-first servers untouched.
-    mcpServers = [server, ...base.mcpServers.slice(1)];
-  }
-  return {
-    allowedHosts,
-    credentials,
-    mcpServers,
-    packages: base.packages,
-  };
-}
 
 /** Short "what it needs" caption for the list. */
 function needsCaption(c: ConnectorSummary): string {
@@ -306,9 +184,7 @@ export function ConnectorRegistry() {
       setError('name is required');
       return;
     }
-    const connectorId =
-      form.connectorId ||
-      form.name.trim().toLowerCase().replace(/[^a-z0-9._-]/g, '-');
+    const connectorId = form.connectorId || connectorIdFromName(form.name);
     setBusy(true);
     setError(null);
     const body = {
@@ -750,16 +626,4 @@ export function ConnectorRegistry() {
       </Card>
     </div>
   );
-}
-
-/** Map a summary into the subset of form fields it carries (edit fallback). */
-function summaryToForm(c: ConnectorSummary): Partial<FormState> {
-  return {
-    connectorId: c.id,
-    name: c.name,
-    description: c.description,
-    usageNote: c.usageNote,
-    keyMode: c.keyMode,
-    visibility: c.visibility,
-  };
 }
