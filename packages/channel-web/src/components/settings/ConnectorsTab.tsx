@@ -25,7 +25,18 @@
  * React text nodes (auto-escaped) — never raw HTML.
  */
 import { useCallback, useEffect, useState } from 'react';
-import { listConnectors, type ConnectorSummary } from '@/lib/connectors';
+import {
+  listConnectors,
+  getConnector,
+  deriveCredentialPlan,
+  type ConnectorSummary,
+} from '@/lib/connectors';
+import {
+  myCredentials,
+  adminCredentials,
+  type CredentialMeta,
+} from '@/lib/credentials';
+import { ConnectorConnectDialog } from './ConnectorConnectDialog';
 import { SourceBadge, connectorSource } from '@/components/SourceBadge';
 import { RoleCard } from '@/components/admin/RoleCard';
 import { StatusDot } from '@/components/admin/StatusDot';
@@ -57,9 +68,25 @@ function shortDate(iso: string): string {
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleDateString();
 }
 
+/**
+ * Per-connector connected state, derived from REAL credential presence (design
+ * Phase 3: "Connected/not state reflects real credential presence; reach derives
+ * from scope"). `undefined` while the connector's plan is still loading.
+ *   - `'connected'` — every credential slot in the connector's plan has a stored
+ *     key at its derived scope/ref (an empty plan ⇒ needs no key ⇒ connected).
+ *   - `'disconnected'` — at least one plan slot has no stored key.
+ *   - `'unknown'` — the connector's full record failed to load (presence
+ *     undeterminable; the tile still offers Connect).
+ */
+type ConnectedState = 'connected' | 'disconnected' | 'unknown';
+
 export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   const [connectors, setConnectors] = useState<ConnectorSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Derived connected-state per connector id (REAL credential presence).
+  const [connected, setConnected] = useState<Record<string, ConnectedState>>({});
+  // The connector whose connect dialog is open (null = closed).
+  const [connecting, setConnecting] = useState<ConnectorSummary | null>(null);
   // Allowed sites — the durable per-(user, agent) "always allow" host grants
   // (design P3/P6; backed by @ax/host-grants, TASK-54). A service an agent
   // reaches is a connection too, so the host-grant mirror lives under
@@ -68,12 +95,65 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   const [agentId, setAgentId] = useState<string>('');
   const [sites, setSites] = useState<AllowedSite[] | null>(null);
 
+  /**
+   * Derive connected-state for a set of connectors from REAL credential presence.
+   * Reads the user / global credential lists ONCE (presence is metadata, never a
+   * secret value), then for each connector loads its full record (the LIST is
+   * metadata-only — capabilities load on demand) to derive its credential plan
+   * and check every plan slot has a stored key at its derived scope+ref. A
+   * connector whose full record fails to load reads `'unknown'` (still
+   * connectable). Best-effort: a list failure leaves every connector
+   * `'disconnected'` rather than crashing the tab.
+   */
+  const refreshConnectedState = useCallback(
+    async (list: ConnectorSummary[]) => {
+      let userCreds: CredentialMeta[] = [];
+      let globalCreds: CredentialMeta[] = [];
+      try {
+        userCreds = await myCredentials.list();
+      } catch {
+        // Treat as no creds → disconnected; never block the tab.
+      }
+      if (isAdmin) {
+        try {
+          globalCreds = await adminCredentials.list();
+        } catch {
+          // Non-fatal — global presence just reads as absent.
+        }
+      }
+      const hasCred = (scope: 'user' | 'global', ref: string): boolean => {
+        const pool = scope === 'user' ? userCreds : globalCreds;
+        return pool.some((c) => c.ref === ref && c.scope === scope);
+      };
+      const results = await Promise.all(
+        list.map(async (summary): Promise<[string, ConnectedState]> => {
+          try {
+            const full = await getConnector(summary.id);
+            const plan = deriveCredentialPlan(full);
+            const ok = plan.every((entry) => hasCred(entry.scope, entry.ref));
+            return [summary.id, ok ? 'connected' : 'disconnected'];
+          } catch {
+            return [summary.id, 'unknown'];
+          }
+        }),
+      );
+      setConnected((prev) => {
+        const next = { ...prev };
+        for (const [id, state] of results) next[id] = state;
+        return next;
+      });
+    },
+    [isAdmin],
+  );
+
   useEffect(() => {
     let cancelled = false;
     setError(null);
     listConnectors()
       .then((list) => {
-        if (!cancelled) setConnectors(list);
+        if (cancelled) return;
+        setConnectors(list);
+        void refreshConnectedState(list);
       })
       .catch((e: unknown) => {
         if (!cancelled) {
@@ -93,7 +173,7 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [refreshConnectedState]);
 
   const loadSites = useCallback((id: string) => {
     if (!id) return;
@@ -144,20 +224,53 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
 
       {connectors !== null && connectors.length > 0 && (
         <div className="flex flex-col gap-3.5">
-          {connectors.map((c) => (
-            <div key={c.id} data-testid={`connector-tile-${c.id}`}>
-              <RoleCard pill="service" title={c.name} caption={needsCaption(c)}>
-                <div className="flex items-center justify-end gap-2">
-                  <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground mr-auto">
-                    <StatusDot variant="ok" />
-                    connected
-                  </span>
-                  <SourceBadge source={connectorSource(c)} />
-                </div>
-              </RoleCard>
-            </div>
-          ))}
+          {connectors.map((c) => {
+            const state = connected[c.id];
+            const isConnected = state === 'connected';
+            return (
+              <div key={c.id} data-testid={`connector-tile-${c.id}`}>
+                <RoleCard pill="service" title={c.name} caption={needsCaption(c)}>
+                  <div className="flex items-center justify-end gap-2">
+                    <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground mr-auto">
+                      <StatusDot variant={isConnected ? 'ok' : 'empty'} />
+                      {state === undefined
+                        ? 'checking…'
+                        : isConnected
+                          ? 'connected'
+                          : 'not connected'}
+                    </span>
+                    <SourceBadge source={connectorSource(c)} />
+                    <Button
+                      size="sm"
+                      variant={isConnected ? 'outline' : 'default'}
+                      onClick={() => setConnecting(c)}
+                    >
+                      {isConnected ? 'Reconnect' : 'Connect'}
+                    </Button>
+                  </div>
+                </RoleCard>
+              </div>
+            );
+          })}
         </div>
+      )}
+
+      {/* The keyMode-aware connect handshake (personal JIT vs workspace shared
+          key + consent gate). Re-derives connected-state on a successful store
+          so the tile flips. */}
+      {connecting && (
+        <ConnectorConnectDialog
+          connectorId={connecting.id}
+          connectorName={connecting.name}
+          isAdmin={isAdmin}
+          open
+          onOpenChange={(o) => {
+            if (!o) setConnecting(null);
+          }}
+          onConnected={() => {
+            if (connectors) void refreshConnectedState(connectors);
+          }}
+        />
       )}
 
       {/* Allowed sites — the durable "always for this agent" host grants
