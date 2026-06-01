@@ -18,6 +18,11 @@ describe.each([['ax-skill-creator'], ['ax-connector-creator']])(
       expect(s!.capabilities.packages).toEqual({ npm: [], pypi: [] });
       expect(s!.files).toEqual([]);
       expect(s!.bodyMd.length).toBeGreaterThan(0);
+      // TASK-111 — the loader surfaces the manifest's connectors[] (the shipped
+      // builtins reference none, so []). The field must be present (not dropped)
+      // so a builtin that ever references a connector folds its reach via the
+      // skill→connector bridge.
+      expect(s!.connectors).toEqual([]);
     });
   },
 );

@@ -49,6 +49,15 @@ export function createSkillBrokerPlugin(_config: SkillBrokerConfig = {}): Plugin
           degradation:
             'an unmet-capability need is not filed to the admin admit queue; the miss is still returned to the model as not-found/empty',
         },
+        // TASK-111 — when a requested catalog skill references connectors[], the
+        // broker resolves each via connectors:resolve and folds its reach into the
+        // approval card. hasService-guarded + best-effort, so a preset without
+        // @ax/connectors degrades to the skill's own capability block on the card.
+        {
+          hook: 'connectors:resolve',
+          degradation:
+            "the approval card shows only the skill's own capability block; a referenced connector's hosts/keys are not folded in",
+        },
       ],
       subscribes: [],
     },

@@ -169,6 +169,71 @@ export async function resolveEffectiveConnectors(
 }
 
 /**
+ * Resolve the connectors a SKILL declares via its top-level `connectors[]`
+ * reference list (TASK-92) into the SAME `ResolvedConnectorForOrch` shape the
+ * agent effective set uses, so the caller can fold them through the EXISTING
+ * `foldConnectorCaps` path (TASK-111 — the skill→connector cap-resolution
+ * bridge). This is the skill-driven twin of `resolveEffectiveConnectors`: the
+ * agent path resolves the agent's effective set (defaults ∪ owner's private),
+ * THIS path resolves the connectors a skill in the spawn union references.
+ *
+ * `connectorIds` is the union of every materialized skill's `connectors[]`;
+ * `alreadyResolved` is the id set the agent effective resolution already
+ * produced, so an id reachable BOTH ways is folded exactly once (dedup by id,
+ * matching `resolveEffectiveConnectors`'s own dedup). Duplicate ids within the
+ * skill reference list itself are also collapsed (a Set drives the loop).
+ *
+ * NON-FATAL, same posture as the agent path: a per-id `connectors:resolve`
+ * failure logs (`skill_connector_resolve_failed`) + skips THAT connector, never
+ * terminates the session (connectors are additive reach — a failure yields fewer
+ * connectors, never wider reach). A stripped preset without `connectors:resolve`
+ * yields [].
+ *
+ * ZERO-REACH for unapproved/pending connectors comes for free: `connectors:resolve`
+ * reads ONLY the LIVE connectors table (TASK-94), so a pending authored draft a
+ * skill references is never resolved here — an unapproved connector grants no
+ * reach even when a skill names it.
+ */
+export async function resolveSkillReferencedConnectors(
+  bus: HookBus,
+  ctx: AgentContext,
+  connectorIds: Iterable<string>,
+  alreadyResolved: Set<string>,
+): Promise<ResolvedConnectorForOrch[]> {
+  if (!bus.hasService('connectors:resolve')) return [];
+
+  // Collapse duplicate references AND drop any id the agent effective set already
+  // folded, so each remaining id is resolved exactly once.
+  const toResolve = new Set<string>();
+  for (const id of connectorIds) {
+    if (!alreadyResolved.has(id)) toResolve.add(id);
+  }
+  if (toResolve.size === 0) return [];
+
+  const out: ResolvedConnectorForOrch[] = [];
+  for (const connectorId of toResolve) {
+    try {
+      const resolved = await bus.call<
+        { userId: string; connectorId: string },
+        ConnectorsResolveOutput
+      >('connectors:resolve', ctx, { userId: ctx.userId, connectorId });
+      out.push({
+        id: resolved.id,
+        capabilities: resolved.capabilities,
+        ...(resolved.usageNote !== undefined ? { usageNote: resolved.usageNote } : {}),
+      });
+    } catch (err) {
+      // Same convention as connector_resolve_failed — non-fatal, additive reach.
+      ctx.logger.warn('skill_connector_resolve_failed', {
+        connectorId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  return out;
+}
+
+/**
  * Per-connector credential env-name scheme — the connector twin of
  * `skillCredentialEnvName`. `connector:<id>:<slot>`. Namespacing connector slots
  * keeps them from colliding with a skill's same-named slot OR a trusted base
