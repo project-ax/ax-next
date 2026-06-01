@@ -247,6 +247,13 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
           degradation:
             'the TASK-100 cap→connector migration strips the legacy capability block but cannot create the connector (no connectors store) — the skill loses that reach until a connector is authored',
         },
+        {
+          // TASK-100 — the migration reads connectors:get to avoid CLOBBERING a
+          // pre-existing connector of the same id (it only creates when absent).
+          hook: 'connectors:get',
+          degradation:
+            'the migration cannot pre-check for an existing connector and falls back to creating one (still owner+id scoped, never cross-tenant)',
+        },
       ],
       subscribes: [],
     },

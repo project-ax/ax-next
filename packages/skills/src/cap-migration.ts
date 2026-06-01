@@ -55,6 +55,14 @@ interface ConnectorUpsertInput {
   capabilities: LegacyCapabilities;
 }
 
+// connectors:get input — used to check whether a connector already exists so the
+// migration NEVER clobbers a pre-existing (e.g. admin-curated) connector of the
+// same id. Structural mirror per I2.
+interface ConnectorGetInput {
+  userId: string;
+  connectorId: string;
+}
+
 // A connector id derived from a skill id: the skill id already satisfies the
 // connector slug grammar (`^[a-z0-9][a-z0-9_-]*$`, ≤128) — it is the manifest
 // NAME_RE (`^[a-z][a-z0-9-]{0,63}$`), a strict subset — so we reuse it verbatim.
@@ -178,6 +186,23 @@ export async function migrateSkillCapabilitiesToConnectors(
   let skipped = 0;
 
   const canUpsert = bus.hasService('connectors:upsert');
+  const canGet = bus.hasService('connectors:get');
+
+  // True iff a LIVE connector with this id already exists for the owner — so the
+  // migration must NOT clobber it (e.g. an admin-curated connector that happens to
+  // share the skill's id). connectors:get throws `not-found` when absent.
+  async function connectorExists(ownerUserId: string, connectorId: string): Promise<boolean> {
+    if (!canGet) return false;
+    try {
+      await bus.call<ConnectorGetInput, unknown>('connectors:get', ctx, {
+        userId: ownerUserId,
+        connectorId,
+      });
+      return true;
+    } catch {
+      return false; // not-found (or any read error) → treat as absent; upsert below
+    }
+  }
 
   async function migrateRow(
     table: 'skills_v1_skills' | 'skills_v1_user_skills',
@@ -191,26 +216,37 @@ export async function migrateSkillCapabilitiesToConnectors(
     }
     // 1. Create the connector via the hook (invariant #4) when the skill had
     //    real reach. A reach-less skill just gets its empty cap block stripped.
+    //    SAFETY: never clobber a pre-existing connector of the same id (e.g. an
+    //    admin-curated one) — only create when absent. This also makes a re-run
+    //    after a partial migration idempotent (the connector survives even if the
+    //    skill row's rewrite failed last time).
     if (result.connectorId !== null && result.capabilities !== null && canUpsert) {
-      try {
-        await bus.call<ConnectorUpsertInput, unknown>('connectors:upsert', ctx, {
-          userId: ownerForConnector,
-          connectorId: result.connectorId,
-          name: row.skill_id,
-          description: `Migrated from the "${row.skill_id}" skill's capabilities (TASK-100).`,
-          // Personal/private is the safe default: a per-user JIT key, owner-only
-          // reach. An admin can re-curate (workspace/shared, default-on) later.
-          keyMode: 'personal',
-          visibility: 'private',
-          capabilities: result.capabilities,
-        });
-        connectorsUpserted++;
-      } catch (err) {
-        ctx.logger.warn('skill_cap_migration_connector_upsert_failed', {
+      if (await connectorExists(ownerForConnector, result.connectorId)) {
+        ctx.logger.warn('skill_cap_migration_connector_exists_skipped', {
           skillId: row.skill_id,
-          error: err instanceof Error ? err.message : String(err),
+          connectorId: result.connectorId,
         });
-        // Fall through: still strip the cap block so the manifest stays valid.
+      } else {
+        try {
+          await bus.call<ConnectorUpsertInput, unknown>('connectors:upsert', ctx, {
+            userId: ownerForConnector,
+            connectorId: result.connectorId,
+            name: row.skill_id,
+            description: `Migrated from the "${row.skill_id}" skill's capabilities (TASK-100).`,
+            // Personal/private is the safe default: a per-user JIT key, owner-only
+            // reach. An admin can re-curate (workspace/shared, default-on) later.
+            keyMode: 'personal',
+            visibility: 'private',
+            capabilities: result.capabilities,
+          });
+          connectorsUpserted++;
+        } catch (err) {
+          ctx.logger.warn('skill_cap_migration_connector_upsert_failed', {
+            skillId: row.skill_id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          // Fall through: still strip the cap block so the manifest stays valid.
+        }
       }
     } else if (result.connectorId !== null && !canUpsert) {
       ctx.logger.warn('skill_cap_migration_no_connectors_plugin', {

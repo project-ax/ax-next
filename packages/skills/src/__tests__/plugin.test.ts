@@ -171,6 +171,11 @@ describe('@ax/skills plugin manifest + lifecycle', () => {
           degradation:
             'the TASK-100 cap→connector migration strips the legacy capability block but cannot create the connector (no connectors store) — the skill loses that reach until a connector is authored',
         },
+        {
+          hook: 'connectors:get',
+          degradation:
+            'the migration cannot pre-check for an existing connector and falls back to creating one (still owner+id scoped, never cross-tenant)',
+        },
       ],
       subscribes: [],
     });
