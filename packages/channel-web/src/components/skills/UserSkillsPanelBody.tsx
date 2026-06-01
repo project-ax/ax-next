@@ -1,11 +1,13 @@
 /**
  * UserSkillsPanelBody — the per-user "My Skills" content, sans modal chrome.
  *
- * Extracted from UserSkillsPanel so the SAME content renders in two places
- * (one source of truth, invariant #4):
- *   - `UserSkillsPanel` wraps it in a Dialog (the user-menu "My Skills" entry).
- *   - `SkillsTab` renders it inline as the Settings "Skills" tab body
- *     (connectors-first-class UI/IA reorg).
+ * Originally extracted from a `UserSkillsPanel` Dialog wrapper so the same
+ * content could render in both that modal and a Settings tab. TASK-110 retired
+ * the modal (and its user-menu "My Skills" entry), so today the sole consumer
+ * is `SkillsTab`, which renders this inline as the Settings "Skills" tab body
+ * (connectors-first-class UI/IA reorg). The split is kept because the body is
+ * still the one source of truth for the per-user skills surface (invariant #4)
+ * — `SkillsTab` is just chrome around it.
  *
  * Every signed-in user can CRUD their own user-scoped skills via
  * `/settings/skills*`; the server forces `scope='user'` and ownerUserId from the
