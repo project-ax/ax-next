@@ -43,6 +43,13 @@ afterAll(async () => {
 const factory: IndexBackendFactory = async (bus) => {
   // Register the database:get-instance provider on the contract's bus so the
   // postgres indexer plugin can resolve the shared Kysely instance during init.
+  // runIndexContract calls this factory once PER TEST (in beforeEach), so each
+  // iteration opens its own pg.Pool here. We capture dbPlugin and shut it down
+  // in teardown — without that, every per-test pool stays open until the
+  // container stops in afterAll, and the plugin's pool.on('error') listener
+  // then LOGS a benign 57P01 ("terminating connection due to administrator
+  // command") once per orphaned pool. That's handled noise (the suite stays
+  // green), but it's noise; draining the pool gracefully here silences it.
   const dbPlugin = createDatabasePostgresPlugin({ connectionString });
   await dbPlugin.init!({ bus, config: {} });
 
@@ -72,6 +79,12 @@ const factory: IndexBackendFactory = async (bus) => {
     teardown: async () => {
       // Truncate the table rather than drop + recreate — faster between runs.
       await sql`TRUNCATE memory_strata_index_v1_docs`.execute(adminDb);
+      // Drain THIS iteration's db-plugin pool gracefully (kysely.destroy()),
+      // so it isn't still open when the container stops in afterAll. Without
+      // this the plugin's pool.on('error') logs a benign 57P01 per pool at
+      // teardown. shutdown() is best-effort/idempotent (guards on its own
+      // kysely), so it's safe to await here.
+      await dbPlugin.shutdown?.();
     },
   };
 };
