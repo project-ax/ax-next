@@ -238,4 +238,17 @@ describe('ConnectorsTab', () => {
     fireEvent.click(screen.getByRole('button', { name: /revoke/i }));
     await waitFor(() => expect(revoke).toHaveBeenCalledWith('a1', 'status.example.com'));
   });
+
+  it('explains the Allowed sites section as "always allow" host grants, distinct from the connectors above', async () => {
+    vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([
+      { agentId: 'a1', displayName: 'Research', visibility: 'personal' },
+    ]);
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('Allowed sites');
+    // A one-line helper ties the section to the connectors above: these are
+    // hosts the agent was granted "always allow", not connectors.
+    const caption = await screen.findByText(/always allow/i);
+    expect(caption).toBeInTheDocument();
+    expect(caption.textContent ?? '').toMatch(/connector/i);
+  });
 });
