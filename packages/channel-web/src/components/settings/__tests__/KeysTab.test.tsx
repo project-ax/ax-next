@@ -44,7 +44,9 @@ describe('KeysTab', () => {
     render(<KeysTab />);
     await screen.findByText(/used by: linear/);
     fireEvent.click(screen.getByRole('button', { name: /^add a key$/i }));
-    fireEvent.change(await screen.findByLabelText(/^service$/i), { target: { value: 'github' } });
+    fireEvent.change(await screen.findByLabelText(/which service is this key for/i), {
+      target: { value: 'github' },
+    });
     fireEvent.change(screen.getByLabelText(/^value$/i), { target: { value: 'ghp_secret' } });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() =>
@@ -57,13 +59,85 @@ describe('KeysTab', () => {
     );
   });
 
-  it('rejects an invalid service slug with a friendly error and disables Save', async () => {
+  it('normalizes a friendly service name to a slug and never shows slug-grammar copy', async () => {
+    const set = vi.spyOn(credLib, 'setDestinationCredential').mockResolvedValue();
     render(<KeysTab />);
     await screen.findByText(/used by: linear/);
     fireEvent.click(screen.getByRole('button', { name: /^add a key$/i }));
-    fireEvent.change(await screen.findByLabelText(/^service$/i), { target: { value: 'Bad Service' } });
-    expect(screen.getByText(/lowercase service name/i)).toBeInTheDocument();
+    // A human types a friendly, mixed-case name with spaces + punctuation.
+    fireEvent.change(await screen.findByLabelText(/which service is this key for/i), {
+      target: { value: 'My Service!' },
+    });
+    // No slug-grammar validation copy is ever surfaced to the user.
+    expect(screen.queryByText(/lowercase service name/i)).not.toBeInTheDocument();
+    // Save is enabled once a value is present (input slugifies non-empty).
+    fireEvent.change(screen.getByLabelText(/^value$/i), { target: { value: 'sekret' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() =>
+      expect(set).toHaveBeenCalledWith({
+        destination: { kind: 'account', service: 'my-service' },
+        slot: { kind: 'api-key' },
+        scope: { scope: 'user', ownerId: null },
+        payload: 'sekret',
+      }),
+    );
+  });
+
+  it('keeps Save disabled when the service name slugifies to empty', async () => {
+    render(<KeysTab />);
+    await screen.findByText(/used by: linear/);
+    fireEvent.click(screen.getByRole('button', { name: /^add a key$/i }));
+    fireEvent.change(await screen.findByLabelText(/which service is this key for/i), {
+      target: { value: '   ' },
+    });
+    fireEvent.change(screen.getByLabelText(/^value$/i), { target: { value: 'sekret' } });
     expect(screen.getByRole('button', { name: /^save$/i })).toBeDisabled();
+  });
+
+  it('shows a humane error with a next step (not a raw dump) when the list fails', async () => {
+    vi.spyOn(credLib.myCredentials, 'list').mockRejectedValue(new Error('HTTP 500'));
+    render(<KeysTab />);
+    // The leading sentence names a next step the user can take.
+    expect(
+      await screen.findByText(/check it's correct and try again/i),
+    ).toBeInTheDocument();
+    // No "[object Object]" String(e) dump is ever rendered.
+    expect(screen.queryByText(/\[object Object\]/)).not.toBeInTheDocument();
+  });
+
+  it('renders a humane next step even for a non-Error rejection', async () => {
+    // A bare string rejection must still surface the next-step sentence.
+    vi.spyOn(credLib.myCredentials, 'list').mockRejectedValue('kaboom');
+    render(<KeysTab />);
+    expect(
+      await screen.findByText(/check it's correct and try again/i),
+    ).toBeInTheDocument();
+  });
+
+  it('does not leak a raw kind:value string for an unknown credential ref', async () => {
+    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([
+      { scope: 'user', ownerId: 'u1', ref: 'provider:anthropic', kind: 'api-key', createdAt: '2026-05-20T00:00:00Z' },
+    ]);
+    vi.spyOn(connLib, 'getAccountUsage').mockResolvedValue({});
+    render(<KeysTab />);
+    // A friendly label is shown for the unknown ref.
+    expect(await screen.findByText(/model provider/i)).toBeInTheDocument();
+    // The raw "provider:anthropic" string never reaches the user.
+    expect(screen.queryByText('provider:anthropic')).not.toBeInTheDocument();
+    expect(screen.queryByText(/used by: provider:anthropic/)).not.toBeInTheDocument();
+  });
+
+  it('falls back to a calm label for an unknown ref whose kind collides with a prototype key', async () => {
+    // A kind segment equal to a prototype key (e.g. "toString") must NOT resolve
+    // to the inherited function — that would crash the row render. It falls back
+    // to the calm "Other credential" label.
+    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([
+      { scope: 'user', ownerId: 'u1', ref: 'toString:weird', kind: 'api-key', createdAt: '2026-05-20T00:00:00Z' },
+    ]);
+    vi.spyOn(connLib, 'getAccountUsage').mockResolvedValue({});
+    render(<KeysTab />);
+    expect(await screen.findByText(/other credential/i)).toBeInTheDocument();
+    expect(screen.queryByText('toString:weird')).not.toBeInTheDocument();
   });
 
   it('Remove on an account row calls clearDestinationCredential with the account destination', async () => {

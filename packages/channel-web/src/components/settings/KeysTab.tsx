@@ -43,22 +43,58 @@ import { getAccountUsage } from '@/lib/connections';
 
 const SKILL_REF = /^skill:([^:]+):(.+)$/;
 const ACCOUNT_REF = /^account:(.+)$/;
-// Client-side friendly early validation. SUBSET-or-equal of the server's account
-// service grammar (credentials-admin-routes DestinationSchema) so a slug that
-// passes here always passes there — never a superset (the mistakes.md rule).
-const ACCOUNT_SERVICE_RE = /^[a-z][a-z0-9-]{0,63}$/;
 
 type ParsedRef =
   | { shape: 'account'; service: string }
   | { shape: 'skill'; skillId: string; slot: string }
-  | { shape: 'other'; raw: string };
+  | { shape: 'other'; kind: string };
 
 function parseRef(ref: string): ParsedRef {
   const acct = ref.match(ACCOUNT_REF);
   if (acct) return { shape: 'account', service: acct[1]! };
   const skill = ref.match(SKILL_REF);
   if (skill) return { shape: 'skill', skillId: skill[1]!, slot: skill[2]! };
-  return { shape: 'other', raw: ref };
+  // Unknown ref shape (provider/mcp/routine/…). Keep ONLY the kind segment for
+  // a friendly label — never surface the raw `kind:value` to the user (the
+  // `value` half can be an internal id/slug that means nothing to a human).
+  const kind = ref.includes(':') ? ref.slice(0, ref.indexOf(':')) : ref;
+  return { shape: 'other', kind };
+}
+
+/** Friendly nouns for the credential refs this surface doesn't manage. A ref
+ *  shape we don't recognize still reads as a calm human label, never a raw
+ *  `kind:value` slug. */
+const OTHER_KIND_LABEL: Record<string, string> = {
+  provider: 'Model provider',
+  mcp: 'Connector',
+  routine: 'Scheduled task',
+};
+function otherKindLabel(kind: string): string {
+  // `Object.hasOwn` guards against a kind segment that collides with a
+  // prototype key (e.g. `toString`, `__proto__`) returning a non-string.
+  return Object.hasOwn(OTHER_KIND_LABEL, kind) ? OTHER_KIND_LABEL[kind]! : 'Other credential';
+}
+
+/** A humane error string: an Error's own message, or a stringified fallback.
+ *  Mirrors the sibling ConnectorsTab / ConnectorConnectDialog idiom — keeps the
+ *  raw `[object Object]` of `String(someErrorObject)` off the user's screen. */
+function humanError(err: unknown): string {
+  return err instanceof Error ? err.message : String(err);
+}
+
+/** Normalize a free-typed, human service NAME into the `account:<service>`
+ *  slug the vault stores. Guarantees the result either satisfies the server's
+ *  grammar (`/^[a-z][a-z0-9-]{0,63}$/`, credentials-admin-routes) or is the
+ *  empty string — so the UI never has to surface slug-grammar rules to the
+ *  user. "My Service!" → "my-service"; "  " → "". */
+function toServiceSlug(input: string): string {
+  const hyphenated = input
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-') // any run of non-alphanumerics → one hyphen
+    .replace(/^-+|-+$/g, ''); // trim leading/trailing hyphens
+  // The grammar requires a LEADING letter; drop any leading digits/hyphens.
+  const leadingTrimmed = hyphenated.replace(/^[^a-z]+/, '');
+  return leadingTrimmed.slice(0, 64).replace(/-+$/g, '');
 }
 
 export function KeysTab() {
@@ -71,7 +107,7 @@ export function KeysTab() {
     myCredentials
       .list()
       .then(setCreds)
-      .catch((e: unknown) => setError(String(e)));
+      .catch((e: unknown) => setError(humanError(e)));
     // Best-effort: the "used by" hint degrades to the service name if usage
     // can't be loaded — it must never block the keys list from rendering.
     getAccountUsage()
@@ -93,7 +129,7 @@ export function KeysTab() {
       });
       load();
     } catch (e: unknown) {
-      setError(String(e));
+      setError(humanError(e));
     }
   };
   const removeAccountKey = async (service: string) => {
@@ -104,7 +140,7 @@ export function KeysTab() {
       });
       load();
     } catch (e: unknown) {
-      setError(String(e));
+      setError(humanError(e));
     }
   };
 
@@ -119,7 +155,7 @@ export function KeysTab() {
       });
       load();
     } catch (e: unknown) {
-      setError(String(e));
+      setError(humanError(e));
     }
   };
   const removeSkillKey = async (skillId: string, slot: string) => {
@@ -130,7 +166,7 @@ export function KeysTab() {
       });
       load();
     } catch (e: unknown) {
-      setError(String(e));
+      setError(humanError(e));
     }
   };
 
@@ -145,7 +181,13 @@ export function KeysTab() {
       </div>
       {error && (
         <Alert variant="destructive">
-          <AlertDescription>{error}</AlertDescription>
+          <AlertDescription>
+            <span className="block">
+              We couldn't save your key. Check it's correct and try again — your
+              admin can help if it keeps failing.
+            </span>
+            <span className="mt-1 block text-xs opacity-80">{error}</span>
+          </AlertDescription>
         </Alert>
       )}
       <Card className="divide-y divide-border">
@@ -210,13 +252,16 @@ export function KeysTab() {
             );
           }
           // Unknown ref shape (provider/mcp/routine) — display-only, not
-          // user-managed from this surface.
+          // user-managed from this surface. Render a friendly kind label, never
+          // the raw `kind:value` ref (that internal id means nothing to a user).
           return (
             <div key={c.ref} className="flex items-center gap-3 px-4 py-2.5">
               <span className="flex flex-1 min-w-0 flex-col">
-                <span className="truncate text-sm text-foreground">{parsed.raw}</span>
+                <span className="truncate text-sm text-foreground">
+                  {otherKindLabel(parsed.kind)}
+                </span>
                 <span className="truncate text-[11px] text-muted-foreground">
-                  used by: {parsed.raw}
+                  Managed elsewhere
                 </span>
               </span>
               <span className="text-xs tracking-widest text-muted-foreground">••••••</span>
@@ -229,8 +274,10 @@ export function KeysTab() {
   );
 }
 
-/** "Add a key by service" (design P2): enter a service slug + value to create a
- *  shared `account:<service>` vault entry, even before any skill prompts. */
+/** "Add a key" (design P2): name the service (a friendly name, not a slug) +
+ *  enter a value to create a shared `account:<service>` vault entry, even
+ *  before any skill prompts. The friendly name is slugified on save
+ *  ({@link toServiceSlug}) so the user never sees slug-grammar rules. */
 function AddByServiceSheet({
   onSave,
 }: {
@@ -239,8 +286,11 @@ function AddByServiceSheet({
   const [service, setService] = useState('');
   const [value, setValue] = useState('');
   const [open, setOpen] = useState(false);
-  const serviceValid = ACCOUNT_SERVICE_RE.test(service);
-  const invalid = service.length > 0 && !serviceValid;
+  // The user types a friendly name; we slugify it for the `account:<service>`
+  // ref on save. Save is enabled iff that slug is non-empty AND there's a value
+  // — no slug-grammar rules are ever shown to the user.
+  const slug = toServiceSlug(service);
+  const canSave = slug.length > 0 && value.length > 0;
   return (
     <Sheet open={open} onOpenChange={setOpen}>
       <SheetTrigger asChild>
@@ -248,22 +298,16 @@ function AddByServiceSheet({
       </SheetTrigger>
       <SheetContent>
         <SheetHeader>
-          <SheetTitle>Add a key by service</SheetTitle>
+          <SheetTitle>Add a key</SheetTitle>
         </SheetHeader>
         <div className="mt-4 flex flex-col gap-3">
-          <Label htmlFor="add-key-service">Service</Label>
+          <Label htmlFor="add-key-service">Which service is this key for?</Label>
           <Input
             id="add-key-service"
             value={service}
-            aria-invalid={invalid}
-            onChange={(e) => setService(e.target.value.trim())}
-            placeholder="e.g. linear"
+            onChange={(e) => setService(e.target.value)}
+            placeholder="e.g. Linear, GitHub, Notion"
           />
-          {invalid && (
-            <p className="text-[11px] text-destructive">
-              Use a lowercase service name (letters, digits, hyphens).
-            </p>
-          )}
           <Label htmlFor="add-key-value">Value</Label>
           <Input
             id="add-key-value"
@@ -273,9 +317,9 @@ function AddByServiceSheet({
             placeholder="Secret value"
           />
           <Button
-            disabled={!serviceValid || value.length === 0}
+            disabled={!canSave}
             onClick={async () => {
-              await onSave(service, value);
+              await onSave(slug, value);
               setOpen(false);
               setService('');
               setValue('');
