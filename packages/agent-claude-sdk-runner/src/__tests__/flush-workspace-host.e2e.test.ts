@@ -232,6 +232,18 @@ function makeHostClient(mirrorDir: string): IpcClient {
 
 const SCRATCH_BODY = 'a file the agent just wrote this turn\n';
 
+// TASK-123 / TASK-5 / #146 load class: each test in this suite sequentially
+// spawns ~25–30 real `git` subprocesses (setup + flush + host-retire + resync +
+// verify). Under the full `pnpm -r test` fan-out (every package's vitest pool +
+// sibling testcontainer suites all competing for CPU), git process startup
+// latency balloons ~10×, breaching vitest's default 5000 ms per-test budget and
+// flaking the push-to-main backstop — even though the bodies run in ~0.5 s
+// isolated. Give the real-git e2e tests a 30 s budget, matching every other
+// real-git package (workspace-git*, ipc-core). Applied per-`it()` (not a
+// package-wide vitest.config override) so the package's ~28 fast unit test files
+// keep the tight 5 s early-hang signal (cf. sandbox-k8s keeping testTimeout: 5_000).
+const E2E_TIMEOUT_MS = 30_000;
+
 const FLUSH_TOOL = {
   name: 'host_reads_workspace',
   description: 'a host tool that reads files the agent just wrote',
@@ -264,7 +276,7 @@ describe('flushWorkspaceBeforeCall host tool (BUG-W2 real path)', () => {
     const result = await (entries[0] as ToolEntry).handler({ path: 'foo.txt' }, {});
 
     expect(hostFound(result)).toBe(false);
-  });
+  }, E2E_TIMEOUT_MS);
 
   it('WITH the pre-forward flush, the host read finds the just-written file (the fix)', async () => {
     const { runnerRoot, mirrorDir, baselineOid } = await setupWorkspace();
@@ -291,7 +303,7 @@ describe('flushWorkspaceBeforeCall host tool (BUG-W2 real path)', () => {
     // commit chains from the pushed state, not the stale baseline).
     expect(parentVersion).not.toBeNull();
     expect(parentVersion).not.toBe(baselineOid);
-  });
+  }, E2E_TIMEOUT_MS);
 
   // Codex review SHOULD-FIX: a host-side delete (e.g. workspace:apply after the
   // tool runs) must not be undone by the next runner commit, and must not wedge
@@ -348,5 +360,5 @@ describe('flushWorkspaceBeforeCall host tool (BUG-W2 real path)', () => {
       .access(path.join(runnerRoot, '.ax', 'scratch', 'foo.txt'))
       .then(() => true, () => false);
     expect(fileInRunnerTree).toBe(false);
-  });
+  }, E2E_TIMEOUT_MS);
 });

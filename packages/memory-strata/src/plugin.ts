@@ -60,6 +60,18 @@ export interface MemoryStrataConfig {
     onDebouncerCreated?(debouncer: Debouncer): void;
     onConsolidationSettleReady?(settle: (agentId: string) => Promise<void>): void;
     /**
+     * Test-only seam — hands tests a `settle(agentId)` fn that awaits the
+     * agent's most-recent Observer run (the `chat:end` fire-and-forget
+     * `kickOffObserver` promise). Per I6 the Observer is DELIBERATELY not
+     * awaited on the bus (chat:end must not block on a ~30 s LLM call), so a
+     * test that asserts on inbox state after `chat:end` must `await
+     * settle(agentId)` instead of sleeping a fixed window — a wall-clock sleep
+     * races the detached `agents:resolve → llm:call → fs-write` chain under
+     * parallel load (the ENOENT-scandir flake this seam fixes). Resolves
+     * immediately if no Observer ever ran. Production code never calls `settle`.
+     */
+    onObserverSettleReady?(settle: (agentId: string) => Promise<void>): void;
+    /**
      * Test-only override for the consolidation pass. When provided, the
      * plugin calls THIS instead of the real `runConsolidation`. This lets
      * timeout/serialization tests drive a consolidation whose duration is
@@ -147,6 +159,24 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   };
   cfg.testHooks?.onConsolidationSettleReady?.(settleConsolidation);
 
+  // Test-only: the most-recent fire-and-forget Observer promise per agent. Like
+  // `lastWork` above, it is NEVER cleared and NEVER read by production — it lets
+  // a test deterministically await the Observer chain (`agents:resolve →
+  // llm:call → write-inbox`) that `chat:end` detaches per I6, instead of racing
+  // a fixed wall-clock sleep (the ENOENT-scandir flake). Resolves immediately
+  // when no Observer has run for the agent.
+  const lastObserverWork = new Map<string, Promise<unknown>>();
+  const settleObserver = async (agentId: string): Promise<void> => {
+    let awaited: Promise<unknown> | undefined;
+    for (let i = 0; i < 100; i++) {
+      const current = lastObserverWork.get(agentId);
+      if (current === undefined || current === awaited) return;
+      awaited = current;
+      try { await current; } catch { /* observer errors already swallowed + logged */ }
+    }
+  };
+  cfg.testHooks?.onObserverSettleReady?.(settleObserver);
+
   // Test-only consolidation override (defaults to the real fs pass in
   // production). See MemoryStrataConfig.testHooks.runConsolidation — this
   // is the seam timeout/serialization tests use to drive a fake-timer-
@@ -217,14 +247,19 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
         // Observer — chat:end's other subscribers shouldn't wait on a
         // 30s LLM call. Errors are swallowed + logged; the Observer's
         // own timeout handles the slow-LLM case.
-        kickOffObserver(bus, ctx, payload, { llmCallHook, observerTimeoutMs }).catch(
-          (err) => {
-            ctx.logger.warn('memory_strata_observer_failed', {
-              err: err instanceof Error ? err : new Error(String(err)),
-              agentId: ctx.agentId,
-            });
-          },
-        );
+        const observerWork = kickOffObserver(bus, ctx, payload, {
+          llmCallHook,
+          observerTimeoutMs,
+        }).catch((err) => {
+          ctx.logger.warn('memory_strata_observer_failed', {
+            err: err instanceof Error ? err : new Error(String(err)),
+            agentId: ctx.agentId,
+          });
+        });
+        // Test-only settle handle: record the ALREADY-caught promise (so an
+        // awaiting test never re-throws) so a test can deterministically await
+        // the detached Observer chain instead of sleeping. Never read in prod.
+        lastObserverWork.set(ctx.agentId, observerWork);
         return undefined;
       });
 

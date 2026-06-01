@@ -79,11 +79,13 @@ function makeCtx(workspace: string) {
   });
 }
 
-async function waitForObserverSettle(): Promise<void> {
-  // Observer is fire-and-forget from chat:end; let microtasks + the
-  // synchronous fs writes drain before we assert on the inbox.
-  await new Promise((r) => setTimeout(r, 50));
-}
+// NOTE: the Observer is intentionally fire-and-forget from chat:end (I6 —
+// chat:end must not block on a ~30 s LLM call). Tests that assert on inbox
+// state after chat:end therefore capture the plugin's test-only
+// `onObserverSettleReady` seam and `await settle(agentId)`, which awaits the
+// REAL detached Observer chain (agents:resolve → llm:call → write-inbox).
+// The prior fixed 50 ms `setTimeout` sleep raced that chain under parallel
+// full-suite load and flaked with `ENOENT: scandir '.../inbox'` (TASK-123).
 
 describe('createMemoryStrataPlugin', () => {
   it('declares a minimal manifest', () => {
@@ -118,7 +120,10 @@ describe('createMemoryStrataPlugin', () => {
       ]),
       agent: fakeAgent(),
     });
-    const plugin = createMemoryStrataPlugin();
+    let settleObserver: ((agentId: string) => Promise<void>) | undefined;
+    const plugin = createMemoryStrataPlugin({
+      testHooks: { onObserverSettleReady(s) { settleObserver = s; } },
+    });
     await plugin.init?.({ bus, config: {} });
 
     const outcome: AgentOutcome = {
@@ -128,8 +133,10 @@ describe('createMemoryStrataPlugin', () => {
         { role: 'assistant', content: 'Noted.' },
       ],
     };
-    await bus.fire('chat:end', makeCtx(workspaceRoot), { outcome });
-    await waitForObserverSettle();
+    const ctx = makeCtx(workspaceRoot);
+    await bus.fire('chat:end', ctx, { outcome });
+    // Deterministically await the detached Observer chain (no wall-clock sleep).
+    await settleObserver!(ctx.agentId);
 
     const inbox = await readdir(join(workspaceRoot, INBOX_DIR));
     expect(inbox).toHaveLength(1);
@@ -139,14 +146,20 @@ describe('createMemoryStrataPlugin', () => {
 
   it('skips Observer on terminated outcomes (no transcript)', async () => {
     const bus = buildBus({ llmText: '[]', agent: fakeAgent() });
-    const plugin = createMemoryStrataPlugin();
+    let settleObserver: ((agentId: string) => Promise<void>) | undefined;
+    const plugin = createMemoryStrataPlugin({
+      testHooks: { onObserverSettleReady(s) { settleObserver = s; } },
+    });
     await plugin.init?.({ bus, config: {} });
 
     const outcome: AgentOutcome = { kind: 'terminated', reason: 'chat:start:vetoed' };
-    await bus.fire('chat:end', makeCtx(workspaceRoot), { outcome });
-    await waitForObserverSettle();
+    const ctx = makeCtx(workspaceRoot);
+    await bus.fire('chat:end', ctx, { outcome });
+    // The Observer subscriber still runs (it kicks off + early-returns on the
+    // terminated outcome), so settle awaits its no-op completion deterministically.
+    await settleObserver!(ctx.agentId);
 
-    // No bootstrap + no Observer = no inbox dir at all.
+    // No bootstrap + no Observer write = no inbox dir at all.
     await expect(readdir(join(workspaceRoot, INBOX_DIR))).rejects.toThrow();
   });
 
