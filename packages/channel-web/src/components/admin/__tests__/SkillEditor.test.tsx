@@ -3,25 +3,32 @@ import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SkillEditor } from '../SkillEditor';
 import type { SkillDetail } from '@ax/skills';
 
-// Mock the wire clients
+// Mock the wire clients.
 vi.mock('@/lib/skills', () => ({
   getSkill: vi.fn(),
   upsertSkill: vi.fn(),
   updateSkill: vi.fn(),
 }));
+// The connectors multi-select pulls owned-connector suggestions. Default to a
+// small fixed set; individual tests override as needed.
+vi.mock('@/lib/connectors', () => ({
+  listConnectors: vi.fn(),
+}));
 
 import { getSkill, upsertSkill, updateSkill } from '@/lib/skills';
+import { listConnectors } from '@/lib/connectors';
 
 const mockGetSkill = vi.mocked(getSkill);
 const mockUpsertSkill = vi.mocked(upsertSkill);
 const mockUpdateSkill = vi.mocked(updateSkill);
+const mockListConnectors = vi.mocked(listConnectors);
 
 const DETAIL: SkillDetail = {
   id: 'github-api',
   description: 'Interacts with the GitHub REST API.',
   version: 1,
   scope: 'global',
-  connectors: [],
+  connectors: ['github'],
   defaultAttached: false,
   updatedAt: '2026-05-18T10:00:00.000Z',
   bodyMd: '# GitHub API\n\nUsage details here.\n',
@@ -35,290 +42,265 @@ const DETAIL: SkillDetail = {
   files: [],
 };
 
-const VALID_MD = [
-  '---',
-  'name: my-skill',
-  'description: Does something useful.',
-  'connectors:',
-  '  - example-connector',
-  '---',
-  '# Body',
-  '',
-  'Instructions here.',
-  '',
-].join('\n');
-
 beforeEach(() => {
   vi.resetAllMocks();
   mockUpsertSkill.mockResolvedValue({ skillId: 'my-skill', created: true });
   mockUpdateSkill.mockResolvedValue({ skillId: 'github-api', created: false });
+  // A connector summary only needs `id` for the suggestions; cast through unknown
+  // so the test fixture stays terse.
+  mockListConnectors.mockResolvedValue([
+    { id: 'github' },
+    { id: 'salesforce' },
+  ] as unknown as Awaited<ReturnType<typeof listConnectors>>);
 });
 
-describe('SkillEditor', () => {
-  it('renders the empty template when no skillId is provided', async () => {
-    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+/** Fill the form's required fields with a valid skill. */
+async function fillValidForm(name = 'my-skill', description = 'Does something useful.') {
+  const nameInput = await screen.findByLabelText('Name');
+  fireEvent.change(nameInput, { target: { value: name } });
+  fireEvent.change(screen.getByLabelText('Description'), {
+    target: { value: description },
+  });
+}
 
-    await waitFor(() => {
-      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-      expect(textarea.value).toContain('name: example');
-      expect(textarea.value).toContain('---');
-    });
+describe('SkillEditor (form-first)', () => {
+  it('renders the form surface (not raw) by default, with empty fields on create', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    const nameInput = await screen.findByLabelText('Name');
+    expect((nameInput as HTMLInputElement).value).toBe('');
+    expect(screen.getByLabelText('Description')).toBeTruthy();
+    expect(screen.getByLabelText('Instructions')).toBeTruthy();
+    // Raw editor is NOT shown by default.
+    expect(screen.queryByLabelText('Raw SKILL.md')).toBeNull();
   });
 
-  it('loads existing skill content when skillId is given', async () => {
+  it('loads an existing skill into the form fields', async () => {
     mockGetSkill.mockResolvedValueOnce(DETAIL);
     render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
 
-    // Shows loading initially
     expect(screen.getByText('Loading…')).toBeTruthy();
 
     await waitFor(() => {
-      const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
-      expect(textarea.value).toContain('name: github-api');
+      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('github-api');
     });
-
-    expect(screen.queryByText('Loading…')).toBeNull();
+    expect((screen.getByLabelText('Description') as HTMLInputElement).value).toBe(
+      'Interacts with the GitHub REST API.',
+    );
+    expect((screen.getByLabelText('Instructions') as HTMLTextAreaElement).value).toContain(
+      'Usage details here.',
+    );
+    // The connector reference loads as a removable chip.
+    expect(screen.getByLabelText('Remove connector github')).toBeTruthy();
   });
 
-  it('shows a parse error when content has no frontmatter fence', async () => {
+  it('disables Save when the name is empty (manifest does not parse)', async () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
-
+    await screen.findByLabelText('Name');
+    // No name → invalid-name → Save disabled.
     await waitFor(() => {
-      expect(screen.getByRole('textbox')).toBeTruthy();
-    });
-
-    // Clear the textarea to remove the template
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: '' } });
-
-    await waitFor(() => {
-      expect(screen.getByText(/no-fence.*Missing frontmatter fence/)).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
+        true,
+      );
     });
   });
 
-  it('disables Save button when content is invalid', async () => {
-    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('textbox')).toBeTruthy();
-    });
-
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: 'no frontmatter here' } });
-
-    await waitFor(() => {
-      const saveBtn = screen.getByRole('button', { name: 'Install' });
-      expect(saveBtn.hasAttribute('disabled')).toBe(true);
-    });
-  });
-
-  it('shows the connectors[] reference list in preview when content parses correctly', async () => {
-    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('textbox')).toBeTruthy();
-    });
-
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: VALID_MD } });
-
-    await waitFor(() => {
-      // TASK-100 — the preview shows the connector references, not hosts/slots.
-      expect(screen.getByText('example-connector')).toBeTruthy();
-      expect(screen.getByText('my-skill')).toBeTruthy();
-      expect(screen.getByText('Does something useful.')).toBeTruthy();
-    });
-  });
-
-  it('calls upsertSkill and invokes onSaved on success (no skillId)', async () => {
+  it('assembles a SKILL.md from the form and calls upsertSkill', async () => {
     const onSaved = vi.fn();
     render(<SkillEditor onSaved={onSaved} onCancel={vi.fn()} />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('textbox')).toBeTruthy();
+    await fillValidForm();
+    fireEvent.change(screen.getByLabelText('Instructions'), {
+      target: { value: '# Body\n\nDo the thing.\n' },
     });
 
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: VALID_MD } });
-
     await waitFor(() => {
-      const saveBtn = screen.getByRole('button', { name: 'Install' });
-      expect(saveBtn.hasAttribute('disabled')).toBe(false);
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
+        false,
+      );
     });
-
     fireEvent.click(screen.getByRole('button', { name: 'Install' }));
 
     await waitFor(() => {
-      expect(mockUpsertSkill).toHaveBeenCalledWith(VALID_MD, {
-        defaultAttached: false,
-        files: [],
-      });
-      expect(onSaved).toHaveBeenCalledTimes(1);
+      expect(mockUpsertSkill).toHaveBeenCalledTimes(1);
     });
+    const [skillMd, opts] = mockUpsertSkill.mock.calls[0]!;
+    expect(skillMd).toContain('name: my-skill');
+    expect(skillMd).toContain('description: Does something useful.');
+    expect(skillMd).toContain('Do the thing.');
+    expect(opts).toEqual({ defaultAttached: false, files: [] });
+    expect(onSaved).toHaveBeenCalledTimes(1);
   });
 
-  it('calls updateSkill when skillId is provided', async () => {
+  it('adds a connector via the multi-select and writes it into connectors: []', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await fillValidForm();
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add a connector' }));
+    // Pick the suggested "salesforce" connector.
+    const option = await screen.findByText('salesforce');
+    fireEvent.click(option);
+
+    expect(await screen.findByLabelText('Remove connector salesforce')).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }));
+    await waitFor(() => expect(mockUpsertSkill).toHaveBeenCalled());
+    const [skillMd] = mockUpsertSkill.mock.calls[0]!;
+    expect(skillMd).toContain('connectors:');
+    expect(skillMd).toContain('salesforce');
+  });
+
+  it('allows free-entry of a connector id not in the owned list', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await fillValidForm();
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add a connector' }));
+    const input = await screen.findByPlaceholderText('Search or type a connector id…');
+    fireEvent.change(input, { target: { value: 'my-custom-connector' } });
+    // The "Custom" affordance offers to add the typed id.
+    const addCustom = await screen.findByText('Add “my-custom-connector”');
+    fireEvent.click(addCustom);
+
+    expect(await screen.findByLabelText('Remove connector my-custom-connector')).toBeTruthy();
+  });
+
+  it('removes a connector chip', async () => {
     mockGetSkill.mockResolvedValueOnce(DETAIL);
-    const onSaved = vi.fn();
-    render(<SkillEditor skillId="github-api" onSaved={onSaved} onCancel={vi.fn()} />);
-
-    await waitFor(() => {
-      expect(screen.getByRole('textbox')).toBeTruthy();
-    });
-
-    // Confirm textarea has valid content (loaded from DETAIL)
-    await waitFor(() => {
-      const btn = screen.getByRole('button', { name: 'Update' });
-      expect(btn.hasAttribute('disabled')).toBe(false);
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
-
-    await waitFor(() => {
-      expect(mockUpdateSkill).toHaveBeenCalledWith(
-        'github-api',
-        expect.stringContaining('name: github-api'),
-        { defaultAttached: false, files: [] },
-      );
-      expect(onSaved).toHaveBeenCalledTimes(1);
-    });
+    render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    const removeBtn = await screen.findByLabelText('Remove connector github');
+    fireEvent.click(removeBtn);
+    expect(screen.queryByLabelText('Remove connector github')).toBeNull();
   });
 
-  it('surfaces server-side error in the alert', async () => {
-    mockUpsertSkill.mockRejectedValueOnce(new Error('name mismatch'));
+  // ── Advanced raw toggle ──────────────────────────────────────────────────
+
+  it('toggles to the raw SKILL.md editor seeded from the form, and back', async () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await fillValidForm('greeter', 'A friendly skill.');
 
+    fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
+    const raw = (await screen.findByLabelText('Raw SKILL.md')) as HTMLTextAreaElement;
+    expect(raw.value).toContain('name: greeter');
+    expect(raw.value).toContain('description: A friendly skill.');
+
+    // Toggle back to the form — fields are reconstructed from the raw text.
+    fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
     await waitFor(() => {
-      expect(screen.getByRole('textbox')).toBeTruthy();
-    });
-
-    const textarea = screen.getByRole('textbox');
-    fireEvent.change(textarea, { target: { value: VALID_MD } });
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(false);
-    });
-
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }));
-
-    await waitFor(() => {
-      expect(screen.getByText('name mismatch')).toBeTruthy();
+      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('greeter');
     });
   });
 
-  it('default-attached checkbox saves the flag through upsertSkill', async () => {
+  it('syncs raw → form: an edit in raw is reflected in the form on toggle-back', async () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await fillValidForm('greeter', 'A friendly skill.');
 
-    const textarea = await screen.findByRole('textbox');
-    const VALID_INSTRUCTION_ONLY = [
-      '---',
-      'name: greeter',
-      'description: A skill.',
-      '---',
-      '# Body',
-    ].join('\n');
-    fireEvent.change(textarea, { target: { value: VALID_INSTRUCTION_ONLY } });
-
-    const checkbox = await screen.findByLabelText(/default-attached/i);
-    expect(checkbox).not.toBeDisabled();
-    fireEvent.click(checkbox);
-
-    const save = screen.getByRole('button', { name: /install/i });
-    fireEvent.click(save);
-
-    await waitFor(() => {
-      expect(mockUpsertSkill).toHaveBeenCalledWith(
-        VALID_INSTRUCTION_ONLY,
-        { defaultAttached: true, files: [] },
-      );
+    fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
+    const raw = await screen.findByLabelText('Raw SKILL.md');
+    fireEvent.change(raw, {
+      target: {
+        value: '---\nname: renamed\ndescription: Edited in raw.\n---\n# New body\n',
+      },
     });
+
+    fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
+    await waitFor(() => {
+      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('renamed');
+    });
+    expect((screen.getByLabelText('Description') as HTMLInputElement).value).toBe(
+      'Edited in raw.',
+    );
+    expect((screen.getByLabelText('Instructions') as HTMLTextAreaElement).value).toContain(
+      'New body',
+    );
   });
 
-  it('TASK-100: the default-attached checkbox is enabled for any parsed manifest (a skill declares no credentials)', async () => {
+  it('stays in raw mode (and shows the error) when the raw text does not parse', async () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await fillValidForm();
 
-    const textarea = await screen.findByRole('textbox');
-    fireEvent.change(textarea, { target: { value: VALID_MD } });
-    // VALID_MD references a connector, no credentials → the box is never disabled.
+    fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
+    const raw = await screen.findByLabelText('Raw SKILL.md');
+    fireEvent.change(raw, { target: { value: 'no frontmatter at all' } });
 
-    const checkbox = await screen.findByLabelText(/default-attached/i);
-    await waitFor(() => expect(checkbox).not.toBeDisabled());
+    // Attempt to toggle back — it must refuse and stay in raw.
+    fireEvent.click(screen.getByLabelText(/Advanced — edit raw/i));
+    await waitFor(() => {
+      expect(screen.getByLabelText('Raw SKILL.md')).toBeTruthy();
+    });
+    expect(screen.getByText(/no-fence.*Missing frontmatter fence/)).toBeTruthy();
+    // Save is disabled while the raw manifest is invalid.
+    expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(true);
   });
 
-  it('loads existing defaultAttached state on edit', async () => {
+  it('round-trips UNKNOWN frontmatter keys through the form (TASK-133)', async () => {
+    // A stored skill with a custom `license:` key the form does not surface.
     mockGetSkill.mockResolvedValueOnce({
       ...DETAIL,
-      // Override to instruction-only + default-attached.
-      manifestYaml: 'name: github-api\ndescription: Interacts with the GitHub REST API.\nversion: 1\n',
-      defaultAttached: true,
+      manifestYaml: [
+        'name: github-api',
+        'description: Interacts with the GitHub REST API.',
+        'version: 1',
+        'connectors:',
+        '  - github',
+        'license: MIT',
+      ].join('\n'),
     });
     render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
 
-    const checkbox = await screen.findByLabelText(/default-attached/i);
+    // Load into the FORM (license is not a form field — it lives in `extra`).
+    await waitFor(() => {
+      expect((screen.getByLabelText('Name') as HTMLInputElement).value).toBe('github-api');
+    });
+
+    // Edit a form field, then save. The unknown key must survive.
+    fireEvent.change(screen.getByLabelText('Description'), {
+      target: { value: 'Updated description.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Update' }));
+
+    await waitFor(() => expect(mockUpdateSkill).toHaveBeenCalled());
+    const [, skillMd] = mockUpdateSkill.mock.calls[0]!;
+    expect(skillMd).toContain('description: Updated description.');
+    // The unknown key was preserved by the form's structured round-trip.
+    expect(skillMd).toContain('license: MIT');
+  });
+
+  it('surfaces a server-side error in the alert', async () => {
+    mockUpsertSkill.mockRejectedValueOnce(new Error('name mismatch'));
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await fillValidForm();
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(false),
+    );
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }));
+    await waitFor(() => expect(screen.getByText('name mismatch')).toBeTruthy());
+  });
+
+  // ── default-attached checkbox (preserved behaviour) ──────────────────────
+
+  it('saves the default-attached flag through upsertSkill', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await fillValidForm('greeter', 'A skill.');
+
+    const checkbox = await screen.findByLabelText(/Available to all my agents by default/i);
+    expect(checkbox).not.toBeDisabled();
+    fireEvent.click(checkbox);
+    fireEvent.click(screen.getByRole('button', { name: /install/i }));
+
+    await waitFor(() => expect(mockUpsertSkill).toHaveBeenCalled());
+    const [, opts] = mockUpsertSkill.mock.calls[0]!;
+    expect(opts).toEqual({ defaultAttached: true, files: [] });
+  });
+
+  it('loads existing defaultAttached state on edit', async () => {
+    mockGetSkill.mockResolvedValueOnce({ ...DETAIL, defaultAttached: true });
+    render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
+    const checkbox = await screen.findByLabelText(/Available to all my agents by default/i);
     await waitFor(() => expect(checkbox).toBeChecked());
   });
 
-  it('preserves checked state across a transient parse error', async () => {
-    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+  // ── Additional files (preserved behaviour) ───────────────────────────────
 
-    const textarea = await screen.findByRole('textbox');
-    const VALID_INSTRUCTION_ONLY = [
-      '---',
-      'name: greeter',
-      'description: A skill.',
-      '---',
-      '# Body',
-    ].join('\n');
-    fireEvent.change(textarea, { target: { value: VALID_INSTRUCTION_ONLY } });
-
-    const checkbox = await screen.findByLabelText(/default-attached/i);
-    fireEvent.click(checkbox);
-    expect(checkbox).toBeChecked();
-
-    // Mid-typing: break the YAML so parseSkillManifest fails.
-    const BROKEN_YAML = '---\nname: greeter\ndescription: : bad colon\n---\n# Body\n';
-    fireEvent.change(textarea, { target: { value: BROKEN_YAML } });
-
-    // The box is disabled while the parse is broken, but its checked
-    // state must survive — we do NOT auto-clear on transient errors.
-    await waitFor(() => expect(checkbox).toBeDisabled());
-    expect(checkbox).toBeChecked();
-
-    // Fix the YAML to a valid instruction-only manifest. The flag should
-    // still be checked.
-    fireEvent.change(textarea, { target: { value: VALID_INSTRUCTION_ONLY } });
-    await waitFor(() => expect(checkbox).not.toBeDisabled());
-    expect(checkbox).toBeChecked();
-  });
-
-  it('TASK-100: the flag stays checked when the user adds a connector reference (no credential lock-out)', async () => {
-    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
-
-    const textarea = await screen.findByRole('textbox');
-    const VALID_INSTRUCTION_ONLY = [
-      '---',
-      'name: greeter',
-      'description: A skill.',
-      '---',
-      '# Body',
-    ].join('\n');
-    fireEvent.change(textarea, { target: { value: VALID_INSTRUCTION_ONLY } });
-
-    const checkbox = await screen.findByLabelText(/default-attached/i);
-    fireEvent.click(checkbox);
-    expect(checkbox).toBeChecked();
-
-    // Add a connector reference — a skill declares no credentials, so the flag is
-    // NOT auto-cleared and the box stays enabled.
-    fireEvent.change(textarea, { target: { value: VALID_MD } });
-
-    await waitFor(() => expect(checkbox).not.toBeDisabled());
-    expect(checkbox).toBeChecked();
-  });
-
-  // ── Bundle multi-file authoring (TASK-59) ────────────────────────────────
-
-  it('loads an existing skill\'s bundle files into the editor', async () => {
+  it('loads an existing skill\'s additional files into the editor', async () => {
     mockGetSkill.mockResolvedValueOnce({
       ...DETAIL,
       files: [
@@ -330,70 +312,91 @@ describe('SkillEditor', () => {
 
     const pathInput = await screen.findByLabelText('Bundle file path 1');
     expect((pathInput as HTMLInputElement).value).toBe('scripts/run.py');
-    const contents1 = screen.getByLabelText('Bundle file contents 1') as HTMLTextAreaElement;
-    expect(contents1.value).toBe('print("hi")\n');
+    expect((screen.getByLabelText('Bundle file contents 1') as HTMLTextAreaElement).value).toBe(
+      'print("hi")\n',
+    );
     expect((screen.getByLabelText('Bundle file path 2') as HTMLInputElement).value).toBe(
       'reference.md',
     );
   });
 
-  it('adds a bundle file and forwards it through upsertSkill', async () => {
+  it('adds an additional file and forwards it through upsertSkill', async () => {
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
-
-    // The SKILL.md textarea is the first textbox.
-    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
-    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
+    await fillValidForm();
 
     fireEvent.click(screen.getByRole('button', { name: /add file/i }));
-
-    const pathInput = await screen.findByLabelText('Bundle file path 1');
-    fireEvent.change(pathInput, { target: { value: 'scripts/run.py' } });
-    const contentsArea = screen.getByLabelText('Bundle file contents 1');
-    fireEvent.change(contentsArea, { target: { value: 'print(1)\n' } });
-
-    await waitFor(() => {
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
-        false,
-      );
+    fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
+      target: { value: 'scripts/run.py' },
+    });
+    fireEvent.change(screen.getByLabelText('Bundle file contents 1'), {
+      target: { value: 'print(1)\n' },
     });
 
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(false),
+    );
     fireEvent.click(screen.getByRole('button', { name: 'Install' }));
 
-    await waitFor(() => {
-      expect(mockUpsertSkill).toHaveBeenCalledWith(VALID_MD, {
-        defaultAttached: false,
-        files: [{ path: 'scripts/run.py', contents: 'print(1)\n' }],
-      });
+    await waitFor(() => expect(mockUpsertSkill).toHaveBeenCalled());
+    const [, opts] = mockUpsertSkill.mock.calls[0]!;
+    expect(opts).toEqual({
+      defaultAttached: false,
+      files: [{ path: 'scripts/run.py', contents: 'print(1)\n' }],
     });
   });
 
-  it('round-trips loaded bundle files on a SKILL.md-only edit', async () => {
+  it('round-trips loaded additional files on a body-only edit', async () => {
     mockGetSkill.mockResolvedValueOnce({
       ...DETAIL,
       files: [{ path: 'helper.md', contents: 'help\n' }],
     });
-    const onSaved = vi.fn();
-    render(<SkillEditor skillId="github-api" onSaved={onSaved} onCancel={vi.fn()} />);
+    render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
 
-    // Wait for the loaded file to appear, then save without touching it.
     await screen.findByLabelText('Bundle file path 1');
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Update' }).hasAttribute('disabled')).toBe(
-        false,
-      ),
+      expect(screen.getByRole('button', { name: 'Update' }).hasAttribute('disabled')).toBe(false),
     );
     fireEvent.click(screen.getByRole('button', { name: 'Update' }));
 
-    await waitFor(() => {
-      expect(mockUpdateSkill).toHaveBeenCalledWith(
-        'github-api',
-        expect.stringContaining('name: github-api'),
-        { defaultAttached: false, files: [{ path: 'helper.md', contents: 'help\n' }] },
-      );
+    await waitFor(() => expect(mockUpdateSkill).toHaveBeenCalled());
+    const [, , opts] = mockUpdateSkill.mock.calls[0]!;
+    expect(opts).toEqual({
+      defaultAttached: false,
+      files: [{ path: 'helper.md', contents: 'help\n' }],
     });
   });
 
-  it('removes a bundle file so it is no longer sent', async () => {
+  it('disables Save when an additional-file path is a traversal', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await fillValidForm();
+
+    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
+    fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
+      target: { value: '../escape.md' },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/may not contain ".."/i)).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(true);
+    });
+  });
+
+  it('flags the reserved .mcp.json additional-file path', async () => {
+    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await fillValidForm();
+
+    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
+    fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
+      target: { value: '.mcp.json' },
+    });
+
+    await waitFor(() => {
+      expect(screen.getByText(/reserved path/i)).toBeTruthy();
+      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(true);
+    });
+  });
+
+  it('removes an additional file so it is no longer sent', async () => {
     mockGetSkill.mockResolvedValueOnce({
       ...DETAIL,
       files: [
@@ -403,105 +406,41 @@ describe('SkillEditor', () => {
     });
     render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
 
-    const removeFirst = await screen.findByLabelText(/remove bundle file a\.md/i);
-    fireEvent.click(removeFirst);
-
+    fireEvent.click(await screen.findByLabelText(/remove bundle file a\.md/i));
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Update' }).hasAttribute('disabled')).toBe(
-        false,
-      ),
+      expect(screen.getByRole('button', { name: 'Update' }).hasAttribute('disabled')).toBe(false),
     );
     fireEvent.click(screen.getByRole('button', { name: 'Update' }));
 
-    await waitFor(() => {
-      expect(mockUpdateSkill).toHaveBeenCalledWith(
-        'github-api',
-        expect.any(String),
-        { defaultAttached: false, files: [{ path: 'b.md', contents: 'b\n' }] },
-      );
-    });
+    await waitFor(() => expect(mockUpdateSkill).toHaveBeenCalled());
+    const [, , opts] = mockUpdateSkill.mock.calls[0]!;
+    expect(opts).toEqual({ defaultAttached: false, files: [{ path: 'b.md', contents: 'b\n' }] });
   });
 
-  it('disables Save when a bundle file path is invalid', async () => {
-    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
-
-    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
-    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
-
-    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
-    const pathInput = await screen.findByLabelText('Bundle file path 1');
-    // A path-traversal — the client hint must engage and block Save.
-    fireEvent.change(pathInput, { target: { value: '../escape.md' } });
-
-    await waitFor(() => {
-      expect(screen.getByText(/may not contain ".."/i)).toBeTruthy();
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
-        true,
-      );
+  it('falls back to raw mode when the stored manifest does not parse', async () => {
+    mockGetSkill.mockResolvedValueOnce({
+      ...DETAIL,
+      // A manifest the parser rejects (capabilities block is forbidden).
+      manifestYaml: 'name: broken\ndescription: x\ncapabilities:\n  allowedHosts:\n    - api.x.com\n',
     });
+    render(<SkillEditor skillId="github-api" onSaved={vi.fn()} onCancel={vi.fn()} />);
+
+    // Opens straight into the raw editor so the author can fix it.
+    const raw = (await screen.findByLabelText('Raw SKILL.md')) as HTMLTextAreaElement;
+    expect(raw.value).toContain('name: broken');
+    // The Advanced toggle reflects raw mode.
+    expect(screen.getByLabelText(/Advanced — edit raw/i)).toBeChecked();
   });
 
-  it('accepts a lowercase skill.md bundle file (only the exact SKILL.md is reserved)', async () => {
-    // The server reserves the EXACT `SKILL.md` (the generated manifest file);
-    // a lowercase `skill.md` is a legitimate distinct extra file. The client
-    // hint must mirror the server case-sensitively and NOT block it.
+  it('keeps working when the connector list fails to load (free-entry still works)', async () => {
+    mockListConnectors.mockRejectedValueOnce(new Error('offline'));
     render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
+    await fillValidForm();
 
-    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
-    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
-
-    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
-    fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
-      target: { value: 'skill.md' },
-    });
-
-    await waitFor(() => {
-      expect(screen.queryByText(/reserved path/i)).toBeNull();
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
-        false,
-      );
-    });
-  });
-
-  it('flags the reserved .mcp.json bundle file path', async () => {
-    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
-
-    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
-    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
-
-    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
-    fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
-      target: { value: '.mcp.json' },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/reserved path/i)).toBeTruthy();
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
-        true,
-      );
-    });
-  });
-
-  it('disables Save and flags a duplicate bundle file path', async () => {
-    render(<SkillEditor onSaved={vi.fn()} onCancel={vi.fn()} />);
-
-    const skillMdArea = (await screen.findAllByRole('textbox'))[0] as HTMLTextAreaElement;
-    fireEvent.change(skillMdArea, { target: { value: VALID_MD } });
-
-    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
-    fireEvent.click(screen.getByRole('button', { name: /add file/i }));
-    fireEvent.change(await screen.findByLabelText('Bundle file path 1'), {
-      target: { value: 'dup.md' },
-    });
-    fireEvent.change(screen.getByLabelText('Bundle file path 2'), {
-      target: { value: 'dup.md' },
-    });
-
-    await waitFor(() => {
-      expect(screen.getByText(/duplicate path/i)).toBeTruthy();
-      expect(screen.getByRole('button', { name: 'Install' }).hasAttribute('disabled')).toBe(
-        true,
-      );
-    });
+    fireEvent.click(screen.getByRole('combobox', { name: 'Add a connector' }));
+    const input = await screen.findByPlaceholderText('Search or type a connector id…');
+    fireEvent.change(input, { target: { value: 'lonely-connector' } });
+    fireEvent.click(await screen.findByText('Add “lonely-connector”'));
+    expect(await screen.findByLabelText('Remove connector lonely-connector')).toBeTruthy();
   });
 });

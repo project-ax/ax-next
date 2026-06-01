@@ -28,7 +28,28 @@ export interface ParsedManifest {
    * is a flat list of opaque connector-id slugs.
    */
   connectors: string[];
+  /**
+   * Unknown frontmatter keys — every top-level key the parser does NOT model
+   * (i.e. everything except name/description/version/sourceUrl/connectors).
+   * Always present; `{}` when there are none (TASK-133).
+   *
+   * Why: the form-first skill editor round-trips a manifest through this parser
+   * (the single authority) and re-serializes it with `buildSkillManifestYaml`.
+   * Without capturing the leftover keys, a raw-editor power-user's custom
+   * frontmatter (e.g. `license:`, `author:`) would be silently dropped the
+   * moment they opened the form. `extra` carries them through unchanged.
+   *
+   * SECURITY: the forbidden capability keys (`capabilities`, `allowedHosts`,
+   * `credentials`, `mcpServers`, `packages`) and any inline-secret key are
+   * HARD-REJECTED earlier in this function, so they can NEVER appear in `extra`.
+   * `extra` is therefore reach-free + secret-free by construction.
+   */
+  extra: Record<string, unknown>;
 }
+
+// Top-level keys the parser models directly. Anything outside this set is
+// collected into `extra` for round-trip preservation.
+const MODELED_KEYS = new Set(['name', 'description', 'version', 'sourceUrl', 'connectors']);
 
 export type ParseResult =
   | { ok: true; value: ParsedManifest }
@@ -245,6 +266,16 @@ export function parseSkillManifest(yaml: string): ParseResult {
   if (!connectorsResult.ok) return err(connectorsResult.code, connectorsResult.message);
   const connectors = connectorsResult.value;
 
+  // Step 8 (TASK-133): collect every UNMODELED top-level key into `extra` so the
+  // form-first editor's parse→build round-trip preserves custom frontmatter the
+  // parser doesn't surface as a typed field. The forbidden capability keys and
+  // inline-secret keys were already hard-rejected above, so `extra` is reach-free
+  // and secret-free by construction.
+  const extra: Record<string, unknown> = {};
+  for (const k of Object.keys(doc)) {
+    if (!MODELED_KEYS.has(k)) extra[k] = doc[k];
+  }
+
   return {
     ok: true,
     value: {
@@ -253,6 +284,7 @@ export function parseSkillManifest(yaml: string): ParseResult {
       version,
       ...(sourceUrl !== undefined ? { sourceUrl } : {}),
       connectors,
+      extra,
     },
   };
 }

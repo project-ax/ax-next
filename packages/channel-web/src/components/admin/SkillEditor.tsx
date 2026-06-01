@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, Check, ChevronsUpDown, X } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
@@ -8,16 +8,30 @@ import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Separator } from '@/components/ui/separator';
-// `@ax/skills/manifest` is a pure-function SKILL.md parser (yaml +
-// shape validation) exported via a subpath so the heavy bits of
-// @ax/skills (kysely db, http routes, node:crypto via @ax/core) stay
-// out of the browser bundle. Same library-not-plugin shape as
-// @ax/validator-routine — the parser IS the boundary contract that
-// the admin editor's live-preview pane consumes. Disable applies to
-// THIS LINE ONLY; component-level eslint posture is unchanged.
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from '@/components/ui/command';
+import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
+import { cn } from '@/lib/utils';
+// `@ax/skills/manifest` is a pure-function SKILL.md (de)serializer (yaml + shape
+// validation) exported via a subpath so the heavy bits of @ax/skills (kysely db,
+// http routes, node:crypto via @ax/core) stay out of the browser bundle. The
+// parser/build pair IS the single round-trip authority (TASK-133): the form
+// edits typed fields; toggling to raw serializes them; toggling back re-parses.
+// Disable applies to THIS LINE ONLY; component-level eslint posture is unchanged.
 // eslint-disable-next-line @typescript-eslint/no-restricted-imports
-import { parseSkillManifest } from '@ax/skills/manifest';
+import {
+  parseSkillManifest,
+  buildSkillManifestYaml,
+  splitSkillMd,
+} from '@ax/skills/manifest';
 import { getSkill, upsertSkill, updateSkill } from '@/lib/skills';
+import { listConnectors } from '@/lib/connectors';
 import type { BundleFile, SkillDetail } from '@ax/skills';
 
 /** Minimal API surface the editor needs — injectable for user vs admin routes. */
@@ -73,20 +87,71 @@ function bundlePathHint(path: string): string | null {
 
 const defaultApi: SkillEditorApi = { getSkill, upsertSkill, updateSkill };
 
-// TASK-100 — a skill manifest carries NO capability block (reach lives on the
-// connectors it references). The template references a connector instead.
-const EMPTY_TEMPLATE = [
-  '---',
-  'name: example',
-  'description: Short description of what this skill does.',
-  'connectors:',
-  '  - example-connector',
-  '---',
-  '# Body',
-  '',
-  'Markdown body. This becomes the SKILL.md the SDK indexes.',
-  '',
-].join('\n');
+/** The structured form state — the single source of truth the editor edits. */
+interface SkillFormState {
+  name: string;
+  description: string;
+  /** Connector-id references → manifest `connectors: []`. */
+  connectors: string[];
+  /** The SKILL.md body (markdown after the frontmatter fence). */
+  body: string;
+  /**
+   * Server-managed version + any unknown frontmatter keys the form doesn't
+   * surface. Carried through so the form ⇄ raw round-trip preserves them
+   * (TASK-133). `sourceUrl`, when present, is folded in here too.
+   */
+  version: number;
+  extra: Record<string, unknown>;
+}
+
+const EMPTY_FORM: SkillFormState = {
+  name: '',
+  description: '',
+  connectors: [],
+  body: '\n# Body\n\nMarkdown body. This becomes the SKILL.md the SDK indexes.\n',
+  version: 0,
+  extra: {},
+};
+
+/**
+ * Fold a parsed manifest into the editor's structured form state. `sourceUrl`
+ * (a modeled parse field) is tucked back into `extra` so a later
+ * `buildSkillManifestYaml({ ...extra })` re-emits it — the form has no control
+ * for it, but it must survive the round-trip.
+ */
+function formFromParsed(
+  parsed: { id: string; description: string; version: number; connectors: string[]; sourceUrl?: string; extra: Record<string, unknown> },
+  body: string,
+): SkillFormState {
+  const extra: Record<string, unknown> = { ...parsed.extra };
+  if (parsed.sourceUrl !== undefined) extra.sourceUrl = parsed.sourceUrl;
+  return {
+    name: parsed.id,
+    description: parsed.description,
+    connectors: parsed.connectors,
+    body,
+    version: parsed.version,
+    extra,
+  };
+}
+
+/** Serialize the structured form state into a full SKILL.md string. */
+function assembleSkillMd(form: SkillFormState): string {
+  const manifestYaml = buildSkillManifestYaml({
+    id: form.name,
+    description: form.description,
+    version: form.version,
+    connectors: form.connectors,
+    extra: form.extra,
+  });
+  return (
+    '---\n' +
+    manifestYaml +
+    (manifestYaml.endsWith('\n') ? '' : '\n') +
+    '---\n' +
+    form.body
+  );
+}
 
 interface Props {
   skillId?: string;
@@ -97,23 +162,47 @@ interface Props {
 }
 
 export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Props) {
-  const [text, setText] = useState<string>('');
+  const [form, setForm] = useState<SkillFormState>(EMPTY_FORM);
   const [files, setFiles] = useState<BundleFile[]>([]);
   const [loading, setLoading] = useState<boolean>(skillId !== undefined);
   const [saving, setSaving] = useState(false);
   const [serverError, setServerError] = useState<string | null>(null);
   const [defaultAttached, setDefaultAttached] = useState<boolean>(false);
 
+  // Advanced raw-markdown escape hatch. `advanced` toggles the raw textarea;
+  // `rawText` is its buffer (authoritative only while advanced is on).
+  const [advanced, setAdvanced] = useState(false);
+  const [rawText, setRawText] = useState('');
+
+  // Owned-connector suggestions for the multi-select. A soft surface: a load
+  // failure (or zero connectors) must NOT block authoring — the field still
+  // accepts free-entry of arbitrary connector-id slugs.
+  const [connectorOptions, setConnectorOptions] = useState<string[]>([]);
+
+  useEffect(() => {
+    let cancelled = false;
+    listConnectors()
+      .then((cs) => {
+        if (!cancelled) setConnectorOptions(cs.map((c) => c.id));
+      })
+      .catch(() => {
+        if (!cancelled) setConnectorOptions([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   useEffect(() => {
     // Reset loading + serverError on every skillId change so the editor
     // doesn't show stale content (or a stale error) while the new skill's
     // fetch is in flight. Without this, an editor that was just open on
-    // skill A can briefly be saved as skill B before A's bytes are
-    // replaced.
+    // skill A can briefly be saved as skill B before A's bytes are replaced.
     setServerError(null);
+    setAdvanced(false);
     setLoading(skillId !== undefined);
     if (skillId === undefined) {
-      setText(EMPTY_TEMPLATE);
+      setForm(EMPTY_FORM);
       setFiles([]);
       setDefaultAttached(false);
       return;
@@ -123,13 +212,23 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
       try {
         const detail = await api.getSkill(skillId);
         if (cancelled) return;
-        const md =
-          '---\n' +
-          detail.manifestYaml +
-          (detail.manifestYaml.endsWith('\n') ? '' : '\n') +
-          '---\n' +
-          detail.bodyMd;
-        setText(md);
+        const parsed = parseSkillManifest(detail.manifestYaml);
+        if (parsed.ok) {
+          setForm(formFromParsed(parsed.value, detail.bodyMd));
+        } else {
+          // The stored manifest doesn't parse (shouldn't happen — the server
+          // validated it on write — but be defensive): open straight into the
+          // raw editor so the author can fix it, seeded from the stored bytes.
+          setForm({ ...EMPTY_FORM, body: detail.bodyMd });
+          setRawText(
+            '---\n' +
+              detail.manifestYaml +
+              (detail.manifestYaml.endsWith('\n') ? '' : '\n') +
+              '---\n' +
+              detail.bodyMd,
+          );
+          setAdvanced(true);
+        }
         // The editor OWNS the full file set it displays: on save it round-trips
         // exactly these files (a body-only edit therefore preserves them rather
         // than wiping the bundle, and a removed file is actually removed).
@@ -145,34 +244,60 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
     return () => {
       cancelled = true;
     };
-  // `api` is an object reference and is correctly listed as a dep below;
-  // callers are expected to pass a stable (module-level) constant so this
-  // effect doesn't re-run every render (the admin default and the user
-  // panel's `userSkillsApi` are both module-level constants).
+    // `api` is an object reference and is correctly listed as a dep below;
+    // callers are expected to pass a stable (module-level) constant so this
+    // effect doesn't re-run every render (the admin default and the user
+    // panel's `userSkillsApi` are both module-level constants).
   }, [skillId, api]);
 
-  // Parse the manifest yaml between the first two `---` fences on every change.
+  // ── Live parse of whatever surface is active ─────────────────────────────
+  // In form mode we assemble + parse the form; in raw mode we split + parse the
+  // raw text. The parser is the single authority for both, so the validity gate
+  // (and the Save payload) are computed the same way.
+  const activeSkillMd = advanced ? rawText : assembleSkillMd(form);
+
   const parsedResult = useMemo(() => {
-    const re = /^---\n([\s\S]*?)\n---/;
-    const m = re.exec(text);
-    if (m === null) {
+    const split = splitSkillMd(activeSkillMd);
+    if (split === null) {
       return {
         ok: false as const,
         code: 'no-fence' as const,
         message: 'Missing frontmatter fence (--- yaml ---)',
       };
     }
-    return parseSkillManifest(m[1] ?? '');
-  }, [text]);
+    return parseSkillManifest(split.manifestYaml);
+  }, [activeSkillMd]);
 
   // TASK-100 — a skill manifest declares no capabilities (its reach is the
   // connectors it references), so a skill is always instruction-only and can
   // always be default-attached once it parses.
   const canBeDefault = parsedResult.ok;
 
-  // ── Bundle-file list helpers ──────────────────────────────────────────────
-  const addFile = () =>
-    setFiles((prev) => [...prev, { path: '', contents: '' }]);
+  // ── Connector multi-select helpers ───────────────────────────────────────
+  const [connectorPickerOpen, setConnectorPickerOpen] = useState(false);
+  const [connectorQuery, setConnectorQuery] = useState('');
+
+  const addConnector = (id: string) => {
+    const slug = id.trim();
+    if (slug.length === 0) return;
+    setForm((f) =>
+      f.connectors.includes(slug) ? f : { ...f, connectors: [...f.connectors, slug] },
+    );
+    setConnectorQuery('');
+  };
+  const removeConnector = (id: string) =>
+    setForm((f) => ({ ...f, connectors: f.connectors.filter((c) => c !== id) }));
+
+  // Suggestions = owned connectors not already selected, filtered by the query.
+  const connectorSuggestions = useMemo(() => {
+    const q = connectorQuery.trim().toLowerCase();
+    return connectorOptions
+      .filter((id) => !form.connectors.includes(id))
+      .filter((id) => q.length === 0 || id.toLowerCase().includes(q));
+  }, [connectorOptions, form.connectors, connectorQuery]);
+
+  // ── Bundle-file list helpers ─────────────────────────────────────────────
+  const addFile = () => setFiles((prev) => [...prev, { path: '', contents: '' }]);
   const setFilePath = (idx: number, path: string) =>
     setFiles((prev) => prev.map((f, i) => (i === idx ? { ...f, path } : f)));
   const setFileContents = (idx: number, contents: string) =>
@@ -195,6 +320,27 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
   }, [files]);
   const filesInvalid = fileHints.some((h) => h !== null);
 
+  // ── Advanced toggle: form ⇄ raw, parser-mediated ─────────────────────────
+  function enterAdvanced() {
+    // Seed the raw buffer from the current form state.
+    setRawText(assembleSkillMd(form));
+    setAdvanced(true);
+  }
+  function exitAdvanced() {
+    // Return to the form ONLY if the raw text parses — otherwise the form
+    // fields can't be reconstructed, so stay in raw and surface the error.
+    const split = splitSkillMd(rawText);
+    if (split === null) return; // parsedResult already shows the no-fence error
+    const parsed = parseSkillManifest(split.manifestYaml);
+    if (!parsed.ok) return; // parsedResult already shows the manifest error
+    setForm(formFromParsed(parsed.value, split.bodyMd));
+    setAdvanced(false);
+  }
+  function toggleAdvanced(next: boolean) {
+    if (next) enterAdvanced();
+    else exitAdvanced();
+  }
+
   async function handleSave() {
     setSaving(true);
     setServerError(null);
@@ -204,11 +350,14 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
       path: f.path.trim(),
       contents: f.contents,
     }));
+    // Save from whichever surface is active. Both flow through the same parser
+    // on the server, which re-validates the manifest + the bundle.
+    const skillMd = activeSkillMd;
     try {
       if (skillId === undefined) {
-        await api.upsertSkill(text, { defaultAttached, files: filesPayload });
+        await api.upsertSkill(skillMd, { defaultAttached, files: filesPayload });
       } else {
-        await api.updateSkill(skillId, text, {
+        await api.updateSkill(skillId, skillMd, {
           defaultAttached,
           files: filesPayload,
         });
@@ -229,55 +378,48 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
     ? `${'code' in parsedResult ? parsedResult.code : ''}: ${parsedResult.message}`
     : null;
 
+  const saveLabel = saving ? 'Saving…' : skillId === undefined ? 'Install' : 'Update';
+
   return (
-    <div className="space-y-3">
-      <div className="grid grid-cols-2 gap-3">
-        <div className="space-y-1">
-          <label className="text-xs font-medium text-muted-foreground">
-            SKILL.md
+    <div className="flex flex-col gap-4 max-h-[72vh] overflow-y-auto pr-1">
+      {/* Advanced toggle — demotes the raw SKILL.md editor to an opt-in escape
+          hatch (TASK-133). Form is the default surface. */}
+      <div className="flex items-start gap-2">
+        <Checkbox
+          id="advanced-raw"
+          checked={advanced}
+          onCheckedChange={(v) => toggleAdvanced(v === true)}
+        />
+        <div className="space-y-0.5 leading-none">
+          <label htmlFor="advanced-raw" className="text-sm font-medium">
+            Advanced — edit raw <code className="font-mono text-xs">SKILL.md</code>
           </label>
-          <Textarea
-            className="font-mono text-xs min-h-[400px]"
-            value={text}
-            onChange={(e) => setText(e.target.value)}
-          />
-        </div>
-        <div className="space-y-2">
-          <label className="text-xs font-medium text-muted-foreground">
-            Parsed preview
-          </label>
-          {parsedResult.ok ? (
-            <div className="rounded-md border border-border p-3 space-y-3 bg-muted/30">
-              <div>
-                <div className="text-xs text-muted-foreground">Name</div>
-                <div className="text-sm font-mono">{parsedResult.value.id}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground">Description</div>
-                <div className="text-sm">{parsedResult.value.description}</div>
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground mb-1">
-                  Connectors
-                </div>
-                {parsedResult.value.connectors.length === 0 ? (
-                  <span className="text-xs text-muted-foreground">none</span>
-                ) : (
-                  parsedResult.value.connectors.map((c) => (
-                    <Badge key={c} variant="secondary" className="text-xs mr-1">
-                      {c}
-                    </Badge>
-                  ))
-                )}
-              </div>
-            </div>
-          ) : (
-            <Alert variant="destructive">
-              <AlertDescription className="text-xs">{liveError}</AlertDescription>
-            </Alert>
-          )}
+          <p className="text-xs text-muted-foreground">
+            Edit the underlying file directly. Changes stay in sync with the form.
+          </p>
         </div>
       </div>
+
+      {advanced ? (
+        <RawEditor
+          value={rawText}
+          onChange={setRawText}
+          parsed={parsedResult}
+        />
+      ) : (
+        <FormFields
+          form={form}
+          setForm={setForm}
+          connectorPickerOpen={connectorPickerOpen}
+          setConnectorPickerOpen={setConnectorPickerOpen}
+          connectorQuery={connectorQuery}
+          setConnectorQuery={setConnectorQuery}
+          connectorSuggestions={connectorSuggestions}
+          addConnector={addConnector}
+          removeConnector={removeConnector}
+          liveError={liveError}
+        />
+      )}
 
       <div className="flex items-start gap-2">
         <Checkbox
@@ -287,11 +429,8 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
           onCheckedChange={(v) => setDefaultAttached(v === true)}
         />
         <div className="space-y-1 leading-none">
-          <label
-            htmlFor="default-attached"
-            className="text-sm font-medium"
-          >
-            Default-attached to all agents
+          <label htmlFor="default-attached" className="text-sm font-medium">
+            Available to all my agents by default
           </label>
           <p className="text-xs text-muted-foreground">
             Adds this skill to every agent at session start, without per-agent
@@ -302,18 +441,18 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
 
       <Separator />
 
-      {/* Bundle files — the extra (non-SKILL.md) files shipped alongside the
+      {/* Additional files — the extra (non-SKILL.md) files shipped alongside the
           manifest. Contents render in text-only controls (Input/Textarea);
           never via dangerouslySetInnerHTML. */}
       <div className="flex flex-col gap-2">
         <div className="flex items-center justify-between">
           <div className="flex flex-col gap-0.5">
             <Label className="text-xs font-medium text-muted-foreground">
-              Bundle files
+              Additional files
             </Label>
             <p className="text-xs text-muted-foreground">
-              Extra files packaged with this skill (scripts, references). SKILL.md
-              is authored above.
+              Extra files packaged with this skill (scripts, references). The
+              skill instructions are authored above. Up to 16 files, 512 KiB total.
             </p>
           </div>
           <Button
@@ -391,8 +530,249 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
           onClick={() => void handleSave()}
           disabled={saving || liveError !== null || filesInvalid}
         >
-          {saving ? 'Saving…' : skillId === undefined ? 'Install' : 'Update'}
+          {saveLabel}
         </Button>
+      </div>
+    </div>
+  );
+}
+
+// ── Form fields surface ────────────────────────────────────────────────────
+
+interface FormFieldsProps {
+  form: SkillFormState;
+  setForm: React.Dispatch<React.SetStateAction<SkillFormState>>;
+  connectorPickerOpen: boolean;
+  setConnectorPickerOpen: (open: boolean) => void;
+  connectorQuery: string;
+  setConnectorQuery: (q: string) => void;
+  connectorSuggestions: string[];
+  addConnector: (id: string) => void;
+  removeConnector: (id: string) => void;
+  liveError: string | null;
+}
+
+function FormFields({
+  form,
+  setForm,
+  connectorPickerOpen,
+  setConnectorPickerOpen,
+  connectorQuery,
+  setConnectorQuery,
+  connectorSuggestions,
+  addConnector,
+  removeConnector,
+  liveError,
+}: FormFieldsProps) {
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-col gap-1.5">
+        <Label htmlFor="skill-name" className="text-xs font-medium text-muted-foreground">
+          Name
+        </Label>
+        <Input
+          id="skill-name"
+          className="font-mono text-sm"
+          placeholder="my-skill"
+          value={form.name}
+          onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
+        />
+        <p className="text-xs text-muted-foreground">
+          Lowercase slug — becomes the skill id. Letters, digits, and dashes.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label
+          htmlFor="skill-description"
+          className="text-xs font-medium text-muted-foreground"
+        >
+          Description
+        </Label>
+        <Input
+          id="skill-description"
+          className="text-sm"
+          placeholder="Short description of what this skill does."
+          value={form.description}
+          onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+        />
+        <p className="text-xs text-muted-foreground">
+          One line (≤240 chars). The model reads this to decide when to use the skill.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label className="text-xs font-medium text-muted-foreground">Connectors</Label>
+        <div className="flex flex-wrap items-center gap-1.5">
+          {form.connectors.map((c) => (
+            <Badge key={c} variant="secondary" className="text-xs gap-1 pr-1">
+              {c}
+              <button
+                type="button"
+                aria-label={`Remove connector ${c}`}
+                className="rounded-sm opacity-70 hover:opacity-100"
+                onClick={() => removeConnector(c)}
+              >
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          ))}
+          <Popover open={connectorPickerOpen} onOpenChange={setConnectorPickerOpen}>
+            <PopoverTrigger asChild>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                role="combobox"
+                aria-expanded={connectorPickerOpen}
+                aria-label="Add a connector"
+                className="h-7 text-xs"
+              >
+                <Plus className="h-3 w-3 mr-1" />
+                Add connector
+                <ChevronsUpDown className="ml-1 h-3 w-3 opacity-60" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="p-0 w-[260px]" align="start">
+              <Command shouldFilter={false}>
+                <CommandInput
+                  placeholder="Search or type a connector id…"
+                  value={connectorQuery}
+                  onValueChange={setConnectorQuery}
+                />
+                <CommandList>
+                  {/* Empty state — shown only when there is no query AND no
+                      suggestions. With a query, the "Custom" group below always
+                      offers an Add item, so the list is never truly empty then. */}
+                  <CommandEmpty>No connectors found.</CommandEmpty>
+                  {connectorSuggestions.length > 0 && (
+                    <CommandGroup heading="Your connectors">
+                      {connectorSuggestions.map((id) => (
+                        <CommandItem
+                          key={id}
+                          value={id}
+                          onSelect={() => {
+                            addConnector(id);
+                            setConnectorPickerOpen(false);
+                          }}
+                          className="text-xs font-mono"
+                        >
+                          <span className="flex-1">{id}</span>
+                          <Check
+                            className={cn(
+                              'h-3.5 w-3.5 text-primary',
+                              form.connectors.includes(id) ? 'opacity-100' : 'opacity-0',
+                            )}
+                          />
+                        </CommandItem>
+                      ))}
+                    </CommandGroup>
+                  )}
+                  {connectorQuery.trim().length > 0 &&
+                    !connectorSuggestions.includes(connectorQuery.trim()) &&
+                    !form.connectors.includes(connectorQuery.trim()) && (
+                      <CommandGroup heading="Custom">
+                        <CommandItem
+                          value={`__add__${connectorQuery}`}
+                          onSelect={() => {
+                            addConnector(connectorQuery);
+                            setConnectorPickerOpen(false);
+                          }}
+                          className="text-xs"
+                        >
+                          Add “{connectorQuery.trim()}”
+                        </CommandItem>
+                      </CommandGroup>
+                    )}
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
+        </div>
+        <p className="text-xs text-muted-foreground">
+          Connectors this skill uses. Capabilities (hosts, keys) live on the
+          connector — this is just a reference.
+        </p>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
+        <Label
+          htmlFor="skill-instructions"
+          className="text-xs font-medium text-muted-foreground"
+        >
+          Instructions
+        </Label>
+        <Textarea
+          id="skill-instructions"
+          className="font-mono text-xs min-h-[240px]"
+          placeholder="Markdown instructions. This becomes the SKILL.md body the SDK indexes."
+          value={form.body}
+          onChange={(e) => setForm((f) => ({ ...f, body: e.target.value }))}
+        />
+      </div>
+
+      {liveError !== null && (
+        <Alert variant="destructive">
+          <AlertDescription className="text-xs">{liveError}</AlertDescription>
+        </Alert>
+      )}
+    </div>
+  );
+}
+
+// ── Raw editor surface (the opt-in escape hatch) ────────────────────────────
+
+interface RawEditorProps {
+  value: string;
+  onChange: (v: string) => void;
+  parsed:
+    | { ok: true; value: { id: string; description: string; connectors: string[] } }
+    | { ok: false; code: string; message: string };
+}
+
+function RawEditor({ value, onChange, parsed }: RawEditorProps) {
+  const liveError = !parsed.ok ? `${parsed.code}: ${parsed.message}` : null;
+  return (
+    <div className="grid grid-cols-2 gap-3">
+      <div className="flex flex-col gap-1">
+        <label className="text-xs font-medium text-muted-foreground">SKILL.md</label>
+        <Textarea
+          aria-label="Raw SKILL.md"
+          className="font-mono text-xs min-h-[400px]"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+        />
+      </div>
+      <div className="flex flex-col gap-2">
+        <label className="text-xs font-medium text-muted-foreground">Parsed preview</label>
+        {parsed.ok ? (
+          <div className="rounded-md border border-border p-3 flex flex-col gap-3 bg-muted/30">
+            <div>
+              <div className="text-xs text-muted-foreground">Name</div>
+              <div className="text-sm font-mono">{parsed.value.id}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground">Description</div>
+              <div className="text-sm">{parsed.value.description}</div>
+            </div>
+            <div>
+              <div className="text-xs text-muted-foreground mb-1">Connectors</div>
+              {parsed.value.connectors.length === 0 ? (
+                <span className="text-xs text-muted-foreground">none</span>
+              ) : (
+                parsed.value.connectors.map((c) => (
+                  <Badge key={c} variant="secondary" className="text-xs mr-1">
+                    {c}
+                  </Badge>
+                ))
+              )}
+            </div>
+          </div>
+        ) : (
+          <Alert variant="destructive">
+            <AlertDescription className="text-xs">{liveError}</AlertDescription>
+          </Alert>
+        )}
       </div>
     </div>
   );

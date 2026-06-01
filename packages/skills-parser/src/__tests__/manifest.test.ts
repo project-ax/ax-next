@@ -214,4 +214,43 @@ describe('parseSkillManifest', () => {
       if (!r.ok) expect(r.code).toBe('invalid-connector');
     });
   });
+
+  // ---- TASK-133: unknown frontmatter keys are PRESERVED in `extra` --------
+  // The form-first editor round-trips through the parser as the single
+  // authority; any frontmatter key the parser doesn't model must survive so a
+  // raw-editor power-user's custom keys aren't silently dropped by the form.
+  describe('unknown-key preservation (extra)', () => {
+    it('defaults extra to {} when there are no unknown keys', () => {
+      const r = parseSkillManifest(SAMPLE_OK);
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.extra).toEqual({});
+    });
+
+    it('collects unknown top-level keys into extra (modeled keys excluded)', () => {
+      const r = parseSkillManifest(
+        'name: github\ndescription: x\nversion: 2\nconnectors:\n  - github\nlicense: MIT\nauthor: jane\ntags:\n  - a\n  - b\n',
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      // Modeled keys stay OUT of extra.
+      expect(r.value.extra).not.toHaveProperty('name');
+      expect(r.value.extra).not.toHaveProperty('description');
+      expect(r.value.extra).not.toHaveProperty('version');
+      expect(r.value.extra).not.toHaveProperty('connectors');
+      expect(r.value.extra).not.toHaveProperty('sourceUrl');
+      // Unknown keys land in extra with their parsed values.
+      expect(r.value.extra).toEqual({ license: 'MIT', author: 'jane', tags: ['a', 'b'] });
+    });
+
+    it('keeps sourceUrl out of extra (it is a modeled key)', () => {
+      const r = parseSkillManifest(
+        'name: x\ndescription: x\nsourceUrl: https://example.com/s.md\nfoo: bar\n',
+      );
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.value.sourceUrl).toBe('https://example.com/s.md');
+      expect(r.value.extra).toEqual({ foo: 'bar' });
+    });
+  });
 });

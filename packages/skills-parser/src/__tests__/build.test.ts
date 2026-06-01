@@ -72,4 +72,54 @@ describe('buildSkillManifestYaml', () => {
     expect(parsed.ok).toBe(true);
     if (parsed.ok) expect(parsed.value.connectors).toEqual([]);
   });
+
+  // ---- TASK-133: unknown-key round-trip (form ⇄ raw must not drop them) ----
+  describe('extra (unknown-key) round-trip', () => {
+    it('emits extra keys so a full parse→build→parse round-trip preserves them', () => {
+      const src =
+        'name: my-skill\ndescription: Does something.\nversion: 3\nconnectors:\n  - github\nlicense: MIT\ntags:\n  - cli\n  - docs\n';
+      const first = parseSkillManifest(src);
+      expect(first.ok).toBe(true);
+      if (!first.ok) return;
+      expect(first.value.extra).toEqual({ license: 'MIT', tags: ['cli', 'docs'] });
+
+      // Rebuild from the parsed fields + extra (what the form-first editor does).
+      const rebuilt = buildSkillManifestYaml({
+        id: first.value.id,
+        description: first.value.description,
+        version: first.value.version,
+        connectors: first.value.connectors,
+        extra: first.value.extra,
+      });
+      const second = parseSkillManifest(rebuilt);
+      expect(second.ok).toBe(true);
+      if (!second.ok) return;
+      expect(second.value.id).toBe('my-skill');
+      expect(second.value.connectors).toEqual(['github']);
+      // The unknown keys survived the form's structured round-trip.
+      expect(second.value.extra).toEqual({ license: 'MIT', tags: ['cli', 'docs'] });
+    });
+
+    it('lets the known fields win over a colliding extra key (no shadowing)', () => {
+      // A crafted extra.name must NOT override the typed name field.
+      const yaml = buildSkillManifestYaml({
+        id: 'real-name',
+        description: 'd',
+        version: 1,
+        extra: { name: 'forged', author: 'jane' },
+      });
+      const parsed = parseSkillManifest(yaml);
+      expect(parsed.ok).toBe(true);
+      if (!parsed.ok) return;
+      expect(parsed.value.id).toBe('real-name');
+      expect(parsed.value.extra).toEqual({ author: 'jane' });
+    });
+
+    it('omits nothing extra when extra is empty/undefined', () => {
+      const yaml = buildSkillManifestYaml({ id: 'x', description: 'd', version: 0, extra: {} });
+      const parsed = parseSkillManifest(yaml);
+      expect(parsed.ok).toBe(true);
+      if (parsed.ok) expect(parsed.value.extra).toEqual({});
+    });
+  });
 });
