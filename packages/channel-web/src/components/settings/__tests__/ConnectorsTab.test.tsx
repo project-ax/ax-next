@@ -210,11 +210,64 @@ describe('ConnectorsTab', () => {
     expect(await screen.findByLabelText(/API key/i)).toBeInTheDocument();
   });
 
-  it('a personal connector with NO stored key reads "not connected"', async () => {
+  // --- status wording (TASK-130): Ready / Needs a key / Can't reach it / Checking… ---
+
+  it('a connector with all keys present reads "Ready" (no literal "connected" status)', async () => {
+    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([
+      {
+        scope: 'user',
+        ownerId: 'u1',
+        ref: 'account:notion',
+        kind: 'api-key',
+        createdAt: '2026-05-20T00:00:00Z',
+      },
+    ]);
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('My Notion');
     const tile = screen.getByTestId('connector-tile-my-notion');
-    await waitFor(() => expect(tile.textContent).toMatch(/not connected/i));
+    await waitFor(() => expect(within(tile).getByText('Ready')).toBeInTheDocument());
+    // The old literal status verb is gone from the tile (Reconnect button aside).
+    expect(within(tile).queryByText(/^connected$/i)).toBeNull();
+    expect(within(tile).queryByText(/^not connected$/i)).toBeNull();
+  });
+
+  it('a personal connector with NO stored key reads "Needs a key" (not the old "not connected")', async () => {
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    await waitFor(() => expect(within(tile).getByText('Needs a key')).toBeInTheDocument());
+    expect(within(tile).queryByText(/^not connected$/i)).toBeNull();
+  });
+
+  it('no literal "connected / not connected / checking…" status verbs remain on any tile', async () => {
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    // status settles off the "Checking…" placeholder
+    await waitFor(() =>
+      expect(screen.getAllByText('Needs a key').length).toBeGreaterThan(0),
+    );
+    // Scope to the tiles, not the "Connected (n)" shelf headers / empty-state copy
+    // (those are TASK-127 app-store sectioning, intentionally kept).
+    for (const id of ['my-notion', 'company-salesforce']) {
+      const tile = screen.getByTestId(`connector-tile-${id}`);
+      expect(tile.textContent).not.toMatch(/\bnot connected\b/i);
+      // status verb is one of the friendly four; the only "connect" left is the
+      // Connect/Reconnect button label.
+      expect(within(tile).queryByText(/^connected$/i)).toBeNull();
+      expect(within(tile).queryByText(/checking…/i)).toBeNull();
+    }
+  });
+
+  it('admin Test "unreachable" verdict reads "Can\'t reach it" (mechanism-agnostic)', async () => {
+    vi.spyOn(connectorsLib, 'testConnector').mockResolvedValue({
+      status: 'unreachable',
+    });
+    render(<ConnectorsTab isAdmin />);
+    await screen.findByText('My Notion');
+    const tile = screen.getByTestId('connector-tile-my-notion');
+    fireEvent.click(within(tile).getByRole('button', { name: /^test$/i }));
+    await waitFor(() => expect(tile.textContent).toMatch(/can't reach it/i));
+    expect(tile.textContent).not.toMatch(/\bunreachable\b/i);
   });
 
   it('the self-connect of a workspace/shared connector shows the capability-consent gate', async () => {
@@ -308,7 +361,7 @@ describe('ConnectorsTab', () => {
     await screen.findByText('My Notion');
     const tile = screen.getByTestId('connector-tile-my-notion');
     fireEvent.click(within(tile).getByRole('button', { name: /^test$/i }));
-    await waitFor(() => expect(tile.textContent).toMatch(/needs key/i));
+    await waitFor(() => expect(tile.textContent).toMatch(/needs a key/i));
   });
 
   // --- allowed sites (preserved verbatim, TASK-131 reshapes later) ---------

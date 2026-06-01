@@ -11,8 +11,9 @@
  *
  * A connector is the first-class ACCESS object; whether it's backed by MCP, a
  * CLI, or a direct API is a MECHANISM that NEVER shows on the default shelf —
- * each row names only the service, what it needs (a key), and its connected
- * state.
+ * each row names only the service, what it needs (a key), and its status in the
+ * plain-language, mechanism-agnostic vocabulary (TASK-130): Ready / Needs a key
+ * / Can't reach it / Checking… (see STATUS_COPY).
  *
  * ADMIN CURATION (gated on `isAdmin`): the standalone admin Connector Registry
  * is gone (TASK-125). Admins now curate the workspace's Available shelf inline —
@@ -102,6 +103,54 @@ type ConnectedState = 'connected' | 'disconnected' | 'unknown';
 /** Per-row Test probe state (admin Test action). */
 type TestState = 'idle' | 'testing' | ConnectorTestStatus;
 
+/**
+ * Plain-language, mechanism-agnostic connector status vocabulary (TASK-130).
+ * Reads the same whether the connector is backed by MCP, a Direct API, or a
+ * Command-line tool — the underlying probe/presence signal NEVER shows through.
+ *
+ *   - **Ready** — reachable / every credential slot has a stored key.
+ *   - **Needs a key** — a credential slot is still missing its key.
+ *   - **Can't reach it** — the service answered, but we couldn't reach it (only
+ *     the live Test probe can tell this apart from "needs a key").
+ *   - **Checking…** — the presence read / probe is still in flight.
+ */
+const STATUS_COPY = {
+  ready: 'Ready',
+  'needs-key': 'Needs a key',
+  unreachable: "Can't reach it",
+  checking: 'Checking…',
+} as const;
+type StatusKey = keyof typeof STATUS_COPY;
+
+/** The credential-presence status all users see, mapped to the friendly copy.
+ *  `undefined` (still loading) reads as "Checking…". */
+function presenceStatusKey(state: ConnectedState | undefined): StatusKey {
+  if (state === undefined) return 'checking';
+  return state === 'connected' ? 'ready' : 'needs-key';
+}
+
+function presenceDotVariant(state: ConnectedState | undefined): StatusDotVariant {
+  if (state === undefined) return 'pending';
+  return state === 'connected' ? 'ok' : 'empty';
+}
+
+/** The admin Test-probe verdict, mapped to the same friendly copy. `unreachable`
+ *  is the one outcome only the live probe can distinguish from "needs a key". */
+function testStatusKey(state: TestState | undefined): StatusKey | null {
+  switch (state) {
+    case 'reachable':
+      return 'ready';
+    case 'unreachable':
+      return 'unreachable';
+    case 'needs-key':
+      return 'needs-key';
+    case 'testing':
+      return 'checking';
+    default:
+      return null; // idle / not yet probed → no verdict shown
+  }
+}
+
 function testDotVariant(state: TestState | undefined): StatusDotVariant {
   switch (state) {
     case 'reachable':
@@ -116,19 +165,10 @@ function testDotVariant(state: TestState | undefined): StatusDotVariant {
   }
 }
 
+/** Friendly label for the admin Test-probe verdict; 'not tested' when idle. */
 function testLabel(state: TestState | undefined): string {
-  switch (state) {
-    case 'reachable':
-      return 'reachable';
-    case 'unreachable':
-      return 'unreachable';
-    case 'needs-key':
-      return 'needs key';
-    case 'testing':
-      return 'testing…';
-    default:
-      return 'not tested';
-  }
+  const key = testStatusKey(state);
+  return key ? STATUS_COPY[key] : 'not tested';
 }
 
 export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
@@ -308,7 +348,6 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   /** One connector row. `section` tweaks the primary action label. */
   const renderTile = (c: ConnectorSummary, section: 'connected' | 'available') => {
     const state = connected[c.id];
-    const connectedNow = state === 'connected';
     const source = connectorSource(c);
     // Catalog/shared connectors are read-only for non-admins (no edit/delete).
     const canCurate = isAdmin;
@@ -317,12 +356,8 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         <RoleCard pill="service" title={c.name} caption={needsCaption(c)}>
           <div className="flex flex-wrap items-center justify-end gap-2">
             <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground mr-auto">
-              <StatusDot variant={connectedNow ? 'ok' : 'empty'} />
-              {state === undefined
-                ? 'checking…'
-                : connectedNow
-                  ? 'connected'
-                  : 'not connected'}
+              <StatusDot variant={presenceDotVariant(state)} />
+              {STATUS_COPY[presenceStatusKey(state)]}
             </span>
             {canCurate && testState[c.id] !== undefined && (
               <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
