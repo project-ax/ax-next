@@ -6,8 +6,6 @@ import { PluginError, type AgentContext, type AgentMessage, type AgentOutcome, t
 // orchestrator's `AgentConfig` / `ProxyConfig` shapes pinned to the same
 // definition the sandbox backends validate against. See @ax/sandbox-protocol.
 import type { AgentConfig, ProxyConfig } from '@ax/sandbox-protocol';
-import { foldAuthoredSkillCaps } from './authored-egress.js';
-import { buildAuthoredCardPayload, authoredCardDedupKey, hasShownDelta } from './authored-card.js';
 import {
   buildAuthoredConnectorCard,
   authoredConnectorCardDedupKey,
@@ -321,12 +319,6 @@ interface McpServerSpecForOrch {
 }
 export interface ResolvedSkillForOrch {
   id: string;
-  capabilities: {
-    allowedHosts: string[];
-    credentials: Array<{ slot: string; kind: string; description?: string; account?: string }>;
-    mcpServers: McpServerSpecForOrch[];
-    packages?: { npm?: string[]; pypi?: string[] };
-  };
   bodyMd: string;
   manifestYaml: string;
   // JIT Phase 1a — extra (non-SKILL.md) bundle files from skills:resolve.
@@ -335,12 +327,13 @@ export interface ResolvedSkillForOrch {
   files?: { path: string; contents: string }[];
   // TASK-92 / TASK-111 — the skill's top-level `connectors[]` soft-dependency
   // reference list (a flat list of opaque connector-id slugs). @ax/skills'
-  // `skills:resolve` already returns this (ResolvedSkill.connectors); the mirror
-  // surfaces it so the orchestrator can resolve each referenced connector into
-  // sandbox caps via `connectors:resolve` (the skill→connector cap-resolution
-  // bridge — see resolveSkillReferencedConnectors). Optional + `?? []` at the
-  // read site for back-compat with a skills:resolve / projection that predates
-  // the field. NEVER carries backing-mechanism vocab (just connector-id slugs).
+  // `skills:resolve` returns this (ResolvedSkill.connectors); the mirror surfaces
+  // it so the orchestrator resolves each referenced connector into sandbox caps
+  // via `connectors:resolve` (the skill→connector cap-resolution bridge — see
+  // resolveSkillReferencedConnectors). TASK-100 — this is the ONLY reach a skill
+  // declares now (the capability block was removed). Optional + `?? []` at the
+  // read site for back-compat with a projection that predates the field. NEVER
+  // carries backing-mechanism vocab (just connector-id slugs).
   connectors?: string[];
 }
 interface SkillsResolveOutput {
@@ -348,25 +341,25 @@ interface SkillsResolveOutput {
 }
 
 // agents:resolve-authored-skills — registered by @ax/agents (Phase 3 A2).
-// Returns the agent's own self-authored draft skills (quarantine-filtered,
-// EMPTY capabilities — instruction-only; lazy approval is Phase 4). Duplicated
-// structurally per I2 (no @ax/agents import). Conditionally called via
+// Returns the agent's own self-authored draft skills (quarantine-filtered).
+// Duplicated structurally per I2 (no @ax/agents import). Conditionally called via
 // bus.hasService — NOT declared in the manifest, same convention as
 // skills:resolve / skills:list-defaults.
 /** Authored-draft projection mirror (structurally mirrors @ax/agents'
- * AuthoredResolvedSkill — NOT an import, per invariant #2). Adds the Phase-4
- * fields the orchestrator consumes: `proposalDelta` (the unapproved remainder,
- * drives the upfront card) and `description` (the card body). `capabilities` is
- * the APPROVED subset PC-1 folds into egress. */
+ * AuthoredResolvedSkill — NOT an import, per invariant #2). Adds `description`
+ * (used for context/logging).
+ *
+ * TASK-100 — a skill declares no capabilities, so there is no per-skill
+ * `proposalDelta` and no per-skill capability approval card: a model-authored
+ * skill is zero-reach instruction scaffolding, and its connectors' reach is
+ * gated by the connector approval card. The skill's connectors[] (inherited from
+ * ResolvedSkillForOrch) feed the skill→connector bridge. */
 export interface AuthoredResolvedSkillForOrch extends ResolvedSkillForOrch {
-  proposalDelta: ResolvedSkillForOrch['capabilities'];
   description: string;
   /** Gate verdict (TASK-76, §D3). Only `active` skills materialize their bytes
    * into the spawn union; a `pending` skill projects NOTHING (no body, no
-   * name/description in context, no caps) but still drives the approval card —
-   * the card reads description+proposalDelta, never bodyMd, so withholding the
-   * body doesn't break it. Optional for back-compat with an agents projection
-   * that predates the field (defaults to `active`, the pre-TASK-76 behavior). */
+   * name/description in context). Optional for back-compat with an agents
+   * projection that predates the field (defaults to `active`). */
   status?: 'active' | 'pending';
 }
 interface AgentsResolveAuthoredSkillsOutput {
@@ -792,28 +785,14 @@ export function createOrchestrator(
   // stream with duplicate cards. Cleared per session in onSessionTerminate (the
   // session's egress is gone, so any future block under a reused id is new).
   const wallCardsByHost = new Map<string, Set<string>>(); // sessionId → hosts already carded
-  // Phase 4 PR-B — upfront authored-skill approval cards already fired, keyed by
-  // conversationId → set of shown-delta dedup keys. Conversation-scoped so it
-  // SURVIVES a re-spawn within the conversation (do NOT clear on chat:end —
-  // that's per-turn). Cleared by applyAuthoredCapabilityGrant on apply so a
-  // post-approve spawn re-evaluates the smaller delta. In-memory, single-replica
-  // (same posture as wallCardsByHost / respawnSessions).
-  const upfrontCardsByConv = new Map<string, Set<string>>();
-  // TASK-94 — the twin of upfrontCardsByConv for authored CONNECTOR cards,
-  // keyed conversationId → set of shown-surface dedup keys. Same conversation-
-  // scoped survives-respawn posture; cleared by applyAuthoredConnectorGrant on
-  // apply so a post-approve spawn re-evaluates.
+  // TASK-94 — upfront authored-CONNECTOR approval cards already fired, keyed by
+  // conversationId → set of shown-surface dedup keys. Conversation-scoped so it
+  // SURVIVES a re-spawn within the conversation; cleared by the connector grant
+  // path on apply so a post-approve spawn re-evaluates. In-memory, single-replica
+  // (same posture as wallCardsByHost / respawnSessions). TASK-100 — the
+  // authored-SKILL upfront card was removed (a skill declares no caps), so there
+  // is no longer a per-skill card-dedup map or a proposing-conversation map.
   const upfrontConnectorCardsByConv = new Map<string, Set<string>>();
-  // TASK-86 — the conversation that PROPOSED each still-pending authored skill.
-  // A pending cap-skill's upfront "Connect …" card used to fire in EVERY
-  // conversation (the projection resolves the user's pending skills on every
-  // turn, regardless of conversation), so a single pending skill papered its card
-  // across unrelated chats. We only fire a PENDING skill's card in the
-  // conversation it was proposed in. Set in the skills:proposed subscriber (which
-  // carries ctx.conversationId); evicted on approve / conversation-delete.
-  // ACTIVE skills and catalog skills are unaffected. In-memory, single-replica
-  // (same posture as upfrontCardsByConv / respawnSessions).
-  const pendingSkillConversation = new Map<string, string>(); // skillId → conversationId
   function registerWaiter(
     sessionId: string,
     reqId: string,
@@ -1009,14 +988,9 @@ export function createOrchestrator(
     if (sid !== undefined && sid.length > 0 && sid !== 'ipc-server') {
       respawnSessions.add(sid);
     }
-    // TASK-86 — remember which conversation proposed a PENDING cap-skill so its
-    // upfront "Connect …" card only fires there (not across every chat). An
-    // `active` (free-path) skill needs no card; a `quarantined` one never
-    // projects. Best-effort: needs a conversationId to scope against.
-    const convId = ctx.conversationId;
-    if (event.status === 'pending' && convId !== undefined && convId.length > 0) {
-      pendingSkillConversation.set(event.skillId, convId);
-    }
+    // TASK-100 — a proposed skill no longer fires a per-skill capability card
+    // (a skill declares no caps), so there is no proposing-conversation to
+    // remember; the re-spawn mark above is the whole effect.
   }
 
   const chatTimeoutMs = config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
@@ -1599,8 +1573,6 @@ export function createOrchestrator(
       }
     }
 
-    const skillById = new Map(resolvedSkills.map((s) => [s.id, s]));
-
     // Build the union allowlist + credentials, starting from agent defaults.
     const baseAllowSet = useAnthropicDefaults
       ? new Set<string>(['api.anthropic.com'])
@@ -1622,44 +1594,16 @@ export function createOrchestrator(
     );
 
     // TASK-86 — ordered (highest precedence first) skill-slot descriptors driving
-    // the namespaced→bare env projection. `attachments` is already in per-user >
-    // agent-global precedence order; authored drafts (folded below) append after,
-    // so the FIRST writer of a shared bare name wins the flat-env stamp.
+    // the namespaced→bare env projection. Connector slots (folded below) append
+    // after the agent defaults, so the FIRST writer of a shared bare name wins
+    // the flat-env stamp.
+    //
+    // TASK-100 — a skill manifest declares NO capabilities (hosts / credentials /
+    // mcp / packages), so an attachment no longer folds any reach here: a skill's
+    // reach is the connectors it references, folded through foldConnectorCaps
+    // below (the skill→connector bridge). The attachment still records WHICH skill
+    // is materialized (the union below); it carries no credential bindings.
     const skillSlotEnvNames: Array<{ envName: string; bareSlot: string }> = [];
-
-    for (const attachment of attachments) {
-      const skill = skillById.get(attachment.skillId);
-      if (skill === undefined) continue; // deleted-skill-still-attached — drop silently
-      for (const host of skill.capabilities.allowedHosts) {
-        baseAllowSet.add(host);
-      }
-      for (const slotDef of skill.capabilities.credentials) {
-        const ref = attachment.credentialBindings[slotDef.slot];
-        if (ref === undefined) {
-          const outcome: AgentOutcome = {
-            kind: 'terminated',
-            reason: 'skill-binding-missing',
-            error: new Error(`skill '${skill.id}' attachment is missing binding for slot '${slotDef.slot}'`),
-          };
-          // TASK-22 — pre-waiter early-return: surface on the SSE so the client
-          // doesn't hang (coarse `reason` only; see note above).
-          await fireTurnError(ctx, ctx.reqId, outcome.reason);
-          await bus.fire('chat:end', ctx, { outcome });
-          return outcome;
-        }
-        // TASK-86 — key the catalog skill's slot by its PER-SKILL namespace so
-        // two skills wanting the same bare slot (e.g. both `LINEAR_API_KEY`)
-        // coexist instead of the old fatal `skill-slot-collision` lockout. The
-        // bare env-var name the skill reads is restored by the env projection
-        // after proxy:open-session. Idempotent on a duplicate slot within one
-        // skill; a different skill can never collide (the key carries the id).
-        const envName = skillCredentialEnvName(skill.id, slotDef.slot);
-        if (slotOwners.has(envName)) continue;
-        baseCreds[envName] = { ref, kind: slotDef.kind };
-        slotOwners.set(envName, skill.id);
-        skillSlotEnvNames.push({ envName, bareSlot: slotDef.slot });
-      }
-    }
 
     const unionedCreds = baseCreds;
 
@@ -1715,44 +1659,16 @@ export function createOrchestrator(
     // §D3 "no bytes project, no caps inject" (TASK-76). A `pending` authored
     // skill — one whose declared caps a human hasn't approved yet — must
     // contribute NOTHING to this spawn: not its SKILL.md body, not its
-    // name/description in context, not its caps. Only `active` skills (zero-cap
-    // free-path, or a gated skill the user approved → status flipped to active)
-    // materialize. The full `authoredDraftSkills` list is still used below to
-    // fire the approval card (the card reads description+proposalDelta, never the
-    // body), so a pending skill is invisible to the model yet still promptable.
-    // A projection that predates the `status` field (back-compat) defaults to
-    // active — the pre-TASK-76 behavior.
+    // name/description in context. Only `active` skills materialize. A projection
+    // that predates the `status` field (back-compat) defaults to active.
+    //
+    // TASK-100 — a skill declares no capabilities, so there is no per-skill cap
+    // fold or per-skill slot append here: an authored skill's reach is the
+    // connectors it references, folded through the SINGLE foldConnectorCaps path
+    // below (the skill→connector bridge) like every other skill's connectors.
     const activeAuthoredDraftSkills = authoredDraftSkills.filter(
       (s) => (s.status ?? 'active') === 'active',
     );
-
-    // PC-1 — fold APPROVED authored-draft caps into the egress allowlist +
-    // credential map (Phase 4 PR-B). baseCreds is aliased by unionedCreds and
-    // baseAllowSet is frozen into unionedAllowlist below, so mutating them here
-    // reaches proxy:open-session. TASK-86 — authored skill slots are namespaced
-    // (`skill:<id>:<slot>`) like catalog slots, so two skills wanting the same
-    // bare slot coexist and a skill can't hijack a trusted credential (the env
-    // projection makes the trusted bare name win) — no more fatal collision.
-    // Only ACTIVE skills fold (§D3 "no caps inject" for pending; a pending
-    // skill's proposal∩approved is empty anyway, so this is belt-and-suspenders).
-    foldAuthoredSkillCaps(
-      activeAuthoredDraftSkills,
-      baseAllowSet,
-      baseCreds,
-      slotOwners,
-    );
-    // Append the authored skills' namespaced slots AFTER the catalog attachments
-    // so the projection's first-writer-wins precedence holds (catalog > authored
-    // on a shared bare name). Mirror the fold's account/untagged ref derivation
-    // for the bare-name mapping (the ref itself is already in baseCreds).
-    for (const s of activeAuthoredDraftSkills) {
-      for (const c of s.capabilities.credentials) {
-        skillSlotEnvNames.push({
-          envName: skillCredentialEnvName(s.id, c.slot),
-          bareSlot: c.slot,
-        });
-      }
-    }
 
     let defaultSkillsForUnion: ResolvedSkillForOrch[] = [];
     if (bus.hasService('skills:list-defaults')) {
@@ -1860,19 +1776,13 @@ export function createOrchestrator(
       skillSlotEnvNames.push(slot);
     }
 
-    // D: auto-allowlist public package registries for any skill OR connector in
-    // the union — explicit attachments AND default-attached skills AND connectors
-    // (all are materialized into the sandbox, so the agent may run npx/uvx for
-    // any). Specific hosts only, gated on installation (I5 — no blanket egress).
-    // Computed here (after the defaults union + connector fold) so every declared
-    // ecosystem is covered.
-    let needsNpmRegistry = connectorFold.needsNpmRegistry;
-    let needsPypiRegistry = connectorFold.needsPypiRegistry;
-    for (const skill of unionedSkills) {
-      const pkgs = skill.capabilities.packages;
-      if (pkgs?.npm?.length) needsNpmRegistry = true;
-      if (pkgs?.pypi?.length) needsPypiRegistry = true;
-    }
+    // D: auto-allowlist public package registries when a CONNECTOR in the union
+    // declares npm/pypi packages. Specific hosts only, gated on installation (I5 —
+    // no blanket egress). TASK-100 — a SKILL declares no packages of its own (its
+    // reach is the connectors it references), so only the connector fold drives
+    // the registry auto-allow now.
+    const needsNpmRegistry = connectorFold.needsNpmRegistry;
+    const needsPypiRegistry = connectorFold.needsPypiRegistry;
     if (needsNpmRegistry) baseAllowSet.add('registry.npmjs.org');
     if (needsPypiRegistry) {
       baseAllowSet.add('pypi.org');
@@ -1920,25 +1830,15 @@ export function createOrchestrator(
         },
         ...(s.files ?? []).map((f) => ({ path: f.path, contents: f.contents })),
       ],
-      // Phase B — per-skill MCP server bundle. Defense-in-depth `?? []` in
-      // case skills:resolve returned a ResolvedSkill without the field
-      // (older impl, structural shape mismatch). No cross-skill union — each
-      // skill stays its own group because `.mcp.json` is per-directory.
-      mcpServers: s.capabilities.mcpServers ?? [],
-      // TASK-14 — top-level allowedHosts + credential slots so the runner can
-      // wire git HTTP Basic auth for the skill's credentialed hosts. The only
-      // credential kind the manifest grammar permits is 'api-key' (see
-      // @ax/skills CapabilitySlotSchema), so narrow the forwarded kind.
-      allowedHosts: s.capabilities.allowedHosts ?? [],
-      // TASK-86 — `slot` is the BARE env-var name the skill reads. The skill's
-      // OWN `ax-cred:<hex>` placeholder is stamped below (after proxy:open-session
-      // resolves the namespaced credential map) so git HTTP-Basic wiring uses the
-      // skill's own credential even when another skill won the flat-env stamp for
-      // the same bare name.
-      credentials: (s.capabilities.credentials ?? []).map((c) => ({
-        slot: c.slot,
-        kind: 'api-key' as const,
-      })),
+      // TASK-100 — a skill declares NO MCP servers / hosts / credentials of its
+      // own: all of a skill's reach is the connectors it references, materialized
+      // as CONNECTOR installed-entries below (synthetic SKILL.md + per-dir
+      // `.mcp.json`, namespaced `connector:<id>:<slot>` credentials). A skill's
+      // own sandbox entry is just its SKILL.md + bundle files (instruction
+      // content), so these are empty.
+      mcpServers: [],
+      allowedHosts: [],
+      credentials: [],
     }));
 
     // TASK-97 — connector installed-skill entries (synthetic SKILL.md +
@@ -2197,64 +2097,12 @@ export function createOrchestrator(
       return outcome;
     }
 
-    // Phase 4 PR-B (D-B1/D-B3) — fire ONE upfront approval card per authored
-    // draft with a non-empty SHOWN delta (hosts/slots/packages; mcp deferred),
-    // deduped per (conversation, skillId, shown-delta). conversationId is the
-    // SSE match key for skill cards, so guard on it.
-    if (ctx.conversationId !== undefined && ctx.conversationId.length > 0) {
-      const convId = ctx.conversationId;
-      // hasShownDelta is the SINGLE source of truth for "is there anything to
-      // card" — shared with buildAuthoredCardPayload's null check so the two
-      // can't diverge (it also tolerates the optional packages field).
-      const cardable = authoredDraftSkills.filter((s) => {
-        if (!hasShownDelta(s.proposalDelta)) return false;
-        // TASK-86 — a PENDING cap-skill's card only fires in the conversation
-        // that proposed it (tracked in onSkillsProposed), so it stops papering
-        // across every unrelated chat. If we never recorded a proposing
-        // conversation (e.g. the skill predates this host process / was proposed
-        // before restart), fall back to the pre-TASK-86 behavior (fire here) so
-        // an approvable skill is never silently un-cardable. ACTIVE skills are
-        // exempt — they don't need an approval card anyway (their shown delta is
-        // empty post-approval), and the filter must not suppress one.
-        if ((s.status ?? 'active') === 'pending') {
-          const proposedIn = pendingSkillConversation.get(s.id);
-          if (proposedIn !== undefined && proposedIn !== convId) return false;
-        }
-        return true;
-      });
-      if (cardable.length > 0) {
-        // Vaulted refs → haveExisting on account-tagged slots (mirror request_capability).
-        const vaultedRefs = new Set<string>();
-        if (bus.hasService('credentials:list')) {
-          try {
-            const list = await bus.call<
-              { scope: 'user'; ownerId: string },
-              { credentials: Array<{ ref: string }> }
-            >('credentials:list', ctx, { scope: 'user', ownerId: ctx.userId });
-            for (const c of list.credentials) vaultedRefs.add(c.ref);
-          } catch {
-            /* a failed lookup just means the card prompts — never block it */
-          }
-        }
-        const fired = upfrontCardsByConv.get(ctx.conversationId) ?? new Set<string>();
-        for (const s of cardable) {
-          // buildAuthoredCardPayload/authoredCardDedupKey normalize the optional
-          // packages field internally, so proposalDelta passes straight through.
-          const key = authoredCardDedupKey(s.id, s.proposalDelta);
-          if (fired.has(key)) continue;
-          const card = buildAuthoredCardPayload(
-            { skillId: s.id, description: s.description, delta: s.proposalDelta },
-            vaultedRefs,
-          );
-          if (card === null) continue;
-          fired.add(key);
-          await bus.fire('chat:permission-request', ctx, card);
-        }
-        // Always store back: `fired` is either a new Set or the existing
-        // reference (re-set is a harmless no-op), so no size guard is needed.
-        upfrontCardsByConv.set(ctx.conversationId, fired);
-      }
-    }
+    // TASK-100 — the authored-SKILL upfront approval card was removed: a skill
+    // declares no capabilities (its reach is the connectors it references), so a
+    // model-authored skill has no per-skill cap delta to approve. The connector
+    // approval card below is the surviving upfront-card path (a connector's reach
+    // is what a human approves); request_capability still fires the JIT card when
+    // a skill's referenced connector needs approval at first use.
 
     // TASK-94 — fire ONE upfront approval card per PENDING authored connector
     // draft with a non-empty shown surface (hosts/slots/packages; mcp deferred),
@@ -2600,38 +2448,12 @@ export function createOrchestrator(
     ctx: AgentContext,
     input: ApplyCapabilityGrantInput,
   ): Promise<ApplyCapabilityGrantOutput> {
-    // 1. Resolve the catalog skill's declared slots so we can bind every one
-    //    (skills:attach-for-user requires a binding for each — see
-    //    validateAttachmentBindings; a partially-bound attachment is rejected).
-    let declaredSlots: Array<{ slot: string; account?: string }> = [];
-    if (bus.hasService('skills:resolve')) {
-      const r = await bus.call<SkillsResolveInput, SkillsResolveOutput>(
-        'skills:resolve',
-        ctx,
-        { skillIds: [input.skillId], ownerUserId: input.userId },
-      );
-      declaredSlots =
-        r.skills[0]?.capabilities.credentials.map((c) => ({
-          slot: c.slot,
-          ...(c.account !== undefined ? { account: c.account } : {}),
-        })) ?? [];
-    }
-
-    // 2. Derive per-slot bindings. A slot tagged `account: <svc>` binds the
-    //    SHARED user vault entry `account:<svc>` (JIT P2/decision #13) — entered
-    //    once, reused by every skill naming the same service. An untagged slot
-    //    keeps the per-skill `skill:<id>:<slot>` ref (the deterministic ref the
-    //    card wrote each key to). The card (request_capability + the
-    //    PermissionCard POST) derives the IDENTICAL ref from the same manifest,
-    //    so the stored key and this binding always address the same row.
-    //    Local re-derivation — no @ax/credentials import (I2), same posture as
-    //    credentials-admin-routes inlining refForDestination. A slotless skill
-    //    binds {}.
+    // TASK-100 — a catalog skill declares NO credential slots (its reach is the
+    // connectors it references), so the attachment carries no credential
+    // bindings: "granting" a skill simply attaches it for the user (the skill's
+    // body materializes next spawn). A referenced connector's credentials are
+    // bound by the connector connect/approval flow, not here.
     const credentialBindings: Record<string, string> = {};
-    for (const s of declaredSlots) {
-      credentialBindings[s.slot] =
-        s.account !== undefined ? `account:${s.account}` : `skill:${input.skillId}:${s.slot}`;
-    }
 
     // 3. Attach for the user (TASK-33). Errors propagate as PluginError — the
     //    caller (the decision endpoint) maps them to an HTTP error.
@@ -2747,82 +2569,16 @@ export function createOrchestrator(
     const draft = drafts.find((s) => s.id === input.skillId);
     if (draft === undefined) return { applied: false, reason: 'not-authored' };
 
-    // 2. Build the approval rows from the re-resolved CURRENT proposalDelta
-    //    (hosts/slots/packages; mcp deferred — D-B2).
+    // TASK-100 — a skill declares NO capabilities, so there is nothing per-skill
+    // to approve into the caps wall: "approving" an authored skill simply flips
+    // its pending draft to active so its instruction body materializes next
+    // spawn. (A skill's connector reach is approved via the connector grant path,
+    // applyAuthoredConnectorGrant, under the connector approval card — not here.)
     //
-    //    FIX 1 (TOCTOU guard): if `shown` is present, filter each kind to only
-    //    entries that were ALSO present in `shown` (what the user saw on the
-    //    card). An agent that widens its draft mid-flight cannot sneak in
-    //    unshown caps — anything in the current delta but not in `shown` is
-    //    silently skipped (it remains unapproved; the next spawn fires its own
-    //    card for the remainder). When `shown` is absent (back-compat), the
-    //    full current delta is approved unchanged.
-    const delta = draft.proposalDelta;
-    const deltaNpm = delta.packages?.npm ?? [];
-    const deltaPypi = delta.packages?.pypi ?? [];
-
-    // Intersection helpers — present only when `shown` is provided.
-    const shownHostSet = input.shown !== undefined ? new Set(input.shown.hosts) : null;
-    const shownSlotSet = input.shown !== undefined ? new Set(input.shown.slots) : null;
-    const shownNpmSet  = input.shown !== undefined ? new Set(input.shown.npm)   : null;
-    const shownPypiSet = input.shown !== undefined ? new Set(input.shown.pypi)  : null;
-
-    const approvedHosts = shownHostSet !== null
-      ? delta.allowedHosts.filter((h) => shownHostSet.has(h))
-      : delta.allowedHosts;
-    const approvedCreds = shownSlotSet !== null
-      ? delta.credentials.filter((c) => shownSlotSet.has(c.slot))
-      : delta.credentials;
-    const approvedNpm = shownNpmSet !== null
-      ? deltaNpm.filter((p) => shownNpmSet.has(p))
-      : deltaNpm;
-    const approvedPypi = shownPypiSet !== null
-      ? deltaPypi.filter((p) => shownPypiSet.has(p))
-      : deltaPypi;
-
-    const rows: Array<{
-      kind: 'host' | 'slot' | 'npm' | 'pypi';
-      value: string;
-      detail?: { kind: 'api-key'; account?: string };
-    }> = [
-      ...approvedHosts.map((h) => ({ kind: 'host' as const, value: h })),
-      ...approvedCreds.map((c) => ({
-        kind: 'slot' as const,
-        value: c.slot,
-        detail: { kind: 'api-key' as const, ...(c.account !== undefined ? { account: c.account } : {}) },
-      })),
-      ...approvedNpm.map((p) => ({ kind: 'npm' as const, value: p })),
-      ...approvedPypi.map((p) => ({ kind: 'pypi' as const, value: p })),
-    ];
-
-    // 3. Write the approval rows (host-side store, outside the agent's reach).
-    //    DELIBERATE fail-loud: a write error PROPAGATES (the route returns 500),
-    //    NOT best-effort-swallow. Swallowing would report `applied:true` while
-    //    silently failing to approve a cap — an "approved" host would stay
-    //    unreachable (a silent failure the user never sees). Propagating surfaces
-    //    it; `skills:approved-caps-set` is idempotent, so a retry re-writes the
-    //    (now-smaller) delta and converges. Do NOT "fix" this into a swallow.
-    if (bus.hasService('skills:approved-caps-set')) {
-      for (const row of rows) {
-        await bus.call('skills:approved-caps-set', ctx, {
-          ownerUserId: input.userId,
-          agentId: input.agentId,
-          skillId: input.skillId,
-          kind: row.kind,
-          value: row.value,
-          ...(row.detail !== undefined ? { detail: row.detail } : {}),
-        });
-      }
-    }
-
-    // 3b. Flip the authored row pending→active (TASK-76, §D3 "on approve … flips
-    //     to active"). A human just approved this skill at the card, so it stops
-    //     being a pending "no bytes project" draft — the next spawn's projection
-    //     now includes its body bytes + the approved caps. Status-guarded in the
-    //     store (only a pending row flips; quarantined stays quarantined). Same
-    //     fail-loud posture as the caps writes above: a flip error propagates
-    //     rather than silently leaving the skill stuck pending after an approval.
-    //     hasService-guarded — a preset without @ax/skills (CLI stub) no-ops.
+    // Flip the authored row pending→active (TASK-76, §D3). Status-guarded in the
+    // store (only a pending row flips; quarantined stays quarantined). Fail-loud:
+    // a flip error propagates rather than silently leaving the skill stuck
+    // pending. hasService-guarded — a preset without @ax/skills (CLI stub) no-ops.
     if (bus.hasService('skills:authored-activate')) {
       await bus.call('skills:authored-activate', ctx, {
         ownerUserId: input.userId,
@@ -2831,30 +2587,22 @@ export function createOrchestrator(
       });
     }
 
-    // 4. Drop the upfront-card dedup for this conversation so the next spawn
-    //    re-evaluates the now-smaller delta (re-fires only if something remains).
-    //    TASK-83: the My Skills "approve early" path has no conversation — there's
-    //    no per-conversation card to dedup-drop, so skip this when absent.
+    // Drop the upfront connector-card dedup for this conversation so the next
+    // spawn re-evaluates (a freshly-active skill may reference connectors that
+    // still need their own approval card). The My Skills "approve early" path has
+    // no conversation, so skip when absent.
     const convId = input.conversationId;
-    if (convId !== undefined) upfrontCardsByConv.delete(convId);
-    // TASK-86 — the skill is no longer pending (it just flipped to active), so
-    // drop its proposing-conversation scope record (bounded-map hygiene).
-    pendingSkillConversation.delete(input.skillId);
+    if (convId !== undefined) upfrontConnectorCardsByConv.delete(convId);
 
-    // 5. Activate per the asymmetry (design table): ANY SHOWN credential slot →
-    //    env var frozen at spawn → re-spawn. Else host/package-only → live widen.
-    //    FIX 1: use `approvedCreds` (shown-intersection) so an unshown credential
-    //    slot does NOT trigger a re-spawn that the user never approved.
-    //    TASK-83: with no conversation (early approval) there is no warm session
-    //    to retire or widen — the approval rows + activate above are the whole
-    //    effect, and the user's next turn cold-spawns with the skill approved.
-    const needsRespawn = approvedCreds.length > 0;
-    if (needsRespawn) {
-      const warm =
-        convId !== undefined
-          ? await activeAliveSession(ctx, convId, input.userId)
-          : null;
-      let respawned = false;
+    // A freshly-active instruction-only skill has no credential/host reach of its
+    // own, so there is nothing to live-widen or re-spawn for here: the skill's
+    // body materializes on the next turn's spawn. (Its referenced connectors'
+    // reach is wired by the connector grant path + the skill→connector bridge.)
+    // Retire the warm session so the next turn cold-spawns with the now-active
+    // skill's body in the union.
+    let respawned = false;
+    if (convId !== undefined) {
+      const warm = await activeAliveSession(ctx, convId, input.userId);
       if (warm !== null) {
         try {
           await bus.call('session:terminate', ctx, { sessionId: warm });
@@ -2866,37 +2614,8 @@ export function createOrchestrator(
           });
         }
       }
-      // `respawned` reports "did we retire a warm session THIS call", NOT "is a
-      // respawn needed". When there's no warm session (warm === null),
-      // respawned:false is correct/expected: the next turn has no warm session
-      // to reuse, so it cold-spawns fresh and PC-1 folds the now-approved
-      // credential into that spawn — the credential activates on the next turn
-      // regardless of whether we retired anything here.
-      return { applied: true, respawned };
     }
-
-    // Host/package-only → live widen on the conversation's warm session.
-    // FIX 1: use `approvedHosts`/`approvedNpm`/`approvedPypi` (shown-filtered)
-    // so only hosts the user saw on the card get live-added.
-    const liveHosts = [...approvedHosts];
-    if (approvedNpm.length > 0) liveHosts.push('registry.npmjs.org');
-    if (approvedPypi.length > 0) liveHosts.push('pypi.org', 'files.pythonhosted.org');
-    if (liveHosts.length > 0 && bus.hasService('proxy:add-host') && convId !== undefined) {
-      const warm = await activeAliveSession(ctx, convId, input.userId);
-      if (warm !== null) {
-        for (const host of liveHosts) {
-          try {
-            await bus.call('proxy:add-host', ctx, { sessionId: warm, host });
-          } catch (err) {
-            ctx.logger.warn('authored_grant_add_host_failed', {
-              host,
-              err: err instanceof Error ? err : new Error(String(err)),
-            });
-          }
-        }
-      }
-    }
-    return { applied: true, respawned: false };
+    return { applied: true, respawned };
   }
 
   // TASK-94 — apply a user-approved authored-CONNECTOR capability grant. The

@@ -43,24 +43,17 @@ interface RequestCapabilityResult {
 }
 
 // Mirrors the subset of @ax/skills' SkillDetail the broker reads. Re-declared
-// locally — the broker reaches the catalog only through the bus (I2). Kept
-// structurally in sync with SkillDetail.capabilities by the broker tests.
+// locally — the broker reaches the catalog only through the bus (I2).
+//
+// TASK-100 — a skill no longer carries a capability block; the broker's approval
+// card is built ENTIRELY from the connectors the skill references. So the broker
+// reads only the skill's id/description (for the card body) + its `connectors[]`.
 interface CatalogSkillDetail {
   id: string;
   description: string;
-  capabilities: {
-    allowedHosts: string[];
-    // `account` (JIT P2/P7.2): a service slug tagging the slot to the user's
-    // shared `account:<service>` vault entry instead of a per-skill ref.
-    credentials: { slot: string; kind: 'api-key'; account?: string }[];
-    // Package registry egress declared by the skill manifest. Mirrors
-    // SkillCapabilities.packages (skills-parser). Empty arrays when absent.
-    packages?: { npm: string[]; pypi: string[] };
-  };
-  // TASK-111 — the skill's top-level connector references (TASK-92). The broker
-  // resolves each via connectors:resolve and folds its reach into the card so the
-  // user approves the connector-derived caps too. Optional + `?? []` for a
-  // skills:get that predates the field (legacy skills with no connectors).
+  // TASK-92/TASK-100 — the skill's top-level connector references. The broker
+  // resolves each via connectors:resolve and builds the card from their reach.
+  // Optional + `?? []` for a skills:get that predates the field.
   connectors?: string[];
 }
 
@@ -181,24 +174,22 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
         }
       }
 
-      // TASK-111 — the skill→connector cap-resolution bridge, broker side. A
-      // skill declares the connectors it uses via its top-level `connectors[]`
-      // (TASK-92); resolve each via connectors:resolve and fold its reach
-      // (hosts / slot NAMES / packages — the SAME public manifest data the card
-      // already shows for the skill's own block) into the card, so the user
-      // approves the connector-derived caps too. The TASK-93 wall keys the grant
-      // by connectorId on its own; here we only widen the card surface the user
-      // sees (the kind:'skill' card is reused, not forked).
+      // TASK-100 / TASK-111 — the card surface comes ENTIRELY from the connectors
+      // a skill references via its top-level `connectors[]` (TASK-92). A skill no
+      // longer carries a capability block of its own (TASK-100 closed that path),
+      // so reach is the connectors', resolved via connectors:resolve and gated by
+      // the TASK-93 wall (connectorId subject — the kind:'skill' card is reused,
+      // not forked). The card shows the SAME public manifest data (hosts / slot
+      // NAMES / packages) the connector declares — never a backing-mechanism field
+      // or a secret.
       //
       // Best-effort + hasService-gated: a stripped/credential-less preset (no
-      // connectors:resolve) degrades to the skill's own block; a per-connector
-      // resolve failure just omits that connector's reach — it NEVER blocks the
-      // card (mirrors the vault-lookup posture above). A pending authored draft is
-      // never returned by connectors:resolve (it reads only the live table —
-      // TASK-94), so an unapproved connector contributes no reach here either.
-      //
-      // The skill's OWN capability block still contributes in parallel (both
-      // paths live during the half-wired window — TASK-100 closes it).
+      // connectors:resolve) yields an empty card surface; a per-connector resolve
+      // failure just omits that connector's reach — it NEVER blocks the card. A
+      // pending authored draft is never returned by connectors:resolve (it reads
+      // only the live human-approved/curated table — TASK-94), so an unapproved
+      // connector contributes ZERO reach here (the security invariant TASK-111
+      // established and TASK-100 must preserve).
       const connectorHosts: string[] = [];
       const connectorSlots: { slot: string; kind: 'api-key'; account?: string }[] = [];
       const connectorNpm: string[] = [];
@@ -222,17 +213,23 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
         }
       }
 
-      // Union skill-block caps with connector-derived caps, deduped: a host or
-      // package declared by both sources appears once; a slot is keyed by name
-      // (first declaration wins its account/haveExisting — the skill block leads).
-      const allHosts = dedup([...detail.capabilities.allowedHosts, ...connectorHosts]);
+      // The card surface is purely connector-derived now, deduped: a host or
+      // package declared by multiple connectors appears once; a slot is keyed by
+      // name (first declaration wins its account/haveExisting).
+      const allHosts = dedup(connectorHosts);
       const slotByName = new Map<string, { slot: string; kind: 'api-key'; account?: string }>();
-      for (const c of [...detail.capabilities.credentials, ...connectorSlots]) {
+      for (const c of connectorSlots) {
         if (!slotByName.has(c.slot)) slotByName.set(c.slot, c);
       }
-      const skillPkgs = detail.capabilities.packages ?? { npm: [], pypi: [] };
-      const allNpm = dedup([...skillPkgs.npm, ...connectorNpm]);
-      const allPypi = dedup([...skillPkgs.pypi, ...connectorPypi]);
+      const allNpm = dedup(connectorNpm);
+      const allPypi = dedup(connectorPypi);
+
+      // A skill that references no connectors (or whose connectors resolve to no
+      // reach) has nothing to gate — it's a free-path instruction skill. Fire no
+      // card; request_capability is a no-op approval surface in that case.
+      if (allHosts.length === 0 && slotByName.size === 0 && allNpm.length === 0 && allPypi.length === 0) {
+        return { status: 'requested', skillId };
+      }
 
       // Surface the ONE bundled approval card (design §11.3, decision #6) — the
       // open-mode security boundary. Public manifest data only: hostnames + slot

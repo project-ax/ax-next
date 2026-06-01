@@ -27,17 +27,10 @@ function loadOne(id: string): ResolvedSkillForOrch {
     manifestYaml: split.manifestYaml,
     bodyMd: split.bodyMd,
     files: [],
-    capabilities: {
-      allowedHosts: [],
-      credentials: [],
-      mcpServers: [],
-      packages: { npm: [], pypi: [] },
-    },
-    // TASK-111 — surface the manifest's top-level `connectors[]` so a builtin
-    // that references a connector folds its reach through the skill→connector
-    // bridge. The shipped builtins declare none today ([]), but wiring it from
-    // the parsed manifest keeps the loader honest (no silent drop) if one ever
-    // does.
+    // TASK-100 — a skill manifest carries no capability block; its reach is the
+    // connectors it references, folded through the skill→connector bridge
+    // (TASK-111). The shipped builtins declare none today ([]), but wiring it
+    // from the parsed manifest keeps the loader honest if one ever does.
     connectors: parsed.value.connectors,
   };
 }
