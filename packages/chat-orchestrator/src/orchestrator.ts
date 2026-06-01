@@ -221,6 +221,30 @@ interface ConnectorsListAuthoredOutput {
   }>;
 }
 
+// connectors:upsert — registered by @ax/connectors (TASK-97). Duplicated
+// structurally per I2 (no @ax/connectors import). Conditionally called via
+// bus.hasService — NOT declared in the manifest, same convention as the peers
+// above. TASK-113 — on approval the grant PROMOTES the approved authored
+// connector into the curated registry through this hook, so the EXISTING
+// registry read paths (resolveEffectiveConnectors → foldConnectorCaps, the UI
+// surfaces) pick it up with NO further changes (invariant #4 — one source of
+// truth; the authored table stays draft/proposal staging only).
+interface ConnectorsUpsertInput {
+  userId: string;
+  connectorId: string;
+  name: string;
+  description: string;
+  usageNote: string;
+  keyMode: 'personal' | 'workspace';
+  visibility: 'private' | 'shared';
+  capabilities: {
+    allowedHosts: string[];
+    credentials: Array<{ slot: string; kind: string; account?: string; description?: string }>;
+    mcpServers: unknown[];
+    packages: { npm: string[]; pypi: string[] };
+  };
+}
+
 // Shapes of the peer hooks we bus.call. Duplicated structurally on purpose —
 // I2 forbids cross-plugin imports. Drift would surface as a runtime shape
 // error at call time.
@@ -2730,6 +2754,54 @@ export function createOrchestrator(
           ...(row.detail !== undefined ? { detail: row.detail } : {}),
         });
       }
+    }
+
+    // 3a. PROMOTE the approved connector into the curated registry (TASK-113 —
+    //     the load-bearing fix). The approved-caps rows above only GATE reach;
+    //     the connector's reach is FOLDED from the registry by
+    //     resolveEffectiveConnectors → foldConnectorCaps, and the UI surfaces
+    //     read the registry too. So an approved authored connector must land in
+    //     the registry, or it never reaches the sandbox NOR the UI (the
+    //     TASK-101-walk bug: npx hits npm 403 + the reactive wall; the connector
+    //     is invisible/unattachable).
+    //
+    //     ONE SOURCE OF TRUTH (invariant #4): the REGISTRY row is authoritative
+    //     for the active connector. The authored row stays draft/proposal
+    //     staging — flipped `active` below only for the audit trail; nothing
+    //     reads the authored table for active reach or UI. We do NOT add a
+    //     second read path.
+    //
+    //     We promote the APPROVED capability surface — the `shown`-narrowed sets
+    //     computed above, NOT the full proposal — so promoted reach == approved
+    //     reach (the TOCTOU guard flows through to the registry row). mcpServers
+    //     ride from the draft proposal verbatim (no per-mcp `shown` narrowing in
+    //     the card today; the wall does not card individual MCP servers).
+    //     keyMode/name/usageNote come from the resolved draft. `visibility` is
+    //     the safe `private` default (owner-scoped reach); an admin re-curates to
+    //     shared/default-on later (mirrors the cap-migration promotion default).
+    //
+    //     Ordered BEFORE the activate flip so a promotion failure leaves the
+    //     draft `pending` (re-approvable) rather than active-but-unpromoted.
+    //     Fail-loud (propagate), like the activate flip. hasService-guarded for
+    //     back-compat with a preset that strips @ax/connectors.
+    if (bus.hasService('connectors:upsert')) {
+      const promotedCapabilities: ConnectorsUpsertInput['capabilities'] = {
+        allowedHosts: approvedHosts,
+        credentials: approvedCreds,
+        mcpServers: proposal.mcpServers,
+        packages: { npm: approvedNpm, pypi: approvedPypi },
+      };
+      const upsertInput: ConnectorsUpsertInput = {
+        userId: input.userId,
+        connectorId: input.connectorId,
+        name: draft.name,
+        description: '',
+        usageNote: draft.usageNote,
+        keyMode: draft.keyMode,
+        visibility: 'private',
+        capabilities: promotedCapabilities,
+      };
+      await bus.call('connectors:upsert', ctx, upsertInput);
     }
 
     // 3b. Flip the connector draft pending→active. Status-guarded + idempotent

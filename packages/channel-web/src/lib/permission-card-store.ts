@@ -99,8 +99,24 @@ export function usePermissionCardStore(): PermissionCardState {
 export const getPermissionCardSnapshot = (): PermissionCardState => state;
 
 export const permissionCardActions = {
-  /** Surface a pending card. A new request replaces any prior one. */
+  /**
+   * Surface a pending card. A new request replaces any prior one — EXCEPT a
+   * reactive `host` egress-wall must not clobber a showing upfront `connector`
+   * connect card (TASK-113).
+   *
+   * On a warm turn the upfront connector card and a same-turn reactive egress
+   * wall both fire; this single-slot store's blind last-write-wins showed the
+   * wall ("npm 403") instead of the actionable "Connect <service>" card. The
+   * connector card is the root cause (the wall is downstream of the same
+   * missing connector), so the connector card WINS: a `host` frame arriving
+   * while a `connector` card is up is dropped. A `connector` frame still
+   * replaces anything (connector wins both directions), and every other
+   * transition replaces as before.
+   */
   show(request: PermissionRequest): void {
+    if (request.kind === 'host' && state.request?.kind === 'connector') {
+      return; // keep the upfront connector connect card; ignore the reactive wall
+    }
     set({ request });
   },
   /** Clear the card (Connect-complete or Not-now). */
