@@ -223,6 +223,56 @@ describe('Admin — Connectors registry', () => {
     expect(body.capabilities.mcpServers).toHaveLength(0);
   });
 
+  it('admin can flag a new connector default-on (POST carries defaultAttached:true)', async () => {
+    let posted: RequestInit | null = null;
+    fetchMock.mockImplementation((url: RequestInfo | URL, opts?: RequestInit) => {
+      if (url === '/admin/connectors' && opts?.method === 'POST') {
+        posted = opts;
+        return Promise.resolve(
+          jsonOk({ connector: fullConnector({ defaultAttached: true }), created: true }, 201),
+        );
+      }
+      return Promise.resolve(jsonOk({ connectors: [] }));
+    });
+
+    render(<ConnectorRegistry />);
+    await waitFor(() => screen.getByText(/New connector/i));
+    fireEvent.click(screen.getByText(/New connector/i));
+    fireEvent.change(screen.getByLabelText(/service name/i), {
+      target: { value: 'Company Salesforce' },
+    });
+    // Flag default-on (the connector half of the admin Catalog).
+    fireEvent.click(screen.getByLabelText(/default-on for all agents/i));
+    fireEvent.click(screen.getByText(/^Save$/i));
+
+    await waitFor(() => expect(posted).toBeTruthy());
+    const body = JSON.parse(String(posted!.body));
+    expect(body.defaultAttached).toBe(true);
+  });
+
+  it('editing a default-on connector pre-checks the default toggle', async () => {
+    fetchMock.mockImplementation((url: RequestInfo | URL, opts?: RequestInit) => {
+      const u = String(url);
+      if (u === '/admin/connectors' && (!opts || opts.method === undefined)) {
+        return Promise.resolve(jsonOk({ connectors: [sampleConnector()] }));
+      }
+      if (u === '/admin/connectors/gdrive' && (!opts || opts.method === undefined)) {
+        return Promise.resolve(jsonOk({ connector: fullConnector({ defaultAttached: true }) }));
+      }
+      return Promise.resolve(jsonOk({ connectors: [sampleConnector()] }));
+    });
+
+    render(<ConnectorRegistry />);
+    await waitFor(() => screen.getByText('Google Drive'));
+    fireEvent.click(screen.getByText(/^edit$/i));
+    const toggle = await screen.findByLabelText(/default-on for all agents/i);
+    await waitFor(() =>
+      expect(toggle.getAttribute('data-state') ?? toggle.getAttribute('aria-checked')).toMatch(
+        /checked|true/,
+      ),
+    );
+  });
+
   it('delete sends DELETE with X-Requested-With: ax-admin', async () => {
     let deleted: RequestInit | null = null;
     fetchMock.mockImplementation((url: RequestInfo | URL, opts?: RequestInit) => {

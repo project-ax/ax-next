@@ -10,15 +10,17 @@ import { ConnectorRegistry } from './ConnectorRegistry';
 import { TeamList } from './TeamList';
 import { CatalogTab } from './CatalogTab';
 import { AdmitQueueTab } from './AdmitQueueTab';
-import { ConnectionsTab } from '../settings/ConnectionsTab';
-import { KeysTab } from '../settings/KeysTab';
+import { SkillsTab } from '../settings/SkillsTab';
+import { ConnectorsTab } from '../settings/ConnectorsTab';
+import { CredentialsTab } from '../settings/CredentialsTab';
 
 export interface AdminShellProps {
   /**
-   * Admins get the full set of admin tabs; every user gets the two Settings
-   * tabs (Connections, Keys). The admin-only tabs are gated here AND on the
-   * server — every /admin/* route enforces role === 'admin' regardless of what
-   * the in-shell nav shows, so hiding the tabs is a UX nicety, not the boundary.
+   * Admins get the full set of admin tabs; every user gets the three Settings
+   * tabs (Skills, Connectors, Credentials). The admin-only tabs are gated here
+   * AND on the server — every /admin/* route enforces role === 'admin'
+   * regardless of what the in-shell nav shows, so hiding the tabs is a UX
+   * nicety, not the boundary.
    */
   isAdmin: boolean;
   onClose: () => void;
@@ -30,20 +32,21 @@ interface TabMeta {
 }
 
 const TAB_META: Record<AdminTabId, TabMeta> = {
-  connections: { eyebrow: 'Settings', title: 'Connections' },
-  keys: { eyebrow: 'Settings', title: 'Keys' },
+  skills: { eyebrow: 'Settings', title: 'Skills' },
+  'connectors-user': { eyebrow: 'Settings', title: 'Connectors' },
+  credentials: { eyebrow: 'Settings', title: 'Credentials' },
   providers: { eyebrow: 'Admin', title: 'Providers' },
   'model-config': { eyebrow: 'Admin', title: 'Model config' },
   'auth-providers': { eyebrow: 'Admin', title: 'Auth providers' },
   agents: { eyebrow: 'Admin', title: 'Agents' },
   catalog: { eyebrow: 'Admin', title: 'Catalog' },
   'admit-queue': { eyebrow: 'Admin', title: 'Admit queue' },
-  connectors: { eyebrow: 'Admin', title: 'Connectors' },
+  connectors: { eyebrow: 'Admin', title: 'Connector catalog' },
   teams: { eyebrow: 'Admin', title: 'Teams' },
 };
 
 export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
-  const [activeTab, setActiveTab] = useState<AdminTabId>('connections');
+  const [activeTab, setActiveTab] = useState<AdminTabId>('skills');
   const meta = TAB_META[activeTab];
 
   return (
@@ -57,8 +60,9 @@ export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
       <AdminPane
         header={<AdminPaneHeader eyebrow={meta.eyebrow} title={meta.title} />}
       >
-        {activeTab === 'connections' && <ConnectionsTab />}
-        {activeTab === 'keys' && <KeysTab />}
+        {activeTab === 'skills' && <SkillsTab />}
+        {activeTab === 'connectors-user' && <ConnectorsTab isAdmin={isAdmin} />}
+        {activeTab === 'credentials' && <CredentialsTab />}
         {activeTab === 'providers' && <ProvidersPanel />}
         {activeTab === 'model-config' && <ModelConfigTab />}
         {activeTab === 'auth-providers' && <AuthProvidersTab />}

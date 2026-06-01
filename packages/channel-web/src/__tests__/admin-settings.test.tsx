@@ -39,8 +39,21 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
-  // ConnectionsTab (the default tab) lists agents via /api/chat/agents (a bare
-  // array). An empty list keeps the nav assertions hermetic.
+  // SkillsTab (the default tab) lists the user's skills via /settings/skills
+  // + /settings/skills/authored on mount. Empty lists keep the nav assertions
+  // hermetic.
+  if (/\/settings\/skills\/authored(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ skills: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  if (/\/settings\/skills(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ skills: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
   if (/\/api\/chat\/agents(\?|$)/.test(url)) {
     return new Response(JSON.stringify([]), {
       status: 200,
@@ -72,12 +85,12 @@ beforeEach(() => {
 });
 
 describe('AdminShell', () => {
-  it('default tab is Connections (TASK-42) — AgentForm is NOT rendered', async () => {
+  it('default tab is Skills — AgentForm is NOT rendered', async () => {
     renderShell();
-    // Connections is the default active tab for every user (admins included).
-    const connectionsBtn = screen.getByRole('button', { name: /^connections$/i });
-    expect(connectionsBtn).toBeTruthy();
-    expect(connectionsBtn.getAttribute('data-active')).toBe('true');
+    // Skills is the default active tab for every user (admins included).
+    const skillsBtn = screen.getByRole('button', { name: /^skills$/i });
+    expect(skillsBtn).toBeTruthy();
+    expect(skillsBtn.getAttribute('data-active')).toBe('true');
     // AgentForm ("+ New agent") must NOT be present on the default tab.
     await waitFor(() => {
       expect(screen.queryByText(/New agent/i)).toBeNull();
@@ -121,12 +134,14 @@ describe('AdminShell', () => {
     });
   });
 
-  it('all five nav items are present in the sidebar', () => {
+  it('the admin nav items are present in the sidebar', () => {
     renderShell();
     expect(screen.getByRole('button', { name: /^providers$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /model config/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^agents$/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /^connectors$/i })).toBeTruthy();
+    // The admin connector registry is now labelled "Connector catalog" to
+    // disambiguate from the user "Connectors" Settings tab.
+    expect(screen.getByRole('button', { name: /^connector catalog$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^teams$/i })).toBeTruthy();
   });
 });

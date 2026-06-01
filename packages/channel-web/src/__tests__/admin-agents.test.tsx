@@ -244,8 +244,10 @@ describe('AdminSettings — agents tab', () => {
       if (/\/admin\/credentials(\?|$)/.test(url) || /\/settings\/credentials(\?|$)/.test(url)) {
         return Promise.resolve(jsonOk({ credentials: [] }));
       }
-      // ConnectionsTab (the default tab) lists agents via /api/chat/agents,
-      // which returns a bare array.
+      // SkillsTab (the default tab) lists the user's skills on mount.
+      if (/\/settings\/skills(\/authored)?(\?|$)/.test(url)) {
+        return Promise.resolve(jsonOk({ skills: [] }));
+      }
       if (/\/api\/chat\/agents(\?|$)/.test(url)) {
         return Promise.resolve(jsonOk([]));
       }
