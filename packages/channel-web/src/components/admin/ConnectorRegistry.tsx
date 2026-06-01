@@ -39,6 +39,7 @@ import {
   capabilitiesFromForm,
   summaryToForm,
   connectorIdFromName,
+  splitList,
   type ConnectorFormState as FormState,
   type Transport,
 } from '../../lib/connector-form';
@@ -581,16 +582,25 @@ export function ConnectorRegistry() {
                     <Label htmlFor="connector-slots">
                       Credential slots (comma-separated)
                     </Label>
+                    {/* This orphaned (nav-dropped, TASK-138-deletion-bound)
+                        registry keeps its comma-string slot input; TASK-128
+                        changed the shared `credentialSlots` to structured rows,
+                        so we adapt at the edge — derive the comma-string from
+                        the rows' machine names and rebuild rows on change. */}
                     <Input
                       id="connector-slots"
                       type="text"
                       className="font-mono"
                       placeholder="e.g. gdrive"
-                      value={form.credentialSlots}
+                      value={form.credentialSlots.map((s) => s.slot).join(', ')}
                       onChange={(e) =>
                         setForm((f) => ({
                           ...f,
-                          credentialSlots: e.target.value,
+                          credentialSlots: splitList(e.target.value).map((slot) => ({
+                            slot,
+                            description: '',
+                            account: '',
+                          })),
                         }))
                       }
                     />

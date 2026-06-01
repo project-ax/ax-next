@@ -1,18 +1,35 @@
 /**
  * connector-form — shared connector create/edit form state + capability
- * (de)serialization, extracted from the (now nav-orphaned) ConnectorRegistry so
- * the inline admin curation folded into ConnectorsTab (TASK-127) and the legacy
- * registry component share ONE source of truth for the form logic (invariant
- * #4). No React here — pure form-state derivation, unit-testable on its own.
+ * (de)serialization. The single source of truth for the connector form logic
+ * (invariant #4), used by `ConnectorEditDialog` (inline admin curation, folded
+ * into ConnectorsTab in TASK-127) and — once TASK-129 lands the user-authoring
+ * entry points — the user authoring path. No React here: pure form-state
+ * derivation, unit-testable on its own.
  *
- * The backing MECHANISM (transport / command / url / args) is still surfaced
- * only behind an Advanced disclosure in the UI; this module just shuttles it
- * between the flat FormState and the opaque ConnectorCapabilities fill, MERGING
- * onto a loaded connector's original capabilities so un-surfaced fields
- * (`packages`, beyond-first mcpServers, env) are never wiped on edit.
+ * MECHANISM-FIRST (TASK-128). The form leads with a `mechanism` choice —
+ * MCP server / Direct API / Command-line tool — that reshapes which slice of the
+ * opaque `capabilities` it edits. The "Advanced — how it connects" disclosure is
+ * gone. `mechanism` is a FORM-ONLY enum, NEVER a stored connector field: the
+ * backing-mechanism vocabulary (transport / command / url / mcp / packages) stays
+ * inside the opaque `ConnectorCapabilities` spec (invariant #1). On edit the
+ * mechanism is INFERRED from the loaded capabilities (packages → cli; leading
+ * mcpServer → mcp; else direct-api).
  *
- * TASK-128 will reshape this into a mechanism-first form; until then it keeps
- * the existing Advanced-disclosure shape so the fold is behavior-preserving.
+ *   - MCP server   → builds the leading `mcpServers[0]` (stdio command+args, or
+ *                    http url); credential slots are its secrets (env for stdio,
+ *                    headers for http — a UI label difference only).
+ *   - Direct API   → no mcpServer, no packages; top-level `allowedHosts` +
+ *                    credential slots (the proxy-injected key(s)).
+ *   - Command-line → `packages.{npm|pypi}` (a single leading package) +
+ *                    top-level `allowedHosts` + credential slots (env secrets).
+ *                    "Downloadable binary" folds in here — no fourth type.
+ *
+ * Round-trip discipline: `capabilitiesFromForm` MERGES onto the loaded
+ * connector's original capabilities so un-surfaced fill — beyond-first mcpServers
+ * / packages, the leading server's inner env/hosts/creds — is PRESERVED on edit,
+ * never wiped. Switching mechanism CLEARS the now-irrelevant LEADING fill (the
+ * leading mcpServer for non-MCP; the leading package for non-CLI) while leaving
+ * beyond-first entries untouched.
  */
 import {
   emptyCapabilities,
@@ -22,9 +39,35 @@ import {
   type ConnectorKeyMode,
   type ConnectorVisibility,
   type ConnectorMcpServerSpec,
+  type ConnectorCredentialSlot,
 } from './connectors';
 
 export type Transport = 'stdio' | 'http';
+
+/** Which backing mechanism the form is shaping. FORM-ONLY — never stored. */
+export type Mechanism = 'mcp' | 'direct-api' | 'cli';
+
+/** Which public registry a Command-line tool's package comes from. */
+export type PackageRegistry = 'npm' | 'pypi';
+
+/**
+ * A structured credential-slot row (TASK-128 — replaces the old comma-string).
+ * `slot` is the machine name (env var / header name); `description` is the
+ * human label ("Personal access token"); `account` optionally shares one stored
+ * key across connectors/skills by service (empty ⟹ fall back to the connector
+ * id). Maps to one {@link ConnectorCredentialSlot}; an empty `slot` drops the row.
+ */
+export interface CredentialSlotRow {
+  slot: string;
+  description: string;
+  account: string;
+}
+
+export const emptySlotRow = (): CredentialSlotRow => ({
+  slot: '',
+  description: '',
+  account: '',
+});
 
 export interface ConnectorFormState {
   connectorId: string;
@@ -39,19 +82,25 @@ export interface ConnectorFormState {
    * `connectors:list-defaults`. Admin-only curation control.
    */
   defaultAttached: boolean;
-  // Mechanism (Advanced) — at most one MCP server in this form. Empty command
-  // AND empty url ⟹ a non-MCP connector (CLI / direct-API), still valid.
+  /** The chosen backing mechanism — reshapes which fields the form edits. */
+  mechanism: Mechanism;
+  // MCP fields (mechanism === 'mcp').
   transport: Transport;
   command: string;
   args: string; // space-separated
   url: string;
+  // Command-line fields (mechanism === 'cli'). A single leading package.
+  packageRegistry: PackageRegistry;
+  packageName: string;
+  // Shared across direct-api + cli (and surfaced for mcp too).
   allowedHosts: string; // comma-separated
-  credentialSlots: string; // comma-separated slot names
+  /** Structured credential-slot rows (TASK-124 per-slot shape). */
+  credentialSlots: CredentialSlotRow[];
   /**
    * The loaded connector's full capabilities (empty for a new connector). The
-   * form only edits allowedHosts / credentials / the single leading mcpServer;
-   * `packages` and any beyond-first mcpServer / extra mcpServer fields (env) are
-   * NOT surfaced — carried here and MERGED onto on submit, never wiped.
+   * form edits the LEADING slice for the chosen mechanism; beyond-first
+   * mcpServers / packages and the leading server's inner env/hosts/creds are
+   * carried here and MERGED on submit, never wiped.
    */
   baseCapabilities: ConnectorCapabilities;
 }
@@ -64,12 +113,15 @@ export const emptyConnectorForm = (): ConnectorFormState => ({
   keyMode: 'personal',
   visibility: 'private',
   defaultAttached: false,
+  mechanism: 'mcp',
   transport: 'stdio',
   command: '',
   args: '',
   url: '',
+  packageRegistry: 'npm',
+  packageName: '',
   allowedHosts: '',
-  credentialSlots: '',
+  credentialSlots: [],
   baseCapabilities: emptyCapabilities(),
 });
 
@@ -79,11 +131,45 @@ export const splitList = (s: string): string[] =>
     .map((x) => x.trim())
     .filter(Boolean);
 
-/** Derive form state from a fetched connector (edit mode). Reads the single
- *  leading mcpServer if present, otherwise leaves mechanism fields empty. */
+/**
+ * Infer the mechanism from a connector's capabilities (edit mode). A connector
+ * with a declared package is a Command-line tool; one with a leading MCP server
+ * is an MCP connector; everything else (top-level hosts + keys only) is Direct
+ * API. Packages win over an mcpServer in the (unexpected) case both are present
+ * so the package field stays editable.
+ */
+function inferMechanism(c: ConnectorCapabilities): Mechanism {
+  if (c.packages.npm.length > 0 || c.packages.pypi.length > 0) return 'cli';
+  if (c.mcpServers.length > 0) return 'mcp';
+  return 'direct-api';
+}
+
+/** The leading package as a (registry, name) pair, npm preferred. */
+function leadingPackage(c: ConnectorCapabilities): {
+  registry: PackageRegistry;
+  name: string;
+} {
+  if (c.packages.npm.length > 0) return { registry: 'npm', name: c.packages.npm[0]! };
+  if (c.packages.pypi.length > 0) return { registry: 'pypi', name: c.packages.pypi[0]! };
+  return { registry: 'npm', name: '' };
+}
+
+/** Map a capability slot into a structured form row (description/account → ''). */
+function slotToRow(s: ConnectorCredentialSlot): CredentialSlotRow {
+  return {
+    slot: s.slot,
+    description: s.description ?? '',
+    account: s.account ?? '',
+  };
+}
+
+/** Derive form state from a fetched connector (edit mode). Infers the mechanism
+ *  and fills the matching fields; un-surfaced fill rides along in baseCapabilities. */
 export function formFromConnector(c: Connector): ConnectorFormState {
-  const mcp = c.capabilities.mcpServers[0];
-  const credSlots = c.capabilities.credentials.map((s) => s.slot);
+  const caps = c.capabilities;
+  const mechanism = inferMechanism(caps);
+  const mcp = caps.mcpServers[0];
+  const pkg = leadingPackage(caps);
   return {
     connectorId: c.id,
     name: c.name,
@@ -92,61 +178,107 @@ export function formFromConnector(c: Connector): ConnectorFormState {
     keyMode: c.keyMode,
     visibility: c.visibility,
     defaultAttached: c.defaultAttached,
+    mechanism,
     transport: mcp?.transport ?? 'stdio',
     command: mcp?.command ?? '',
     args: (mcp?.args ?? []).join(' '),
     url: mcp?.url ?? '',
-    allowedHosts: c.capabilities.allowedHosts.join(', '),
-    credentialSlots: credSlots.join(', '),
-    baseCapabilities: c.capabilities,
+    packageRegistry: pkg.registry,
+    packageName: pkg.name,
+    allowedHosts: caps.allowedHosts.join(', '),
+    credentialSlots: caps.credentials.map(slotToRow),
+    baseCapabilities: caps,
+  };
+}
+
+/** Map structured rows → capability slots: drop empty-slot rows; include
+ *  description/account only when non-empty (exactOptionalPropertyTypes). */
+function rowsToSlots(rows: CredentialSlotRow[]): ConnectorCredentialSlot[] {
+  return rows
+    .filter((r) => r.slot.trim().length > 0)
+    .map((r) => {
+      const slot: ConnectorCredentialSlot = { slot: r.slot.trim(), kind: 'api-key' };
+      if (r.description.trim().length > 0) slot.description = r.description.trim();
+      if (r.account.trim().length > 0) slot.account = r.account.trim();
+      return slot;
+    });
+}
+
+/** Build the leading MCP server, overlaying transport/command/args/url onto any
+ *  existing leading server so its un-surfaced inner fields (env, inner hosts /
+ *  credentials) survive. */
+function buildLeadingMcpServer(
+  form: ConnectorFormState,
+  existing: ConnectorMcpServerSpec | undefined,
+): ConnectorMcpServerSpec {
+  return {
+    name: existing?.name ?? form.connectorId ?? form.name.trim().toLowerCase(),
+    allowedHosts: existing?.allowedHosts ?? [],
+    credentials: existing?.credentials ?? [],
+    ...(existing?.env !== undefined ? { env: existing.env } : {}),
+    transport: form.transport,
+    ...(form.transport === 'stdio'
+      ? {
+          command: form.command.trim(),
+          args: form.args.trim() ? form.args.trim().split(/\s+/) : [],
+        }
+      : { url: form.url.trim() }),
   };
 }
 
 /**
- * Assemble the opaque capabilities fill. MERGES the form's edited fields
- * (allowedHosts / credentials / the single leading mcpServer) onto the loaded
- * connector's original capabilities so the un-surfaced fill — `packages`, any
- * beyond-first mcpServer, extra mcpServer fields (env) — is PRESERVED, never
- * wiped on edit. For a new connector the base is empty so this is a plain build.
+ * Assemble the opaque capabilities fill for the chosen mechanism. MERGES the
+ * edited LEADING slice onto the loaded connector's original capabilities so the
+ * un-surfaced fill (beyond-first mcpServers / packages) is PRESERVED, never
+ * wiped. Switching mechanism clears the now-irrelevant LEADING entry while
+ * keeping beyond-first ones. For a new connector the base is empty so this is a
+ * plain build.
  */
 export function capabilitiesFromForm(
   form: ConnectorFormState,
 ): ConnectorCapabilities {
   const base = form.baseCapabilities;
   const allowedHosts = splitList(form.allowedHosts);
-  const credentials = splitList(form.credentialSlots).map((slot) => ({
-    slot,
-    kind: 'api-key' as const,
-  }));
-  const hasMcp =
-    (form.transport === 'http' && form.url.trim().length > 0) ||
-    (form.transport === 'stdio' && form.command.trim().length > 0);
-  let mcpServers = base.mcpServers;
-  if (hasMcp) {
-    const existing = base.mcpServers[0];
-    // Preserve any extra mcpServer fields (env, the server's own allowedHosts /
-    // credentials) the form doesn't surface; overlay transport/command/args/url.
-    const server: ConnectorMcpServerSpec = {
-      name: existing?.name ?? form.connectorId ?? form.name.trim().toLowerCase(),
-      allowedHosts: existing?.allowedHosts ?? [],
-      credentials: existing?.credentials ?? [],
-      ...(existing?.env !== undefined ? { env: existing.env } : {}),
-      transport: form.transport,
-      ...(form.transport === 'stdio'
-        ? {
-            command: form.command.trim(),
-            args: form.args.trim() ? form.args.trim().split(/\s+/) : [],
-          }
-        : { url: form.url.trim() }),
-    };
-    // Replace the leading server; keep any beyond-first servers untouched.
-    mcpServers = [server, ...base.mcpServers.slice(1)];
+  const credentials = rowsToSlots(form.credentialSlots);
+
+  // mcpServers — only an MCP connector keeps a LEADING server. Beyond-first
+  // servers (index ≥ 1) are always preserved; the leading slot is the edited /
+  // cleared one.
+  let mcpServers = base.mcpServers.slice(1);
+  if (form.mechanism === 'mcp') {
+    const hasMcp =
+      (form.transport === 'http' && form.url.trim().length > 0) ||
+      (form.transport === 'stdio' && form.command.trim().length > 0);
+    if (hasMcp) {
+      mcpServers = [buildLeadingMcpServer(form, base.mcpServers[0]), ...mcpServers];
+    }
   }
+
+  // packages — only a Command-line connector keeps a LEADING package. Beyond-
+  // first packages (per registry) are preserved; the leading one is edited /
+  // cleared. We treat npm[0]/pypi[0] as the "leading" slot of each list.
+  let packages = { npm: base.packages.npm, pypi: base.packages.pypi };
+  if (form.mechanism === 'cli') {
+    const name = form.packageName.trim();
+    const reg = form.packageRegistry;
+    // Replace the leading entry of the chosen registry; clear the OTHER
+    // registry's leading entry (a connector declares one leading package).
+    const other: PackageRegistry = reg === 'npm' ? 'pypi' : 'npm';
+    const chosenRest = base.packages[reg].slice(1);
+    const otherRest = base.packages[other].slice(1);
+    packages = {
+      npm: [],
+      pypi: [],
+    };
+    packages[reg] = name ? [name, ...chosenRest] : chosenRest;
+    packages[other] = otherRest;
+  }
+
   return {
     allowedHosts,
     credentials,
     mcpServers,
-    packages: base.packages,
+    packages,
   };
 }
 

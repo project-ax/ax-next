@@ -464,6 +464,7 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         <ConnectorEditDialog
           target={editing}
           open
+          isAdmin={isAdmin}
           onOpenChange={(o) => {
             if (!o) setEditing(null);
           }}

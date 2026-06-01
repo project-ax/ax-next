@@ -22,6 +22,16 @@ const FULL: Connector = {
     ...connectorsLib.emptyCapabilities(),
     allowedHosts: ['drive.googleapis.com'],
     credentials: [{ slot: 'token', kind: 'api-key' }],
+    mcpServers: [
+      {
+        name: 'gdrive',
+        transport: 'stdio',
+        command: 'mcp-gdrive',
+        args: [],
+        allowedHosts: [],
+        credentials: [],
+      },
+    ],
   },
 };
 
@@ -39,6 +49,7 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
+        isAdmin
         onOpenChange={() => {}}
         onSaved={onSaved}
       />,
@@ -55,20 +66,16 @@ describe('ConnectorEditDialog', () => {
   });
 
   it('create mode: a name-less submit never creates a connector', async () => {
-    // The Service-name input is `required`, so the browser blocks submission;
-    // the component also guards with `if (!form.name.trim()) return` as
-    // defense-in-depth. Either way, createConnector must NOT fire.
     render(
       <ConnectorEditDialog
         target="new"
         open
+        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
     );
     const form = (await screen.findByLabelText(/service name/i)).closest('form')!;
-    // Submit the form directly (bypasses native validation in jsdom) to exercise
-    // the component-level guard, then assert no create happened.
     fireEvent.submit(form);
     await Promise.resolve();
     expect(connectorsLib.createConnector).not.toHaveBeenCalled();
@@ -80,6 +87,7 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target={SUMMARY}
         open
+        isAdmin
         onOpenChange={() => {}}
         onSaved={onSaved}
       />,
@@ -96,11 +104,146 @@ describe('ConnectorEditDialog', () => {
     expect(onSaved).toHaveBeenCalled();
   });
 
-  it('exposes the admin-only Sharing + default-on fields', async () => {
+  // --- mechanism-first picker ---------------------------------------------
+
+  it('leads with the segmented mechanism picker (no Advanced disclosure)', async () => {
     render(
       <ConnectorEditDialog
         target="new"
         open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    await screen.findByLabelText(/service name/i);
+    // All three mechanism options are present up-front.
+    expect(screen.getByRole('radio', { name: /mcp server/i })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /direct api/i })).toBeInTheDocument();
+    expect(
+      screen.getByRole('radio', { name: /command-line tool/i }),
+    ).toBeInTheDocument();
+    // The Advanced disclosure is gone.
+    expect(
+      screen.queryByRole('button', { name: /advanced — how it connects/i }),
+    ).toBeNull();
+  });
+
+  it('MCP is the default mechanism and shows transport + command', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    await screen.findByLabelText(/service name/i);
+    expect(screen.getByLabelText(/transport/i)).toBeInTheDocument();
+    expect(screen.getByLabelText(/^command$/i)).toBeInTheDocument();
+    // No package picker in MCP mode.
+    expect(screen.queryByLabelText(/package name/i)).toBeNull();
+  });
+
+  it('Direct API hides transport + package picker', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    await screen.findByLabelText(/service name/i);
+    fireEvent.click(screen.getByRole('radio', { name: /direct api/i }));
+    expect(screen.queryByLabelText(/transport/i)).toBeNull();
+    expect(screen.queryByLabelText(/package name/i)).toBeNull();
+    expect(screen.getByLabelText(/allowed hosts/i)).toBeInTheDocument();
+  });
+
+  it('Command-line tool shows the npm/pypi package picker and submits packages', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    const name = await screen.findByLabelText(/service name/i);
+    fireEvent.change(name, { target: { value: 'My CLI' } });
+    fireEvent.click(screen.getByRole('radio', { name: /command-line tool/i }));
+    const pkg = screen.getByLabelText(/package name/i);
+    expect(pkg).toBeInTheDocument();
+    fireEvent.change(pkg, { target: { value: '@org/cli' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
+    expect(body.capabilities.packages).toEqual({ npm: ['@org/cli'], pypi: [] });
+    expect(body.capabilities.mcpServers).toEqual([]);
+  });
+
+  // --- structured credential slot rows ------------------------------------
+
+  it('credential slots are structured rows: description + machine name + account', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    const name = await screen.findByLabelText(/service name/i);
+    fireEvent.change(name, { target: { value: 'OAuth Svc' } });
+    fireEvent.click(screen.getByRole('radio', { name: /direct api/i }));
+    // Add a slot row and fill its structured fields.
+    fireEvent.click(screen.getByRole('button', { name: /add (key|secret)/i }));
+    fireEvent.change(screen.getByLabelText(/machine name/i), {
+      target: { value: 'API_KEY' },
+    });
+    fireEvent.change(screen.getByLabelText(/label \(what it is\)/i), {
+      target: { value: 'Secret API key' },
+    });
+    fireEvent.change(screen.getByLabelText(/share key by service/i), {
+      target: { value: 'stripe' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
+    expect(body.capabilities.credentials).toEqual([
+      { slot: 'API_KEY', kind: 'api-key', description: 'Secret API key', account: 'stripe' },
+    ]);
+  });
+
+  it('edit mode prefills the structured slot row from the loaded connector', async () => {
+    render(
+      <ConnectorEditDialog
+        target={SUMMARY}
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    await screen.findByLabelText(/service name/i);
+    await waitFor(() =>
+      expect(screen.getByLabelText(/machine name/i)).toHaveValue('token'),
+    );
+  });
+
+  // --- admin vs user variant ----------------------------------------------
+
+  it('admin variant exposes Sharing + default-on', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
@@ -110,20 +253,25 @@ describe('ConnectorEditDialog', () => {
     expect(screen.getByText(/default-on for all agents/i)).toBeInTheDocument();
   });
 
-  it('keeps the mechanism behind an Advanced disclosure (collapsed by default)', async () => {
+  it('user variant hides Sharing + default-on and forces visibility private', async () => {
     render(
       <ConnectorEditDialog
         target="new"
         open
+        isAdmin={false}
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,
     );
-    await screen.findByLabelText(/service name/i);
-    // Transport/command fields are hidden until Advanced is expanded.
-    expect(screen.queryByLabelText(/transport/i)).toBeNull();
-    fireEvent.click(screen.getByRole('button', { name: /advanced — how it connects/i }));
-    expect(await screen.findByLabelText(/transport/i)).toBeInTheDocument();
+    const name = await screen.findByLabelText(/service name/i);
+    expect(screen.queryByText(/^Sharing$/i)).toBeNull();
+    expect(screen.queryByText(/default-on for all agents/i)).toBeNull();
+    fireEvent.change(name, { target: { value: 'My Private' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
+    expect(body.visibility).toBe('private');
+    expect(body.defaultAttached).toBe(false);
   });
 
   it('surfaces a save error from the server', async () => {
@@ -134,6 +282,7 @@ describe('ConnectorEditDialog', () => {
       <ConnectorEditDialog
         target="new"
         open
+        isAdmin
         onOpenChange={() => {}}
         onSaved={() => {}}
       />,

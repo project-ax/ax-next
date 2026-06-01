@@ -1,11 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
   emptyConnectorForm,
+  emptySlotRow,
   formFromConnector,
   capabilitiesFromForm,
   summaryToForm,
   connectorIdFromName,
   splitList,
+  type ConnectorFormState,
 } from '../connector-form';
 import { emptyCapabilities, type Connector } from '../connectors';
 
@@ -24,13 +26,21 @@ const baseConnector = (over: Partial<Connector> = {}): Connector => ({
 });
 
 describe('connector-form helpers', () => {
-  it('emptyConnectorForm is a private, personal, non-default stdio form', () => {
+  it('emptyConnectorForm is a private, personal, non-default MCP/stdio form', () => {
     const f = emptyConnectorForm();
     expect(f.keyMode).toBe('personal');
     expect(f.visibility).toBe('private');
     expect(f.defaultAttached).toBe(false);
+    expect(f.mechanism).toBe('mcp');
     expect(f.transport).toBe('stdio');
+    expect(f.credentialSlots).toEqual([]);
+    expect(f.packageRegistry).toBe('npm');
+    expect(f.packageName).toBe('');
     expect(f.baseCapabilities).toEqual(emptyCapabilities());
+  });
+
+  it('emptySlotRow is a blank structured row', () => {
+    expect(emptySlotRow()).toEqual({ slot: '', description: '', account: '' });
   });
 
   it('splitList trims, drops empties', () => {
@@ -43,7 +53,9 @@ describe('connector-form helpers', () => {
     expect(connectorIdFromName('My_Notion.v2')).toBe('my_notion.v2');
   });
 
-  it('formFromConnector reads the leading mcp server + slots', () => {
+  // --- mechanism inference on load ----------------------------------------
+
+  it('formFromConnector infers MCP from a leading mcp server + reads its fields', () => {
     const c = baseConnector({
       keyMode: 'workspace',
       visibility: 'shared',
@@ -65,6 +77,7 @@ describe('connector-form helpers', () => {
       },
     });
     const f = formFromConnector(c);
+    expect(f.mechanism).toBe('mcp');
     expect(f.keyMode).toBe('workspace');
     expect(f.visibility).toBe('shared');
     expect(f.defaultAttached).toBe(true);
@@ -72,17 +85,92 @@ describe('connector-form helpers', () => {
     expect(f.command).toBe('mcp-gdrive');
     expect(f.args).toBe('--flag x');
     expect(f.allowedHosts).toBe('drive.googleapis.com');
-    expect(f.credentialSlots).toBe('token');
+    expect(f.credentialSlots).toEqual([
+      { slot: 'token', description: '', account: '' },
+    ]);
   });
 
-  it('capabilitiesFromForm builds an stdio mcp server when a command is set', () => {
-    const f = {
+  it('formFromConnector infers http MCP and reads the url', () => {
+    const c = baseConnector({
+      capabilities: {
+        ...emptyCapabilities(),
+        mcpServers: [
+          {
+            name: 'remote',
+            transport: 'http',
+            url: 'https://mcp.example.com',
+            allowedHosts: [],
+            credentials: [],
+          },
+        ],
+      },
+    });
+    const f = formFromConnector(c);
+    expect(f.mechanism).toBe('mcp');
+    expect(f.transport).toBe('http');
+    expect(f.url).toBe('https://mcp.example.com');
+  });
+
+  it('formFromConnector infers CLI from a package + reads registry/name', () => {
+    const c = baseConnector({
+      capabilities: {
+        ...emptyCapabilities(),
+        packages: { npm: [], pypi: ['some-cli'] },
+        allowedHosts: ['api.example.com'],
+      },
+    });
+    const f = formFromConnector(c);
+    expect(f.mechanism).toBe('cli');
+    expect(f.packageRegistry).toBe('pypi');
+    expect(f.packageName).toBe('some-cli');
+    expect(f.allowedHosts).toBe('api.example.com');
+  });
+
+  it('formFromConnector infers Direct API when neither packages nor mcp server present', () => {
+    const c = baseConnector({
+      capabilities: {
+        ...emptyCapabilities(),
+        allowedHosts: ['api.stripe.com'],
+        credentials: [{ slot: 'key', kind: 'api-key', description: 'Secret key' }],
+      },
+    });
+    const f = formFromConnector(c);
+    expect(f.mechanism).toBe('direct-api');
+    expect(f.allowedHosts).toBe('api.stripe.com');
+    expect(f.credentialSlots).toEqual([
+      { slot: 'key', description: 'Secret key', account: '' },
+    ]);
+  });
+
+  it('formFromConnector reads description + account onto structured rows', () => {
+    const c = baseConnector({
+      capabilities: {
+        ...emptyCapabilities(),
+        credentials: [
+          { slot: 'CLIENT_ID', kind: 'api-key', description: 'Client ID', account: 'oauthsvc' },
+          { slot: 'CLIENT_SECRET', kind: 'api-key' },
+        ],
+      },
+    });
+    const f = formFromConnector(c);
+    expect(f.credentialSlots).toEqual([
+      { slot: 'CLIENT_ID', description: 'Client ID', account: 'oauthsvc' },
+      { slot: 'CLIENT_SECRET', description: '', account: '' },
+    ]);
+  });
+
+  // --- capabilitiesFromForm per mechanism ---------------------------------
+
+  it('mcp/stdio builds the leading mcp server, no packages', () => {
+    const f: ConnectorFormState = {
       ...emptyConnectorForm(),
       name: 'GDrive',
+      mechanism: 'mcp',
+      transport: 'stdio',
       command: 'mcp-gdrive',
       args: 'a b',
       allowedHosts: 'drive.googleapis.com, www.googleapis.com',
-      credentialSlots: 'token',
+      credentialSlots: [{ slot: 'token', description: '', account: '' }],
     };
     const caps = capabilitiesFromForm(f);
     expect(caps.allowedHosts).toEqual([
@@ -94,19 +182,155 @@ describe('connector-form helpers', () => {
     expect(caps.mcpServers[0]!.transport).toBe('stdio');
     expect(caps.mcpServers[0]!.command).toBe('mcp-gdrive');
     expect(caps.mcpServers[0]!.args).toEqual(['a', 'b']);
+    expect(caps.packages).toEqual({ npm: [], pypi: [] });
   });
 
-  it('capabilitiesFromForm leaves mcpServers empty for a non-MCP (CLI/direct-API) connector', () => {
-    const f = { ...emptyConnectorForm(), name: 'Stripe', credentialSlots: 'key' };
+  it('mcp/http builds the leading mcp server with a url', () => {
+    const f: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'Remote',
+      mechanism: 'mcp',
+      transport: 'http',
+      url: 'https://mcp.example.com',
+    };
+    const caps = capabilitiesFromForm(f);
+    expect(caps.mcpServers).toHaveLength(1);
+    expect(caps.mcpServers[0]!.transport).toBe('http');
+    expect(caps.mcpServers[0]!.url).toBe('https://mcp.example.com');
+    expect(caps.mcpServers[0]!.command).toBeUndefined();
+  });
+
+  it('direct-api builds top-level hosts + credentials, no mcp server, no packages', () => {
+    const f: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'Stripe',
+      mechanism: 'direct-api',
+      allowedHosts: 'api.stripe.com',
+      credentialSlots: [{ slot: 'key', description: 'Secret key', account: '' }],
+    };
     const caps = capabilitiesFromForm(f);
     expect(caps.mcpServers).toEqual([]);
-    expect(caps.credentials).toEqual([{ slot: 'key', kind: 'api-key' }]);
+    expect(caps.packages).toEqual({ npm: [], pypi: [] });
+    expect(caps.allowedHosts).toEqual(['api.stripe.com']);
+    expect(caps.credentials).toEqual([
+      { slot: 'key', kind: 'api-key', description: 'Secret key' },
+    ]);
   });
 
-  it('capabilitiesFromForm PRESERVES un-surfaced base fields (packages, env, beyond-first server) on edit', () => {
+  it('cli builds the npm package + hosts + credentials, no mcp server', () => {
+    const f: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'My CLI',
+      mechanism: 'cli',
+      packageRegistry: 'npm',
+      packageName: '@org/cli',
+      allowedHosts: 'registry.example.com',
+      credentialSlots: [{ slot: 'TOKEN', description: '', account: '' }],
+    };
+    const caps = capabilitiesFromForm(f);
+    expect(caps.packages).toEqual({ npm: ['@org/cli'], pypi: [] });
+    expect(caps.mcpServers).toEqual([]);
+    expect(caps.allowedHosts).toEqual(['registry.example.com']);
+    expect(caps.credentials).toEqual([{ slot: 'TOKEN', kind: 'api-key' }]);
+  });
+
+  it('cli builds a pypi package', () => {
+    const f: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'Py CLI',
+      mechanism: 'cli',
+      packageRegistry: 'pypi',
+      packageName: 'awscli',
+    };
+    const caps = capabilitiesFromForm(f);
+    expect(caps.packages).toEqual({ npm: [], pypi: ['awscli'] });
+  });
+
+  it('structured rows include account when set, drop empty-slot rows', () => {
+    const f: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'OAuth',
+      mechanism: 'direct-api',
+      credentialSlots: [
+        { slot: 'CLIENT_ID', description: 'Client ID', account: 'oauthsvc' },
+        { slot: '', description: 'orphan', account: '' },
+        { slot: 'CLIENT_SECRET', description: '', account: '' },
+      ],
+    };
+    const caps = capabilitiesFromForm(f);
+    expect(caps.credentials).toEqual([
+      { slot: 'CLIENT_ID', kind: 'api-key', description: 'Client ID', account: 'oauthsvc' },
+      { slot: 'CLIENT_SECRET', kind: 'api-key' },
+    ]);
+  });
+
+  it('switching mechanism away from MCP clears the leading mcp server on submit', () => {
+    // A connector that was MCP, edited to direct-api: the leading server must
+    // not survive into the direct-api capabilities fill.
     const base = {
       ...emptyCapabilities(),
-      packages: { npm: ['@org/cli'], pypi: [] },
+      mcpServers: [
+        {
+          name: 'old',
+          transport: 'stdio' as const,
+          command: 'old-cmd',
+          args: [],
+          allowedHosts: [],
+          credentials: [],
+        },
+      ],
+    };
+    const f: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'Now Direct',
+      mechanism: 'direct-api',
+      allowedHosts: 'api.example.com',
+      baseCapabilities: base,
+    };
+    const caps = capabilitiesFromForm(f);
+    expect(caps.mcpServers).toEqual([]);
+  });
+
+  it('switching to CLI clears the leading mcp server but keeps beyond-first servers', () => {
+    const base = {
+      ...emptyCapabilities(),
+      mcpServers: [
+        {
+          name: 'leading',
+          transport: 'stdio' as const,
+          command: 'lead',
+          args: [],
+          allowedHosts: [],
+          credentials: [],
+        },
+        {
+          name: 'second',
+          transport: 'http' as const,
+          url: 'https://second.example',
+          allowedHosts: [],
+          credentials: [],
+        },
+      ],
+    };
+    const f: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'CLI now',
+      mechanism: 'cli',
+      packageRegistry: 'npm',
+      packageName: 'tool',
+      baseCapabilities: base,
+    };
+    const caps = capabilitiesFromForm(f);
+    // Leading replaced/cleared; beyond-first preserved.
+    expect(caps.mcpServers).toHaveLength(1);
+    expect(caps.mcpServers[0]!.name).toBe('second');
+    expect(caps.packages).toEqual({ npm: ['tool'], pypi: [] });
+  });
+
+  it('mcp edit PRESERVES inner env/hosts/creds + beyond-first server + beyond-first package', () => {
+    const base = {
+      ...emptyCapabilities(),
+      packages: { npm: ['@org/cli', '@org/extra'], pypi: [] },
       mcpServers: [
         {
           name: 'gdrive',
@@ -126,23 +350,40 @@ describe('connector-form helpers', () => {
         },
       ],
     };
-    const f = {
+    const f: ConnectorFormState = {
       ...emptyConnectorForm(),
       name: 'GDrive',
-      transport: 'stdio' as const,
+      mechanism: 'mcp',
+      transport: 'stdio',
       command: 'new-cmd',
       baseCapabilities: base,
     };
     const caps = capabilitiesFromForm(f);
-    // packages preserved
-    expect(caps.packages).toEqual({ npm: ['@org/cli'], pypi: [] });
     // leading server's command overlaid, but env + inner fields preserved
     expect(caps.mcpServers[0]!.command).toBe('new-cmd');
     expect(caps.mcpServers[0]!.env).toEqual({ FOO: 'bar' });
     expect(caps.mcpServers[0]!.allowedHosts).toEqual(['inner.example']);
     // beyond-first server untouched
     expect(caps.mcpServers[1]!.name).toBe('second');
-    expect(caps.mcpServers[1]!.url).toBe('https://second.example');
+    // packages preserved as-is for an MCP connector (un-surfaced)
+    expect(caps.packages).toEqual({ npm: ['@org/cli', '@org/extra'], pypi: [] });
+  });
+
+  it('cli edit preserves a beyond-first package, overlays the leading one', () => {
+    const base = {
+      ...emptyCapabilities(),
+      packages: { npm: ['old-lead', 'keep-me'], pypi: [] },
+    };
+    const f: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'CLI',
+      mechanism: 'cli',
+      packageRegistry: 'npm',
+      packageName: 'new-lead',
+      baseCapabilities: base,
+    };
+    const caps = capabilitiesFromForm(f);
+    expect(caps.packages.npm).toEqual(['new-lead', 'keep-me']);
   });
 
   it('summaryToForm carries the metadata subset incl. defaultAttached', () => {
