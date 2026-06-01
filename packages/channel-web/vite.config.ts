@@ -11,10 +11,10 @@ import { mockMiddleware } from './mock/server';
 //                                Google login; clicking the CTA simulates
 //                                a successful sign-in as user u2.
 //
-//   AX_BACKEND_URL=http://...  — Proxy /auth/* and /admin/* to a real
-//                                ax-next serve. Real Google OAuth, real
-//                                cookies. Browser still sees :5173 so
-//                                cookies stay same-origin.
+//   AX_BACKEND_URL=http://...  — Proxy /auth/*, /admin/*, /api/* and
+//                                /settings/* to a real ax-next serve. Real
+//                                Google OAuth, real cookies. Browser still sees
+//                                :5173 so cookies stay same-origin.
 //
 // Use the proxy mode once you've got Google OAuth creds in place; use
 // the mock for offline UI work.
@@ -57,6 +57,10 @@ export default defineConfig({
             '/auth': { target: backendUrl, changeOrigin: false, ws: false },
             '/admin': { target: backendUrl, changeOrigin: false, ws: false },
             '/api': { target: backendUrl, changeOrigin: false, ws: false },
+            // The connector connect/credential flow POSTs to /settings/* (the
+            // per-user @ax/skills + connectors settings routes). Real deploys are
+            // same-origin so this only matters for a local Vite walk (TASK-114).
+            '/settings': { target: backendUrl, changeOrigin: false, ws: false },
           },
         }
       : {}),
