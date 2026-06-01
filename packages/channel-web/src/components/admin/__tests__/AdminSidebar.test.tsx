@@ -20,8 +20,6 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     );
     expect(screen.queryByText('AI model keys')).not.toBeInTheDocument();
     expect(screen.queryByText('Teams')).not.toBeInTheDocument();
-    // The admin connector-catalog registry is also hidden for non-admins.
-    expect(screen.queryByText('Connector catalog')).not.toBeInTheDocument();
     // The "Admin" section label is also absent for non-admins.
     expect(screen.queryByText('Admin')).not.toBeInTheDocument();
   });
@@ -32,8 +30,20 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     );
     expect(screen.getByText('Skills')).toBeInTheDocument();
     expect(screen.getByText('AI model keys')).toBeInTheDocument();
-    expect(screen.getByText('Connector catalog')).toBeInTheDocument();
     expect(screen.getByText('Teams')).toBeInTheDocument();
+  });
+
+  it('folds the catalog / admit-queue / connector-registry surfaces out of the nav', () => {
+    // settings-unified epic: the duplicate admin Skills/Connectors surfaces
+    // (Catalog, Skills awaiting review, Connector catalog) no longer have nav
+    // entries — their curation moves inline into the user Skills/Connectors
+    // tabs. Even for admins, none of these labels render.
+    render(
+      <AdminSidebar activeTab="providers" isAdmin onTabChange={noop} onBackToChat={noop} />,
+    );
+    expect(screen.queryByText('Catalog')).not.toBeInTheDocument();
+    expect(screen.queryByText('Skills awaiting review')).not.toBeInTheDocument();
+    expect(screen.queryByText('Connector catalog')).not.toBeInTheDocument();
   });
 
   it('fires onTabChange when a tab is clicked', () => {

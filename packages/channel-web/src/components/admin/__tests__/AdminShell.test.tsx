@@ -37,27 +37,6 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
-  // CatalogTab (listSkills → /admin/skills) and AdmitQueueTab
-  // (listCatalogRequests → /admin/catalog/requests) fetch on mount.
-  if (/\/admin\/skills(\?|$)/.test(url)) {
-    return new Response(JSON.stringify({ skills: [] }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  }
-  if (/\/admin\/catalog\/requests(\?|$)/.test(url)) {
-    return new Response(JSON.stringify({ requests: [] }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  }
-  // ConnectorRegistry (listConnectors → /admin/connectors) fetches on mount.
-  if (/\/admin\/connectors(\?|$)/.test(url)) {
-    return new Response(JSON.stringify({ connectors: [] }), {
-      status: 200,
-      headers: { 'content-type': 'application/json' },
-    });
-  }
   return new Response(JSON.stringify({ providers: [], agents: [], teams: [], connectors: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
@@ -89,17 +68,17 @@ function renderShell(onClose = vi.fn(), isAdmin = true) {
 describe('AdminShell', () => {
   it('renders the three user Settings tabs plus admin tabs, with Skills active by default', () => {
     renderShell();
-    // The agent-centric Settings tabs (every user). "Connectors" the user tab
-    // shares its label with the admin "Connector catalog" registry, so scope to
-    // the user nav button by its exact label.
+    // The agent-centric Settings tabs (every user).
     expect(screen.getByRole('button', { name: 'Skills' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Connectors' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Credentials' })).toBeTruthy();
-    // Admin tabs (Admin section) — present for admins.
+    // Admin tabs (Admin section) — present for admins. After the
+    // settings-unified nav fold the Admin group is exactly Agents / keys /
+    // model / sign-in / teams; the duplicate Catalog / Connector-catalog
+    // surfaces are gone.
     expect(screen.getByRole('button', { name: 'AI model keys' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Default AI model' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Connector catalog' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Teams' })).toBeTruthy();
     // Skills is the default active tab for everyone.
     expect(
@@ -112,8 +91,6 @@ describe('AdminShell', () => {
     expect(screen.getByRole('button', { name: 'Skills' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'AI model keys' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Teams' })).toBeNull();
-    // The admin connector-catalog registry is hidden for non-admins.
-    expect(screen.queryByRole('button', { name: 'Connector catalog' })).toBeNull();
   });
 
   it('clicking Default AI model makes it the active tab', () => {
@@ -134,23 +111,13 @@ describe('AdminShell', () => {
     expect(onClose).toHaveBeenCalledTimes(1);
   });
 
-  it('shows the Catalog and Skills awaiting review nav items for admins', () => {
+  it('does not render the folded Catalog / Skills-awaiting-review / Connector-catalog nav items, even for admins', () => {
+    // settings-unified epic: these admin surfaces were folded out of the nav;
+    // their curation moves inline into the user Skills/Connectors tabs. No nav
+    // entry — and therefore no orphaned tab route — remains.
     renderShell();
-    expect(screen.getByRole('button', { name: 'Catalog' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Skills awaiting review' })).toBeTruthy();
-  });
-
-  it('clicking Catalog makes it the active tab', () => {
-    renderShell();
-    fireEvent.click(screen.getByRole('button', { name: 'Catalog' }));
-    expect(
-      screen.getByRole('button', { name: 'Catalog' }).getAttribute('data-active'),
-    ).toBeTruthy();
-  });
-
-  it('hides Catalog and Skills awaiting review when isAdmin is false', () => {
-    renderShell(vi.fn(), false);
     expect(screen.queryByRole('button', { name: 'Catalog' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Skills awaiting review' })).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Connector catalog' })).toBeNull();
   });
 });
