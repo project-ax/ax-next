@@ -324,6 +324,20 @@ export function createChannelWebServerPlugin(
       const connections = makeConnectionsHandlers({ bus, initCtx });
       for (const route of [
         { method: 'GET' as const, path: '/api/chat/connections/:agentId', handler: connections.get },
+        // TASK-126 — Skills app-store: the every-user global-catalog read (the
+        // "Not installed" shelf) + the self-install attach route. Both ship with
+        // their consumer (SkillsAppStore) in the same PR (I3 — no half-wired
+        // surface).
+        {
+          method: 'GET' as const,
+          path: '/api/chat/catalog-skills',
+          handler: connections.listCatalog,
+        },
+        {
+          method: 'POST' as const,
+          path: '/api/chat/connections/:agentId/skills',
+          handler: connections.attach,
+        },
         {
           method: 'DELETE' as const,
           path: '/api/chat/connections/:agentId/skills/:skillId',

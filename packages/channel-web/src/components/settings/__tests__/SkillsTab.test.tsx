@@ -1,8 +1,18 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { SkillsTab } from '../SkillsTab';
-import type { SkillSummary } from '@ax/skills';
+import type { ConnectionSkill, CatalogSkillListing } from '@/lib/connections';
 
+// SkillsTab is now thin chrome around SkillsAppStore (the app-store body, with
+// its own thorough test). Here we just verify the tab mounts the app-store
+// shelves and passes `isAdmin` through.
+vi.mock('@/lib/connections', () => ({
+  getConnections: vi.fn(),
+  detachConnectionSkill: vi.fn(),
+  attachConnectionSkill: vi.fn(),
+  listCatalogSkills: vi.fn(),
+}));
+vi.mock('@/lib/agents', () => ({ listChatAgents: vi.fn() }));
 vi.mock('@/lib/user-skills', () => ({
   listUserSkills: vi.fn(),
   listAuthoredSkills: vi.fn(),
@@ -11,76 +21,68 @@ vi.mock('@/lib/user-skills', () => ({
   updateUserSkill: vi.fn(),
   deleteUserSkill: vi.fn(),
   shareUserSkill: vi.fn(),
-  approveAuthoredSkill: vi.fn(),
 }));
-vi.mock('@/lib/credentials', () => ({ setDestinationCredential: vi.fn() }));
+vi.mock('@/lib/skills', () => ({
+  setSkillDefaultAttached: vi.fn(),
+  deleteSkill: vi.fn(),
+  getSkill: vi.fn(),
+  upsertSkill: vi.fn(),
+  updateSkill: vi.fn(),
+}));
+vi.mock('@/lib/catalog', () => ({
+  listCatalogRequests: vi.fn(),
+  decideCatalogRequest: vi.fn(),
+}));
 vi.mock('@/components/admin/SkillEditor', () => ({
   SkillEditor: () => <div data-testid="skill-editor" />,
 }));
+vi.mock('@/components/admin/BundleReviewDialog', () => ({
+  BundleReviewDialog: () => <div data-testid="bundle-review" />,
+}));
 
+import { getConnections, listCatalogSkills } from '@/lib/connections';
+import { listChatAgents } from '@/lib/agents';
 import { listUserSkills, listAuthoredSkills } from '@/lib/user-skills';
-const mockListUserSkills = vi.mocked(listUserSkills);
-const mockListAuthoredSkills = vi.mocked(listAuthoredSkills);
+import { listCatalogRequests } from '@/lib/catalog';
 
-const PRIVATE_SKILL: SkillSummary = {
-  id: 'my-helper',
-  description: 'My private helper.',
-  version: 1,
-  scope: 'user',
-  connectors: [],
-  defaultAttached: false,
-  updatedAt: '2026-05-20T10:00:00.000Z',
-};
-
-// A catalog (scope:'global') skill → the single "Catalog" source badge.
-const CATALOG_SKILL: SkillSummary = {
-  id: 'web-search',
-  description: 'Search the web.',
-  version: 3,
-  scope: 'global',
-  connectors: [],
-  defaultAttached: true,
-  updatedAt: '2026-05-20T10:00:00.000Z',
-};
+const INSTALLED: ConnectionSkill[] = [
+  { skillId: 'web-search', description: 'Search the web.', source: 'default', removable: false },
+];
+const CATALOG: CatalogSkillListing[] = [
+  { skillId: 'web-search', description: 'Search the web.', defaultAttached: true, connectors: [] },
+  { skillId: 'pdf-tools', description: 'Work with PDFs.', defaultAttached: false, connectors: [] },
+];
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mockListAuthoredSkills.mockResolvedValue([]);
+  vi.mocked(listChatAgents).mockResolvedValue([
+    { agentId: 'a1', displayName: 'My Agent', visibility: 'personal' },
+  ]);
+  vi.mocked(getConnections).mockResolvedValue({ agentId: 'a1', skills: INSTALLED });
+  vi.mocked(listCatalogSkills).mockResolvedValue(CATALOG);
+  vi.mocked(listUserSkills).mockResolvedValue([]);
+  vi.mocked(listAuthoredSkills).mockResolvedValue([]);
+  vi.mocked(listCatalogRequests).mockResolvedValue([]);
 });
 
 describe('SkillsTab', () => {
-  it('lists the user skills', async () => {
-    mockListUserSkills.mockResolvedValue([PRIVATE_SKILL]);
-    render(<SkillsTab />);
-    expect(await screen.findByText('my-helper')).toBeInTheDocument();
-    expect(screen.getByText('My private helper.')).toBeInTheDocument();
+  it('renders the INSTALLED and NOT INSTALLED app-store shelves', async () => {
+    render(<SkillsTab isAdmin={false} />);
+    expect(await screen.findByText(/^Installed/)).toBeInTheDocument();
+    expect(await screen.findByText(/Not installed/i)).toBeInTheDocument();
+    // The not-installed shelf surfaces the catalog item that isn't installed.
+    expect(await screen.findByText('Work with PDFs.')).toBeInTheDocument();
   });
 
-  it('shows the single "Catalog" badge on a catalog skill, none on a private skill', async () => {
-    mockListUserSkills.mockResolvedValue([PRIVATE_SKILL, CATALOG_SKILL]);
-    render(<SkillsTab />);
-    await screen.findByText('web-search');
-
-    const catalogRow = screen.getByText('web-search').closest('tr')!;
-    expect(catalogRow.textContent).toMatch(/Catalog/);
-
-    const privateRow = screen.getByText('my-helper').closest('tr')!;
-    expect(privateRow.textContent).not.toMatch(/Catalog/);
+  it('passes isAdmin=false through (no admin curation affordances)', async () => {
+    render(<SkillsTab isAdmin={false} />);
+    await screen.findByText('Work with PDFs.');
+    expect(screen.queryByRole('button', { name: /Add to workspace/i })).toBeNull();
   });
 
-  it('a solo user with only private skills sees NO catalog badge or language', async () => {
-    mockListUserSkills.mockResolvedValue([PRIVATE_SKILL]);
-    render(<SkillsTab />);
-    await screen.findByText('my-helper');
-    expect(screen.queryByText('Catalog')).toBeNull();
-  });
-
-  it('shows the empty state with no "catalog" language', async () => {
-    mockListUserSkills.mockResolvedValue([]);
-    render(<SkillsTab />);
-    await waitFor(() => {
-      expect(screen.getByText(/No skills/)).toBeInTheDocument();
-    });
-    expect(screen.queryByText(/catalog/i)).toBeNull();
+  it('passes isAdmin=true through (admin curation affordances render)', async () => {
+    render(<SkillsTab isAdmin={true} />);
+    await screen.findByText('Work with PDFs.');
+    expect(screen.getByRole('button', { name: /Add to workspace/i })).toBeInTheDocument();
   });
 });

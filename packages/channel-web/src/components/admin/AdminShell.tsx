@@ -54,7 +54,7 @@ export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
       <AdminPane
         header={<AdminPaneHeader eyebrow={meta.eyebrow} title={meta.title} />}
       >
-        {activeTab === 'skills' && <SkillsTab />}
+        {activeTab === 'skills' && <SkillsTab isAdmin={isAdmin} />}
         {activeTab === 'connectors-user' && <ConnectorsTab isAdmin={isAdmin} />}
         {activeTab === 'credentials' && <CredentialsTab />}
         {activeTab === 'providers' && <ProvidersPanel />}

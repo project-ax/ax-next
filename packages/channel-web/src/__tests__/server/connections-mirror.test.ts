@@ -42,10 +42,10 @@ const initCtx: AgentContext = makeAgentContext({
   userId: 'system',
 });
 
-function mkReq(params: Record<string, string>): RouteRequest {
+function mkReq(params: Record<string, string>, body?: unknown): RouteRequest {
   return {
     headers: {},
-    body: Buffer.alloc(0),
+    body: body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body), 'utf8'),
     cookies: {},
     query: {},
     params,
@@ -173,5 +173,50 @@ describe('Connections mirror property (TASK-42)', () => {
       { attachments: unknown[] }
     >('skills:list-user-attachments', sys, { userId: 'u1', agentId: 'a1' });
     expect(after.attachments).toEqual([]);
+  });
+
+  // TASK-126 (Skills app-store) — self-install. The global catalog skill shows
+  // on the every-user catalog read, POSTing it attaches it for the caller, and a
+  // bogus id is rejected (capability-min) so a browser can only install a vetted
+  // catalog item.
+  it('catalog read + self-install attach a global catalog skill end to end', async () => {
+    const h = await makeHarness();
+    const sys = h.ctx();
+
+    // A global (admin-curated) catalog skill exists.
+    await h.bus.call('skills:upsert', sys, {
+      manifestYaml: SAMPLE_MANIFEST,
+      bodyMd: SAMPLE_BODY,
+    });
+
+    const handlers = makeConnectionsHandlers({ bus: h.bus, initCtx });
+
+    // 1) The every-user catalog read surfaces it as an installable listing.
+    const cat = mkRes();
+    await handlers.listCatalog(mkReq({}), cat.res);
+    expect(cat.captured.statusCode).toBe(200);
+    const listings = (cat.captured.body as { skills: Array<{ skillId: string; connectors: string[] }> }).skills;
+    expect(listings).toContainEqual(
+      expect.objectContaining({ skillId: 'github', connectors: ['github'] }),
+    );
+
+    // 2) A bogus id is rejected BEFORE any write (capability-min gate).
+    const bogus = mkRes();
+    await handlers.attach(mkReq({ agentId: 'a1' }, { skillId: 'not-a-real-skill' }), bogus.res);
+    expect(bogus.captured.statusCode).toBe(404);
+
+    // 3) POST the real catalog id → 201, and it now appears as a removable
+    //    user-source connection.
+    const ins = mkRes();
+    await handlers.attach(mkReq({ agentId: 'a1' }, { skillId: 'github' }), ins.res);
+    expect(ins.captured.statusCode).toBe(201);
+    expect(ins.captured.body).toEqual({ created: true });
+
+    const get = mkRes();
+    await handlers.get(mkReq({ agentId: 'a1' }), get.res);
+    const installed = (get.captured.body as { skills: unknown[] }).skills;
+    expect(installed).toContainEqual(
+      expect.objectContaining({ skillId: 'github', source: 'user', removable: true }),
+    );
   });
 });

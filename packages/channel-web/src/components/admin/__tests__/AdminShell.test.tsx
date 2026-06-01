@@ -17,8 +17,13 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
-  // SkillsTab (the default tab) calls listUserSkills() → /settings/skills and
-  // listAuthoredSkills() → /settings/skills/authored on mount.
+  // SkillsTab (the default tab) → SkillsAppStore calls, on mount:
+  //   listUserSkills()      → GET /settings/skills            → { skills: [] }
+  //   listAuthoredSkills()  → GET /settings/skills/authored   → { skills: [] }
+  //   listCatalogSkills()   → GET /api/chat/catalog-skills    → { skills: [] }
+  //   listChatAgents()      → GET /api/chat/agents            → []
+  //   getConnections(id)    → GET /api/chat/connections/:id   → { agentId, skills:[] }
+  // (an admin also calls listCatalogRequests() → /admin/catalog/requests.)
   if (/\/settings\/skills\/authored(\?|$)/.test(url)) {
     return new Response(JSON.stringify({ skills: [] }), {
       status: 200,
@@ -27,6 +32,24 @@ function emptyResponse(url: string): Response {
   }
   if (/\/settings\/skills(\?|$)/.test(url)) {
     return new Response(JSON.stringify({ skills: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  if (/\/api\/chat\/catalog-skills(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ skills: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  if (/\/admin\/catalog\/requests(\?|$)/.test(url)) {
+    return new Response(JSON.stringify({ requests: [] }), {
+      status: 200,
+      headers: { 'content-type': 'application/json' },
+    });
+  }
+  if (/\/api\/chat\/connections\//.test(url)) {
+    return new Response(JSON.stringify({ agentId: 'a1', skills: [] }), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
