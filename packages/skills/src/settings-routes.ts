@@ -10,6 +10,8 @@ import type {
   SkillsListAuthoredOutput,
   AuthoredSkillListing,
   SettingsAuthoredSkillsOutput,
+  SkillsAdoptAuthoredInput,
+  SkillsAdoptAuthoredOutput,
 } from './types.js';
 import {
   requireAuthenticated,
@@ -84,6 +86,7 @@ export interface SettingsRouteDeps {
 export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
   list: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   listAuthored: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  adoptAuthored: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   get: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   create: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   update: (req: RouteRequest, res: RouteResponse) => Promise<void>;
@@ -188,6 +191,72 @@ export function createSettingsSkillsHandlers(deps: SettingsRouteDeps): {
             (a.agentId < b.agentId ? -1 : a.agentId > b.agentId ? 1 : 0),
         );
         res.status(200).json({ skills: listings } satisfies SettingsAuthoredSkillsOutput);
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
+    /**
+     * POST /settings/skills/authored/:agentId/:skillId/adopt — copy an
+     * agent-authored draft into the caller's OWN editable user-scoped skill,
+     * then mark the draft adopted (TASK-134, adopt-&-edit). The user-facing
+     * replacement for the admin "promote" affordance: the user takes a copy
+     * they own and edits it in the form-first editor.
+     *
+     * Security (invariant I5): `ownerUserId` is ALWAYS the authenticated actor —
+     * never a request field. The agent is ACL-checked the SAME way `listAuthored`
+     * scopes its reads: we resolve the caller's own personal agents and reject
+     * any `agentId` that isn't one of them, so a user can never adopt another
+     * user's authored draft by guessing an agent id. The body is ignored (ids
+     * come from the path).
+     *
+     * The copy goes through `skills:adopt-authored`, which upserts via
+     * skills:upsert scope:'user' — running the full parse + bundle-file gate on
+     * the untrusted draft content, so an adopted copy can never carry self-
+     * granted reach (a cap-bearing manifest fails the parse → 4xx). A draft that
+     * isn't a user-facing (active/pending) draft of this agent throws
+     * `not-authored`/`not-adoptable` → mapped via `writeServiceError`.
+     */
+    async adoptAuthored(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireAuthenticated(deps.bus, ctx, req, res);
+      if (actor === null) return;
+
+      const { agentId, skillId } = req.params;
+      if (!agentId || !skillId) {
+        res.status(400).json({ error: 'missing agent id or skill id' });
+        return;
+      }
+
+      try {
+        // ACL: a user can only adopt a draft of an agent they OWN. Mirror
+        // listAuthored's scoping exactly. No agents plugin → no authored
+        // namespace → the agent can't be owned → 404 (not an error).
+        if (!deps.bus.hasService('agents:list-for-user')) {
+          res.status(404).json({ error: 'agent not accessible' });
+          return;
+        }
+        const { agents } = await deps.bus.call<
+          { userId: string },
+          AgentsListForUserOutput
+        >('agents:list-for-user', ctx, { userId: actor.id });
+        const ownsAgent = agents.some(
+          (a) => a.id === agentId && a.ownerType === 'user' && a.ownerId === actor.id,
+        );
+        if (!ownsAgent) {
+          res.status(404).json({ error: 'agent not accessible' });
+          return;
+        }
+
+        const out = await deps.bus.call<
+          SkillsAdoptAuthoredInput,
+          SkillsAdoptAuthoredOutput
+        >('skills:adopt-authored', ctx, {
+          ownerUserId: actor.id, // host-forced (I5); body is ignored
+          agentId,
+          skillId,
+        });
+        res.status(200).json(out);
       } catch (err) {
         if (writeServiceError(res, err)) return;
         throw err;
@@ -442,6 +511,16 @@ export async function registerSettingsSkillsRoutes(
     // exact-match Map is checked before the /settings/skills/:id pattern scan,
     // so it never collides with `:id`. (Registration order is irrelevant here.)
     { method: 'GET', path: '/settings/skills/authored', handler: handlers.listAuthored },
+    // POST /settings/skills/authored/:agentId/:skillId/adopt (TASK-134). A
+    // 6-segment pattern — the router matches by exact segment count, so it
+    // never collides with the 3-segment /settings/skills/:id pattern, and the
+    // 3-segment EXACT /settings/skills/authored route is checked before any
+    // pattern scan. Registration order is therefore irrelevant.
+    {
+      method: 'POST',
+      path: '/settings/skills/authored/:agentId/:skillId/adopt',
+      handler: handlers.adoptAuthored,
+    },
     { method: 'GET', path: '/settings/skills/:id', handler: handlers.get },
     { method: 'POST', path: '/settings/skills', handler: handlers.create },
     { method: 'PUT', path: '/settings/skills/:id', handler: handlers.update },

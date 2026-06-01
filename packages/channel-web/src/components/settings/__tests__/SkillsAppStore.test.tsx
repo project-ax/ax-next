@@ -1,8 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { SkillsAppStore } from '../SkillsAppStore';
 import type { ConnectionSkill, CatalogSkillListing } from '@/lib/connections';
-import type { SkillSummary } from '@ax/skills';
+import type { SkillSummary, AuthoredSkillListing } from '@ax/skills';
 
 vi.mock('@/lib/connections', () => ({
   getConnections: vi.fn(),
@@ -19,6 +19,7 @@ vi.mock('@/lib/user-skills', () => ({
   updateUserSkill: vi.fn(),
   deleteUserSkill: vi.fn(),
   shareUserSkill: vi.fn(),
+  adoptAuthoredSkill: vi.fn(),
 }));
 vi.mock('@/lib/skills', () => ({
   setSkillDefaultAttached: vi.fn(),
@@ -40,7 +41,7 @@ vi.mock('@/components/admin/BundleReviewDialog', () => ({
 
 import { getConnections, listCatalogSkills } from '@/lib/connections';
 import { listChatAgents } from '@/lib/agents';
-import { listUserSkills, listAuthoredSkills } from '@/lib/user-skills';
+import { listUserSkills, listAuthoredSkills, adoptAuthoredSkill } from '@/lib/user-skills';
 import { listCatalogRequests } from '@/lib/catalog';
 
 const mockGetConnections = vi.mocked(getConnections);
@@ -49,6 +50,7 @@ const mockListAgents = vi.mocked(listChatAgents);
 const mockListUserSkills = vi.mocked(listUserSkills);
 const mockListAuthored = vi.mocked(listAuthoredSkills);
 const mockListRequests = vi.mocked(listCatalogRequests);
+const mockAdoptAuthored = vi.mocked(adoptAuthoredSkill);
 
 const INSTALLED: ConnectionSkill[] = [
   { skillId: 'web-search', description: 'Search the web.', source: 'default', removable: false },
@@ -151,5 +153,52 @@ describe('SkillsAppStore', () => {
     await screen.findByTestId('catalog-pdf-tools');
     expect(screen.getByRole('button', { name: /Add to workspace/i })).toBeInTheDocument();
     expect(await screen.findByText(/Awaiting review \(1\)/i)).toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // Adopt-&-edit authored skills (TASK-134)
+  // -------------------------------------------------------------------------
+
+  const AUTHORED: AuthoredSkillListing[] = [
+    { skillId: 'drafted', agentId: 'a1', description: 'An agent-authored draft.', status: 'active' },
+  ];
+
+  it('an authored draft shows an Edit (adopt-&-edit) button', async () => {
+    mockListAuthored.mockResolvedValue(AUTHORED);
+    render(<SkillsAppStore isAdmin={false} />);
+    const row = await screen.findByTestId('authored-drafted');
+    expect(row).toBeInTheDocument();
+    expect(screen.getByText('Authored by your agents')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Edit drafted/i })).toBeInTheDocument();
+  });
+
+  it('Edit on an authored draft adopts it then opens the editor on the copy', async () => {
+    mockListAuthored.mockResolvedValue(AUTHORED);
+    mockAdoptAuthored.mockResolvedValue({ skillId: 'drafted', created: true, adopted: true });
+    render(<SkillsAppStore isAdmin={false} />);
+    await screen.findByTestId('authored-drafted');
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit drafted/i }));
+
+    // The adopt call is made with the draft's (agentId, skillId).
+    await waitFor(() =>
+      expect(mockAdoptAuthored).toHaveBeenCalledWith('a1', 'drafted'),
+    );
+    // The form-first editor (TASK-133, mocked here) opens on the adopted copy.
+    expect(await screen.findByTestId('skill-editor')).toBeInTheDocument();
+  });
+
+  it('a failed adopt surfaces an error and does NOT open the editor', async () => {
+    mockListAuthored.mockResolvedValue(AUTHORED);
+    mockAdoptAuthored.mockRejectedValue(
+      new Error('user-skills API 409: not-adoptable'),
+    );
+    render(<SkillsAppStore isAdmin={false} />);
+    await screen.findByTestId('authored-drafted');
+
+    fireEvent.click(screen.getByRole('button', { name: /Edit drafted/i }));
+
+    expect(await screen.findByText(/not-adoptable/i)).toBeInTheDocument();
+    expect(screen.queryByTestId('skill-editor')).toBeNull();
   });
 });

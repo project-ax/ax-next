@@ -80,6 +80,7 @@ import {
   updateUserSkill,
   deleteUserSkill,
   shareUserSkill,
+  adoptAuthoredSkill,
 } from '@/lib/user-skills';
 import {
   setSkillDefaultAttached,
@@ -128,6 +129,9 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
   const [sharing, setSharing] = useState(false);
   const [shareResult, setShareResult] = useState<{ kind: 'submitted' | 'pending'; skillId: string } | null>(null);
   const [installing, setInstalling] = useState<CatalogSkillListing | null>(null);
+  // The authored draft currently being adopted (its `agentId/skillId` key), so
+  // its Edit button shows an in-flight state and can't be double-clicked.
+  const [adopting, setAdopting] = useState<string | null>(null);
 
   // ---- data loads -------------------------------------------------------
 
@@ -262,6 +266,32 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
       await Promise.all([refreshCatalog(), refreshInstalled(agentId)]);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
+   * Adopt-&-edit (TASK-134): copy an agent-authored draft into the user's own
+   * editable user-scoped skill, then open the form-first editor on the copy. The
+   * server copies manifest + body + extra files and marks the draft adopted (so
+   * it drops off the authored list on the next refresh). On success we refresh
+   * and open `edit-user` on the returned skill id; on failure (e.g. the draft is
+   * no longer adoptable) we surface the error and leave the list as-is.
+   */
+  async function handleAdopt(a: AuthoredSkillListing): Promise<void> {
+    const key = `${a.agentId}/${a.skillId}`;
+    setAdopting(key);
+    setError(null);
+    try {
+      const out = await adoptAuthoredSkill(a.agentId, a.skillId);
+      // The copy now lives in the user's own skills; refresh both the authored
+      // list (the draft drops off) and the installed/own surfaces, then open the
+      // editor on the adopted copy for further editing.
+      await refreshOwn();
+      setEditor({ mode: 'edit-user', skillId: out.skillId });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setAdopting(null);
     }
   }
 
@@ -440,33 +470,56 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
             </div>
           )}
 
-          {/* Authored-by-your-agents — surfaced read-only so authored work
-              doesn't read as "nothing installed". */}
+          {/* Authored-by-your-agents — skills an agent wrote in its workspace.
+              "Edit" adopts the draft into your OWN editable copy (TASK-134),
+              replacing the old approve-only affordance: it copies the draft
+              (manifest + body + files) into your installed skills and opens the
+              editor on the copy. */}
           {authored.length > 0 && (
             <div className="flex flex-col gap-1.5">
               <h4 className="text-xs font-medium text-muted-foreground">
                 Authored by your agents
               </h4>
+              <p className="text-xs text-muted-foreground">
+                Skills your agents drafted. Edit one to make an editable copy you
+                own.
+              </p>
               <div className="flex flex-col divide-y divide-border rounded-md border border-border">
-                {authored.map((a) => (
-                  <div
-                    key={`${a.agentId}/${a.skillId}`}
-                    className="flex items-center justify-between gap-3 px-3 py-2"
-                  >
-                    <div className="min-w-0">
-                      <span className="text-sm truncate">{a.description}</span>
-                      <span className="block font-mono text-xs text-muted-foreground">
-                        {a.skillId} · {a.agentId}
-                      </span>
-                    </div>
-                    <Badge
-                      variant={a.status === 'active' ? 'secondary' : 'outline'}
-                      className="text-xs shrink-0"
+                {authored.map((a) => {
+                  const key = `${a.agentId}/${a.skillId}`;
+                  const isAdopting = adopting === key;
+                  return (
+                    <div
+                      key={key}
+                      data-testid={`authored-${a.skillId}`}
+                      className="flex items-center justify-between gap-3 px-3 py-2"
                     >
-                      {a.status === 'active' ? 'active' : 'pending review'}
-                    </Badge>
-                  </div>
-                ))}
+                      <div className="min-w-0">
+                        <span className="text-sm truncate">{a.description}</span>
+                        <span className="block font-mono text-xs text-muted-foreground">
+                          {a.skillId} · {a.agentId}
+                        </span>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <Badge
+                          variant={a.status === 'active' ? 'secondary' : 'outline'}
+                          className="text-xs"
+                        >
+                          {a.status === 'active' ? 'active' : 'pending review'}
+                        </Badge>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          disabled={adopting !== null}
+                          onClick={() => void handleAdopt(a)}
+                          aria-label={`Edit ${a.skillId}`}
+                        >
+                          {isAdopting ? 'Adopting…' : 'Edit'}
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             </div>
           )}

@@ -750,3 +750,41 @@ export interface SkillsAuthoredActivateOutput {
 export const SkillsAuthoredActivateOutputSchema = z.object({
   activated: z.boolean(),
 }) as unknown as ZodType<SkillsAuthoredActivateOutput>;
+
+// `skills:adopt-authored` — copy an agent-authored draft into the caller's OWN
+// editable user-scoped skill, then mark the draft adopted (TASK-134, adopt-&-edit;
+// design card 11). This replaces the admin-only "promote with admin-chosen grants"
+// affordance for the user's own authored work: the user takes a copy they own and
+// edits it in the form-first editor. The whole transaction is one hook so the
+// copy + the mark are atomic.
+//
+// Reach posture (security): the adopted copy is upserted through `skills:upsert`
+// scope:'user', which runs the FULL `parseSkillManifest` gate — a draft whose
+// frontmatter still declares a capability block (allowedHosts / credentials /
+// mcpServers / packages) HARD-FAILS the parse and the adopt errors out. So the
+// user-owned copy can never carry self-granted reach; a skill's reach lives only
+// on the connectors it references, re-consented via the connector approval path.
+//
+// Idempotent on the draft mark (status-guarded in the store) but NOT on the copy
+// (a re-adopt re-upserts the same user skill, last-write-wins). `ownerUserId` is
+// host-forced from the session at the route; never a client field. Ids only —
+// storage-agnostic (no row/blob/git vocab on the wire).
+export interface SkillsAdoptAuthoredInput {
+  ownerUserId: string;
+  agentId: string;
+  skillId: string;
+}
+export interface SkillsAdoptAuthoredOutput {
+  /** The id of the user-scoped skill the draft was copied into. */
+  skillId: string;
+  /** Whether the user-scoped copy was created (false = it already existed and was overwritten). */
+  created: boolean;
+  /** Whether THIS call flipped the draft to `adopted` (false = already adopted / not user-facing). */
+  adopted: boolean;
+}
+
+export const SkillsAdoptAuthoredOutputSchema = z.object({
+  skillId: z.string(),
+  created: z.boolean(),
+  adopted: z.boolean(),
+}) as unknown as ZodType<SkillsAdoptAuthoredOutput>;
