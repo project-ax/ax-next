@@ -2413,16 +2413,13 @@ describe('chat-orchestrator', () => {
     };
   }
 
-  it('unions skill allowedHosts and merges credential bindings into proxy:open-session', async () => {
+  it('TASK-100: an attached skill contributes NO host/credential to proxy:open-session (its reach is its connector)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
         github: {
           id: 'github',
-          capabilities: {
-            allowedHosts: ['api.github.com'],
-            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
-          },
+          connectors: [],
           bodyMd: 'Use the GitHub API.',
           manifestYaml: 'name: github\nversion: 1.0.0\n',
         },
@@ -2438,7 +2435,7 @@ describe('chat-orchestrator', () => {
             ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
-            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
+            { skillId: 'github', credentialBindings: {} },
           ],
         },
       }),
@@ -2465,15 +2462,16 @@ describe('chat-orchestrator', () => {
       allowlist: string[];
       credentials: Record<string, { ref: string; kind: string }>;
     };
-    // Allowlist must contain both the agent host AND the skill host.
+    // The AGENT's own host/cred reach the proxy.
     expect(openIn.allowlist).toContain('api.anthropic.com');
-    expect(openIn.allowlist).toContain('api.github.com');
-    // Credentials must carry both the agent cred and the skill binding. TASK-86
-    // — the skill slot is keyed by its PER-SKILL namespace (`skill:<id>:<slot>`).
     expect(openIn.credentials).toMatchObject({
       ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
-      'skill:github:GITHUB_TOKEN': { ref: 'gh-pat', kind: 'api-key' },
     });
+    // TASK-100 — the SKILL declares no caps, so its (former) host/credential do
+    // NOT reach the proxy. A skill's reach is the connectors it references
+    // (folded via the connector path, covered by connector-union.test.ts).
+    expect(openIn.allowlist).not.toContain('api.github.com');
+    expect(openIn.credentials['skill:github:GITHUB_TOKEN']).toBeUndefined();
   });
 
   // ---------------------------------------------------------------------
@@ -2668,17 +2666,13 @@ describe('chat-orchestrator', () => {
     expect(sharedEntries).toHaveLength(1);
   });
 
-  it('TASK-111 no-regression: a legacy capability-block skill (no connectors[]) still materializes', async () => {
+  it('TASK-100: a skill that references no connectors contributes NO reach (instruction-only)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
         github: {
           id: 'github',
-          capabilities: {
-            allowedHosts: ['api.github.com'],
-            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
-          },
-          // No connectors[] — pure legacy path.
+          connectors: [], // references no connectors → zero reach
           bodyMd: 'Use the GitHub API.',
           manifestYaml: 'name: github\nversion: 1\n',
         },
@@ -2696,7 +2690,7 @@ describe('chat-orchestrator', () => {
             ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
-            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
+            { skillId: 'github', credentialBindings: {} },
           ],
         },
       }),
@@ -2716,15 +2710,13 @@ describe('chat-orchestrator', () => {
       { message: { role: 'user', content: 'hi' } },
     );
     expect(outcome.kind).toBe('complete');
-    // The legacy capability block still materialized unchanged.
+    // The skill declares no caps + references no connectors → no reach of its own.
     const openIn = proxy.state.lastOpenInput as {
       allowlist: string[];
       credentials: Record<string, { ref: string; kind: string }>;
     };
-    expect(openIn.allowlist).toContain('api.github.com');
-    expect(openIn.credentials).toMatchObject({
-      'skill:github:GITHUB_TOKEN': { ref: 'gh-pat', kind: 'api-key' },
-    });
+    expect(openIn.allowlist).not.toContain('api.github.com');
+    expect(openIn.credentials['skill:github:GITHUB_TOKEN']).toBeUndefined();
     // No connector resolution happened (the skill referenced none).
     expect(connHook.resolveCalls).toEqual([]);
   });
