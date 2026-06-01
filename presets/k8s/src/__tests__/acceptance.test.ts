@@ -84,8 +84,6 @@ import { createValidatorSkillPlugin } from '@ax/validator-skill';
 import type {
   SkillsUpsertInput,
   SkillsUpsertOutput,
-  SkillsDeleteInput,
-  SkillsDeleteOutput,
 } from '@ax/skills';
 import { createRoutinesPlugin } from '@ax/routines';
 
@@ -1185,6 +1183,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
     ctx: AgentContext,
     manifestYaml: string,
     bodyMd: string,
+    origin: 'authored' | 'imported' | 'attached' = 'authored',
   ): Promise<ProposeOut> {
     return bus.call<unknown, ProposeOut>('skills:propose', ctx, {
       ownerUserId: ctx.userId,
@@ -1193,12 +1192,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       bodyMd,
       files: [],
       capabilityProposal: emptyCaps,
-      origin: 'authored',
+      // TASK-100 — a skill declares no caps, so a non-authored origin is the only
+      // way to land `pending` (a self-authored skill is always active).
+      origin,
     });
   }
 
   it(
-    'TASK-74 canary: skills:propose gate — zero-cap authored → active; declares-a-host → pending (booted preset)',
+    'TASK-100 canary: skills:propose gate — authored → active; non-authored → pending; a capabilities block is REJECTED (booted preset)',
     { timeout: 60_000 },
     async () => {
       const sub = await bootSkillSubsystem();
@@ -1209,7 +1210,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           userId: 'user-t74-gate',
         });
 
-        // Zero-capability self-authored skill → FREE path → active.
+        // Self-authored skill → FREE path → active.
         const free = await propose(
           sub.bus,
           ctx,
@@ -1218,15 +1219,27 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         );
         expect(free).toEqual({ skillId: 'commit-style', status: 'active' });
 
-        // Declares a host + a credential → GATED → pending (nothing live yet).
+        // A non-authored origin → GATED → pending (nothing live yet).
         const gated = await propose(
           sub.bus,
           ctx,
-          'name: linear\ndescription: work with Linear\nversion: 1\ncapabilities:\n  allowedHosts:\n    - api.linear.app\n  credentials:\n    - slot: LINEAR_API_KEY\n      kind: api-key',
-          '# Linear\nCall the Linear API.',
+          'name: linear\ndescription: work with Linear\nversion: 1\nconnectors:\n  - linear',
+          '# Linear\nDrive the Linear connector.',
+          'imported',
         );
         expect(gated.skillId).toBe('linear');
         expect(gated.status).toBe('pending');
+
+        // TASK-100 — a manifest that still declares a capabilities block is a hard
+        // reject (capabilities live on connectors now).
+        await expect(
+          propose(
+            sub.bus,
+            ctx,
+            'name: legacy\ndescription: legacy\nversion: 1\ncapabilities:\n  allowedHosts:\n    - api.linear.app',
+            '# Legacy',
+          ),
+        ).rejects.toThrow();
       } finally {
         await sub.shutdown();
       }
@@ -1281,7 +1294,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
   );
 
   it(
-    'TASK-74 canary: a pending skill projects with EMPTY caps + a proposalDelta; an APPROVED host folds into live caps (booted preset)',
+    'TASK-100 canary: a pending skill projects its connector references (no per-skill caps/proposalDelta); approving activates it (booted preset)',
     { timeout: 60_000 },
     async () => {
       const sub = await bootSkillSubsystem();
@@ -1292,47 +1305,46 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           userId: 'user-t74-caps',
         });
 
-        const manifest =
-          'name: linear\ndescription: work with Linear\nversion: 1\ncapabilities:\n  allowedHosts:\n    - api.linear.app\n  credentials:\n    - slot: LINEAR_API_KEY\n      kind: api-key';
-        const out = await propose(sub.bus, ctx, manifest, '# Linear\nCall the API.');
+        // TASK-100 — a skill declares no caps; it references a connector. A
+        // non-authored origin lands it pending.
+        const manifest = 'name: linear\ndescription: work with Linear\nversion: 1\nconnectors:\n  - linear';
+        const out = await propose(sub.bus, ctx, manifest, '# Linear\nDrive the connector.', 'imported');
         expect(out.status).toBe('pending');
 
-        // Before approval: projected with EMPTY live caps; the host is in the
-        // proposalDelta (so the orchestrator can fire the approval card).
+        // The projection carries the skill's connector references, no per-skill
+        // capabilities / proposalDelta (those concepts were removed).
         const before = await sub.bus.call<
           unknown,
-          { skills: Array<{ id: string; capabilities: { allowedHosts: string[] }; proposalDelta: { allowedHosts: string[] }; manifestYaml: string }> }
+          { skills: Array<{ id: string; connectors: string[]; manifestYaml: string }> }
         >('agents:resolve-authored-skills', ctx, {
           ownerUserId: ctx.userId,
           agentId: ctx.agentId,
         });
         const s0 = before.skills.find((s) => s.id === 'linear')!;
         expect(s0).toBeDefined();
-        expect(s0.capabilities.allowedHosts).toEqual([]);
-        expect(s0.proposalDelta.allowedHosts).toContain('api.linear.app');
-        // The projected manifest is caps-stripped — frontmatter alone grants nothing.
-        expect(s0.manifestYaml).not.toContain('api.linear.app');
+        expect(s0.connectors).toEqual(['linear']);
+        expect('capabilities' in s0).toBe(false);
+        expect('proposalDelta' in s0).toBe(false);
 
-        // Approve the host (the TASK-35 approved-caps store, real @ax/skills).
-        await sub.bus.call('skills:approved-caps-set', ctx, {
-          ownerUserId: ctx.userId,
-          agentId: ctx.agentId,
-          skillId: 'linear',
-          kind: 'host',
-          value: 'api.linear.app',
-        });
+        // Activating the skill (the skills:authored-activate hook the
+        // orchestrator's grant flow calls on approval) flips it active. The
+        // connector approval card gates the connector's reach separately.
+        const flip = await sub.bus.call<unknown, { activated: boolean }>(
+          'skills:authored-activate',
+          ctx,
+          { ownerUserId: ctx.userId, agentId: ctx.agentId, skillId: 'linear' },
+        );
+        expect(flip.activated).toBe(true);
 
-        // After approval: the host folds into live capabilities; delta clears.
         const after = await sub.bus.call<
           unknown,
-          { skills: Array<{ id: string; capabilities: { allowedHosts: string[] }; proposalDelta: { allowedHosts: string[] } }> }
+          { skills: Array<{ id: string; status?: string }> }
         >('agents:resolve-authored-skills', ctx, {
           ownerUserId: ctx.userId,
           agentId: ctx.agentId,
         });
         const s1 = after.skills.find((s) => s.id === 'linear')!;
-        expect(s1.capabilities.allowedHosts).toContain('api.linear.app');
-        expect(s1.proposalDelta.allowedHosts).toEqual([]);
+        expect(s1.status).toBe('active');
       } finally {
         await sub.shutdown();
       }
@@ -2786,48 +2798,34 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         );
         const createdAgentId = agentCreateOut.agent.id;
 
-        // ── Step 2: Create skill (needed before deleting it in Task 14 test) ─
+        // ── Step 2: Create skill (cap-free — TASK-100) ────────────────────────
         const skillManifestYaml = [
           'name: task21-skill',
           'description: Task 21 lifecycle canary skill.',
           'version: 1',
-          'capabilities:',
-          '  credentials:',
-          '    - slot: T',
-          '      kind: api-key',
-          '      description: Task 21 test slot.',
+          'connectors:',
+          '  - task21',
         ].join('\n') + '\n';
-        const skillUpsertOut = await bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
+        await bus.call<SkillsUpsertInput, SkillsUpsertOutput>(
           'skills:upsert',
           ctx,
           { manifestYaml: skillManifestYaml, bodyMd: '# Task 21 skill\n' },
         );
-        const createdSkillId = skillUpsertOut.skillId;
 
         // ── Step 3: Seed credentials ─────────────────────────────────────────
-        // Four credential rows for the destination-plugin cleanup paths:
+        // Four credential rows for the destination-plugin cleanup paths. TASK-100
+        // — a skill no longer owns a `skill:<id>:<slot>` credential (it declares
+        // no slots), so the old Row B / Task-14 skill-purge path is gone.
         //   A) global  provider:anthropic         — cleaned by credentials:delete directly
-        //   B) global  skill:<id>:T               — cleaned by skills:delete (Task 14)
         //   C) global  mcp:srv:env:E              — cleaned by credentials:delete directly
-        //              (Task 15 HTTP path is separately tested)
         //   D) agent/<agentId>  provider:anthropic — purged by agents:delete (Task 17)
-        //
-        // One more agent-scope row for the Task 16 routine-hmac purge path:
-        //   E) agent/<agentId>  routine:<id>:.ax/routines/task21-r.md:hmac
-        //      — purged by workspace:applied subscriber when the routine file
-        //        is deleted. Requires REF_RE to allow '/' (now fixed).
+        //   E) agent/<agentId>  routine:<id>:...:hmac — purged by workspace:applied (Task 16)
         const credPayload = new TextEncoder().encode('test-value');
 
         // Row A: global provider
         await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
           scope: 'global', ownerId: null,
           ref: 'provider:anthropic',
-          kind: 'api-key', payload: credPayload,
-        });
-        // Row B: global skill-slot (matches the skill's declared slot)
-        await bus.call<CredentialsSetInput, void>('credentials:set', ctx, {
-          scope: 'global', ownerId: null,
-          ref: `skill:${createdSkillId}:T`,
           kind: 'api-key', payload: credPayload,
         });
         // Row C: global mcp-env
@@ -2851,26 +2849,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           kind: 'api-key', payload: credPayload,
         });
 
-        // All five stored.
+        // All four stored.
         const listBefore = await bus.call<CredentialsListInput, CredentialsListOutput>(
           'credentials:list', ctx, {},
         );
-        expect(listBefore.credentials).toHaveLength(5);
-
-        // ── Task 14: skill delete purges skill-slot credential ───────────────
-        // purgeSkillCredentials() inside skills:delete lists all credentials
-        // and tombstones any row whose ref matches skill:<id>:<slot>.
-        await bus.call<SkillsDeleteInput, SkillsDeleteOutput>(
-          'skills:delete', ctx, { skillId: createdSkillId },
-        );
-        const listAfterSkill = await bus.call<CredentialsListInput, CredentialsListOutput>(
-          'credentials:list', ctx, {},
-        );
-        // Row B deleted; rows A, C, D, E remain.
-        expect(listAfterSkill.credentials).toHaveLength(4);
-        expect(
-          listAfterSkill.credentials.every((c) => !c.ref.startsWith('skill:')),
-        ).toBe(true);
+        expect(listBefore.credentials).toHaveLength(4);
 
         // ── Task 16: workspace:applied delete fires routines subscriber ───────
         // The routines plugin's workspace:applied subscriber calls
