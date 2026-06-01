@@ -66,6 +66,7 @@ import { RoleCard } from '@/components/admin/RoleCard';
 import { StatusDot, type StatusDotVariant } from '@/components/admin/StatusDot';
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
@@ -83,6 +84,7 @@ import {
 import { listChatAgents, type ChatAgentSummary } from '@/lib/agents';
 import {
   getAllowedSites,
+  addAllowedSite,
   revokeAllowedSite,
   type AllowedSite,
 } from '@/lib/connections';
@@ -210,6 +212,12 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   const [agents, setAgents] = useState<ChatAgentSummary[]>([]);
   const [agentId, setAgentId] = useState<string>('');
   const [sites, setSites] = useState<AllowedSite[] | null>(null);
+  // Proactive "Add a site" (TASK-131): the host being typed, the in-flight flag,
+  // and the inline add-error (kept separate from the page-level `error` so a bad
+  // host shows next to the field, not at the top of the tab).
+  const [newSite, setNewSite] = useState<string>('');
+  const [addingSite, setAddingSite] = useState<boolean>(false);
+  const [addSiteError, setAddSiteError] = useState<string | null>(null);
 
   /**
    * Derive connected-state for a set of connectors from REAL credential presence.
@@ -321,6 +329,25 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
       loadSites(agentId);
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
+    }
+  };
+
+  // Proactive add. The host is untrusted — the server (@ax/host-grants store) is
+  // the authoritative validator; here we only trim + relay and surface its
+  // rejection inline. On success we clear the field and reload the list.
+  const addSite = async () => {
+    const host = newSite.trim();
+    if (host.length === 0 || addingSite) return;
+    setAddingSite(true);
+    setAddSiteError(null);
+    try {
+      await addAllowedSite(agentId, host);
+      setNewSite('');
+      loadSites(agentId);
+    } catch (e: unknown) {
+      setAddSiteError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setAddingSite(false);
     }
   };
 
@@ -573,21 +600,25 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         </Dialog>
       )}
 
-      {/* Allowed sites — the durable "always for this agent" host grants. Not
-          connectors; individual hosts the agent was granted "always allow"
-          mid-task. Revoking removes the durable grant. Hosts are untrusted text
-          → React text nodes (auto-escaped); never raw inner HTML. (TASK-131
-          will move this into its own section with a proactive add.) */}
+      {/* Allowed sites — its OWN section (TASK-131), set off by a top border
+          from the connector shelves above. The durable per-(user, agent)
+          "always allow" host grants: NOT connectors, but individual hosts the
+          agent may reach. Proactive "Add a site" (host → host-grants:grant)
+          sits alongside per-row Revoke (→ host-grants:revoke). The typed host
+          is UNTRUSTED — the server (@ax/host-grants store) is the authoritative
+          validator + cap; this field only relays it. Hosts render through React
+          text nodes (auto-escaped); never raw inner HTML. */}
       {agents.length > 0 && (
-        <>
-          <div className="flex items-start justify-between gap-3 pt-2">
+        <section className="flex flex-col gap-3.5 border-t border-border pt-5 mt-2">
+          <div className="flex items-start justify-between gap-3">
             <div>
               <h3 className="text-sm font-medium text-foreground">
                 Allowed sites
               </h3>
               <p className="text-xs text-muted-foreground">
-                Not connectors — these are individual hosts you granted this
-                agent “always allow” when it asked to reach one mid-task.
+                Not connectors — individual hosts this agent is allowed to reach.
+                Add one ahead of time, or grant it “always allow” when the agent
+                asks mid-task.
               </p>
             </div>
             <Select value={agentId} onValueChange={setAgentId}>
@@ -603,13 +634,48 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
               </SelectContent>
             </Select>
           </div>
+
+          {/* Proactive add. Enter submits; the inline error sits under the field
+              so a rejected host explains itself in place. */}
+          <form
+            className="flex flex-col gap-1.5"
+            onSubmit={(e) => {
+              e.preventDefault();
+              void addSite();
+            }}
+          >
+            <div className="flex items-center gap-2">
+              <Input
+                value={newSite}
+                onChange={(e) => setNewSite(e.target.value)}
+                placeholder="example.com"
+                aria-label="Add a site"
+                autoComplete="off"
+                spellCheck={false}
+                className="flex-1"
+              />
+              <Button
+                type="submit"
+                size="sm"
+                disabled={addingSite || newSite.trim().length === 0}
+              >
+                {addingSite ? 'Adding…' : 'Add a site'}
+              </Button>
+            </div>
+            {addSiteError && (
+              <p role="alert" className="text-xs text-destructive">
+                {addSiteError}
+              </p>
+            )}
+          </form>
+
           <Card className="divide-y divide-border">
             {sites === null && !error && (
               <div className="px-4 py-3 text-sm text-muted-foreground">Loading…</div>
             )}
             {sites?.length === 0 && (
               <div className="px-4 py-3 text-sm text-muted-foreground">
-                No allowed sites.
+                No allowed sites yet — add one above.
               </div>
             )}
             {sites?.map((site) => (
@@ -626,7 +692,7 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
               </div>
             ))}
           </Card>
-        </>
+        </section>
       )}
     </div>
   );

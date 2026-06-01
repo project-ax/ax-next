@@ -448,7 +448,7 @@ describe('ConnectorsTab', () => {
     await waitFor(() => expect(tile.textContent).toMatch(/needs a key/i));
   });
 
-  // --- allowed sites (preserved verbatim, TASK-131 reshapes later) ---------
+  // --- allowed sites: own section + proactive add (TASK-131) ----------------
 
   it('shows the per-agent Allowed sites mirror and revokes a host', async () => {
     vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([
@@ -475,5 +475,59 @@ describe('ConnectorsTab', () => {
     const caption = await screen.findByText(/always allow/i);
     expect(caption).toBeInTheDocument();
     expect(caption.textContent ?? '').toMatch(/connector/i);
+  });
+
+  it('proactively adds a site and reloads the list', async () => {
+    vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([
+      { agentId: 'a1', displayName: 'Research', visibility: 'personal' },
+    ]);
+    // First load empty; after the add, the list returns the new host.
+    const getSites = vi
+      .spyOn(connLib, 'getAllowedSites')
+      .mockResolvedValueOnce({ agentId: 'a1', hosts: [] })
+      .mockResolvedValue({
+        agentId: 'a1',
+        hosts: [{ host: 'docs.example.com', grantedAt: '2026-06-01T00:00:00Z' }],
+      });
+    const add = vi
+      .spyOn(connLib, 'addAllowedSite')
+      .mockResolvedValue({ created: true });
+
+    render(<ConnectorsTab isAdmin={false} />);
+    const input = await screen.findByRole('textbox', { name: /add a site/i });
+    fireEvent.change(input, { target: { value: 'docs.example.com' } });
+    fireEvent.click(screen.getByRole('button', { name: /add a site/i }));
+
+    await waitFor(() =>
+      expect(add).toHaveBeenCalledWith('a1', 'docs.example.com'),
+    );
+    // The list reloads (initial load + post-add reload) and shows the new host.
+    expect(await screen.findByText('docs.example.com')).toBeInTheDocument();
+    expect(getSites.mock.calls.length).toBeGreaterThanOrEqual(2);
+    // The input clears on success.
+    expect((input as HTMLInputElement).value).toBe('');
+  });
+
+  it('shows the add error inline and keeps the typed host', async () => {
+    vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([
+      { agentId: 'a1', displayName: 'Research', visibility: 'personal' },
+    ]);
+    vi.spyOn(connLib, 'getAllowedSites').mockResolvedValue({
+      agentId: 'a1',
+      hosts: [],
+    });
+    vi.spyOn(connLib, 'addAllowedSite').mockRejectedValue(
+      new Error('That doesn’t look like a valid hostname.'),
+    );
+
+    render(<ConnectorsTab isAdmin={false} />);
+    const input = await screen.findByRole('textbox', { name: /add a site/i });
+    fireEvent.change(input, { target: { value: 'http://bad' } });
+    fireEvent.click(screen.getByRole('button', { name: /add a site/i }));
+
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent ?? '').toMatch(/valid hostname/i);
+    // The bad host stays in the field so the user can fix it.
+    expect((input as HTMLInputElement).value).toBe('http://bad');
   });
 });

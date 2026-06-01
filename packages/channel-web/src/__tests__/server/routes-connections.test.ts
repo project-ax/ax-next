@@ -3,10 +3,11 @@ import { HookBus, makeAgentContext, type AgentContext } from '@ax/core';
 import { makeConnectionsHandlers } from '../../server/routes-connections.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 
-function mkReq(params: Record<string, string>): RouteRequest {
+function mkReq(params: Record<string, string>, body?: unknown): RouteRequest {
   return {
     headers: {},
-    body: Buffer.alloc(0),
+    body:
+      body === undefined ? Buffer.alloc(0) : Buffer.from(JSON.stringify(body), 'utf-8'),
     cookies: {},
     query: {},
     params,
@@ -48,12 +49,14 @@ describe('channel-web Connections BFF', () => {
   let bus: HookBus;
   let detachCalls: Array<{ userId: string; agentId: string; skillId: string }>;
   let grantListCalls: Array<{ ownerUserId: string; agentId: string }>;
+  let grantCalls: Array<{ ownerUserId: string; agentId: string; host: string }>;
   let revokeCalls: Array<{ ownerUserId: string; agentId: string; host: string }>;
 
   beforeEach(() => {
     bus = new HookBus();
     detachCalls = [];
     grantListCalls = [];
+    grantCalls = [];
     revokeCalls = [];
     bus.registerService('auth:require-user', 'auth', async () => ({
       user: { id: 'u1', isAdmin: false },
@@ -104,6 +107,10 @@ describe('channel-web Connections BFF', () => {
     bus.registerService('host-grants:list', 'host-grants', async (_c, i: unknown) => {
       grantListCalls.push(i as { ownerUserId: string; agentId: string });
       return { hosts: [{ host: 'status.example.com', grantedAt: '2026-05-20T00:00:00Z' }] };
+    });
+    bus.registerService('host-grants:grant', 'host-grants', async (_c, i: unknown) => {
+      grantCalls.push(i as { ownerUserId: string; agentId: string; host: string });
+      return { created: true };
     });
     bus.registerService('host-grants:revoke', 'host-grants', async (_c, i: unknown) => {
       revokeCalls.push(i as { ownerUserId: string; agentId: string; host: string });
@@ -166,6 +173,133 @@ describe('channel-web Connections BFF', () => {
       await h.detach(mkReq({ agentId: 'nope', skillId: 'linear' }), res);
       expect(captured.statusCode).toBe(404);
       expect(detachCalls).toEqual([]);
+    });
+  });
+
+  describe('POST /api/chat/allowed-sites/:agentId (TASK-131)', () => {
+    it('grants the durable host and returns 201', async () => {
+      const h = makeConnectionsHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.addAllowedSite(mkReq({ agentId: 'a1' }, { host: 'status.example.com' }), res);
+      expect(captured.statusCode).toBe(201);
+      expect(captured.body).toEqual({ created: true });
+      // ownerUserId SERVER-FORCED from auth ('u1'); host from the body. The
+      // browser never supplies ownerUserId — no cross-user grant (IDOR guard).
+      expect(grantCalls).toEqual([
+        { ownerUserId: 'u1', agentId: 'a1', host: 'status.example.com' },
+      ]);
+    });
+
+    it('404s an agent the caller cannot access (no cross-user grant)', async () => {
+      const h = makeConnectionsHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.addAllowedSite(
+        mkReq({ agentId: 'nope' }, { host: 'status.example.com' }),
+        res,
+      );
+      expect(captured.statusCode).toBe(404);
+      expect(grantCalls).toEqual([]);
+    });
+
+    it('401s an unauthenticated caller', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => {
+        throw new (await import('@ax/core')).PluginError({
+          code: 'unauthenticated',
+          plugin: 'auth',
+          message: 'no cookie',
+        });
+      });
+      const h = makeConnectionsHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.addAllowedSite(mkReq({ agentId: 'a1' }, { host: 'x.example.com' }), res);
+      expect(captured.statusCode).toBe(401);
+    });
+
+    it('400s a missing/blank host', async () => {
+      const h = makeConnectionsHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.addAllowedSite(mkReq({ agentId: 'a1' }, { host: '   ' }), res);
+      expect(captured.statusCode).toBe(400);
+      expect(grantCalls).toEqual([]);
+    });
+
+    it('400s a malformed body', async () => {
+      const h = makeConnectionsHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      const req = mkReq({ agentId: 'a1' });
+      // Non-JSON garbage in the body.
+      (req as { body: Buffer }).body = Buffer.from('not json', 'utf-8');
+      await h.addAllowedSite(req, res);
+      expect(captured.statusCode).toBe(400);
+      expect(grantCalls).toEqual([]);
+    });
+
+    it('maps the store invalid-host PluginError to 400', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => ({
+        user: { id: 'u1', isAdmin: false },
+      }));
+      b.registerService('agents:resolve', 'agents', async () => ({
+        agent: { id: 'a1', displayName: 'Research', skillAttachments: [] },
+      }));
+      b.registerService('host-grants:grant', 'host-grants', async () => {
+        throw new (await import('@ax/core')).PluginError({
+          code: 'invalid-host',
+          plugin: '@ax/host-grants',
+          message: 'invalid host',
+        });
+      });
+      const h = makeConnectionsHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.addAllowedSite(
+        mkReq({ agentId: 'a1' }, { host: 'http://bad' }),
+        res,
+      );
+      expect(captured.statusCode).toBe(400);
+      expect(captured.body).toEqual({ error: 'invalid-host' });
+    });
+
+    it('maps the store grant-limit PluginError to 409', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => ({
+        user: { id: 'u1', isAdmin: false },
+      }));
+      b.registerService('agents:resolve', 'agents', async () => ({
+        agent: { id: 'a1', displayName: 'Research', skillAttachments: [] },
+      }));
+      b.registerService('host-grants:grant', 'host-grants', async () => {
+        throw new (await import('@ax/core')).PluginError({
+          code: 'grant-limit',
+          plugin: '@ax/host-grants',
+          message: 'too many',
+        });
+      });
+      const h = makeConnectionsHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.addAllowedSite(
+        mkReq({ agentId: 'a1' }, { host: 'a.example.com' }),
+        res,
+      );
+      expect(captured.statusCode).toBe(409);
+      expect(captured.body).toEqual({ error: 'grant-limit' });
+    });
+
+    it('503s when @ax/host-grants is absent (the add cannot persist)', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => ({
+        user: { id: 'u1', isAdmin: false },
+      }));
+      b.registerService('agents:resolve', 'agents', async () => ({
+        agent: { id: 'a1', displayName: 'Research', skillAttachments: [] },
+      }));
+      const h = makeConnectionsHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.addAllowedSite(
+        mkReq({ agentId: 'a1' }, { host: 'a.example.com' }),
+        res,
+      );
+      expect(captured.statusCode).toBe(503);
     });
   });
 
