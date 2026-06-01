@@ -249,14 +249,63 @@ export interface AdminRouteDeps {
   bus: HookBus;
 }
 
-export function createAdminConnectorRouteHandlers(deps: AdminRouteDeps) {
+/**
+ * The route bundle's authoring MODE — the policy difference between the admin
+ * Connector registry and the user-authoring surface (TASK-129).
+ *
+ *   - `'admin'` — the folded Connector registry (`/admin/connectors`). The actor
+ *     may curate the workspace catalog: set `visibility: 'shared'` and
+ *     `defaultAttached: true`. Owner is still forced from the session.
+ *   - `'user'`  — user authoring (`/settings/connectors`). The actor may only
+ *     ever create/edit their OWN PRIVATE connectors. Admin-only fields
+ *     (`visibility: 'shared'`, `defaultAttached: true`) are REJECTED server-side
+ *     (400 — not silently dropped), `visibility` is forced `'private'`, and a
+ *     catalog/shared connector (one already `shared`/default-on) is READ-ONLY:
+ *     editing or deleting it through the user surface 403s. This is the
+ *     server-side enforcement of "catalog/shared connectors are read-only for
+ *     non-admins" — never UI-only.
+ *
+ * Both modes share the read paths (list/show) and the owner-forced-from-session
+ * posture verbatim; mode only gates the write policy. There is NO role gate on
+ * the user routes — any authenticated user may author their own private
+ * connectors (the human is the granting authority for their own agents; no
+ * approval wall is on this path — that gates MODEL-authored reach only).
+ */
+export type ConnectorRouteMode = 'admin' | 'user';
+
+/** A catalog/shared connector — admin-curated, hence read-only for a non-admin
+ *  author. Mirrors channel-web's `connectorSource(...) === 'catalog'`. */
+function isCatalogConnector(c: Connector): boolean {
+  return c.visibility === 'shared' || c.defaultAttached === true;
+}
+
+/**
+ * Reject admin-only write fields on the user surface. Returns an error message
+ * when the body carries a field only an admin may set (so the route 400s instead
+ * of silently downgrading), else null. Checked BEFORE the owner/visibility are
+ * forced so a tampered client body surfaces as a clear rejection.
+ */
+function rejectAdminOnlyFields(raw: Record<string, unknown>): string | null {
+  if (raw.visibility === 'shared') {
+    return 'visibility: shared is admin-only';
+  }
+  if (raw.defaultAttached === true) {
+    return 'defaultAttached is admin-only';
+  }
+  return null;
+}
+
+export function createConnectorRouteHandlers(
+  deps: AdminRouteDeps & { mode?: ConnectorRouteMode },
+) {
+  const mode: ConnectorRouteMode = deps.mode ?? 'admin';
   // Per-handler-bundle ctx mirrors the @ax/mcp-client / @ax/agents pattern. The
   // synthetic ctx attributes the bus calls; the real actor id flows through the
   // hook input (`userId`), forced from the authenticated session below.
   const ctx = makeAgentContext({
-    sessionId: 'connectors-admin',
+    sessionId: `connectors-${mode}`,
     agentId: PLUGIN_NAME,
-    userId: 'admin',
+    userId: mode,
   });
 
   return {
@@ -305,6 +354,43 @@ export function createAdminConnectorRouteHandlers(deps: AdminRouteDeps) {
       // Force userId from the authenticated actor — a client cannot create a
       // connector owned by someone else. Strip any client-supplied userId.
       const raw = (parsed.value ?? {}) as Record<string, unknown>;
+      // User-authoring surface: reject admin-only fields server-side (not merely
+      // ignore them) THEN force the connector private + non-default — a tampered
+      // client body can never smuggle a shared / default-on connector through.
+      if (mode === 'user') {
+        const rejected = rejectAdminOnlyFields(raw);
+        if (rejected !== null) {
+          res.status(400).json({ error: rejected });
+          return;
+        }
+        // POST is create-OR-update (upsert by id). If the id already names a
+        // catalog/shared connector the actor owns, this would silently DEMOTE it
+        // to private — the same read-only bypass PATCH/DELETE guard against. So
+        // pre-read and 403 before the forced-private upsert can land.
+        const cid = raw.connectorId;
+        if (typeof cid === 'string' && cid.length > 0) {
+          try {
+            const got = await deps.bus.call<GetInput, GetOutput>(
+              'connectors:get',
+              ctx,
+              { userId: actor.id, connectorId: cid },
+            );
+            if (isCatalogConnector(got.connector)) {
+              res.status(403).json({ error: 'read-only' });
+              return;
+            }
+          } catch (err) {
+            // not-found ⟹ a genuine create — fall through. Any other hook error
+            // (e.g. invalid id) surfaces here with the right status.
+            if (!(err instanceof PluginError && err.code === 'not-found')) {
+              handleHookError(err, res);
+              return;
+            }
+          }
+        }
+        raw.visibility = 'private';
+        raw.defaultAttached = false;
+      }
       const input = { ...raw, userId: actor.id } as unknown as UpsertInput;
       try {
         const out = await deps.bus.call<UpsertInput, UpsertOutput>(
@@ -349,12 +435,32 @@ export function createAdminConnectorRouteHandlers(deps: AdminRouteDeps) {
         handleHookError(err, res);
         return;
       }
+      // User-authoring surface: a catalog/shared connector (admin-curated) is
+      // READ-ONLY for a non-admin author — editing it 403s, even when the actor
+      // happens to own the row. This is the server-side enforcement of
+      // "catalog/shared connectors are read-only for non-admins."
+      if (mode === 'user' && isCatalogConnector(existing)) {
+        res.status(403).json({ error: 'read-only' });
+        return;
+      }
       // Merge the patch over the existing connector, then re-assert id + userId
       // from the URL / session so a malicious body can't rename or owner-hijack.
       const patchRaw = (parsed.value ?? {}) as Record<string, unknown>;
       delete patchRaw.userId;
       delete patchRaw.connectorId;
       delete patchRaw.id;
+      // User-authoring surface: reject admin-only fields server-side, then force
+      // the connector private + non-default after the spread below — a user PATCH
+      // can never flip an owned private connector to shared / default-on.
+      if (mode === 'user') {
+        const rejected = rejectAdminOnlyFields(patchRaw);
+        if (rejected !== null) {
+          res.status(400).json({ error: rejected });
+          return;
+        }
+        patchRaw.visibility = 'private';
+        patchRaw.defaultAttached = false;
+      }
       const input: UpsertInput = {
         name: existing.name,
         description: existing.description,
@@ -389,6 +495,26 @@ export function createAdminConnectorRouteHandlers(deps: AdminRouteDeps) {
       if (typeof id !== 'string' || id.length === 0) {
         res.status(400).json({ error: 'missing-id' });
         return;
+      }
+      // User-authoring surface: a catalog/shared connector is read-only for a
+      // non-admin author — deleting it 403s. Read it first so we can tell a
+      // catalog/shared connector (403) from a missing/foreign one (404).
+      if (mode === 'user') {
+        let existing: Connector;
+        try {
+          const got = await deps.bus.call<GetInput, GetOutput>('connectors:get', ctx, {
+            userId: actor.id,
+            connectorId: id,
+          });
+          existing = got.connector;
+        } catch (err) {
+          handleHookError(err, res);
+          return;
+        }
+        if (isCatalogConnector(existing)) {
+          res.status(403).json({ error: 'read-only' });
+          return;
+        }
       }
       try {
         const out = await deps.bus.call<DeleteInput, DeleteOutput>(
@@ -443,6 +569,15 @@ export function createAdminConnectorRouteHandlers(deps: AdminRouteDeps) {
   };
 }
 
+/**
+ * Back-compat alias — the admin Connector registry route bundle. Equivalent to
+ * `createConnectorRouteHandlers({ bus, mode: 'admin' })`. Kept so the existing
+ * registration + tests keep their name.
+ */
+export function createAdminConnectorRouteHandlers(deps: AdminRouteDeps) {
+  return createConnectorRouteHandlers({ ...deps, mode: 'admin' });
+}
+
 // --- registration ---------------------------------------------------------
 
 /**
@@ -454,7 +589,7 @@ export async function registerAdminConnectorRoutes(
   bus: HookBus,
   initCtx: AgentContext,
 ): Promise<Array<() => void>> {
-  const handlers = createAdminConnectorRouteHandlers({ bus });
+  const handlers = createConnectorRouteHandlers({ bus, mode: 'admin' });
   const routes: Array<{
     method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
     path: string;
@@ -466,6 +601,51 @@ export async function registerAdminConnectorRoutes(
     { method: 'PATCH', path: '/admin/connectors/:id', handler: handlers.update },
     { method: 'DELETE', path: '/admin/connectors/:id', handler: handlers.destroy },
     { method: 'POST', path: '/admin/connectors/:id/test', handler: handlers.test },
+  ];
+  const unregisters: Array<() => void> = [];
+  for (const route of routes) {
+    const result = await bus.call<unknown, { unregister: () => void }>(
+      'http:register-route',
+      initCtx,
+      route,
+    );
+    unregisters.push(result.unregister);
+  }
+  return unregisters;
+}
+
+/**
+ * Register the user-authoring routes against @ax/http-server (TASK-129). These
+ * are the locked-down `/settings/connectors[/:id]` surface: same owner-scoped,
+ * owner-forced-from-session bridge as the admin routes, but in `mode: 'user'`
+ * so the connector is forced PRIVATE, admin-only fields are rejected, and a
+ * catalog/shared connector is read-only (see `ConnectorRouteMode`).
+ *
+ * NOTE: there is deliberately no `/settings/connectors/:id/test` — the Test
+ * probe is an admin curation action, not part of user authoring.
+ *
+ * Returned unregister callbacks should be tracked by the plugin and called on
+ * shutdown so a re-init (tests) doesn't trip duplicate-route.
+ */
+export async function registerUserConnectorRoutes(
+  bus: HookBus,
+  initCtx: AgentContext,
+): Promise<Array<() => void>> {
+  const handlers = createConnectorRouteHandlers({ bus, mode: 'user' });
+  const routes: Array<{
+    method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+    path: string;
+    handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  }> = [
+    { method: 'GET', path: '/settings/connectors', handler: handlers.list },
+    { method: 'POST', path: '/settings/connectors', handler: handlers.create },
+    { method: 'GET', path: '/settings/connectors/:id', handler: handlers.show },
+    { method: 'PATCH', path: '/settings/connectors/:id', handler: handlers.update },
+    {
+      method: 'DELETE',
+      path: '/settings/connectors/:id',
+      handler: handlers.destroy,
+    },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {

@@ -13,6 +13,7 @@ import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createConnectorsPlugin } from '../plugin.js';
 import {
   createAdminConnectorRouteHandlers,
+  createConnectorRouteHandlers,
   ADMIN_BODY_MAX_BYTES,
   type RouteRequest,
   type RouteResponse,
@@ -603,5 +604,349 @@ describe('admin connector routes', () => {
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
     expect(captured.status).toBe(200);
     expect((captured.body as { status: string }).status).toBe('unreachable');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// User-authoring routes — GET/POST /settings/connectors,
+// GET/PATCH/DELETE /settings/connectors/:id (TASK-129, mode:'user').
+//
+// Same owner-scoped bridge as the admin routes, but the write policy is locked
+// down: the connector is forced PRIVATE, admin-only fields (visibility:shared,
+// defaultAttached:true) are REJECTED (400 — not silently dropped), and a
+// catalog/shared connector is READ-ONLY (editing/deleting it 403s). These are
+// SERVER-SIDE policy proofs — never UI-only — driven against the same real
+// connector store via the duck-typed req/res.
+// ---------------------------------------------------------------------------
+
+describe('user connector routes (/settings/connectors)', () => {
+  /** Seed a connector directly through the ADMIN route so we can construct a
+   *  catalog/shared row a user must NOT be able to edit (the user route can't
+   *  create one — that's the point of these tests). */
+  async function adminSeed(
+    bus: TestHarness['bus'],
+    body: Record<string, unknown>,
+  ): Promise<void> {
+    const handlers = createAdminConnectorRouteHandlers({ bus });
+    const { res, captured } = makeRes();
+    await handlers.create(makeReq({ body }), res);
+    if (captured.status !== 201 && captured.status !== 200) {
+      throw new Error(
+        `admin seed failed: ${captured.status} ${JSON.stringify(captured.body)}`,
+      );
+    }
+  }
+
+  it('401 when unauthenticated', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = null;
+    const { res, captured } = makeRes();
+    await handlers.list(makeReq({}), res);
+    expect(captured.status).toBe(401);
+    expect(captured.body).toEqual({ error: 'unauthenticated' });
+  });
+
+  it('POST forces the connector private (a body visibility is ignored when absent)', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'mine',
+          name: 'My connector',
+          keyMode: 'personal',
+          // No visibility supplied — the route must force it private.
+          capabilities: mcpCaps(),
+        },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(201);
+    const connector = (captured.body as { connector: { visibility: string } })
+      .connector;
+    expect(connector.visibility).toBe('private');
+  });
+
+  it('POST rejects visibility:shared (admin-only) with 400 — never silently downgrades', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'sneaky',
+          name: 'Sneaky',
+          keyMode: 'personal',
+          visibility: 'shared',
+          capabilities: mcpCaps(),
+        },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    expect((captured.body as { error: string }).error).toContain('admin-only');
+    // It must NOT have landed downgraded — the GET 404s.
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'sneaky' } }), gRes);
+    expect(gCap.status).toBe(404);
+  });
+
+  it('POST rejects defaultAttached:true (admin-only) with 400', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'sneaky',
+          name: 'Sneaky',
+          keyMode: 'personal',
+          visibility: 'private',
+          defaultAttached: true,
+          capabilities: mcpCaps(),
+        },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    expect((captured.body as { error: string }).error).toContain('admin-only');
+  });
+
+  it('full CRUD on an owned private connector: create → edit → delete', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    // Unique id per test — the postgres container persists rows across the file's
+    // tests, so a reused id would make a "create" return 200 (update) not 201.
+    currentActor = { id: 'userCrud', isAdmin: false };
+
+    const { res: cRes, captured: cCap } = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'crud-conn',
+          name: 'My connector',
+          keyMode: 'personal',
+          visibility: 'private',
+          capabilities: mcpCaps(),
+        },
+      }),
+      cRes,
+    );
+    expect(cCap.status).toBe(201);
+
+    const { res: pRes, captured: pCap } = makeRes();
+    await handlers.update(
+      makeReq({ params: { id: 'crud-conn' }, body: { name: 'Renamed' } }),
+      pRes,
+    );
+    expect(pCap.status).toBe(200);
+    expect((pCap.body as { connector: { name: string } }).connector.name).toBe(
+      'Renamed',
+    );
+    // Still private after the edit.
+    expect(
+      (pCap.body as { connector: { visibility: string } }).connector.visibility,
+    ).toBe('private');
+
+    const { res: dRes, captured: dCap } = makeRes();
+    await handlers.destroy(makeReq({ params: { id: 'crud-conn' } }), dRes);
+    expect(dCap.status).toBe(204);
+
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'crud-conn' } }), gRes);
+    expect(gCap.status).toBe(404);
+  });
+
+  it('PATCH cannot flip an owned private connector to shared (admin-only field rejected)', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userU', isAdmin: false };
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'mine',
+          name: 'Mine',
+          keyMode: 'personal',
+          visibility: 'private',
+          capabilities: mcpCaps(),
+        },
+      }),
+      makeRes().res,
+    );
+    const { res, captured } = makeRes();
+    await handlers.update(
+      makeReq({ params: { id: 'mine' }, body: { visibility: 'shared' } }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    expect((captured.body as { error: string }).error).toContain('admin-only');
+    // Still private — the rejected patch never landed.
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'mine' } }), gRes);
+    expect((gCap.body as { connector: { visibility: string } }).connector.visibility).toBe(
+      'private',
+    );
+  });
+
+  it('PATCH on a SHARED (catalog) connector is read-only — 403', async () => {
+    const h = await makeHarness();
+    currentActor = { id: 'userU', isAdmin: true };
+    // Admin-seed a SHARED connector owned by userU (a catalog item).
+    await adminSeed(h.bus, {
+      connectorId: 'catalog-conn',
+      name: 'Catalog',
+      keyMode: 'workspace',
+      visibility: 'shared',
+      capabilities: mcpCaps(),
+    });
+    // Now the SAME user hits the user route — the shared connector is read-only.
+    currentActor = { id: 'userU', isAdmin: false };
+    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    const { res, captured } = makeRes();
+    await userHandlers.update(
+      makeReq({ params: { id: 'catalog-conn' }, body: { name: 'hijack' } }),
+      res,
+    );
+    expect(captured.status).toBe(403);
+    expect(captured.body).toEqual({ error: 'read-only' });
+  });
+
+  it('POST cannot demote an existing catalog/shared connector to private (read-only — 403)', async () => {
+    const h = await makeHarness();
+    currentActor = { id: 'userU', isAdmin: true };
+    // Admin-seed a SHARED connector owned by userU.
+    await adminSeed(h.bus, {
+      connectorId: 'demote-target',
+      name: 'Shared',
+      keyMode: 'workspace',
+      visibility: 'shared',
+      capabilities: mcpCaps(),
+    });
+    // The same user POSTs the SAME id via the user route — create-or-update must
+    // NOT silently demote the shared connector to private; it 403s (read-only).
+    currentActor = { id: 'userU', isAdmin: false };
+    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    const { res, captured } = makeRes();
+    await userHandlers.create(
+      makeReq({
+        body: {
+          connectorId: 'demote-target',
+          name: 'Sneaky private',
+          keyMode: 'personal',
+          capabilities: mcpCaps(),
+        },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(403);
+    expect(captured.body).toEqual({ error: 'read-only' });
+    // The connector is STILL shared — the demote never landed.
+    currentActor = { id: 'userU', isAdmin: true };
+    const { res: gRes, captured: gCap } = makeRes();
+    await createAdminConnectorRouteHandlers({ bus: h.bus }).show(
+      makeReq({ params: { id: 'demote-target' } }),
+      gRes,
+    );
+    expect(
+      (gCap.body as { connector: { visibility: string } }).connector.visibility,
+    ).toBe('shared');
+  });
+
+  it('PATCH on a DEFAULT-ON connector is read-only — 403', async () => {
+    const h = await makeHarness();
+    currentActor = { id: 'userU', isAdmin: true };
+    await adminSeed(h.bus, {
+      connectorId: 'default-conn',
+      name: 'Default',
+      keyMode: 'personal',
+      visibility: 'private',
+      defaultAttached: true,
+      capabilities: mcpCaps(),
+    });
+    currentActor = { id: 'userU', isAdmin: false };
+    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    const { res, captured } = makeRes();
+    await userHandlers.update(
+      makeReq({ params: { id: 'default-conn' }, body: { name: 'hijack' } }),
+      res,
+    );
+    expect(captured.status).toBe(403);
+    expect(captured.body).toEqual({ error: 'read-only' });
+  });
+
+  it('DELETE on a catalog (shared) connector is read-only — 403', async () => {
+    const h = await makeHarness();
+    currentActor = { id: 'userU', isAdmin: true };
+    await adminSeed(h.bus, {
+      connectorId: 'catalog-conn',
+      name: 'Catalog',
+      keyMode: 'workspace',
+      visibility: 'shared',
+      capabilities: mcpCaps(),
+    });
+    currentActor = { id: 'userU', isAdmin: false };
+    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    const { res, captured } = makeRes();
+    await userHandlers.destroy(makeReq({ params: { id: 'catalog-conn' } }), res);
+    expect(captured.status).toBe(403);
+    expect(captured.body).toEqual({ error: 'read-only' });
+  });
+
+  it('forces actor id from session — a body-supplied userId cannot impersonate', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userImp', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          userId: 'someoneElse',
+          connectorId: 'imp-conn',
+          name: 'Mine',
+          keyMode: 'personal',
+          visibility: 'private',
+          capabilities: mcpCaps(),
+        },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(201);
+    // The connector landed under userImp, not "someoneElse".
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'imp-conn' } }), gRes);
+    expect(gCap.status).toBe(200);
+  });
+
+  it('cross-tenant: user B cannot edit / delete user A’s private connector (404)', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userA', isAdmin: false };
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'a-conn',
+          name: 'A',
+          keyMode: 'personal',
+          visibility: 'private',
+          capabilities: mcpCaps(),
+        },
+      }),
+      makeRes().res,
+    );
+    currentActor = { id: 'userB', isAdmin: false };
+    const { res: pRes, captured: pCap } = makeRes();
+    await handlers.update(
+      makeReq({ params: { id: 'a-conn' }, body: { name: 'hijack' } }),
+      pRes,
+    );
+    expect(pCap.status).toBe(404);
+    const { res: dRes, captured: dCap } = makeRes();
+    await handlers.destroy(makeReq({ params: { id: 'a-conn' } }), dRes);
+    expect(dCap.status).toBe(404);
   });
 });

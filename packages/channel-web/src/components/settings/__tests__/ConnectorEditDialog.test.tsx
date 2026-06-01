@@ -96,9 +96,11 @@ describe('ConnectorEditDialog', () => {
     await waitFor(() => expect(name).toHaveValue('Google Drive'));
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() =>
+      // The admin variant writes via the /admin/connectors route base (TASK-129).
       expect(connectorsLib.patchConnector).toHaveBeenCalledWith(
         'gdrive',
         expect.objectContaining({ connectorId: 'gdrive', name: 'Google Drive' }),
+        '/admin/connectors',
       ),
     );
     expect(onSaved).toHaveBeenCalled();
@@ -272,6 +274,24 @@ describe('ConnectorEditDialog', () => {
     const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
     expect(body.visibility).toBe('private');
     expect(body.defaultAttached).toBe(false);
+  });
+
+  it('user variant creates through the /settings/connectors route base (TASK-129)', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin={false}
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    const name = await screen.findByLabelText(/service name/i);
+    fireEvent.change(name, { target: { value: 'My Private' } });
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    const base = vi.mocked(connectorsLib.createConnector).mock.calls[0]![1];
+    expect(base).toBe('/settings/connectors');
   });
 
   it('surfaces a save error from the server', async () => {

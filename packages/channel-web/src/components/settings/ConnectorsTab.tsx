@@ -15,20 +15,28 @@
  * plain-language, mechanism-agnostic vocabulary (TASK-130): Ready / Needs a key
  * / Can't reach it / Checking… (see STATUS_COPY).
  *
- * ADMIN CURATION (gated on `isAdmin`): the standalone admin Connector Registry
- * is gone (TASK-125). Admins now curate the workspace's Available shelf inline —
- * New connector, plus per-row Edit / set-default / Delete / Test — via the
- * shared connector form (ConnectorEditDialog, reusing `lib/connector-form`, the
- * one source of truth for the form logic, invariant #4). Catalog/shared
- * connectors are read-only for non-admins: they see the source badge +
- * Connect/Reconnect only, never edit/delete.
+ * AUTHORING: the standalone admin Connector Registry is gone (TASK-125). Both
+ * users and admins author connectors INLINE here via the shared connector form
+ * (ConnectorEditDialog, reusing `lib/connector-form`, the one source of truth,
+ * invariant #4):
+ *   - Every user (TASK-129) gets "New connector" + per-row Edit / Delete on the
+ *     connectors they OWN AND that are PRIVATE. Their writes go to the
+ *     locked-down `/settings/connectors` routes (owner forced, visibility forced
+ *     private, admin-only fields rejected server-side).
+ *   - Admins additionally get per-row set-default / Test (workspace curation) and
+ *     may edit ANY connector, writing to `/admin/connectors` (where they may set
+ *     visibility:shared + default-on).
+ * Catalog/shared connectors are READ-ONLY for non-admins: they see the source
+ * badge + Connect/Reconnect only, never edit/delete — mirrored by the user
+ * route's server-side 403.
  *
  * SCOPE NOTE: the connector store is owner-scoped at every layer — `listConnectors`
- * (`/admin/connectors`) returns only the caller's own connectors. There is no
- * cross-owner workspace-catalog read (deferred per the design's Out-of-scope §);
- * so the Available shelf is "owned-but-not-yet-connected", and admin curation
- * edits the caller's own catalog rows. Connected/Available derive from REAL
- * credential presence, not a separate attach state.
+ * returns only the caller's own connectors (the admin and user route bundles are
+ * both owner-scoped). There is no cross-owner workspace-catalog read (deferred
+ * per the design's Out-of-scope §); so the Available shelf is
+ * "owned-but-not-yet-connected", and authoring edits the caller's own rows.
+ * Connected/Available derive from REAL credential presence, not a separate
+ * attach state.
  *
  * Untrusted text (connector name / description) renders through React text
  * nodes (auto-escaped) — never raw HTML. shadcn primitives + semantic tokens
@@ -44,6 +52,7 @@ import {
   deriveCredentialPlan,
   type ConnectorSummary,
   type ConnectorTestStatus,
+  type ConnectorRouteBase,
 } from '@/lib/connectors';
 import {
   myCredentials,
@@ -172,15 +181,25 @@ function testLabel(state: TestState | undefined): string {
 }
 
 export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
+  // The route bundle every CRUD call targets (TASK-129): admins curate via
+  // `/admin/connectors`; non-admin authors read/write their OWN PRIVATE
+  // connectors via the locked-down `/settings/connectors` (owner forced,
+  // visibility forced private, admin-only fields rejected, catalog/shared
+  // read-only — server-side). Both bundles are owner-scoped, so the list/get a
+  // user sees is identical; only the write policy differs.
+  const base: ConnectorRouteBase = isAdmin
+    ? '/admin/connectors'
+    : '/settings/connectors';
   const [connectors, setConnectors] = useState<ConnectorSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   // Derived connected-state per connector id (REAL credential presence).
   const [connected, setConnected] = useState<Record<string, ConnectedState>>({});
   // The connector whose connect dialog is open (null = closed).
   const [connecting, setConnecting] = useState<ConnectorSummary | null>(null);
-  // Admin curation: the connector being created/edited (null = closed).
+  // Authoring: the connector being created/edited (null = closed). Admins curate
+  // any connector; non-admins author only their own PRIVATE ones.
   const [editing, setEditing] = useState<ConnectorSummary | 'new' | null>(null);
-  // Admin curation: the connector awaiting delete confirmation (null = none).
+  // Authoring: the connector awaiting delete confirmation (null = none).
   const [pendingDelete, setPendingDelete] = useState<ConnectorSummary | null>(
     null,
   );
@@ -222,7 +241,7 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
       const results = await Promise.all(
         list.map(async (summary): Promise<[string, ConnectedState]> => {
           try {
-            const full = await getConnector(summary.id);
+            const full = await getConnector(summary.id, base);
             const plan = deriveCredentialPlan(full);
             const ok = plan.every((entry) => hasCred(entry.scope, entry.ref));
             return [summary.id, ok ? 'connected' : 'disconnected'];
@@ -237,14 +256,14 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         return next;
       });
     },
-    [isAdmin],
+    [isAdmin, base],
   );
 
   /** Reload the connector list + re-derive connected-state (after a curation
    *  write or a successful connect). */
   const refreshConnectors = useCallback(() => {
     setError(null);
-    return listConnectors()
+    return listConnectors(base)
       .then((list) => {
         setConnectors(list);
         void refreshConnectedState(list);
@@ -253,12 +272,12 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         setError(e instanceof Error ? e.message : String(e));
         setConnectors([]);
       });
-  }, [refreshConnectedState]);
+  }, [refreshConnectedState, base]);
 
   useEffect(() => {
     let cancelled = false;
     setError(null);
-    listConnectors()
+    listConnectors(base)
       .then((list) => {
         if (cancelled) return;
         setConnectors(list);
@@ -282,7 +301,7 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
     return () => {
       cancelled = true;
     };
-  }, [refreshConnectedState]);
+  }, [refreshConnectedState, base]);
 
   const loadSites = useCallback((id: string) => {
     if (!id) return;
@@ -317,7 +336,9 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
 
   const onToggleDefault = async (c: ConnectorSummary) => {
     try {
-      await patchConnector(c.id, { defaultAttached: !c.defaultAttached });
+      // Set-default is admin-only (it shapes the shared catalog) → the admin
+      // route base. `base` is already '/admin/connectors' for an admin caller.
+      await patchConnector(c.id, { defaultAttached: !c.defaultAttached }, base);
       await refreshConnectors();
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
@@ -327,7 +348,7 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   const confirmDelete = async () => {
     if (!pendingDelete) return;
     try {
-      await deleteConnector(pendingDelete.id);
+      await deleteConnector(pendingDelete.id, base);
       setPendingDelete(null);
       await refreshConnectors();
     } catch (e: unknown) {
@@ -349,8 +370,14 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   const renderTile = (c: ConnectorSummary, section: 'connected' | 'available') => {
     const state = connected[c.id];
     const source = connectorSource(c);
-    // Catalog/shared connectors are read-only for non-admins (no edit/delete).
-    const canCurate = isAdmin;
+    // Workspace curation (Test / Set-default) is admin-only — it shapes the
+    // shared catalog, which a non-admin never controls.
+    const canManageWorkspace = isAdmin;
+    // Edit / Delete: admins may curate any connector; a non-admin author may
+    // edit/delete only the connectors they OWN AND that are private. A
+    // catalog/shared connector (`source === 'catalog'`) is read-only for a
+    // non-admin (mirrors the server-side 403 on the user route).
+    const canEdit = isAdmin || source === 'private';
     return (
       <div key={c.id} data-testid={`connector-tile-${c.id}`}>
         <RoleCard pill="service" title={c.name} caption={needsCaption(c)}>
@@ -359,14 +386,14 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
               <StatusDot variant={presenceDotVariant(state)} />
               {STATUS_COPY[presenceStatusKey(state)]}
             </span>
-            {canCurate && testState[c.id] !== undefined && (
+            {canManageWorkspace && testState[c.id] !== undefined && (
               <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
                 <StatusDot variant={testDotVariant(testState[c.id])} />
                 {testLabel(testState[c.id])}
               </span>
             )}
             <SourceBadge source={source} />
-            {canCurate && (
+            {canManageWorkspace && (
               <>
                 <Button
                   variant="outline"
@@ -383,6 +410,10 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
                 >
                   {c.defaultAttached ? 'Unset default' : 'Set default'}
                 </Button>
+              </>
+            )}
+            {canEdit && (
+              <>
                 <Button variant="outline" size="sm" onClick={() => setEditing(c)}>
                   Edit
                 </Button>
@@ -418,11 +449,12 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
             a key, the data it talks to — behind a single name.
           </p>
         </div>
-        {isAdmin && (
-          <Button size="sm" onClick={() => setEditing('new')}>
-            New connector
-          </Button>
-        )}
+        {/* Every user may author their OWN private connectors (TASK-129); the
+            New connector form opens the user variant for a non-admin (forces
+            visibility private) and the admin variant for an admin. */}
+        <Button size="sm" onClick={() => setEditing('new')}>
+          New connector
+        </Button>
       </div>
 
       {error && (
@@ -440,7 +472,7 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
           No connectors yet.{' '}
           {isAdmin
             ? 'Add one to make it available to the workspace.'
-            : 'Your assistant will offer to connect a service when it needs one.'}
+            : 'Add one with “New connector,” or your assistant will offer to connect a service when it needs one.'}
         </p>
       )}
 

@@ -43,6 +43,7 @@ import {
   type ConnectorSummary,
   type ConnectorKeyMode,
   type ConnectorVisibility,
+  type ConnectorRouteBase,
 } from '@/lib/connectors';
 import {
   emptyConnectorForm,
@@ -120,6 +121,14 @@ export function ConnectorEditDialog({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  // The route bundle this variant targets (TASK-129): the admin variant curates
+  // via `/admin/connectors`; the user variant authors via the locked-down
+  // `/settings/connectors` (owner forced, visibility forced private, admin-only
+  // fields rejected server-side, catalog/shared read-only).
+  const base: ConnectorRouteBase = isAdmin
+    ? '/admin/connectors'
+    : '/settings/connectors';
+
   // (Re)load the form each time the dialog opens. For edit, fetch the full
   // connector so the mechanism + capabilities round-trip; fall back to the
   // summary subset if the fetch fails (mechanism stays at the default).
@@ -133,7 +142,7 @@ export function ConnectorEditDialog({
       return;
     }
     setForm({ ...emptyConnectorForm(), ...summaryToForm(target) });
-    getConnector(target.id)
+    getConnector(target.id, base)
       .then((full) => {
         if (!cancelled) setForm(formFromConnector(full));
       })
@@ -143,7 +152,7 @@ export function ConnectorEditDialog({
     return () => {
       cancelled = true;
     };
-  }, [open, target]);
+  }, [open, target, base]);
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -172,9 +181,9 @@ export function ConnectorEditDialog({
     };
     try {
       if (target === 'new') {
-        await createConnector(body);
+        await createConnector(body, base);
       } else {
-        await patchConnector(target.id, body);
+        await patchConnector(target.id, body, base);
       }
       onSaved();
     } catch (err) {

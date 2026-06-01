@@ -3,24 +3,28 @@ import type { Store } from '../store';
 import { requireSession } from '../auth';
 
 /**
- * Offline Vite mock for the connector registry's wire surface
- * (`/admin/connectors[/:id]`).
+ * Offline Vite mock for the connector REST wire surface. Two owner-scoped route
+ * bundles, selected by `mode` (mirrors `@ax/connectors` `admin-routes.ts`):
+ *   - `/admin/connectors[/:id]`    — admin registry (`mode: 'admin'`).
+ *   - `/settings/connectors[/:id]` — user authoring (`mode: 'user'`, TASK-129):
+ *     forces `visibility: 'private'`, rejects admin-only fields (400), and
+ *     treats a catalog/shared connector as read-only (403).
  *
  * The real backend registers these routes in `@ax/connectors`
  * (`mountAdminRoutes` → `admin-routes.ts`), bridging the `connectors:*` service
  * hooks. The local Vite mock harness has no host bus, so this middleware mirrors
- * the same contract so the registry works under `pnpm dev` with AX_BACKEND_URL
+ * the same contract so the surface works under `pnpm dev` with AX_BACKEND_URL
  * unset (TASK-106, followup from TASK-98). The proxy mode (TASK-114) forwards to
  * a real backend instead — a different path.
  *
  * Contract mirrored from `@ax/connectors` `admin-routes.ts` + the client
- * `lib/connectors.ts`:
+ * `lib/connectors.ts` (where `<base>` is the bundle's base path):
  *
- *   GET    /admin/connectors      → { connectors: ConnectorSummary[] }
- *   POST   /admin/connectors      body ConnectorUpsertInput → { connector, created }
- *   GET    /admin/connectors/:id  → { connector: Connector }
- *   PATCH  /admin/connectors/:id  body Partial<ConnectorUpsertInput> → { connector, created:false }
- *   DELETE /admin/connectors/:id  → 204
+ *   GET    <base>      → { connectors: ConnectorSummary[] }
+ *   POST   <base>      body ConnectorUpsertInput → { connector, created }
+ *   GET    <base>/:id  → { connector: Connector }
+ *   PATCH  <base>/:id  body Partial<ConnectorUpsertInput> → { connector, created:false }
+ *   DELETE <base>/:id  → 204
  *
  * Note the path has NO `/api/` prefix (unlike the mock `/api/admin/mcp-servers`)
  * — it matches the real `@ax/connectors` routes, which the UI hits directly.
@@ -33,6 +37,8 @@ import { requireSession } from '../auth';
  *    read / mutated in a foreign namespace.
  *  - A read/mutate of a connector the actor doesn't own surfaces as 404 (the
  *    foreign connector is simply not found for this user), never 403.
+ *  - `mode: 'user'` additionally forces `visibility: 'private'`, rejects
+ *    admin-only fields server-side (400), and 403s on a catalog/shared connector.
  *  - Responses carry credential SLOT names only (inside `capabilities`), never
  *    secret values — same posture as the hook bus.
  *
@@ -41,6 +47,9 @@ import { requireSession } from '../auth';
  * hook bus, never via cross-package imports (CLAUDE.md invariant 2). This is the
  * same posture `admin/mcp-servers.ts` keeps for the `@ax/mcp-client` shapes.
  */
+
+/** Which route bundle a mock middleware serves (mirrors the client base). */
+type RouteMode = 'admin' | 'user';
 
 type KeyMode = 'personal' | 'workspace';
 type Visibility = 'private' | 'shared';
@@ -222,12 +231,36 @@ function validateUpsert(
   };
 }
 
-export function adminConnectorsMiddleware(
+/** A catalog/shared connector — admin-curated, read-only for a non-admin author
+ *  (mirrors the real route's `isCatalogConnector` + channel-web's
+ *  `connectorSource(...) === 'catalog'`). */
+function isCatalogConnector(row: StoredConnector): boolean {
+  return row.visibility === 'shared' || row.defaultAttached === true;
+}
+
+/** Reject admin-only write fields on the user surface (mirrors the real route's
+ *  `rejectAdminOnlyFields`). Returns an error message, else null. */
+function rejectAdminOnlyFields(body: Record<string, unknown>): string | null {
+  if (body.visibility === 'shared') return 'visibility: shared is admin-only';
+  if (body.defaultAttached === true) return 'defaultAttached is admin-only';
+  return null;
+}
+
+/**
+ * The shared connector-routes mock, parameterized by `base` (the bundle's path)
+ * and `mode` (`'admin'` = the registry, `'user'` = locked-down authoring). One
+ * implementation, two registrations — the user mode forces private, rejects
+ * admin-only fields, and 403s on a catalog/shared connector (TASK-129).
+ */
+function connectorsMiddleware(
   store: Store,
+  opts: { base: string; mode: RouteMode },
 ): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
+  const { base, mode } = opts;
+  const idRe = new RegExp(`^${base.replace(/[/]/g, '\\/')}\\/([^/]+)$`);
   return async (req, res) => {
     const url = req.url ?? '';
-    if (!url.startsWith('/admin/connectors')) return false;
+    if (!url.startsWith(base)) return false;
 
     const parsed = new URL(url, 'http://x');
     const path = parsed.pathname;
@@ -243,14 +276,35 @@ export function adminConnectorsMiddleware(
     const connectors = store.collection<StoredConnector>(COLLECTION);
 
     // ---- collection routes -------------------------------------------------
-    if (path === '/admin/connectors' && method === 'GET') {
+    if (path === base && method === 'GET') {
       const mine = connectors.list().filter((r) => r.userId === actor.id);
       send(res, 200, { connectors: mine.map(toSummary) });
       return true;
     }
 
-    if (path === '/admin/connectors' && method === 'POST') {
+    if (path === base && method === 'POST') {
       const body = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>;
+      // User-authoring surface: reject admin-only fields, then force the
+      // connector private + non-default (mirrors the real route).
+      if (mode === 'user') {
+        const rejected = rejectAdminOnlyFields(body);
+        if (rejected !== null) {
+          send(res, 400, { error: rejected });
+          return true;
+        }
+        // POST is create-or-update; a re-POST of an existing catalog/shared
+        // connector's id would silently demote it to private. 403 instead.
+        const cid = body.connectorId;
+        if (typeof cid === 'string' && cid.length > 0) {
+          const existing = connectors.get(rowKey(actor.id, cid));
+          if (existing && isCatalogConnector(existing)) {
+            send(res, 403, { error: 'read-only' });
+            return true;
+          }
+        }
+        body.visibility = 'private';
+        body.defaultAttached = false;
+      }
       const result = validateUpsert(body);
       if (!result.ok) {
         send(res, 400, { error: result.message });
@@ -274,8 +328,8 @@ export function adminConnectorsMiddleware(
       return true;
     }
 
-    // ---- /admin/connectors/:id ---------------------------------------------
-    const idMatch = path.match(/^\/admin\/connectors\/([^/]+)$/);
+    // ---- <base>/:id --------------------------------------------------------
+    const idMatch = path.match(idRe);
     if (idMatch && idMatch[1]) {
       const connectorId = decodeURIComponent(idMatch[1]);
       const key = rowKey(actor.id, connectorId);
@@ -298,7 +352,21 @@ export function adminConnectorsMiddleware(
           send(res, 404, { error: 'not-found' });
           return true;
         }
+        // User-authoring surface: a catalog/shared connector is read-only (403).
+        if (mode === 'user' && isCatalogConnector(existing)) {
+          send(res, 403, { error: 'read-only' });
+          return true;
+        }
         const body = ((await readJsonBody(req)) ?? {}) as Record<string, unknown>;
+        if (mode === 'user') {
+          const rejected = rejectAdminOnlyFields(body);
+          if (rejected !== null) {
+            send(res, 400, { error: rejected });
+            return true;
+          }
+          body.visibility = 'private';
+          body.defaultAttached = false;
+        }
         const result = validateUpsert(body, existing);
         if (!result.ok) {
           send(res, 400, { error: result.message });
@@ -327,6 +395,11 @@ export function adminConnectorsMiddleware(
           send(res, 404, { error: 'not-found' });
           return true;
         }
+        // User-authoring surface: a catalog/shared connector is read-only (403).
+        if (mode === 'user' && isCatalogConnector(existing)) {
+          send(res, 403, { error: 'read-only' });
+          return true;
+        }
         connectors.remove(key);
         send(res, 204);
         return true;
@@ -335,4 +408,21 @@ export function adminConnectorsMiddleware(
 
     return false;
   };
+}
+
+/** The admin Connector registry mock (`/admin/connectors[/:id]`). */
+export function adminConnectorsMiddleware(
+  store: Store,
+): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
+  return connectorsMiddleware(store, { base: '/admin/connectors', mode: 'admin' });
+}
+
+/** The user-authoring mock (`/settings/connectors[/:id]`, TASK-129). */
+export function settingsConnectorsMiddleware(
+  store: Store,
+): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
+  return connectorsMiddleware(store, {
+    base: '/settings/connectors',
+    mode: 'user',
+  });
 }
