@@ -269,8 +269,7 @@ export function UserSkillsPanelBody({ active }: { active: boolean }) {
               <TableRow>
                 <TableHead>ID</TableHead>
                 <TableHead>Description</TableHead>
-                <TableHead>Hosts</TableHead>
-                <TableHead>Slots</TableHead>
+                <TableHead>Connectors</TableHead>
                 <TableHead>Updated</TableHead>
                 <TableHead className="w-[80px]"></TableHead>
               </TableRow>
@@ -289,31 +288,16 @@ export function UserSkillsPanelBody({ active }: { active: boolean }) {
                   </TableCell>
                   <TableCell className="text-sm">{s.description}</TableCell>
                   <TableCell>
-                    {s.capabilities.allowedHosts.length === 0 ? (
+                    {s.connectors.length === 0 ? (
                       <span className="text-xs text-muted-foreground">—</span>
                     ) : (
-                      s.capabilities.allowedHosts.map((h) => (
+                      s.connectors.map((c) => (
                         <Badge
-                          key={h}
+                          key={c}
                           variant="secondary"
                           className="text-xs mr-1"
                         >
-                          {h}
-                        </Badge>
-                      ))
-                    )}
-                  </TableCell>
-                  <TableCell>
-                    {s.capabilities.credentials.length === 0 ? (
-                      <span className="text-xs text-muted-foreground">—</span>
-                    ) : (
-                      s.capabilities.credentials.map((c) => (
-                        <Badge
-                          key={c.slot}
-                          variant="outline"
-                          className="text-xs mr-1 font-mono"
-                        >
-                          {c.slot}
+                          {c}
                         </Badge>
                       ))
                     )}

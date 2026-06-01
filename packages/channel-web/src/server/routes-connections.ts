@@ -322,31 +322,13 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
 
-      // Null-prototype map so a manifest-supplied `account` value can never
-      // pollute Object.prototype via a key like __proto__/constructor (defense
-      // in depth — invariant #5: skill manifests are untrusted at this hop, and
-      // open-mode agent-authored skills can reach the catalog). The manifest
-      // grammar /^[a-z][a-z0-9-]{0,63}$/ already forbids those keys; this makes
-      // the guarantee structural rather than grammar-dependent.
-      const usage: Record<string, Set<string>> = Object.create(null) as Record<string, Set<string>>;
-      if (bus.hasService('skills:list')) {
-        const listed = await bus.call<SkillsListInput, SkillsListOutput>(
-          'skills:list',
-          initCtx,
-          { scope: 'all', ownerUserId: userId },
-        );
-        for (const s of listed.skills) {
-          for (const slot of s.capabilities?.credentials ?? []) {
-            if (slot.account !== undefined && slot.account.length > 0) {
-              (usage[slot.account] ??= new Set()).add(s.id);
-            }
-          }
-        }
-      }
+      // TASK-100 — a skill manifest declares no credential slots (its reach is
+      // the connectors it references), so a SKILL never contributes to per-account
+      // (`account:<service>`) usage anymore: that mapping now belongs to the
+      // connector surface (TASK-99's Connectors tab derives a connector's account
+      // usage). This route therefore reports no skill-derived account usage. The
+      // null-prototype object preserves the prototype-pollution-safe response shape.
       const out: AccountUsageResponse['usage'] = Object.create(null) as AccountUsageResponse['usage'];
-      for (const service of Object.keys(usage)) {
-        out[service] = [...usage[service]!].sort();
-      }
       res.status(200).json({ usage: out } satisfies AccountUsageResponse);
     },
   };

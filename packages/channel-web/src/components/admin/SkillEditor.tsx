@@ -168,16 +168,10 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
     return parseSkillManifest(m[1] ?? '');
   }, [text]);
 
-  // Only the confirmed-credentials case should auto-clear the flag. A
-  // transient parse error (parsedResult.ok === false) leaves the flag
-  // alone so the box doesn't silently un-check while the user is mid-
-  // typing — they fix the YAML and the checked state survives.
-  const hasCredentialSlots =
-    parsedResult.ok && parsedResult.value.capabilities.credentials.length > 0;
-  const canBeDefault = parsedResult.ok && !hasCredentialSlots;
-  useEffect(() => {
-    if (hasCredentialSlots && defaultAttached) setDefaultAttached(false);
-  }, [hasCredentialSlots, defaultAttached]);
+  // TASK-100 — a skill manifest declares no capabilities (its reach is the
+  // connectors it references), so a skill is always instruction-only and can
+  // always be default-attached once it parses.
+  const canBeDefault = parsedResult.ok;
 
   // ── Bundle-file list helpers ──────────────────────────────────────────────
   const addFile = () =>
@@ -267,42 +261,16 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
               </div>
               <div>
                 <div className="text-xs text-muted-foreground mb-1">
-                  Allowed hosts
+                  Connectors
                 </div>
-                {parsedResult.value.capabilities.allowedHosts.length === 0 ? (
+                {parsedResult.value.connectors.length === 0 ? (
                   <span className="text-xs text-muted-foreground">none</span>
                 ) : (
-                  parsedResult.value.capabilities.allowedHosts.map((h) => (
-                    <Badge key={h} variant="secondary" className="text-xs mr-1">
-                      {h}
+                  parsedResult.value.connectors.map((c) => (
+                    <Badge key={c} variant="secondary" className="text-xs mr-1">
+                      {c}
                     </Badge>
                   ))
-                )}
-              </div>
-              <div>
-                <div className="text-xs text-muted-foreground mb-1">
-                  Credential slots
-                </div>
-                {parsedResult.value.capabilities.credentials.length === 0 ? (
-                  <span className="text-xs text-muted-foreground">none</span>
-                ) : (
-                  <ul className="space-y-1 text-xs list-none m-0 p-0">
-                    {parsedResult.value.capabilities.credentials.map((c) => (
-                      <li key={c.slot}>
-                        <code className="font-mono">{c.slot}</code>
-                        <span className="text-muted-foreground">
-                          {' '}
-                          ({c.kind})
-                        </span>
-                        {c.description && (
-                          <span className="text-muted-foreground">
-                            {' '}
-                            &mdash; {c.description}
-                          </span>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
                 )}
               </div>
             </div>
@@ -329,9 +297,8 @@ export function SkillEditor({ skillId, onSaved, onCancel, api = defaultApi }: Pr
             Default-attached to all agents
           </label>
           <p className="text-xs text-muted-foreground">
-            {canBeDefault
-              ? "Adds this skill to every agent at session start, without per-agent setup."
-              : "Capability-bearing skills must be attached per agent."}
+            Adds this skill to every agent at session start, without per-agent
+            setup.
           </p>
         </div>
       </div>
