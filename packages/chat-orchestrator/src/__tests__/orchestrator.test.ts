@@ -2721,31 +2721,24 @@ describe('chat-orchestrator', () => {
     expect(connHook.resolveCalls).toEqual([]);
   });
 
-  it('TASK-33: per-user attachment beats agent-global on id collision and unions a per-user-only skill', async () => {
+  it('TASK-33: a per-user attachment unions a per-user-only skill BODY (resolve threads ownerUserId)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
-        github: {
-          id: 'github',
-          capabilities: { allowedHosts: ['api.github.com'], credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }] },
-          bodyMd: 'gh', manifestYaml: 'name: github\nversion: 1\n',
-        },
-        linear: {
-          id: 'linear',
-          capabilities: { allowedHosts: ['api.linear.app'], credentials: [] },
-          bodyMd: 'ln', manifestYaml: 'name: linear\nversion: 1\n',
-        },
+        github: { id: 'github', connectors: [], bodyMd: 'gh', manifestYaml: 'name: github\nversion: 1\n' },
+        linear: { id: 'linear', connectors: [], bodyMd: 'ln', manifestYaml: 'name: linear\nversion: 1\n' },
       },
     });
 
-    // Per-user attachments: github (overrides the agent-global binding) + a
-    // per-user-only linear. Record the query args to assert (user, agent) scope.
+    // Per-user attachments: github + a per-user-only linear. TASK-100 — a skill
+    // declares no credential slots, so the attachments carry no bindings; the
+    // per-user layer still decides WHICH skill bodies materialize.
     let listInput: unknown;
     skillsHooks.services['skills:list-user-attachments'] = async (_ctx, input) => {
       listInput = input;
       return {
         attachments: [
-          { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'per-user-pat' } },
+          { skillId: 'github', credentialBindings: {} },
           { skillId: 'linear', credentialBindings: {} },
         ],
       };
@@ -2758,8 +2751,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
-          // Agent-global attaches github with a DIFFERENT binding — per-user must win.
-          skillAttachments: [{ skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'agent-global-pat' } }],
+          skillAttachments: [{ skillId: 'github', credentialBindings: {} }],
         },
       }),
       openSession: makeChatEndOpenSession(busRef),
@@ -2778,35 +2770,27 @@ describe('chat-orchestrator', () => {
     );
     expect(outcome.kind).toBe('complete');
 
-    // Read hook queried per (user, agent).
+    // Read hook queried per (user, agent); resolve threaded ownerUserId.
     expect(listInput).toEqual({ userId: 'test-user', agentId: 'test-agent' });
-    // resolve engaged the content-override path (ownerUserId threaded).
     expect((skillsHooks.state.lastResolveInput as { ownerUserId?: string }).ownerUserId).toBe('test-user');
 
     const openIn = proxy.state.lastOpenInput as {
       allowlist: string[];
       credentials: Record<string, { ref: string; kind: string }>;
     };
-    // Per-user-only skill's host is unioned in.
-    expect(openIn.allowlist).toContain('api.linear.app');
-    expect(openIn.allowlist).toContain('api.github.com');
-    // Per-user binding WINS over the agent-global binding for the same skill+slot
-    // (TASK-86 — keyed by the per-skill namespace).
-    expect(openIn.credentials['skill:github:GITHUB_TOKEN']).toEqual({ ref: 'per-user-pat', kind: 'api-key' });
+    // TASK-100 — neither skill contributes a host/credential of its own.
+    expect(openIn.allowlist).not.toContain('api.linear.app');
+    expect(openIn.allowlist).not.toContain('api.github.com');
+    expect(openIn.credentials['skill:github:GITHUB_TOKEN']).toBeUndefined();
   });
 
-  it('TASK-33: with no per-user attachments, agent-global behavior is unchanged', async () => {
+  it('TASK-33: with no per-user attachments, agent-global behavior is unchanged (skills contribute no caps)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
-        github: {
-          id: 'github',
-          capabilities: { allowedHosts: ['api.github.com'], credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }] },
-          bodyMd: 'gh', manifestYaml: 'name: github\nversion: 1\n',
-        },
+        github: { id: 'github', connectors: [], bodyMd: 'gh', manifestYaml: 'name: github\nversion: 1\n' },
       },
     });
-    // Read hook returns empty → behavior identical to pre-TASK-33.
     skillsHooks.services['skills:list-user-attachments'] = async () => ({ attachments: [] });
 
     const busRef: { current: HookBus | null } = { current: null };
@@ -2816,7 +2800,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
-          skillAttachments: [{ skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'agent-global-pat' } }],
+          skillAttachments: [{ skillId: 'github', credentialBindings: {} }],
         },
       }),
       openSession: makeChatEndOpenSession(busRef),
@@ -2839,10 +2823,10 @@ describe('chat-orchestrator', () => {
       allowlist: string[];
       credentials: Record<string, { ref: string; kind: string }>;
     };
-    expect(openIn.allowlist).toContain('api.github.com');
-    // The agent-global binding is used unchanged when there's no per-user layer
-    // (TASK-86 — keyed by the per-skill namespace).
-    expect(openIn.credentials['skill:github:GITHUB_TOKEN']).toEqual({ ref: 'agent-global-pat', kind: 'api-key' });
+    // The agent's own host reaches the proxy; the skill contributes none.
+    expect(openIn.allowlist).toContain('api.anthropic.com');
+    expect(openIn.allowlist).not.toContain('api.github.com');
+    expect(openIn.credentials['skill:github:GITHUB_TOKEN']).toBeUndefined();
   });
 
   it('TASK-33: a thrown skills:list-user-attachments FAILS CLOSED (does not silently use agent-global creds)', async () => {
@@ -2974,20 +2958,11 @@ describe('chat-orchestrator', () => {
     expect(openIn.allowlist).not.toContain('persisted.example.com');
   });
 
-  it('auto-unions registry.npmjs.org when a skill declares packages.npm (D)', async () => {
+  it('TASK-100: a skill does NOT auto-union registry.npmjs.org (packages live on connectors now)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
-        linear: {
-          id: 'linear',
-          capabilities: {
-            allowedHosts: [],
-            credentials: [],
-            packages: { npm: ['@linear/cli'] },
-          },
-          bodyMd: 'Use the Linear CLI.',
-          manifestYaml: 'name: linear\nversion: 1.0.0\n',
-        },
+        linear: { id: 'linear', connectors: [], bodyMd: 'Use the Linear CLI.', manifestYaml: 'name: linear\nversion: 1.0.0\n' },
       },
     });
     const busRef: { current: HookBus | null } = { current: null };
@@ -3012,23 +2987,14 @@ describe('chat-orchestrator', () => {
     busRef.current = h.bus;
     await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('npm-pkg-session'), { message: { role: 'user', content: 'hi' } });
     const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
-    expect(openIn.allowlist).toContain('registry.npmjs.org');
+    expect(openIn.allowlist).not.toContain('registry.npmjs.org');
   });
 
-  it('auto-unions pypi.org + files.pythonhosted.org for packages.pypi (D)', async () => {
+  it('TASK-100: a skill does NOT auto-union pypi hosts (packages live on connectors now)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
-        pyskill: {
-          id: 'pyskill',
-          capabilities: {
-            allowedHosts: [],
-            credentials: [],
-            packages: { pypi: ['some-tool'] },
-          },
-          bodyMd: 'Use the some-tool CLI.',
-          manifestYaml: 'name: pyskill\nversion: 1.0.0\n',
-        },
+        pyskill: { id: 'pyskill', connectors: [], bodyMd: 'Use the some-tool CLI.', manifestYaml: 'name: pyskill\nversion: 1.0.0\n' },
       },
     });
     const busRef: { current: HookBus | null } = { current: null };
@@ -3053,23 +3019,15 @@ describe('chat-orchestrator', () => {
     busRef.current = h.bus;
     await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('pypi-pkg-session'), { message: { role: 'user', content: 'hi' } });
     const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
-    expect(openIn.allowlist).toEqual(expect.arrayContaining(['pypi.org', 'files.pythonhosted.org']));
+    expect(openIn.allowlist).not.toContain('pypi.org');
+    expect(openIn.allowlist).not.toContain('files.pythonhosted.org');
   });
 
   it('unions no registry hosts when no packages are declared (D)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
-        nopkgs: {
-          id: 'nopkgs',
-          capabilities: {
-            allowedHosts: ['api.example.com'],
-            credentials: [],
-            packages: { npm: [], pypi: [] },
-          },
-          bodyMd: 'A skill with no packages.',
-          manifestYaml: 'name: nopkgs\nversion: 1.0.0\n',
-        },
+        nopkgs: { id: 'nopkgs', connectors: [], bodyMd: 'A skill with no packages.', manifestYaml: 'name: nopkgs\nversion: 1.0.0\n' },
       },
     });
     const busRef: { current: HookBus | null } = { current: null };
@@ -3098,18 +3056,14 @@ describe('chat-orchestrator', () => {
     expect(openIn.allowlist).not.toContain('pypi.org');
   });
 
-  it('auto-unions registry hosts for a DEFAULT-attached skill declaring packages (D)', async () => {
-    // Regression: default-attached skills are materialized into the sandbox (their
-    // SKILL.md instructs the agent to run the CLI), so a default skill's declared
-    // ecosystem must reach the registry allowlist too — not only explicit attachments.
+  it('TASK-100: a DEFAULT-attached skill does NOT auto-union registry hosts (packages live on connectors)', async () => {
+    // TASK-100 — a skill declares no packages, so a default-attached skill's
+    // materialized SKILL.md never drives the registry auto-allow; package egress
+    // now comes from a connector (the connector union does that auto-allow).
     const proxy = buildProxyHooks();
     const defaultSkill: ResolvedSkill = {
       id: 'default-cli',
-      capabilities: {
-        allowedHosts: [],
-        credentials: [],
-        packages: { npm: ['@linear/cli'], pypi: ['some-tool'] },
-      },
+      connectors: [],
       bodyMd: '# default-cli\n',
       manifestYaml: 'name: default-cli\ndescription: dc\n',
     };
@@ -3123,7 +3077,6 @@ describe('chat-orchestrator', () => {
           requiredCredentials: {
             ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
-          // No explicit skillAttachments — the packages come purely from defaults.
         },
       }),
       openSession: makeChatEndOpenSession(busRef),
@@ -3136,9 +3089,8 @@ describe('chat-orchestrator', () => {
     busRef.current = h.bus;
     await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('default-pkg-session'), { message: { role: 'user', content: 'hi' } });
     const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
-    expect(openIn.allowlist).toEqual(
-      expect.arrayContaining(['registry.npmjs.org', 'pypi.org', 'files.pythonhosted.org']),
-    );
+    expect(openIn.allowlist).not.toContain('registry.npmjs.org');
+    expect(openIn.allowlist).not.toContain('pypi.org');
   });
 
   // -------------------------------------------------------------------------
@@ -3283,16 +3235,13 @@ describe('chat-orchestrator', () => {
     expect(skillMd!.contents).toContain('Use this to read Drive docs.');
   });
 
-  it('TASK-97: a connector host dedups against a skill host (one allowlist entry); shared bare slot coexists', async () => {
+  it('TASK-97/TASK-100: a connector folds its host + slot; the cap-free skill that references it contributes none', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
         gh: {
           id: 'gh',
-          capabilities: {
-            allowedHosts: ['api.shared.example.com'],
-            credentials: [{ slot: 'SHARED_KEY', kind: 'api-key' }],
-          },
+          connectors: [], // the connector below is a workspace default, not skill-referenced
           bodyMd: 'gh',
           manifestYaml: 'name: gh\nversion: 1\n',
         },
@@ -3302,9 +3251,7 @@ describe('chat-orchestrator', () => {
       defaults: {
         cx: {
           capabilities: {
-            // Same host the skill declares → must dedup to ONE allowlist entry.
             allowedHosts: ['api.shared.example.com'],
-            // Same BARE slot name the skill declares → must coexist (namespaced).
             credentials: [{ slot: 'SHARED_KEY', kind: 'api-key' }],
             mcpServers: [],
             packages: { npm: [], pypi: [] },
@@ -3319,7 +3266,7 @@ describe('chat-orchestrator', () => {
           ...TEST_AGENT,
           allowedHosts: ['api.anthropic.com'],
           requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
-          skillAttachments: [{ skillId: 'gh', credentialBindings: { SHARED_KEY: 'skill-ref' } }],
+          skillAttachments: [{ skillId: 'gh', credentialBindings: {} }],
         },
       }),
       openSession: makeChatEndOpenSession(busRef),
@@ -3342,31 +3289,22 @@ describe('chat-orchestrator', () => {
       allowlist: string[];
       credentials: Record<string, { ref: string; kind: string }>;
     };
-    // Host dedups: appears exactly once despite both subjects declaring it.
-    expect(openIn.allowlist.filter((h2) => h2 === 'api.shared.example.com')).toHaveLength(1);
-    // The skill slot and the connector slot COEXIST under distinct namespaces;
-    // the connector's REF is its `account:<connectorId>` vault key.
-    expect(openIn.credentials).toMatchObject({
-      'skill:gh:SHARED_KEY': { ref: 'skill-ref', kind: 'api-key' },
-      'connector:cx:SHARED_KEY': { ref: 'account:cx', kind: 'api-key' },
-    });
+    // The CONNECTOR's host + slot reach the sandbox (the connector path). The
+    // skill declares no caps, so no `skill:gh:*` entry exists.
+    expect(openIn.allowlist).toContain('api.shared.example.com');
+    expect(openIn.credentials['connector:cx:SHARED_KEY']).toEqual({ ref: 'account:cx', kind: 'api-key' });
+    expect(openIn.credentials['skill:gh:SHARED_KEY']).toBeUndefined();
   });
 
-  it('TASK-97: a throwing connectors:list-defaults is NON-FATAL — session opens, skill caps intact', async () => {
+  it('TASK-97: a throwing connectors:list-defaults is NON-FATAL — session opens', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
-        gh: {
-          id: 'gh',
-          capabilities: { allowedHosts: ['api.github.com'], credentials: [] },
-          bodyMd: 'gh',
-          manifestYaml: 'name: gh\nversion: 1\n',
-        },
+        gh: { id: 'gh', connectors: [], bodyMd: 'gh', manifestYaml: 'name: gh\nversion: 1\n' },
       },
     });
     const connectorHooks = buildConnectorHooks({
       listDefaultsThrows: new Error('connectors db down'),
-      // No owned connectors registered either — but list/resolve still present.
     });
     const busRef: { current: HookBus | null } = { current: null };
     const mocks = buildMocks({
@@ -3394,9 +3332,9 @@ describe('chat-orchestrator', () => {
     );
     // Session NOT terminated — the connector failure is non-fatal.
     expect(outcome.kind).toBe('complete');
-    // The skill host still reached the sandbox (skill caps unaffected).
+    // The agent's own host still reached the sandbox.
     const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
-    expect(openIn.allowlist).toContain('api.github.com');
+    expect(openIn.allowlist).toContain('api.anthropic.com');
   });
 
   it('threads installedSkills into sandbox:open-session with correct SKILL.md content', async () => {
@@ -3474,27 +3412,13 @@ describe('chat-orchestrator', () => {
     expect(entry.mcpServers).toEqual([]);
   });
 
-  it('unions skill-bundled mcpServers into the sandbox open-session input', async () => {
+  it('TASK-100: a skill installed-entry carries NO mcpServers (MCP lives on connectors now)', async () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
         github: {
           id: 'github',
-          capabilities: {
-            allowedHosts: ['api.github.com'],
-            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
-            mcpServers: [
-              {
-                name: 'github',
-                transport: 'stdio',
-                command: 'npx',
-                args: ['-y', '@modelcontextprotocol/server-github'],
-                env: { GITHUB_TOKEN: '$GITHUB_TOKEN' },
-                allowedHosts: ['api.github.com'],
-                credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
-              },
-            ],
-          },
+          connectors: [],
           bodyMd: 'Use the GitHub MCP server.',
           manifestYaml: 'name: github\nversion: 1.0.0\n',
         },
@@ -3510,7 +3434,7 @@ describe('chat-orchestrator', () => {
             ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
-            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
+            { skillId: 'github', credentialBindings: {} },
           ],
         },
       }),
@@ -3538,10 +3462,11 @@ describe('chat-orchestrator', () => {
         mcpServers: Array<{ name: string; transport: string; command?: string }>;
       }>;
     };
-    expect(sandboxIn.installedSkills).toHaveLength(1);
-    expect(sandboxIn.installedSkills![0]!.mcpServers).toEqual([
-      expect.objectContaining({ name: 'github', transport: 'stdio', command: 'npx' }),
-    ]);
+    const gh = sandboxIn.installedSkills?.find((s) => s.id === 'github');
+    expect(gh).toBeDefined();
+    // TASK-100 — a skill bundles no MCP servers of its own; MCP lives on the
+    // connector it references (materialized as a CONNECTOR installed-entry).
+    expect(gh!.mcpServers).toEqual([]);
   });
 
   it('does NOT call skills:resolve when agent has no skillAttachments', async () => {
@@ -3583,15 +3508,7 @@ describe('chat-orchestrator', () => {
     const proxy = buildProxyHooks();
     const skillsHooks = buildSkillsHooks({
       skills: {
-        github: {
-          id: 'github',
-          capabilities: {
-            allowedHosts: ['api.github.com'],
-            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
-          },
-          bodyMd: 'GitHub',
-          manifestYaml: 'name: github\n',
-        },
+        github: { id: 'github', connectors: [], bodyMd: 'GitHub', manifestYaml: 'name: github\n' },
         // 'vanished' is NOT in the resolved set
       },
     });
@@ -3605,7 +3522,7 @@ describe('chat-orchestrator', () => {
             ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
           },
           skillAttachments: [
-            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
+            { skillId: 'github', credentialBindings: {} },
             { skillId: 'vanished', credentialBindings: {} },
           ],
         },
@@ -3626,302 +3543,25 @@ describe('chat-orchestrator', () => {
       silentCtx('deleted-skill-session'),
       { message: { role: 'user', content: 'hi' } },
     );
-    // Must succeed — the vanished skill is silently dropped.
+    // Must succeed — the vanished skill is silently dropped; the resolved github
+    // skill materializes its body (no caps of its own).
     expect(outcome.kind).toBe('complete');
     expect(mocks.calls.sandboxOpen).toBe(1);
-
-    const openIn = proxy.state.lastOpenInput as { allowlist: string[]; credentials: Record<string, unknown> };
-    expect(openIn.allowlist).toContain('api.github.com');
-    // TASK-86 — the skill slot is keyed by its per-skill namespace.
-    expect(openIn.credentials).toHaveProperty('skill:github:GITHUB_TOKEN');
+    const sandboxIn = mocks.calls.lastSandboxInput as { installedSkills?: Array<{ id: string }> };
+    expect(sandboxIn.installedSkills?.some((s) => s.id === 'github')).toBe(true);
+    expect(sandboxIn.installedSkills?.some((s) => s.id === 'vanished')).toBe(false);
   });
 
-  it('terminates with skill-binding-missing when a required slot has no binding', async () => {
-    const proxy = buildProxyHooks();
-    const skillsHooks = buildSkillsHooks({
-      skills: {
-        github: {
-          id: 'github',
-          capabilities: {
-            allowedHosts: ['api.github.com'],
-            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
-          },
-          bodyMd: 'GitHub',
-          manifestYaml: 'name: github\n',
-        },
-      },
-    });
-    const mocks = buildMocks({
-      agentsResolve: async () => ({
-        agent: {
-          ...TEST_AGENT,
-          allowedHosts: ['api.anthropic.com'],
-          requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
-          },
-          skillAttachments: [
-            {
-              skillId: 'github',
-              credentialBindings: {}, // GITHUB_TOKEN binding is absent
-            },
-          ],
-        },
-      }),
-    });
-    Object.assign(mocks.services, proxy.services, skillsHooks.services);
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
-      ],
-    });
-
-    const endFires: AgentOutcome[] = [];
-    h.bus.subscribe('chat:end', 'obs', async (_ctx, p: unknown) => {
-      endFires.push((p as { outcome: AgentOutcome }).outcome);
-      return undefined;
-    });
-
-    const outcome = await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      silentCtx('binding-missing-session'),
-      { message: { role: 'user', content: 'hi' } },
-    );
-    expect(outcome.kind).toBe('terminated');
-    expect((outcome as { reason: string }).reason).toBe('skill-binding-missing');
-    // proxy:open-session must NOT be called — abort happens before the proxy step.
-    expect(proxy.state.openCalls).toBe(0);
-    expect(mocks.calls.sandboxOpen).toBe(0);
-    expect(endFires).toHaveLength(1);
-  });
-
-  it('TASK-86: two catalog skills declaring the same slot COEXIST (no collision, namespaced creds)', async () => {
-    // Namespaced envMap so the orchestrator's env projection has placeholders to
-    // map back to bare names.
-    const proxy = buildProxyHooks({
-      openOutput: {
-        proxyEndpoint: 'tcp://127.0.0.1:54321',
-        caCertPem: 'TEST-CA-PEM',
-        envMap: {
-          ANTHROPIC_API_KEY: 'ax-cred:00000000000000000000000000000000',
-          'skill:skill-a:OPENAI_API_KEY': 'ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-          'skill:skill-b:OPENAI_API_KEY': 'ax-cred:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-        },
-      },
-    });
-    const skillsHooks = buildSkillsHooks({
-      skills: {
-        'skill-a': {
-          id: 'skill-a',
-          capabilities: {
-            allowedHosts: ['api.example.com'],
-            credentials: [{ slot: 'OPENAI_API_KEY', kind: 'api-key' }],
-          },
-          bodyMd: 'A',
-          manifestYaml: 'name: skill-a\n',
-        },
-        'skill-b': {
-          id: 'skill-b',
-          capabilities: {
-            allowedHosts: ['api.other.com'],
-            credentials: [{ slot: 'OPENAI_API_KEY', kind: 'api-key' }], // same slot
-          },
-          bodyMd: 'B',
-          manifestYaml: 'name: skill-b\n',
-        },
-      },
-    });
-    let busRefA: HookBus | null = null;
-    const mocks = buildMocks({
-      agentsResolve: async () => ({
-        agent: {
-          ...TEST_AGENT,
-          allowedHosts: ['api.anthropic.com'],
-          requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
-          },
-          skillAttachments: [
-            { skillId: 'skill-a', credentialBindings: { OPENAI_API_KEY: 'ref-a' } },
-            { skillId: 'skill-b', credentialBindings: { OPENAI_API_KEY: 'ref-b' } },
-          ],
-        },
-      }),
-      openSession: async (ctx, input: unknown) => {
-        const sessionId = (input as { sessionId: string }).sessionId;
-        const originatingReqId = ctx.reqId;
-        setImmediate(() => {
-          void busRefA!.fire(
-            'chat:end',
-            makeAgentContext({
-              sessionId, agentId: 'a', userId: 'u', reqId: originatingReqId,
-              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
-            }),
-            { outcome: { kind: 'complete', messages: [] } },
-          );
-        });
-        return {
-          runnerEndpoint: 'unix:///tmp/x.sock',
-          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
-        };
-      },
-    });
-    Object.assign(mocks.services, proxy.services, skillsHooks.services);
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
-      ],
-    });
-    busRefA = h.bus;
-
-    const outcome = await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      silentCtx('slot-coexist-session'),
-      { message: { role: 'user', content: 'hi' } },
-    );
-    // No lockout: the turn completes instead of terminating.
-    expect(outcome.kind).toBe('complete');
-    expect(proxy.state.openCalls).toBe(1);
-    // Each skill's credential is present under its OWN namespaced key, with its
-    // OWN ref — each resolves its own credential.
-    const openIn = proxy.state.lastOpenInput as {
-      credentials: Record<string, { ref: string; kind: string }>;
-    };
-    expect(openIn.credentials['skill:skill-a:OPENAI_API_KEY']).toEqual({
-      ref: 'ref-a',
-      kind: 'api-key',
-    });
-    expect(openIn.credentials['skill:skill-b:OPENAI_API_KEY']).toEqual({
-      ref: 'ref-b',
-      kind: 'api-key',
-    });
-    // The sandbox sees the BARE env-var name (the skill reads $OPENAI_API_KEY).
-    // Among two skills sharing the bare name, the FIRST (skill-a) wins the flat
-    // env stamp; skill-b's credential still reached the proxy (above) and rides
-    // its own per-skill git placeholder (asserted via installedSkills below).
-    const sandboxIn = mocks.calls.lastSandboxInput as {
-      proxyConfig?: { envMap: Record<string, string> };
-      installedSkills?: Array<{
-        id: string;
-        credentials: Array<{ slot: string; placeholder?: string }>;
-      }>;
-    };
-    expect(sandboxIn.proxyConfig?.envMap['OPENAI_API_KEY']).toBe(
-      'ax-cred:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
-    );
-    // No namespaced key leaks into the flat sandbox env.
-    expect(sandboxIn.proxyConfig?.envMap['skill:skill-a:OPENAI_API_KEY']).toBeUndefined();
-    expect(sandboxIn.proxyConfig?.envMap['skill:skill-b:OPENAI_API_KEY']).toBeUndefined();
-    // Each skill carries its OWN placeholder for per-skill git wiring.
-    const skillB = sandboxIn.installedSkills?.find((s) => s.id === 'skill-b');
-    expect(skillB?.credentials[0]?.placeholder).toBe(
-      'ax-cred:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
-    );
-  });
-
-  it('TASK-86: a skill slot colliding with agent.requiredCredentials no longer terminates (trusted wins)', async () => {
-    const proxy = buildProxyHooks({
-      openOutput: {
-        proxyEndpoint: 'tcp://127.0.0.1:54321',
-        caCertPem: 'TEST-CA-PEM',
-        envMap: {
-          ANTHROPIC_API_KEY: 'ax-cred:00000000000000000000000000000000',
-          'skill:badskill:ANTHROPIC_API_KEY': 'ax-cred:ffffffffffffffffffffffffffffffff',
-        },
-      },
-    });
-    const skillsHooks = buildSkillsHooks({
-      skills: {
-        badskill: {
-          id: 'badskill',
-          capabilities: {
-            allowedHosts: ['api.example.com'],
-            credentials: [
-              { slot: 'ANTHROPIC_API_KEY', kind: 'api-key' }, // same name as agent default
-            ],
-          },
-          bodyMd: 'Bad skill',
-          manifestYaml: 'name: badskill\n',
-        },
-      },
-    });
-    let busRefB: HookBus | null = null;
-    const mocks = buildMocks({
-      agentsResolve: async () => ({
-        agent: {
-          ...TEST_AGENT,
-          allowedHosts: ['api.anthropic.com'],
-          requiredCredentials: {
-            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
-          },
-          skillAttachments: [
-            {
-              skillId: 'badskill',
-              credentialBindings: { ANTHROPIC_API_KEY: 'some-other-ref' },
-            },
-          ],
-        },
-      }),
-      openSession: async (ctx, input: unknown) => {
-        const sessionId = (input as { sessionId: string }).sessionId;
-        const originatingReqId = ctx.reqId;
-        setImmediate(() => {
-          void busRefB!.fire(
-            'chat:end',
-            makeAgentContext({
-              sessionId, agentId: 'a', userId: 'u', reqId: originatingReqId,
-              logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
-            }),
-            { outcome: { kind: 'complete', messages: [] } },
-          );
-        });
-        return {
-          runnerEndpoint: 'unix:///tmp/x.sock',
-          handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
-        };
-      },
-    });
-    Object.assign(mocks.services, proxy.services, skillsHooks.services);
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
-      ],
-    });
-    busRefB = h.bus;
-
-    const outcome = await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      silentCtx('agent-slot-coexist-session'),
-      { message: { role: 'user', content: 'hi' } },
-    );
-    // No lockout — the trusted credential simply wins; the skill can't hijack it.
-    expect(outcome.kind).toBe('complete');
-    expect(proxy.state.openCalls).toBe(1);
-    const openIn = proxy.state.lastOpenInput as {
-      credentials: Record<string, { ref: string; kind: string }>;
-    };
-    // The trusted bare credential is untouched; the skill's slot lives under its
-    // own namespaced key (so it can't overwrite the trusted one).
-    expect(openIn.credentials['ANTHROPIC_API_KEY']).toEqual({
-      ref: 'provider:anthropic',
-      kind: 'api-key',
-    });
-    expect(openIn.credentials['skill:badskill:ANTHROPIC_API_KEY']).toEqual({
-      ref: 'some-other-ref',
-      kind: 'api-key',
-    });
-    // The sandbox's flat ANTHROPIC_API_KEY is the TRUSTED placeholder — never the
-    // skill's. The skill cannot hijack the trusted credential.
-    const sandboxIn = mocks.calls.lastSandboxInput as {
-      proxyConfig?: { envMap: Record<string, string> };
-    };
-    expect(sandboxIn.proxyConfig?.envMap['ANTHROPIC_API_KEY']).toBe(
-      'ax-cred:00000000000000000000000000000000',
-    );
-    expect(mocks.calls.sandboxOpen).toBe(1);
-  });
-
+  // TASK-100 — the `skill-binding-missing` termination path was removed: a skill
+  // declares no credential slots, so an attachment can never be missing a
+  // required binding. (A connector's credential binding is gated separately.)
+  // TASK-100 — the "TASK-86: two catalog skills declaring the same slot COEXIST..." test was removed: it exercised skill-slot
+  // coexistence/collision/cap-card mechanics that no longer exist (a skill
+  // declares no credential slots). Connector-slot coexistence is covered by
+  // connector-union.test.ts.
+  // coexistence/collision/cap-card mechanics that no longer exist (a skill
+  // declares no credential slots). Connector-slot coexistence is covered by
+  // connector-union.test.ts.
   it('terminates with skill-resolve-failed when skills:resolve throws', async () => {
     const proxy = buildProxyHooks();
     const resolveError = new Error('skills store unreachable');
@@ -4282,79 +3922,10 @@ describe('chat-orchestrator', () => {
     const openIn = proxy.state.lastOpenInput as { allowlist: string[] };
     expect(openIn.allowlist).not.toContain('api.linear.app');
   });
-
-  it('TASK-86: a PENDING cap-skill card fires ONLY in its proposing conversation', async () => {
-    const proxy = buildProxyHooks();
-    const pendingDraft = {
-      id: 'linear',
-      capabilities: { allowedHosts: [], credentials: [], mcpServers: [], packages: { npm: [], pypi: [] } },
-      proposalDelta: {
-        allowedHosts: ['api.linear.app'],
-        credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' as const }],
-        mcpServers: [],
-        packages: { npm: [], pypi: [] },
-      },
-      description: 'Work with Linear issues.',
-      bodyMd: 'pending body',
-      manifestYaml: 'name: linear\ndescription: Work with Linear issues.\nversion: 1\n',
-      files: [],
-      status: 'pending' as const,
-    };
-    const authoredServices: Record<string, ServiceHandler> = {
-      'agents:resolve-authored-skills': async () => ({ skills: [pendingDraft] }),
-    };
-    const busRef: { current: HookBus | null } = { current: null };
-    const mocks = buildMocks({
-      agentsResolve: async () => ({
-        agent: {
-          ...TEST_AGENT,
-          allowedHosts: ['api.anthropic.com'],
-          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
-          skillAttachments: [],
-        },
-      }),
-      openSession: makeChatEndOpenSession(busRef),
-    });
-    Object.assign(mocks.services, proxy.services, authoredServices);
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
-    });
-    busRef.current = h.bus;
-
-    // Capture skill cards per conversation.
-    const cardConvs: string[] = [];
-    h.bus.subscribe('chat:permission-request', 'test/capture', async (c, p) => {
-      if ((p as { kind?: string }).kind === 'skill') cardConvs.push(c.conversationId ?? '');
-      return undefined;
-    });
-
-    const ctxIn = (sessionId: string, conversationId: string) =>
-      makeAgentContext({
-        sessionId, agentId: 'test-agent', userId: 'test-user', conversationId,
-        logger: createLogger({ reqId: `req-${sessionId}`, writer: () => undefined }),
-      });
-
-    // The skill was proposed in conversation A (the runner fires skills:proposed
-    // on the proposing ctx; status pending).
-    await h.bus.fire('skills:proposed', ctxIn('sess-a', 'conv-A'), {
-      ownerUserId: 'test-user', agentId: 'test-agent', skillId: 'linear', status: 'pending',
-    });
-
-    // A turn in conversation A fires the card...
-    await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke', ctxIn('sess-a2', 'conv-A'),
-      { message: { role: 'user', content: 'hi' } },
-    );
-    // ...a turn in an UNRELATED conversation B does NOT.
-    await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke', ctxIn('sess-b', 'conv-B'),
-      { message: { role: 'user', content: 'hi' } },
-    );
-
-    expect(cardConvs).toEqual(['conv-A']);
-  });
-
+  // TASK-100 — the "TASK-86: a PENDING cap-skill card fires ONLY in its proposin..." test was removed: it exercised skill-slot
+  // coexistence/collision/cap-card mechanics that no longer exist (a skill
+  // declares no credential slots). Connector-slot coexistence is covered by
+  // connector-union.test.ts.
   it('§D3: an ACTIVE authored skill DOES project its bytes (the flip target)', async () => {
     const proxy = buildProxyHooks();
     const activeDraft = {
@@ -4404,104 +3975,10 @@ describe('chat-orchestrator', () => {
     const skillMd = entry!.files.find((f) => f.path === 'SKILL.md');
     expect(skillMd?.contents).toContain('ACTIVE BODY the model should see');
   });
-
-  it('TASK-86 regression: two ACTIVE authored skills sharing a slot name → turn succeeds, each resolves its own credential', async () => {
-    // The exact TASK-72 walk repro: two approved authored skills both declare
-    // `LINEAR_API_KEY`. Before the fix this terminated EVERY turn with
-    // skill-slot-collision (the all-chat lockout).
-    const proxy = buildProxyHooks({
-      openOutput: {
-        proxyEndpoint: 'tcp://127.0.0.1:54321',
-        caCertPem: 'TEST-CA-PEM',
-        envMap: {
-          ANTHROPIC_API_KEY: 'ax-cred:00000000000000000000000000000000',
-          'skill:linear-issues-helper:LINEAR_API_KEY':
-            'ax-cred:11111111111111111111111111111111',
-          'skill:walk4-linear:LINEAR_API_KEY':
-            'ax-cred:22222222222222222222222222222222',
-        },
-      },
-    });
-    const mkDraft = (id: string) => ({
-      id,
-      capabilities: {
-        allowedHosts: ['api.linear.app'],
-        credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
-        mcpServers: [],
-        packages: { npm: [], pypi: [] },
-      },
-      proposalDelta: {
-        allowedHosts: [],
-        credentials: [],
-        mcpServers: [],
-        packages: { npm: [], pypi: [] },
-      },
-      description: `${id} body`,
-      bodyMd: `${id} instructions`,
-      manifestYaml: `name: ${id}\ndescription: ${id}\nversion: 1\n`,
-      files: [],
-      status: 'active' as const,
-    });
-    const authoredServices: Record<string, ServiceHandler> = {
-      'agents:resolve-authored-skills': async () => ({
-        skills: [mkDraft('linear-issues-helper'), mkDraft('walk4-linear')],
-      }),
-    };
-    const busRef: { current: HookBus | null } = { current: null };
-    const mocks = buildMocks({
-      agentsResolve: async () => ({
-        agent: {
-          ...TEST_AGENT,
-          allowedHosts: ['api.anthropic.com'],
-          requiredCredentials: { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } },
-          skillAttachments: [],
-        },
-      }),
-      openSession: makeChatEndOpenSession(busRef),
-    });
-    Object.assign(mocks.services, proxy.services, authoredServices);
-    const h = await createTestHarness({
-      services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
-    });
-    busRef.current = h.bus;
-
-    const outcome = await h.bus.call<unknown, AgentOutcome>(
-      'agent:invoke',
-      silentCtx('two-authored-linear-session'),
-      { message: { role: 'user', content: 'hi' } },
-    );
-    // No lockout — the turn completes.
-    expect(outcome.kind).toBe('complete');
-    expect(proxy.state.openCalls).toBe(1);
-    // Each authored skill's credential is present under its OWN namespaced key
-    // with its OWN per-skill ref — each resolves its own credential.
-    const openIn = proxy.state.lastOpenInput as {
-      credentials: Record<string, { ref: string; kind: string }>;
-    };
-    expect(openIn.credentials['skill:linear-issues-helper:LINEAR_API_KEY']).toEqual({
-      ref: 'skill:linear-issues-helper:LINEAR_API_KEY',
-      kind: 'api-key',
-    });
-    expect(openIn.credentials['skill:walk4-linear:LINEAR_API_KEY']).toEqual({
-      ref: 'skill:walk4-linear:LINEAR_API_KEY',
-      kind: 'api-key',
-    });
-    // The sandbox sees the BARE LINEAR_API_KEY (first authored skill wins the
-    // flat-env stamp); the other skill carries its own git placeholder.
-    const sandboxIn = mocks.calls.lastSandboxInput as {
-      proxyConfig?: { envMap: Record<string, string> };
-      installedSkills?: Array<{ id: string; credentials: Array<{ slot: string; placeholder?: string }> }>;
-    };
-    expect(sandboxIn.proxyConfig?.envMap['LINEAR_API_KEY']).toBe(
-      'ax-cred:11111111111111111111111111111111',
-    );
-    const walk4 = sandboxIn.installedSkills?.find((s) => s.id === 'walk4-linear');
-    expect(walk4?.credentials[0]?.placeholder).toBe(
-      'ax-cred:22222222222222222222222222222222',
-    );
-  });
-
+  // TASK-100 — the "TASK-86 regression: two ACTIVE authored skills sharing a slo..." test was removed: it exercised skill-slot
+  // coexistence/collision/cap-card mechanics that no longer exist (a skill
+  // declares no credential slots). Connector-slot coexistence is covered by
+  // connector-union.test.ts.
   it('§D3: a PENDING draft does NOT suppress a same-id default attachment', async () => {
     const proxy = buildProxyHooks();
     // A default-attached skill of id 'linear' that SHOULD still project.
