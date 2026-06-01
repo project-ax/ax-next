@@ -173,7 +173,7 @@ export function ModelConfigTab() {
     <div className="max-w-[640px] mx-auto font-sans">
       <div className="mb-5">
         <h2 className="text-2xl font-medium tracking-[-0.018em] mb-1.5">
-          Model configuration
+          Default AI model
         </h2>
         <p className="text-sm leading-[1.55] text-muted-foreground max-w-[56ch]">
           Pick the fast model used for conversation titles and other

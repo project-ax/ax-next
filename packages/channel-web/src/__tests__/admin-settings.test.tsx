@@ -3,7 +3,7 @@
  *
  * Pinned behaviors:
  *   1. Default tab is 'providers' (ProvidersPanel rendered, not AgentForm).
- *   2. Clicking "Model Config" nav item shows ModelConfigTab.
+ *   2. Clicking "Default AI model" nav item shows ModelConfigTab.
  *   3. Clicking "← chat" calls onClose.
  *   4. Clicking "Agents" nav item shows AgentForm content.
  *
@@ -97,9 +97,9 @@ describe('AdminShell', () => {
     });
   });
 
-  it('admin can navigate to Providers (ProvidersPanel)', async () => {
+  it('admin can navigate to AI model keys (ProvidersPanel)', async () => {
     renderShell();
-    const providersBtn = screen.getByRole('button', { name: /^providers$/i });
+    const providersBtn = screen.getByRole('button', { name: /^AI model keys$/i });
     fireEvent.click(providersBtn);
     expect(providersBtn.getAttribute('data-active')).toBe('true');
     await waitFor(() => {
@@ -107,9 +107,9 @@ describe('AdminShell', () => {
     });
   });
 
-  it('clicking "Model Config" nav item shows ModelConfigTab', async () => {
+  it('clicking "Default AI model" nav item shows ModelConfigTab', async () => {
     renderShell();
-    fireEvent.click(screen.getByRole('button', { name: /model config/i }));
+    fireEvent.click(screen.getByRole('button', { name: /default ai model/i }));
     // ModelConfigTab renders a save button.
     await waitFor(() => {
       expect(screen.getByRole('button', { name: /Save changes/i })).toBeTruthy();
@@ -136,8 +136,8 @@ describe('AdminShell', () => {
 
   it('the admin nav items are present in the sidebar', () => {
     renderShell();
-    expect(screen.getByRole('button', { name: /^providers$/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /model config/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^AI model keys$/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^Default AI model$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^agents$/i })).toBeTruthy();
     // The admin connector registry is now labelled "Connector catalog" to
     // disambiguate from the user "Connectors" Settings tab.

@@ -35,7 +35,7 @@ export function AdmitQueueTab() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Admit queue</CardTitle>
+        <CardTitle>Skills awaiting review</CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         {error && (

@@ -18,7 +18,7 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     render(
       <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBackToChat={noop} />,
     );
-    expect(screen.queryByText('Providers')).not.toBeInTheDocument();
+    expect(screen.queryByText('AI model keys')).not.toBeInTheDocument();
     expect(screen.queryByText('Teams')).not.toBeInTheDocument();
     // The admin connector-catalog registry is also hidden for non-admins.
     expect(screen.queryByText('Connector catalog')).not.toBeInTheDocument();
@@ -31,7 +31,7 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
       <AdminSidebar activeTab="providers" isAdmin onTabChange={noop} onBackToChat={noop} />,
     );
     expect(screen.getByText('Skills')).toBeInTheDocument();
-    expect(screen.getByText('Providers')).toBeInTheDocument();
+    expect(screen.getByText('AI model keys')).toBeInTheDocument();
     expect(screen.getByText('Connector catalog')).toBeInTheDocument();
     expect(screen.getByText('Teams')).toBeInTheDocument();
   });
