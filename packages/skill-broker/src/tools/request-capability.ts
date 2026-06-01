@@ -6,6 +6,12 @@ const PLUGIN_NAME = '@ax/skill-broker';
 // trusts the model's skillId shape before handing it to skills:get.
 const SKILL_ID_RE = /^[a-z0-9][a-z0-9._-]{0,127}$/;
 
+// Order-preserving dedup (first occurrence wins). Used to union the skill block's
+// caps with the connector-derived caps without double-listing a shared host/pkg.
+function dedup<T>(items: T[]): T[] {
+  return [...new Set(items)];
+}
+
 export const REQUEST_CAPABILITY_DESCRIPTOR: ToolDescriptor = {
   name: 'request_capability',
   description:
@@ -51,7 +57,31 @@ interface CatalogSkillDetail {
     // SkillCapabilities.packages (skills-parser). Empty arrays when absent.
     packages?: { npm: string[]; pypi: string[] };
   };
+  // TASK-111 — the skill's top-level connector references (TASK-92). The broker
+  // resolves each via connectors:resolve and folds its reach into the card so the
+  // user approves the connector-derived caps too. Optional + `?? []` for a
+  // skills:get that predates the field (legacy skills with no connectors).
+  connectors?: string[];
 }
+
+// TASK-111 — connectors:resolve output (the subset the card folds). Structural
+// mirror of @ax/connectors' ResolveOutput (I2 — no @ax/connectors import); the
+// broker reaches the connector registry only through the bus. The card surfaces
+// the same public manifest data (hosts / slot NAMES / packages) it already shows
+// for the skill's own block — never a backing-mechanism field or a secret.
+interface ConnectorsResolveOutput {
+  id: string;
+  capabilities: {
+    allowedHosts: string[];
+    credentials: { slot: string; kind: 'api-key'; account?: string }[];
+    packages?: { npm?: string[]; pypi?: string[] };
+  };
+}
+
+// Connector id grammar (re-validated at this trust boundary, I2/I5). Mirrors the
+// @ax/connectors store rule — a flat opaque slug; the broker never trusts a
+// skill-declared connector id's shape before handing it to connectors:resolve.
+const CONNECTOR_ID_RE = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 
 // credentials:list returns METADATA ONLY — refs + kinds, NEVER a secret value.
 // Minimal local mirror (I2 — no @ax/credentials import). The broker only learns
@@ -151,6 +181,59 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
         }
       }
 
+      // TASK-111 — the skill→connector cap-resolution bridge, broker side. A
+      // skill declares the connectors it uses via its top-level `connectors[]`
+      // (TASK-92); resolve each via connectors:resolve and fold its reach
+      // (hosts / slot NAMES / packages — the SAME public manifest data the card
+      // already shows for the skill's own block) into the card, so the user
+      // approves the connector-derived caps too. The TASK-93 wall keys the grant
+      // by connectorId on its own; here we only widen the card surface the user
+      // sees (the kind:'skill' card is reused, not forked).
+      //
+      // Best-effort + hasService-gated: a stripped/credential-less preset (no
+      // connectors:resolve) degrades to the skill's own block; a per-connector
+      // resolve failure just omits that connector's reach — it NEVER blocks the
+      // card (mirrors the vault-lookup posture above). A pending authored draft is
+      // never returned by connectors:resolve (it reads only the live table —
+      // TASK-94), so an unapproved connector contributes no reach here either.
+      //
+      // The skill's OWN capability block still contributes in parallel (both
+      // paths live during the half-wired window — TASK-100 closes it).
+      const connectorHosts: string[] = [];
+      const connectorSlots: { slot: string; kind: 'api-key'; account?: string }[] = [];
+      const connectorNpm: string[] = [];
+      const connectorPypi: string[] = [];
+      if (bus.hasService('connectors:resolve')) {
+        // Dedup the reference list + drop any id with a bad shape before resolving.
+        const refs = new Set((detail.connectors ?? []).filter((c) => CONNECTOR_ID_RE.test(c)));
+        for (const connectorId of refs) {
+          try {
+            const resolved = await bus.call<
+              { userId: string; connectorId: string },
+              ConnectorsResolveOutput
+            >('connectors:resolve', toolCtx, { userId: toolCtx.userId, connectorId });
+            for (const h of resolved.capabilities.allowedHosts) connectorHosts.push(h);
+            for (const c of resolved.capabilities.credentials) connectorSlots.push(c);
+            for (const p of resolved.capabilities.packages?.npm ?? []) connectorNpm.push(p);
+            for (const p of resolved.capabilities.packages?.pypi ?? []) connectorPypi.push(p);
+          } catch {
+            // A failed resolve just omits this connector's reach. Never block the card.
+          }
+        }
+      }
+
+      // Union skill-block caps with connector-derived caps, deduped: a host or
+      // package declared by both sources appears once; a slot is keyed by name
+      // (first declaration wins its account/haveExisting — the skill block leads).
+      const allHosts = dedup([...detail.capabilities.allowedHosts, ...connectorHosts]);
+      const slotByName = new Map<string, { slot: string; kind: 'api-key'; account?: string }>();
+      for (const c of [...detail.capabilities.credentials, ...connectorSlots]) {
+        if (!slotByName.has(c.slot)) slotByName.set(c.slot, c);
+      }
+      const skillPkgs = detail.capabilities.packages ?? { npm: [], pypi: [] };
+      const allNpm = dedup([...skillPkgs.npm, ...connectorNpm]);
+      const allPypi = dedup([...skillPkgs.pypi, ...connectorPypi]);
+
       // Surface the ONE bundled approval card (design §11.3, decision #6) — the
       // open-mode security boundary. Public manifest data only: hostnames + slot
       // NAMES (never values). request_capability still returns the minimum to the
@@ -168,16 +251,14 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
         kind: 'skill',
         skillId,
         description: detail.description,
-        hosts: detail.capabilities.allowedHosts,
-        slots: detail.capabilities.credentials.map((c) => ({
+        hosts: allHosts,
+        slots: [...slotByName.values()].map((c) => ({
           slot: c.slot,
           kind: 'api-key' as const,
           ...(c.account !== undefined ? { account: c.account } : {}),
           haveExisting: c.account !== undefined && vaulted.has(`account:${c.account}`),
         })),
-        // Guard a backend that omits packages (pre-Task-2 shape or catalog skill
-        // whose manifest predates the packages capability). Empty = no registry egress.
-        packages: detail.capabilities.packages ?? { npm: [], pypi: [] },
+        packages: { npm: allNpm, pypi: allPypi },
       };
       await bus.fire('chat:permission-request', toolCtx, card);
 

@@ -19,6 +19,7 @@ import {
 } from './credential-namespace.js';
 import {
   resolveEffectiveConnectors,
+  resolveSkillReferencedConnectors,
   foldConnectorCaps,
   connectorCredentialEnvName,
   type FoldConnectorResult,
@@ -332,6 +333,15 @@ export interface ResolvedSkillForOrch {
   // Optional + `?? []` at the construction site for back-compat with a
   // skills:resolve impl that predates the bundle field.
   files?: { path: string; contents: string }[];
+  // TASK-92 / TASK-111 — the skill's top-level `connectors[]` soft-dependency
+  // reference list (a flat list of opaque connector-id slugs). @ax/skills'
+  // `skills:resolve` already returns this (ResolvedSkill.connectors); the mirror
+  // surfaces it so the orchestrator can resolve each referenced connector into
+  // sandbox caps via `connectors:resolve` (the skill→connector cap-resolution
+  // bridge — see resolveSkillReferencedConnectors). Optional + `?? []` at the
+  // read site for back-compat with a skills:resolve / projection that predates
+  // the field. NEVER carries backing-mechanism vocab (just connector-id slugs).
+  connectors?: string[];
 }
 interface SkillsResolveOutput {
   skills: ResolvedSkillForOrch[];
@@ -1807,8 +1817,36 @@ export function createOrchestrator(
     // the per-subject namespace. NON-FATAL throughout — a connector resolve failure
     // yields fewer connectors, never terminates (connectors are additive reach).
     const effectiveConnectors = await resolveEffectiveConnectors(bus, ctx);
+
+    // TASK-111 — the skill→connector cap-resolution bridge. A skill declares the
+    // connectors it uses via its top-level `connectors[]` reference list (TASK-92);
+    // until now that list was parsed + stored but never resolved into reach
+    // ("dead-on-arrival"). Collect every materialized skill's references (the FULL
+    // spawn union: attachments + defaults + builtins + ACTIVE authored drafts —
+    // every skill the model can see), resolve the ones the agent effective set
+    // didn't already fold, and append them so the SINGLE foldConnectorCaps call
+    // below folds skill-referenced connectors through the EXACT SAME path. No
+    // second materialization path (invariant #4). Deduped by id against the
+    // effective set. NON-FATAL (a resolve failure skips that connector).
+    //
+    // The skill's OWN `capabilities` block stays authoritative + materializes in
+    // parallel during the half-wired window (TASK-100 closes it) — both paths
+    // work this card (invariant #3 — no half-wired).
+    const skillConnectorIds = new Set<string>();
+    for (const skill of unionedSkills) {
+      for (const cid of skill.connectors ?? []) skillConnectorIds.add(cid);
+    }
+    const alreadyResolvedConnectorIds = new Set(effectiveConnectors.map((c) => c.id));
+    const skillReferencedConnectors = await resolveSkillReferencedConnectors(
+      bus,
+      ctx,
+      skillConnectorIds,
+      alreadyResolvedConnectorIds,
+    );
+    const allConnectors = [...effectiveConnectors, ...skillReferencedConnectors];
+
     const connectorFold: FoldConnectorResult = foldConnectorCaps(
-      effectiveConnectors,
+      allConnectors,
       baseAllowSet,
       baseCreds,
       slotOwners,

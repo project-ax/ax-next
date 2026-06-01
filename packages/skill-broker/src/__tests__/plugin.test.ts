@@ -22,6 +22,21 @@ function busWithStubs(
     withCatalogSubmit?: boolean;
     /** when true, skills:search-catalog returns [] for ANY intent (force a miss). */
     searchAlwaysEmpty?: boolean;
+    /** TASK-111 — the connector ids the stub `linear` skill references. */
+    linearConnectors?: string[];
+    /** TASK-111 — register a connectors:resolve stub. A function lets a test
+     *  resolve per-id (or throw to exercise the NON-FATAL path); when omitted,
+     *  no connectors:resolve hook is registered (stripped-preset behavior). */
+    connectorsResolve?: (connectorId: string) => {
+      id: string;
+      keyMode?: 'personal' | 'workspace';
+      capabilities: {
+        allowedHosts: string[];
+        credentials: Array<{ slot: string; kind: 'api-key'; account?: string }>;
+        mcpServers?: unknown[];
+        packages?: { npm?: string[]; pypi?: string[] };
+      };
+    };
   } = {},
 ) {
   const bus = new HookBus();
@@ -72,10 +87,22 @@ function busWithStubs(
           allowedHosts: ['api.linear.app'],
           credentials: linearCredentials,
         },
+        // TASK-111 — the skill's connector references (default none, so the
+        // legacy card stays byte-identical; a test opts in via linearConnectors).
+        ...(opts.linearConnectors !== undefined ? { connectors: opts.linearConnectors } : {}),
       } as never;
     }
     throw new PluginError({ code: 'skill-not-found', plugin: 'skills', message: 'nope' });
   });
+  // TASK-111 — optional connectors:resolve stub. The broker resolves a requested
+  // skill's referenced connectors and folds their reach into the approval card.
+  if (opts.connectorsResolve !== undefined) {
+    const resolveFn = opts.connectorsResolve;
+    bus.registerService('connectors:resolve', 'connectors', async (_c, input: unknown) => {
+      const connectorId = (input as { connectorId: string }).connectorId;
+      return resolveFn(connectorId) as never;
+    });
+  }
   if (opts.withVault === true) {
     // Metadata-only vault listing — refs + kinds, NEVER a secret value.
     bus.registerService('credentials:list', 'creds', async (_c, _input: unknown) => ({
@@ -403,6 +430,187 @@ describe('request_capability — bundled approval card (chat:permission-request)
     });
     expect(out).toEqual({ status: 'not-found', skillId: 'ghost' });
     expect(cards).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-111 — request_capability routes through connector-derived caps. When the
+// requested catalog skill declares connectors[], the broker resolves each via
+// connectors:resolve and folds the connector's hosts/slots/packages into the
+// approval card (reusing the existing kind:'skill' card + the TASK-93 wall). The
+// skill's own capability block still contributes (both paths live — no-regression).
+// ---------------------------------------------------------------------------
+
+describe('request_capability — connector-derived caps (TASK-111)', () => {
+  it('folds a referenced connector\'s hosts + slots into the card', async () => {
+    const { bus } = busWithStubs({
+      // Skill declares its own block (api.linear.app + api_key) AND references a
+      // connector that adds reach.
+      linearConnectors: ['gh'],
+      connectorsResolve: (id) => ({
+        id,
+        keyMode: 'personal',
+        capabilities: {
+          allowedHosts: ['api.github.com'],
+          credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+          mcpServers: [],
+          packages: { npm: [], pypi: [] },
+        },
+      }),
+    });
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: Array<{
+      hosts: string[];
+      slots: Array<{ slot: string }>;
+      packages: { npm: string[]; pypi: string[] };
+    }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(cards).toHaveLength(1);
+    // Both the skill's own host AND the connector's host are on the card.
+    expect(cards[0]!.hosts.sort()).toEqual(['api.github.com', 'api.linear.app']);
+    // Both the skill's own slot AND the connector's slot are on the card.
+    expect(cards[0]!.slots.map((s) => s.slot).sort()).toEqual(['GITHUB_TOKEN', 'api_key']);
+  });
+
+  it('dedups a host declared by BOTH the skill block and the connector', async () => {
+    const { bus } = busWithStubs({
+      linearConnectors: ['linear-conn'],
+      connectorsResolve: (id) => ({
+        id,
+        capabilities: {
+          // Same host the skill block already declares.
+          allowedHosts: ['api.linear.app'],
+          credentials: [],
+          mcpServers: [],
+          packages: { npm: [], pypi: [] },
+        },
+      }),
+    });
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: Array<{ hosts: string[] }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    // api.linear.app appears exactly once despite both sources declaring it.
+    expect(cards[0]!.hosts).toEqual(['api.linear.app']);
+  });
+
+  it('folds a connector\'s packages into the card', async () => {
+    const { bus } = busWithStubs({
+      linearConnectors: ['sf'],
+      connectorsResolve: (id) => ({
+        id,
+        capabilities: {
+          allowedHosts: [],
+          credentials: [],
+          mcpServers: [],
+          packages: { npm: ['@salesforce/cli'], pypi: [] },
+        },
+      }),
+    });
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: Array<{ packages: { npm: string[]; pypi: string[] } }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(cards[0]!.packages.npm).toEqual(['@salesforce/cli']);
+  });
+
+  it('carries the connector slot\'s account tag (+ haveExisting from the vault)', async () => {
+    const { bus, setVault } = busWithStubs({
+      linearConnectors: ['gdrive'],
+      withVault: true,
+      connectorsResolve: (id) => ({
+        id,
+        capabilities: {
+          allowedHosts: [],
+          credentials: [{ slot: 'GDRIVE_TOKEN', kind: 'api-key', account: 'google' }],
+          mcpServers: [],
+          packages: { npm: [], pypi: [] },
+        },
+      }),
+    });
+    setVault(['account:google']);
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: Array<{ slots: Array<Record<string, unknown>> }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    const connectorSlot = cards[0]!.slots.find((s) => s['slot'] === 'GDRIVE_TOKEN');
+    expect(connectorSlot).toMatchObject({
+      slot: 'GDRIVE_TOKEN',
+      account: 'google',
+      haveExisting: true,
+    });
+  });
+
+  it('is NON-FATAL: a throwing connectors:resolve still fires the card with the skill\'s own caps', async () => {
+    const { bus } = busWithStubs({
+      linearConnectors: ['boom'],
+      connectorsResolve: () => {
+        throw new Error('resolve failed');
+      },
+    });
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: Array<{ hosts: string[]; slots: Array<{ slot: string }> }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    const ack = await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(ack).toEqual({ status: 'requested', skillId: 'linear' });
+    expect(cards).toHaveLength(1);
+    // The connector resolve failed, so only the skill's OWN caps are on the card.
+    expect(cards[0]!.hosts).toEqual(['api.linear.app']);
+    expect(cards[0]!.slots.map((s) => s.slot)).toEqual(['api_key']);
+  });
+
+  it('no-regression: a skill with NO connectors fires the unchanged legacy card', async () => {
+    // No linearConnectors, no connectorsResolve → exact legacy shape.
+    const { bus } = busWithStubs();
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: unknown[] = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(cards[0]).toEqual({
+      kind: 'skill',
+      skillId: 'linear',
+      description: 'Read your Linear issues',
+      hosts: ['api.linear.app'],
+      slots: [{ slot: 'api_key', kind: 'api-key', haveExisting: false }],
+      packages: { npm: [], pypi: [] },
+    });
   });
 });
 

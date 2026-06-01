@@ -2350,6 +2350,8 @@ describe('chat-orchestrator', () => {
     manifestYaml: string;
     // JIT Phase 1a — extra (non-SKILL.md) bundle files. Optional in fixtures.
     files?: Array<{ path: string; contents: string }>;
+    // TASK-111 — the skill's connector references. Optional in fixtures.
+    connectors?: string[];
   }
 
   interface SkillsHookState {
@@ -2472,6 +2474,259 @@ describe('chat-orchestrator', () => {
       ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
       'skill:github:GITHUB_TOKEN': { ref: 'gh-pat', kind: 'api-key' },
     });
+  });
+
+  // ---------------------------------------------------------------------
+  // TASK-111 — the skill→connector cap-resolution bridge. A skill declares
+  // the connectors it uses via its top-level connectors[]; the orchestrator
+  // resolves each via connectors:resolve and folds its reach through the
+  // SAME path the agent effective connector set uses. The skill's own
+  // capability block keeps materializing in parallel (no regression).
+  // ---------------------------------------------------------------------
+
+  /** A connectors:resolve stub: resolves each id from the supplied map; an id
+   *  not in the map throws (exercises the NON-FATAL skip). Records resolve calls. */
+  function buildConnectorResolveHook(
+    connectors: Record<
+      string,
+      {
+        allowedHosts: string[];
+        credentials: Array<{ slot: string; kind: 'api-key'; account?: string }>;
+        mcpServers?: unknown[];
+        packages?: { npm?: string[]; pypi?: string[] };
+      }
+    >,
+  ): { resolveCalls: string[]; services: Record<string, ServiceHandler> } {
+    const resolveCalls: string[] = [];
+    return {
+      resolveCalls,
+      services: {
+        'connectors:resolve': async (_ctx, input) => {
+          const id = (input as { connectorId: string }).connectorId;
+          resolveCalls.push(id);
+          const c = connectors[id];
+          if (c === undefined) throw new Error(`connector '${id}' not found`);
+          return {
+            id,
+            keyMode: 'personal',
+            capabilities: {
+              allowedHosts: c.allowedHosts,
+              credentials: c.credentials,
+              mcpServers: c.mcpServers ?? [],
+              packages: c.packages ?? { npm: [], pypi: [] },
+            },
+            credentialPlan: [],
+            requiresSharedKeyConsent: false,
+          };
+        },
+      },
+    };
+  }
+
+  it('TASK-111: resolves a skill\'s connectors[] into sandbox caps (hosts + creds + installed entry)', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        'linear-triage': {
+          id: 'linear-triage',
+          // The skill carries NO capability block of its own — its reach comes
+          // entirely from the referenced connector (the connectors-first-class
+          // shape). connectors[] used to be dead-on-arrival; this is the bridge.
+          capabilities: { allowedHosts: [], credentials: [] },
+          connectors: ['linear'],
+          bodyMd: 'Triage the Linear cycle.',
+          manifestYaml: 'name: linear-triage\nversion: 1\nconnectors: [linear]\n',
+        },
+      },
+    });
+    const connHook = buildConnectorResolveHook({
+      linear: {
+        allowedHosts: ['api.linear.app'],
+        credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+      },
+    });
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          skillAttachments: [{ skillId: 'linear-triage', credentialBindings: {} }],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services, connHook.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('skill-connector-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    // The skill's referenced connector was resolved.
+    expect(connHook.resolveCalls).toEqual(['linear']);
+
+    const openIn = proxy.state.lastOpenInput as {
+      allowlist: string[];
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    // The connector's host reached the proxy allowlist.
+    expect(openIn.allowlist).toContain('api.linear.app');
+    // The connector's credential slot reached the credential map under the
+    // connector namespace (`connector:<id>:<slot>`), ref = account:<connectorId>.
+    expect(openIn.credentials).toMatchObject({
+      'connector:linear:LINEAR_API_KEY': { ref: 'account:linear', kind: 'api-key' },
+    });
+
+    // A synthetic connector installed-skill entry reached the sandbox spawn.
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{ id: string }>;
+    };
+    const ids = (sandboxIn.installedSkills ?? []).map((s) => s.id);
+    expect(ids.some((id) => id.startsWith('cx-linear-'))).toBe(true);
+  });
+
+  it('TASK-111: a connector that is BOTH a skill reference AND in the effective set is folded once', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        's': {
+          id: 's',
+          capabilities: { allowedHosts: [], credentials: [] },
+          connectors: ['shared'],
+          bodyMd: 'body',
+          manifestYaml: 'name: s\nversion: 1\nconnectors: [shared]\n',
+        },
+      },
+    });
+    const connHook = buildConnectorResolveHook({
+      shared: {
+        allowedHosts: ['api.shared.example'],
+        credentials: [],
+      },
+    });
+    // The agent effective set ALSO carries `shared` (owner's own connector),
+    // so the skill reference must dedup against it — resolved by the effective
+    // path, NOT re-resolved by the skill path.
+    const effectiveServices: Record<string, ServiceHandler> = {
+      'connectors:list': async () => ({ connectors: [{ id: 'shared' }] }),
+    };
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          skillAttachments: [{ skillId: 's', credentialBindings: {} }],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(
+      mocks.services,
+      proxy.services,
+      skillsHooks.services,
+      connHook.services,
+      effectiveServices,
+    );
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('skill-connector-dedup'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    // `shared` resolved exactly once (via the effective `connectors:list` →
+    // `connectors:resolve`); the skill path saw it in alreadyResolved and skipped.
+    expect(connHook.resolveCalls.filter((id) => id === 'shared')).toHaveLength(1);
+    // Folded once → exactly one installed entry for it.
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      installedSkills?: Array<{ id: string }>;
+    };
+    const sharedEntries = (sandboxIn.installedSkills ?? []).filter((s) =>
+      s.id.startsWith(`cx-shared-`),
+    );
+    expect(sharedEntries).toHaveLength(1);
+  });
+
+  it('TASK-111 no-regression: a legacy capability-block skill (no connectors[]) still materializes', async () => {
+    const proxy = buildProxyHooks();
+    const skillsHooks = buildSkillsHooks({
+      skills: {
+        github: {
+          id: 'github',
+          capabilities: {
+            allowedHosts: ['api.github.com'],
+            credentials: [{ slot: 'GITHUB_TOKEN', kind: 'api-key' }],
+          },
+          // No connectors[] — pure legacy path.
+          bodyMd: 'Use the GitHub API.',
+          manifestYaml: 'name: github\nversion: 1\n',
+        },
+      },
+    });
+    // connectors:resolve registered but should NEVER be called (no references).
+    const connHook = buildConnectorResolveHook({});
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+          skillAttachments: [
+            { skillId: 'github', credentialBindings: { GITHUB_TOKEN: 'gh-pat' } },
+          ],
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    Object.assign(mocks.services, proxy.services, skillsHooks.services, connHook.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('legacy-skill-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    // The legacy capability block still materialized unchanged.
+    const openIn = proxy.state.lastOpenInput as {
+      allowlist: string[];
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    expect(openIn.allowlist).toContain('api.github.com');
+    expect(openIn.credentials).toMatchObject({
+      'skill:github:GITHUB_TOKEN': { ref: 'gh-pat', kind: 'api-key' },
+    });
+    // No connector resolution happened (the skill referenced none).
+    expect(connHook.resolveCalls).toEqual([]);
   });
 
   it('TASK-33: per-user attachment beats agent-global on id collision and unions a per-user-only skill', async () => {

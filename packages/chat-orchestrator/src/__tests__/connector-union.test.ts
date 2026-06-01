@@ -7,6 +7,7 @@ import {
 } from '@ax/core';
 import {
   resolveEffectiveConnectors,
+  resolveSkillReferencedConnectors,
   foldConnectorCaps,
   connectorCredentialEnvName,
   connectorSandboxDirId,
@@ -123,6 +124,106 @@ describe('resolveEffectiveConnectors', () => {
   it('returns [] when no connector hooks are registered (stripped preset)', async () => {
     const out = await resolveEffectiveConnectors(busWith({}), ctx());
     expect(out).toEqual([]);
+  });
+});
+
+describe('resolveSkillReferencedConnectors (TASK-111)', () => {
+  it('resolves a skill-referenced connector id not already in the effective set', async () => {
+    const bus = busWith({
+      'connectors:resolve': async (_c, input) => {
+        const id = (input as { connectorId: string }).connectorId;
+        return { id, capabilities: CAPS(), usageNote: `${id} note` };
+      },
+    });
+    const out = await resolveSkillReferencedConnectors(
+      bus,
+      ctx(),
+      ['linear'],
+      new Set(),
+    );
+    expect(out.map((c) => c.id)).toEqual(['linear']);
+    expect(out[0]!.usageNote).toBe('linear note');
+    expect(out[0]!.capabilities.allowedHosts).toEqual(['api.example.com']);
+  });
+
+  it('dedups: an id already in the effective set is NOT re-resolved', async () => {
+    const resolved: string[] = [];
+    const bus = busWith({
+      'connectors:resolve': async (_c, input) => {
+        const id = (input as { connectorId: string }).connectorId;
+        resolved.push(id);
+        return { id, capabilities: CAPS() };
+      },
+    });
+    const out = await resolveSkillReferencedConnectors(
+      bus,
+      ctx(),
+      ['shared', 'mine'],
+      new Set(['shared']), // already in the agent effective set
+    );
+    // Only 'mine' is resolved; 'shared' is skipped (already folded).
+    expect(out.map((c) => c.id)).toEqual(['mine']);
+    expect(resolved).toEqual(['mine']);
+  });
+
+  it('dedups duplicate ids within the skill reference list (resolve once)', async () => {
+    const resolved: string[] = [];
+    const bus = busWith({
+      'connectors:resolve': async (_c, input) => {
+        const id = (input as { connectorId: string }).connectorId;
+        resolved.push(id);
+        return { id, capabilities: CAPS() };
+      },
+    });
+    const out = await resolveSkillReferencedConnectors(
+      bus,
+      ctx(),
+      ['linear', 'linear', 'gh'],
+      new Set(),
+    );
+    expect(out.map((c) => c.id).sort()).toEqual(['gh', 'linear']);
+    // 'linear' resolved exactly once despite the duplicate reference.
+    expect(resolved.sort()).toEqual(['gh', 'linear']);
+  });
+
+  it('is NON-FATAL: a per-id resolve failure skips just that connector', async () => {
+    const bus = busWith({
+      'connectors:resolve': async (_c, input) => {
+        const id = (input as { connectorId: string }).connectorId;
+        if (id === 'bad') throw new Error('not found');
+        return { id, capabilities: CAPS() };
+      },
+    });
+    const out = await resolveSkillReferencedConnectors(
+      bus,
+      ctx(),
+      ['ok', 'bad'],
+      new Set(),
+    );
+    expect(out.map((c) => c.id)).toEqual(['ok']);
+  });
+
+  it('returns [] when connectors:resolve is unregistered (stripped preset)', async () => {
+    const out = await resolveSkillReferencedConnectors(
+      busWith({}),
+      ctx(),
+      ['linear'],
+      new Set(),
+    );
+    expect(out).toEqual([]);
+  });
+
+  it('returns [] for an empty id list (no resolve calls)', async () => {
+    let called = false;
+    const bus = busWith({
+      'connectors:resolve': async () => {
+        called = true;
+        return { id: 'x', capabilities: CAPS() };
+      },
+    });
+    const out = await resolveSkillReferencedConnectors(bus, ctx(), [], new Set());
+    expect(out).toEqual([]);
+    expect(called).toBe(false);
   });
 });
 
