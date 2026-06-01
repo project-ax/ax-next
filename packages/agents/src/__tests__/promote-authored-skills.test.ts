@@ -161,26 +161,24 @@ async function createPersonalAgent(
 }
 
 /**
- * Seed an authored skill the TASK-74 way: propose it through `skills:propose`,
- * which writes the `skills_v1_authored` row that `agents:list-authored-skills`
- * (the admin promote reader) now reads. (The retired `seedFile` wrote a
- * `.ax/draft-skills` git file that the workspace scan used to pick up.) `caps`
- * (a frontmatter capabilities block, e.g. `allowedHosts`) sends the proposal to
- * `pending`, but the promote reader surfaces every non-deleted status — and the
- * promote route replaces the file's caps with admin grants anyway.
+ * Seed an authored skill via `skills:propose`, which writes the
+ * `skills_v1_authored` row that `agents:list-authored-skills` (the admin promote
+ * reader) reads. TASK-100 — a skill manifest declares no capabilities; it
+ * references the connectors it uses. `connectors` adds a connectors[] list that
+ * the promote preserves into the promoted skill.
  */
 async function seedAuthored(
   h: TestHarness,
   id: string,
   ownerUserId: string,
   agentId: string,
-  opts: { allowedHosts?: string[] } = {},
+  opts: { connectors?: string[] } = {},
 ): Promise<void> {
-  const capBlock =
-    opts.allowedHosts && opts.allowedHosts.length > 0
-      ? `\ncapabilities:\n  allowedHosts:\n${opts.allowedHosts.map((host) => `    - ${host}`).join('\n')}`
+  const connBlock =
+    opts.connectors && opts.connectors.length > 0
+      ? `\nconnectors:\n${opts.connectors.map((c) => `  - ${c}`).join('\n')}`
       : '';
-  const manifestYaml = `name: ${id}\ndescription: A skill called ${id}\nversion: 1${capBlock}`;
+  const manifestYaml = `name: ${id}\ndescription: A skill called ${id}\nversion: 1${connBlock}`;
   const ctx = makeAgentContext({ userId: ownerUserId, agentId, sessionId: 'test-seed' });
   await h.bus.call('skills:propose', ctx, {
     ownerUserId,
@@ -239,27 +237,19 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     expect((bodyOf() as { error: string }).error).toBe('forbidden');
   });
 
-  it('promote clean authored skill to global scope → 200; skills:get returns it with admin grants', async () => {
+  it('promote clean authored skill to global scope → 200; skills:get returns it cap-free', async () => {
     const h = await makeHarness({ id: 'admin', isAdmin: true });
     const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
     const agentId = await createPersonalAgent(h, 'alice');
 
-    // Seed the authored skill (no capabilities in the file).
+    // Seed the authored skill (no capabilities — TASK-100).
     await seedAuthored(h, 'foo', 'alice', agentId);
 
     const { res, statusOf, bodyOf } = mkRes();
     await handlers.promoteAuthoredSkill(
       mkReq({
         params: { id: agentId },
-        body: {
-          skillId: 'foo',
-          targetScope: 'global',
-          grants: {
-            allowedHosts: ['api.foo.com'],
-            credentials: [],
-            mcpServers: [],
-          },
-        },
+        body: { skillId: 'foo', targetScope: 'global' },
       }),
       res,
     );
@@ -271,20 +261,22 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
       targetScope: 'global',
     });
 
-    // Verify the skill landed in the global store with admin-supplied hosts.
+    // TASK-100 — the promoted skill carries no capability block; its reach is the
+    // connectors it references (none here).
     const skill = (await getInstalledSkill(h, 'foo', 'global')) as {
-      capabilities: { allowedHosts: string[] };
+      connectors: string[];
     };
-    expect(skill.capabilities.allowedHosts).toEqual(['api.foo.com']);
+    expect('capabilities' in skill).toBe(false);
+    expect(skill.connectors).toEqual([]);
   });
 
-  it('authored file WITH capabilities → promote with different grants → resulting skill uses admin grants, NOT authored file caps', async () => {
+  it('authored file connectors are PRESERVED on promote (legacy admin grants are ignored — TASK-100)', async () => {
     const h = await makeHarness({ id: 'admin', isAdmin: true });
     const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
     const agentId = await createPersonalAgent(h, 'alice');
 
-    // Authored file declares allowedHosts: [evil.com].
-    await seedAuthored(h, 'foo', 'alice', agentId, { allowedHosts: ['api.evil.com'] });
+    // Authored file references a connector.
+    await seedAuthored(h, 'foo', 'alice', agentId, { connectors: ['github'] });
 
     const { res, statusOf } = mkRes();
     await handlers.promoteAuthoredSkill(
@@ -293,11 +285,8 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
         body: {
           skillId: 'foo',
           targetScope: 'global',
-          grants: {
-            allowedHosts: ['api.foo.com'],
-            credentials: [],
-            mcpServers: [],
-          },
+          // Legacy admin grants are accepted on the wire but IGNORED (deprecated).
+          grants: { allowedHosts: ['api.foo.com'], credentials: [], mcpServers: [] },
         },
       }),
       res,
@@ -305,12 +294,12 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
 
     expect(statusOf()).toBe(200);
 
-    // Admin grants must win — 'api.evil.com' must NOT appear.
+    // The promoted skill carries no caps; it preserves the authored connector ref.
     const skill = (await getInstalledSkill(h, 'foo', 'global')) as {
-      capabilities: { allowedHosts: string[] };
+      connectors: string[];
     };
-    expect(skill.capabilities.allowedHosts).toEqual(['api.foo.com']);
-    expect(skill.capabilities.allowedHosts).not.toContain('api.evil.com');
+    expect('capabilities' in skill).toBe(false);
+    expect(skill.connectors).toEqual(['github']);
   });
 
   it('missing authored skill id → 404 authored-skill-not-found', async () => {
@@ -341,21 +330,13 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
     const agentId = await createPersonalAgent(h, 'alice');
 
-    await seedAuthored(h, 'foo', 'alice', agentId);
+    await seedAuthored(h, 'foo', 'alice', agentId, { connectors: ['github'] });
 
     const { res, statusOf, bodyOf } = mkRes();
     await handlers.promoteAuthoredSkill(
       mkReq({
         params: { id: agentId },
-        body: {
-          skillId: 'foo',
-          targetScope: 'user',
-          grants: {
-            allowedHosts: ['api.foo.com'],
-            credentials: [],
-            mcpServers: [],
-          },
-        },
+        body: { skillId: 'foo', targetScope: 'user' },
       }),
       res,
     );
@@ -363,13 +344,14 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     expect(statusOf()).toBe(200);
     expect((bodyOf() as { targetScope: string }).targetScope).toBe('user');
 
-    // Skill must be in user scope under alice, NOT global.
+    // Skill must be in user scope under alice, NOT global; cap-free + connectors preserved.
     const userSkill = (await getInstalledSkill(h, 'foo', 'user', 'alice')) as {
-      capabilities: { allowedHosts: string[] };
+      connectors: string[];
       scope: string;
     };
     expect(userSkill.scope).toBe('user');
-    expect(userSkill.capabilities.allowedHosts).toEqual(['api.foo.com']);
+    expect('capabilities' in userSkill).toBe(false);
+    expect(userSkill.connectors).toEqual(['github']);
   });
 
   it('targetScope:user on team agent → 400 team-agent-user-scope-unsupported', async () => {
