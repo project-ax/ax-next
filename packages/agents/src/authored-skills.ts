@@ -39,8 +39,13 @@ async function listAuthoredRows(
 
 /**
  * Parse one authored skill's manifest into a promote-UI summary, or null when
- * it's malformed. Flags any declared capability so the promote UI can say
- * "remove capabilities first" (or, post-gate, surface that it needs approval).
+ * it's malformed.
+ *
+ * TASK-100 — a skill manifest can no longer declare capabilities: the parser
+ * REJECTS any capabilities block, so a cap-bearing draft fails to parse and is
+ * skipped here (returns null). A skill that DOES parse is by construction
+ * cap-free, so `hasForbiddenCapabilities` is always `false`. The field is kept
+ * (the promote UI still reads it) but is now structurally always false.
  */
 function summarizeAuthoredSkill(
   skillId: string,
@@ -49,14 +54,8 @@ function summarizeAuthoredSkill(
 ): AuthoredSkillSummary | null {
   const parsed = parseSkillManifest(manifestYaml);
   if (!parsed.ok) return null;
-  const { capabilities, description, version } = parsed.value;
-  const hasForbiddenCapabilities =
-    capabilities.allowedHosts.length > 0 ||
-    capabilities.credentials.length > 0 ||
-    capabilities.mcpServers.length > 0 ||
-    (capabilities.packages?.npm.length ?? 0) > 0 ||
-    (capabilities.packages?.pypi.length ?? 0) > 0;
-  return { id: skillId, description, version, bodyMd, hasForbiddenCapabilities };
+  const { description, version, connectors } = parsed.value;
+  return { id: skillId, description, version, bodyMd, connectors, hasForbiddenCapabilities: false };
 }
 
 /**

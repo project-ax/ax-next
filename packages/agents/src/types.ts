@@ -275,20 +275,23 @@ export interface AgentsCreatedEvent {
 // --- agents:list-authored-skills ---------------------------------------------
 
 /**
- * A SKILL.md file found under `.ax/draft-skills/<id>/SKILL.md` in an agent's
- * workspace. Returned by `agents:list-authored-skills`.
+ * An agent-authored skill, returned by `agents:list-authored-skills` for the
+ * human-reviewed promote UI.
  *
- * `hasForbiddenCapabilities` is true when the parsed manifest declares any
- * `allowedHosts`, `credentials`, or `mcpServers` entries. Agent-authored
- * files MUST NOT declare capabilities (half-trust: an agent cannot grant
- * itself external reach). We flag rather than drop so the promote UI can
- * explain what must change before the skill can be promoted.
+ * TASK-100 — a skill manifest can no longer declare capabilities: the parser
+ * REJECTS any capabilities block, so a cap-bearing draft never parses and is
+ * skipped. `hasForbiddenCapabilities` is therefore always `false` (kept for the
+ * promote UI's gate, which can no longer trip). A skill's reach is the
+ * `connectors` it references, carried here so a promoted skill preserves them.
  */
 export interface AuthoredSkillSummary {
   id: string;
   description: string;
   version: number;
   bodyMd: string;
+  /** The connector ids this skill references (TASK-92). Preserved on promote. */
+  connectors: string[];
+  /** @deprecated TASK-100 — always false (a skill can't declare capabilities). */
   hasForbiddenCapabilities: boolean;
 }
 
@@ -310,25 +313,28 @@ export interface AgentsListAuthoredSkillsOutput {
 /** Resolved-skill projection shape (structurally mirrors the orchestrator's
  * ResolvedSkillForOrch — NOT an @ax/skills import, per invariant #2).
  *
- * `capabilities` is the APPROVED subset (proposal ∩ approved-store) — the
- * enforcement source the orchestrator feeds to proxy:open-session. `proposalDelta`
- * is the UNAPPROVED remainder (proposal − approved) — Phase 4 PR-B fires the
- * upfront approval card from it. `manifestYaml` is caps-stripped (name +
- * description + version only): the materialized SKILL.md the SDK sees never
- * carries a capabilities block, so frontmatter alone grants nothing. */
+ * TASK-100 — a skill carries no capability block; its only declared reach is the
+ * `connectors` it references (resolved into sandbox caps by the orchestrator's
+ * skill→connector bridge). A model-authored skill is therefore always zero-
+ * reach instruction scaffolding — there is no per-skill capability proposal or
+ * delta, and so no per-skill capability approval card (the connector approval
+ * card gates a connector's reach instead). `manifestYaml` is the authored
+ * SKILL.md verbatim (already cap-free — the parser rejects a capabilities
+ * block). */
 export interface AuthoredResolvedSkill {
   id: string;
   description: string;
-  capabilities: SkillCapabilities;
-  proposalDelta: SkillCapabilities;
+  /** The connector ids this authored skill references (TASK-92). A NAME only —
+   * a pending/unapproved connector grants ZERO reach (connectors:resolve reads
+   * the live human-approved/curated table). */
+  connectors: string[];
   bodyMd: string;
   manifestYaml: string;
   files: Array<{ path: string; contents: string }>;
-  /** The hybrid-gate verdict (TASK-76, §D3). `quarantined` is already omitted
-   * upstream; the orchestrator consumes this to MATERIALIZE only `active`
-   * skills' bytes into the spawn (a `pending` skill projects nothing — "no bytes
-   * project" — but still drives the approval card from description+proposalDelta
-   * until a human approves and it flips to `active`). */
+  /** The gate verdict (TASK-76, §D3). `quarantined` is already omitted upstream;
+   * the orchestrator consumes this to MATERIALIZE only `active` skills' bytes
+   * into the spawn (a `pending` skill projects nothing until a human action
+   * flips it to `active`). */
   status: 'active' | 'pending';
 }
 
@@ -341,36 +347,12 @@ export interface AgentsResolveAuthoredSkillsOutput {
   skills: AuthoredResolvedSkill[];
 }
 
-const CapabilitySlotSchema = z.object({
-  slot: z.string(),
-  kind: z.literal('api-key'),
-  description: z.string().optional(),
-  account: z.string().optional(),
-});
-const McpServerSpecSchema = z.object({
-  name: z.string(),
-  transport: z.union([z.literal('stdio'), z.literal('http')]),
-  command: z.string().optional(),
-  args: z.array(z.string()).optional(),
-  env: z.record(z.string()).optional(),
-  url: z.string().optional(),
-  allowedHosts: z.array(z.string()),
-  credentials: z.array(CapabilitySlotSchema),
-});
-const SkillCapabilitiesSchema = z.object({
-  allowedHosts: z.array(z.string()),
-  credentials: z.array(CapabilitySlotSchema),
-  mcpServers: z.array(McpServerSpecSchema),
-  packages: z.object({ npm: z.array(z.string()), pypi: z.array(z.string()) }),
-});
-
 export const AgentsResolveAuthoredSkillsOutputSchema = z.object({
   skills: z.array(
     z.object({
       id: z.string(),
       description: z.string(),
-      capabilities: SkillCapabilitiesSchema,
-      proposalDelta: SkillCapabilitiesSchema,
+      connectors: z.array(z.string()),
       bodyMd: z.string(),
       manifestYaml: z.string(),
       files: z.array(z.object({ path: z.string(), contents: z.string() })),
