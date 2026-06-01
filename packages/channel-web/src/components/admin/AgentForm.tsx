@@ -13,10 +13,12 @@
  *     or PATCHes (edit) and re-fetches the list on success.
  *
  * Visibility radio toggles the team picker. The teams list comes from
- * `/admin/teams`. The chip inputs (`allowedTools`, `mcpConfigIds`) are
- * deliberately dumb comma-separated text fields. A drag-reorder
- * multiselect is on the deferred polish list — admin paths are
- * low-traffic.
+ * `/admin/teams`. `allowedTools` stays a dumb comma-separated text field;
+ * the old raw `mcpConfigIds` chip field is replaced (TASK-98) by a connector
+ * PICKER — a checkbox list over `/admin/connectors`. Selected connector ids
+ * are written into the agent's `mcpConfigIds` field, which stays the live
+ * binding the orchestrator / sandbox read (the field is kept load-bearing;
+ * only the UI changes from a jargon chip to a named picker).
  */
 import { useEffect, useState } from 'react';
 import {
@@ -24,20 +26,20 @@ import {
   createAgent,
   patchAgent,
   deleteAgent,
-  listMcpServers,
   listTeams,
   type AdminAgent,
   type AdminAgentInput,
 } from '../../lib/admin';
+import { listConnectors, type ConnectorSummary } from '../../lib/connectors';
 import { SkillAttachmentsSection } from './SkillAttachmentsSection';
 import { AuthoredSkillsSection } from './AuthoredSkillsSection';
 import type { Team } from '../../../mock/admin/teams';
-import type { McpServer } from '../../../mock/admin/mcp-servers';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
+import { Checkbox } from '@/components/ui/checkbox';
 import { RoleCard } from './RoleCard';
 
 const MODELS = [
@@ -53,7 +55,9 @@ type FormState = {
   systemPrompt: string;
   model: string;
   allowedTools: string;
-  mcpConfigIds: string;
+  /** The connectors attached to this agent, by id. Written into the agent's
+   *  `mcpConfigIds` field (kept load-bearing) on submit. */
+  connectorIds: string[];
 };
 
 const emptyForm = (): FormState => ({
@@ -63,7 +67,7 @@ const emptyForm = (): FormState => ({
   systemPrompt: '',
   model: MODELS[0] ?? 'claude-sonnet-4-6',
   allowedTools: '',
-  mcpConfigIds: '',
+  connectorIds: [],
 });
 
 const formFromAgent = (a: AdminAgent): FormState => ({
@@ -73,7 +77,7 @@ const formFromAgent = (a: AdminAgent): FormState => ({
   systemPrompt: a.systemPrompt,
   model: a.model || MODELS[0] || 'claude-sonnet-4-6',
   allowedTools: (a.allowedTools ?? []).join(', '),
-  mcpConfigIds: (a.mcpConfigIds ?? []).join(', '),
+  connectorIds: a.mcpConfigIds ?? [],
 });
 
 const splitChips = (s: string): string[] =>
@@ -88,7 +92,7 @@ export function AgentForm() {
   // Distinguishing the two prevents writing an empty `teamId` if the
   // user toggles to `team` before `/admin/teams` resolves.
   const [teams, setTeams] = useState<Team[] | null>(null);
-  const [mcps, setMcps] = useState<McpServer[]>([]);
+  const [connectors, setConnectors] = useState<ConnectorSummary[]>([]);
   const [editing, setEditing] = useState<AdminAgent | 'new' | null>(null);
   const [form, setForm] = useState<FormState>(() => emptyForm());
   const [busy, setBusy] = useState(false);
@@ -107,19 +111,19 @@ export function AgentForm() {
     void refresh();
   }, []);
 
-  // Teams + mcp servers are only needed once the form actually opens —
-  // they feed the team picker and the chip placeholder. Defer fetching
-  // until then so the list view stays a single round-trip. Both lookups
-  // are best-effort: if either fails or returns a shape we can't read,
-  // fall back to empty arrays — the form still submits.
+  // Teams + connectors are only needed once the form actually opens — they
+  // feed the team picker and the connector picker. Defer fetching until then
+  // so the list view stays a single round-trip. Both lookups are best-effort:
+  // if either fails or returns a shape we can't read, fall back to empty
+  // arrays — the form still submits.
   useEffect(() => {
     if (editing === null) return;
     void listTeams()
       .then((t) => setTeams(t ?? []))
       .catch(() => setTeams([]));
-    void listMcpServers()
-      .then((m) => setMcps(m ?? []))
-      .catch(() => setMcps([]));
+    void listConnectors()
+      .then((c) => setConnectors(c ?? []))
+      .catch(() => setConnectors([]));
   }, [editing]);
 
   const startNew = () => {
@@ -153,10 +157,12 @@ export function AgentForm() {
     setBusy(true);
     setError(null);
     const allowedTools = splitChips(form.allowedTools);
-    const mcpConfigIds = splitChips(form.mcpConfigIds);
+    // Selected connector ids ARE the agent's mcpConfigIds (kept load-bearing —
+    // the orchestrator / sandbox read this field for the agent's MCP backing).
+    const mcpConfigIds = form.connectorIds;
     if (allowedTools.length === 0 && mcpConfigIds.length === 0) {
       setBusy(false);
-      setError('agent must list at least one tool or one MCP config');
+      setError('agent must list at least one tool or one connector');
       return;
     }
     const base: AdminAgentInput = {
@@ -415,24 +421,50 @@ export function AgentForm() {
             />
           </div>
 
-          {/* MCP servers */}
+          {/* Connectors — attach the services this agent can reach. */}
           <div className="flex flex-col gap-2">
-            <Label htmlFor="agent-mcps">MCP servers</Label>
-            <Input
-              id="agent-mcps"
-              placeholder={
-                mcps.length
-                  ? `e.g. ${mcps
-                      .slice(0, 2)
-                      .map((m) => m.id)
-                      .join(', ')}`
-                  : 'comma-separated server IDs'
-              }
-              value={form.mcpConfigIds}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, mcpConfigIds: e.target.value }))
-              }
-            />
+            <span className="text-sm font-medium leading-none">Connectors</span>
+            {connectors.length === 0 ? (
+              <p className="text-xs text-muted-foreground">
+                No connectors yet. Create one under Connectors, then attach it
+                here.
+              </p>
+            ) : (
+              <div className="flex flex-col gap-1.5 rounded-md border border-border p-3">
+                {connectors.map((c) => {
+                  const checked = form.connectorIds.includes(c.id);
+                  return (
+                    <label
+                      key={c.id}
+                      className="flex items-center gap-2.5 text-sm cursor-pointer"
+                    >
+                      <Checkbox
+                        checked={checked}
+                        onCheckedChange={(v) =>
+                          setForm((f) => ({
+                            ...f,
+                            connectorIds:
+                              v === true
+                                ? [...f.connectorIds, c.id]
+                                : f.connectorIds.filter((id) => id !== c.id),
+                          }))
+                        }
+                        aria-label={`Attach ${c.name}`}
+                      />
+                      <span className="flex-1 min-w-0">
+                        <span className="font-medium">{c.name}</span>
+                        {c.description && (
+                          <span className="text-muted-foreground">
+                            {' '}
+                            — {c.description}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  );
+                })}
+              </div>
+            )}
           </div>
 
           {error && (

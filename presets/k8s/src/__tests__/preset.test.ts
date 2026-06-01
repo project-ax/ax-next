@@ -233,10 +233,17 @@ describe('@ax/preset-k8s wiring', () => {
       'connectors:activate-authored',
       'connectors:clear-authored',
     ]);
-    // database:get-instance is the only hard dependency — satisfied by
+    // database:get-instance is the hard dependency — satisfied by
     // @ax/database-postgres in the real preset (the "every calls entry is
     // satisfied" test above derives this dynamically; this pins the edge).
-    expect(connectors!.manifest.calls).toEqual(['database:get-instance']);
+    // TASK-98: the preset mounts the admin-route bridge, so the connector
+    // plugin also calls http:register-route + auth:require-user (both already
+    // loaded — @ax/http-server + @ax/auth-better).
+    expect(connectors!.manifest.calls).toEqual([
+      'database:get-instance',
+      'http:register-route',
+      'auth:require-user',
+    ]);
   });
 
   it('loads @ax/skills and registers the quarantine services (Phase 2)', () => {

@@ -25,6 +25,7 @@ import {
   createAuthoredConnectorsStore,
   type AuthoredConnectorsStore,
 } from './authored-store.js';
+import { registerAdminConnectorRoutes } from './admin-routes.js';
 import {
   ActivateAuthoredOutputSchema,
   ClearAuthoredOutputSchema,
@@ -91,16 +92,34 @@ const PLUGIN_NAME = '@ax/connectors';
 // ---------------------------------------------------------------------------
 
 /**
- * Plugin config. No knobs today (the foundation slice needs none); typed as an
- * open record so a future field is additive without changing the factory
- * signature. (A bare empty interface trips `@typescript-eslint/no-empty-object-type`.)
+ * Plugin config.
+ *
+ * - `mountAdminRoutes` — when true, register the `/admin/connectors[/:id]` REST
+ *   routes that bridge the `connectors:*` hooks for the channel-web connector
+ *   registry UI (TASK-98). Off by default so the bus surface can load without an
+ *   http-server (the CLI / sandbox-side contexts). The k8s preset turns it on.
+ *
+ * Typed as an object (not `Record<string, never>` anymore) so the field is
+ * additive without changing the factory signature.
  */
-export type ConnectorsConfig = Record<string, never>;
+export interface ConnectorsConfig {
+  mountAdminRoutes?: boolean;
+}
 
-export function createConnectorsPlugin(_config: ConnectorsConfig = {}): Plugin {
+export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
   let db: Kysely<ConnectorDatabase> | undefined;
   let _store: ConnectorStore | undefined;
   let _authored: AuthoredConnectorsStore | undefined;
+  const mountAdminRoutes = config.mountAdminRoutes === true;
+  const unregisterRoutes: Array<() => void> = [];
+
+  // The `calls` list is built once at construction so the manifest is stable and
+  // matches what init actually uses. The admin-route bridge calls
+  // `http:register-route` + `auth:require-user` only when mounted.
+  const calls: string[] = ['database:get-instance'];
+  if (mountAdminRoutes) {
+    calls.push('http:register-route', 'auth:require-user');
+  }
 
   return {
     manifest: {
@@ -123,7 +142,7 @@ export function createConnectorsPlugin(_config: ConnectorsConfig = {}): Plugin {
         'connectors:clear-authored',
       ],
       // database:get-instance is hard — we run our own migration on init.
-      calls: ['database:get-instance'],
+      calls,
       subscribes: [],
     },
 
@@ -214,9 +233,26 @@ export function createConnectorsPlugin(_config: ConnectorsConfig = {}): Plugin {
         async (_ctx, input) => clearAuthoredConnector(localAuthored, input),
         { returns: ClearAuthoredOutputSchema },
       );
+
+      // TASK-98 — the connector registry's HTTP bridge. Mounted only when the
+      // host configures it (the k8s preset) and an http-server is present. The
+      // routes delegate straight back to the `connectors:*` hooks above.
+      if (mountAdminRoutes) {
+        const unregisters = await registerAdminConnectorRoutes(bus, initCtx);
+        unregisterRoutes.push(...unregisters);
+      }
     },
 
     async shutdown() {
+      // Tear down the admin routes first so a re-init (tests) doesn't trip
+      // duplicate-route.
+      for (const unregister of unregisterRoutes.splice(0)) {
+        try {
+          unregister();
+        } catch {
+          // best-effort — a route already gone is fine.
+        }
+      }
       // The shared db handle is owned by @ax/database-postgres; don't close it
       // here. Drop our references so a re-init doesn't read a stale store.
       db = undefined;

@@ -47,7 +47,7 @@ function emptyResponse(url: string): Response {
       headers: { 'content-type': 'application/json' },
     });
   }
-  return new Response(JSON.stringify({ providers: [], agents: [], teams: [], servers: [] }), {
+  return new Response(JSON.stringify({ providers: [], agents: [], teams: [], connectors: [] }), {
     status: 200,
     headers: { 'content-type': 'application/json' },
   });
@@ -126,7 +126,7 @@ describe('AdminShell', () => {
     expect(screen.getByRole('button', { name: /^providers$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /model config/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^agents$/i })).toBeTruthy();
-    expect(screen.getByRole('button', { name: /mcp servers/i })).toBeTruthy();
+    expect(screen.getByRole('button', { name: /^connectors$/i })).toBeTruthy();
     expect(screen.getByRole('button', { name: /^teams$/i })).toBeTruthy();
   });
 });
