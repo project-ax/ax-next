@@ -370,6 +370,72 @@ describe('chat-orchestrator route-by-conversationId (Task 16, J6)', () => {
     ]);
   });
 
+  // TASK-112 (Bug 2) — a connector draft proposed mid-turn must be carded on the
+  // NEXT (warm-resume) turn. The routed/warm branch returns BEFORE the fresh-spawn
+  // connector-card block, so before this fix a pending draft on a live session was
+  // never carded (it surfaced a reactive egress wall instead). Assert the warm
+  // path fires ONE kind:'connector' chat:permission-request.
+  it('TASK-112: a pending connector draft fires ONE connector card on the WARM/routed path', async () => {
+    const mocks = buildMocks({
+      conversations: { 'conv-w': { activeSessionId: 's-warm' } },
+      liveSessions: new Set(['s-warm']),
+    });
+    Object.assign(mocks.services, {
+      'connectors:list-authored': async () => ({
+        drafts: [
+          {
+            connectorId: 'linear',
+            name: 'Linear',
+            usageNote: '',
+            keyMode: 'personal',
+            status: 'pending',
+            proposal: {
+              allowedHosts: ['api.linear.app'],
+              credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+              mcpServers: [],
+              packages: { npm: [], pypi: [] },
+            },
+          },
+        ],
+      }),
+    } satisfies Record<string, ServiceHandler>);
+
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinary: '/irrelevant',
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+
+    const cards: Array<Record<string, unknown>> = [];
+    h.bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      if ((p as { kind?: string }).kind === 'connector') cards.push(p as Record<string, unknown>);
+      return undefined;
+    });
+
+    const expected: AgentOutcome = { kind: 'complete', messages: [] };
+    arrangeImmediateEnd(h.bus, expected, 's-warm', 'req-W');
+
+    await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      ctxWith({ sessionId: 'unused', conversationId: 'conv-w', reqId: 'req-W' }),
+      { message: { role: 'user', content: 'follow-up' } },
+    );
+
+    // Routed warm path — NO fresh sandbox, yet the connector card still fired.
+    expect(mocks.trace.sandboxOpen).toBe(0);
+    expect(cards).toHaveLength(1);
+    expect(cards[0]).toMatchObject({
+      kind: 'connector',
+      connectorId: 'linear',
+      name: 'Linear',
+      hosts: ['api.linear.app'],
+    });
+  });
+
   it('4) ctx.conversationId set, active_session_id stale (is-alive=false) → fresh sandbox + bind', async () => {
     const mocks = buildMocks({
       conversations: { 'conv-3': { activeSessionId: 's-stale' } },

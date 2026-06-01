@@ -572,16 +572,20 @@ export function createPermissionCardFillSubscriber(buffer: ChunkBuffer) {
     ctx: AgentContext,
     payload: PermissionRequest & { reqId?: string },
   ): Promise<undefined> {
-    if (payload.kind === 'skill') {
-      // Skill cards are matched by conversationId on the SSE side. No
-      // conversationId → nothing the replay path can key off, so don't buffer.
+    // Skill AND connector cards are matched by conversationId on the SSE side
+    // (TASK-112 — the connector card is conversationId-matched like the skill
+    // card). No conversationId → nothing the replay path can key off, so don't
+    // buffer. Without this, a connector card raised during the cold-boot SSE race
+    // is lost and the orchestrator's per-conversation dedup suppresses re-emission
+    // → the pending connector is permanently un-approvable (the TASK-82 hazard).
+    if (payload.kind === 'skill' || payload.kind === 'connector') {
       if (
         typeof ctx.conversationId !== 'string' ||
         ctx.conversationId.length === 0
       ) {
         return undefined;
       }
-      // Strip the optional reqId envelope (skill cards don't carry one; the
+      // Strip the optional reqId envelope (these cards don't carry one; the
       // replay path stamps the connection reqId). Store the card verbatim.
       const { reqId: _reqId, ...card } = payload;
       buffer.appendPermissionCard(ctx.conversationId, card as PermissionRequest);

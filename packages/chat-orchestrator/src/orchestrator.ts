@@ -793,6 +793,73 @@ export function createOrchestrator(
   // authored-SKILL upfront card was removed (a skill declares no caps), so there
   // is no longer a per-skill card-dedup map or a proposing-conversation map.
   const upfrontConnectorCardsByConv = new Map<string, Set<string>>();
+
+  // TASK-94 / TASK-112 — fire ONE upfront approval card per PENDING authored
+  // connector draft with a non-empty shown surface (hosts/slots/packages; mcp
+  // deferred — the wall rejects kind:'mcp'), deduped per (conversation,
+  // connectorId, shown-surface). Single source of truth shared by BOTH the
+  // fresh-spawn path AND the warm/routed path (TASK-112 Bug 2: a draft proposed
+  // mid-turn must be carded on the next warm turn — the routed branch returns
+  // before the fresh-spawn block, so without this the warm turn surfaces a
+  // reactive egress wall instead of the card). Best-effort + hasService-gated;
+  // a resolve failure fires NO card (fewer cards, never a wrong one) and never
+  // blocks the turn. conversationId is the SSE match key.
+  async function fireUpfrontConnectorCards(
+    ctx: AgentContext,
+    agentId: string,
+  ): Promise<void> {
+    if (ctx.conversationId === undefined || ctx.conversationId.length === 0) return;
+    if (!bus.hasService('connectors:list-authored')) return;
+
+    let drafts: ConnectorsListAuthoredOutput['drafts'] = [];
+    try {
+      const r = await bus.call<
+        { ownerUserId: string; agentId: string },
+        ConnectorsListAuthoredOutput
+      >('connectors:list-authored', ctx, { ownerUserId: ctx.userId, agentId });
+      drafts = r.drafts;
+    } catch (err) {
+      ctx.logger.warn('resolve_authored_connectors_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return;
+    }
+
+    const cardable = drafts.filter(
+      (d) => d.status === 'pending' && hasConnectorShownSurface(d.proposal),
+    );
+    if (cardable.length === 0) return;
+
+    // Vaulted refs → haveExisting on account-tagged slots (mirror the skill
+    // card). Best-effort: a failed lookup just means the card prompts.
+    const vaultedRefs = new Set<string>();
+    if (bus.hasService('credentials:list')) {
+      try {
+        const list = await bus.call<
+          { scope: 'user'; ownerId: string },
+          { credentials: Array<{ ref: string }> }
+        >('credentials:list', ctx, { scope: 'user', ownerId: ctx.userId });
+        for (const c of list.credentials) vaultedRefs.add(c.ref);
+      } catch {
+        /* a failed lookup just means the card prompts — never block it */
+      }
+    }
+
+    const fired = upfrontConnectorCardsByConv.get(ctx.conversationId) ?? new Set<string>();
+    for (const d of cardable) {
+      const key = authoredConnectorCardDedupKey(d.connectorId, d.proposal);
+      if (fired.has(key)) continue;
+      const card = buildAuthoredConnectorCard(
+        { connectorId: d.connectorId, name: d.name, proposal: d.proposal },
+        vaultedRefs,
+      );
+      if (card === null) continue;
+      fired.add(key);
+      await bus.fire('chat:permission-request', ctx, card);
+    }
+    upfrontConnectorCardsByConv.set(ctx.conversationId, fired);
+  }
+
   function registerWaiter(
     sessionId: string,
     reqId: string,
@@ -1284,6 +1351,13 @@ export function createOrchestrator(
         });
       }
 
+      // (TASK-112 Bug 2) Fire the upfront connector approval card on the WARM
+      //     path too. A draft proposed mid-turn (the previous turn's
+      //     connector_propose) wouldn't otherwise be carded until a re-spawn —
+      //     it would surface a reactive egress wall instead. Best-effort, after
+      //     the bind so the SSE handler can locate the row; never blocks the turn.
+      await fireUpfrontConnectorCards(ctx, agent.id);
+
       // (2) Register the waiter BEFORE enqueueing — the runner may emit
       //     chat:turn-end almost immediately on a fast model. Keyed by
       //     ctx.reqId (J9, unique per agent:invoke) — see waitersByReqId
@@ -1632,27 +1706,6 @@ export function createOrchestrator(
           error: err instanceof Error ? err.message : String(err),
         });
         authoredDraftSkills = [];
-      }
-    }
-
-    // TASK-94 — resolve the agent's authored CONNECTOR drafts (best-effort). A
-    // PENDING connector draft contributes NOTHING to this spawn's reach
-    // (connectors:resolve, the projection seam TASK-97 will read, never returns
-    // a pending draft); it only drives the approval card below. hasService-
-    // gated — a preset without @ax/connectors (CLI canary) just has no drafts.
-    let authoredConnectorDrafts: ConnectorsListAuthoredOutput['drafts'] = [];
-    if (bus.hasService('connectors:list-authored')) {
-      try {
-        const r = await bus.call<
-          { ownerUserId: string; agentId: string },
-          ConnectorsListAuthoredOutput
-        >('connectors:list-authored', ctx, { ownerUserId: ctx.userId, agentId: agent.id });
-        authoredConnectorDrafts = r.drafts;
-      } catch (err) {
-        ctx.logger.warn('resolve_authored_connectors_failed', {
-          error: err instanceof Error ? err.message : String(err),
-        });
-        authoredConnectorDrafts = [];
       }
     }
 
@@ -2104,44 +2157,10 @@ export function createOrchestrator(
     // is what a human approves); request_capability still fires the JIT card when
     // a skill's referenced connector needs approval at first use.
 
-    // TASK-94 — fire ONE upfront approval card per PENDING authored connector
-    // draft with a non-empty shown surface (hosts/slots/packages; mcp deferred),
-    // deduped per (conversation, connectorId, shown-surface). The twin of the
-    // authored-skill card block above; conversationId is the SSE match key.
-    if (ctx.conversationId !== undefined && ctx.conversationId.length > 0) {
-      const cardable = authoredConnectorDrafts.filter(
-        (d) => d.status === 'pending' && hasConnectorShownSurface(d.proposal),
-      );
-      if (cardable.length > 0) {
-        // Vaulted refs → haveExisting on account-tagged slots (mirror the skill
-        // card). Best-effort: a failed lookup just means the card prompts.
-        const vaultedRefs = new Set<string>();
-        if (bus.hasService('credentials:list')) {
-          try {
-            const list = await bus.call<
-              { scope: 'user'; ownerId: string },
-              { credentials: Array<{ ref: string }> }
-            >('credentials:list', ctx, { scope: 'user', ownerId: ctx.userId });
-            for (const c of list.credentials) vaultedRefs.add(c.ref);
-          } catch {
-            /* a failed lookup just means the card prompts — never block it */
-          }
-        }
-        const fired = upfrontConnectorCardsByConv.get(ctx.conversationId) ?? new Set<string>();
-        for (const d of cardable) {
-          const key = authoredConnectorCardDedupKey(d.connectorId, d.proposal);
-          if (fired.has(key)) continue;
-          const card = buildAuthoredConnectorCard(
-            { connectorId: d.connectorId, name: d.name, proposal: d.proposal },
-            vaultedRefs,
-          );
-          if (card === null) continue;
-          fired.add(key);
-          await bus.fire('chat:permission-request', ctx, card);
-        }
-        upfrontConnectorCardsByConv.set(ctx.conversationId, fired);
-      }
-    }
+    // TASK-94 / TASK-112 — fire ONE upfront approval card per PENDING authored
+    // connector draft (the surviving upfront-card path). Same helper the
+    // warm/routed path calls, so both behave identically (one source of truth).
+    await fireUpfrontConnectorCards(ctx, agent.id);
 
     // 7. Bind the conversation row to this fresh session (J6). Same
     //    reqId/sessionId pair the SSE handler (Task 7) keys off. We bind

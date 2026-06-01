@@ -165,7 +165,7 @@ type SseFrame =
             skillId: string;
             description: string;
             hosts: string[];
-            slots: { slot: string; kind: 'api-key' }[];
+            slots: { slot: string; kind: 'api-key'; account?: string; haveExisting?: boolean }[];
             // TASK-39: open-mode banner flag — rides the SSE frame verbatim and
             // is forwarded to the card store (drives the "new skill" warning).
             authored?: boolean;
@@ -173,7 +173,19 @@ type SseFrame =
             // the card store (drives the informational registry line).
             packages?: { npm: string[]; pypi: string[] };
           }
-        | { kind: 'host'; host: string; sessionId: string };
+        | { kind: 'host'; host: string; sessionId: string }
+        | {
+            // TASK-112 — the upfront authored-connector approval card (TASK-94
+            // fires it host-side). Forwarded verbatim to the card store. No
+            // `description` — a connector carries a `name`.
+            kind: 'connector';
+            connectorId: string;
+            name: string;
+            hosts: string[];
+            slots: { slot: string; kind: 'api-key'; account?: string; haveExisting?: boolean }[];
+            authored?: boolean;
+            packages?: { npm: string[]; pypi: string[] };
+          };
     };
 
 interface AxChatTransportOptions {

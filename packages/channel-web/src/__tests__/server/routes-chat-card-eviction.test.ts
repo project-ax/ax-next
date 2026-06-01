@@ -49,7 +49,13 @@ function fakeRes(): { res: RouteResponse; captured: { status?: number; json?: un
 }
 
 /** Bus with the services postPermissionDecision + deleteConversation reach. */
-function makeBus(opts: { grantFails?: boolean } = {}): HookBus {
+function makeBus(opts: {
+  grantFails?: boolean;
+  /** TASK-112 — register the connector grant; `applied` toggles the result. */
+  connectorGrant?: { applied: boolean };
+  /** Captures the connector-grant input for assertions. */
+  connectorGrantTrace?: Array<Record<string, unknown>>;
+} = {}): HookBus {
   const bus = new HookBus();
   bus.registerService('auth:require-user', 'mock-auth', async () => ({
     user: { id: 'userA', isAdmin: false },
@@ -76,6 +82,18 @@ function makeBus(opts: { grantFails?: boolean } = {}): HookBus {
     }
     return { attached: true };
   });
+  if (opts.connectorGrant !== undefined) {
+    bus.registerService(
+      'agent:apply-authored-connector-grant',
+      'mock-connector-grant',
+      async (_ctx, input) => {
+        opts.connectorGrantTrace?.push(input as Record<string, unknown>);
+        return opts.connectorGrant!.applied
+          ? { applied: true, respawned: false }
+          : { applied: false, reason: 'not-authored' };
+      },
+    );
+  }
   bus.registerService('conversations:delete', 'mock-delete', async () => undefined);
   return bus;
 }
@@ -113,6 +131,66 @@ describe('TASK-82 — card eviction wiring', () => {
     );
     expect(captured.status).toBe(500);
     expect(resolved).toEqual([]);
+  });
+
+  // TASK-112 — a connectorId decision routes to the connector grant (NOT the
+  // skill grant) and evicts the connector card by its connectorId on success.
+  it('routes a connectorId decision to agent:apply-authored-connector-grant + evicts by connectorId', async () => {
+    const trace: Array<Record<string, unknown>> = [];
+    const bus = makeBus({ connectorGrant: { applied: true }, connectorGrantTrace: trace });
+    const resolved: Array<[string, string]> = [];
+    const handlers = createChatRouteHandlers({
+      bus,
+      initCtx,
+      onCardResolved: (c, s) => resolved.push([c, s]),
+    });
+    const { res, captured } = fakeRes();
+    await handlers.postPermissionDecision(
+      fakeReq({
+        conversationId: 'cnv1',
+        connectorId: 'linear',
+        shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: [], pypi: [] },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(200);
+    // The connector grant was called with the connectorId subject + shown guard.
+    expect(trace).toHaveLength(1);
+    expect(trace[0]).toMatchObject({
+      conversationId: 'cnv1',
+      userId: 'userA',
+      agentId: 'agt_test',
+      connectorId: 'linear',
+    });
+    // The card eviction keys off the connectorId.
+    expect(resolved).toEqual([['cnv1', 'linear']]);
+  });
+
+  it('does NOT evict when a connectorId decision is not-authored', async () => {
+    const bus = makeBus({ connectorGrant: { applied: false } });
+    const resolved: Array<[string, string]> = [];
+    const handlers = createChatRouteHandlers({
+      bus,
+      initCtx,
+      onCardResolved: (c, s) => resolved.push([c, s]),
+    });
+    const { res, captured } = fakeRes();
+    await handlers.postPermissionDecision(
+      fakeReq({ conversationId: 'cnv1', connectorId: 'ghost' }),
+      res,
+    );
+    // not-authored → no catalog fallback for connectors → coarse 404/409-style
+    // signal; the card is NOT evicted (nothing was approved).
+    expect(captured.status).toBe(409);
+    expect(resolved).toEqual([]);
+  });
+
+  it('400s a decision carrying NEITHER skillId NOR connectorId', async () => {
+    const bus = makeBus({ connectorGrant: { applied: true } });
+    const handlers = createChatRouteHandlers({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await handlers.postPermissionDecision(fakeReq({ conversationId: 'cnv1' }), res);
+    expect(captured.status).toBe(400);
   });
 
   it('fires onConversationDeleted on a successful delete', async () => {

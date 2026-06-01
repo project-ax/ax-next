@@ -108,10 +108,19 @@ export type PhaseKind = 'sandbox-starting';
  *   browser sees it). Carries no secret; the grant route re-validates session
  *   ownership host-side.
  *
- * Backend-agnostic (Invariant I1): hostnames, slot names, and the opaque
- * sessionId are all public/transport-neutral fields. Re-declared here (not
- * imported from @ax/skill-broker / @ax/credential-proxy) — same cross-plugin
- * duplication-with-a-comment posture as StreamChunk vs @ax/ipc-protocol (I2).
+ * - `kind: 'connector'` — the upfront authored-CONNECTOR approval card (design
+ *   §"Authoring", TASK-94): a connectorId + display name + the reach (hosts /
+ *   slots / packages) the connector declares. Fired by @ax/chat-orchestrator,
+ *   SSE-matched by ctx.conversationId (the firing ctx carries the real
+ *   conversationId; same match posture as the skill card). NO `description` — a
+ *   connector carries a `name`. Carries no secret; approval grants the connector
+ *   under the TASK-93 wall with a connectorId subject.
+ *
+ * Backend-agnostic (Invariant I1): hostnames, slot names, connectorId, name, and
+ * the opaque sessionId are all public/transport-neutral fields. Re-declared here
+ * (not imported from @ax/skill-broker / @ax/credential-proxy / @ax/connectors) —
+ * same cross-plugin duplication-with-a-comment posture as StreamChunk vs
+ * @ax/ipc-protocol (I2).
  */
 export type PermissionRequest =
   | {
@@ -141,7 +150,25 @@ export type PermissionRequest =
        */
       packages?: { npm: string[]; pypi: string[] };
     }
-  | { kind: 'host'; host: string; sessionId: string };
+  | { kind: 'host'; host: string; sessionId: string }
+  | {
+      kind: 'connector';
+      connectorId: string;
+      name: string;
+      hosts: string[];
+      slots: {
+        slot: string;
+        kind: 'api-key';
+        /** service slug; when set, the key binds the shared `account:<service>` vault. */
+        account?: string;
+        /** the user already has `account:<service>`; card shows "use existing". */
+        haveExisting?: boolean;
+      }[];
+      /** Open-mode banner — the agent just authored this connector (TASK-94 → true). */
+      authored?: boolean;
+      /** npm/pypi packages the connector declares; informational. No secret; forwarded verbatim. */
+      packages?: { npm: string[]; pypi: string[] };
+    };
 
 export type SseFrame =
   | StreamChunk

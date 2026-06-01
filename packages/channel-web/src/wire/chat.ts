@@ -114,12 +114,25 @@ const ShownCapsSchema = z.object({
   pypi: z.array(z.string()),
 });
 
-export const PermissionDecisionRequest = z.object({
-  conversationId: z.string().min(1),
-  skillId: z.string().min(1).max(128),
-  /** What the card displayed — authored grant intersects this with the current proposal. */
-  shown: ShownCapsSchema.optional(),
-});
+// TASK-112 — the decision carries EITHER a `skillId` (the JIT skill card) OR a
+// `connectorId` (the upfront connector card, TASK-94/112). Exactly one is present:
+// the card knows which kind it rendered. Both are short ids capped at 128. The
+// server stays authoritative either way (the grant self-detects authored-ness /
+// re-resolves the agent's own drafts); the subject id is only an identifier
+// matched host-side, never a capability.
+export const PermissionDecisionRequest = z
+  .object({
+    conversationId: z.string().min(1),
+    skillId: z.string().min(1).max(128).optional(),
+    /** TASK-112 — the connector subject (mutually exclusive with skillId). */
+    connectorId: z.string().min(1).max(128).optional(),
+    /** What the card displayed — authored grant intersects this with the current proposal. */
+    shown: ShownCapsSchema.optional(),
+  })
+  .refine(
+    (v) => (v.skillId === undefined) !== (v.connectorId === undefined),
+    { message: 'exactly one of skillId or connectorId is required' },
+  );
 export type PermissionDecisionRequest = z.infer<
   typeof PermissionDecisionRequest
 >;
