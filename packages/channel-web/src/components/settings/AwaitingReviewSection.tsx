@@ -1,7 +1,8 @@
 /**
  * AwaitingReviewSection — the admin "Skills awaiting review" admit queue, folded
- * INLINE into the Skills app-store (TASK-126). This is the same logic as the
- * (now nav-less) admin `AdmitQueueTab`: list pending admit-to-catalog requests
+ * INLINE into the Skills app-store (TASK-126). This is the logic that formerly
+ * lived in the standalone admin `AdmitQueueTab` (deleted in TASK-138): list
+ * pending admit-to-catalog requests
  * (cold-start "a user needed X" + share-to-catalog submissions) and review each
  * one, where admitting means a CODE REVIEW of the submitted untrusted bundle
  * bytes (BundleReviewDialog).

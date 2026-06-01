@@ -108,7 +108,7 @@ export function AgentForm() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // The agent awaiting delete confirmation (null = no dialog). Styled-confirm
-  // pattern (mirrors UserSkillsPanelBody) — no OS `window.confirm`.
+  // pattern (TASK-117: project-wide styled Dialog) — no OS `window.confirm`.
   const [pendingDelete, setPendingDelete] = useState<AdminAgent | null>(null);
 
   const refresh = async () => {

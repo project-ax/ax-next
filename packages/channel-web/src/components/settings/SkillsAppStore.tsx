@@ -1,7 +1,7 @@
 /**
  * SkillsAppStore — the Settings "Skills" surface as an app-store (TASK-126,
- * settings-unified epic, design card 3). Replaces the flat "My Skills" list
- * (UserSkillsPanelBody) with two shelves:
+ * settings-unified epic, design card 3). Replaced the flat "My Skills" list
+ * (formerly UserSkillsPanelBody, deleted in TASK-138) with two shelves:
  *
  *   INSTALLED (n)                      — skills active on the CURRENT agent:
  *                                        🏢 admin defaults + agent-global +
@@ -16,9 +16,10 @@
  *                                        THE OLD CATALOG (invariant #4: the
  *                                        catalog renders in exactly one place).
  *
- * Admin curation folds inline (gated on `isAdmin`), reusing the CatalogTab /
- * AdmitQueueTab logic — there is NO separate Catalog / Awaiting-review nav
- * surface anymore (TASK-125 dropped them):
+ * Admin curation folds inline (gated on `isAdmin`), absorbing the logic of the
+ * former standalone Catalog / Awaiting-review admin tabs — there is NO separate
+ * Catalog / Awaiting-review nav surface anymore (TASK-125 dropped the nav; their
+ * components were deleted in TASK-138):
  *   - per NOT-INSTALLED row: ⚙ set-as-default · remove-from-workspace · edit
  *   - section: "+ Add to workspace" · "Awaiting review (n)" approve/reject
  *
