@@ -9,7 +9,7 @@ function makeDetail(over: Partial<SkillDetail> = {}): SkillDetail {
     version: 1,
     manifestYaml: 'name: x\ndescription: x\nversion: 1\n',
     bodyMd: 'body',
-    capabilities: { allowedHosts: [], credentials: [], mcpServers: [] },
+    connectors: [],
     defaultAttached: false,
     updatedAt: new Date().toISOString(),
     sourceUrl: 'https://example.com/skill.md',

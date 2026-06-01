@@ -15,18 +15,13 @@ let container: StartedPostgreSqlContainer;
 let connectionString: string;
 const opened: Kysely<SkillsDatabase>[] = [];
 
-// Sample manifest with allowedHosts + credentials so capabilities can be
-// asserted round-trip.
+// Sample manifest. TASK-100 — a skill carries no capability block; it references
+// the connector(s) it uses, which round-trip through list/get/resolve.
 const SAMPLE_MANIFEST = `name: github
-description: Access the GitHub REST API with a personal access token.
+description: Know-how for driving the GitHub connector.
 version: 1
-capabilities:
-  allowedHosts:
-    - api.github.com
-  credentials:
-    - slot: GITHUB_TOKEN
-      kind: api-key
-      description: GitHub PAT.
+connectors:
+  - github
 `;
 
 const SAMPLE_BODY = '# GitHub\n\nGitHub skill body.\n';
@@ -120,7 +115,7 @@ describe('SkillsStore', () => {
     expect(detail!.version).toBe(2);
   });
 
-  it('list() returns all skills ordered by skill_id with capabilities parsed', async () => {
+  it('list() returns all skills ordered by skill_id with connectors parsed', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);
     const store = createSkillsStore(db);
@@ -144,11 +139,10 @@ describe('SkillsStore', () => {
 
     const skills = await store.list();
     expect(skills.map((s) => s.id)).toEqual(['airtable', 'github']);
-    // capabilities re-parsed from manifest_yaml
+    // connectors re-parsed from manifest_yaml (the only declared reach now)
     const github = skills.find((s) => s.id === 'github');
-    expect(github?.capabilities.allowedHosts).toEqual(['api.github.com']);
-    expect(github?.capabilities.credentials).toHaveLength(1);
-    expect(github?.capabilities.credentials[0]?.slot).toBe('GITHUB_TOKEN');
+    expect(github?.connectors).toEqual(['github']);
+    expect('capabilities' in (github ?? {})).toBe(false);
   });
 
   it('get(id) returns full detail for existing skill, null for missing', async () => {
@@ -180,27 +174,20 @@ describe('SkillsStore', () => {
     expect(parsedUpdatedAt.toISOString()).toBe(detail!.updatedAt);
   });
 
-  // TASK-92 — a skill that declares a non-empty connectors[] soft-dependency
-  // list round-trips it across list/get/resolve (derived from manifest_yaml,
-  // exactly like capabilities — no stored column). Asserts the additive design:
-  // the connectors list and the still-authoritative capability block coexist.
-  it('round-trips a non-empty connectors[] across list/get/resolve, additive to capabilities', async () => {
+  // TASK-92/TASK-100 — a skill that declares a non-empty connectors[] soft-
+  // dependency list round-trips it across list/get/resolve (derived from
+  // manifest_yaml — no stored column). This is the ONLY reach a skill declares.
+  it('round-trips a non-empty connectors[] across list/get/resolve', async () => {
     const db = makeKysely();
     await runSkillsMigration(db);
     const store = createSkillsStore(db);
 
     const manifestWithConnectors = `name: github
-description: GitHub helper with a declared connector.
+description: GitHub helper with declared connectors.
 version: 1
 connectors:
   - github-connector
   - gitlab_ce
-capabilities:
-  allowedHosts:
-    - api.github.com
-  credentials:
-    - slot: GITHUB_TOKEN
-      kind: api-key
 `;
 
     await store.upsert({
@@ -214,9 +201,6 @@ capabilities:
     // summary (list)
     const [summary] = await store.list();
     expect(summary?.connectors).toEqual(['github-connector', 'gitlab_ce']);
-    // additive — the capability block is untouched and still surfaced.
-    expect(summary?.capabilities.allowedHosts).toEqual(['api.github.com']);
-    expect(summary?.capabilities.credentials[0]?.slot).toBe('GITHUB_TOKEN');
 
     // detail (get)
     const detail = await store.get('github');
@@ -329,7 +313,7 @@ version: 1
     expect(defaults[0]).toMatchObject({
       id: 'acceptance-canary',
       bodyMd: '# canary\n',
-      capabilities: { allowedHosts: [], credentials: [] },
+      connectors: [],
     });
     expect(defaults[0]).toHaveProperty('manifestYaml');
   });
@@ -371,38 +355,9 @@ version: 1
     expect(detail!.sourceUrl).toBeUndefined();
   });
 
-  it('roundtrips capabilities.mcpServers through upsert + list + get', async () => {
-    const db = makeKysely();
-    await runSkillsMigration(db);
-    const store = createSkillsStore(db);
-
-    const yaml = `name: ghub
-description: GitHub MCP bundle.
-capabilities:
-  mcpServers:
-    - name: github
-      transport: stdio
-      command: npx
-      args: ['-y', '@modelcontextprotocol/server-github']
-`;
-    await store.upsert({
-      id: 'ghub',
-      description: 'GitHub MCP bundle.',
-      manifestYaml: yaml,
-      bodyMd: '# ghub\n',
-      version: 0,
-    });
-
-    const list = await store.list();
-    const ghub = list.find((s) => s.id === 'ghub');
-    expect(ghub?.capabilities.mcpServers).toHaveLength(1);
-    expect(ghub?.capabilities.mcpServers[0]?.name).toBe('github');
-
-    const detail = await store.get('ghub');
-    expect(detail).not.toBeNull();
-    expect(detail!.capabilities.mcpServers[0]?.transport).toBe('stdio');
-    expect(detail!.capabilities.mcpServers[0]?.command).toBe('npx');
-  });
+  // TASK-100 — mcpServers (and all capabilities) live on the connector now, not
+  // the skill manifest, so the old "roundtrips capabilities.mcpServers" store
+  // test was removed; @ax/connectors owns that round-trip.
 
   it('resolve preserves input order and drops unknown ids silently', async () => {
     const db = makeKysely();
@@ -420,12 +375,8 @@ capabilities:
     const slackManifest = `name: slack
 description: Post to Slack.
 version: 0
-capabilities:
-  allowedHosts:
-    - slack.com
-  credentials:
-    - slot: SLACK_TOKEN
-      kind: api-key
+connectors:
+  - slack
 `;
     await store.upsert({
       id: 'slack',
@@ -440,38 +391,11 @@ capabilities:
     expect(resolved.map((r) => r.id)).toEqual(['slack', 'github']);
 
     const github = resolved.find((r) => r.id === 'github');
-    expect(github?.capabilities.allowedHosts).toEqual(['api.github.com']);
-    expect(github?.capabilities.credentials[0]?.slot).toBe('GITHUB_TOKEN');
+    expect(github?.connectors).toEqual(['github']);
   });
 
-  it('skills:resolve carries capabilities.packages through from the stored manifest (D)', async () => {
-    const db = makeKysely();
-    await runSkillsMigration(db);
-    const store = createSkillsStore(db);
-
-    const linearManifest = `name: linear
-description: Linear CLI skill.
-version: 1
-capabilities:
-  allowedHosts:
-    - api.linear.app
-  packages:
-    npm:
-      - "@linear/cli"
-`;
-    await store.upsert({
-      id: 'linear',
-      description: 'Linear CLI skill.',
-      manifestYaml: linearManifest,
-      bodyMd: '# Linear\n',
-      version: 1,
-    });
-
-    const resolved = await store.resolve(['linear']);
-    expect(resolved).toHaveLength(1);
-    expect(resolved[0]?.capabilities.packages.npm).toEqual(['@linear/cli']);
-    expect(resolved[0]?.capabilities.packages.pypi).toEqual([]);
-  });
+  // TASK-100 — packages (and all capabilities) live on the connector now; the
+  // old "skills:resolve carries capabilities.packages" store test was removed.
 
   it('upsert stores extra files; get/resolve return them; re-upsert replaces', async () => {
     const db = makeKysely();
