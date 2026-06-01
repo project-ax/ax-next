@@ -19,6 +19,11 @@ import { useSyncExternalStore } from 'react';
  * - `kind: 'host'` — the reactive egress-wall card (TASK-37): the single host a
  *   blocked egress tried to reach + the opaque sessionId the browser echoes on
  *   grant. Never a secret.
+ * - `kind: 'connector'` — the upfront authored-CONNECTOR approval card (TASK-94
+ *   host / TASK-112 UI): a connectorId + display name + the reach (hosts / slots /
+ *   packages) the connector declares. NO `description` — a connector carries a
+ *   `name`, not a skill description. Approving it grants the connector under the
+ *   TASK-93 wall with a connectorId subject. Never a secret.
  */
 export type PermissionRequest =
   | {
@@ -39,7 +44,25 @@ export type PermissionRequest =
       /** npm/pypi packages the skill declares; shown as an informational registry line. */
       packages?: { npm: string[]; pypi: string[] };
     }
-  | { kind: 'host'; host: string; sessionId: string };
+  | { kind: 'host'; host: string; sessionId: string }
+  | {
+      kind: 'connector';
+      connectorId: string;
+      name: string;
+      hosts: string[];
+      slots: {
+        slot: string;
+        kind: 'api-key';
+        /** service slug; when set, the key binds the shared `account:<service>` vault. */
+        account?: string;
+        /** the user already has `account:<service>`; card shows "use existing". */
+        haveExisting?: boolean;
+      }[];
+      /** Open-mode banner — the agent just authored this connector (TASK-94 fires true). */
+      authored?: boolean;
+      /** npm/pypi packages the connector declares; shown as an informational line. */
+      packages?: { npm: string[]; pypi: string[] };
+    };
 
 export interface PermissionCardState {
   request: PermissionRequest | null;

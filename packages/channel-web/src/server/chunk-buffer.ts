@@ -185,11 +185,12 @@ export interface ChunkBuffer {
    */
   tailHostCards(reqId: string): readonly PermissionRequest[];
   /**
-   * Drop one pending skill card for a conversation by skillId. Called when the
-   * grant is applied (the card is resolved — replaying it would re-prompt for an
-   * already-approved skill). Idempotent.
+   * Drop one pending conversation-keyed card by its SUBJECT id — a skill's
+   * skillId OR a connector's connectorId (TASK-112). Called when the grant is
+   * applied (the card is resolved — replaying it would re-prompt for an
+   * already-approved subject). Idempotent.
    */
-  evictPermissionCard(conversationId: string, skillId: string): void;
+  evictPermissionCard(conversationId: string, subjectId: string): void;
   /** Drop all pending skill cards for a conversation. Called on conversation
    *  delete. Idempotent. */
   evictConversationCards(conversationId: string): void;
@@ -409,13 +410,16 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
 
     appendPermissionCard(key, card) {
       if (typeof key !== 'string' || key.length === 0) return;
-      if (card.kind === 'skill') {
+      // Skill AND connector cards are conversationId-matched (TASK-112) and share
+      // the same per-conversation replay list. De-dupe by the card's SUBJECT id
+      // (skillId / connectorId) so a re-proposal replaces in place rather than
+      // stacking a second prompt for the same subject.
+      if (card.kind === 'skill' || card.kind === 'connector') {
         const list = skillCards.get(key) ?? [];
-        // De-dupe by skillId: a re-proposal of the same skill replaces the
-        // stored card in place (the delta may have changed) rather than
-        // stacking a second identical prompt.
-        const idx = list.findIndex(
-          (c) => c.kind === 'skill' && c.skillId === card.skillId,
+        const idx = list.findIndex((c) =>
+          card.kind === 'skill'
+            ? c.kind === 'skill' && c.skillId === card.skillId
+            : c.kind === 'connector' && c.connectorId === card.connectorId,
         );
         if (idx >= 0) {
           list[idx] = card;
@@ -459,11 +463,19 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       return list.slice();
     },
 
-    evictPermissionCard(conversationId, skillId) {
+    evictPermissionCard(conversationId, subjectId) {
       const list = skillCards.get(conversationId);
       if (list === undefined) return;
+      // TASK-112 — drop the card whose SUBJECT matches: a skill keyed by skillId
+      // OR a connector keyed by connectorId. The two id namespaces don't collide
+      // in practice, and the match is exact-string, so a single id arg suffices
+      // (the route passes whichever subject it just granted).
       const next = list.filter(
-        (c) => !(c.kind === 'skill' && c.skillId === skillId),
+        (c) =>
+          !(
+            (c.kind === 'skill' && c.skillId === subjectId) ||
+            (c.kind === 'connector' && c.connectorId === subjectId)
+          ),
       );
       if (next.length === 0) {
         skillCards.delete(conversationId);

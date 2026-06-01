@@ -297,6 +297,132 @@ describe('PermissionCard', () => {
   });
 });
 
+// TASK-112 — the connector approval card (kind:'connector'). The host (TASK-94)
+// fires this verbatim over SSE; channel-web must render it (NO description field —
+// a TypeError on the skill default branch was the blocker) and approve it with the
+// connectorId subject (reusing the TASK-93 wall via the host grant).
+describe('PermissionCard — connector approval (TASK-112)', () => {
+  beforeEach(() => {
+    mockConversationId = 'cnv-1';
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    permissionCardActions.reset();
+  });
+
+  const linearConnector = {
+    kind: 'connector' as const,
+    connectorId: 'linear',
+    name: 'Linear',
+    hosts: ['api.linear.app'],
+    slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' as const }],
+    authored: true as const,
+    packages: { npm: [], pypi: [] },
+  };
+
+  it('renders the connector card (name + hosts + slot) without throwing', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show(linearConnector);
+    // Title is the connector NAME (not connectorId), and there is no description
+    // crash (the skill default branch reads request.description.length).
+    expect(await screen.findByText('Connect Linear')).toBeInTheDocument();
+    expect(screen.getByText('api.linear.app')).toBeInTheDocument();
+    expect(screen.getByLabelText('LINEAR_API_KEY')).toBeInTheDocument();
+  });
+
+  it('shows the "new connector" authored banner', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show(linearConnector);
+    expect(
+      await screen.findByText(/new connector your assistant just wrote/i),
+    ).toBeInTheDocument();
+  });
+
+  it('Connect writes the untagged slot to the connector account vault, POSTs the connectorId decision, then continues', async () => {
+    const continueSpy = vi
+      .spyOn(resumeActions, 'continueAfterGrant')
+      .mockImplementation(() => undefined);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(JSON.stringify({ ok: true }), { status: 200 }));
+    render(<PermissionCard />);
+    permissionCardActions.show(linearConnector);
+
+    fireEvent.change(await screen.findByLabelText('LINEAR_API_KEY'), {
+      target: { value: 'lin_secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+    await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
+
+    const urls = fetchMock.mock.calls.map((c) => c[0]);
+    // Untagged connector slot → account vault keyed by the connectorId
+    // (account:<connectorId>) so it addresses the same row the connector
+    // resolver reads.
+    expect(urls).toContain('/settings/destinations/account/credential');
+    const credCall = fetchMock.mock.calls.find(
+      (c) => c[0] === '/settings/destinations/account/credential',
+    );
+    expect(credCall?.[1]?.body).toContain('"service":"linear"');
+    // Decision POST carries the connectorId subject (NOT skillId).
+    expect(urls).toContain('/api/chat/permission-decision');
+    const decisionCall = fetchMock.mock.calls.find(
+      (c) => c[0] === '/api/chat/permission-decision',
+    );
+    expect(decisionCall?.[1]?.body).toContain('"connectorId":"linear"');
+    expect(decisionCall?.[1]?.body).not.toContain('"skillId"');
+    expect(decisionCall?.[1]?.body).toContain('"conversationId":"cnv-1"');
+    expect(continueSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('an account-tagged slot posts to the account destination by its service tag', async () => {
+    vi.spyOn(resumeActions, 'continueAfterGrant').mockImplementation(() => undefined);
+    const fetchMock = vi
+      .spyOn(globalThis, 'fetch')
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    render(<PermissionCard />);
+    permissionCardActions.show({
+      kind: 'connector',
+      connectorId: 'gdrive-connector',
+      name: 'Google Drive',
+      hosts: ['drive.googleapis.com'],
+      slots: [{ slot: 'GDRIVE', kind: 'api-key', account: 'google', haveExisting: false }],
+      packages: { npm: [], pypi: [] },
+    });
+    fireEvent.change(await screen.findByLabelText('GDRIVE'), {
+      target: { value: 'g-secret' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+    await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
+    const credCall = fetchMock.mock.calls.find(
+      (c) => c[0] === '/settings/destinations/account/credential',
+    );
+    expect(credCall?.[1]?.body).toContain('"service":"google"');
+  });
+
+  it('Not now dismisses a connector card without writing or posting', async () => {
+    const continueSpy = vi
+      .spyOn(resumeActions, 'continueAfterGrant')
+      .mockImplementation(() => undefined);
+    const fetchMock = vi.spyOn(globalThis, 'fetch');
+    render(<PermissionCard />);
+    permissionCardActions.show(linearConnector);
+    fireEvent.click(await screen.findByRole('button', { name: /not now/i }));
+    await waitFor(() => expect(getPermissionCardSnapshot().request).toBeNull());
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(continueSpy).not.toHaveBeenCalled();
+  });
+
+  it('Connect is disabled until every connector slot is filled', async () => {
+    render(<PermissionCard />);
+    permissionCardActions.show(linearConnector);
+    expect(
+      await screen.findByRole('button', { name: /^connect$/i }),
+    ).toBeDisabled();
+    fireEvent.change(screen.getByLabelText('LINEAR_API_KEY'), { target: { value: 'k' } });
+    expect(screen.getByRole('button', { name: /^connect$/i })).not.toBeDisabled();
+  });
+});
+
 describe('PermissionCard — host grant (TASK-37)', () => {
   afterEach(() => {
     vi.restoreAllMocks();

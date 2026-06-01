@@ -546,6 +546,69 @@ describe('@ax/channel-web ChunkBuffer', () => {
       }
     });
 
+    // TASK-112 — connector cards are conversationId-matched (like skill cards),
+    // so they ride the SAME replay buffer + eviction. A connector card raised
+    // during the cold-boot SSE race would otherwise be lost (un-approvable).
+    const connector = (connectorId: string) =>
+      ({
+        kind: 'connector' as const,
+        connectorId,
+        name: connectorId,
+        hosts: ['api.example.com'],
+        slots: [{ slot: 'KEY', kind: 'api-key' as const }],
+        authored: true as const,
+        packages: { npm: [], pypi: [] },
+      });
+
+    it('connector cards round-trip by conversationId alongside skill cards', () => {
+      const buf = createChunkBuffer();
+      try {
+        buf.appendPermissionCard('cnv1', skill('s1'));
+        buf.appendPermissionCard('cnv1', connector('linear'));
+        const cards = buf.tailPermissionCards('cnv1');
+        expect(cards).toHaveLength(2);
+        expect(cards[1]?.kind).toBe('connector');
+        expect(cards[1]?.kind === 'connector' ? cards[1].connectorId : '').toBe(
+          'linear',
+        );
+      } finally {
+        buf.dispose();
+      }
+    });
+
+    it('de-dupes connector cards by connectorId — a re-proposal replaces in place', () => {
+      const buf = createChunkBuffer();
+      try {
+        buf.appendPermissionCard('cnv1', connector('linear'));
+        buf.appendPermissionCard('cnv1', {
+          ...connector('linear'),
+          hosts: ['api.linear.app', 'extra.linear.app'],
+        });
+        const cards = buf.tailPermissionCards('cnv1');
+        expect(cards).toHaveLength(1);
+        expect(cards[0]?.kind === 'connector' ? cards[0].hosts : []).toEqual([
+          'api.linear.app',
+          'extra.linear.app',
+        ]);
+      } finally {
+        buf.dispose();
+      }
+    });
+
+    it('evictPermissionCard removes a resolved connector card by connectorId', () => {
+      const buf = createChunkBuffer();
+      try {
+        buf.appendPermissionCard('cnv1', connector('linear'));
+        buf.appendPermissionCard('cnv1', skill('s1'));
+        buf.evictPermissionCard('cnv1', 'linear');
+        const cards = buf.tailPermissionCards('cnv1');
+        expect(cards).toHaveLength(1);
+        expect(cards[0]?.kind).toBe('skill');
+      } finally {
+        buf.dispose();
+      }
+    });
+
     it('host cards key off reqId and are dropped at the turn boundary (evictReqId)', () => {
       const buf = createChunkBuffer();
       try {
