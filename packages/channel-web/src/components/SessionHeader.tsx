@@ -9,11 +9,13 @@
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { sessionStoreActions, useSessionStore } from '../lib/session-store';
-import { AgentChip, useHydrateAgents } from './AgentChip';
+import { AgentChip } from './AgentChip';
 import { SidebarMobileToggle } from './SidebarMobileToggle';
 
-export function SessionHeader() {
-  useHydrateAgents();
+export function SessionHeader({ onCreateAgent }: { onCreateAgent?: (() => void) | undefined }) {
+  // Agent-list hydration is lifted to AppContent (so the first-run gate can
+  // read agentsStatus before the chat shell ever renders); the header no
+  // longer kicks it off.
   const { sessions, activeSessionId } = useSessionStore();
   const active = sessions.find((s) => s.id === activeSessionId) ?? null;
   const title = active?.title ?? '';
@@ -122,7 +124,7 @@ export function SessionHeader() {
           {/* Mobile hamburger — hidden on desktop via Tailwind responsive classes. */}
           <SidebarMobileToggle />
           {/* Agent chip: identity + agent switcher, left-aligned per the design. */}
-          <AgentChip />
+          <AgentChip onCreateNew={onCreateAgent} />
         </div>
         <div
           ref={titleRef}
