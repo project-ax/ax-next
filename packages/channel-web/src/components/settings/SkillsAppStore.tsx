@@ -64,7 +64,12 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { TooltipProvider } from '@/components/ui/tooltip';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import { listChatAgents, type ChatAgentSummary } from '@/lib/agents';
 import {
   getConnections,
@@ -87,6 +92,7 @@ import {
   setSkillDefaultAttached,
   deleteSkill as deleteCatalogSkill,
 } from '@/lib/skills';
+import { listAdminAgents, patchAgentSkillAttachments } from '@/lib/admin';
 import type { SkillSummary, AuthoredSkillListing } from '@ax/skills';
 import { SkillEditor } from '@/components/admin/SkillEditor';
 import type { SkillEditorApi } from '@/components/admin/SkillEditor';
@@ -271,6 +277,29 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
   }
 
   /**
+   * Admin: detach a skill the admin attached to THIS agent (an 'agent'-source
+   * installed row). We must read the agent's REAL `skillAttachments` — NOT the
+   * connections union, which collapses an agent-attachment under a colliding
+   * user-attachment (precedence user > agent), so reconstructing from the union
+   * would silently drop hidden agent rows. Read the truth, drop just the target
+   * (preserving every other attachment's credentialBindings), and PATCH the rest.
+   */
+  async function handleRemoveAgentSkill(skillId: string): Promise<void> {
+    try {
+      const agent = (await listAdminAgents()).find((a) => a.id === agentId);
+      if (!agent) {
+        setError(`Agent ${agentId} is no longer available.`);
+        return;
+      }
+      const remaining = agent.skillAttachments.filter((att) => att.skillId !== skillId);
+      await patchAgentSkillAttachments(agentId, remaining);
+      await refreshInstalled(agentId);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /**
    * Adopt-&-edit (TASK-134): copy an agent-authored draft into the user's own
    * editable user-scoped skill, then open the form-first editor on the copy. The
    * server copies manifest + body + extra files and marks the draft adopted (so
@@ -377,7 +406,8 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
 
           {agentsLoaded && agents.length === 0 ? (
             <p className="text-sm text-muted-foreground">
-              No assistant yet — create one to install skills.
+              You don’t have an assistant yet. Create one on the Agents tab, then
+              come back here to install skills onto it.
             </p>
           ) : installed === null ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
@@ -456,6 +486,28 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                           size="sm"
                           onClick={() => void handleRemove(s.skillId)}
                           aria-label={`Remove ${s.skillId}`}
+                        >
+                          Remove
+                        </Button>
+                      ) : isAdmin && s.source === 'default' ? (
+                        // A workspace default is on EVERY agent; the only way to
+                        // uninstall it is to unset the default (workspace-wide,
+                        // not just this agent) — the label says so.
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void handleSetDefault(s.skillId, false)}
+                          aria-label={`Unset ${s.skillId} as a workspace default`}
+                        >
+                          Unset default
+                        </Button>
+                      ) : isAdmin && s.source === 'agent' ? (
+                        // An admin per-agent attachment — detach it from THIS agent.
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => void handleRemoveAgentSkill(s.skillId)}
+                          aria-label={`Remove ${s.skillId} from this agent`}
                         >
                           Remove
                         </Button>
@@ -628,13 +680,30 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                         </Button>
                       </>
                     )}
-                    <Button
-                      size="sm"
-                      onClick={() => setInstalling(c)}
-                      disabled={agentId === ''}
-                    >
-                      Install
-                    </Button>
+                    {agentId === '' ? (
+                      // No agent → install is impossible. Explain why and where to
+                      // fix it instead of a dead, unexplained button. A disabled
+                      // <button> swallows pointer events, so the Tooltip trigger
+                      // wraps a focusable <span> (the radix pattern for disabled
+                      // triggers).
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <span tabIndex={0}>
+                            <Button size="sm" disabled>
+                              Install
+                            </Button>
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          Create an assistant on the Agents tab first, then install
+                          skills onto it.
+                        </TooltipContent>
+                      </Tooltip>
+                    ) : (
+                      <Button size="sm" onClick={() => setInstalling(c)}>
+                        Install
+                      </Button>
+                    )}
                   </div>
                 </div>
               ))}
