@@ -28,7 +28,8 @@ vi.mock('../AuthoredSkillsSection', () => ({
   AuthoredSkillsSection: () => null,
 }));
 
-import { listAdminAgents, deleteAgent } from '@/lib/admin';
+import { listAdminAgents, deleteAgent, listTeams } from '@/lib/admin';
+import { listConnectors } from '@/lib/connectors';
 
 const mockList = vi.mocked(listAdminAgents);
 const mockDelete = vi.mocked(deleteAgent);
@@ -59,7 +60,7 @@ describe('AgentForm — styled delete confirm', () => {
 
   it('does not use the OS confirm; clicking delete opens a styled dialog', async () => {
     const confirmSpy = vi.spyOn(window, 'confirm');
-    render(<AgentForm />);
+    render(<AgentForm isAdmin />);
 
     await waitFor(() => {
       expect(screen.getByText('Research Bot')).toBeTruthy();
@@ -77,7 +78,7 @@ describe('AgentForm — styled delete confirm', () => {
   });
 
   it('confirm path → calls deleteAgent with the id', async () => {
-    render(<AgentForm />);
+    render(<AgentForm isAdmin />);
     await waitFor(() => {
       expect(screen.getByText('Research Bot')).toBeTruthy();
     });
@@ -95,7 +96,7 @@ describe('AgentForm — styled delete confirm', () => {
   });
 
   it('cancel path → dialog closes and deleteAgent is NOT called', async () => {
-    render(<AgentForm />);
+    render(<AgentForm isAdmin />);
     await waitFor(() => {
       expect(screen.getByText('Research Bot')).toBeTruthy();
     });
@@ -111,5 +112,34 @@ describe('AgentForm — styled delete confirm', () => {
       expect(screen.queryByText('Delete agent?')).toBeNull();
     });
     expect(mockDelete).not.toHaveBeenCalled();
+  });
+});
+
+describe('AgentForm — non-admin owner-scoped sources', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockList.mockResolvedValue([AGENT]);
+    vi.mocked(listTeams).mockResolvedValue([]);
+    vi.mocked(listConnectors).mockResolvedValue([]);
+  });
+
+  it('a non-admin reads connectors from the user route (/settings/connectors), not the admin one', async () => {
+    render(<AgentForm isAdmin={false} />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    // Opening the form triggers the deferred teams + connectors fetch.
+    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
+    await waitFor(() =>
+      expect(listConnectors).toHaveBeenCalledWith('/settings/connectors'),
+    );
+    expect(listConnectors).not.toHaveBeenCalledWith('/admin/connectors');
+  });
+
+  it('an admin reads connectors from the admin route (/admin/connectors)', async () => {
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
+    await waitFor(() =>
+      expect(listConnectors).toHaveBeenCalledWith('/admin/connectors'),
+    );
   });
 });

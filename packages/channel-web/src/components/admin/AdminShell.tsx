@@ -30,10 +30,10 @@ interface TabMeta {
 const TAB_META: Record<AdminTabId, TabMeta> = {
   skills: { eyebrow: 'Settings', title: 'Skills' },
   'connectors-user': { eyebrow: 'Settings', title: 'Connectors' },
+  agents: { eyebrow: 'Settings', title: 'Agents' },
   providers: { eyebrow: 'Admin', title: 'AI model keys' },
   'model-config': { eyebrow: 'Admin', title: 'Default AI model' },
   'auth-providers': { eyebrow: 'Admin', title: 'Sign-in methods' },
-  agents: { eyebrow: 'Admin', title: 'Agents' },
   teams: { eyebrow: 'Admin', title: 'Teams' },
 };
 
@@ -57,7 +57,7 @@ export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
         {activeTab === 'providers' && <ProvidersPanel />}
         {activeTab === 'model-config' && <ModelConfigTab />}
         {activeTab === 'auth-providers' && <AuthProvidersTab />}
-        {activeTab === 'agents' && <AgentForm />}
+        {activeTab === 'agents' && <AgentForm isAdmin={isAdmin} />}
         {activeTab === 'teams' && <TeamList />}
       </AdminPane>
     </div>

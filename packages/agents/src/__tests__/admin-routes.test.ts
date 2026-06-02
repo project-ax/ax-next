@@ -95,18 +95,50 @@ async function bootStack(): Promise<BootedStack> {
     services: {
       'skills:resolve': async (
         _ctx: unknown,
-        input: { skillIds: string[] },
+        input: { skillIds: string[]; ownerUserId?: string },
       ) => {
-        const known = new Set(['github', 'openai', 'linear-a', 'linear-b']);
-        return {
-          skills: input.skillIds
-            .filter((id) => known.has(id))
-            .map((id) => ({
-              id,
-              bodyMd: 'body',
-              manifestYaml: `name: ${id}\n`,
-            })),
+        // GLOBAL catalog skills — resolvable to anyone (no ownerUserId needed).
+        const globalSkills = new Set(['github', 'openai', 'linear-a', 'linear-b']);
+        // USER-SCOPED skills — only resolvable when ownerUserId is passed
+        // (mirrors prod: skills:resolve unions the caller's user store ONLY then).
+        // 'my-skill' is cap-free; 'ws-skill' references a WORKSPACE connector
+        // (the transitive-grant guard must reject attaching it as a non-admin).
+        const userSkills: Record<string, { connectors?: string[] }> = {
+          'my-skill': {},
+          'ws-skill': { connectors: ['workspace-conn'] },
         };
+        const skills: Array<{
+          id: string;
+          bodyMd: string;
+          manifestYaml: string;
+          connectors?: string[];
+        }> = [];
+        for (const id of input.skillIds) {
+          const base = { id, bodyMd: 'body', manifestYaml: `name: ${id}\n` };
+          if (globalSkills.has(id)) {
+            skills.push(base);
+          } else if (input.ownerUserId !== undefined && userSkills[id] !== undefined) {
+            const conns = userSkills[id]!.connectors;
+            skills.push(conns ? { ...base, connectors: conns } : base);
+          }
+        }
+        return { skills };
+      },
+      // Owner-scoped connector resolve stub for the non-admin attachment guard.
+      // 'personal-conn' is the user's own (keyMode personal); 'workspace-conn' is
+      // a shared/global-keyed connector; anything else "isn't owned" (throws →
+      // treated as a runtime no-op by the guard).
+      'connectors:resolve': async (
+        _ctx: unknown,
+        input: { userId: string; connectorId: string },
+      ) => {
+        const keyModes: Record<string, 'personal' | 'workspace'> = {
+          'personal-conn': 'personal',
+          'workspace-conn': 'workspace',
+        };
+        const keyMode = keyModes[input.connectorId];
+        if (keyMode === undefined) throw new Error('connector not found / not owned');
+        return { id: input.connectorId, keyMode };
       },
       'credentials:envelope-encrypt': async (_ctx, input) => ({
         ciphertext: Buffer.from((input as { plaintext: string }).plaintext, 'utf8'),
@@ -660,7 +692,7 @@ describe('@ax/agents admin routes', () => {
     expect(r.status).toBe(400);
   });
 
-  it('PATCH /admin/agents/:id/skill-attachments non-admin → 403', async () => {
+  it('PATCH /admin/agents/:id/skill-attachments by a NON-OWNER → 403 (agent ACL)', async () => {
     const cookie = await signIn(stack);
     // Create agent as admin.
     const created = await http(stack.port, 'POST', '/admin/agents', {
@@ -804,7 +836,7 @@ describe('@ax/agents admin routes', () => {
     expect(r.status).toBe(400);
   });
 
-  it('PATCH /admin/agents/:id/connector-attachments non-admin → 403', async () => {
+  it('PATCH /admin/agents/:id/connector-attachments by a NON-OWNER → 403 (agent ACL)', async () => {
     const cookie = await signIn(stack);
     const created = await http(stack.port, 'POST', '/admin/agents', {
       cookie,
@@ -835,5 +867,112 @@ describe('@ax/agents admin routes', () => {
       { cookie, body: { notTheRightField: [] } },
     );
     expect(r.status).toBe(400);
+  });
+
+  // -------------------------------------------------------------------------
+  // Non-admin OWNER attachment (owner-scoped): a user may attach their OWN
+  // PERSONAL connectors/skills to their OWN agents; a workspace (shared/
+  // global-keyed) connector — directly or pulled in by a skill — stays
+  // admin-only. The agent-ownership ACL is the hook's; this is the keyMode guard.
+  // -------------------------------------------------------------------------
+
+  it('connector-attachments: a non-admin OWNER may attach their OWN personal connector → 200', async () => {
+    const { cookie } = await mintSecondUserCookie();
+    // A non-admin creates THEIR OWN agent (create is requireUser + owner-scoped).
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    expect(created.status).toBe(201);
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    const r = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/connector-attachments`,
+      { cookie, body: { connectorAttachments: ['personal-conn'] } },
+    );
+    expect(r.status).toBe(200);
+    expect((r.body as { agent: SerializedAgent }).agent.connectorAttachments).toEqual([
+      'personal-conn',
+    ]);
+  });
+
+  it('SECURITY: a non-admin OWNER may NOT attach a workspace (shared) connector → 403', async () => {
+    const { cookie } = await mintSecondUserCookie();
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    const r = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/connector-attachments`,
+      { cookie, body: { connectorAttachments: ['workspace-conn'] } },
+    );
+    expect(r.status).toBe(403);
+    expect((r.body as { error: string }).error).toMatch(/workspace/i);
+    // Nothing was persisted — the guard ran before the store write.
+    const show = await http(stack.port, 'GET', `/admin/agents/${id}`, { cookie });
+    expect((show.body as { agent: SerializedAgent }).agent.connectorAttachments).toEqual([]);
+  });
+
+  it('an ADMIN OWNER may attach a workspace connector → 200 (bypasses the keyMode guard)', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    const r = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/connector-attachments`,
+      { cookie, body: { connectorAttachments: ['workspace-conn'] } },
+    );
+    expect(r.status).toBe(200);
+    expect((r.body as { agent: SerializedAgent }).agent.connectorAttachments).toEqual([
+      'workspace-conn',
+    ]);
+  });
+
+  it('skill-attachments: a non-admin OWNER may attach their OWN user-scoped skill → 200', async () => {
+    const { cookie } = await mintSecondUserCookie();
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    // 'my-skill' is USER-SCOPED — it resolves only because the route now passes
+    // ownerUserId: actor.id to skills:resolve. (Before that fix this 400'd with
+    // skill-not-found, silently breaking non-admin skill attachment.)
+    const r = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/skill-attachments`,
+      { cookie, body: { skillAttachments: [{ skillId: 'my-skill', credentialBindings: {} }] } },
+    );
+    expect(r.status).toBe(200);
+    expect((r.body as { agent: SerializedAgent }).agent.skillAttachments).toEqual([
+      { skillId: 'my-skill', credentialBindings: {} },
+    ]);
+  });
+
+  it('SECURITY: a non-admin OWNER may NOT attach a skill that pulls in a workspace connector → 403', async () => {
+    const { cookie } = await mintSecondUserCookie();
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    // 'ws-skill' references the workspace connector (skills:resolve stub).
+    const r = await http(
+      stack.port,
+      'PATCH',
+      `/admin/agents/${id}/skill-attachments`,
+      { cookie, body: { skillAttachments: [{ skillId: 'ws-skill', credentialBindings: {} }] } },
+    );
+    expect(r.status).toBe(403);
+    expect((r.body as { error: string }).error).toMatch(/workspace/i);
   });
 });

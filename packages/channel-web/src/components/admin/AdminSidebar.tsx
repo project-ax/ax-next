@@ -16,10 +16,13 @@ import { cn } from '@/lib/utils';
 
 export type AdminTabId =
   // User tabs (every user) — the agent-centric Settings surface: Skills ·
-  // Connectors. Each connector is the single home for its own key(s); the
-  // separate Credentials tab was folded out (credentials-into-connectors).
+  // Connectors · Agents. Each connector is the single home for its own key(s);
+  // the separate Credentials tab was folded out (credentials-into-connectors).
+  // Agents are owner-scoped, so every user lists + manages their OWN agents here
+  // (attaching their own personal connectors/skills; workspace ones stay admin).
   | 'skills'
   | 'connectors-user'
+  | 'agents'
   // Admin tabs (admins only) — genuinely workspace-level config with no user
   // counterpart. The former catalog / admit-queue / connector-registry surfaces
   // were folded out of the nav (settings-unified epic); their admin curation
@@ -27,7 +30,6 @@ export type AdminTabId =
   | 'providers'
   | 'model-config'
   | 'auth-providers'
-  | 'agents'
   | 'teams';
 
 type NavItem = { id: AdminTabId; label: string; icon: typeof KeyRound };
@@ -35,13 +37,13 @@ type NavItem = { id: AdminTabId; label: string; icon: typeof KeyRound };
 const USER_NAV: NavItem[] = [
   { id: 'skills', label: 'Skills', icon: Wrench },
   { id: 'connectors-user', label: 'Connectors', icon: Plug },
+  { id: 'agents', label: 'Agents', icon: User },
 ];
 
 const ADMIN_NAV: NavItem[] = [
   { id: 'providers', label: 'AI model keys', icon: KeyRound },
   { id: 'model-config', label: 'Default AI model', icon: Cpu },
   { id: 'auth-providers', label: 'Sign-in methods', icon: ShieldCheck },
-  { id: 'agents', label: 'Agents', icon: User },
   { id: 'teams', label: 'Teams', icon: UsersRound },
 ];
 

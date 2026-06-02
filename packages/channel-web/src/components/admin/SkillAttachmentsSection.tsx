@@ -9,7 +9,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-import { listSkills } from '@/lib/skills';
+import { listSkills, listUserSkills } from '@/lib/skills';
 import { patchAgentSkillAttachments } from '@/lib/admin';
 import type { SkillSummary } from '@ax/skills';
 
@@ -21,6 +21,13 @@ interface Attachment {
 interface Props {
   agentId: string;
   initialAttachments: Attachment[];
+  /**
+   * Admins pick from the workspace catalog (`/admin/skills`); a non-admin can't
+   * reach that, so they pick from THEIR OWN user-scoped skills (`/settings/skills`).
+   * The server's owner-scoped attachment guard rejects any skill that would pull
+   * in a workspace/shared connector either way.
+   */
+  isAdmin: boolean;
   onSaved?: (attachments: Attachment[]) => void;
 }
 
@@ -32,6 +39,7 @@ interface Props {
 export function SkillAttachmentsSection({
   agentId,
   initialAttachments,
+  isAdmin,
   onSaved,
 }: Props) {
   const [attachments, setAttachments] = useState<Attachment[]>(initialAttachments);
@@ -43,13 +51,13 @@ export function SkillAttachmentsSection({
   useEffect(() => {
     void (async () => {
       try {
-        const skills = await listSkills();
+        const skills = isAdmin ? await listSkills() : await listUserSkills();
         setAllSkills(skills);
       } catch (err) {
         setError(err instanceof Error ? err.message : String(err));
       }
     })();
-  }, []);
+  }, [isAdmin]);
 
   const skillById = useMemo(
     () => new Map(allSkills.map((s) => [s.id, s])),

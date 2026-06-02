@@ -5,18 +5,21 @@ import { AdminSidebar } from '../AdminSidebar';
 const noop = () => {};
 
 describe('AdminSidebar (role-aware Settings surface)', () => {
-  it('shows the user tabs (Skills, Connectors) — no separate Credentials tab', () => {
+  it('shows the user tabs (Skills, Connectors, Agents) — no separate Credentials tab', () => {
     render(
       <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBackToChat={noop} />,
     );
     expect(screen.getByText('Skills')).toBeInTheDocument();
     expect(screen.getByText('Connectors')).toBeInTheDocument();
+    // Agents is a user-facing Settings tab now — every user lists + manages their
+    // OWN agents (owner-scoped). Visible even to a non-admin.
+    expect(screen.getByText('Agents')).toBeInTheDocument();
     // The Credentials tab was folded into Connectors — each connector owns its
     // own key(s), so there's no standalone Credentials nav entry.
     expect(screen.queryByText('Credentials')).not.toBeInTheDocument();
   });
 
-  it('hides admin tabs from non-admins', () => {
+  it('hides admin tabs from non-admins (but NOT Agents — it is a user tab now)', () => {
     render(
       <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBackToChat={noop} />,
     );
@@ -24,6 +27,17 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
     expect(screen.queryByText('Teams')).not.toBeInTheDocument();
     // The "Admin" section label is also absent for non-admins.
     expect(screen.queryByText('Admin')).not.toBeInTheDocument();
+    // Agents is owner-scoped and lives in the user Settings group → still shown.
+    expect(screen.getByText('Agents')).toBeInTheDocument();
+  });
+
+  it('routes the Agents user tab to the agents tab id', () => {
+    const onTabChange = vi.fn();
+    render(
+      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={onTabChange} onBackToChat={noop} />,
+    );
+    screen.getByText('Agents').click();
+    expect(onTabChange).toHaveBeenCalledWith('agents');
   });
 
   it('shows admin tabs to admins alongside the user tabs', () => {

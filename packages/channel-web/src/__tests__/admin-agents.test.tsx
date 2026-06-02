@@ -95,7 +95,7 @@ describe('AdminSettings — agents tab', () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     fetchMock.mockResolvedValueOnce(jsonOk({ agents: [sampleAgent({ displayName: 'ax' })] }));
 
-    render(<AgentForm />);
+    render(<AgentForm isAdmin />);
     await waitFor(() => {
       expect(screen.getByText('ax')).toBeTruthy();
     });
@@ -106,7 +106,7 @@ describe('AdminSettings — agents tab', () => {
     globalThis.fetch = fetchMock as unknown as typeof fetch;
     fetchMock.mockResolvedValue(jsonOk({ agents: [], teams: [], connectors: [] }));
 
-    render(<AgentForm />);
+    render(<AgentForm isAdmin />);
     await waitFor(() => screen.getByText(/New agent/i));
     fireEvent.click(screen.getByText(/New agent/i));
     expect(screen.getByLabelText(/name/i)).toBeTruthy();
@@ -128,7 +128,7 @@ describe('AdminSettings — agents tab', () => {
     // re-fetch agents after save
     fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
 
-    render(<AgentForm />);
+    render(<AgentForm isAdmin />);
     await waitFor(() => screen.getByText(/New agent/i));
     fireEvent.click(screen.getByText(/New agent/i));
     fireEvent.change(screen.getByLabelText(/name/i), {
@@ -208,7 +208,7 @@ describe('AdminSettings — agents tab', () => {
       return Promise.resolve(jsonOk({ agents: [] }));
     });
 
-    render(<AgentForm />);
+    render(<AgentForm isAdmin />);
     await waitFor(() => screen.getByText(/New agent/i));
     fireEvent.click(screen.getByText(/New agent/i));
     fireEvent.change(screen.getByLabelText(/name/i), { target: { value: 'cbot' } });
@@ -277,7 +277,7 @@ describe('AdminSettings — agents tab', () => {
       return Promise.resolve(jsonOk({ teams: [] }));
     });
 
-    render(<AgentForm />);
+    render(<AgentForm isAdmin />);
     await waitFor(() => screen.getByText('probe'));
     // Before the camelCase fix this threw "Cannot read properties of
     // undefined (reading 'join')" inside formFromAgent.
@@ -301,7 +301,7 @@ describe('AdminSettings — agents tab', () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
 
     const confirmSpy = vi.spyOn(window, 'confirm');
-    render(<AgentForm />);
+    render(<AgentForm isAdmin />);
     await waitFor(() => screen.getByText('probe'));
     fireEvent.click(screen.getByText(/^delete$/i));
 
