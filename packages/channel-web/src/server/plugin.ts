@@ -5,6 +5,7 @@ import {
   type Plugin,
 } from '@ax/core';
 import { createChunkBuffer, type ChunkBuffer } from './chunk-buffer.js';
+import { makeAgentBootstrapHandler } from './routes-agent-bootstrap.js';
 import { makeAllowHostHandler } from './routes-allow-host.js';
 import { registerAttachmentsRoutes } from './routes-attachments.js';
 import { registerChatRoutes } from './routes-chat.js';
@@ -92,6 +93,11 @@ export function createChannelWebServerPlugin(
         'auth:require-user',
         'agents:resolve',
         'agents:list-for-user',
+        // First-run personal-agent bootstrap (POST /api/agents/bootstrap)
+        // creates the user's own agent with the wildcard tool scope, exactly
+        // like onboarding's Default Agent. Hard dep — the route is dead
+        // without it.
+        'agents:create',
         'conversations:get-by-req-id',
         'conversations:create',
         'conversations:get',
@@ -311,6 +317,26 @@ export function createChannelWebServerPlugin(
         ) => Promise<void>,
       });
       unregisterRoutes.push(allowHostRoute.unregister);
+
+      // First-run personal-agent bootstrap. The SPA's <AgentBootstrap> POSTs
+      // { displayName, systemPrompt } here; the handler fixes visibility +
+      // owner + wildcard tools server-side. CSRF-gated automatically by
+      // @ax/http-server on state-changing methods. Ships with its consumer
+      // (the SPA surface) in the same PR (I3 — no half-wired surface).
+      const agentBootstrap = makeAgentBootstrapHandler({ bus, initCtx });
+      const agentBootstrapRoute = await bus.call<unknown, { unregister: () => void }>(
+        'http:register-route',
+        initCtx,
+        {
+          method: 'POST',
+          path: '/api/agents/bootstrap',
+          handler: agentBootstrap.bootstrap as unknown as (
+            req: RouteRequest,
+            res: RouteResponse,
+          ) => Promise<void>,
+        },
+      );
+      unregisterRoutes.push(agentBootstrapRoute.unregister);
 
       // TASK-42 — the Settings "Connections" surface. GET returns the per-(user,
       // agent) merged skills list (default + agent-global + per-user); DELETE

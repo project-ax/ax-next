@@ -213,7 +213,7 @@ function agentsMockPlugin(args: { allow: boolean }): Plugin {
     manifest: {
       name: 'mock-agents',
       version: '0.0.0',
-      registers: ['agents:resolve', 'agents:list-for-user'],
+      registers: ['agents:resolve', 'agents:list-for-user', 'agents:create'],
       calls: [],
       subscribes: [],
     },
@@ -233,6 +233,13 @@ function agentsMockPlugin(args: { allow: boolean }): Plugin {
       // registration satisfies the bootstrap verifyCalls walk.
       bus.registerService('agents:list-for-user', 'mock-agents', async () => {
         return { agents: [] };
+      });
+      // Channel-web declares agents:create as a hard call (first-run
+      // personal-agent bootstrap, POST /api/agents/bootstrap). This suite
+      // doesn't exercise that route, so a no-op registration satisfies the
+      // bootstrap verifyCalls walk.
+      bus.registerService('agents:create', 'mock-agents', async () => {
+        return { agent: { id: 'agt_new', displayName: 'New', visibility: 'personal' } };
       });
     },
   };
@@ -437,6 +444,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'auth:require-user',
         'agents:resolve',
         'agents:list-for-user',
+        'agents:create',
         'conversations:get-by-req-id',
         'conversations:create',
         'conversations:get',
