@@ -495,7 +495,7 @@ describe('@ax/connectors hooks — delete purges the connector\'s credentials', 
     ]);
   });
 
-  it('a workspace connector purges its slot at scope:global / ownerId:null', async () => {
+  it('a workspace connector purges its GLOBAL key only when purgeGlobal is authorized (admin)', async () => {
     const { h, calls } = await makeHarnessWithCredSpy();
     await h.bus.call<UpsertInput, UpsertOutput>(
       'connectors:upsert',
@@ -508,13 +508,42 @@ describe('@ax/connectors hooks — delete purges the connector\'s credentials', 
         capabilities: cliCaps(),
       }),
     );
+    // purgeGlobal:true (the route passes actor.isAdmin) → the shared company key
+    // at scope:global / ownerId:null is purged.
     const del = await h.bus.call<DeleteInput, DeleteOutput>(
       'connectors:delete',
       h.ctx({ userId: 'admin' }),
-      { userId: 'admin', connectorId: 'sf' },
+      { userId: 'admin', connectorId: 'sf', purgeGlobal: true },
     );
     expect(del.deleted).toBe(true);
     expect(calls).toEqual([{ scope: 'global', ownerId: null, ref: 'account:sf' }]);
+  });
+
+  it('SECURITY: a workspace connector delete WITHOUT purgeGlobal leaves the shared global key intact', async () => {
+    // The authority gate that closes the cross-tenant DoS: a non-admin's delete
+    // (purgeGlobal omitted/false) must NEVER tombstone a global (company) key,
+    // however the non-admin came to own the workspace connector (incl. the
+    // authored-connector approve path that bypasses the HTTP keyMode gate).
+    const { h, calls } = await makeHarnessWithCredSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'mallory' }),
+      upsertInput({
+        userId: 'mallory',
+        connectorId: 'sf',
+        keyMode: 'workspace',
+        visibility: 'private',
+        capabilities: cliCaps(),
+      }),
+    );
+    const del = await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'mallory' }),
+      { userId: 'mallory', connectorId: 'sf' }, // no purgeGlobal → not authorized
+    );
+    // The connector row is still soft-deleted, but NO global credential is purged.
+    expect(del.deleted).toBe(true);
+    expect(calls).toEqual([]);
   });
 
   it('a multi-slot connector purges every per-slot ref (no key left behind)', async () => {

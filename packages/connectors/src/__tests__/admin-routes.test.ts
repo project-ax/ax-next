@@ -780,6 +780,59 @@ describe('user connector routes (/settings/connectors)', () => {
     expect((captured.body as { error: string }).error).toContain('admin-only');
   });
 
+  it('destroy passes purgeGlobal=actor.isAdmin: an admin purges the GLOBAL key, a non-admin does not', async () => {
+    // Defense at the dangerous primitive: even if a non-admin somehow OWNS a
+    // workspace (global-keyed) connector — e.g. via the authored-connector approve
+    // path, which bypasses the HTTP keyMode gate — their delete must NOT purge the
+    // shared company key. The route passes actor.isAdmin as purgeGlobal; the hook
+    // skips the global-scope purge unless authorized. We seed the owned-state
+    // directly via the upsert hook (the user route would reject keyMode:workspace).
+    const deleteCalls: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
+    const h = await createTestHarness({
+      services: {
+        'credentials:delete': async (_c, input) => {
+          deleteCalls.push(input as (typeof deleteCalls)[number]);
+        },
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        authStubPlugin(),
+        credentialsStubPlugin(),
+        createConnectorsPlugin(),
+      ],
+    });
+    harnesses.push(h);
+    // Two same-id workspace connectors, one owned by a non-admin, one by an admin.
+    for (const owner of ['mallory', 'adminX']) {
+      await h.bus.call('connectors:upsert', h.ctx({ userId: owner }), {
+        userId: owner,
+        connectorId: 'ws-route',
+        name: 'Workspace svc',
+        keyMode: 'workspace',
+        visibility: 'private',
+        capabilities: mcpCaps(),
+      });
+    }
+    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    const adminHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'admin' });
+
+    // Non-admin destroy → purgeGlobal:false → the shared global key is untouched.
+    currentActor = { id: 'mallory', isAdmin: false };
+    const { res: r1, captured: c1 } = makeRes();
+    await userHandlers.destroy(makeReq({ params: { id: 'ws-route' } }), r1);
+    expect(c1.status).toBe(204);
+    expect(deleteCalls).toEqual([]);
+
+    // Admin destroy → purgeGlobal:true → the shared global key IS purged.
+    currentActor = { id: 'adminX', isAdmin: true };
+    const { res: r2, captured: c2 } = makeRes();
+    await adminHandlers.destroy(makeReq({ params: { id: 'ws-route' } }), r2);
+    expect(c2.status).toBe(204);
+    expect(deleteCalls).toEqual([
+      { scope: 'global', ownerId: null, ref: 'account:ws-route' },
+    ]);
+  });
+
   it('full CRUD on an owned private connector: create → edit → delete', async () => {
     const h = await makeHarness();
     const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });

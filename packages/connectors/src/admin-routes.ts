@@ -531,7 +531,10 @@ export function createConnectorRouteHandlers(
         const out = await deps.bus.call<DeleteInput, DeleteOutput>(
           'connectors:delete',
           ctx,
-          { userId: actor.id, connectorId: id },
+          // Only an admin may purge a GLOBAL (shared/company) credential on delete
+          // — a non-admin's delete leaves global-scope refs intact (it still purges
+          // their own per-user refs). This is the authority the hook gates on.
+          { userId: actor.id, connectorId: id, purgeGlobal: actor.isAdmin },
         );
         if (!out.deleted) {
           // Soft-delete returns false when there was nothing (owned) to delete —

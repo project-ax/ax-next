@@ -216,6 +216,19 @@ export interface UpsertOutput {
 export interface DeleteInput {
   userId: string;
   connectorId: string;
+  /**
+   * Whether the caller is authorized to purge GLOBAL-scope (shared/company)
+   * credentials as part of the delete. Omitted/false ⟹ ONLY the caller's own
+   * per-user (`scope:'user'`, `ownerId:userId`) credential refs are purged;
+   * global-scope refs are LEFT INTACT. A global (company) key is shared
+   * infrastructure — owner-independent, keyed by the connector id — so only an
+   * admin may tombstone it on delete. Routes pass `actor.isAdmin`. This is the
+   * security boundary that stops a non-admin who somehow owns a workspace
+   * connector (e.g. via the authored-connector approve path, which the HTTP
+   * keyMode gate doesn't cover) from wiping a company key. Storage-agnostic:
+   * a granted capability flag, no backend vocabulary.
+   */
+  purgeGlobal?: boolean;
 }
 export interface DeleteOutput {
   deleted: boolean;

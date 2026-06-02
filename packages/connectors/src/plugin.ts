@@ -424,13 +424,28 @@ async function deleteConnector(
   // Purge the connector's OWN stored key(s) so a secret never lingers with no UI
   // home. Soft-dep: only attempted when credentials:delete is present (a preset
   // without @ax/credentials still deletes the connector). The purge targets ONLY
-  // the deleted connector's derived refs, at the scope it declares — a personal
-  // connector purges (scope:user, ownerId:userId), a workspace connector
-  // (scope:global, ownerId:null). Each failure is logged + swallowed so a
-  // credential hiccup never wedges the connector deletion (invariant #5: the
-  // reach is exactly the connector's own keys, no wider).
+  // the deleted connector's derived refs, at the scope it declares.
+  //
+  // SECURITY (invariant #5): a per-user ref (scope:'user', ownerId:userId) is
+  // unambiguously the deleting caller's own — always safe to purge. A GLOBAL ref
+  // (scope:'global', shared company key, owner-independent) is purged ONLY when
+  // the caller is authorized (input.purgeGlobal — routes pass actor.isAdmin).
+  // Gating the PURGE here, not just the HTTP create route, closes EVERY path to
+  // a non-admin global-credential wipe (incl. the authored-connector approve
+  // path, which promotes a draft straight through connectors:upsert). Each
+  // failure is logged + swallowed so a credential hiccup never wedges the delete.
   if (connector !== null && bus.hasService('credentials:delete')) {
+    const purgeGlobal = input.purgeGlobal === true;
     for (const entry of deriveCredentialPlan(connector)) {
+      if (entry.scope === 'global' && !purgeGlobal) {
+        // Unauthorized to purge a shared/company key — leave it intact. (An admin
+        // delete passes purgeGlobal:true; a non-admin's never does.)
+        ctx.logger.info('connectors_delete_skipped_global_purge', {
+          connectorId,
+          ref: entry.ref,
+        });
+        continue;
+      }
       const ownerId = entry.scope === 'user' ? userId : null;
       try {
         await bus.call('credentials:delete', ctx, {
