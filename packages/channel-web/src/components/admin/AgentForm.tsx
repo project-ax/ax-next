@@ -1,5 +1,10 @@
 /**
- * AgentForm — admin CRUD for agents.
+ * AgentForm — CRUD for agents, in the user "Settings" surface. Agents are
+ * owner-scoped, so EVERY user manages their OWN agents here (the `/admin/agents`
+ * routes are requireUser + owner-scoped, not admin-gated). `isAdmin` gates the
+ * admin-only bits: non-admins read/attach connectors via `/settings/connectors`
+ * and may attach only PERSONAL connectors (workspace/shared stay admin-only —
+ * enforced server-side); the authored-skill drafts section is admin-only for now.
  *
  * Shape mirrors the real `/admin/agents` wire (camelCase + visibility).
  * The legacy snake_case mock fields (desc/color/tag/owner_type) have no
@@ -96,7 +101,7 @@ const splitChips = (s: string): string[] =>
     .map((x) => x.trim())
     .filter(Boolean);
 
-export function AgentForm() {
+export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const [agents, setAgents] = useState<AdminAgent[]>([]);
   // `null` = not yet loaded (radio disabled), `[]` = loaded but empty.
   // Distinguishing the two prevents writing an empty `teamId` if the
@@ -134,10 +139,14 @@ export function AgentForm() {
     void listTeams()
       .then((t) => setTeams(t ?? []))
       .catch(() => setTeams([]));
-    void listConnectors()
-      .then((c) => setConnectors(c ?? []))
+    // A non-admin reads/writes their OWN connectors via /settings/connectors and
+    // may only attach PERSONAL ones (their own key) — workspace/shared connectors
+    // are admin-only to attach (the server enforces this; filtering the picker is
+    // the friendly front for it). Admins curate via /admin/connectors and see all.
+    void listConnectors(isAdmin ? '/admin/connectors' : '/settings/connectors')
+      .then((c) => setConnectors((c ?? []).filter((conn) => isAdmin || conn.keyMode === 'personal')))
       .catch(() => setConnectors([]));
-  }, [editing]);
+  }, [editing, isAdmin]);
 
   const startNew = () => {
     setError(null);
@@ -563,6 +572,7 @@ export function AgentForm() {
           <SkillAttachmentsSection
             agentId={editing.id}
             initialAttachments={editing.skillAttachments ?? []}
+            isAdmin={isAdmin}
             onSaved={(next) => {
               // Functional updater + identity guard: if the user has
               // navigated to a different agent (or to 'new') by the time
@@ -577,9 +587,11 @@ export function AgentForm() {
         </Card>
       )}
 
-      {/* Authored skills — skills the agent wrote in its workspace.
-          Only meaningful once the agent exists and has a workspace. */}
-      {editing !== 'new' && (
+      {/* Authored skills — the agent's model-proposed skill DRAFTS + approval.
+          A distinct capability-grant flow whose routes stay admin-only for now
+          (its owner-scoped opening is a tracked follow-up), so it's hidden for
+          non-admins. Only meaningful once the agent exists. */}
+      {editing !== 'new' && isAdmin && (
         <div className="mt-4">
           <AuthoredSkillsSection agentId={editing.id} />
         </div>

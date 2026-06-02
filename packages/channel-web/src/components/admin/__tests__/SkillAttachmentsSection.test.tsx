@@ -88,6 +88,7 @@ describe('SkillAttachmentsSection', () => {
     ]);
     render(
       <SkillAttachmentsSection
+        isAdmin
         agentId="agt-1"
         initialAttachments={[{ skillId: 'linear-tracker', credentialBindings: {} }]}
       />,
@@ -103,6 +104,7 @@ describe('SkillAttachmentsSection', () => {
   it('renders existing attachments (skill id only — no slot labels)', async () => {
     render(
       <SkillAttachmentsSection
+        isAdmin
         agentId={AGENT_ID}
         initialAttachments={[
           { skillId: 'github-api', credentialBindings: {} },
@@ -120,6 +122,7 @@ describe('SkillAttachmentsSection', () => {
   it('clicking "Attach skill" shows a picker with skills not already attached', async () => {
     render(
       <SkillAttachmentsSection
+        isAdmin
         agentId={AGENT_ID}
         initialAttachments={[
           { skillId: 'github-api', credentialBindings: {} },
@@ -145,6 +148,7 @@ describe('SkillAttachmentsSection', () => {
     const onSaved = vi.fn();
     render(
       <SkillAttachmentsSection
+        isAdmin
         agentId={AGENT_ID}
         initialAttachments={[
           { skillId: 'github-api', credentialBindings: {} },
@@ -172,6 +176,7 @@ describe('SkillAttachmentsSection', () => {
     mockPatch.mockRejectedValueOnce(new Error('foreign key violation'));
     render(
       <SkillAttachmentsSection
+        isAdmin
         agentId={AGENT_ID}
         initialAttachments={[]}
         onSaved={vi.fn()}
@@ -192,6 +197,7 @@ describe('SkillAttachmentsSection', () => {
   it('clicking detach removes the attachment from the in-memory list', async () => {
     render(
       <SkillAttachmentsSection
+        isAdmin
         agentId={AGENT_ID}
         initialAttachments={[
           { skillId: 'github-api', credentialBindings: {} },
@@ -220,6 +226,7 @@ describe('SkillAttachmentsSection', () => {
   it('skill with no credential slots renders without a Set credential button', async () => {
     render(
       <SkillAttachmentsSection
+        isAdmin
         agentId={AGENT_ID}
         initialAttachments={[
           { skillId: 'slack-notify', credentialBindings: {} },

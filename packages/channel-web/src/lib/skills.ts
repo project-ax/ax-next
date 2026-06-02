@@ -47,6 +47,21 @@ export async function listSkills(): Promise<CatalogSkillSummary[]> {
   return body.skills;
 }
 
+/**
+ * List the CALLER'S OWN user-scoped skills via the user-facing
+ * `GET /settings/skills` route (requireUser, owner-scoped) — same
+ * `{ skills }` shape as {@link listSkills}, but for a non-admin who can't reach
+ * the admin `/admin/skills` catalog. Used by the per-agent skill-attachment
+ * picker in the user Settings → Agents surface: a non-admin attaches THEIR OWN
+ * skills to THEIR OWN agents (the server's owner-scoped attachment guard also
+ * rejects any skill that would pull in a workspace/shared connector).
+ */
+export async function listUserSkills(): Promise<CatalogSkillSummary[]> {
+  const res = await fetch('/settings/skills', { credentials: 'include' });
+  const body = (await handleResponse(res)) as { skills: CatalogSkillSummary[] };
+  return body.skills;
+}
+
 export async function getSkill(skillId: string): Promise<SkillDetail> {
   const res = await fetch(`/admin/skills/${encodeURIComponent(skillId)}`, {
     credentials: 'include',

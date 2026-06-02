@@ -96,13 +96,14 @@ describe('AdminShell', () => {
     expect(screen.getByRole('button', { name: 'Skills' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Connectors' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Credentials' })).toBeNull();
-    // Admin tabs (Admin section) — present for admins. After the
-    // settings-unified nav fold the Admin group is exactly Agents / keys /
-    // model / sign-in / teams; the duplicate Catalog / Connector-catalog
+    // Agents is a USER Settings tab now (owner-scoped — every user manages their
+    // own agents), no longer in the Admin group.
+    expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
+    // Admin tabs (Admin section) — present for admins. The Admin group is now
+    // keys / model / sign-in / teams; the duplicate Catalog / Connector-catalog
     // surfaces are gone.
     expect(screen.getByRole('button', { name: 'AI model keys' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Default AI model' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Teams' })).toBeTruthy();
     // Skills is the default active tab for everyone.
     expect(
@@ -110,9 +111,11 @@ describe('AdminShell', () => {
     ).toBeTruthy();
   });
 
-  it('hides admin tabs when isAdmin is false', () => {
+  it('hides admin tabs when isAdmin is false — but keeps the user Agents tab', () => {
     renderShell(vi.fn(), false);
     expect(screen.getByRole('button', { name: 'Skills' })).toBeTruthy();
+    // Agents is owner-scoped → a user Settings tab, shown even to non-admins.
+    expect(screen.getByRole('button', { name: 'Agents' })).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'AI model keys' })).toBeNull();
     expect(screen.queryByRole('button', { name: 'Teams' })).toBeNull();
   });
