@@ -640,10 +640,21 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
       }> = [];
       if (uniqueSkillIds.length > 0) {
         try {
+          // Resolve against the ACTOR'S scope: skills:resolve unions the global
+          // catalog with the caller's USER-SCOPED skills only when ownerUserId is
+          // passed (user-wins on id collision). A non-admin attaches their OWN
+          // user-scoped skills (from /settings/skills), so we must pass it or
+          // those ids resolve to nothing → spurious skill-not-found. Passing it
+          // for admins too is a superset (global catalog + their own), and it
+          // lets the workspace-connector guard below see a user-scoped skill's
+          // referenced connectors. Mirrors the orchestrator's runtime resolve.
           const result = await deps.bus.call<
-            { skillIds: string[] },
+            { skillIds: string[]; ownerUserId: string },
             { skills: typeof resolvedSkills }
-          >('skills:resolve', ctx, { skillIds: uniqueSkillIds });
+          >('skills:resolve', ctx, {
+            skillIds: uniqueSkillIds,
+            ownerUserId: actor.id,
+          });
           resolvedSkills = result.skills;
         } catch (err) {
           if (err instanceof PluginError && err.code === 'no-service') {

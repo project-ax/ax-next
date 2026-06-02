@@ -95,21 +95,34 @@ async function bootStack(): Promise<BootedStack> {
     services: {
       'skills:resolve': async (
         _ctx: unknown,
-        input: { skillIds: string[] },
+        input: { skillIds: string[]; ownerUserId?: string },
       ) => {
-        const known = new Set(['github', 'openai', 'linear-a', 'linear-b', 'ws-skill']);
-        return {
-          skills: input.skillIds
-            .filter((id) => known.has(id))
-            .map((id) => ({
-              id,
-              bodyMd: 'body',
-              manifestYaml: `name: ${id}\n`,
-              // 'ws-skill' references a WORKSPACE connector — used to test that a
-              // non-admin can't grant a global key transitively via a skill.
-              ...(id === 'ws-skill' ? { connectors: ['workspace-conn'] } : {}),
-            })),
+        // GLOBAL catalog skills — resolvable to anyone (no ownerUserId needed).
+        const globalSkills = new Set(['github', 'openai', 'linear-a', 'linear-b']);
+        // USER-SCOPED skills — only resolvable when ownerUserId is passed
+        // (mirrors prod: skills:resolve unions the caller's user store ONLY then).
+        // 'my-skill' is cap-free; 'ws-skill' references a WORKSPACE connector
+        // (the transitive-grant guard must reject attaching it as a non-admin).
+        const userSkills: Record<string, { connectors?: string[] }> = {
+          'my-skill': {},
+          'ws-skill': { connectors: ['workspace-conn'] },
         };
+        const skills: Array<{
+          id: string;
+          bodyMd: string;
+          manifestYaml: string;
+          connectors?: string[];
+        }> = [];
+        for (const id of input.skillIds) {
+          const base = { id, bodyMd: 'body', manifestYaml: `name: ${id}\n` };
+          if (globalSkills.has(id)) {
+            skills.push(base);
+          } else if (input.ownerUserId !== undefined && userSkills[id] !== undefined) {
+            const conns = userSkills[id]!.connectors;
+            skills.push(conns ? { ...base, connectors: conns } : base);
+          }
+        }
+        return { skills };
       },
       // Owner-scoped connector resolve stub for the non-admin attachment guard.
       // 'personal-conn' is the user's own (keyMode personal); 'workspace-conn' is
@@ -923,22 +936,25 @@ describe('@ax/agents admin routes', () => {
     ]);
   });
 
-  it('skill-attachments: a non-admin OWNER may attach a cap-free skill of their own → 200', async () => {
+  it('skill-attachments: a non-admin OWNER may attach their OWN user-scoped skill → 200', async () => {
     const { cookie } = await mintSecondUserCookie();
     const created = await http(stack.port, 'POST', '/admin/agents', {
       cookie,
       body: makeBody(),
     });
     const id = (created.body as { agent: SerializedAgent }).agent.id;
+    // 'my-skill' is USER-SCOPED — it resolves only because the route now passes
+    // ownerUserId: actor.id to skills:resolve. (Before that fix this 400'd with
+    // skill-not-found, silently breaking non-admin skill attachment.)
     const r = await http(
       stack.port,
       'PATCH',
       `/admin/agents/${id}/skill-attachments`,
-      { cookie, body: { skillAttachments: [{ skillId: 'github', credentialBindings: {} }] } },
+      { cookie, body: { skillAttachments: [{ skillId: 'my-skill', credentialBindings: {} }] } },
     );
     expect(r.status).toBe(200);
     expect((r.body as { agent: SerializedAgent }).agent.skillAttachments).toEqual([
-      { skillId: 'github', credentialBindings: {} },
+      { skillId: 'my-skill', credentialBindings: {} },
     ]);
   });
 
