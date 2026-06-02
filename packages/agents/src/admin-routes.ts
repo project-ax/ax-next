@@ -408,6 +408,55 @@ function writeServiceError(res: RouteResponse, err: unknown): boolean {
   return false;
 }
 
+// --- non-admin attachment guard -------------------------------------------
+
+/**
+ * SECURITY (non-admin owner-scoped attachment). Agent CRUD + attachments are
+ * owner-scoped (the agent-ownership ACL lives in the hooks' `assertWriteAllowed`),
+ * so a non-admin may manage their OWN agents. The one escalation an attachment
+ * could enable is making the agent spend a GLOBAL (company) credential — and that
+ * only ever comes from a `keyMode:'workspace'` connector. So a non-admin's set is
+ * rejected iff ANY of the given connector ids resolves — OWNER-SCOPED to the actor
+ * — to keyMode 'workspace'. A personal connector is the user's own per-user key
+ * (their own reach → no escalation); a connector the actor doesn't own never
+ * resolves and is a runtime no-op (tolerated, like a dangling id). Admins bypass
+ * this entirely (admin curation is unchanged).
+ *
+ * Fail-closed: if `connectors:resolve` is unavailable we can't verify keyMode, so
+ * a non-empty connector set from a non-admin is refused (attaching stays
+ * admin-only in a connectors-less preset).
+ *
+ * Returns an error message to 403 with, or null when the set is allowed.
+ */
+async function workspaceConnectorGrantViolation(
+  bus: HookBus,
+  ctx: AgentContext,
+  userId: string,
+  connectorIds: readonly string[],
+): Promise<string | null> {
+  if (connectorIds.length === 0) return null;
+  if (!bus.hasService('connectors:resolve')) {
+    return 'cannot verify connector reach — attaching connectors is admin-only here';
+  }
+  for (const connectorId of connectorIds) {
+    let keyMode: string | undefined;
+    try {
+      const resolved = await bus.call<
+        { userId: string; connectorId: string },
+        { keyMode: string }
+      >('connectors:resolve', ctx, { userId, connectorId });
+      keyMode = resolved.keyMode;
+    } catch {
+      // not-found / not owned by this user → never resolves at runtime → no-op.
+      continue;
+    }
+    if (keyMode === 'workspace') {
+      return `forbidden: '${connectorId}' is a workspace (shared) connector — only an admin can attach it`;
+    }
+  }
+  return null;
+}
+
 // --- handler factory -------------------------------------------------------
 
 export interface AdminRouteDeps {
@@ -560,12 +609,11 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
     async setSkillAttachments(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
-      // Admin-only: skill attachments carry credential refs that must not be
-      // set by arbitrary authenticated users.
-      if (!actor.isAdmin) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
-      }
+      // Owner-scoped (agent ownership enforced by the hook's assertWriteAllowed).
+      // The validator below rejects any credential binding, and the non-admin
+      // workspace-connector guard (after skill resolution) rejects granting a
+      // shared/global-keyed connector via a referenced skill — see the post-
+      // resolution check. Admins bypass that guard.
       const agentId = req.params.id;
       if (typeof agentId !== 'string' || agentId.length === 0) {
         res.status(400).json({ error: 'missing-agent-id' });
@@ -615,6 +663,24 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         res.status(400).json({ error: validation.message, code: validation.code });
         return;
       }
+      // Non-admin owner-scoped guard: a referenced skill must not pull in a
+      // workspace (shared/global-keyed) connector — that would let the agent
+      // spend a company credential. Admins may attach any skill.
+      if (!actor.isAdmin) {
+        const referencedConnectors = [
+          ...new Set(resolvedSkills.flatMap((s) => s.connectors ?? [])),
+        ];
+        const violation = await workspaceConnectorGrantViolation(
+          deps.bus,
+          ctx,
+          actor.id,
+          referencedConnectors,
+        );
+        if (violation !== null) {
+          res.status(403).json({ error: violation });
+          return;
+        }
+      }
       try {
         const out = await deps.bus.call<
           { actor: Actor; agentId: string; attachments: SkillAttachment[] },
@@ -635,14 +701,11 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
     async setConnectorAttachments(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
-      // Admin-only: attaching a connector grants the agent that connector's
-      // network reach + credential slots in the sandbox (TASK-97 fold), so it
-      // must not be set by arbitrary authenticated users — same posture as
-      // skill attachments.
-      if (!actor.isAdmin) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
-      }
+      // Owner-scoped (agent ownership enforced by the hook's assertWriteAllowed).
+      // A non-admin may attach their OWN PERSONAL connectors (their own reach);
+      // the workspace-connector guard after id validation rejects attaching a
+      // shared/global-keyed connector (that would grant the company key). Admins
+      // bypass that guard.
       const agentId = req.params.id;
       if (typeof agentId !== 'string' || agentId.length === 0) {
         res.status(400).json({ error: 'missing-agent-id' });
@@ -667,6 +730,20 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
           return;
         }
         throw err;
+      }
+      // Non-admin owner-scoped guard: reject attaching a workspace (shared/
+      // global-keyed) connector. Personal connectors (own per-user key) are fine.
+      if (!actor.isAdmin) {
+        const violation = await workspaceConnectorGrantViolation(
+          deps.bus,
+          ctx,
+          actor.id,
+          connectorIds,
+        );
+        if (violation !== null) {
+          res.status(403).json({ error: violation });
+          return;
+        }
       }
       try {
         const out = await deps.bus.call<
