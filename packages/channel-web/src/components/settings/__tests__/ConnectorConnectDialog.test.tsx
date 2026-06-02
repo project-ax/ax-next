@@ -235,7 +235,7 @@ describe('ConnectorConnectDialog', () => {
     expect(screen.queryByLabelText(/API key/i)).toBeNull();
   });
 
-  it('a slot whose key is already stored shows Replace + Remove (not just enter)', async () => {
+  it('a slot whose key is already stored shows a clear "saved" cue + Replace (no Remove, no Save)', async () => {
     vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(PERSONAL);
     // The user already has a key at the slot's derived ref (account:my-notion).
     vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([
@@ -257,10 +257,12 @@ describe('ConnectorConnectDialog', () => {
         onConnected={() => {}}
       />,
     );
-    expect(await screen.findByRole('button', { name: /^Replace$/i })).toBeInTheDocument();
-    expect(screen.getByRole('button', { name: /^Remove$/i })).toBeInTheDocument();
-    // The empty-slot affordance ("Save") is NOT shown for a set slot.
+    // The secret can't be shown, but it must be obvious a key already exists.
+    expect(await screen.findByText(/a key is saved/i)).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Replace$/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull();
+    // No per-key Remove — Delete (on the Connectors tab) is the uninstall action.
+    expect(screen.queryByRole('button', { name: /remove/i })).toBeNull();
   });
 
   it('an empty slot shows enter (Save), no Remove', async () => {
@@ -277,42 +279,40 @@ describe('ConnectorConnectDialog', () => {
       />,
     );
     expect(await screen.findByRole('button', { name: /^Save$/i })).toBeInTheDocument();
-    expect(screen.queryByRole('button', { name: /^Remove$/i })).toBeNull();
+    expect(screen.queryByText(/a key is saved/i)).toBeNull();
+    expect(screen.queryByRole('button', { name: /remove/i })).toBeNull();
   });
 
-  it('removing a stored key calls the clear path and notifies the parent', async () => {
+  it('closes the dialog once the last slot is saved', async () => {
     vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(PERSONAL);
-    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([
-      {
-        scope: 'user',
-        ownerId: 'alice',
-        ref: 'account:my-notion',
-        kind: 'api-key',
-        createdAt: '2026-06-01T00:00:00Z',
-      },
-    ]);
-    const clear = vi.spyOn(credLib, 'clearDestinationCredential').mockResolvedValue();
-    const onConnected = vi.fn();
+    // Empty when the dialog opens; the key exists on the post-save re-check →
+    // every slot is now set → the dialog closes (an unambiguous "it worked").
+    vi.spyOn(credLib.myCredentials, 'list')
+      .mockResolvedValueOnce([])
+      .mockResolvedValue([
+        {
+          scope: 'user',
+          ownerId: 'alice',
+          ref: 'account:my-notion',
+          kind: 'api-key',
+          createdAt: '2026-06-01T00:00:00Z',
+        },
+      ]);
+    const onOpenChange = vi.fn();
     render(
       <ConnectorConnectDialog
         connectorId="my-notion"
         connectorName="My Notion"
         isAdmin={false}
         open
-        onOpenChange={() => {}}
-        onConnected={onConnected}
+        onOpenChange={onOpenChange}
+        onConnected={() => {}}
       />,
     );
-    fireEvent.click(await screen.findByRole('button', { name: /^Remove$/i }));
-    await waitFor(() =>
-      expect(clear).toHaveBeenCalledWith(
-        expect.objectContaining({
-          destination: { kind: 'account', service: 'my-notion' },
-          scope: { scope: 'user', ownerId: null },
-        }),
-      ),
-    );
-    await waitFor(() => expect(onConnected).toHaveBeenCalled());
+    const input = await screen.findByLabelText(/api key/i);
+    fireEvent.change(input, { target: { value: 'the-key' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
   it('surfaces a load error', async () => {
