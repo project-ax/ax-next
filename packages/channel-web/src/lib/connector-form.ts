@@ -52,21 +52,19 @@ export type PackageRegistry = 'npm' | 'pypi';
 
 /**
  * A structured credential-slot row (TASK-128 — replaces the old comma-string).
- * `slot` is the machine name (env var / header name); `description` is the
- * human label ("Personal access token"); `account` optionally shares one stored
- * key across connectors/skills by service (empty ⟹ fall back to the connector
- * id). Maps to one {@link ConnectorCredentialSlot}; an empty `slot` drops the row.
+ * `slot` is the machine name (env var / header name); `description` is the human
+ * label ("Personal access token"). There is NO share-by-service `account` field:
+ * each connector owns its own key, keyed by the connector id. Maps to one
+ * {@link ConnectorCredentialSlot}; an empty `slot` drops the row.
  */
 export interface CredentialSlotRow {
   slot: string;
   description: string;
-  account: string;
 }
 
 export const emptySlotRow = (): CredentialSlotRow => ({
   slot: '',
   description: '',
-  account: '',
 });
 
 export interface ConnectorFormState {
@@ -154,12 +152,11 @@ function leadingPackage(c: ConnectorCapabilities): {
   return { registry: 'npm', name: '' };
 }
 
-/** Map a capability slot into a structured form row (description/account → ''). */
+/** Map a capability slot into a structured form row (description → ''). */
 function slotToRow(s: ConnectorCredentialSlot): CredentialSlotRow {
   return {
     slot: s.slot,
     description: s.description ?? '',
-    account: s.account ?? '',
   };
 }
 
@@ -192,14 +189,13 @@ export function formFromConnector(c: Connector): ConnectorFormState {
 }
 
 /** Map structured rows → capability slots: drop empty-slot rows; include
- *  description/account only when non-empty (exactOptionalPropertyTypes). */
+ *  description only when non-empty (exactOptionalPropertyTypes). */
 function rowsToSlots(rows: CredentialSlotRow[]): ConnectorCredentialSlot[] {
   return rows
     .filter((r) => r.slot.trim().length > 0)
     .map((r) => {
       const slot: ConnectorCredentialSlot = { slot: r.slot.trim(), kind: 'api-key' };
       if (r.description.trim().length > 0) slot.description = r.description.trim();
-      if (r.account.trim().length > 0) slot.account = r.account.trim();
       return slot;
     });
 }

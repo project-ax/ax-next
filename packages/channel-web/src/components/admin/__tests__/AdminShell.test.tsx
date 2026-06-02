@@ -89,12 +89,13 @@ function renderShell(onClose = vi.fn(), isAdmin = true) {
 }
 
 describe('AdminShell', () => {
-  it('renders the three user Settings tabs plus admin tabs, with Skills active by default', () => {
+  it('renders the user Settings tabs plus admin tabs, with Skills active by default', () => {
     renderShell();
-    // The agent-centric Settings tabs (every user).
+    // The agent-centric Settings tabs (every user). No separate Credentials tab —
+    // each connector owns its own key(s) (credentials-into-connectors).
     expect(screen.getByRole('button', { name: 'Skills' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Connectors' })).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Credentials' })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Credentials' })).toBeNull();
     // Admin tabs (Admin section) — present for admins. After the
     // settings-unified nav fold the Admin group is exactly Agents / keys /
     // model / sign-in / teams; the duplicate Catalog / Connector-catalog

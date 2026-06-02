@@ -9,15 +9,14 @@ import { AgentForm } from './AgentForm';
 import { TeamList } from './TeamList';
 import { SkillsTab } from '../settings/SkillsTab';
 import { ConnectorsTab } from '../settings/ConnectorsTab';
-import { CredentialsTab } from '../settings/CredentialsTab';
 
 export interface AdminShellProps {
   /**
-   * Admins get the full set of admin tabs; every user gets the three Settings
-   * tabs (Skills, Connectors, Credentials). The admin-only tabs are gated here
-   * AND on the server — every /admin/* route enforces role === 'admin'
-   * regardless of what the in-shell nav shows, so hiding the tabs is a UX
-   * nicety, not the boundary.
+   * Admins get the full set of admin tabs; every user gets the Settings tabs
+   * (Skills, Connectors — each connector owns its own key(s), so there's no
+   * separate Credentials tab). The admin-only tabs are gated here AND on the
+   * server — every /admin/* route enforces role === 'admin' regardless of what
+   * the in-shell nav shows, so hiding the tabs is a UX nicety, not the boundary.
    */
   isAdmin: boolean;
   onClose: () => void;
@@ -31,7 +30,6 @@ interface TabMeta {
 const TAB_META: Record<AdminTabId, TabMeta> = {
   skills: { eyebrow: 'Settings', title: 'Skills' },
   'connectors-user': { eyebrow: 'Settings', title: 'Connectors' },
-  credentials: { eyebrow: 'Settings', title: 'Credentials' },
   providers: { eyebrow: 'Admin', title: 'AI model keys' },
   'model-config': { eyebrow: 'Admin', title: 'Default AI model' },
   'auth-providers': { eyebrow: 'Admin', title: 'Sign-in methods' },
@@ -56,7 +54,6 @@ export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
       >
         {activeTab === 'skills' && <SkillsTab isAdmin={isAdmin} />}
         {activeTab === 'connectors-user' && <ConnectorsTab isAdmin={isAdmin} />}
-        {activeTab === 'credentials' && <CredentialsTab />}
         {activeTab === 'providers' && <ProvidersPanel />}
         {activeTab === 'model-config' && <ModelConfigTab />}
         {activeTab === 'auth-providers' && <AuthProvidersTab />}

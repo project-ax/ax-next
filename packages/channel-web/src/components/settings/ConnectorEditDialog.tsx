@@ -18,9 +18,9 @@
  * becomes a first-class field — it is assembled into the opaque `capabilities`
  * spec on submit (invariant #1).
  *
- * Credential slots are STRUCTURED rows (description + machine name + optional
- * share-by-service account), not a comma-string; they map to the TASK-124
- * per-slot credential refs.
+ * Credential slots are STRUCTURED rows (description + machine name), not a
+ * comma-string; they map to the per-slot credential refs (keyed by the connector
+ * id — each connector owns its own key, no share-by-service).
  *
  * SECURITY (invariant #5): EVERY field is browser-supplied and UNTRUSTED — hosts,
  * commands, package names, credential SLOT NAMES (never values). They flow to the
@@ -538,19 +538,6 @@ export function ConnectorEditDialog({
                         placeholder="e.g. GITHUB_TOKEN"
                         value={row.slot}
                         onChange={(e) => updateSlot(i, { slot: e.target.value })}
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor={`slot-account-${i}`} className="text-xs">
-                        Share key by service (optional)
-                      </Label>
-                      <Input
-                        id={`slot-account-${i}`}
-                        type="text"
-                        className="font-mono"
-                        placeholder="e.g. github — reuse one stored key across connectors"
-                        value={row.account}
-                        onChange={(e) => updateSlot(i, { account: e.target.value })}
                       />
                     </div>
                   </div>

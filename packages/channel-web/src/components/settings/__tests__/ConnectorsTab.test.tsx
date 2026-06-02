@@ -47,19 +47,15 @@ const DEFAULT_ON_PRIVATE_CONN: ConnectorSummary = {
   updatedAt: '2026-05-20T00:00:00Z',
 };
 
-/** Build the full connector a `getConnector` mock returns (carries capabilities). */
-function fullOf(summary: ConnectorSummary, slotAccount?: string): Connector {
+/** Build the full connector a `getConnector` mock returns (carries capabilities).
+ *  A single api-key slot — the connector owns its own key, keyed by the id, so the
+ *  derived presence ref is `account:<connectorId>`. */
+function fullOf(summary: ConnectorSummary): Connector {
   return {
     ...summary,
     capabilities: {
       ...connectorsLib.emptyCapabilities(),
-      credentials: [
-        {
-          slot: 'token',
-          kind: 'api-key',
-          ...(slotAccount !== undefined ? { account: slotAccount } : {}),
-        },
-      ],
+      credentials: [{ slot: 'token', kind: 'api-key' }],
     },
   };
 }
@@ -73,7 +69,7 @@ describe('ConnectorsTab', () => {
     // Each tile derives connected-state + the connect plan from the full
     // connector. Default: a single api-key slot, account keyed off the id.
     vi.spyOn(connectorsLib, 'getConnector').mockImplementation(async (id: string) => {
-      if (id === PRIVATE_CONN.id) return fullOf(PRIVATE_CONN, 'notion');
+      if (id === PRIVATE_CONN.id) return fullOf(PRIVATE_CONN);
       if (id === DEFAULT_ON_PRIVATE_CONN.id) return fullOf(DEFAULT_ON_PRIVATE_CONN);
       return fullOf(SHARED_CONN);
     });
@@ -109,7 +105,7 @@ describe('ConnectorsTab', () => {
       {
         scope: 'user',
         ownerId: 'u1',
-        ref: 'account:notion',
+        ref: 'account:my-notion',
         kind: 'api-key',
         createdAt: '2026-05-20T00:00:00Z',
       },
@@ -120,9 +116,9 @@ describe('ConnectorsTab', () => {
       expect(screen.getByText('Connected (1)')).toBeInTheDocument();
       expect(screen.getByText('Available (1)')).toBeInTheDocument();
     });
-    // The connected tile offers Reconnect; the available tile offers Connect.
+    // The connected tile offers Manage; the available tile offers Connect.
     const notionTile = screen.getByTestId('connector-tile-my-notion');
-    expect(within(notionTile).getByRole('button', { name: /reconnect/i })).toBeInTheDocument();
+    expect(within(notionTile).getByRole('button', { name: /manage/i })).toBeInTheDocument();
     const sfTile = screen.getByTestId('connector-tile-company-salesforce');
     expect(within(sfTile).getByRole('button', { name: /^connect$/i })).toBeInTheDocument();
   });
@@ -217,7 +213,7 @@ describe('ConnectorsTab', () => {
       {
         scope: 'user',
         ownerId: 'u1',
-        ref: 'account:notion',
+        ref: 'account:my-notion',
         kind: 'api-key',
         createdAt: '2026-05-20T00:00:00Z',
       },
@@ -226,7 +222,7 @@ describe('ConnectorsTab', () => {
     await screen.findByText('My Notion');
     const tile = screen.getByTestId('connector-tile-my-notion');
     await waitFor(() => expect(within(tile).getByText('Ready')).toBeInTheDocument());
-    // The old literal status verb is gone from the tile (Reconnect button aside).
+    // The old literal status verb is gone from the tile (Manage button aside).
     expect(within(tile).queryByText(/^connected$/i)).toBeNull();
     expect(within(tile).queryByText(/^not connected$/i)).toBeNull();
   });
@@ -252,7 +248,7 @@ describe('ConnectorsTab', () => {
       const tile = screen.getByTestId(`connector-tile-${id}`);
       expect(tile.textContent).not.toMatch(/\bnot connected\b/i);
       // status verb is one of the friendly four; the only "connect" left is the
-      // Connect/Reconnect button label.
+      // Connect/Manage button label.
       expect(within(tile).queryByText(/^connected$/i)).toBeNull();
       expect(within(tile).queryByText(/checking…/i)).toBeNull();
     }
@@ -314,7 +310,7 @@ describe('ConnectorsTab', () => {
     expect(
       within(sharedTile).queryByRole('button', { name: /^delete$/i }),
     ).toBeNull();
-    // It still offers Connect/Reconnect — read-only ≠ unusable.
+    // It still offers Connect/Manage — read-only ≠ unusable.
     expect(
       within(sharedTile).getByRole('button', { name: /^connect$/i }),
     ).toBeInTheDocument();

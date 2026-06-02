@@ -55,4 +55,41 @@ describe('CredentialSlotForm', () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(fetchMock.mock.calls[0]![0]).toBe('/settings/destinations/provider/credential');
   });
+
+  it('shows a Remove button when a key is set and clears it (DELETE + onCleared)', async () => {
+    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(null, { status: 204 }),
+    );
+    const onCleared = vi.fn();
+    render(
+      <CredentialSlotForm
+        destination={{ kind: 'account', service: 'gdrive' }}
+        slot={{ label: 'TOKEN', kind: 'api-key' }}
+        scope={{ scope: 'user', ownerId: 'alice' }}
+        current={{ set: true }}
+        onSaved={() => {}}
+        onCleared={onCleared}
+      />,
+    );
+    fireEvent.click(screen.getByRole('button', { name: /remove/i }));
+    await waitFor(() => expect(onCleared).toHaveBeenCalledTimes(1));
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/settings/destinations/account/credential',
+      expect.objectContaining({ method: 'DELETE' }),
+    );
+  });
+
+  it('does NOT show a Remove button when no key is set', () => {
+    render(
+      <CredentialSlotForm
+        destination={{ kind: 'account', service: 'gdrive' }}
+        slot={{ label: 'TOKEN', kind: 'api-key' }}
+        scope={{ scope: 'user', ownerId: 'alice' }}
+        current={{ set: false }}
+        onSaved={() => {}}
+        onCleared={() => {}}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /remove/i })).toBeNull();
+  });
 });

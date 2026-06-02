@@ -28,7 +28,7 @@ const PERSONAL = fullConnector({
   visibility: 'private',
   capabilities: {
     ...connectorsLib.emptyCapabilities(),
-    credentials: [{ slot: 'token', kind: 'api-key', account: 'notion' }],
+    credentials: [{ slot: 'token', kind: 'api-key' }],
   },
 });
 
@@ -72,6 +72,10 @@ const MULTI_SLOT = fullConnector({
 describe('ConnectorConnectDialog', () => {
   beforeEach(() => {
     vi.spyOn(credLib, 'setDestinationCredential').mockResolvedValue();
+    // Per-slot presence reads the credential lists on open. Default: empty (every
+    // slot shows "enter"). Individual tests override to simulate a stored key.
+    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([]);
+    vi.spyOn(credLib.adminCredentials, 'list').mockResolvedValue([]);
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -95,7 +99,8 @@ describe('ConnectorConnectDialog', () => {
     await waitFor(() =>
       expect(credLib.setDestinationCredential).toHaveBeenCalledWith(
         expect.objectContaining({
-          destination: { kind: 'account', service: 'notion' },
+          // Each connector owns its own key → ref keyed by the connector id.
+          destination: { kind: 'account', service: 'my-notion' },
           scope: { scope: 'user', ownerId: null },
           payload: 'secret-token',
         }),
@@ -228,6 +233,86 @@ describe('ConnectorConnectDialog', () => {
     );
     expect(await screen.findByText(/needs no key/i)).toBeInTheDocument();
     expect(screen.queryByLabelText(/API key/i)).toBeNull();
+  });
+
+  it('a slot whose key is already stored shows Replace + Remove (not just enter)', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(PERSONAL);
+    // The user already has a key at the slot's derived ref (account:my-notion).
+    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([
+      {
+        scope: 'user',
+        ownerId: 'alice',
+        ref: 'account:my-notion',
+        kind: 'api-key',
+        createdAt: '2026-06-01T00:00:00Z',
+      },
+    ]);
+    render(
+      <ConnectorConnectDialog
+        connectorId="my-notion"
+        connectorName="My Notion"
+        isAdmin={false}
+        open
+        onOpenChange={() => {}}
+        onConnected={() => {}}
+      />,
+    );
+    expect(await screen.findByRole('button', { name: /^Replace$/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /^Remove$/i })).toBeInTheDocument();
+    // The empty-slot affordance ("Save") is NOT shown for a set slot.
+    expect(screen.queryByRole('button', { name: /^Save$/i })).toBeNull();
+  });
+
+  it('an empty slot shows enter (Save), no Remove', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(PERSONAL);
+    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([]);
+    render(
+      <ConnectorConnectDialog
+        connectorId="my-notion"
+        connectorName="My Notion"
+        isAdmin={false}
+        open
+        onOpenChange={() => {}}
+        onConnected={() => {}}
+      />,
+    );
+    expect(await screen.findByRole('button', { name: /^Save$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^Remove$/i })).toBeNull();
+  });
+
+  it('removing a stored key calls the clear path and notifies the parent', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(PERSONAL);
+    vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([
+      {
+        scope: 'user',
+        ownerId: 'alice',
+        ref: 'account:my-notion',
+        kind: 'api-key',
+        createdAt: '2026-06-01T00:00:00Z',
+      },
+    ]);
+    const clear = vi.spyOn(credLib, 'clearDestinationCredential').mockResolvedValue();
+    const onConnected = vi.fn();
+    render(
+      <ConnectorConnectDialog
+        connectorId="my-notion"
+        connectorName="My Notion"
+        isAdmin={false}
+        open
+        onOpenChange={() => {}}
+        onConnected={onConnected}
+      />,
+    );
+    fireEvent.click(await screen.findByRole('button', { name: /^Remove$/i }));
+    await waitFor(() =>
+      expect(clear).toHaveBeenCalledWith(
+        expect.objectContaining({
+          destination: { kind: 'account', service: 'my-notion' },
+          scope: { scope: 'user', ownerId: null },
+        }),
+      ),
+    );
+    await waitFor(() => expect(onConnected).toHaveBeenCalled());
   });
 
   it('surfaces a load error', async () => {
