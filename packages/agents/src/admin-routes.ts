@@ -903,6 +903,68 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         targetScope: body.targetScope,
       });
     },
+
+    /** DELETE /admin/agents/:id/authored-skills/:skillId
+     *
+     * Hard-delete an agent-authored draft (the Delete affordance on the admin
+     * AuthoredSkillsSection). Admin-only. Authored drafts are keyed by the
+     * agent's single owner, so we resolve it the same way promote does
+     * (`agents:list-personal-owners`) and hand the owner to @ax/skills'
+     * `skills:delete-authored` hook — @ax/agents never touches the skills store
+     * directly (I4). A team/nonexistent agent has no personal authored namespace
+     * → 404. Idempotent: deleting an already-gone draft still returns 204. */
+    async deleteAuthoredSkill(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      if (!actor.isAdmin) {
+        res.status(403).json({ error: 'forbidden' });
+        return;
+      }
+      const agentId = req.params.id;
+      const skillId = req.params.skillId;
+      if (typeof agentId !== 'string' || agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      if (typeof skillId !== 'string' || skillId.length === 0) {
+        res.status(400).json({ error: 'missing-skill-id' });
+        return;
+      }
+
+      // Soft dep — the skills plugin owns the authored store. Mirror promote's
+      // skills:upsert guard (503, not added to the manifest).
+      if (!deps.bus.hasService('skills:delete-authored')) {
+        res.status(503).json({ error: 'skills-plugin-not-loaded' });
+        return;
+      }
+
+      // Resolve the agent's owner (authored drafts are per-(owner, agent)). A
+      // team/nonexistent agent isn't a personal owner → no such authored draft.
+      const { agents: personalOwners } = await deps.bus.call<
+        Record<string, never>,
+        { agents: Array<{ agentId: string; ownerUserId: string }> }
+      >('agents:list-personal-owners', ctx, {});
+      const ownerEntry = personalOwners.find((a) => a.agentId === agentId);
+      if (ownerEntry === undefined) {
+        res.status(404).json({ error: 'authored-skill-not-found' });
+        return;
+      }
+
+      try {
+        await deps.bus.call<
+          { ownerUserId: string; agentId: string; skillId: string },
+          { deleted: boolean }
+        >('skills:delete-authored', ctx, {
+          ownerUserId: ownerEntry.ownerUserId,
+          agentId,
+          skillId,
+        });
+        res.status(204).end();
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
   };
 }
 
@@ -940,6 +1002,14 @@ export async function registerAdminAgentRoutes(
       method: 'GET',
       path: '/admin/agents/:id/authored-skills',
       handler: handlers.listAuthoredSkills,
+    },
+    // DELETE /admin/agents/:id/authored-skills/:skillId — a 5-segment DELETE
+    // pattern. Patterns are segregated by method, so it never collides with the
+    // 5-segment POST .../promote, nor with the 3-segment DELETE /admin/agents/:id.
+    {
+      method: 'DELETE',
+      path: '/admin/agents/:id/authored-skills/:skillId',
+      handler: handlers.deleteAuthoredSkill,
     },
     {
       method: 'POST',

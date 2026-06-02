@@ -87,6 +87,7 @@ import {
   deleteUserSkill,
   shareUserSkill,
   adoptAuthoredSkill,
+  deleteAuthoredSkill,
 } from '@/lib/user-skills';
 import {
   setSkillDefaultAttached,
@@ -139,6 +140,10 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
   // The authored draft currently being adopted (its `agentId/skillId` key), so
   // its Edit button shows an in-flight state and can't be double-clicked.
   const [adopting, setAdopting] = useState<string | null>(null);
+  // The authored draft awaiting delete confirmation, and the one whose delete is
+  // in flight (its `agentId/skillId` key) — mirrors pendingDelete / adopting.
+  const [pendingDismiss, setPendingDismiss] = useState<AuthoredSkillListing | null>(null);
+  const [dismissing, setDismissing] = useState<string | null>(null);
 
   // ---- data loads -------------------------------------------------------
 
@@ -322,6 +327,29 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setAdopting(null);
+    }
+  }
+
+  /**
+   * Delete an agent-authored draft (the authored shelf's Delete button). Unlike
+   * Adopt (which copies the draft into an editable user skill), this just removes
+   * the draft outright. There's no tombstone — if the agent re-authors the same
+   * id later it can re-appear. On success we drop it from the local list and
+   * refresh `own`; on failure we surface the error.
+   */
+  async function handleDismiss(a: AuthoredSkillListing): Promise<void> {
+    const key = `${a.agentId}/${a.skillId}`;
+    setDismissing(key);
+    setError(null);
+    try {
+      await deleteAuthoredSkill(a.agentId, a.skillId);
+      setPendingDismiss(null);
+      await refreshOwn();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+      setPendingDismiss(null);
+    } finally {
+      setDismissing(null);
     }
   }
 
@@ -541,6 +569,8 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                 {authored.map((a) => {
                   const key = `${a.agentId}/${a.skillId}`;
                   const isAdopting = adopting === key;
+                  const isDismissing = dismissing === key;
+                  const busy = adopting !== null || dismissing !== null;
                   return (
                     <div
                       key={key}
@@ -563,11 +593,20 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                         <Button
                           variant="outline"
                           size="sm"
-                          disabled={adopting !== null}
+                          disabled={busy}
                           onClick={() => void handleAdopt(a)}
                           aria-label={`Edit ${a.skillId}`}
                         >
                           {isAdopting ? 'Adopting…' : 'Edit'}
+                        </Button>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          disabled={busy}
+                          onClick={() => setPendingDismiss(a)}
+                          aria-label={`Delete ${a.skillId}`}
+                        >
+                          {isDismissing ? 'Deleting…' : 'Delete'}
                         </Button>
                       </div>
                     </div>
@@ -797,6 +836,35 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
                 }
               >
                 {pendingDelete.scope === 'user' ? 'Delete' : 'Remove'}
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {pendingDismiss !== null && (
+        <Dialog open onOpenChange={(o) => { if (!o) setPendingDismiss(null); }}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Delete authored draft?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              Delete the draft{' '}
+              <code className="font-mono">{pendingDismiss.skillId}</code> authored
+              by your agent? This removes the draft only — it doesn't touch any
+              editable copy you've already adopted. If the agent authors it again
+              later, it can re-appear here.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setPendingDismiss(null)}>
+                Cancel
+              </Button>
+              <Button
+                variant="destructive"
+                disabled={dismissing !== null}
+                onClick={() => void handleDismiss(pendingDismiss)}
+              >
+                Delete
               </Button>
             </div>
           </DialogContent>

@@ -20,6 +20,7 @@ vi.mock('@/lib/user-skills', () => ({
   deleteUserSkill: vi.fn(),
   shareUserSkill: vi.fn(),
   adoptAuthoredSkill: vi.fn(),
+  deleteAuthoredSkill: vi.fn(),
 }));
 vi.mock('@/lib/skills', () => ({
   setSkillDefaultAttached: vi.fn(),
@@ -45,7 +46,12 @@ vi.mock('@/components/admin/BundleReviewDialog', () => ({
 
 import { getConnections, listCatalogSkills } from '@/lib/connections';
 import { listChatAgents } from '@/lib/agents';
-import { listUserSkills, listAuthoredSkills, adoptAuthoredSkill } from '@/lib/user-skills';
+import {
+  listUserSkills,
+  listAuthoredSkills,
+  adoptAuthoredSkill,
+  deleteAuthoredSkill,
+} from '@/lib/user-skills';
 import { setSkillDefaultAttached } from '@/lib/skills';
 import { listCatalogRequests } from '@/lib/catalog';
 import { listAdminAgents, patchAgentSkillAttachments, type AdminAgent } from '@/lib/admin';
@@ -60,6 +66,7 @@ const mockAdoptAuthored = vi.mocked(adoptAuthoredSkill);
 const mockSetDefault = vi.mocked(setSkillDefaultAttached);
 const mockListAdminAgents = vi.mocked(listAdminAgents);
 const mockPatchAgentSkills = vi.mocked(patchAgentSkillAttachments);
+const mockDeleteAuthored = vi.mocked(deleteAuthoredSkill);
 
 const INSTALLED: ConnectionSkill[] = [
   { skillId: 'web-search', description: 'Search the web.', source: 'default', removable: false },
@@ -306,5 +313,54 @@ describe('SkillsAppStore', () => {
     for (const b of installButtons) expect(b).toBeDisabled();
     // The empty INSTALLED state explains the fix: create an agent on the Agents tab.
     expect(screen.getByText(/Agents tab/i)).toBeInTheDocument();
+  });
+
+  // Delete authored drafts (fix #1) — before this, an authored draft had only an
+  // Edit/adopt affordance and NO way to remove it from the UI.
+
+  it('an authored draft shows a Delete button', async () => {
+    mockListAuthored.mockResolvedValue(AUTHORED);
+    render(<SkillsAppStore isAdmin={false} />);
+    await screen.findByTestId('authored-drafted');
+    expect(screen.getByRole('button', { name: /Delete drafted/i })).toBeInTheDocument();
+  });
+
+  it('Delete on an authored draft confirms, calls deleteAuthoredSkill, and drops it from the list', async () => {
+    mockListAuthored.mockResolvedValueOnce(AUTHORED); // initial load shows the draft
+    mockDeleteAuthored.mockResolvedValue(undefined);
+    mockListAuthored.mockResolvedValue([]); // post-delete refreshOwn sees it gone
+    render(<SkillsAppStore isAdmin={false} />);
+    await screen.findByTestId('authored-drafted');
+
+    // Click Delete → a confirmation dialog appears (no call yet).
+    fireEvent.click(screen.getByRole('button', { name: /Delete drafted/i }));
+    expect(await screen.findByText(/Delete authored draft\?/i)).toBeInTheDocument();
+    expect(mockDeleteAuthored).not.toHaveBeenCalled();
+
+    // Confirm → the delete call fires with the draft's (agentId, skillId).
+    fireEvent.click(screen.getByRole('button', { name: /^Delete$/ }));
+    await waitFor(() =>
+      expect(mockDeleteAuthored).toHaveBeenCalledWith('a1', 'drafted'),
+    );
+
+    // The row drops off (refreshOwn re-read returns []).
+    await waitFor(() =>
+      expect(screen.queryByTestId('authored-drafted')).toBeNull(),
+    );
+  });
+
+  it('a failed delete surfaces an error and leaves the draft visible', async () => {
+    mockListAuthored.mockResolvedValue(AUTHORED);
+    mockDeleteAuthored.mockRejectedValue(
+      new Error('user-skills API 404: agent not accessible'),
+    );
+    render(<SkillsAppStore isAdmin={false} />);
+    await screen.findByTestId('authored-drafted');
+
+    fireEvent.click(screen.getByRole('button', { name: /Delete drafted/i }));
+    fireEvent.click(await screen.findByRole('button', { name: /^Delete$/ }));
+
+    expect(await screen.findByText(/agent not accessible/i)).toBeInTheDocument();
+    expect(screen.getByTestId('authored-drafted')).toBeInTheDocument();
   });
 });

@@ -438,3 +438,88 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
     expect(body.skills[0]!.id).toBe('bar');
   });
 });
+
+// ---------------------------------------------------------------------------
+// DELETE /admin/agents/:id/authored-skills/:skillId — remove an authored draft.
+// Before this, the admin AuthoredSkillsSection could only Promote a draft; there
+// was no way to remove a stale one. These are the Bug-Fix-Policy tests.
+// ---------------------------------------------------------------------------
+
+describe('DELETE /admin/agents/:id/authored-skills/:skillId', () => {
+  it('non-admin actor → 403 forbidden', async () => {
+    const h = await makeHarness({ id: 'alice', isAdmin: false });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const agentId = await createPersonalAgent(h, 'alice');
+
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.deleteAuthoredSkill(
+      mkReq({ params: { id: agentId, skillId: 'foo' } }),
+      res,
+    );
+    expect(statusOf()).toBe(403);
+    expect((bodyOf() as { error: string }).error).toBe('forbidden');
+  });
+
+  it('missing skill id → 400', async () => {
+    const h = await makeHarness({ id: 'admin', isAdmin: true });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const agentId = await createPersonalAgent(h, 'alice');
+
+    const { res, statusOf } = mkRes();
+    await handlers.deleteAuthoredSkill(mkReq({ params: { id: agentId } }), res);
+    expect(statusOf()).toBe(400);
+  });
+
+  it('admin deletes a draft → 204 and it drops from the authored listing', async () => {
+    const h = await makeHarness({ id: 'admin', isAdmin: true });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const agentId = await createPersonalAgent(h, 'alice');
+    await seedAuthored(h, 'foo', 'alice', agentId);
+
+    // It's listed first.
+    const { res: rBefore, bodyOf: bBefore } = mkRes();
+    await handlers.listAuthoredSkills(mkReq({ params: { id: agentId } }), rBefore);
+    expect((bBefore() as { skills: Array<{ id: string }> }).skills.map((s) => s.id)).toContain('foo');
+
+    // Delete it.
+    const { res, statusOf } = mkRes();
+    await handlers.deleteAuthoredSkill(
+      mkReq({ params: { id: agentId, skillId: 'foo' } }),
+      res,
+    );
+    expect(statusOf()).toBe(204);
+
+    // Gone from the listing.
+    const { res: rAfter, bodyOf: bAfter } = mkRes();
+    await handlers.listAuthoredSkills(mkReq({ params: { id: agentId } }), rAfter);
+    expect((bAfter() as { skills: Array<{ id: string }> }).skills).toHaveLength(0);
+  });
+
+  it('deleting an already-gone draft is idempotent → 204', async () => {
+    const h = await makeHarness({ id: 'admin', isAdmin: true });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+    const agentId = await createPersonalAgent(h, 'alice');
+    await seedAuthored(h, 'foo', 'alice', agentId);
+
+    const { res: r1, statusOf: s1 } = mkRes();
+    await handlers.deleteAuthoredSkill(mkReq({ params: { id: agentId, skillId: 'foo' } }), r1);
+    expect(s1()).toBe(204);
+
+    const { res: r2, statusOf: s2 } = mkRes();
+    await handlers.deleteAuthoredSkill(mkReq({ params: { id: agentId, skillId: 'foo' } }), r2);
+    expect(s2()).toBe(204);
+  });
+
+  it('delete on a nonexistent (non-personal) agent → 404 authored-skill-not-found', async () => {
+    const h = await makeHarness({ id: 'admin', isAdmin: true });
+    const handlers = createAdminAgentRouteHandlers({ bus: h.bus });
+
+    const { res, statusOf, bodyOf } = mkRes();
+    await handlers.deleteAuthoredSkill(
+      mkReq({ params: { id: 'agt_does_not_exist', skillId: 'foo' } }),
+      res,
+    );
+    expect(statusOf()).toBe(404);
+    expect((bodyOf() as { error: string }).error).toBe('authored-skill-not-found');
+  });
+});

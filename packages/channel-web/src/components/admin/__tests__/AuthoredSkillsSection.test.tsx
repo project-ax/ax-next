@@ -5,12 +5,18 @@ import { AuthoredSkillsSection } from '../AuthoredSkillsSection';
 vi.mock('@/lib/admin', () => ({
   listAuthoredSkills: vi.fn(),
   promoteAuthoredSkill: vi.fn(),
+  deleteAuthoredSkill: vi.fn(),
 }));
 
-import { listAuthoredSkills, promoteAuthoredSkill } from '@/lib/admin';
+import {
+  listAuthoredSkills,
+  promoteAuthoredSkill,
+  deleteAuthoredSkill,
+} from '@/lib/admin';
 
 const mockList = vi.mocked(listAuthoredSkills);
 const mockPromote = vi.mocked(promoteAuthoredSkill);
+const mockDelete = vi.mocked(deleteAuthoredSkill);
 
 const SKILL_CLEAN = {
   id: 'weather-api',
@@ -278,5 +284,72 @@ describe('AuthoredSkillsSection', () => {
     await waitFor(() => {
       expect(screen.getByText('skills-plugin-not-loaded')).toBeInTheDocument();
     });
+  });
+
+  // Delete authored drafts (admin surface) — there was previously no way to
+  // remove a stale draft from this section (only Promote).
+
+  it('shows a Delete button for each authored skill', async () => {
+    mockList.mockResolvedValue([SKILL_CLEAN]);
+    render(<AuthoredSkillsSection agentId={AGENT_ID} />);
+    await waitFor(() => {
+      expect(screen.getByText('weather-api')).toBeInTheDocument();
+    });
+    expect(
+      screen.getByRole('button', { name: /Delete weather-api/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('Delete confirms, calls deleteAuthoredSkill, and refreshes the list', async () => {
+    mockList.mockResolvedValueOnce([SKILL_CLEAN]); // initial load
+    mockDelete.mockResolvedValue(undefined);
+    mockList.mockResolvedValue([]); // post-delete refresh
+    render(<AuthoredSkillsSection agentId={AGENT_ID} />);
+    await waitFor(() => {
+      expect(screen.getByText('weather-api')).toBeInTheDocument();
+    });
+
+    // Open the confirm dialog (no call yet).
+    fireEvent.click(screen.getByRole('button', { name: /Delete weather-api/i }));
+    await waitFor(() => {
+      expect(screen.getByText('Delete authored draft?')).toBeInTheDocument();
+    });
+    expect(mockDelete).not.toHaveBeenCalled();
+
+    // Confirm.
+    const deleteButtons = screen.getAllByRole('button', { name: /^Delete$/ });
+    fireEvent.click(deleteButtons[deleteButtons.length - 1]!);
+
+    await waitFor(() => {
+      expect(mockDelete).toHaveBeenCalledWith(AGENT_ID, SKILL_CLEAN.id);
+    });
+    // Dialog closes + list refreshed (now empty).
+    await waitFor(() => {
+      expect(screen.queryByRole('dialog')).not.toBeInTheDocument();
+      expect(screen.getByText('No authored skills.')).toBeInTheDocument();
+    });
+  });
+
+  it('surfaces a delete error and keeps the skill listed', async () => {
+    mockList.mockResolvedValue([SKILL_CLEAN]);
+    mockDelete.mockRejectedValue(new Error('authored-skill-not-found'));
+    render(<AuthoredSkillsSection agentId={AGENT_ID} />);
+    await waitFor(() => {
+      expect(screen.getByText('weather-api')).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /Delete weather-api/i }));
+    const deleteButtons = await screen.findAllByRole('button', { name: /^Delete$/ });
+    fireEvent.click(deleteButtons[deleteButtons.length - 1]!);
+
+    await waitFor(() => {
+      expect(screen.getByText('authored-skill-not-found')).toBeInTheDocument();
+      // Dialog stays open (in-dialog error), so the draft is never lost.
+      expect(screen.getByRole('dialog')).toBeInTheDocument();
+    });
+    // The list wasn't wiped (the empty-state never appeared) and the row remains
+    // (id renders in both the row and the dialog description → at least one).
+    expect(screen.queryByText('No authored skills.')).not.toBeInTheDocument();
+    expect(screen.getAllByText('weather-api').length).toBeGreaterThanOrEqual(1);
   });
 });

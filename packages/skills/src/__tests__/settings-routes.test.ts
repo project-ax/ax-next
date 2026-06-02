@@ -1115,4 +1115,151 @@ describe('/settings/skills handlers', () => {
     );
     expect(statusOf()).toBe(404);
   });
+
+  // -------------------------------------------------------------------------
+  // DELETE /settings/skills/authored/:agentId/:skillId — hard-delete an
+  // agent-authored draft (the authored shelf's Delete button). Before this
+  // existed, an authored draft had NO deletion path (only "adopt"), so a stale
+  // draft was un-removable through the UI. These are the Bug-Fix-Policy tests.
+  // -------------------------------------------------------------------------
+
+  it('DELETE authored returns 401 when anonymous', async () => {
+    const h = await makeHarness({ authedUser: null });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+    const { res, statusOf } = mkRes();
+    await handlers.destroyAuthored(
+      mkReq({ params: { agentId: 'agt_a', skillId: 'x' } }),
+      res,
+    );
+    expect(statusOf()).toBe(401);
+  });
+
+  it('DELETE authored returns 400 when ids are missing', async () => {
+    const h = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+    const { res, statusOf } = mkRes();
+    await handlers.destroyAuthored(mkReq({ params: { agentId: 'agt_a' } }), res);
+    expect(statusOf()).toBe(400);
+  });
+
+  it('DELETE authored removes the draft and drops it from the authored listing (204)', async () => {
+    // The acceptance / Bug-Fix-Policy test: a draft with no other deletion path
+    // is removed outright and stops showing in the authored listing.
+    const h = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    await proposeWithFiles(h, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml: 'name: drafted\ndescription: A draft.\nversion: 1',
+      bodyMd: 'Body.\n',
+      files: [{ path: 'notes.md', contents: 'n\n' }],
+    });
+
+    // It shows in the authored listing first.
+    const { res: rBefore, bodyOf: bBefore } = mkRes();
+    await handlers.listAuthored(mkReq({}), rBefore);
+    expect(
+      (bBefore() as SettingsAuthoredSkillsOutput).skills.some((s) => s.skillId === 'drafted'),
+    ).toBe(true);
+
+    // Delete it.
+    const { res, statusOf } = mkRes();
+    await handlers.destroyAuthored(
+      mkReq({ params: { agentId: 'agt_a', skillId: 'drafted' } }),
+      res,
+    );
+    expect(statusOf()).toBe(204);
+
+    // It's gone from the listing — and no user-scoped copy was created (delete,
+    // not adopt).
+    const { res: rAfter, bodyOf: bAfter } = mkRes();
+    await handlers.listAuthored(mkReq({}), rAfter);
+    expect(
+      (bAfter() as SettingsAuthoredSkillsOutput).skills.find((s) => s.skillId === 'drafted'),
+    ).toBeUndefined();
+
+    const { res: rGet, statusOf: sGet } = mkRes();
+    await handlers.get(mkReq({ params: { id: 'drafted' } }), rGet);
+    expect(sGet()).toBe(404);
+  });
+
+  it('DELETE authored is idempotent — deleting an already-gone draft still returns 204', async () => {
+    const h = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+
+    await proposeWithFiles(h, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml: 'name: drafted\ndescription: A draft.\nversion: 1',
+      bodyMd: 'Body.\n',
+      files: [],
+    });
+
+    const { res: r1, statusOf: s1 } = mkRes();
+    await handlers.destroyAuthored(mkReq({ params: { agentId: 'agt_a', skillId: 'drafted' } }), r1);
+    expect(s1()).toBe(204);
+
+    // Second delete: the row is already gone — still a success (204), not a 404.
+    const { res: r2, statusOf: s2 } = mkRes();
+    await handlers.destroyAuthored(mkReq({ params: { agentId: 'agt_a', skillId: 'drafted' } }), r2);
+    expect(s2()).toBe(204);
+  });
+
+  it('DELETE authored of a draft on an agent the caller does NOT own returns 404 and leaves it intact (I5 ACL)', async () => {
+    // alice authors a draft on agt_a. bob — even with agt_a presented in his
+    // (spoofed) agent list under alice's ownership — cannot delete it.
+    const hAlice = await makeHarness({
+      authedUser: { id: 'alice', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    const handlersAlice = createSettingsSkillsHandlers({ bus: hAlice.bus });
+    await proposeWithFiles(hAlice, {
+      ownerUserId: 'alice',
+      agentId: 'agt_a',
+      manifestYaml: 'name: drafted\ndescription: A draft.\nversion: 1',
+      bodyMd: 'Body.\n',
+      files: [],
+    });
+
+    const hBob = await makeHarness({
+      authedUser: { id: 'bob', isAdmin: false },
+      agents: [{ id: 'agt_a', ownerId: 'alice', ownerType: 'user' }],
+    });
+    const handlersBob = createSettingsSkillsHandlers({ bus: hBob.bus });
+    const { res, statusOf } = mkRes();
+    await handlersBob.destroyAuthored(
+      mkReq({ params: { agentId: 'agt_a', skillId: 'drafted' } }),
+      res,
+    );
+    expect(statusOf()).toBe(404);
+
+    // alice's draft survives bob's attempt.
+    const { res: rList, bodyOf: bList } = mkRes();
+    await handlersAlice.listAuthored(mkReq({}), rList);
+    expect(
+      (bList() as SettingsAuthoredSkillsOutput).skills.some((s) => s.skillId === 'drafted'),
+    ).toBe(true);
+  });
+
+  it('DELETE authored returns 404 when @ax/agents is absent (no ownable agent)', async () => {
+    const h = await makeHarness({ authedUser: { id: 'alice', isAdmin: false } });
+    expect(h.bus.hasService('agents:list-for-user')).toBe(false);
+    const handlers = createSettingsSkillsHandlers({ bus: h.bus });
+    const { res, statusOf } = mkRes();
+    await handlers.destroyAuthored(
+      mkReq({ params: { agentId: 'agt_a', skillId: 'drafted' } }),
+      res,
+    );
+    expect(statusOf()).toBe(404);
+  });
 });

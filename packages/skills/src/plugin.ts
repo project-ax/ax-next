@@ -51,6 +51,7 @@ import {
   SkillsListAuthoredOutputSchema,
   SkillsAuthoredActivateOutputSchema,
   SkillsAdoptAuthoredOutputSchema,
+  SkillsDeleteAuthoredOutputSchema,
 } from './types.js';
 import type {
   SkillsCheckForUpdatesInput,
@@ -107,6 +108,8 @@ import type {
   SkillsAuthoredActivateOutput,
   SkillsAdoptAuthoredInput,
   SkillsAdoptAuthoredOutput,
+  SkillsDeleteAuthoredInput,
+  SkillsDeleteAuthoredOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/skills';
@@ -228,6 +231,11 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
         // (the user-facing "adopt-&-edit" of authored work; called by the
         // /settings/skills/authored/:agentId/:skillId/adopt route).
         'skills:adopt-authored',
+        // Hard-delete an agent-authored draft (the user-facing "remove this
+        // draft"; the authored shelf's Delete button). Symmetric with the
+        // user-scope skills:delete — called by the DELETE
+        // /settings/skills/authored/:agentId/:skillId route.
+        'skills:delete-authored',
       ],
       calls: [
         'database:get-instance',
@@ -1282,6 +1290,32 @@ export function createSkillsPlugin(_config: SkillsPluginConfig = {}): Plugin {
           return { skillId: upserted.skillId, created: upserted.created, adopted };
         },
         { returns: SkillsAdoptAuthoredOutputSchema },
+      );
+
+      // -----------------------------------------------------------------------
+      // skills:delete-authored — hard-delete an agent-authored draft (the
+      // user-facing "remove this draft"; the authored shelf's Delete button).
+      // Symmetric with the user-scope skills:delete: the row is dropped outright.
+      // No tombstone — if the agent re-authors the same id later (via the
+      // skills:propose chokepoint, a user-driven event), a fresh draft re-appears
+      // and can be deleted again.
+      //
+      // Security (I5): `ownerUserId` is host-forced at the route (never a client
+      // field) and the store delete is scoped to (owner, agent, skillId), so a
+      // caller can only ever remove THEIR OWN draft. The route additionally
+      // ACL-checks that the agent is one the caller owns (mirrors adoptAuthored).
+      // Idempotent — deleting an already-gone draft returns { deleted: false }.
+      // -----------------------------------------------------------------------
+      bus.registerService<SkillsDeleteAuthoredInput, SkillsDeleteAuthoredOutput>(
+        'skills:delete-authored',
+        PLUGIN_NAME,
+        async (_ctx, input) =>
+          authoredStore.delete(
+            requireOwner(input.ownerUserId),
+            input.agentId,
+            input.skillId,
+          ),
+        { returns: SkillsDeleteAuthoredOutputSchema },
       );
 
       // Register admin + settings HTTP routes. Both batches are pushed into
