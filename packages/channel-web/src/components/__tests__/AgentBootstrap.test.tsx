@@ -40,6 +40,9 @@ describe('AgentBootstrap', () => {
       systemPrompt: string;
     };
     expect(arg.displayName).toBe('Ada');
+    // The chosen name must reach the system prompt (else the agent says it's
+    // "Claude" when asked its name — regression guard).
+    expect(arg.systemPrompt).toContain('You are Ada');
     expect(arg.systemPrompt).toContain('Warm and patient.');
     expect(arg.systemPrompt).toContain('Your job: help me write');
 
