@@ -104,7 +104,7 @@ function agentsMockPlugin(args: {
     manifest: {
       name: 'mock-agents',
       version: '0.0.0',
-      registers: ['agents:resolve', 'agents:list-for-user'],
+      registers: ['agents:resolve', 'agents:list-for-user', 'agents:create'],
       calls: [],
       subscribes: [],
     },
@@ -143,6 +143,12 @@ function agentsMockPlugin(args: {
           return { agents };
         },
       );
+      // Channel-web declares agents:create as a hard call (POST
+      // /api/agents/bootstrap). This suite doesn't drive that route, so a
+      // no-op registration satisfies the bootstrap verifyCalls walk.
+      bus.registerService('agents:create', 'mock-agents', async () => ({
+        agent: { id: 'agt_new', displayName: 'New', visibility: 'personal' },
+      }));
     },
   };
 }
