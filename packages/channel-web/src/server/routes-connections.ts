@@ -157,11 +157,6 @@ export interface CatalogSkillsResponse {
   skills: CatalogSkillListing[];
 }
 
-/** service → sorted, deduped skill ids whose manifest declares `account: <service>`. */
-export interface AccountUsageResponse {
-  usage: Record<string, string[]>;
-}
-
 /** Resolve the authenticated caller, or write 401 and return null. */
 async function authOr401(
   bus: HookBus,
@@ -530,27 +525,6 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
         );
       }
       res.status(204).end();
-    },
-
-    /** GET /api/chat/account-usage
-     *
-     * The "used by" hint for the Settings "Keys" service-keyed vault (design
-     * P2/P6, decision #13): which skills declare `account: <service>`. Derived
-     * from skills:list (which already carries each slot's optional `account`) —
-     * NO new hook. Auth-gated; degrades to {} when skills:list is absent. The
-     * derivation is metadata-only (skill ids + service names), never secrets. */
-    async accountUsage(req: RouteRequest, res: RouteResponse): Promise<void> {
-      const userId = await authOr401(bus, initCtx, req, res);
-      if (userId === null) return;
-
-      // TASK-100 — a skill manifest declares no credential slots (its reach is
-      // the connectors it references), so a SKILL never contributes to per-account
-      // (`account:<service>`) usage anymore: that mapping now belongs to the
-      // connector surface (TASK-99's Connectors tab derives a connector's account
-      // usage). This route therefore reports no skill-derived account usage. The
-      // null-prototype object preserves the prototype-pollution-safe response shape.
-      const out: AccountUsageResponse['usage'] = Object.create(null) as AccountUsageResponse['usage'];
-      res.status(200).json({ usage: out } satisfies AccountUsageResponse);
     },
   };
 }

@@ -319,11 +319,10 @@ export function createChannelWebServerPlugin(
       // existence leak). Ships with its consumer (the ConnectionsTab) in the
       // same PR (I3 — no half-wired surface).
       // TASK-54 — the Settings "Allowed sites" panel (host-grants list/revoke,
-      // the durable twin of the reactive wall — design P3/P6) and the "Keys"
-      // tab's service-keyed "used by" derivation (account-usage from skills:list)
-      // ride on the same Connections-surface BFF handlers + ctx. Both ship with
-      // their consumers (ConnectionsTab + KeysTab) in the same PR (I3 — no
-      // half-wired surface), closing TASK-44/43's deferred-UI windows.
+      // the durable twin of the reactive wall — design P3/P6) rides on the
+      // Connections-surface BFF handlers + ctx, shipping with its consumer (the
+      // ConnectorsTab Allowed-sites section) in the same PR (I3 — no half-wired
+      // surface).
       const connections = makeConnectionsHandlers({ bus, initCtx });
       for (const route of [
         { method: 'GET' as const, path: '/api/chat/connections/:agentId', handler: connections.get },
@@ -363,11 +362,6 @@ export function createChannelWebServerPlugin(
           method: 'DELETE' as const,
           path: '/api/chat/allowed-sites/:agentId/:host',
           handler: connections.revokeAllowedSite,
-        },
-        {
-          method: 'GET' as const,
-          path: '/api/chat/account-usage',
-          handler: connections.accountUsage,
         },
       ]) {
         const r = await bus.call<unknown, { unregister: () => void }>(

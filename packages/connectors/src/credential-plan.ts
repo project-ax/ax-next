@@ -67,13 +67,18 @@ export interface CredentialPlanEntry {
 }
 
 /**
- * The service tag for a slot — the `<service>` in `account:<service>`. Prefer the
- * slot's declared `account` (share-by-service); fall back to the connector id when
- * a slot omits it, so a slotless-account connector still gets a stable per-service
- * vault key.
+ * The service tag for a slot — the `<service>` in `account:<service>`. Each
+ * connector owns its own key(s): the tag is ALWAYS the connector id, so two
+ * connectors that name the same upstream service each store their own copy (no
+ * share-by-service). A legacy `account` tag on stored data is IGNORED (it is also
+ * stripped on read by the connector store's capabilities re-validation), so this
+ * is the single rule the connect-flow WRITE and the host-resolver READ agree on.
+ *
+ * `_slot` is retained for signature stability (callers pass the slot positionally)
+ * but is no longer consulted.
  */
-export function serviceTagForSlot(slot: CapabilitySlot, connectorId: string): string {
-  return slot.account !== undefined && slot.account.length > 0 ? slot.account : connectorId;
+export function serviceTagForSlot(_slot: CapabilitySlot, connectorId: string): string {
+  return connectorId;
 }
 
 /**

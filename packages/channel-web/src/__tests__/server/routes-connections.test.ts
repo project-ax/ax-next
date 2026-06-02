@@ -390,43 +390,4 @@ describe('channel-web Connections BFF', () => {
       expect(captured.statusCode).toBe(204);
     });
   });
-
-  describe('GET /api/chat/account-usage (TASK-54)', () => {
-    it('TASK-100: reports no skill-derived account usage (a skill declares no credential slots)', async () => {
-      const h = makeConnectionsHandlers({ bus, initCtx });
-      const { res, captured } = mkRes();
-      await h.accountUsage(mkReq({}), res);
-      expect(captured.statusCode).toBe(200);
-      // A skill declares no credentials, so it never references an account:<svc>
-      // vault entry — per-account usage now belongs to the connector surface.
-      expect(captured.body).toEqual({ usage: {} });
-    });
-
-    it('401s an unauthenticated caller', async () => {
-      const b = new HookBus();
-      b.registerService('auth:require-user', 'auth', async () => {
-        throw new (await import('@ax/core')).PluginError({
-          code: 'unauthenticated',
-          plugin: 'auth',
-          message: 'no cookie',
-        });
-      });
-      const h = makeConnectionsHandlers({ bus: b, initCtx });
-      const { res, captured } = mkRes();
-      await h.accountUsage(mkReq({}), res);
-      expect(captured.statusCode).toBe(401);
-    });
-
-    it('degrades to empty when skills:list is absent', async () => {
-      const b = new HookBus();
-      b.registerService('auth:require-user', 'auth', async () => ({
-        user: { id: 'u1', isAdmin: false },
-      }));
-      const h = makeConnectionsHandlers({ bus: b, initCtx });
-      const { res, captured } = mkRes();
-      await h.accountUsage(mkReq({}), res);
-      expect(captured.statusCode).toBe(200);
-      expect(captured.body).toEqual({ usage: {} });
-    });
-  });
 });

@@ -2750,6 +2750,10 @@ export function createOrchestrator(
       ...approvedCreds.map((c) => ({
         kind: 'slot' as const,
         value: c.slot,
+        // `c.account` is VESTIGIAL here: this is the authored-CONNECTOR grant path
+        // and `draft.proposal` is read back through the authored store, which strips
+        // `account` (credentials-into-connectors: connectors own their own key, keyed
+        // by id). It is always undefined; retained only for shape parity.
         detail: { kind: 'api-key' as const, ...(c.account !== undefined ? { account: c.account } : {}) },
       })),
       ...approvedNpm.map((p) => ({ kind: 'npm' as const, value: p })),

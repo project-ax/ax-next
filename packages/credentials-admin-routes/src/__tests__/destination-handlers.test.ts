@@ -324,6 +324,32 @@ describe('destination credential handlers', () => {
     expect(stored).toMatchObject({ ref: 'account:linear', scope: 'user', ownerId: 'alice', kind: 'api-key' });
   });
 
+  it('POST /settings/destinations/account: accepts a connector-id-shaped service (underscore / leading digit)', async () => {
+    // After credentials-into-connectors the account `service` is ALWAYS the
+    // connector id, which permits `_` and a leading digit (e.g. `1password`,
+    // `my_crm` per the connectors id grammar). The destination grammar must accept
+    // anything a valid connector id can be, or such connectors are unconnectable.
+    const bus = await makeBus({ id: 'alice', isAdmin: false });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.createSettings(
+      mkReq({
+        params: { destinationKind: 'account' },
+        body: {
+          destination: { kind: 'account', service: '1password_cli' },
+          scope: 'user',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('s').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(204);
+  });
+
   // TASK-124 — per-slot credential refs. A multi-slot connector supplies a
   // `slot` so the key lands under the distinct `account:<service>:<slot>` row.
   it('POST /settings/destinations/account: stores under account:<service>:<slot> when slot is supplied', async () => {

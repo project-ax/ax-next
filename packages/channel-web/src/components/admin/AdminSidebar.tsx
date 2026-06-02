@@ -7,7 +7,6 @@ import {
   UsersRound,
   ShieldCheck,
   Plug,
-  Key,
   Wrench,
 } from 'lucide-react';
 import { BrandMark } from '../BrandMark';
@@ -16,11 +15,11 @@ import { AdminNavItem } from './AdminNavItem';
 import { cn } from '@/lib/utils';
 
 export type AdminTabId =
-  // User tabs (every user) — the agent-centric Settings surface
-  // (connectors-first-class UI/IA reorg): Skills · Connectors · Credentials.
+  // User tabs (every user) — the agent-centric Settings surface: Skills ·
+  // Connectors. Each connector is the single home for its own key(s); the
+  // separate Credentials tab was folded out (credentials-into-connectors).
   | 'skills'
   | 'connectors-user'
-  | 'credentials'
   // Admin tabs (admins only) — genuinely workspace-level config with no user
   // counterpart. The former catalog / admit-queue / connector-registry surfaces
   // were folded out of the nav (settings-unified epic); their admin curation
@@ -36,7 +35,6 @@ type NavItem = { id: AdminTabId; label: string; icon: typeof KeyRound };
 const USER_NAV: NavItem[] = [
   { id: 'skills', label: 'Skills', icon: Wrench },
   { id: 'connectors-user', label: 'Connectors', icon: Plug },
-  { id: 'credentials', label: 'Credentials', icon: Key },
 ];
 
 const ADMIN_NAV: NavItem[] = [

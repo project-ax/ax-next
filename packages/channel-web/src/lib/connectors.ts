@@ -67,7 +67,9 @@ export interface ConnectorCredentialSlot {
   slot: string;
   kind: 'api-key';
   description?: string;
-  account?: string;
+  // No share-by-service `account` tag — each connector owns its own key, keyed by
+  // the connector id (mirrors @ax/connectors' CapabilitySlot). The server strips
+  // any legacy `account` on read, so it never reaches the client.
 }
 
 export interface ConnectorCapabilities {
@@ -287,18 +289,17 @@ export interface ConnectorCredentialPlanEntry {
 }
 
 /**
- * The service tag for a slot — the `<service>` in `account:<service>`. Prefers
- * the slot's declared `account` (share-by-service), falling back to the connector
- * id when a slot omits it (or declares it empty), so a slotless-account connector
- * still gets a stable per-service vault key. Mirrors `serviceTagForSlot` upstream.
+ * The service tag for a slot — the `<service>` in `account:<service>`. Each
+ * connector owns its own key(s): the tag is ALWAYS the connector id (no
+ * share-by-service). Mirrors `serviceTagForSlot` upstream EXACTLY — the connect
+ * flow WRITE (this module) and the host-resolver READ must agree. `_slot` is
+ * retained for signature stability but no longer consulted.
  */
 export function serviceTagForSlot(
-  slot: ConnectorCredentialSlot,
+  _slot: ConnectorCredentialSlot,
   connectorId: string,
 ): string {
-  return slot.account !== undefined && slot.account.length > 0
-    ? slot.account
-    : connectorId;
+  return connectorId;
 }
 
 /** Build the per-user / company vault ref for a service. Identical to

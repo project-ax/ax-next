@@ -4,7 +4,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import type { Destination } from '@ax/credentials';
-import { setDestinationCredential } from '@/lib/credentials';
+import {
+  setDestinationCredential,
+  clearDestinationCredential,
+} from '@/lib/credentials';
 
 export interface CredentialSlotFormProps {
   destination: Destination;
@@ -21,9 +24,11 @@ export function CredentialSlotForm({
   scope,
   current,
   onSaved,
+  onCleared,
 }: CredentialSlotFormProps) {
   const [payload, setPayload] = useState('');
   const [busy, setBusy] = useState(false);
+  const [removing, setRemoving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   // TASK-124 — a multi-slot connector renders one CredentialSlotForm PER slot, so
   // a static input id would collide across slots (ambiguous <label htmlFor>). A
@@ -43,6 +48,23 @@ export function CredentialSlotForm({
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
+    }
+  }
+
+  // Remove the stored key (only offered when one is set). Clears the vault row
+  // and lets the caller re-check presence (the connector tile flips back to
+  // "needs a key"). 404 is treated as already-gone by clearDestinationCredential.
+  async function remove() {
+    if (removing) return;
+    setRemoving(true);
+    setError(null);
+    try {
+      await clearDestinationCredential({ destination, scope });
+      onCleared();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRemoving(false);
     }
   }
 
@@ -70,7 +92,17 @@ export function CredentialSlotForm({
         />
       </div>
       <div className="flex justify-end gap-2">
-        <Button type="submit" disabled={busy || payload.trim().length === 0}>
+        {current.set && (
+          <Button
+            type="button"
+            variant="ghost"
+            disabled={removing || busy}
+            onClick={() => void remove()}
+          >
+            {removing ? 'Removing…' : 'Remove'}
+          </Button>
+        )}
+        <Button type="submit" disabled={busy || removing || payload.trim().length === 0}>
           {busy ? 'Saving…' : current.set ? 'Replace' : 'Save'}
         </Button>
       </div>

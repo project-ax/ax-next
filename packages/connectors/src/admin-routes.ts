@@ -292,6 +292,17 @@ function rejectAdminOnlyFields(raw: Record<string, unknown>): string | null {
   if (raw.defaultAttached === true) {
     return 'defaultAttached is admin-only';
   }
+  // keyMode:'workspace' means "an admin supplies ONE shared GLOBAL company key".
+  // SECURITY (purge-on-delete): a workspace connector derives a GLOBAL credential
+  // ref (account:<id>, owner-independent), so deleting it tombstones the SHARED
+  // company key. The global credential WRITE is already admin-gated
+  // (/admin/destinations); the connector that drives the global PURGE must be too,
+  // or a non-admin could create-then-delete a workspace connector to wipe a
+  // company key. A non-admin only ever authors their OWN PRIVATE personal
+  // connectors here.
+  if (raw.keyMode === 'workspace') {
+    return 'keyMode: workspace is admin-only';
+  }
   return null;
 }
 
@@ -520,7 +531,10 @@ export function createConnectorRouteHandlers(
         const out = await deps.bus.call<DeleteInput, DeleteOutput>(
           'connectors:delete',
           ctx,
-          { userId: actor.id, connectorId: id },
+          // Only an admin may purge a GLOBAL (shared/company) credential on delete
+          // — a non-admin's delete leaves global-scope refs intact (it still purges
+          // their own per-user refs). This is the authority the hook gates on.
+          { userId: actor.id, connectorId: id, purgeGlobal: actor.isAdmin },
         );
         if (!out.deleted) {
           // Soft-delete returns false when there was nothing (owned) to delete —

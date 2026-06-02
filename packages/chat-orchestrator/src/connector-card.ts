@@ -81,8 +81,12 @@ export function buildAuthoredConnectorCard(
   // slot so two slots that share a service tag no longer collide.
   const isMulti = proposal.credentials.length >= 2;
   const slots = proposal.credentials.map((c) => {
-    // The service tag the key binds: the slot's declared account, else the
-    // connectorId (the same fallback @ax/connectors' serviceTagForSlot uses).
+    // The service tag the key binds is the connectorId (credentials-into-connectors:
+    // each connector owns its own key, no share-by-service — matches
+    // @ax/connectors' serviceTagForSlot). The `c.account ?? connectorId` is
+    // VESTIGIAL: the connectors store strips `account` from a connector proposal's
+    // slots, so it is always `connectorId` here; retained only because the shape is
+    // shared with skill-slot capability cards (which can carry `account`).
     const service = c.account !== undefined && c.account.length > 0 ? c.account : connectorId;
     const ref = isMulti ? `account:${service}:${c.slot}` : `account:${service}`;
     return {

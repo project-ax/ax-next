@@ -1,20 +1,23 @@
 /**
- * ConnectorConnectDialog — the user-facing connector CONNECT handshake
- * (connectors-first-class design, Phase 3). Driven by the connector's
- * `keyMode`:
+ * ConnectorConnectDialog — the user-facing connector MANAGE surface (grown from
+ * a connect-only handshake). Driven by the connector's `keyMode`:
  *
  *   - `personal` → prompt THIS user for their OWN key (per-user JIT,
  *     credential scope 'user'). Everyone acts as themselves.
  *   - `workspace` → an ADMIN stores ONE shared company key (scope 'global'),
  *     gated behind the explicit shared-key CONSENT moment.
  *
+ * Each slot reads its REAL presence on open (the user/global credential list vs
+ * the slot's derived ref): a slot with a stored key shows Replace/Remove, an
+ * empty one shows enter. Save/remove re-derives presence in place.
+ *
  * The credential plan + consent gate are derived CLIENT-SIDE from the full
  * connector (`getConnector` carries `capabilities`) via the local re-declaration
- * of TASK-96's derivation in `lib/connectors.ts` — there is no
- * `connectors:resolve` HTTP route, and a runtime cross-plugin import of
- * `@ax/connectors` is forbidden (invariant #2). Each slot's key is written to
- * the SAME `account:<service>` vault row the host resolver reads
- * (`account:<slot.account ?? connectorId>`), reusing the existing
+ * of the derivation in `lib/connectors.ts` — there is no `connectors:resolve`
+ * HTTP route, and a runtime cross-plugin import of `@ax/connectors` is forbidden
+ * (invariant #2). Each connector owns its own key: the slot's key is written to
+ * the `account:<connectorId>` (single-slot) / `account:<connectorId>:<slot>`
+ * (multi-slot) vault row the host resolver reads, reusing the existing
  * `setDestinationCredential` write (no new wire surface).
  *
  * SECURITY (invariant #5): the shared-key consent gate is BLOCKING — the
@@ -45,6 +48,11 @@ import {
   type Connector,
   type ConnectorCredentialPlanEntry,
 } from '@/lib/connectors';
+import {
+  myCredentials,
+  adminCredentials,
+  type CredentialMeta,
+} from '@/lib/credentials';
 
 export interface ConnectorConnectDialogProps {
   connectorId: string;
@@ -70,15 +78,42 @@ export function ConnectorConnectDialog({
   const [error, setError] = useState<string | null>(null);
   // The shared-key consent moment must be accepted BEFORE the key form renders.
   const [consented, setConsented] = useState(false);
+  // Real per-slot presence (metadata only — never a secret value): the user's
+  // own vault + (for an admin) the global company vault. A slot whose derived
+  // ref already has a stored key renders Replace/Remove instead of enter.
+  const [userCreds, setUserCreds] = useState<CredentialMeta[]>([]);
+  const [globalCreds, setGlobalCreds] = useState<CredentialMeta[]>([]);
 
-  // (Re)load the full connector each time the dialog opens, and reset the
-  // per-open consent so it can never be carried over from a prior session.
+  // Load credential PRESENCE for this user (+ global if admin). Re-run after a
+  // save/clear so a slot flips Replace↔enter without reopening the dialog. A
+  // list failure reads as "absent" — it never blocks the connect flow.
+  const loadCreds = useCallback(async () => {
+    try {
+      setUserCreds(await myCredentials.list());
+    } catch {
+      setUserCreds([]);
+    }
+    if (isAdmin) {
+      try {
+        setGlobalCreds(await adminCredentials.list());
+      } catch {
+        setGlobalCreds([]);
+      }
+    } else {
+      setGlobalCreds([]);
+    }
+  }, [isAdmin]);
+
+  // (Re)load the full connector + presence each time the dialog opens, and reset
+  // the per-open consent so it can never be carried over from a prior session.
   useEffect(() => {
     if (!open) return;
     let cancelled = false;
     setConnector(null);
     setError(null);
     setConsented(false);
+    setUserCreds([]);
+    setGlobalCreds([]);
     getConnector(connectorId)
       .then((c) => {
         if (!cancelled) setConnector(c);
@@ -86,10 +121,28 @@ export function ConnectorConnectDialog({
       .catch((e: unknown) => {
         if (!cancelled) setError(e instanceof Error ? e.message : String(e));
       });
+    void loadCreds();
     return () => {
       cancelled = true;
     };
-  }, [open, connectorId]);
+  }, [open, connectorId, loadCreds]);
+
+  // Whether a slot's derived (scope, ref) already has a stored key.
+  const hasCred = useCallback(
+    (scope: 'user' | 'global', ref: string): boolean =>
+      (scope === 'user' ? userCreds : globalCreds).some(
+        (c) => c.ref === ref && c.scope === scope,
+      ),
+    [userCreds, globalCreds],
+  );
+
+  // A slot was saved or removed: refresh our own presence (so the slot's
+  // Replace/Remove vs enter state updates in place) AND tell the parent so the
+  // connector tile re-derives Connected/Available.
+  const onSlotChanged = useCallback(() => {
+    void loadCreds();
+    onConnected();
+  }, [loadCreds, onConnected]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -106,7 +159,8 @@ export function ConnectorConnectDialog({
           isAdmin={isAdmin}
           consented={consented}
           onConsent={() => setConsented(true)}
-          onConnected={onConnected}
+          hasCred={hasCred}
+          onSlotChanged={onSlotChanged}
         />
       </DialogContent>
     </Dialog>
@@ -119,14 +173,16 @@ function ConnectBody({
   isAdmin,
   consented,
   onConsent,
-  onConnected,
+  hasCred,
+  onSlotChanged,
 }: {
   connector: Connector | null;
   error: string | null;
   isAdmin: boolean;
   consented: boolean;
   onConsent: () => void;
-  onConnected: () => void;
+  hasCred: (scope: 'user' | 'global', ref: string) => boolean;
+  onSlotChanged: () => void;
 }) {
   if (error) {
     return (
@@ -183,7 +239,12 @@ function ConnectBody({
   }
 
   return (
-    <ConnectKeyForms connector={connector} plan={plan} onConnected={onConnected} />
+    <ConnectKeyForms
+      connector={connector}
+      plan={plan}
+      hasCred={hasCred}
+      onSlotChanged={onSlotChanged}
+    />
   );
 }
 
@@ -198,11 +259,13 @@ function ConnectBody({
 function ConnectKeyForms({
   connector,
   plan,
-  onConnected,
+  hasCred,
+  onSlotChanged,
 }: {
   connector: Connector;
   plan: ConnectorCredentialPlanEntry[];
-  onConnected: () => void;
+  hasCred: (scope: 'user' | 'global', ref: string) => boolean;
+  onSlotChanged: () => void;
 }) {
   const slotByName = useCallback(
     (slotName: string) =>
@@ -238,9 +301,9 @@ function ConnectKeyForms({
                   : {}),
               }}
               scope={{ scope: entry.scope, ownerId: null }}
-              current={{ set: false }}
-              onSaved={onConnected}
-              onCleared={onConnected}
+              current={{ set: hasCred(entry.scope, entry.ref) }}
+              onSaved={onSlotChanged}
+              onCleared={onSlotChanged}
             />
           </div>
         );

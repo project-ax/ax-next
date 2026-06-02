@@ -534,13 +534,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
       );
       expect(r.status).toBe(401);
     });
-
-    it('registers GET /api/chat/account-usage at boot (401, not 404)', async () => {
-      const booted = await boot({ user: null });
-      harness = booted.harness;
-      const r = await fetch(`http://127.0.0.1:${booted.port}/api/chat/account-usage`);
-      expect(r.status).toBe(401);
-    });
   });
 
   it('GET /api/chat/title-events is registered (returns 401, not 404)', async () => {

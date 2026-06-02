@@ -39,8 +39,8 @@ describe('connector-form helpers', () => {
     expect(f.baseCapabilities).toEqual(emptyCapabilities());
   });
 
-  it('emptySlotRow is a blank structured row', () => {
-    expect(emptySlotRow()).toEqual({ slot: '', description: '', account: '' });
+  it('emptySlotRow is a blank structured row (slot + description only)', () => {
+    expect(emptySlotRow()).toEqual({ slot: '', description: '' });
   });
 
   it('splitList trims, drops empties', () => {
@@ -86,7 +86,7 @@ describe('connector-form helpers', () => {
     expect(f.args).toBe('--flag x');
     expect(f.allowedHosts).toBe('drive.googleapis.com');
     expect(f.credentialSlots).toEqual([
-      { slot: 'token', description: '', account: '' },
+      { slot: 'token', description: '' },
     ]);
   });
 
@@ -138,24 +138,24 @@ describe('connector-form helpers', () => {
     expect(f.mechanism).toBe('direct-api');
     expect(f.allowedHosts).toBe('api.stripe.com');
     expect(f.credentialSlots).toEqual([
-      { slot: 'key', description: 'Secret key', account: '' },
+      { slot: 'key', description: 'Secret key' },
     ]);
   });
 
-  it('formFromConnector reads description + account onto structured rows', () => {
+  it('formFromConnector reads description onto structured rows', () => {
     const c = baseConnector({
       capabilities: {
         ...emptyCapabilities(),
         credentials: [
-          { slot: 'CLIENT_ID', kind: 'api-key', description: 'Client ID', account: 'oauthsvc' },
+          { slot: 'CLIENT_ID', kind: 'api-key', description: 'Client ID' },
           { slot: 'CLIENT_SECRET', kind: 'api-key' },
         ],
       },
     });
     const f = formFromConnector(c);
     expect(f.credentialSlots).toEqual([
-      { slot: 'CLIENT_ID', description: 'Client ID', account: 'oauthsvc' },
-      { slot: 'CLIENT_SECRET', description: '', account: '' },
+      { slot: 'CLIENT_ID', description: 'Client ID' },
+      { slot: 'CLIENT_SECRET', description: '' },
     ]);
   });
 
@@ -170,7 +170,7 @@ describe('connector-form helpers', () => {
       command: 'mcp-gdrive',
       args: 'a b',
       allowedHosts: 'drive.googleapis.com, www.googleapis.com',
-      credentialSlots: [{ slot: 'token', description: '', account: '' }],
+      credentialSlots: [{ slot: 'token', description: '' }],
     };
     const caps = capabilitiesFromForm(f);
     expect(caps.allowedHosts).toEqual([
@@ -206,7 +206,7 @@ describe('connector-form helpers', () => {
       name: 'Stripe',
       mechanism: 'direct-api',
       allowedHosts: 'api.stripe.com',
-      credentialSlots: [{ slot: 'key', description: 'Secret key', account: '' }],
+      credentialSlots: [{ slot: 'key', description: 'Secret key' }],
     };
     const caps = capabilitiesFromForm(f);
     expect(caps.mcpServers).toEqual([]);
@@ -225,7 +225,7 @@ describe('connector-form helpers', () => {
       packageRegistry: 'npm',
       packageName: '@org/cli',
       allowedHosts: 'registry.example.com',
-      credentialSlots: [{ slot: 'TOKEN', description: '', account: '' }],
+      credentialSlots: [{ slot: 'TOKEN', description: '' }],
     };
     const caps = capabilitiesFromForm(f);
     expect(caps.packages).toEqual({ npm: ['@org/cli'], pypi: [] });
@@ -246,20 +246,20 @@ describe('connector-form helpers', () => {
     expect(caps.packages).toEqual({ npm: [], pypi: ['awscli'] });
   });
 
-  it('structured rows include account when set, drop empty-slot rows', () => {
+  it('structured rows map to slots (description when set), dropping empty-slot rows', () => {
     const f: ConnectorFormState = {
       ...emptyConnectorForm(),
       name: 'OAuth',
       mechanism: 'direct-api',
       credentialSlots: [
-        { slot: 'CLIENT_ID', description: 'Client ID', account: 'oauthsvc' },
-        { slot: '', description: 'orphan', account: '' },
-        { slot: 'CLIENT_SECRET', description: '', account: '' },
+        { slot: 'CLIENT_ID', description: 'Client ID' },
+        { slot: '', description: 'orphan' },
+        { slot: 'CLIENT_SECRET', description: '' },
       ],
     };
     const caps = capabilitiesFromForm(f);
     expect(caps.credentials).toEqual([
-      { slot: 'CLIENT_ID', kind: 'api-key', description: 'Client ID', account: 'oauthsvc' },
+      { slot: 'CLIENT_ID', kind: 'api-key', description: 'Client ID' },
       { slot: 'CLIENT_SECRET', kind: 'api-key' },
     ]);
   });

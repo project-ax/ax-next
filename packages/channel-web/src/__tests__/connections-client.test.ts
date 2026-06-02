@@ -5,7 +5,6 @@ import {
   detachConnectionSkill,
   getAllowedSites,
   revokeAllowedSite,
-  getAccountUsage,
 } from '../lib/connections.js';
 
 afterEach(() => vi.restoreAllMocks());
@@ -85,21 +84,5 @@ describe('agents + connections wire clients', () => {
   it('revokeAllowedSite throws on a non-204 error', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response(null, { status: 500 }));
     await expect(revokeAllowedSite('a1', 'x.example.com')).rejects.toThrow(/500/);
-  });
-
-  it('getAccountUsage GETs /api/chat/account-usage and unwraps the usage map', async () => {
-    const fetchMock = vi.spyOn(global, 'fetch').mockResolvedValue(
-      new Response(JSON.stringify({ usage: { linear: ['linear', 'linear-search'] } }), {
-        status: 200,
-      }),
-    );
-    const out = await getAccountUsage();
-    expect(fetchMock).toHaveBeenCalledWith('/api/chat/account-usage', { credentials: 'include' });
-    expect(out).toEqual({ linear: ['linear', 'linear-search'] });
-  });
-
-  it('getAccountUsage throws on a non-ok response', async () => {
-    vi.spyOn(global, 'fetch').mockResolvedValue(new Response(null, { status: 500 }));
-    await expect(getAccountUsage()).rejects.toThrow(/500/);
   });
 });

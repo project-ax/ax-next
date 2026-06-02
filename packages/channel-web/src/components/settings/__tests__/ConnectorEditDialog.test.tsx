@@ -190,7 +190,7 @@ describe('ConnectorEditDialog', () => {
 
   // --- structured credential slot rows ------------------------------------
 
-  it('credential slots are structured rows: description + machine name + account', async () => {
+  it('credential slots are structured rows (Label + Machine name only — no share-by-service field)', async () => {
     render(
       <ConnectorEditDialog
         target="new"
@@ -211,14 +211,13 @@ describe('ConnectorEditDialog', () => {
     fireEvent.change(screen.getByLabelText(/label \(what it is\)/i), {
       target: { value: 'Secret API key' },
     });
-    fireEvent.change(screen.getByLabelText(/share key by service/i), {
-      target: { value: 'stripe' },
-    });
+    // The share-by-service field is GONE — each connector owns its own key.
+    expect(screen.queryByLabelText(/share key by service/i)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
     const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
     expect(body.capabilities.credentials).toEqual([
-      { slot: 'API_KEY', kind: 'api-key', description: 'Secret API key', account: 'stripe' },
+      { slot: 'API_KEY', kind: 'api-key', description: 'Secret API key' },
     ]);
   });
 

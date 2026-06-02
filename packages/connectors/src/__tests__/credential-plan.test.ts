@@ -41,12 +41,14 @@ function connector(over: Partial<Connector> = {}): Connector {
 }
 
 describe('serviceTagForSlot', () => {
-  it('uses the slot account when present (share-by-service)', () => {
+  // Each connector owns its own key(s) — the service tag is ALWAYS the connector
+  // id (no share-by-service). A legacy `account` tag on stored data is IGNORED.
+  it('ignores a legacy account tag and returns the connector id', () => {
     expect(serviceTagForSlot({ slot: 'X', kind: 'api-key', account: 'google' }, 'gdrive')).toBe(
-      'google',
+      'gdrive',
     );
   });
-  it('falls back to the connector id when the slot has no account', () => {
+  it('returns the connector id when the slot has no account', () => {
     expect(serviceTagForSlot({ slot: 'X', kind: 'api-key' }, 'salesforce')).toBe('salesforce');
   });
 });
@@ -62,13 +64,16 @@ describe('accountRef', () => {
 });
 
 describe('deriveCredentialPlan — personal keyMode binds the per-user vault (scope=user)', () => {
-  it('maps each slot to scope=user, ref=account:<service>', () => {
+  it('maps each slot to scope=user, ref=account:<connectorId>, ignoring a legacy account tag', () => {
     const plan = deriveCredentialPlan(
       connector({
+        id: 'salesforce',
         keyMode: 'personal',
         capabilities: {
           allowedHosts: [],
-          credentials: [{ slot: 'SF_TOKEN', kind: 'api-key', account: 'salesforce' }],
+          // A legacy `account` tag on stored data must be IGNORED — the key is
+          // keyed by the connector id, not the tag.
+          credentials: [{ slot: 'SF_TOKEN', kind: 'api-key', account: 'legacy-shared-tag' }],
           mcpServers: [],
           packages: { npm: [], pypi: [] },
         },
@@ -99,13 +104,14 @@ describe('deriveCredentialPlan — personal keyMode binds the per-user vault (sc
 });
 
 describe('deriveCredentialPlan — workspace keyMode spends the single company key (scope=global)', () => {
-  it('maps each slot to scope=global, ref=account:<service>', () => {
+  it('maps each slot to scope=global, ref=account:<connectorId>, ignoring a legacy account tag', () => {
     const plan = deriveCredentialPlan(
       connector({
+        id: 'salesforce',
         keyMode: 'workspace',
         capabilities: {
           allowedHosts: [],
-          credentials: [{ slot: 'SF_TOKEN', kind: 'api-key', account: 'salesforce' }],
+          credentials: [{ slot: 'SF_TOKEN', kind: 'api-key', account: 'legacy-shared-tag' }],
           mcpServers: [],
           packages: { npm: [], pypi: [] },
         },
@@ -194,13 +200,15 @@ describe('deriveCredentialPlan — edges', () => {
     expect(plan[0]!.ref).not.toBe(plan[1]!.ref);
   });
 
-  it('multi-slot connector keeps per-slot refs even when slots name distinct accounts', () => {
+  it('multi-slot connector keys every slot by the connector id, ignoring legacy account tags (no collision)', () => {
     const plan = deriveCredentialPlan(
       connector({
         id: 'gdrive',
         keyMode: 'personal',
         capabilities: {
           allowedHosts: [],
+          // Slot A carries a legacy account tag; it is IGNORED — both slots key by
+          // the connector id, and the per-slot ref form keeps them collision-free.
           credentials: [
             { slot: 'A', kind: 'api-key', account: 'svc-a' },
             { slot: 'B', kind: 'api-key' },
@@ -211,9 +219,10 @@ describe('deriveCredentialPlan — edges', () => {
       }),
     );
     expect(plan).toEqual([
-      { slot: 'A', scope: 'user', ref: 'account:svc-a:A', service: 'svc-a', slotTag: 'A' },
+      { slot: 'A', scope: 'user', ref: 'account:gdrive:A', service: 'gdrive', slotTag: 'A' },
       { slot: 'B', scope: 'user', ref: 'account:gdrive:B', service: 'gdrive', slotTag: 'B' },
     ]);
+    expect(plan[0]!.ref).not.toBe(plan[1]!.ref);
   });
 });
 

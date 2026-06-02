@@ -48,30 +48,24 @@ describe('connector credential-plan derivation (TASK-96 parity, local re-decl)',
     expect(accountRef('salesforce', 'CLIENT_ID')).toBe('account:salesforce:CLIENT_ID');
   });
 
-  it('serviceTagForSlot prefers the slot account, falls back to connectorId', () => {
-    expect(
-      serviceTagForSlot({ slot: 'token', kind: 'api-key', account: 'gmail' }, 'my-conn'),
-    ).toBe('gmail');
+  it('serviceTagForSlot always returns the connectorId (each connector owns its own key)', () => {
     expect(serviceTagForSlot({ slot: 'token', kind: 'api-key' }, 'my-conn')).toBe('my-conn');
-    // Empty-string account falls back too (mirrors the >0-length guard upstream).
-    expect(
-      serviceTagForSlot({ slot: 'token', kind: 'api-key', account: '' }, 'my-conn'),
-    ).toBe('my-conn');
   });
 
   describe('deriveCredentialPlan — keyMode → scope', () => {
-    it('personal keyMode → scope:user, one entry per credential slot, account:<service> ref', () => {
+    it('personal keyMode → scope:user, one entry per credential slot, account:<connectorId> ref', () => {
       const c = connector({
         id: 'my-notion',
         keyMode: 'personal',
         capabilities: {
           ...emptyCapabilities(),
-          credentials: [{ slot: 'token', kind: 'api-key', account: 'notion' }],
+          credentials: [{ slot: 'token', kind: 'api-key' }],
         },
       });
       expect(deriveCredentialPlan(c)).toEqual([
-        // TASK-124 — single-slot connector keeps the collapsed ref + `service`.
-        { slot: 'token', scope: 'user', ref: 'account:notion', service: 'notion' },
+        // Single-slot connector keeps the collapsed ref + `service`, keyed by the
+        // connector id (no share-by-service).
+        { slot: 'token', scope: 'user', ref: 'account:my-notion', service: 'my-notion' },
       ]);
     });
 

@@ -53,11 +53,15 @@ export type { Capabilities, CapabilitySlot, McpServerSpec, PackagesSpec };
  * `capabilities-schema.test.ts` is the drift guard that re-validates a real
  * spec round-trips. (Same pattern as @ax/skills' return schemas.)
  */
+// Each connector owns its own key(s): there is NO share-by-service `account`
+// tag. A slot's vault ref is keyed by the connector id (see credential-plan.ts).
+// `account` is deliberately ABSENT from the schema, so a legacy `account` field
+// on stored JSONB is STRIPPED on read (zod drops unknown keys) — the read path
+// can therefore never resurrect the old shared-key behaviour.
 const CapabilitySlotSchema = z.object({
   slot: z.string(),
   kind: z.literal('api-key'),
   description: z.string().optional(),
-  account: z.string().optional(),
 });
 
 const McpServerSpecSchema = z.object({
@@ -212,6 +216,19 @@ export interface UpsertOutput {
 export interface DeleteInput {
   userId: string;
   connectorId: string;
+  /**
+   * Whether the caller is authorized to purge GLOBAL-scope (shared/company)
+   * credentials as part of the delete. Omitted/false ⟹ ONLY the caller's own
+   * per-user (`scope:'user'`, `ownerId:userId`) credential refs are purged;
+   * global-scope refs are LEFT INTACT. A global (company) key is shared
+   * infrastructure — owner-independent, keyed by the connector id — so only an
+   * admin may tombstone it on delete. Routes pass `actor.isAdmin`. This is the
+   * security boundary that stops a non-admin who somehow owns a workspace
+   * connector (e.g. via the authored-connector approve path, which the HTTP
+   * keyMode gate doesn't cover) from wiping a company key. Storage-agnostic:
+   * a granted capability flag, no backend vocabulary.
+   */
+  purgeGlobal?: boolean;
 }
 export interface DeleteOutput {
   deleted: boolean;
@@ -283,12 +300,12 @@ export interface ListDefaultsOutput {
 // the gate verdict; a draft is `pending` (zero reach) until a human approves.
 // ---------------------------------------------------------------------------
 
-/** A single declared credential slot — public metadata, never a secret. */
+/** A single declared credential slot — public metadata, never a secret. No
+ *  share-by-service `account` tag: the key is keyed by the connector id. */
 export interface AuthoredConnectorSlot {
   slot: string;
   kind: 'api-key';
   description?: string;
-  account?: string;
 }
 
 /**

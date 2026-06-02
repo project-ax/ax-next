@@ -151,7 +151,8 @@ afterEach(async () => {
 function mcpCaps(): Capabilities {
   return {
     allowedHosts: ['drive.googleapis.com'],
-    credentials: [{ slot: 'gdrive', kind: 'api-key', account: 'google' }],
+    // No share-by-service `account` tag — keyed by the connector id.
+    credentials: [{ slot: 'gdrive', kind: 'api-key' }],
     mcpServers: [
       {
         name: 'gdrive',
@@ -504,9 +505,10 @@ describe('admin connector routes', () => {
       visibility: 'private',
       capabilities: mcpCaps(),
     });
-    // The slot `gdrive` declares account 'google' → ref account:google; a
-    // personal connector resolves it at scope:'user' under the actor's id.
-    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:google' }];
+    // The connector owns its own key: the ref is account:<connectorId>
+    // (account:gdrive) — the slot's legacy account tag is ignored. A personal
+    // connector resolves it at scope:'user' under the actor's id.
+    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:gdrive' }];
     const { res, captured } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
     expect(captured.status).toBe(200);
@@ -525,13 +527,13 @@ describe('admin connector routes', () => {
       capabilities: mcpCaps(),
     });
     // A user-scoped row under the actor must NOT satisfy a workspace slot — the
-    // workspace key lives at scope:'global' / ownerId:null.
-    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:google' }];
+    // workspace key lives at scope:'global' / ownerId:null. Ref is account:gdrive.
+    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:gdrive' }];
     const { res: r1, captured: c1 } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), r1);
     expect((c1.body as { status: string }).status).toBe('needs-key');
     // Seed the global key → now reachable.
-    credentialRows = [{ scope: 'global', ownerId: null, ref: 'account:google' }];
+    credentialRows = [{ scope: 'global', ownerId: null, ref: 'account:gdrive' }];
     const { res: r2, captured: c2 } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), r2);
     expect((c2.body as { status: string }).status).toBe('reachable');
@@ -715,6 +717,120 @@ describe('user connector routes (/settings/connectors)', () => {
     );
     expect(captured.status).toBe(400);
     expect((captured.body as { error: string }).error).toContain('admin-only');
+  });
+
+  it('POST rejects keyMode:workspace (admin-only) — a non-admin must never own a workspace (global-keyed) connector', async () => {
+    // SECURITY (purge-on-delete): a workspace connector derives a GLOBAL credential
+    // ref (account:<id>, owner-independent). If a non-admin could own one, deleting
+    // it would tombstone the SHARED company key. The global credential WRITE is
+    // admin-gated (/admin/destinations); the connector that drives the global purge
+    // must be too. So the user route rejects keyMode:workspace.
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'company-sf',
+          name: 'Salesforce',
+          keyMode: 'workspace',
+          visibility: 'private',
+          capabilities: mcpCaps(),
+        },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    expect((captured.body as { error: string }).error).toContain('admin-only');
+    // It must NOT have landed — the GET 404s, so there is no workspace connector
+    // for the non-admin to later delete (and thus no global purge they can trigger).
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'company-sf' } }), gRes);
+    expect(gCap.status).toBe(404);
+  });
+
+  it('PATCH cannot flip an owned private connector to keyMode:workspace (admin-only)', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userFlipWs', isAdmin: false };
+    // Seed an owned PRIVATE personal connector (unique id — the container persists
+    // rows across this file's tests).
+    const { res: cRes, captured: cCap } = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'flip-to-ws',
+          name: 'Flip',
+          keyMode: 'personal',
+          visibility: 'private',
+          capabilities: mcpCaps(),
+        },
+      }),
+      cRes,
+    );
+    expect(cCap.status).toBe(201);
+    // Attempt to flip it to workspace via PATCH → rejected.
+    const { res, captured } = makeRes();
+    await handlers.update(
+      makeReq({ params: { id: 'flip-to-ws' }, body: { keyMode: 'workspace' } }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    expect((captured.body as { error: string }).error).toContain('admin-only');
+  });
+
+  it('destroy passes purgeGlobal=actor.isAdmin: an admin purges the GLOBAL key, a non-admin does not', async () => {
+    // Defense at the dangerous primitive: even if a non-admin somehow OWNS a
+    // workspace (global-keyed) connector — e.g. via the authored-connector approve
+    // path, which bypasses the HTTP keyMode gate — their delete must NOT purge the
+    // shared company key. The route passes actor.isAdmin as purgeGlobal; the hook
+    // skips the global-scope purge unless authorized. We seed the owned-state
+    // directly via the upsert hook (the user route would reject keyMode:workspace).
+    const deleteCalls: Array<{ scope: string; ownerId: string | null; ref: string }> = [];
+    const h = await createTestHarness({
+      services: {
+        'credentials:delete': async (_c, input) => {
+          deleteCalls.push(input as (typeof deleteCalls)[number]);
+        },
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        authStubPlugin(),
+        credentialsStubPlugin(),
+        createConnectorsPlugin(),
+      ],
+    });
+    harnesses.push(h);
+    // Two same-id workspace connectors, one owned by a non-admin, one by an admin.
+    for (const owner of ['mallory', 'adminX']) {
+      await h.bus.call('connectors:upsert', h.ctx({ userId: owner }), {
+        userId: owner,
+        connectorId: 'ws-route',
+        name: 'Workspace svc',
+        keyMode: 'workspace',
+        visibility: 'private',
+        capabilities: mcpCaps(),
+      });
+    }
+    const userHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    const adminHandlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'admin' });
+
+    // Non-admin destroy → purgeGlobal:false → the shared global key is untouched.
+    currentActor = { id: 'mallory', isAdmin: false };
+    const { res: r1, captured: c1 } = makeRes();
+    await userHandlers.destroy(makeReq({ params: { id: 'ws-route' } }), r1);
+    expect(c1.status).toBe(204);
+    expect(deleteCalls).toEqual([]);
+
+    // Admin destroy → purgeGlobal:true → the shared global key IS purged.
+    currentActor = { id: 'adminX', isAdmin: true };
+    const { res: r2, captured: c2 } = makeRes();
+    await adminHandlers.destroy(makeReq({ params: { id: 'ws-route' } }), r2);
+    expect(c2.status).toBe(204);
+    expect(deleteCalls).toEqual([
+      { scope: 'global', ownerId: null, ref: 'account:ws-route' },
+    ]);
   });
 
   it('full CRUD on an owned private connector: create → edit → delete', async () => {

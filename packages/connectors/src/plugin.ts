@@ -1,4 +1,10 @@
-import { makeAgentContext, PluginError, type Plugin } from '@ax/core';
+import {
+  makeAgentContext,
+  PluginError,
+  type AgentContext,
+  type HookBus,
+  type Plugin,
+} from '@ax/core';
 import { type Kysely } from 'kysely';
 import {
   runConnectorsMigration,
@@ -148,6 +154,16 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       ],
       // database:get-instance is hard — we run our own migration on init.
       calls,
+      // credentials:delete is a SOFT dep: deleting a connector purges its stored
+      // key(s) so a secret never lingers with no UI home. A preset without
+      // @ax/credentials still deletes the connector — it just can't purge the key.
+      optionalCalls: [
+        {
+          hook: 'credentials:delete',
+          degradation:
+            'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
+        },
+      ],
       subscribes: [],
     },
 
@@ -200,7 +216,7 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
       bus.registerService<DeleteInput, DeleteOutput>(
         'connectors:delete',
         PLUGIN_NAME,
-        async (_ctx, input) => deleteConnector(localStore, input),
+        async (ctx, input) => deleteConnector(localStore, bus, ctx, input),
         { returns: DeleteOutputSchema },
       );
 
@@ -393,12 +409,60 @@ async function upsertConnector(
 
 async function deleteConnector(
   store: ConnectorStore,
+  bus: HookBus,
+  ctx: AgentContext,
   input: DeleteInput,
 ): Promise<DeleteOutput> {
   const hookName = 'connectors:delete';
   const userId = requireUserId(input.userId, hookName);
   const connectorId = validateConnectorId(input.connectorId);
+  // Load BEFORE soft-delete so we can derive the credential plan — getByIdNotDeleted
+  // returns null once the row is tombstoned.
+  const connector = await store.getByIdNotDeleted(userId, connectorId);
   const deleted = await store.softDelete(userId, connectorId);
+
+  // Purge the connector's OWN stored key(s) so a secret never lingers with no UI
+  // home. Soft-dep: only attempted when credentials:delete is present (a preset
+  // without @ax/credentials still deletes the connector). The purge targets ONLY
+  // the deleted connector's derived refs, at the scope it declares.
+  //
+  // SECURITY (invariant #5): a per-user ref (scope:'user', ownerId:userId) is
+  // unambiguously the deleting caller's own — always safe to purge. A GLOBAL ref
+  // (scope:'global', shared company key, owner-independent) is purged ONLY when
+  // the caller is authorized (input.purgeGlobal — routes pass actor.isAdmin).
+  // Gating the PURGE here, not just the HTTP create route, closes EVERY path to
+  // a non-admin global-credential wipe (incl. the authored-connector approve
+  // path, which promotes a draft straight through connectors:upsert). Each
+  // failure is logged + swallowed so a credential hiccup never wedges the delete.
+  if (connector !== null && bus.hasService('credentials:delete')) {
+    const purgeGlobal = input.purgeGlobal === true;
+    for (const entry of deriveCredentialPlan(connector)) {
+      if (entry.scope === 'global' && !purgeGlobal) {
+        // Unauthorized to purge a shared/company key — leave it intact. (An admin
+        // delete passes purgeGlobal:true; a non-admin's never does.)
+        ctx.logger.info('connectors_delete_skipped_global_purge', {
+          connectorId,
+          ref: entry.ref,
+        });
+        continue;
+      }
+      const ownerId = entry.scope === 'user' ? userId : null;
+      try {
+        await bus.call('credentials:delete', ctx, {
+          scope: entry.scope,
+          ownerId,
+          ref: entry.ref,
+        });
+      } catch (err) {
+        ctx.logger.warn('connectors_delete_credential_purge_failed', {
+          connectorId,
+          ref: entry.ref,
+          err: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+  }
+
   return { deleted };
 }
 
@@ -486,7 +550,8 @@ function assembleProposal(input: InstallAuthoredInput): Capabilities {
     slot: validateSlotName(s?.slot),
     kind: 'api-key' as const,
     ...(typeof s?.description === 'string' ? { description: s.description } : {}),
-    ...(typeof s?.account === 'string' ? { account: s.account } : {}),
+    // No share-by-service `account` tag — each connector owns its own key, keyed
+    // by the connector id. Any `account` on untrusted authored input is dropped.
   }));
   const mcpServers: McpServerSpec[] = Array.isArray(input.mcpServers)
     ? input.mcpServers

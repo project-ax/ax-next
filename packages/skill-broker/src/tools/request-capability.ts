@@ -230,8 +230,11 @@ export async function registerRequestCapability(bus: HookBus): Promise<void> {
             for (const h of resolved.capabilities.allowedHosts) connectorHosts.push(h);
             const isMulti = resolved.capabilities.credentials.length >= 2;
             for (const c of resolved.capabilities.credentials) {
-              // service = the slot's account, else the connector id (mirrors
-              // @ax/connectors' serviceTagForSlot fallback).
+              // service = the connector id (mirrors @ax/connectors' serviceTagForSlot:
+              // each connector owns its own key, no share-by-service). The
+              // `c.account ?? resolved.id` is VESTIGIAL — `connectors:resolve` returns
+              // store-validated capabilities with `account` stripped, so it is always
+              // `resolved.id` here.
               const service =
                 c.account !== undefined && c.account.length > 0 ? c.account : resolved.id;
               const ref = isMulti ? `account:${service}:${c.slot}` : `account:${service}`;

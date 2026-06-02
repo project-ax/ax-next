@@ -164,13 +164,3 @@ export async function revokeAllowedSite(agentId: string, host: string): Promise<
   );
   if (!res.ok && res.status !== 204) throw new Error(`revoke-site: ${res.status}`);
 }
-
-// TASK-54 — account-usage: service → the skill ids that declare `account:
-// <service>`, derived server-side from skills:list. Powers the Keys tab's
-// "used by" hint for service-keyed vault entries (design P2/P6).
-export async function getAccountUsage(): Promise<Record<string, string[]>> {
-  const res = await fetch('/api/chat/account-usage', { credentials: 'include' });
-  if (!res.ok) throw new Error(`account-usage: ${res.status}`);
-  const body = (await res.json()) as { usage: Record<string, string[]> };
-  return body.usage;
-}

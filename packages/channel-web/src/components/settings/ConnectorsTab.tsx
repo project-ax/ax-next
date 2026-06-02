@@ -4,7 +4,7 @@
  * two shelves, mirroring the Skills tab's Installed / Not-installed:
  *
  *   - **Connected** — services every credential slot has a stored key for; the
- *     assistant can reach them now. Per-row Reconnect.
+ *     assistant can reach them now. Per-row Manage (status / replace / remove keys).
  *   - **Available** — services in your library still missing a key. Per-row
  *     **Connect** opens the capability-consent handshake (ConnectorConnectDialog)
  *     before the user-scoped key write completes — the self-connect path.
@@ -27,7 +27,7 @@
  *     may edit ANY connector, writing to `/admin/connectors` (where they may set
  *     visibility:shared + default-on).
  * Catalog/shared connectors are READ-ONLY for non-admins: they see the source
- * badge + Connect/Reconnect only, never edit/delete — mirrored by the user
+ * badge + Connect/Manage only, never edit/delete — mirrored by the user
  * route's server-side 403.
  *
  * SCOPE NOTE: the connector store is owner-scoped at every layer — `listConnectors`
@@ -458,7 +458,7 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
               variant={section === 'connected' ? 'outline' : 'default'}
               onClick={() => setConnecting(c)}
             >
-              {section === 'connected' ? 'Reconnect' : 'Connect'}
+              {section === 'connected' ? 'Manage' : 'Connect'}
             </Button>
           </div>
         </RoleCard>

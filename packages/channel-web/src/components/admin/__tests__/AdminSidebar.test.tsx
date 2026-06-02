@@ -5,13 +5,15 @@ import { AdminSidebar } from '../AdminSidebar';
 const noop = () => {};
 
 describe('AdminSidebar (role-aware Settings surface)', () => {
-  it('always shows the three user tabs (Skills, Connectors, Credentials)', () => {
+  it('shows the user tabs (Skills, Connectors) — no separate Credentials tab', () => {
     render(
       <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={noop} onBackToChat={noop} />,
     );
     expect(screen.getByText('Skills')).toBeInTheDocument();
     expect(screen.getByText('Connectors')).toBeInTheDocument();
-    expect(screen.getByText('Credentials')).toBeInTheDocument();
+    // The Credentials tab was folded into Connectors — each connector owns its
+    // own key(s), so there's no standalone Credentials nav entry.
+    expect(screen.queryByText('Credentials')).not.toBeInTheDocument();
   });
 
   it('hides admin tabs from non-admins', () => {
@@ -49,10 +51,10 @@ describe('AdminSidebar (role-aware Settings surface)', () => {
   it('fires onTabChange when a tab is clicked', () => {
     const onTabChange = vi.fn();
     render(
-      <AdminSidebar activeTab="skills" isAdmin={false} onTabChange={onTabChange} onBackToChat={noop} />,
+      <AdminSidebar activeTab="connectors-user" isAdmin={false} onTabChange={onTabChange} onBackToChat={noop} />,
     );
-    screen.getByText('Credentials').click();
-    expect(onTabChange).toHaveBeenCalledWith('credentials');
+    screen.getByText('Skills').click();
+    expect(onTabChange).toHaveBeenCalledWith('skills');
   });
 
   it('the user "Connectors" tab uses the connectors-user id', () => {
