@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { AgentBootstrap } from '../onboard/AgentBootstrap';
-import { agentStoreActions } from '../../lib/agent-store';
+import { agentStoreActions, getAgentStoreSnapshot } from '../../lib/agent-store';
 
 vi.mock('../../lib/agent-bootstrap', () => ({
   bootstrapAgent: vi.fn(async () => ({ agentId: 'a-new', displayName: 'Ada', visibility: 'personal' })),
@@ -15,7 +15,7 @@ beforeEach(() => agentStoreActions.resetForTest());
 afterEach(() => vi.clearAllMocks());
 
 describe('AgentBootstrap', () => {
-  it('walks name → soul → purpose → done and creates the agent', async () => {
+  it('walks name → soul → purpose → done; defers store mutation until "Start chatting"', async () => {
     const onDone = vi.fn();
     render(<AgentBootstrap onDone={onDone} />);
 
@@ -43,10 +43,17 @@ describe('AgentBootstrap', () => {
     expect(arg.systemPrompt).toContain('Warm and patient.');
     expect(arg.systemPrompt).toContain('Your job: help me write');
 
-    // post-create: re-hydrate + select + done screen
-    await waitFor(() => expect(hydrateAgentsOnce).toHaveBeenCalled());
-    expect(screen.getByText(/ada is ready/i)).toBeTruthy();
+    // post-create: the done screen renders BEFORE the store is mutated.
+    // Hydrating/selecting here would flip App's `noAgents` gate and unmount us
+    // before 'done' paints (the first-run bug), so neither has run yet.
+    await waitFor(() => expect(screen.getByText(/ada is ready/i)).toBeTruthy());
+    expect(hydrateAgentsOnce).not.toHaveBeenCalled();
+    expect(getAgentStoreSnapshot().selectedAgentId).toBeNull();
+
+    // "Start chatting →" commits the store mutation, then hands control back.
     fireEvent.click(screen.getByRole('button', { name: /start chatting/i }));
+    await waitFor(() => expect(hydrateAgentsOnce).toHaveBeenCalledTimes(1));
+    expect(getAgentStoreSnapshot().selectedAgentId).toBe('a-new');
     expect(onDone).toHaveBeenCalled();
   });
 
@@ -56,6 +63,17 @@ describe('AgentBootstrap', () => {
     expect(continueBtn.disabled).toBe(true);
     fireEvent.click(screen.getByRole('button', { name: /surprise me/i }));
     expect((screen.getByLabelText(/what should we call/i) as HTMLInputElement).value.length).toBeGreaterThan(0);
+  });
+
+  it('uses first-run copy by default and second-agent copy when canCancel is true', () => {
+    const { rerender } = render(<AgentBootstrap onDone={() => {}} />);
+    // First run (canCancel falsy): "your first agent".
+    expect(screen.getByText(/let's make your first agent/i)).toBeTruthy();
+
+    // Additional agent (canCancel true ⇒ an agent already exists): no "first".
+    rerender(<AgentBootstrap onDone={() => {}} canCancel onCancel={() => {}} />);
+    expect(screen.queryByText(/let's make your first agent/i)).toBeNull();
+    expect(screen.getByText(/make another agent/i)).toBeTruthy();
   });
 
   it('shows a Back-to-chat affordance only when canCancel is true', () => {

@@ -36,6 +36,7 @@ import {
 } from './lib/sidebar-collapse';
 import { hydrateTheme } from './lib/theme';
 import { useAgentStore } from './lib/agent-store';
+import { shouldShowAgentBootstrap } from './lib/agent-bootstrap-gate';
 import { sessionStoreActions } from './lib/session-store';
 import { useTitleEvents } from './lib/use-title-events';
 import { useHydrateAgents } from './components/AgentChip';
@@ -207,7 +208,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // must not force an existing user into the create flow; "+ New agent"
   // remains available from the agent menu.
   const noAgents = agentsStatus === 'ready' && agents.length === 0;
-  if (createAgentOpen || noAgents) {
+  if (shouldShowAgentBootstrap({ agentsStatus, agentCount: agents.length, createAgentOpen })) {
     return (
       <UserProvider value={user}>
         <AgentBootstrap
