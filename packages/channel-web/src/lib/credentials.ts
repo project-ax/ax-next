@@ -208,24 +208,3 @@ export async function grantHost(input: {
   });
   if (!res.ok) throw new Error(`allow-host failed: ${res.status}`);
 }
-
-export async function clearDestinationCredential(args: {
-  destination: Destination;
-  scope: { scope: 'global' | 'user' | 'agent'; ownerId: string | null };
-}): Promise<void> {
-  const base = args.scope.scope === 'user' ? '/settings' : '/admin';
-  const url = `${base}/destinations/${args.destination.kind}/credential`;
-  const res = await fetch(url, {
-    method: 'DELETE',
-    headers: writeHeaders,
-    credentials: 'include',
-    body: JSON.stringify({
-      destination: args.destination,
-      scope: args.scope.scope,
-      ownerId: args.scope.ownerId,
-    }),
-  });
-  if (!res.ok && res.status !== 404) {
-    throw new Error(`HTTP ${res.status}: ${await res.text()}`);
-  }
-}

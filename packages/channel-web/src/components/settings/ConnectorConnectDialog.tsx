@@ -8,8 +8,12 @@
  *     gated behind the explicit shared-key CONSENT moment.
  *
  * Each slot reads its REAL presence on open (the user/global credential list vs
- * the slot's derived ref): a slot with a stored key shows Replace/Remove, an
- * empty one shows enter. Save/remove re-derives presence in place.
+ * the slot's derived ref): a slot with a stored key shows a clear "key is saved"
+ * cue + Replace, an empty one shows enter. The secret itself is never shown (it
+ * never leaves the vault). Saving the LAST empty slot closes the dialog — an
+ * unambiguous "it worked" — and the tile moves to the Connected shelf. There is
+ * NO per-key Remove here: to drop a connector entirely the user Deletes it from
+ * the Connectors tab (Delete is the single "uninstall" action).
  *
  * The credential plan + consent gate are derived CLIENT-SIDE from the full
  * connector (`getConnector` carries `capabilities`) via the local re-declaration
@@ -80,28 +84,36 @@ export function ConnectorConnectDialog({
   const [consented, setConsented] = useState(false);
   // Real per-slot presence (metadata only — never a secret value): the user's
   // own vault + (for an admin) the global company vault. A slot whose derived
-  // ref already has a stored key renders Replace/Remove instead of enter.
+  // ref already has a stored key renders a "key is saved" cue + Replace instead
+  // of enter.
   const [userCreds, setUserCreds] = useState<CredentialMeta[]>([]);
   const [globalCreds, setGlobalCreds] = useState<CredentialMeta[]>([]);
 
   // Load credential PRESENCE for this user (+ global if admin). Re-run after a
-  // save/clear so a slot flips Replace↔enter without reopening the dialog. A
-  // list failure reads as "absent" — it never blocks the connect flow.
-  const loadCreds = useCallback(async () => {
+  // save so a slot flips to its saved state without reopening the dialog, and
+  // RETURNED so a caller can decide synchronously whether every slot is now set.
+  // A list failure reads as "absent" — it never blocks the connect flow.
+  const loadCreds = useCallback(async (): Promise<{
+    user: CredentialMeta[];
+    global: CredentialMeta[];
+  }> => {
+    let user: CredentialMeta[] = [];
+    let global: CredentialMeta[] = [];
     try {
-      setUserCreds(await myCredentials.list());
+      user = await myCredentials.list();
     } catch {
-      setUserCreds([]);
+      user = [];
     }
     if (isAdmin) {
       try {
-        setGlobalCreds(await adminCredentials.list());
+        global = await adminCredentials.list();
       } catch {
-        setGlobalCreds([]);
+        global = [];
       }
-    } else {
-      setGlobalCreds([]);
     }
+    setUserCreds(user);
+    setGlobalCreds(global);
+    return { user, global };
   }, [isAdmin]);
 
   // (Re)load the full connector + presence each time the dialog opens, and reset
@@ -136,13 +148,23 @@ export function ConnectorConnectDialog({
     [userCreds, globalCreds],
   );
 
-  // A slot was saved or removed: refresh our own presence (so the slot's
-  // Replace/Remove vs enter state updates in place) AND tell the parent so the
-  // connector tile re-derives Connected/Available.
-  const onSlotChanged = useCallback(() => {
-    void loadCreds();
+  // A slot's key was saved: refresh our own presence (so a just-saved slot flips
+  // to its "saved" state in place) AND tell the parent so the connector tile
+  // re-derives Connected/Available. Once EVERY slot in the plan has a stored key,
+  // close the dialog — an unambiguous "it worked" (and the tile moves to the
+  // Connected shelf). For a multi-key connector we only close once the LAST slot
+  // is filled, so a partly-filled connector stays open to finish.
+  const onSaved = useCallback(async () => {
+    const fresh = await loadCreds();
     onConnected();
-  }, [loadCreds, onConnected]);
+    if (connector === null) return;
+    const allSet = deriveCredentialPlan(connector).every((entry) =>
+      (entry.scope === 'user' ? fresh.user : fresh.global).some(
+        (c) => c.ref === entry.ref && c.scope === entry.scope,
+      ),
+    );
+    if (allSet) onOpenChange(false);
+  }, [loadCreds, onConnected, connector, onOpenChange]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -160,7 +182,7 @@ export function ConnectorConnectDialog({
           consented={consented}
           onConsent={() => setConsented(true)}
           hasCred={hasCred}
-          onSlotChanged={onSlotChanged}
+          onSaved={onSaved}
         />
       </DialogContent>
     </Dialog>
@@ -174,7 +196,7 @@ function ConnectBody({
   consented,
   onConsent,
   hasCred,
-  onSlotChanged,
+  onSaved,
 }: {
   connector: Connector | null;
   error: string | null;
@@ -182,7 +204,7 @@ function ConnectBody({
   consented: boolean;
   onConsent: () => void;
   hasCred: (scope: 'user' | 'global', ref: string) => boolean;
-  onSlotChanged: () => void;
+  onSaved: () => void;
 }) {
   if (error) {
     return (
@@ -243,7 +265,7 @@ function ConnectBody({
       connector={connector}
       plan={plan}
       hasCred={hasCred}
-      onSlotChanged={onSlotChanged}
+      onSaved={onSaved}
     />
   );
 }
@@ -260,12 +282,12 @@ function ConnectKeyForms({
   connector,
   plan,
   hasCred,
-  onSlotChanged,
+  onSaved,
 }: {
   connector: Connector;
   plan: ConnectorCredentialPlanEntry[];
   hasCred: (scope: 'user' | 'global', ref: string) => boolean;
-  onSlotChanged: () => void;
+  onSaved: () => void;
 }) {
   const slotByName = useCallback(
     (slotName: string) =>
@@ -302,8 +324,7 @@ function ConnectKeyForms({
               }}
               scope={{ scope: entry.scope, ownerId: null }}
               current={{ set: hasCred(entry.scope, entry.ref) }}
-              onSaved={onSlotChanged}
-              onCleared={onSlotChanged}
+              onSaved={onSaved}
             />
           </div>
         );

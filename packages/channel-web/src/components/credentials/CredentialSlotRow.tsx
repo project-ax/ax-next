@@ -69,10 +69,6 @@ export function CredentialSlotRow({ destination, slot, scope }: CredentialSlotRo
                 setOpen(false);
                 void refresh();
               }}
-              onCleared={() => {
-                setOpen(false);
-                void refresh();
-              }}
             />
           </div>
         </SheetContent>

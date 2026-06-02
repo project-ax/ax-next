@@ -18,7 +18,6 @@ describe('CredentialSlotForm', () => {
         scope={{ scope: 'agent', ownerId: 'agt-1' }}
         current={{ set: false }}
         onSaved={onSaved}
-        onCleared={() => {}}
       />,
     );
     fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: 'sk-test-123' } });
@@ -47,7 +46,6 @@ describe('CredentialSlotForm', () => {
         scope={{ scope: 'user', ownerId: 'alice' }}
         current={{ set: false }}
         onSaved={() => {}}
-        onCleared={() => {}}
       />,
     );
     fireEvent.change(screen.getByLabelText(/api key/i), { target: { value: 'x' } });
@@ -56,11 +54,7 @@ describe('CredentialSlotForm', () => {
     expect(fetchMock.mock.calls[0]![0]).toBe('/settings/destinations/provider/credential');
   });
 
-  it('shows a Remove button when a key is set and clears it (DELETE + onCleared)', async () => {
-    const fetchMock = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
-      new Response(null, { status: 204 }),
-    );
-    const onCleared = vi.fn();
+  it('shows a clear "key is saved" cue + Replace when a key is set (no per-key Remove)', () => {
     render(
       <CredentialSlotForm
         destination={{ kind: 'account', service: 'gdrive' }}
@@ -68,18 +62,17 @@ describe('CredentialSlotForm', () => {
         scope={{ scope: 'user', ownerId: 'alice' }}
         current={{ set: true }}
         onSaved={() => {}}
-        onCleared={onCleared}
       />,
     );
-    fireEvent.click(screen.getByRole('button', { name: /remove/i }));
-    await waitFor(() => expect(onCleared).toHaveBeenCalledTimes(1));
-    expect(fetchMock).toHaveBeenCalledWith(
-      '/settings/destinations/account/credential',
-      expect.objectContaining({ method: 'DELETE' }),
-    );
+    // The secret can't be shown, but the saved state must be unmistakable.
+    expect(screen.getByText(/a key is saved/i)).toBeInTheDocument();
+    // The action is "Replace" (not "Save"), and there is NO per-key Remove button.
+    expect(screen.getByRole('button', { name: /^replace$/i })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: /^save$/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /remove/i })).toBeNull();
   });
 
-  it('does NOT show a Remove button when no key is set', () => {
+  it('shows no saved cue and a plain "Save" when empty', () => {
     render(
       <CredentialSlotForm
         destination={{ kind: 'account', service: 'gdrive' }}
@@ -87,9 +80,10 @@ describe('CredentialSlotForm', () => {
         scope={{ scope: 'user', ownerId: 'alice' }}
         current={{ set: false }}
         onSaved={() => {}}
-        onCleared={() => {}}
       />,
     );
+    expect(screen.queryByText(/a key is saved/i)).toBeNull();
+    expect(screen.getByRole('button', { name: /^save$/i })).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /remove/i })).toBeNull();
   });
 });
