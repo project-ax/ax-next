@@ -45,10 +45,21 @@ function appendSentence(current: string, sentence: string): string {
   return trimmed.length === 0 ? sentence : `${trimmed} ${sentence}`;
 }
 
-function composeSystemPrompt(opts: { name: string; soul: string; purpose: string }): string {
-  const parts: string[] = [];
+/**
+ * Compose the agent's system prompt from the bootstrap answers.
+ *
+ * The chosen name is ALWAYS stated first, as the agent's identity. Without it
+ * the model has no name anywhere in its prompt and answers "what's your name?"
+ * with its trained default ("I'm Claude"): the runner passes this string as the
+ * SDK's `systemPrompt`, which REPLACES the default `claude_code` preset, so
+ * nothing downstream supplies a name. (The earlier version only named the agent
+ * in the empty-soul fallback, so any chosen personality silently dropped the
+ * name.) The optional personality (soul) and purpose follow.
+ */
+export function composeSystemPrompt(opts: { name: string; soul: string; purpose: string }): string {
+  const parts: string[] = [`You are ${opts.name}, a helpful personal assistant.`];
   const soul = opts.soul.trim();
-  parts.push(soul.length > 0 ? soul : `You are ${opts.name}, a helpful personal assistant.`);
+  if (soul.length > 0) parts.push(soul);
   const purpose = opts.purpose.trim();
   if (purpose.length > 0) parts.push(`Your job: ${purpose}`);
   return parts.join('\n\n');
