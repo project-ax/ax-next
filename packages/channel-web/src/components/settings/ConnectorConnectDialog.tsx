@@ -84,7 +84,8 @@ export function ConnectorConnectDialog({
   const [consented, setConsented] = useState(false);
   // Real per-slot presence (metadata only — never a secret value): the user's
   // own vault + (for an admin) the global company vault. A slot whose derived
-  // ref already has a stored key renders Replace/Remove instead of enter.
+  // ref already has a stored key renders a "key is saved" cue + Replace instead
+  // of enter.
   const [userCreds, setUserCreds] = useState<CredentialMeta[]>([]);
   const [globalCreds, setGlobalCreds] = useState<CredentialMeta[]>([]);
 

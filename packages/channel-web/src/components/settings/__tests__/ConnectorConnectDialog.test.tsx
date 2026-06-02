@@ -315,6 +315,50 @@ describe('ConnectorConnectDialog', () => {
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
   });
 
+  it('multi-slot: saving one slot keeps the dialog open; the LAST slot closes it', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(MULTI_SLOT);
+    const idCred = {
+      scope: 'user' as const,
+      ownerId: 'alice',
+      ref: 'account:oauthsvc:CLIENT_ID',
+      kind: 'api-key',
+      createdAt: '2026-06-01T00:00:00Z',
+    };
+    const secretCred = { ...idCred, ref: 'account:oauthsvc:CLIENT_SECRET' };
+    // open → neither set; after save #1 → only CLIENT_ID; after save #2 → both.
+    vi.spyOn(credLib.myCredentials, 'list')
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([idCred])
+      .mockResolvedValue([idCred, secretCred]);
+    const onOpenChange = vi.fn();
+    render(
+      <ConnectorConnectDialog
+        connectorId="oauthsvc"
+        connectorName="OAuth Service"
+        isAdmin={false}
+        open
+        onOpenChange={onOpenChange}
+        onConnected={() => {}}
+      />,
+    );
+    const fields = await screen.findAllByLabelText(/api key/i);
+    expect(fields).toHaveLength(2);
+    const saves = screen.getAllByRole('button', { name: /^Save$/i });
+    expect(saves).toHaveLength(2);
+
+    // Save slot 1 (CLIENT_ID) → it flips to its saved state, but the dialog must
+    // STAY OPEN because CLIENT_SECRET is still empty.
+    fireEvent.change(fields[0]!, { target: { value: 'id-val' } });
+    fireEvent.click(saves[0]!);
+    await screen.findByRole('button', { name: /^Replace$/i });
+    expect(onOpenChange).not.toHaveBeenCalledWith(false);
+
+    // Save the remaining empty slot (CLIENT_SECRET) → now every slot is set → close.
+    fireEvent.change(screen.getByLabelText('API key'), { target: { value: 'secret-val' } });
+    fireEvent.click(screen.getByRole('button', { name: /^Save$/i }));
+    await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
   it('surfaces a load error', async () => {
     vi.spyOn(connectorsLib, 'getConnector').mockRejectedValue(new Error('get boom'));
     render(
