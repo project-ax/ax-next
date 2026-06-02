@@ -28,6 +28,15 @@ describe('@ax/connectors plugin manifest', () => {
       // database:get-instance is hard — the plugin runs its own migration on
       // init and can't function without a postgres instance.
       calls: ['database:get-instance'],
+      // credentials:delete is a soft dep — purge-on-delete degrades gracefully
+      // when no @ax/credentials provider is present.
+      optionalCalls: [
+        {
+          hook: 'credentials:delete',
+          degradation:
+            'the connector is deleted but its stored key is left in the vault (no @ax/credentials provider to purge it)',
+        },
+      ],
       subscribes: [],
     });
   });

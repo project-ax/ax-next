@@ -45,11 +45,12 @@ async function makeHarness(): Promise<TestHarness> {
   return h;
 }
 
-/** An MCP-backed connector spec (Google-Drive-shaped). */
+/** An MCP-backed connector spec (Google-Drive-shaped). No share-by-service
+ *  `account` tag — each connector owns its own key, keyed by the connector id. */
 function mcpCaps(): Capabilities {
   return {
     allowedHosts: ['drive.googleapis.com'],
-    credentials: [{ slot: 'gdrive', kind: 'api-key', account: 'google' }],
+    credentials: [{ slot: 'gdrive', kind: 'api-key' }],
     mcpServers: [
       {
         name: 'gdrive',
@@ -186,6 +187,39 @@ describe('@ax/connectors hooks — CRUD round-trip', () => {
     // The whole spec is replaced — mechanism flipped MCP → CLI/package.
     expect(up2.connector.capabilities).toEqual(cliCaps());
   });
+
+  it('strips a legacy share-by-service `account` tag from a stored slot on read', async () => {
+    const h = await makeHarness();
+    // A connector authored before the share-by-service removal could carry an
+    // `account` tag on its slot. The store re-validates capabilities on write AND
+    // read against a schema that no longer declares `account`, so the tag is
+    // dropped — the read path can never resurrect the old shared-key behaviour.
+    const up = await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({
+        connectorId: 'legacy',
+        capabilities: {
+          allowedHosts: [],
+          credentials: [{ slot: 'TOKEN', kind: 'api-key', account: 'shared-svc' }],
+          mcpServers: [],
+          packages: { npm: [], pypi: [] },
+        },
+      }),
+    );
+    expect(up.connector.capabilities.credentials).toEqual([
+      { slot: 'TOKEN', kind: 'api-key' },
+    ]);
+    // And the derived plan keys the ref by the connector id, NOT the legacy tag.
+    const resolved = await h.bus.call<ResolveInput, ResolveOutput>(
+      'connectors:resolve',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'legacy' },
+    );
+    expect(resolved.credentialPlan).toEqual([
+      { slot: 'TOKEN', scope: 'user', ref: 'account:legacy', service: 'legacy' },
+    ]);
+  });
 });
 
 describe('@ax/connectors hooks — resolve', () => {
@@ -235,17 +269,18 @@ describe('@ax/connectors hooks — resolve', () => {
       { userId: 'admin', connectorId: 'sf' },
     );
     expect(resolved.credentialPlan).toEqual([
-      // TASK-124 — single-slot connector keeps the collapsed ref + carries the
-      // structured `service` tag (no slotTag).
-      { slot: 'SF_TOKEN', scope: 'global', ref: 'account:salesforce', service: 'salesforce' },
+      // Single-slot connector keeps the collapsed ref + carries the structured
+      // `service` tag (no slotTag). The key is keyed by the CONNECTOR ID ('sf') —
+      // the slot's legacy `account: 'salesforce'` tag is stripped on read + ignored.
+      { slot: 'SF_TOKEN', scope: 'global', ref: 'account:sf', service: 'sf' },
     ]);
     expect(resolved.requiresSharedKeyConsent).toBe(true);
   });
 
   it('personal keyMode resolves every slot to scope=user (per-user JIT vault) + no consent when private', async () => {
     const h = await makeHarness();
-    // A personal, private Google Drive connector — the my-data case. Slot tags
-    // the shared account:google vault; keyMode binds it per-user.
+    // A personal, private Google Drive connector — the my-data case. The key is
+    // keyed by the connector id ('gdrive'); keyMode binds it per-user.
     await h.bus.call<UpsertInput, UpsertOutput>(
       'connectors:upsert',
       h.ctx({ userId: 'userA' }),
@@ -257,8 +292,10 @@ describe('@ax/connectors hooks — resolve', () => {
       { userId: 'userA', connectorId: 'gdrive' },
     );
     expect(resolved.credentialPlan).toEqual([
-      // TASK-124 — single-slot connector keeps the collapsed ref + `service` tag.
-      { slot: 'gdrive', scope: 'user', ref: 'account:google', service: 'google' },
+      // Single-slot connector keeps the collapsed ref + `service` tag. Keyed by
+      // the connector id 'gdrive' — the slot's legacy `account: 'google'` tag is
+      // stripped on read + ignored (each connector owns its own key).
+      { slot: 'gdrive', scope: 'user', ref: 'account:gdrive', service: 'gdrive' },
     ]);
     expect(resolved.requiresSharedKeyConsent).toBe(false);
   });
@@ -401,6 +438,148 @@ describe('@ax/connectors hooks — delete + resurrect', () => {
       { userId: 'userA', connectorId: 'gdrive' },
     );
     expect(got.connector.name).toBe('Re-connected');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Purge-on-delete: deleting a connector also purges its stored key(s) so a
+// secret can never linger with no UI home. credentials:delete is an optionalCall
+// (soft-dep) — a credentials:delete spy stands in for @ax/credentials here. Each
+// purge targets the connector's OWN derived refs, at the scope the connector
+// declares (personal → user/ownerId:userId, workspace → global/ownerId:null).
+// ---------------------------------------------------------------------------
+interface CredDeleteCall {
+  scope: string;
+  ownerId: string | null;
+  ref: string;
+}
+
+async function makeHarnessWithCredSpy(): Promise<{
+  h: TestHarness;
+  calls: CredDeleteCall[];
+}> {
+  const calls: CredDeleteCall[] = [];
+  const h = await createTestHarness({
+    services: {
+      // Matches @ax/credentials' real handler shape (async, returns void).
+      'credentials:delete': async (_ctx, input) => {
+        calls.push(input as CredDeleteCall);
+      },
+    },
+    plugins: [
+      createDatabasePostgresPlugin({ connectionString }),
+      createConnectorsPlugin(),
+    ],
+  });
+  harnesses.push(h);
+  return { h, calls };
+}
+
+describe('@ax/connectors hooks — delete purges the connector\'s credentials', () => {
+  it('a personal connector purges its slot at scope:user / ownerId:userId', async () => {
+    const { h, calls } = await makeHarnessWithCredSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput(),
+    );
+    const del = await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'gdrive' },
+    );
+    expect(del.deleted).toBe(true);
+    // mcpCaps() is single-slot → collapsed ref account:<connectorId>.
+    expect(calls).toEqual([
+      { scope: 'user', ownerId: 'userA', ref: 'account:gdrive' },
+    ]);
+  });
+
+  it('a workspace connector purges its slot at scope:global / ownerId:null', async () => {
+    const { h, calls } = await makeHarnessWithCredSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'admin' }),
+      upsertInput({
+        userId: 'admin',
+        connectorId: 'sf',
+        keyMode: 'workspace',
+        visibility: 'shared',
+        capabilities: cliCaps(),
+      }),
+    );
+    const del = await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'admin' }),
+      { userId: 'admin', connectorId: 'sf' },
+    );
+    expect(del.deleted).toBe(true);
+    expect(calls).toEqual([{ scope: 'global', ownerId: null, ref: 'account:sf' }]);
+  });
+
+  it('a multi-slot connector purges every per-slot ref (no key left behind)', async () => {
+    const { h, calls } = await makeHarnessWithCredSpy();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({
+        connectorId: 'oauthsvc',
+        capabilities: {
+          allowedHosts: ['api.example.com'],
+          credentials: [
+            { slot: 'CLIENT_ID', kind: 'api-key' },
+            { slot: 'CLIENT_SECRET', kind: 'api-key' },
+          ],
+          mcpServers: [],
+          packages: { npm: [], pypi: [] },
+        },
+      }),
+    );
+    await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'oauthsvc' },
+    );
+    expect(calls).toEqual([
+      { scope: 'user', ownerId: 'userA', ref: 'account:oauthsvc:CLIENT_ID' },
+      { scope: 'user', ownerId: 'userA', ref: 'account:oauthsvc:CLIENT_SECRET' },
+    ]);
+  });
+
+  it('deleting an absent connector purges nothing', async () => {
+    const { h, calls } = await makeHarnessWithCredSpy();
+    const del = await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'gdrive' },
+    );
+    expect(del.deleted).toBe(false);
+    expect(calls).toEqual([]);
+  });
+});
+
+describe('@ax/connectors hooks — delete degrades without credentials:delete', () => {
+  it('still soft-deletes the connector when credentials:delete is absent (no throw)', async () => {
+    const h = await makeHarness(); // no credentials:delete provider in this stack
+    expect(h.bus.hasService('credentials:delete')).toBe(false);
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput(),
+    );
+    const del = await h.bus.call<DeleteInput, DeleteOutput>(
+      'connectors:delete',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'gdrive' },
+    );
+    expect(del.deleted).toBe(true);
+    await expect(
+      h.bus.call<GetInput, GetOutput>(
+        'connectors:get',
+        h.ctx({ userId: 'userA' }),
+        { userId: 'userA', connectorId: 'gdrive' },
+      ),
+    ).rejects.toMatchObject({ code: 'not-found' });
   });
 });
 

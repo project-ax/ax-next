@@ -90,7 +90,7 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
       h.ctx({ userId: 'userA' }),
       installInput({
         hosts: ['api.linear.app'],
-        slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key', account: 'linear' }],
+        slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
         packages: { npm: ['@linear/sdk'] },
       }),
     );
@@ -107,7 +107,7 @@ describe('@ax/connectors — install_authored_connector + lifecycle', () => {
     // The flat install args were assembled into the canonical Capabilities.
     expect(d.proposal.allowedHosts).toEqual(['api.linear.app']);
     expect(d.proposal.credentials).toEqual([
-      { slot: 'LINEAR_API_KEY', kind: 'api-key', account: 'linear' },
+      { slot: 'LINEAR_API_KEY', kind: 'api-key' },
     ]);
     expect(d.proposal.packages).toEqual({ npm: ['@linear/sdk'], pypi: [] });
     expect(d.proposal.mcpServers).toEqual([]);

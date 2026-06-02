@@ -151,7 +151,8 @@ afterEach(async () => {
 function mcpCaps(): Capabilities {
   return {
     allowedHosts: ['drive.googleapis.com'],
-    credentials: [{ slot: 'gdrive', kind: 'api-key', account: 'google' }],
+    // No share-by-service `account` tag — keyed by the connector id.
+    credentials: [{ slot: 'gdrive', kind: 'api-key' }],
     mcpServers: [
       {
         name: 'gdrive',
@@ -504,9 +505,10 @@ describe('admin connector routes', () => {
       visibility: 'private',
       capabilities: mcpCaps(),
     });
-    // The slot `gdrive` declares account 'google' → ref account:google; a
-    // personal connector resolves it at scope:'user' under the actor's id.
-    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:google' }];
+    // The connector owns its own key: the ref is account:<connectorId>
+    // (account:gdrive) — the slot's legacy account tag is ignored. A personal
+    // connector resolves it at scope:'user' under the actor's id.
+    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:gdrive' }];
     const { res, captured } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), res);
     expect(captured.status).toBe(200);
@@ -525,13 +527,13 @@ describe('admin connector routes', () => {
       capabilities: mcpCaps(),
     });
     // A user-scoped row under the actor must NOT satisfy a workspace slot — the
-    // workspace key lives at scope:'global' / ownerId:null.
-    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:google' }];
+    // workspace key lives at scope:'global' / ownerId:null. Ref is account:gdrive.
+    credentialRows = [{ scope: 'user', ownerId: 'userA', ref: 'account:gdrive' }];
     const { res: r1, captured: c1 } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), r1);
     expect((c1.body as { status: string }).status).toBe('needs-key');
     // Seed the global key → now reachable.
-    credentialRows = [{ scope: 'global', ownerId: null, ref: 'account:google' }];
+    credentialRows = [{ scope: 'global', ownerId: null, ref: 'account:gdrive' }];
     const { res: r2, captured: c2 } = makeRes();
     await handlers.test(makeReq({ params: { id: 'gdrive' } }), r2);
     expect((c2.body as { status: string }).status).toBe('reachable');
