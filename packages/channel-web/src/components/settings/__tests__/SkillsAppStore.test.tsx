@@ -32,6 +32,10 @@ vi.mock('@/lib/catalog', () => ({
   listCatalogRequests: vi.fn(),
   decideCatalogRequest: vi.fn(),
 }));
+vi.mock('@/lib/admin', () => ({
+  listAdminAgents: vi.fn(),
+  patchAgentSkillAttachments: vi.fn(),
+}));
 vi.mock('@/components/admin/SkillEditor', () => ({
   SkillEditor: () => <div data-testid="skill-editor" />,
 }));
@@ -42,7 +46,9 @@ vi.mock('@/components/admin/BundleReviewDialog', () => ({
 import { getConnections, listCatalogSkills } from '@/lib/connections';
 import { listChatAgents } from '@/lib/agents';
 import { listUserSkills, listAuthoredSkills, adoptAuthoredSkill } from '@/lib/user-skills';
+import { setSkillDefaultAttached } from '@/lib/skills';
 import { listCatalogRequests } from '@/lib/catalog';
+import { listAdminAgents, patchAgentSkillAttachments, type AdminAgent } from '@/lib/admin';
 
 const mockGetConnections = vi.mocked(getConnections);
 const mockListCatalog = vi.mocked(listCatalogSkills);
@@ -51,6 +57,9 @@ const mockListUserSkills = vi.mocked(listUserSkills);
 const mockListAuthored = vi.mocked(listAuthoredSkills);
 const mockListRequests = vi.mocked(listCatalogRequests);
 const mockAdoptAuthored = vi.mocked(adoptAuthoredSkill);
+const mockSetDefault = vi.mocked(setSkillDefaultAttached);
+const mockListAdminAgents = vi.mocked(listAdminAgents);
+const mockPatchAgentSkills = vi.mocked(patchAgentSkillAttachments);
 
 const INSTALLED: ConnectionSkill[] = [
   { skillId: 'web-search', description: 'Search the web.', source: 'default', removable: false },
@@ -81,6 +90,9 @@ beforeEach(() => {
   ]);
   mockListAuthored.mockResolvedValue([]);
   mockListRequests.mockResolvedValue([]);
+  mockListAdminAgents.mockResolvedValue([]);
+  mockPatchAgentSkills.mockResolvedValue({ id: 'a1' } as unknown as AdminAgent);
+  mockSetDefault.mockResolvedValue(undefined);
 });
 
 describe('SkillsAppStore', () => {
@@ -200,5 +212,99 @@ describe('SkillsAppStore', () => {
 
     expect(await screen.findByText(/not-adoptable/i)).toBeInTheDocument();
     expect(screen.queryByTestId('skill-editor')).toBeNull();
+  });
+
+  // -------------------------------------------------------------------------
+  // Admins can uninstall non-user (default / agent) installed skills
+  // -------------------------------------------------------------------------
+
+  it('admin: an agent-attached row shows Remove that detaches via patch, preserving siblings', async () => {
+    mockGetConnections.mockResolvedValue({
+      agentId: 'a1',
+      skills: [
+        { skillId: 'agent-skill', description: 'Attached by admin.', source: 'agent', removable: false },
+      ],
+    });
+    mockListUserSkills.mockResolvedValue([]);
+    // The handler must read the agent's REAL skill_attachments (not the union,
+    // which hides agent rows that collide with a user attachment), drop the
+    // target, and keep the rest (with their credentialBindings intact).
+    mockListAdminAgents.mockResolvedValue([
+      {
+        id: 'a1',
+        skillAttachments: [
+          { skillId: 'agent-skill', credentialBindings: {} },
+          // Sibling kept verbatim — a server-acceptable binding (slot key matches
+          // the route's SLOT_RE) proves bindings pass through untouched, not just
+          // that the row survives.
+          { skillId: 'keep-me', credentialBindings: { TOKEN_SLOT: 'svc' } },
+        ],
+      } as unknown as AdminAgent,
+    ]);
+
+    render(<SkillsAppStore isAdmin={true} />);
+    const removeBtn = await screen.findByRole('button', {
+      name: /Remove agent-skill from this agent/i,
+    });
+    fireEvent.click(removeBtn);
+
+    await waitFor(() =>
+      expect(mockPatchAgentSkills).toHaveBeenCalledWith('a1', [
+        { skillId: 'keep-me', credentialBindings: { TOKEN_SLOT: 'svc' } },
+      ]),
+    );
+  });
+
+  it('admin: a default-attached row shows Unset default that clears the workspace default', async () => {
+    mockGetConnections.mockResolvedValue({
+      agentId: 'a1',
+      skills: [
+        { skillId: 'web-search', description: 'Search the web.', source: 'default', removable: false },
+      ],
+    });
+    mockListUserSkills.mockResolvedValue([]);
+
+    render(<SkillsAppStore isAdmin={true} />);
+    const unsetBtn = await screen.findByRole('button', {
+      name: /Unset web-search as a workspace default/i,
+    });
+    fireEvent.click(unsetBtn);
+
+    await waitFor(() =>
+      expect(mockSetDefault).toHaveBeenCalledWith('web-search', false),
+    );
+  });
+
+  it('non-admin: a non-removable row shows status text, not an uninstall button', async () => {
+    mockGetConnections.mockResolvedValue({
+      agentId: 'a1',
+      skills: [
+        { skillId: 'agent-skill', description: 'Attached by admin.', source: 'agent', removable: false },
+      ],
+    });
+    mockListUserSkills.mockResolvedValue([]);
+
+    render(<SkillsAppStore isAdmin={false} />);
+    await screen.findByTestId('installed-agent-skill');
+    expect(screen.queryByRole('button', { name: /Remove agent-skill/i })).toBeNull();
+    expect(screen.queryByRole('button', { name: /Unset .* default/i })).toBeNull();
+    expect(screen.getByText('set by admin')).toBeInTheDocument();
+  });
+
+  // -------------------------------------------------------------------------
+  // A user with no agent yet is guided to create one (Install stays disabled)
+  // -------------------------------------------------------------------------
+
+  it('with no agent, Install is disabled and the user is guided to the Agents tab', async () => {
+    mockListAgents.mockResolvedValue([]); // user has no assistant yet
+
+    render(<SkillsAppStore isAdmin={false} />);
+    // The catalog is still browsable, but every Install button is disabled.
+    await screen.findByTestId('catalog-web-search');
+    const installButtons = screen.getAllByRole('button', { name: /^Install$/i });
+    expect(installButtons.length).toBeGreaterThan(0);
+    for (const b of installButtons) expect(b).toBeDisabled();
+    // The empty INSTALLED state explains the fix: create an agent on the Agents tab.
+    expect(screen.getByText(/Agents tab/i)).toBeInTheDocument();
   });
 });
