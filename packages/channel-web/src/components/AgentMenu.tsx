@@ -17,9 +17,11 @@ export interface AgentMenuProps {
   /** The agent that should render with a checkmark (pending OR selected). */
   activeId: string | null;
   onPick: (agentId: string) => void;
+  /** When provided, renders a "+ New agent" row that opens the bootstrap flow. */
+  onCreateNew?: (() => void) | undefined;
 }
 
-export function AgentMenu({ agents, activeId, onPick }: AgentMenuProps) {
+export function AgentMenu({ agents, activeId, onPick, onCreateNew }: AgentMenuProps) {
   // We deliberately do NOT use `role="menu"` / `role="menuitem"` here.
   // WAI-ARIA expects menus to implement full keyboard navigation
   // (arrow up/down to traverse, Esc to close, Enter to activate). We
@@ -79,6 +81,21 @@ export function AgentMenu({ agents, activeId, onPick }: AgentMenuProps) {
         })}
       </div>
       <div className="mt-1 pt-1 border-t border-border">
+        {onCreateNew && (
+          <button
+            type="button"
+            className="
+              agent-menu-new group flex w-full items-center gap-2.5 cursor-pointer
+              px-2.5 py-[7px] rounded-md transition-colors hover:bg-muted text-left
+            "
+            onClick={onCreateNew}
+          >
+            <AvatarTile size={22} background="muted">
+              <span aria-hidden="true" className="text-[13px] leading-none text-muted-foreground">+</span>
+            </AvatarTile>
+            <span className="text-[14px] tracking-[-0.01em] leading-[1.1] text-foreground">New agent</span>
+          </button>
+        )}
         <div className="px-2.5 pt-2 pb-1 text-[10.5px] tracking-[0.04em] text-ink-ghost text-center">
           a new session starts on your next message
         </div>

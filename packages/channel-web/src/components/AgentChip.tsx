@@ -21,7 +21,7 @@ import { AgentMenu } from './AgentMenu';
 import { AvatarTile } from './AvatarTile';
 import { cn } from '@/lib/utils';
 
-export function AgentChip() {
+export function AgentChip({ onCreateNew }: { onCreateNew?: (() => void) | undefined } = {}) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const aui = useAui();
@@ -117,7 +117,21 @@ export function AgentChip() {
           />
         </svg>
       </button>
-      {open && <AgentMenu agents={agents} activeId={activeId} onPick={handlePick} />}
+      {open && (
+        <AgentMenu
+          agents={agents}
+          activeId={activeId}
+          onPick={handlePick}
+          onCreateNew={
+            onCreateNew
+              ? () => {
+                  setOpen(false);
+                  onCreateNew();
+                }
+              : undefined
+          }
+        />
+      )}
     </div>
   );
 }
