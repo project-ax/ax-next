@@ -69,6 +69,17 @@ export function AgentBootstrap({ onDone, canCancel = false, onCancel }: AgentBoo
   const [purpose, setPurpose] = useState('');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
+  // Stash the freshly-created agent id so the done-step handler can select it.
+  // We deliberately defer hydrating the agent store + selecting the agent until
+  // the user leaves the done screen — populating the store mid-create flips the
+  // App-level `noAgents` gate to false and unmounts this component before the
+  // 'done' step ever paints (the first-run path keeps `createAgentOpen` false,
+  // so the gate has nothing else to hold it open). See App.tsx's gate.
+  const [createdAgentId, setCreatedAgentId] = useState<string | null>(null);
+
+  // canCancel is true exactly when there's already an existing agent (the
+  // steady-state "+ New agent" entry), which means this is NOT the first-run.
+  const isFirstRun = !canCancel;
 
   const trimmedName = name.trim();
 
@@ -80,14 +91,27 @@ export function AgentBootstrap({ onDone, canCancel = false, onCancel }: AgentBoo
         displayName: trimmedName,
         systemPrompt: composeSystemPrompt({ name: trimmedName, soul, purpose }),
       });
-      await hydrateAgentsOnce();
-      agentStoreActions.setSelectedAgent(agent.agentId);
+      // Do NOT hydrate / select here — that would unmount us before 'done'
+      // paints (first-run). The store stays empty so `noAgents` stays true and
+      // the done screen renders; we commit the store mutation on "Start chatting".
+      setCreatedAgentId(agent.agentId);
       setStep('done');
     } catch {
       setErr("We couldn't create your agent just now. This is on us, not you — give it another go in a moment.");
     } finally {
       setBusy(false);
     }
+  }
+
+  async function finish() {
+    // Commit the store mutation now, as the user leaves the done screen: select
+    // the new agent, hydrate the store (this flips the App-level `noAgents` gate
+    // and unmounts us), then hand control back so the chat shell renders it.
+    if (createdAgentId !== null) {
+      agentStoreActions.setSelectedAgent(createdAgentId);
+      await hydrateAgentsOnce();
+    }
+    onDone();
   }
 
   const backToChat =
@@ -103,7 +127,7 @@ export function AgentBootstrap({ onDone, canCancel = false, onCancel }: AgentBoo
         title={`${trimmedName} is ready`}
         description={`That's it — ${trimmedName} is yours. Say hi, ask anything, and tweak the details whenever you like.`}
       >
-        <Button className="w-full" onClick={onDone} type="button">
+        <Button className="w-full" onClick={() => void finish()} type="button">
           Start chatting →
         </Button>
       </SetupShell>
@@ -113,8 +137,12 @@ export function AgentBootstrap({ onDone, canCancel = false, onCancel }: AgentBoo
   if (step === 'name') {
     return (
       <SetupShell
-        title="Let's make your first agent"
-        description="Think of this as hiring a teammate — except it never steals your lunch. Three quick steps, and you can change everything later."
+        title={isFirstRun ? "Let's make your first agent" : 'Make another agent'}
+        description={
+          isFirstRun
+            ? 'Think of this as hiring a teammate — except it never steals your lunch. Three quick steps, and you can change everything later.'
+            : "Building out the team? Three quick steps, and you can change everything later. The first one didn't even ask for a raise."
+        }
       >
         <div className="flex flex-col gap-4">
           <div className="flex flex-col gap-2">

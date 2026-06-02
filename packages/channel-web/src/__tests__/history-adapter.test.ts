@@ -31,6 +31,16 @@ describe('createAxHistoryAdapter', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('withFormat.load skips the fetch (no 404) for an assistant-ui __LOCALID_ placeholder', async () => {
+    // A fresh/unsaved assistant-ui thread has no remoteId yet — getConversationId
+    // resolves to a local placeholder like `__LOCALID_3lA3wt3`. Fetching it would
+    // 404 and log a console error; the adapter must treat it like "no id yet".
+    const adapter = createAxHistoryAdapter(() => '__LOCALID_3lA3wt3');
+    const result = await adapter.withFormat!(makeFormatAdapter()).load();
+    expect(result.messages).toHaveLength(0);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it('withFormat.load fetches /api/chat/conversations/:id and decodes turns', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,

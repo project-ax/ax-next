@@ -21,6 +21,15 @@
 import type { ThreadHistoryAdapter } from '@assistant-ui/react';
 import type { ContentBlock } from '@ax/ipc-protocol';
 
+/**
+ * Prefix assistant-ui's RemoteThreadList uses for the local placeholder id of
+ * a fresh thread that has no server-side remoteId yet (template literal
+ * `__LOCALID_${nanoid}` in @assistant-ui/core). There's no exported constant
+ * for it, so we match the literal; a regression test guards the behavior so
+ * we'd notice if an assistant-ui upgrade changes the prefix.
+ */
+const AUI_LOCAL_ID_PREFIX = '__LOCALID_';
+
 interface Turn {
   turnId: string;
   turnIndex: number;
@@ -279,7 +288,15 @@ export const createAxHistoryAdapter = (
       return {
         async load() {
           const conversationId = getConversationId();
-          if (!conversationId) return { messages: [] };
+          // assistant-ui mints a local placeholder id (`__LOCALID_<nanoid>`)
+          // for a fresh/unsaved thread before it has a server-side remoteId
+          // (see @assistant-ui/core RemoteThreadListThreadListRuntimeCore).
+          // Treat it like "no remote id yet" — fetching it would just 404 and
+          // spam the console with a failed-resource error. The prefix is an
+          // internal detail with no exported constant, so we match the literal.
+          if (!conversationId || conversationId.startsWith(AUI_LOCAL_ID_PREFIX)) {
+            return { messages: [] };
+          }
 
           const qs = includeThinking ? '?includeThinking=true' : '';
           const response = await fetch(
