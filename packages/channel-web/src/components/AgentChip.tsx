@@ -15,12 +15,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { useAui } from '@assistant-ui/react';
 import { agentStoreActions, useAgentStore } from '../lib/agent-store';
+import { hydrateAgentsOnce } from '../lib/hydrate-agents';
 import { sessionStoreActions } from '../lib/session-store';
 import { AgentMenu } from './AgentMenu';
 import { AvatarTile } from './AvatarTile';
 import { cn } from '@/lib/utils';
 
-export function AgentChip() {
+export function AgentChip({ onCreateNew }: { onCreateNew?: (() => void) | undefined } = {}) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
   const aui = useAui();
@@ -116,59 +117,27 @@ export function AgentChip() {
           />
         </svg>
       </button>
-      {open && <AgentMenu agents={agents} activeId={activeId} onPick={handlePick} />}
+      {open && (
+        <AgentMenu
+          agents={agents}
+          activeId={activeId}
+          onPick={handlePick}
+          onCreateNew={
+            onCreateNew
+              ? () => {
+                  setOpen(false);
+                  onCreateNew();
+                }
+              : undefined
+          }
+        />
+      )}
     </div>
   );
 }
 
 export function useHydrateAgents(): void {
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await fetch('/api/chat/agents', {
-          credentials: 'include',
-        });
-        if (!res.ok) return;
-        const body = (await res.json()) as unknown;
-        if (cancelled) return;
-        if (!Array.isArray(body)) return;
-        const wireAgents = body as Array<{
-          agentId: string;
-          displayName: string;
-          visibility: 'personal' | 'team';
-        }>;
-        const mapped = wireAgents.map((a) => ({
-          id: a.agentId,
-          owner_id: '',
-          owner_type: a.visibility === 'team' ? ('team' as const) : ('user' as const),
-          name: a.displayName,
-          tag: '',
-          desc: '',
-          color: agentColorFor(a.agentId),
-          system_prompt: '',
-          allowed_tools: [],
-          mcp_config_ids: [],
-          model: '',
-          created_at: 0,
-          updated_at: 0,
-        }));
-        agentStoreActions.setAgents(mapped);
-      } catch (err) {
-        console.warn('[agent-chip] hydrate failed', err);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
+    void hydrateAgentsOnce();
   }, []);
-}
-
-function agentColorFor(agentId: string): string {
-  const palette = ['#7aa6c9', '#b08968', '#9c89b8', '#90a955', '#d4a373', '#9b5de5'];
-  let hash = 0;
-  for (let i = 0; i < agentId.length; i++) {
-    hash = (hash * 31 + agentId.charCodeAt(i)) >>> 0;
-  }
-  return palette[hash % palette.length] ?? '#888';
 }

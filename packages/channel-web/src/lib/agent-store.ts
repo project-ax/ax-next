@@ -26,8 +26,12 @@
 import { useSyncExternalStore } from 'react';
 import type { Agent } from '../../mock/agents';
 
+export type AgentsStatus = 'loading' | 'ready' | 'error';
+
 export interface AgentStoreState {
   agents: Agent[];
+  /** Tri-state load signal for the agent list (drives the first-run gate). */
+  agentsStatus: AgentsStatus;
   /** The agent the user explicitly picked (rendered in the chip). */
   selectedAgentId: string | null;
   /** Set when the user picked a new agent on a non-empty session. */
@@ -38,6 +42,7 @@ export interface AgentStoreState {
 
 const initialState: AgentStoreState = {
   agents: [],
+  agentsStatus: 'loading',
   selectedAgentId: null,
   pendingAgentId: null,
   activeSessionId: null,
@@ -48,6 +53,9 @@ const listeners = new Set<() => void>();
 let state: AgentStoreState = initialState;
 
 const getSnapshot = (): AgentStoreState => state;
+
+/** Test-only snapshot getter for the module singleton. */
+export const getAgentStoreSnapshot = (): AgentStoreState => state;
 
 const subscribe = (cb: () => void): (() => void) => {
   listeners.add(cb);
@@ -66,7 +74,17 @@ export const useAgentStore = (): AgentStoreState =>
 
 export const agentStoreActions = {
   setAgents: (agents: Agent[]): void => {
-    set({ agents });
+    set({ agents, agentsStatus: 'ready' });
+  },
+
+  /** Mark the agent-list load as failed (transient fetch/parse error). */
+  setAgentsError: (): void => {
+    set({ agentsStatus: 'error' });
+  },
+
+  /** Test-only: restore the module singleton to its initial state. */
+  resetForTest: (): void => {
+    set({ ...initialState });
   },
 
   /** Explicit user pick (also clears any stale pending switch). */

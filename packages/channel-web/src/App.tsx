@@ -38,6 +38,8 @@ import { hydrateTheme } from './lib/theme';
 import { useAgentStore } from './lib/agent-store';
 import { sessionStoreActions } from './lib/session-store';
 import { useTitleEvents } from './lib/use-title-events';
+import { useHydrateAgents } from './components/AgentChip';
+import { AgentBootstrap } from './components/onboard/AgentBootstrap';
 import { LoginPage } from './components/LoginPage';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
@@ -131,7 +133,8 @@ export const App = () => {
 
 const AppContent = ({ user }: { user: AuthUser }) => {
   useTitleEvents();
-  const { agents, selectedAgentId, pendingAgentId } = useAgentStore();
+  useHydrateAgents(); // lifted from SessionHeader so the first-run gate can read the result
+  const { agents, agentsStatus, selectedAgentId, pendingAgentId } = useAgentStore();
   const runtime = useAxChatRuntime(user.id);
   // `adminSettingsOpen` is set by the user menu's "Settings" entry
   // (admin-gated). AdminSettings renders in the main pane when true.
@@ -140,6 +143,9 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // to every signed-in user — server-side scopes routines to caller's
   // owned/shared agents.
   const [routinesOpen, setRoutinesOpen] = useState(false);
+  // `createAgentOpen` drives the explicit "+ New agent" entry into the
+  // bootstrap flow (the first-run gate below uses the empty-list signal).
+  const [createAgentOpen, setCreateAgentOpen] = useState(false);
   // Mobile slide-over open state (Task 27). Used to render the scrim
   // that closes the sidebar on tap. Desktop CSS hides the scrim.
   const sidebarOpen = useSidebarOpen();
@@ -188,6 +194,32 @@ const AppContent = ({ user }: { user: AuthUser }) => {
     return () => document.removeEventListener('keydown', onKey);
   }, [agents, selectedAgentId, pendingAgentId, runtime]);
 
+  if (agentsStatus === 'loading') {
+    return (
+      <div className="flex items-center justify-center min-h-screen text-muted-foreground font-mono text-xs tracking-[0.04em]">
+        loading your agents…
+      </div>
+    );
+  }
+
+  // First-run (no personal agent yet) OR the explicit "+ New agent" entry.
+  // 'error' deliberately falls through to the chat shell — a transient blip
+  // must not force an existing user into the create flow; "+ New agent"
+  // remains available from the agent menu.
+  const noAgents = agentsStatus === 'ready' && agents.length === 0;
+  if (createAgentOpen || noAgents) {
+    return (
+      <UserProvider value={user}>
+        <AgentBootstrap
+          canCancel={!noAgents}
+          onCancel={() => setCreateAgentOpen(false)}
+          onDone={() => setCreateAgentOpen(false)}
+        />
+        <ToastStack />
+      </UserProvider>
+    );
+  }
+
   return (
     <UserProvider value={user}>
       <AssistantRuntimeProvider runtime={runtime}>
@@ -211,7 +243,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
                 />
               )}
               <main className="flex flex-1 flex-col min-w-0 min-h-0 h-full">
-                <SessionHeader />
+                <SessionHeader onCreateAgent={() => setCreateAgentOpen(true)} />
                 <Thread />
               </main>
             </>

@@ -21,10 +21,13 @@ beforeEach(() => {
   fetchMock.mockReset();
   globalThis.fetch = fetchMock as unknown as typeof fetch;
 
-  // Default backend stub: Alice is signed in, no agents yet, no sessions.
-  // The empty-state path is intentional — it means we don't have to
-  // wrangle the streaming SSE protocol in jsdom, which has no real
-  // ReadableStream story for fetch responses.
+  // Default backend stub: Alice is signed in with one existing agent and no
+  // sessions. The agent is required so AppContent's first-run gate resolves
+  // to the chat shell (an EMPTY agent list now diverts to <AgentBootstrap> —
+  // see the dedicated AgentBootstrap suite for that path). The empty-session
+  // state is intentional — it means we don't have to wrangle the streaming
+  // SSE protocol in jsdom, which has no real ReadableStream story for fetch
+  // responses.
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : (input as Request).url ?? String(input);
     if (url.includes('/admin/me')) {
@@ -37,10 +40,13 @@ beforeEach(() => {
       );
     }
     if (url.includes('/api/chat/agents')) {
-      return new Response(JSON.stringify([]), {
-        status: 200,
-        headers: { 'content-type': 'application/json' },
-      });
+      return new Response(
+        JSON.stringify([{ agentId: 'agt_alice', displayName: 'Alice Agent', visibility: 'personal' }]),
+        {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        },
+      );
     }
     if (url.includes('/api/chat/conversations')) {
       return new Response(JSON.stringify([]), {

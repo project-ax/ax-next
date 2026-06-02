@@ -1858,6 +1858,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           registers: [
             'agents:resolve',
             'agents:list-for-user',
+            // First-run personal-agent bootstrap (POST /api/agents/bootstrap)
+            // — channel-web hard-requires agents:create. The real preset loads
+            // @ax/agents; this canary boots a stub set, so a no-op producer
+            // satisfies the bootstrap verifyCalls walk.
+            'agents:create',
             'skills:list',
             'skills:list-user-attachments',
             'skills:detach-for-user',
@@ -1901,6 +1906,9 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             AGENTS_STUB_NAME,
             async () => ({ agents: [] as Array<unknown> }),
           );
+          bus.registerService('agents:create', AGENTS_STUB_NAME, async () => ({
+            agent: { id: 'phase-3-agent-new', displayName: 'New', visibility: 'personal' as const },
+          }));
           bus.registerService('skills:list', AGENTS_STUB_NAME, async () => ({
             skills: [] as Array<unknown>,
           }));
@@ -2279,6 +2287,11 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           registers: [
             'agents:resolve',
             'agents:list-for-user',
+            // First-run personal-agent bootstrap (POST /api/agents/bootstrap)
+            // — channel-web hard-requires agents:create. The real preset loads
+            // @ax/agents; this canary boots a stub set, so a no-op producer
+            // satisfies the bootstrap verifyCalls walk.
+            'agents:create',
             'skills:list',
             'skills:list-user-attachments',
             'skills:detach-for-user',
@@ -2320,6 +2333,13 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
             AGENTS_STUB_NAME,
             async () => ({ agents: [] as Array<unknown> }),
           );
+          bus.registerService('agents:create', AGENTS_STUB_NAME, async () => ({
+            agent: {
+              id: 'phase-3-artifact-agent-new',
+              displayName: 'New',
+              visibility: 'personal' as const,
+            },
+          }));
           bus.registerService('skills:list', AGENTS_STUB_NAME, async () => ({
             skills: [] as Array<unknown>,
           }));
