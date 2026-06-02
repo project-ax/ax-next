@@ -719,6 +719,67 @@ describe('user connector routes (/settings/connectors)', () => {
     expect((captured.body as { error: string }).error).toContain('admin-only');
   });
 
+  it('POST rejects keyMode:workspace (admin-only) — a non-admin must never own a workspace (global-keyed) connector', async () => {
+    // SECURITY (purge-on-delete): a workspace connector derives a GLOBAL credential
+    // ref (account:<id>, owner-independent). If a non-admin could own one, deleting
+    // it would tombstone the SHARED company key. The global credential WRITE is
+    // admin-gated (/admin/destinations); the connector that drives the global purge
+    // must be too. So the user route rejects keyMode:workspace.
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'company-sf',
+          name: 'Salesforce',
+          keyMode: 'workspace',
+          visibility: 'private',
+          capabilities: mcpCaps(),
+        },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    expect((captured.body as { error: string }).error).toContain('admin-only');
+    // It must NOT have landed — the GET 404s, so there is no workspace connector
+    // for the non-admin to later delete (and thus no global purge they can trigger).
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'company-sf' } }), gRes);
+    expect(gCap.status).toBe(404);
+  });
+
+  it('PATCH cannot flip an owned private connector to keyMode:workspace (admin-only)', async () => {
+    const h = await makeHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userFlipWs', isAdmin: false };
+    // Seed an owned PRIVATE personal connector (unique id — the container persists
+    // rows across this file's tests).
+    const { res: cRes, captured: cCap } = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'flip-to-ws',
+          name: 'Flip',
+          keyMode: 'personal',
+          visibility: 'private',
+          capabilities: mcpCaps(),
+        },
+      }),
+      cRes,
+    );
+    expect(cCap.status).toBe(201);
+    // Attempt to flip it to workspace via PATCH → rejected.
+    const { res, captured } = makeRes();
+    await handlers.update(
+      makeReq({ params: { id: 'flip-to-ws' }, body: { keyMode: 'workspace' } }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    expect((captured.body as { error: string }).error).toContain('admin-only');
+  });
+
   it('full CRUD on an owned private connector: create → edit → delete', async () => {
     const h = await makeHarness();
     const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });

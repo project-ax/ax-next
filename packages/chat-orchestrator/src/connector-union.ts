@@ -376,14 +376,17 @@ export function foldConnectorCaps(
     // WRITES, so the orchestrator resolves the SAME row the user's connect stored.
     //
     // ONE SOURCE OF TRUTH (invariant #4): the service tag + per-slot rule MUST
-    // match @ax/connectors' `serviceTagForSlot` / `deriveCredentialPlan` — service
-    // = slot.account when present, else the connector id; and (TASK-124) the ref
-    // COLLAPSES to `account:<service>` for a single-slot connector but EXPANDS to
-    // `account:<service>:<slot>` per slot for a ≥2-slot connector. Re-derived
-    // locally (I2 — no @ax/connectors runtime import), the same posture as
-    // foldAuthoredSkillCaps' local `account:${account}` derivation.
-    // `connector-union.test.ts` pins the shape; a drift here would silently
-    // address an empty (or colliding) vault row.
+    // match @ax/connectors' `serviceTagForSlot` / `deriveCredentialPlan` — the
+    // service tag is the connector id (credentials-into-connectors: each connector
+    // owns its own key, no share-by-service); and (TASK-124) the ref COLLAPSES to
+    // `account:<service>` for a single-slot connector but EXPANDS to
+    // `account:<service>:<slot>` per slot for a ≥2-slot connector. The
+    // `slotDef.account ?? c.id` below is VESTIGIAL for connectors — the connectors
+    // store strips `account` from a connector's slots on read, so it is always
+    // `c.id` here — but it's retained because a SKILL slot (foldAuthoredSkillCaps,
+    // which DOES carry `account`) flows through the same shape elsewhere. Re-derived
+    // locally (I2 — no @ax/connectors runtime import). `connector-union.test.ts`
+    // pins the shape; a drift here would silently address an empty/colliding row.
     const isMulti = c.capabilities.credentials.length >= 2;
     for (const slotDef of c.capabilities.credentials) {
       const envName = connectorCredentialEnvName(c.id, slotDef.slot);

@@ -138,11 +138,16 @@ const DestinationSchema = z.discriminatedUnion('kind', [
   z
     .object({
       kind: z.literal('account'),
+      // The account `service` is the connector id (credentials-into-connectors:
+      // each connector owns its own key, keyed by id). It MUST accept anything the
+      // connectors id grammar can produce (`/^[a-z0-9][a-z0-9_-]*$/`, max 128 —
+      // leading digit + underscore allowed, e.g. `1password`, `my_crm`), or such
+      // connectors become unconnectable. Still excludes `:` (the ref separator).
       service: z
         .string()
         .min(1)
-        .max(64)
-        .regex(/^[a-z][a-z0-9-]{0,63}$/, 'invalid account service'),
+        .max(128)
+        .regex(/^[a-z0-9][a-z0-9_-]{0,127}$/, 'invalid account service'),
       slot: z
         .string()
         .min(1)

@@ -184,6 +184,11 @@ No change. `credentials:delete` already exists with the right shape.
 - MCP / routine reserved credential kinds (not user-facing).
 - Cross-owner workspace connector catalog (still owner-scoped).
 - A data-migration script for legacy `account`-tagged connectors (accepted one-time re-entry).
+  Caveat (no migration): the connector now resolves to `account:<connectorId>`, so a key that was
+  stored under the old `account:<tag>` row is left orphaned in the vault — no UI home, and not
+  reached by purge-on-delete (which now targets `account:<connectorId>`). The ironic flip side of
+  the purge feature, accepted pre-GA because the `account` tag was a seldom-used optional field;
+  an operator who used it can clear the stray row out-of-band.
 
 ## Open questions
 
