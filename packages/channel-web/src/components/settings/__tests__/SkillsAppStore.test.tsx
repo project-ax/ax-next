@@ -435,22 +435,28 @@ describe('SkillsAppStore', () => {
     mockAdoptAuthored.mockResolvedValue({ skillId: 'drafted', created: true, adopted: true });
     // After adopt+refreshOwn: draft is gone (adopted), skill now in ownSkills.
     mockListAuthored.mockResolvedValue([]);
-    mockListUserSkills.mockResolvedValue([
-      {
-        id: 'drafted',
-        description: 'An agent-authored draft.',
-        version: 1,
-        scope: 'user',
-        connectors: [],
-        defaultAttached: false,
-        updatedAt: '2026-06-01T10:00:00.000Z',
-      } as SkillSummary,
-    ]);
+    // Initially no user-owned skills (draft is in authored, not yet adopted).
+    // After adopt, refreshOwn picks it up as a user-scoped copy.
+    mockListUserSkills
+      .mockResolvedValueOnce([]) // initial load: no user skills yet
+      .mockResolvedValue([
+        {
+          id: 'drafted',
+          description: 'An agent-authored draft.',
+          version: 1,
+          scope: 'user',
+          connectors: [],
+          defaultAttached: false,
+          updatedAt: '2026-06-01T10:00:00.000Z',
+        } as SkillSummary,
+      ]); // post-adopt refreshOwn: copy now owned
     mockGetConnections.mockResolvedValue({ agentId: 'a1', skills: [] });
 
     render(<SkillsAppStore isAdmin={false} />);
 
-    // Adopt the draft (click Edit on authored shelf).
+    // Adopt the draft (click Edit on authored shelf). On initial load the skill
+    // is only in the authored section — NOT in ownNotInstalled — so the Edit
+    // button is unambiguous.
     await screen.findByTestId('authored-drafted');
     fireEvent.click(screen.getByRole('button', { name: /Edit drafted/i }));
     await waitFor(() => expect(mockAdoptAuthored).toHaveBeenCalledWith('a1', 'drafted'));
