@@ -195,6 +195,62 @@ export const InstalledSkillSchema = z.object({
 });
 export type InstalledSkill = z.infer<typeof InstalledSkillSchema>;
 
+// ---------------------------------------------------------------------------
+// ServiceDescriptor (TASK-150) — a dev SERVICE the unit of work wants alongside
+// its sandbox (a database, a cache, …). The CANONICAL shape lives in
+// @ax/skills-parser (`ServiceDescriptorSchema`, on the `Capabilities` shape the
+// connector store owns). Re-declared LOCALLY here for trust-boundary
+// re-validation at the wire — the SAME defense-in-depth as McpServerSchema
+// above: the host orchestrator built the descriptor from a connector's parsed
+// capabilities, but a drifted/compromised host must not be able to smuggle a
+// malformed (or backend-vocabulary-laden) service spec through to a sandbox
+// backend. Both packages are eslint-allow-listed pure schema packages (I12); a
+// drift between the two surfaces as a runtime parse failure here.
+//
+// I1/I2 — backend-agnostic. `.strict()` rejects any key not named here,
+// including a smuggled `pod`/`securityContext`/`runtimeClassName`/`volume`/… —
+// no scheduler vocabulary crosses this boundary. I8 — `image` MUST be
+// digest-pinned (`…@sha256:<64 hex>`); a floating tag is mutable and is both a
+// reproducibility and a supply-chain hole.
+const SERVICE_PORT = z.number().int().min(1).max(65535);
+
+const HealthcheckSchema = z.union([
+  z.object({ kind: z.literal('tcp'), port: SERVICE_PORT }).strict(),
+  z
+    .object({
+      kind: z.literal('exec'),
+      command: z.array(z.string().max(256)).min(1).max(16),
+    })
+    .strict(),
+]);
+
+export const ServiceDescriptorSchema = z
+  .object({
+    name: z.string().regex(ID_RE, 'invalid service name shape'),
+    image: z
+      .string()
+      .regex(/.+@sha256:[0-9a-f]{64}$/, 'image must be digest-pinned (…@sha256:<64 hex>)'),
+    ports: z.array(SERVICE_PORT).max(16),
+    env: z
+      .record(z.string().max(256), z.string().max(2048))
+      .superRefine((rec, ctx) => {
+        const count = Object.keys(rec).length;
+        if (count > 32) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: `env may declare at most 32 entries, got ${count}`,
+          });
+        }
+      }),
+    healthcheck: HealthcheckSchema.optional(),
+    writablePaths: z
+      .array(z.string().regex(/^\//, 'writablePaths entries must be absolute').max(256))
+      .max(16)
+      .default([]),
+  })
+  .strict();
+export type ServiceDescriptorParsed = z.infer<typeof ServiceDescriptorSchema>;
+
 // Per-session credential-proxy blob threaded from the orchestrator. The
 // orchestrator's `endpointToProxyConfig` guarantees exactly one of
 // `endpoint` / `unixSocketPath` at construction; this schema documents AND
@@ -247,6 +303,11 @@ export const OpenSessionInputSchema = z.object({
     .optional(),
   proxyConfig: ProxyConfigSchema.optional(),
   installedSkills: z.array(InstalledSkillSchema).max(50).optional(),
+  // TASK-150 — dev SERVICES the orchestrator folded from the agent's connector
+  // capabilities. Optional + back-compat with non-orchestrator callers (tests,
+  // ad-hoc CLI) that don't set it. Each entry is re-validated at the wire
+  // (digest-pin, caps, no smuggled backend vocab). Carrier capped at 8.
+  services: z.array(ServiceDescriptorSchema).max(8).optional(),
 });
 
 export type OpenSessionInput = z.input<typeof OpenSessionInputSchema>;

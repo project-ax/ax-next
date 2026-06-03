@@ -34,6 +34,7 @@
     { "path": "../test-harness" },
     { "path": "../validator-identity" },
     { "path": "../validator-routine" },
+    { "path": "../validator-service" },
     { "path": "../validator-skill" },
     { "path": "../../presets/k8s" }
   ]

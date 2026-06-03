@@ -48,6 +48,7 @@
     { "path": "../../packages/onboarding" },
     { "path": "../../packages/validator-identity" },
     { "path": "../../packages/validator-routine" },
+    { "path": "../../packages/validator-service" },
     { "path": "../../packages/validator-skill" },
     { "path": "../../packages/routines" },
     { "path": "../../packages/routines-admin-routes" },

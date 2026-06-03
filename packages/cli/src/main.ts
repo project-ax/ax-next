@@ -19,6 +19,7 @@ import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
 import { createValidatorRoutinePlugin } from '@ax/validator-routine';
 import { createValidatorIdentityPlugin } from '@ax/validator-identity';
+import { createValidatorServicePlugin } from '@ax/validator-service';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
@@ -233,6 +234,15 @@ export async function main(opts: MainOptions): Promise<number> {
   // degrades to the post-bootstrap policy) — load in local CLI dev too so an
   // identity self-edit gets the same injection veto + bootstrap gate as prod.
   plugins.push(createValidatorIdentityPlugin());
+
+  // TASK-150: validator-service registers `services:validate` — the neutral
+  // dev-SERVICE descriptor validator (digest-pin I8, descriptor caps, and a
+  // named rejection of smuggled backend vocab I2). A pure, no-dep service hook
+  // (NO spawn / file I/O / DB / network), so it loads in the Postgres-free CLI
+  // preset exactly like validator-skill's `skills:scan` does. This OPENS the
+  // half-wired window: the validator + the `services` schema field exist, but
+  // nothing folds a service descriptor onto a session yet.
+  plugins.push(createValidatorServicePlugin());
 
   // Sandbox. Config only admits 'subprocess' today; the switch is future-
   // proofing for when alternate sandbox providers land.

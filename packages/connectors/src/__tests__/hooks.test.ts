@@ -61,6 +61,10 @@ function mcpCaps(): Capabilities {
       },
     ],
     packages: { npm: [], pypi: [] },
+    // TASK-150 — the store's CapabilitiesSchema defaults services to [] on
+    // parse, so a stored→read round-trip carries services: []. Set it here so
+    // the .toEqual round-trip assertions stay exact.
+    services: [],
   };
 }
 
@@ -71,6 +75,7 @@ function cliCaps(): Capabilities {
     credentials: [{ slot: 'sf', kind: 'api-key' }],
     mcpServers: [],
     packages: { npm: ['@salesforce/cli'], pypi: [] },
+    services: [],
   };
 }
 

@@ -4,6 +4,15 @@ export type {
   McpServerSpec,
   PackagesSpec,
   SkillCapabilities,
+  ServiceDescriptor,
+  Healthcheck,
+} from './capabilities.js';
+export {
+  CapabilitiesSchema,
+  ServiceDescriptorSchema,
+  ServicesArraySchema,
+  HealthcheckSchema,
+  SERVICES_MAX,
 } from './capabilities.js';
 export { buildSkillManifestYaml } from './build.js';
 export { parseSkillManifest } from './manifest.js';

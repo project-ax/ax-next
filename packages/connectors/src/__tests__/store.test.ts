@@ -40,8 +40,13 @@ function caps(): Capabilities {
     credentials: [{ slot: 's', kind: 'api-key' }],
     mcpServers: [],
     packages: { npm: [], pypi: [] },
+    // TASK-150 — services defaults to [] through the schema; set it explicitly
+    // here so the round-trip assertion below stays an exact deep-equal.
+    services: [],
   };
 }
+
+const PINNED_IMAGE = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgres:16-alpine').start();
@@ -321,5 +326,57 @@ describe('boundary validators', () => {
   it('validateCapabilities round-trips a valid spec and rejects garbage', () => {
     expect(validateCapabilities(caps())).toEqual(caps());
     expect(() => validateCapabilities({ allowedHosts: 'no' })).toThrow();
+  });
+
+  it('validateCapabilities round-trips a spec carrying services (TASK-150)', () => {
+    const withServices = {
+      ...caps(),
+      services: [
+        {
+          name: 'postgres',
+          image: PINNED_IMAGE,
+          ports: [5432],
+          env: { POSTGRES_PASSWORD: 'x' },
+          writablePaths: ['/var/lib/postgresql/data'],
+        },
+      ],
+    };
+    const parsed = validateCapabilities(withServices);
+    expect(parsed.services).toHaveLength(1);
+    expect(parsed.services?.[0]?.image).toBe(PINNED_IMAGE);
+  });
+
+  it('validateCapabilities defaults services to [] when omitted', () => {
+    const { services: _drop, ...noServices } = caps();
+    expect(validateCapabilities(noServices).services).toEqual([]);
+  });
+
+  it('validateCapabilities rejects a service with a non-digest image (I8)', () => {
+    expect(() =>
+      validateCapabilities({
+        ...caps(),
+        services: [
+          { name: 'redis', image: 'redis:7', ports: [6379], env: {}, writablePaths: [] },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  it('validateCapabilities rejects a service carrying smuggled backend vocab (I2)', () => {
+    expect(() =>
+      validateCapabilities({
+        ...caps(),
+        services: [
+          {
+            name: 'pg',
+            image: PINNED_IMAGE,
+            ports: [5432],
+            env: {},
+            writablePaths: [],
+            securityContext: { privileged: true },
+          },
+        ],
+      }),
+    ).toThrow();
   });
 });

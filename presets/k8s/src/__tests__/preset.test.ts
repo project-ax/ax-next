@@ -179,10 +179,18 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/tool-dispatcher',
         '@ax/validator-identity',
         '@ax/validator-routine',
+        '@ax/validator-service',
         '@ax/validator-skill',
         '@ax/workspace-git',
       ].sort(),
     );
+  });
+
+  it('loads @ax/validator-service and registers services:validate (TASK-150)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const vs = plugins.find((p) => p.manifest.name === '@ax/validator-service');
+    expect(vs).toBeDefined();
+    expect(vs!.manifest.registers).toEqual(['services:validate']);
   });
 
   it('does NOT include local-mode-only plugins', () => {
