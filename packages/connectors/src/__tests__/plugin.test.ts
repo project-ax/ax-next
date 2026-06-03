@@ -22,6 +22,8 @@ describe('@ax/connectors plugin manifest', () => {
         // TASK-94 — agent-authored connector drafts + the approval gate.
         'connectors:install-authored',
         'connectors:list-authored',
+        // The Settings "Proposed by your assistant" fallback read.
+        'connectors:list-authored-pending',
         'connectors:activate-authored',
         'connectors:clear-authored',
       ],

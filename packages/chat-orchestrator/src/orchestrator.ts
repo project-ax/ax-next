@@ -475,6 +475,23 @@ interface SkillsProposedLike {
   status: 'active' | 'pending' | 'quarantined';
 }
 
+// The `connectors:proposed` notify @ax/connectors fires after a successful
+// `connectors:install-authored` write of a PENDING draft (the agent authored a
+// connector THIS turn via connector_propose). The orchestrator subscribes and
+// fires the upfront approval card on the proposing turn's conversation — the
+// same mid-turn live-card pattern @ax/skill-broker's request_capability uses —
+// so the user sees the card without waiting for their next message (the bug
+// this fixes: the card was previously fired only at the START of an
+// agent:invoke, so a connector proposed mid-turn was uncarded until a turn the
+// user might never send). Storage-agnostic ids; re-declared here per I2 (no
+// @ax/connectors import); the shape mirrors @ax/connectors' ConnectorProposedEvent.
+interface ConnectorProposedLike {
+  ownerUserId: string;
+  agentId: string;
+  connectorId: string;
+  status: 'pending' | 'active';
+}
+
 // AgentConfig (sent through sandbox:open-session and persisted on the session
 // row) now comes from @ax/sandbox-protocol (type-only import above). The
 // session-postgres / session-inmemory plugins declare the same shape; drift is
@@ -794,6 +811,7 @@ export function createOrchestrator(
   ): Promise<ApplyAuthoredConnectorGrantOutput>;
   onHttpEgress(ctx: AgentContext, payload: HttpEgressEventLike): Promise<void>;
   onSkillsProposed(ctx: AgentContext, event: SkillsProposedLike): Promise<void>;
+  onConnectorProposed(ctx: AgentContext, event: ConnectorProposedLike): Promise<void>;
 } {
   // Waiters are tracked by ctx.reqId (server-minted, J9, unique per
   // agent:invoke). On the J6 routed path, two concurrent agent:invokes for the
@@ -1091,6 +1109,28 @@ export function createOrchestrator(
     // TASK-100 — a proposed skill no longer fires a per-skill capability card
     // (a skill declares no caps), so there is no proposing-conversation to
     // remember; the re-spawn mark above is the whole effect.
+  }
+
+  // connectors:proposed subscriber — surface the connector approval card AT
+  // PROPOSAL TIME. The agent calls connector_propose mid-turn; @ax/connectors
+  // persists the PENDING draft and fires this event on the SAME ctx (the IPC
+  // server stamps the real conversationId onto the runner-driven tool ctx). We
+  // reuse fireUpfrontConnectorCards — which resolves the agent's pending drafts,
+  // builds the card, and dedups per (conversation, connectorId, shown-surface).
+  // Because the proposing turn's SSE is still open and matched by conversationId
+  // (sse.ts live permission-request subscriber), the card delivers LIVE on the
+  // current turn. The per-conversation dedup means a later turn's
+  // fireUpfrontConnectorCards won't double-fire it.
+  //
+  // Best-effort + non-blocking, exactly like the turn-start fire sites: a
+  // resolve failure logs and fires no card (fewer cards, never a wrong one) and
+  // never affects the proposing turn. firing this event needs no manifest
+  // declaration (subscriber events are undeclared, like chat:turn-error).
+  async function onConnectorProposed(
+    ctx: AgentContext,
+    _event: ConnectorProposedLike,
+  ): Promise<void> {
+    await fireUpfrontConnectorCards(ctx, ctx.agentId);
   }
 
   const chatTimeoutMs = config.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS;
@@ -2905,6 +2945,7 @@ export function createOrchestrator(
     applyAuthoredConnectorGrant,
     onHttpEgress,
     onSkillsProposed,
+    onConnectorProposed,
   };
 }
 

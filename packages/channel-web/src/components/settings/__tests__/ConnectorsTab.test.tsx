@@ -76,6 +76,9 @@ describe('ConnectorsTab', () => {
     // No stored credentials by default → every connector reads "not connected".
     vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([]);
     vi.spyOn(credLib.adminCredentials, 'list').mockResolvedValue([]);
+    // No proposed (pending authored) drafts by default → the Proposed shelf is
+    // absent. Tests that exercise the fallback override this.
+    vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([]);
     // Allowed-sites section deps — default empty so most tests focus on the
     // connector list. Tests that exercise allowed-sites override these.
     vi.spyOn(agentsLib, 'listChatAgents').mockResolvedValue([]);
@@ -90,6 +93,75 @@ describe('ConnectorsTab', () => {
     render(<ConnectorsTab isAdmin={false} />);
     expect(await screen.findByText('My Notion')).toBeInTheDocument();
     expect(screen.getByText('Salesforce')).toBeInTheDocument();
+  });
+
+  // The Settings "Proposed by your assistant" fallback (2026-06-03): a connector
+  // the assistant proposed mid-turn lands as a PENDING authored draft. If the
+  // in-chat approval card was missed, the user can approve it here.
+  const PROPOSED_LINEAR: connectorsLib.PendingAuthoredConnector = {
+    connectorId: 'linear',
+    agentId: 'agt_1',
+    name: 'Linear',
+    usageNote: 'Drive the Linear CLI',
+    keyMode: 'personal',
+    status: 'pending',
+    proposal: {
+      allowedHosts: ['api.linear.app'],
+      credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+      mcpServers: [],
+      packages: { npm: ['@schpet/linear-cli'], pypi: [] },
+    },
+  };
+
+  it('shows a "Proposed by your assistant" shelf when there are pending authored drafts', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([PROPOSED_LINEAR]);
+    render(<ConnectorsTab isAdmin={false} />);
+    expect(await screen.findByText(/Proposed by your assistant/i)).toBeInTheDocument();
+    const tile = await screen.findByTestId('proposed-connector-linear');
+    expect(within(tile).getByText('Linear')).toBeInTheDocument();
+    expect(within(tile).getByRole('button', { name: /approve/i })).toBeInTheDocument();
+  });
+
+  it('omits the Proposed shelf when there are no pending drafts', async () => {
+    render(<ConnectorsTab isAdmin={false} />);
+    await screen.findByText('My Notion');
+    expect(screen.queryByText(/Proposed by your assistant/i)).not.toBeInTheDocument();
+  });
+
+  it('approving a proposed connector writes the key then calls approve, and refreshes', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredPending')
+      .mockResolvedValueOnce([PROPOSED_LINEAR]) // initial load
+      .mockResolvedValue([]); // after approval → shelf empties
+    const setCred = vi
+      .spyOn(credLib, 'setDestinationCredential')
+      .mockResolvedValue(undefined as unknown as Awaited<ReturnType<typeof credLib.setDestinationCredential>>);
+    const approve = vi
+      .spyOn(connectorsLib, 'approveAuthoredConnector')
+      .mockResolvedValue(undefined);
+
+    render(<ConnectorsTab isAdmin={false} />);
+    const tile = await screen.findByTestId('proposed-connector-linear');
+    fireEvent.click(within(tile).getByRole('button', { name: /approve/i }));
+
+    // The approve dialog opens with a key field for the declared slot.
+    const keyField = await screen.findByLabelText('LINEAR_API_KEY');
+    fireEvent.change(keyField, { target: { value: 'lin_secret_123' } });
+    fireEvent.click(screen.getByRole('button', { name: /^connect$/i }));
+
+    await waitFor(() => expect(approve).toHaveBeenCalledTimes(1));
+    // The key is written to the user's vault under the connector's account ref —
+    // never sent through the approve call.
+    expect(setCred).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destination: { kind: 'account', service: 'linear' },
+        payload: 'lin_secret_123',
+        scope: { scope: 'user', ownerId: null },
+      }),
+    );
+    expect(approve).toHaveBeenCalledWith('linear', {
+      agentId: 'agt_1',
+      shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: ['@schpet/linear-cli'], pypi: [] },
+    });
   });
 
   it('renders Connected and Available section headers', async () => {
@@ -116,9 +188,12 @@ describe('ConnectorsTab', () => {
       expect(screen.getByText('Connected (1)')).toBeInTheDocument();
       expect(screen.getByText('Available (1)')).toBeInTheDocument();
     });
-    // The connected tile offers Manage; the available tile offers Connect.
+    // The connected tile offers "Update credentials" (the credential enter/replace
+    // dialog); the available tile offers Connect.
     const notionTile = screen.getByTestId('connector-tile-my-notion');
-    expect(within(notionTile).getByRole('button', { name: /manage/i })).toBeInTheDocument();
+    expect(
+      within(notionTile).getByRole('button', { name: /update credentials/i }),
+    ).toBeInTheDocument();
     const sfTile = screen.getByTestId('connector-tile-company-salesforce');
     expect(within(sfTile).getByRole('button', { name: /^connect$/i })).toBeInTheDocument();
   });

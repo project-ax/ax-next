@@ -79,6 +79,38 @@ describe('ConnectorConnectDialog', () => {
   });
   afterEach(() => vi.restoreAllMocks());
 
+  it('titles itself "Connect <name>" in connect mode and "Update credentials for <name>" in manage mode', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(PERSONAL);
+    const { rerender } = render(
+      <ConnectorConnectDialog
+        connectorId="my-notion"
+        connectorName="My Notion"
+        isAdmin={false}
+        open
+        onOpenChange={() => {}}
+        onConnected={() => {}}
+      />,
+    );
+    // Default (connect) — first-time key entry from the Available shelf.
+    expect(await screen.findByRole('heading', { name: 'Connect My Notion' })).toBeInTheDocument();
+
+    // Manage — opened from the Connected shelf where the key is already set.
+    rerender(
+      <ConnectorConnectDialog
+        connectorId="my-notion"
+        connectorName="My Notion"
+        mode="manage"
+        isAdmin={false}
+        open
+        onOpenChange={() => {}}
+        onConnected={() => {}}
+      />,
+    );
+    expect(
+      await screen.findByRole('heading', { name: 'Update credentials for My Notion' }),
+    ).toBeInTheDocument();
+  });
+
   it('personal connector prompts for a PER-USER key (user-scope write)', async () => {
     vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(PERSONAL);
     const onConnected = vi.fn();

@@ -16,6 +16,8 @@ import type {
   InstallAuthoredOutput,
   ListAuthoredInput,
   ListAuthoredOutput,
+  ListAuthoredPendingInput,
+  ListAuthoredPendingOutput,
   ResolveInput,
   ResolveOutput,
   UpsertInput,
@@ -369,5 +371,103 @@ describe('@ax/connectors — install_authored_connector re-propose dedup (TASK-1
     );
     // userA has no registry 'linear' → normal pending draft.
     expect(out).toEqual({ connectorId: 'linear', status: 'pending' });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// connectors:proposed (2026-06-03) — install-authored fires this subscriber
+// event so the chat-orchestrator can surface the approval card AT PROPOSAL
+// TIME (mid-turn), not only at the start of the user's NEXT turn. The event is
+// the trigger for the bug fix: previously a connector proposed mid-turn was
+// never carded until a turn the user might never send.
+// ---------------------------------------------------------------------------
+describe('@ax/connectors — install-authored fires connectors:proposed', () => {
+  it('fires connectors:proposed once for a fresh PENDING draft, carrying the (owner, agent, id)', async () => {
+    const h = await makeHarness();
+    const events: Array<{ ownerUserId: string; agentId: string; connectorId: string; status: string }> = [];
+    h.bus.subscribe('connectors:proposed', 'test/capture', async (_ctx, payload) => {
+      events.push(payload as { ownerUserId: string; agentId: string; connectorId: string; status: string });
+      return undefined;
+    });
+
+    await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+      'connectors:install-authored',
+      h.ctx({ userId: 'userA' }),
+      installInput(),
+    );
+
+    expect(events).toEqual([
+      { ownerUserId: 'userA', agentId: 'agent1', connectorId: 'linear', status: 'pending' },
+    ]);
+  });
+
+  it('does NOT fire connectors:proposed on the already-active no-op path (TASK-114 dedup)', async () => {
+    const h = await makeHarness();
+    await seedRegistryConnector(h); // 'linear' already active in the registry
+
+    const events: unknown[] = [];
+    h.bus.subscribe('connectors:proposed', 'test/capture', async (_ctx, payload) => {
+      events.push(payload);
+      return undefined;
+    });
+
+    const out = await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+      'connectors:install-authored',
+      h.ctx({ userId: 'userA' }),
+      installInput(),
+    );
+    // No-op: already active → no pending draft written → no card to surface.
+    expect(out).toEqual({ connectorId: 'linear', status: 'active' });
+    expect(events).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// connectors:list-authored-pending (2026-06-03) — the Settings fallback read.
+// Aggregates the user's PENDING drafts across all their agents and excludes any
+// id already live in the registry.
+// ---------------------------------------------------------------------------
+describe('@ax/connectors — connectors:list-authored-pending', () => {
+  it('lists the user’s pending drafts across agents, each with its agentId', async () => {
+    const h = await makeHarness();
+    await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+      'connectors:install-authored',
+      h.ctx({ userId: 'userA' }),
+      installInput({ agentId: 'agent2', connectorId: 'linear', name: 'Linear' }),
+    );
+    await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+      'connectors:install-authored',
+      h.ctx({ userId: 'userA' }),
+      installInput({ agentId: 'agent1', connectorId: 'gmail', name: 'Gmail', hosts: ['gmail.googleapis.com'] }),
+    );
+
+    const out = await h.bus.call<ListAuthoredPendingInput, ListAuthoredPendingOutput>(
+      'connectors:list-authored-pending',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA' },
+    );
+    expect(out.drafts.map((d) => ({ connectorId: d.connectorId, agentId: d.agentId }))).toEqual([
+      { connectorId: 'gmail', agentId: 'agent1' },
+      { connectorId: 'linear', agentId: 'agent2' },
+    ]);
+  });
+
+  it('excludes a pending draft whose id is already an active registry connector', async () => {
+    const h = await makeHarness();
+    await h.bus.call<InstallAuthoredInput, InstallAuthoredOutput>(
+      'connectors:install-authored',
+      h.ctx({ userId: 'userA' }),
+      installInput(), // pending 'linear' under agent1
+    );
+    // Promote 'linear' into the live registry (the post-approval state).
+    await seedRegistryConnector(h);
+
+    const out = await h.bus.call<ListAuthoredPendingInput, ListAuthoredPendingOutput>(
+      'connectors:list-authored-pending',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA' },
+    );
+    // 'linear' is already connectable on the normal shelves → not "proposed".
+    expect(out.drafts).toEqual([]);
   });
 });

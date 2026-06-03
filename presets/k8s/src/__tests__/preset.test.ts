@@ -231,6 +231,8 @@ describe('@ax/preset-k8s wiring', () => {
       // TASK-94 — agent-authored connector drafts + the approval gate.
       'connectors:install-authored',
       'connectors:list-authored',
+      // The Settings "Proposed by your assistant" fallback read.
+      'connectors:list-authored-pending',
       'connectors:activate-authored',
       'connectors:clear-authored',
     ]);

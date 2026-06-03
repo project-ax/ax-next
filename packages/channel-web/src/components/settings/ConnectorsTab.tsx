@@ -50,10 +50,13 @@ import {
   patchConnector,
   testConnector,
   deriveCredentialPlan,
+  listAuthoredPending,
   type ConnectorSummary,
   type ConnectorTestStatus,
   type ConnectorRouteBase,
+  type PendingAuthoredConnector,
 } from '@/lib/connectors';
+import { ProposedConnectorApproveDialog } from './ProposedConnectorApproveDialog';
 import {
   myCredentials,
   adminCredentials,
@@ -208,6 +211,12 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   // Per-row Test probe state, keyed by connector id (admin Test action).
   const [testState, setTestState] = useState<Record<string, TestState>>({});
 
+  // "Proposed by your assistant" fallback: pending authored drafts the assistant
+  // proposed mid-turn (the approval-card twin for a missed/dismissed card). The
+  // draft currently being approved (null = dialog closed).
+  const [proposed, setProposed] = useState<PendingAuthoredConnector[]>([]);
+  const [approving, setApproving] = useState<PendingAuthoredConnector | null>(null);
+
   // Allowed sites — the durable per-(user, agent) "always allow" host grants.
   const [agents, setAgents] = useState<ChatAgentSummary[]>([]);
   const [agentId, setAgentId] = useState<string>('');
@@ -267,6 +276,15 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
     [isAdmin, base],
   );
 
+  /** Reload the pending authored drafts ("Proposed by your assistant"). Always
+   *  the owner-scoped `/settings/connectors/authored` surface; best-effort — a
+   *  failure just leaves the shelf empty rather than blocking the tab. */
+  const refreshProposed = useCallback(() => {
+    return listAuthoredPending()
+      .then((drafts) => setProposed(drafts))
+      .catch(() => setProposed([]));
+  }, []);
+
   /** Reload the connector list + re-derive connected-state (after a curation
    *  write or a successful connect). */
   const refreshConnectors = useCallback(() => {
@@ -296,6 +314,15 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
           setError(e instanceof Error ? e.message : String(e));
           setConnectors([]);
         }
+      });
+    listAuthoredPending()
+      .then((drafts) => {
+        if (!cancelled) setProposed(drafts);
+      })
+      .catch(() => {
+        // Best-effort: a preset without the connectors plugin (or a transient
+        // failure) just hides the Proposed shelf.
+        if (!cancelled) setProposed([]);
       });
     listChatAgents()
       .then((a) => {
@@ -458,7 +485,10 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
               variant={section === 'connected' ? 'outline' : 'default'}
               onClick={() => setConnecting(c)}
             >
-              {section === 'connected' ? 'Manage' : 'Connect'}
+              {/* Connected → the keys are already set, so this opens the
+                  enter/replace-key dialog: name it for what it does ("Update
+                  credentials"), not the vague "Manage" that collided with Edit. */}
+              {section === 'connected' ? 'Update credentials' : 'Connect'}
             </Button>
           </div>
         </RoleCard>
@@ -503,6 +533,39 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         </p>
       )}
 
+      {/* Proposed by your assistant — pending authored drafts the assistant
+          proposed mid-turn. The approval-card twin: if the in-chat card was
+          missed/dismissed, approve the connector here. Rendered only when there
+          is at least one pending draft. */}
+      {proposed.length > 0 && (
+        <section className="flex flex-col gap-3.5">
+          <h4 className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            Proposed by your assistant ({proposed.length})
+          </h4>
+          {proposed.map((d) => (
+            <div key={d.connectorId} data-testid={`proposed-connector-${d.connectorId}`}>
+              <RoleCard
+                pill="service"
+                title={d.name}
+                caption={
+                  d.keyMode === 'workspace' ? 'Needs a shared key' : 'Needs a personal key'
+                }
+              >
+                <div className="flex flex-wrap items-center justify-end gap-2">
+                  <span className="flex items-center gap-1.5 text-[12.5px] text-muted-foreground mr-auto">
+                    <StatusDot variant="pending" />
+                    Awaiting your approval
+                  </span>
+                  <Button size="sm" onClick={() => setApproving(d)}>
+                    Approve
+                  </Button>
+                </div>
+              </RoleCard>
+            </div>
+          ))}
+        </section>
+      )}
+
       {/* Connected shelf */}
       {connectors !== null && list.length > 0 && (
         <section className="flex flex-col gap-3.5">
@@ -535,6 +598,25 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         </section>
       )}
 
+      {/* Approve a proposed (pending authored) connector — the Settings twin of
+          the in-chat approval card. On approval the draft is promoted into the
+          registry; we refresh both shelves so it leaves "Proposed" and appears as
+          a real connector. */}
+      {approving && (
+        <ProposedConnectorApproveDialog
+          draft={approving}
+          open
+          onOpenChange={(o) => {
+            if (!o) setApproving(null);
+          }}
+          onApproved={() => {
+            setApproving(null);
+            void refreshProposed();
+            void refreshConnectors();
+          }}
+        />
+      )}
+
       {/* The keyMode-aware connect handshake (personal JIT vs workspace shared
           key + consent gate). Re-derives connected-state on a successful store
           so the tile moves to the Connected shelf. */}
@@ -542,6 +624,10 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         <ConnectorConnectDialog
           connectorId={connecting.id}
           connectorName={connecting.name}
+          // From the Connected shelf the key is already set → "manage" (the
+          // title reads "Update credentials"); from Available it's a first-time
+          // "connect". Derived from the same presence map the shelves split on.
+          mode={isConnected(connecting) ? 'manage' : 'connect'}
           isAdmin={isAdmin}
           open
           onOpenChange={(o) => {

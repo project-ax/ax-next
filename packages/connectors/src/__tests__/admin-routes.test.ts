@@ -1066,3 +1066,175 @@ describe('user connector routes (/settings/connectors)', () => {
     expect(dCap.status).toBe(404);
   });
 });
+
+// ---------------------------------------------------------------------------
+// User connector AUTHORED-draft routes (2026-06-03) — the Settings "Proposed by
+// your assistant" fallback: GET /settings/connectors/authored (list pending) +
+// POST /settings/connectors/authored/:id/approve (approve outside chat). The
+// approve route forces userId from the session, ACL-gates agents:resolve, and
+// calls the orchestrator's authored-connector grant with NO conversationId
+// (approve-ahead). Both stubbed here; the real grant is tested in
+// @ax/chat-orchestrator.
+// ---------------------------------------------------------------------------
+describe('user connector AUTHORED routes (/settings/connectors/authored)', () => {
+  // Captured grant calls + a configurable verdict the stub returns.
+  let grantCalls: Array<Record<string, unknown>>;
+  let grantApplied: boolean;
+  // agents:resolve verdict: 'ok' | 'forbidden' | 'not-found'.
+  let agentsResolveVerdict: 'ok' | 'forbidden' | 'not-found';
+
+  async function makeAuthoredHarness(): Promise<TestHarness> {
+    grantCalls = [];
+    grantApplied = true;
+    agentsResolveVerdict = 'ok';
+    const h = await createTestHarness({
+      services: {
+        'agents:resolve': async (_ctx, input: unknown) => {
+          if (agentsResolveVerdict === 'forbidden') {
+            throw new PluginError({
+              code: 'forbidden',
+              plugin: 'agents-stub',
+              hookName: 'agents:resolve',
+              message: 'no',
+            });
+          }
+          if (agentsResolveVerdict === 'not-found') {
+            throw new PluginError({
+              code: 'not-found',
+              plugin: 'agents-stub',
+              hookName: 'agents:resolve',
+              message: 'gone',
+            });
+          }
+          return { agent: { id: (input as { agentId: string }).agentId } };
+        },
+        'agent:apply-authored-connector-grant': async (_ctx, input: unknown) => {
+          grantCalls.push(input as Record<string, unknown>);
+          return grantApplied
+            ? { applied: true, respawned: false }
+            : { applied: false, reason: 'not-authored' };
+        },
+      },
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        authStubPlugin(),
+        credentialsStubPlugin(),
+        createConnectorsPlugin(),
+      ],
+    });
+    harnesses.push(h);
+    return h;
+  }
+
+  /** Seed a PENDING authored draft via the install-authored hook. */
+  async function seedDraft(
+    h: TestHarness,
+    over: { userId: string; agentId: string; connectorId: string; name?: string },
+  ): Promise<void> {
+    await h.bus.call('connectors:install-authored', h.ctx({ userId: over.userId }), {
+      ownerUserId: over.userId,
+      agentId: over.agentId,
+      connectorId: over.connectorId,
+      name: over.name ?? over.connectorId,
+      hosts: ['api.linear.app'],
+      slots: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
+      usageNote: '',
+      keyMode: 'personal',
+    });
+  }
+
+  it('GET authored lists the session user’s pending drafts across agents (owner-scoped)', async () => {
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    await seedDraft(h, { userId: 'userU', agentId: 'agent2', connectorId: 'linear' });
+    await seedDraft(h, { userId: 'userU', agentId: 'agent1', connectorId: 'gmail' });
+    await seedDraft(h, { userId: 'other', agentId: 'agent1', connectorId: 'notion' });
+
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.listAuthoredPending(makeReq({}), res);
+    expect(captured.status).toBe(200);
+    const drafts = (captured.body as { drafts: Array<{ connectorId: string; agentId: string }> }).drafts;
+    // userU's two drafts only (owner-scoped), sorted by connector_id; never 'notion'.
+    expect(drafts.map((d) => ({ connectorId: d.connectorId, agentId: d.agentId }))).toEqual([
+      { connectorId: 'gmail', agentId: 'agent1' },
+      { connectorId: 'linear', agentId: 'agent2' },
+    ]);
+  });
+
+  it('GET authored 401 when unauthenticated', async () => {
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = null;
+    const { res, captured } = makeRes();
+    await handlers.listAuthoredPending(makeReq({}), res);
+    expect(captured.status).toBe(401);
+  });
+
+  it('POST approve forces userId from session, omits conversationId, returns 200', async () => {
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    await seedDraft(h, { userId: 'userU', agentId: 'agent1', connectorId: 'linear' });
+
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.approveAuthored(
+      makeReq({
+        params: { id: 'linear' },
+        body: { agentId: 'agent1', shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: [], pypi: [] } },
+      }),
+      res,
+    );
+    expect(captured.status).toBe(200);
+    expect(captured.body).toEqual({ applied: true });
+    // The grant was called with the session userId + body agentId + url id, the
+    // shown guard forwarded, and NO conversationId (approve-ahead).
+    expect(grantCalls).toHaveLength(1);
+    expect(grantCalls[0]).toMatchObject({
+      userId: 'userU',
+      agentId: 'agent1',
+      connectorId: 'linear',
+      shown: { hosts: ['api.linear.app'], slots: ['LINEAR_API_KEY'], npm: [], pypi: [] },
+    });
+    expect(grantCalls[0]).not.toHaveProperty('conversationId');
+  });
+
+  it('POST approve 400 when agentId is missing', async () => {
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.approveAuthored(makeReq({ params: { id: 'linear' }, body: {} }), res);
+    expect(captured.status).toBe(400);
+    expect(grantCalls).toHaveLength(0);
+  });
+
+  it('POST approve 403 when the agent ACL gate forbids', async () => {
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    agentsResolveVerdict = 'forbidden';
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.approveAuthored(
+      makeReq({ params: { id: 'linear' }, body: { agentId: 'agentX' } }),
+      res,
+    );
+    expect(captured.status).toBe(403);
+    // The grant is never reached when the ACL gate rejects.
+    expect(grantCalls).toHaveLength(0);
+  });
+
+  it('POST approve 409 when the grant reports not-authored (unknown/foreign draft)', async () => {
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    grantApplied = false;
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.approveAuthored(
+      makeReq({ params: { id: 'ghost' }, body: { agentId: 'agent1' } }),
+      res,
+    );
+    expect(captured.status).toBe(409);
+    expect((captured.body as { error: string }).error).toBe('not-authored');
+  });
+});
