@@ -1081,3 +1081,15 @@ Two bugs caught pre-merge: (1) empty `systemPromptAugment` rejected by session r
 fixed with requireStringAllowEmpty (only surfaced in @ax/cli e2e); (2) identity PUT
 parent:null was a strict-CAS miss → 500 for existing-history agents — fixed with the
 parent-mismatch retry contract.
+
+## 2026-06-03 — TASK-147: decouple admin identity save from the tools-required gate (wildcard/bare agents)
+
+| Date | Decision | Rationale | Alternatives |
+|------|----------|-----------|--------------|
+| 2026-06-03 | The AgentForm tools-required gate fires only when the save would CREATE a new wildcard agent or DEMOTE a tool-listed agent to wildcard — never on a bare-stays-bare identity edit. On such an edit the PATCH OMITS `allowedTools`+`mcpConfigIds`. | TASK-143 walk GLITCH: the combined AgentForm Save was over-gated — its unconditional `if (allowedTools.length===0) return` aborted the whole submit (incl. `putAgentIdentity`) for an existing wildcard/bare agent. The standalone `PUT /admin/agents/:id/identity` route is ungated and worked. A bare agent (`allowedTools=[]`) is a legit store-allowed state; the server only rejects the wildcard sentinel when BOTH `allowedTools` AND `mcpConfigIds` are present-and-empty (`rejectsWildcardScope`, agents/admin-routes.ts), on create AND update. So omitting both empty fields from the PATCH leaves the agent bare and avoids the server rejection. | (a) Suppress the gate globally — rejected: would let the form create new wildcard agents, which the server (correctly) rejects, and let a tool-listed agent be silently demoted. (b) Always send `allowedTools:[]` on the bare edit — rejected: server `rejectsWildcardScope` 400s on the both-empty PATCH. |
+
+Key facts learned (server-side wildcard rule, `packages/agents/src/admin-routes.ts`):
+- `rejectsWildcardScope` triggers ONLY when `allowedTools` AND `mcpConfigIds` are both present-and-empty; runs on both `create` and `update`.
+- `updateBodySchema` makes every field optional → a PATCH that omits the tool fields is accepted and leaves the agent's tool scope untouched.
+
+| 2026-06-03 | TASK-147 Phase 5 review done manually (correctness/removed-behavior/cross-file/altitude angles) instead of the ax-code-reviewer subagent. | The Agent/subagent-dispatch tool was unavailable in this orchestrated run, so the ax-code-reviewer subagent and the code-review skill's finder-agents couldn't be dispatched. The diff is 1 source file + tests, small enough for a thorough manual whole-branch review; no actionable findings. | Skip review — rejected (gate requires a review for code changes). |

@@ -232,11 +232,25 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     // TASK-107 — `mcpConfigIds` reverts to MCP-only meaning. Connectors are
     // saved to the first-class attachment store AFTER create/PATCH (below), not
     // here. The wildcard sentinel (`allowedTools=[] && mcpConfigIds=[]`) is
-    // reserved for the dev-mode bypass and rejected by the admin API, so the
-    // form requires at least one explicit tool — connector attachments don't
-    // participate (exactly like skill attachments).
+    // reserved for the dev-mode bypass and rejected by the admin API.
     const mcpConfigIds: string[] = [];
-    if (allowedTools.length === 0) {
+    // TASK-147 — a WILDCARD/BARE agent (persisted `allowedTools` empty AND no
+    // mcp configs) is a legitimate, store-allowed state. Editing such an agent's
+    // identity must NOT force the user to enumerate tools. So the tools-required
+    // gate fires only when the save would CREATE a new wildcard agent or DEMOTE
+    // a previously-tool-listed agent to wildcard — never on a bare-stays-bare
+    // identity edit. (The standalone PUT /admin/agents/:id/identity route was
+    // always ungated; this realigns the combined form with it — the TASK-143
+    // walk GLITCH.)
+    const editingExisting = editing !== null && editing !== 'new' ? editing : null;
+    const wasBare =
+      editingExisting !== null &&
+      editingExisting.allowedTools.length === 0 &&
+      editingExisting.mcpConfigIds.length === 0;
+    // "Staying bare" — editing an already-bare agent without adding any tools.
+    // This is the identity-only path the gate must let through.
+    const bareStaysBare = wasBare && allowedTools.length === 0;
+    if (allowedTools.length === 0 && !bareStaysBare) {
       setBusy(false);
       setError('agent must list at least one tool');
       return;
@@ -262,9 +276,16 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
         const patch: Partial<AdminAgentInput> = {
           displayName: base.displayName,
           model: base.model,
-          allowedTools: base.allowedTools,
-          mcpConfigIds: base.mcpConfigIds,
         };
+        // TASK-147 — on a bare-stays-bare edit, OMIT the tool fields entirely.
+        // The server's wildcard guard rejects a PATCH that sends BOTH
+        // `allowedTools: []` AND `mcpConfigIds: []`; omitting them leaves the
+        // agent's existing (empty) tool scope untouched so the identity save can
+        // proceed. For every other edit we send the tool fields as usual.
+        if (!bareStaysBare) {
+          patch.allowedTools = base.allowedTools;
+          patch.mcpConfigIds = base.mcpConfigIds;
+        }
         await patchAgent(editing.id, patch);
         agentId = editing.id;
       } else {
