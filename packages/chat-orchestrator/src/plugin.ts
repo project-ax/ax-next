@@ -138,6 +138,7 @@ export function createChatOrchestratorPlugin(
         'session:terminate',
         'event.http-egress',
         'skills:proposed',
+        'connectors:proposed',
       ],
     },
     init({ bus }) {
@@ -241,6 +242,26 @@ export function createChatOrchestratorPlugin(
         async (ctx, event) => {
           await orch.onSkillsProposed(ctx, event);
           return undefined; // mark-only; never vetoes/transforms.
+        },
+      );
+
+      // connectors:proposed (2026-06-03) — fire the connector approval card at
+      // proposal time. @ax/connectors fires this after install-authored persists
+      // a PENDING draft; the subscriber fires the upfront card on the proposing
+      // turn's conversation so it appears live (mirror of the skill JIT card),
+      // instead of only at the start of the user's NEXT turn. Observation-only;
+      // never vetoes/transforms.
+      bus.subscribe<{
+        ownerUserId: string;
+        agentId: string;
+        connectorId: string;
+        status: 'pending' | 'active';
+      }>(
+        'connectors:proposed',
+        PLUGIN_NAME,
+        async (ctx, event) => {
+          await orch.onConnectorProposed(ctx, event);
+          return undefined;
         },
       );
     },
