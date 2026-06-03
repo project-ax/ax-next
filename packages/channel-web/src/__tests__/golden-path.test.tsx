@@ -23,11 +23,11 @@ beforeEach(() => {
 
   // Default backend stub: Alice is signed in with one existing agent and no
   // sessions. The agent is required so AppContent's first-run gate resolves
-  // to the chat shell (an EMPTY agent list now diverts to <AgentBootstrap> —
-  // see the dedicated AgentBootstrap suite for that path). The empty-session
-  // state is intentional — it means we don't have to wrangle the streaming
-  // SSE protocol in jsdom, which has no real ReadableStream story for fetch
-  // responses.
+  // to the chat shell (an EMPTY agent list now diverts to the first-run
+  // auto-create flow, <FirstRunAutoCreate> — see its dedicated suite). The
+  // empty-session state is intentional — it means we don't have to wrangle the
+  // streaming SSE protocol in jsdom, which has no real ReadableStream story for
+  // fetch responses.
   fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
     const url = typeof input === 'string' ? input : (input as Request).url ?? String(input);
     if (url.includes('/admin/me')) {

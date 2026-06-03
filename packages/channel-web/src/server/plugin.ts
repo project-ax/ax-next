@@ -324,11 +324,13 @@ export function createChannelWebServerPlugin(
       });
       unregisterRoutes.push(allowHostRoute.unregister);
 
-      // First-run personal-agent bootstrap. The SPA's <AgentBootstrap> POSTs
-      // { displayName, systemPrompt } here; the handler fixes visibility +
-      // owner + wildcard tools server-side. CSRF-gated automatically by
-      // @ax/http-server on state-changing methods. Ships with its consumer
-      // (the SPA surface) in the same PR (I3 — no half-wired surface).
+      // First-run personal-agent bootstrap (TASK-140). The SPA's first-run
+      // auto-create POSTs { displayName } here; the handler creates a BARE
+      // agent (no systemPrompt), fixes visibility + owner + wildcard tools
+      // server-side, and seeds .ax/BOOTSTRAP.md into the new agent's workspace.
+      // CSRF-gated automatically by @ax/http-server on state-changing methods.
+      // Ships with its consumer (the SPA surface) in the same PR (I3 — no
+      // half-wired surface).
       const agentBootstrap = makeAgentBootstrapHandler({ bus, initCtx });
       const agentBootstrapRoute = await bus.call<unknown, { unregister: () => void }>(
         'http:register-route',
