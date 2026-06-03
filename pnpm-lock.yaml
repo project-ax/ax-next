@@ -85,6 +85,9 @@ importers:
       '@anthropic-ai/claude-agent-sdk':
         specifier: 0.2.119
         version: 0.2.119(zod@3.25.76)
+      '@ax/agent-identity-templates':
+        specifier: workspace:*
+        version: link:../agent-identity-templates
       '@ax/credential-proxy-bridge':
         specifier: workspace:*
         version: link:../credential-proxy-bridge

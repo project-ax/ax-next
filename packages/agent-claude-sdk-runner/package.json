@@ -25,6 +25,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.119",
+    "@ax/agent-identity-templates": "workspace:*",
     "@ax/credential-proxy-bridge": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "@ax/tool-artifact-publish": "workspace:*",
