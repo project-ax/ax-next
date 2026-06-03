@@ -199,6 +199,48 @@ describe('@ax/credential-proxy plugin', () => {
     expect(result.envMap.ANTHROPIC_API_KEY).toMatch(/^ax-cred:[0-9a-f]{32}$/);
   });
 
+  it('proxy:open-session returns the advertised endpoint (cluster Service URL), not the bind address (TASK-149)', async () => {
+    // In TCP mode the listener binds 0.0.0.0:<port> inside the host pod, but
+    // a runner in ANOTHER pod reaches it over a k8s Service. The advertised
+    // endpoint (analogous to sandbox-k8s hostIpcUrl) overrides what
+    // open-session returns so the runner gets a dialable URL.
+    const advertised = 'tcp://ax-next-proxy.ax-next.svc.cluster.local:8888';
+    kernel = await bootstrap({
+      bus,
+      plugins: [
+        memCredentialsPlugin(),
+        createCredentialProxyPlugin({
+          listen: { kind: 'tcp', host: '0.0.0.0', port: 0 },
+          advertisedEndpoint: advertised,
+          caDir,
+        }),
+      ],
+      config: {},
+    });
+    await bus.call('credentials:set', ctx(), {
+      ref: 'r1',
+      userId: 'u1',
+      value: 'sk-real-secret-xyz',
+    });
+    const result = await bus.call<
+      {
+        sessionId: string;
+        userId: string;
+        agentId: string;
+        allowlist: string[];
+        credentials: Record<string, { ref: string; kind: string }>;
+      },
+      { proxyEndpoint: string }
+    >('proxy:open-session', ctx(), {
+      sessionId: 's1',
+      userId: 'u1',
+      agentId: 'a1',
+      allowlist: ['api.anthropic.com'],
+      credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+    });
+    expect(result.proxyEndpoint).toBe(advertised);
+  });
+
   it('proxy:open-session returns a 32-hex proxyAuthToken (egress attribution)', async () => {
     // TASK-52: the proxy mints a per-session token the sandbox carries as
     // Proxy-Authorization, so the listener can attribute even a blocked

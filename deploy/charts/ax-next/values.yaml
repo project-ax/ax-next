@@ -249,9 +249,29 @@ sandbox:
   # empty (the default), the host pod uses an emptyDir for the socket
   # and runner pods CANNOT reach the proxy — the runner will crash at
   # boot with `missing AX_PROXY_*`. Single-node / kind-only posture.
-  # Production should switch the proxy to TCP listen mode instead; see
-  # SECURITY.md.
+  # Production should switch the proxy to TCP listen mode instead
+  # (credentialProxy.tcp below); see SECURITY.md.
+  #
+  # MUTUALLY EXCLUSIVE with credentialProxy.tcp.enabled — pick exactly one
+  # proxy transport. The chart fails fast at template time if both are set.
   proxySocketHostPath: ""
+
+# ─── Credential-proxy TCP transport (production gVisor) ──────────
+# GKE Sandbox (gVisor) bans `hostPath`, so the kind-only socket posture
+# above can't run there. TCP mode moves the credential-proxy onto a TCP
+# listener fronted by a ClusterIP Service: runner pods reach it over the
+# cluster network, and the MITM CA is delivered to each runner as an env
+# var (the runner writes it to a tmpfs path at boot) instead of a shared
+# mount. The CA is a public key — safe inside the sandbox.
+#
+# When `enabled: true`, set `sandbox.proxySocketHostPath` to "" (the default)
+# — the two transports are mutually exclusive.
+credentialProxy:
+  tcp:
+    enabled: false
+    # Port the proxy's TCP listener binds (inside the host pod) AND the
+    # ClusterIP Service exposes. Runner pods dial the Service at this port.
+    port: 8888
 
 # ─── PostgreSQL ──────────────────────────────────────────────────
 # Two modes:

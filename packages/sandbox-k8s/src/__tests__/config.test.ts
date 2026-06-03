@@ -85,3 +85,38 @@ describe('computeReadinessBudgetMs (TASK-151 readiness-budget policy)', () => {
     ).toBe(60_000);
   });
 });
+
+describe('sandbox-k8s proxy transport config (TASK-149)', () => {
+  const base = { hostIpcUrl: 'http://host:8080' };
+
+  it('defaults both proxy knobs to empty (no proxy mount/env wired)', () => {
+    const cfg = resolveConfig({ ...base });
+    expect(cfg.proxySocketHostPath).toBe('');
+    expect(cfg.proxyEndpoint).toBe('');
+  });
+
+  it('accepts proxySocketHostPath alone (legacy hostPath posture)', () => {
+    const cfg = resolveConfig({ ...base, proxySocketHostPath: '/var/lib/ax-next-proxy' });
+    expect(cfg.proxySocketHostPath).toBe('/var/lib/ax-next-proxy');
+    expect(cfg.proxyEndpoint).toBe('');
+  });
+
+  it('accepts proxyEndpoint alone (TCP Service posture)', () => {
+    const cfg = resolveConfig({
+      ...base,
+      proxyEndpoint: 'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+    });
+    expect(cfg.proxyEndpoint).toBe('http://ax-next-proxy.ax-next.svc.cluster.local:8888');
+    expect(cfg.proxySocketHostPath).toBe('');
+  });
+
+  it('rejects BOTH proxyEndpoint and proxySocketHostPath set (mutually exclusive)', () => {
+    expect(() =>
+      resolveConfig({
+        ...base,
+        proxySocketHostPath: '/var/lib/ax-next-proxy',
+        proxyEndpoint: 'http://proxy:8888',
+      }),
+    ).toThrow(/exactly one|mutually exclusive/i);
+  });
+});

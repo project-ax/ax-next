@@ -986,6 +986,47 @@ describe('loadK8sConfigFromEnv', () => {
     expect(cfg.credentialProxy?.caDir).toBe('/var/run/ax/proxy-ca');
   });
 
+  // TASK-149: TCP-Service proxy posture (production gVisor). The chart sets
+  // AX_PROXY_TCP_PORT + AX_PROXY_ADVERTISED_ENDPOINT on the host pod and
+  // K8S_PROXY_ENDPOINT for the sandbox plugin.
+  it('reads AX_PROXY_TCP_PORT + AX_PROXY_ADVERTISED_ENDPOINT into credentialProxy', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({
+        AX_PROXY_TCP_PORT: '8888',
+        AX_PROXY_ADVERTISED_ENDPOINT:
+          'tcp://ax-next-proxy.ax-next.svc.cluster.local:8888',
+      }),
+    );
+    expect(cfg.credentialProxy?.tcpPort).toBe(8888);
+    expect(cfg.credentialProxy?.advertisedEndpoint).toBe(
+      'tcp://ax-next-proxy.ax-next.svc.cluster.local:8888',
+    );
+  });
+
+  it('reads K8S_PROXY_ENDPOINT into sandbox.proxyEndpoint', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({
+        K8S_PROXY_ENDPOINT: 'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+      }),
+    );
+    expect(cfg.sandbox?.proxyEndpoint).toBe(
+      'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+    );
+  });
+
+  it('leaves the TCP proxy knobs unset when their env vars are empty (legacy hostPath default)', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({
+        AX_PROXY_TCP_PORT: '',
+        AX_PROXY_ADVERTISED_ENDPOINT: '',
+        K8S_PROXY_ENDPOINT: '',
+      }),
+    );
+    expect(cfg.credentialProxy?.tcpPort).toBeUndefined();
+    expect(cfg.credentialProxy?.advertisedEndpoint).toBeUndefined();
+    expect(cfg.sandbox?.proxyEndpoint).toBeUndefined();
+  });
+
   it('reads BIND_HOST and PORT into ipc.host/port', () => {
     const cfg = loadK8sConfigFromEnv(
       minRequired({ BIND_HOST: '127.0.0.1', PORT: '9090' }),

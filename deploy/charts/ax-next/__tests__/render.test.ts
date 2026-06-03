@@ -522,3 +522,101 @@ describeIfHelm('ax-next chart: single-replica chat guard (ARCH-1)', () => {
     expect(r.stderr).toMatch(/replicas must be 1/);
   });
 });
+
+// TASK-149: the credential-proxy TCP-Service posture (production gVisor).
+// Mirrors the issue-#39 listener-split contract — the chart shape IS the
+// boundary contract, so we assert the rendered Service + NetworkPolicy egress
+// + host env in TCP mode and their absence in the default (hostPath) mode.
+describeIfHelm('ax-next chart: credential-proxy TCP Service (TASK-149)', () => {
+  const PROXY_SVC = 'ax-test-ax-next-proxy';
+  const HOST_DEPLOY = 'ax-test-ax-next-host';
+  const SANDBOX_NP = 'ax-test-ax-next-sandbox-restrict';
+
+  const tcpArgs = [
+    '--set', 'credentialProxy.tcp.enabled=true',
+    '--set', 'credentialProxy.tcp.port=8888',
+  ];
+
+  it('default (hostPath posture): NO proxy Service renders', () => {
+    const docs = helmTemplate([]);
+    const svc = docs.find(
+      (d) => d.kind === 'Service' && d.metadata?.name === PROXY_SVC,
+    );
+    expect(svc, 'no proxy Service in hostPath mode').toBeUndefined();
+  });
+
+  it('TCP mode: a ClusterIP proxy Service fronts the proxy port, selecting the host pod', () => {
+    const docs = helmTemplate(tcpArgs);
+    const svc = docs.find(
+      (d) => d.kind === 'Service' && d.metadata?.name === PROXY_SVC,
+    );
+    expect(svc, 'proxy Service renders in TCP mode').toBeDefined();
+    expect(svc?.spec?.type).toBe('ClusterIP');
+    // Selects the HOST pod (the proxy listens inside the host container) —
+    // the same stable selector label the host Service uses.
+    expect(svc?.spec?.selector?.['app.kubernetes.io/name']).toBe('ax-test-ax-next-host');
+    const ports = svc?.spec?.ports ?? [];
+    expect(ports.some((p: { port?: number }) => p.port === 8888)).toBe(true);
+  });
+
+  it('TCP mode: host Deployment stamps the TCP proxy env (K8S_PROXY_ENDPOINT + AX_PROXY_TCP_PORT + AX_PROXY_ADVERTISED_ENDPOINT) and NOT the hostPath env', () => {
+    const docs = helmTemplate(tcpArgs);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === HOST_DEPLOY,
+    );
+    const env: Array<{ name: string; value?: string }> =
+      host?.spec?.template?.spec?.containers?.[0]?.env ?? [];
+    const byName = Object.fromEntries(env.map((e) => [e.name, e.value]));
+    expect(byName.AX_PROXY_TCP_PORT).toBe('8888');
+    expect(byName.AX_PROXY_ADVERTISED_ENDPOINT).toMatch(
+      /^tcp:\/\/ax-test-ax-next-proxy\..*\.svc\.cluster\.local:8888$/,
+    );
+    expect(byName.K8S_PROXY_ENDPOINT).toMatch(
+      /^http:\/\/ax-test-ax-next-proxy\..*\.svc\.cluster\.local:8888$/,
+    );
+    // The hostPath-only env must NOT appear in TCP mode.
+    expect(env.find((e) => e.name === 'K8S_PROXY_SOCKET_HOST_PATH')).toBeUndefined();
+  });
+
+  it('TCP mode: NO proxy-socket hostPath volume on the host pod', () => {
+    const docs = helmTemplate(tcpArgs);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === HOST_DEPLOY,
+    );
+    const vols: Array<{ name: string; hostPath?: unknown }> =
+      host?.spec?.template?.spec?.volumes ?? [];
+    const proxyVol = vols.find((v) => v.name === 'proxy-socket');
+    // The proxy-socket volume may still exist as an emptyDir (host listener
+    // local), but it must NOT be a hostPath in TCP mode.
+    if (proxyVol) {
+      expect(proxyVol.hostPath, 'proxy-socket must not be hostPath in TCP mode').toBeUndefined();
+    }
+  });
+
+  it('TCP mode: the sandbox-restrict NetworkPolicy adds an egress rule to the proxy Service port', () => {
+    const docs = helmTemplate([...tcpArgs, '--set', 'networkPolicies.enabled=true']);
+    const np = docs.find(
+      (d) => d.kind === 'NetworkPolicy' && d.metadata?.name === SANDBOX_NP,
+    );
+    expect(np, 'sandbox-restrict NetworkPolicy renders').toBeDefined();
+    const egress: Array<{ ports?: Array<{ port?: number; protocol?: string }> }> =
+      np?.spec?.egress ?? [];
+    const reachesProxyPort = egress.some((rule) =>
+      (rule.ports ?? []).some((p) => p.port === 8888 && p.protocol === 'TCP'),
+    );
+    expect(reachesProxyPort, 'runner egress reaches the proxy TCP port').toBe(true);
+  });
+
+  it('default (hostPath posture): the sandbox-restrict NetworkPolicy has NO proxy egress rule', () => {
+    const docs = helmTemplate(['--set', 'networkPolicies.enabled=true']);
+    const np = docs.find(
+      (d) => d.kind === 'NetworkPolicy' && d.metadata?.name === SANDBOX_NP,
+    );
+    expect(np).toBeDefined();
+    const egress: Array<{ ports?: Array<{ port?: number }> }> = np?.spec?.egress ?? [];
+    const hasProxyPort = egress.some((rule) =>
+      (rule.ports ?? []).some((p) => p.port === 8888),
+    );
+    expect(hasProxyPort, 'no proxy egress rule in hostPath mode').toBe(false);
+  });
+});

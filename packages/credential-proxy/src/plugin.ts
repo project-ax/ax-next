@@ -187,6 +187,22 @@ function parseHostPath(method: string, url: string): { host: string; path: strin
 
 export interface CredentialProxyConfig {
   listen: { kind: 'unix'; path: string } | { kind: 'tcp'; host?: string; port?: number };
+  /**
+   * Cluster-reachable endpoint `proxy:open-session` advertises to callers in
+   * TCP mode (TASK-149). The listener binds `0.0.0.0:<port>` inside the host
+   * pod, but a runner in ANOTHER pod reaches the proxy over a k8s Service —
+   * so the bind address (`tcp://0.0.0.0:<port>` / `tcp://127.0.0.1:<port>`)
+   * isn't dialable cross-pod. When set, open-session returns THIS value as
+   * `proxyEndpoint` instead of the bind address. Must be a `tcp://host:port`
+   * URL (the orchestrator's `endpointToProxyConfig` rewrites it to
+   * `http://host:port` for HTTPS_PROXY).
+   *
+   * Analogous to `@ax/sandbox-k8s` `hostIpcUrl`. Ignored for `unix` listen
+   * (the socket path IS the cross-pod address via the shared hostPath dir).
+   * Unset = advertise the bind address verbatim (today's behavior — correct
+   * for subprocess sandbox and same-host loopback).
+   */
+  advertisedEndpoint?: string;
   caDir?: string;
   /**
    * Max bytes the plain-HTTP forward path buffers for a single request body
@@ -265,9 +281,17 @@ type SessionCredentialRefs = Record<string, { ref: string; kind: string }>;
 function buildEndpointString(
   listen: CredentialProxyConfig['listen'],
   listener: ProxyListener,
+  advertisedEndpoint: string | undefined,
 ): string {
   if (listen.kind === 'unix') {
     return `unix://${listen.path}`;
+  }
+  // TASK-149: in TCP mode prefer the operator-supplied advertised endpoint
+  // (the cluster Service URL) over the bind address — a runner in another pod
+  // can't dial 0.0.0.0/127.0.0.1. The endpoint must be a `tcp://host:port` URL
+  // (the orchestrator's endpointToProxyConfig parses the scheme).
+  if (advertisedEndpoint !== undefined && advertisedEndpoint.length > 0) {
+    return advertisedEndpoint;
   }
   const host = listen.host ?? '127.0.0.1';
   return `tcp://${host}:${listener.port}`;
@@ -378,7 +402,11 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           ? { maxHttpRequestBodyBytes: config.maxHttpRequestBodyBytes }
           : {}),
       });
-      endpointString = buildEndpointString(config.listen, listener);
+      endpointString = buildEndpointString(
+        config.listen,
+        listener,
+        config.advertisedEndpoint,
+      );
 
       // 4a. proxy:open-session — resolve credentials, register placeholders,
       //     persist session config, return endpoint + CA + envMap.

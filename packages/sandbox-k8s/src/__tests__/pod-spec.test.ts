@@ -473,6 +473,99 @@ describe('buildPodSpec', () => {
       const vols = (spec.spec as { volumes: Array<{ name: string }> }).volumes;
       expect(vols.find((v) => v.name === 'proxy-socket')).toBeUndefined();
     });
+
+    // TASK-149: TCP mode (production gVisor — GKE Sandbox bans hostPath).
+    // The proxy is reached over a cluster Service URL; the MITM CA is
+    // delivered as an env var the runner writes to a tmpfs path at boot.
+    describe('TCP mode (config.proxyEndpoint set, no hostPath)', () => {
+      const tcpResolved = () =>
+        resolveConfig({
+          hostIpcUrl: 'http://test-host:8080',
+          proxyEndpoint: 'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+        });
+      const TCP_CA_PATH = '/home/runner/.ax/proxy-ca/ca.crt';
+      const tcpProxyInput = {
+        ...baseInput,
+        proxyConfig: {
+          endpoint: 'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+          caCertPem:
+            '-----BEGIN CERTIFICATE-----\ntcp-ca\n-----END CERTIFICATE-----\n',
+          envMap: {
+            ANTHROPIC_API_KEY: 'ax-cred:11111111111111111111111111111111',
+          },
+        },
+      };
+
+      it('has NO proxy-socket volume or mount in TCP mode', () => {
+        const spec = buildPodSpec('p', tcpProxyInput, tcpResolved());
+        const s = spec.spec as {
+          containers: Array<{ volumeMounts: Array<{ name: string }> }>;
+          volumes: Array<{ name: string }>;
+        };
+        expect(
+          s.containers[0]!.volumeMounts.find((m) => m.name === 'proxy-socket'),
+        ).toBeUndefined();
+        expect(s.volumes.find((v) => v.name === 'proxy-socket')).toBeUndefined();
+      });
+
+      it('stamps AX_PROXY_ENDPOINT + HTTPS_PROXY from the per-session endpoint', () => {
+        const spec = buildPodSpec('p', tcpProxyInput, tcpResolved());
+        const env = (
+          spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+        ).containers[0]!.env;
+        const byName = (n: string) => env.find((e) => e.name === n)?.value;
+        expect(byName('AX_PROXY_ENDPOINT')).toBe(
+          'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+        );
+        expect(byName('HTTPS_PROXY')).toBe(
+          'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+        );
+        expect(byName('HTTP_PROXY')).toBe(
+          'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+        );
+        // Unix socket var must NOT be set in TCP mode.
+        expect(env.find((e) => e.name === 'AX_PROXY_UNIX_SOCKET')).toBeUndefined();
+      });
+
+      it('stamps AX_PROXY_CA_PEM with the cert PEM (no shared dir to mount it)', () => {
+        const spec = buildPodSpec('p', tcpProxyInput, tcpResolved());
+        const env = (
+          spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+        ).containers[0]!.env;
+        const byName = (n: string) => env.find((e) => e.name === n)?.value;
+        expect(byName('AX_PROXY_CA_PEM')).toBe(
+          '-----BEGIN CERTIFICATE-----\ntcp-ca\n-----END CERTIFICATE-----\n',
+        );
+      });
+
+      it('points all four cert env vars at the tmpfs CA path the runner writes', () => {
+        const spec = buildPodSpec('p', tcpProxyInput, tcpResolved());
+        const env = (
+          spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+        ).containers[0]!.env;
+        const byName = (n: string) => env.find((e) => e.name === n)?.value;
+        expect(byName('NODE_EXTRA_CA_CERTS')).toBe(TCP_CA_PATH);
+        expect(byName('SSL_CERT_FILE')).toBe(TCP_CA_PATH);
+        expect(byName('GIT_SSL_CAINFO')).toBe(TCP_CA_PATH);
+        expect(byName('DENO_CERT')).toBe(TCP_CA_PATH);
+      });
+    });
+
+    it('does NOT stamp AX_PROXY_CA_PEM in hostPath mode (cert is mounted)', () => {
+      // Regression guard: AX_PROXY_CA_PEM is a TCP-only signal. In hostPath
+      // mode the cert is mounted at /var/run/ax/proxy-ca/ca.crt — stamping
+      // the PEM env too would make the runner needlessly re-write a file
+      // that already exists.
+      const cfg = resolveConfig({
+        hostIpcUrl: 'http://test-host:8080',
+        proxySocketHostPath: '/var/lib/ax-next-proxy',
+      });
+      const spec = buildPodSpec('p', proxyInput, cfg);
+      const env = (
+        spec.spec as { containers: Array<{ env: Array<{ name: string }> }> }
+      ).containers[0]!.env;
+      expect(env.find((e) => e.name === 'AX_PROXY_CA_PEM')).toBeUndefined();
+    });
   });
 
   // Phase 0 of skill-install: HOME + CLAUDE_CONFIG_DIR + init-container
