@@ -90,6 +90,30 @@ describe('validation', () => {
     ).toThrow(/systemPrompt must be at most/);
   });
 
+  it('TASK-140: defaults an ABSENT systemPrompt to empty string (bare create)', () => {
+    const input = makeInput();
+    delete (input as { systemPrompt?: string }).systemPrompt;
+    const out = validateCreateInput(input, vctx);
+    expect(out.systemPrompt).toBe('');
+  });
+
+  it('TASK-140: defaults a null systemPrompt to empty string', () => {
+    const out = validateCreateInput(
+      makeInput({ systemPrompt: null as unknown as string }),
+      vctx,
+    );
+    expect(out.systemPrompt).toBe('');
+  });
+
+  it('TASK-140: still rejects a PRESENT non-string systemPrompt', () => {
+    expect(() =>
+      validateCreateInput(
+        makeInput({ systemPrompt: 123 as unknown as string }),
+        vctx,
+      ),
+    ).toThrow(/systemPrompt must be a string/);
+  });
+
   it('rejects model not in allow-list', () => {
     expect(() =>
       validateCreateInput(makeInput({ model: 'gpt-4' }), vctx),

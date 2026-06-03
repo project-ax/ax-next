@@ -64,7 +64,13 @@ export interface Agent {
  */
 export interface AgentInput {
   displayName: string;
-  systemPrompt: string;
+  /**
+   * TASK-140: OPTIONAL. A BARE agent (the conversational-first-run path)
+   * carries no system prompt — its identity lives in `.ax/` files, not this
+   * column. Absent / null → stored as `''`. A present non-string is still a
+   * hard reject. (Phase 4 drops the column entirely.)
+   */
+  systemPrompt?: string;
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;

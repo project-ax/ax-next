@@ -87,6 +87,14 @@ function validateDisplayName(value: unknown): string {
 }
 
 function validateSystemPrompt(value: unknown): string {
+  // TASK-140: an ABSENT systemPrompt is now legal — a BARE agent (the
+  // conversational-first-run path) has no identity string; its identity lives
+  // in `.ax/` files. undefined/null → '' so `agents:create` can mint a bare
+  // agent. A PRESENT non-string is still a hard reject (that's a malformed
+  // payload, not an intentional omission). The column itself dies in Phase 4.
+  if (value === undefined || value === null) {
+    return '';
+  }
   if (typeof value !== 'string') {
     throw invalid('systemPrompt must be a string');
   }
