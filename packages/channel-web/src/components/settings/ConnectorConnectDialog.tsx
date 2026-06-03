@@ -62,6 +62,14 @@ export interface ConnectorConnectDialogProps {
   connectorId: string;
   /** The display name (already in hand from the list — shown while loading). */
   connectorName: string;
+  /**
+   * Which shelf opened the dialog. `'connect'` (Available — no key yet) titles it
+   * "Connect <name>"; `'manage'` (Connected — key already set, so this is the
+   * enter/replace surface) titles it "Update credentials for <name>". The body is
+   * identical either way (it always reflects per-slot presence). Defaults to
+   * `'connect'` for back-compat with callers that predate the prop.
+   */
+  mode?: 'connect' | 'manage';
   /** Whether the current user is an admin (gates the workspace shared-key write). */
   isAdmin: boolean;
   open: boolean;
@@ -73,6 +81,7 @@ export interface ConnectorConnectDialogProps {
 export function ConnectorConnectDialog({
   connectorId,
   connectorName,
+  mode = 'connect',
   isAdmin,
   open,
   onOpenChange,
@@ -170,7 +179,11 @@ export function ConnectorConnectDialog({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Connect {connectorName}</DialogTitle>
+          <DialogTitle>
+            {mode === 'manage'
+              ? `Update credentials for ${connectorName}`
+              : `Connect ${connectorName}`}
+          </DialogTitle>
           <DialogDescription>
             {connector?.description || 'Give your assistant access to this service.'}
           </DialogDescription>

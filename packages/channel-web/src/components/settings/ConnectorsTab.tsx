@@ -485,7 +485,10 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
               variant={section === 'connected' ? 'outline' : 'default'}
               onClick={() => setConnecting(c)}
             >
-              {section === 'connected' ? 'Manage' : 'Connect'}
+              {/* Connected → the keys are already set, so this opens the
+                  enter/replace-key dialog: name it for what it does ("Update
+                  credentials"), not the vague "Manage" that collided with Edit. */}
+              {section === 'connected' ? 'Update credentials' : 'Connect'}
             </Button>
           </div>
         </RoleCard>
@@ -621,6 +624,10 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
         <ConnectorConnectDialog
           connectorId={connecting.id}
           connectorName={connecting.name}
+          // From the Connected shelf the key is already set → "manage" (the
+          // title reads "Update credentials"); from Available it's a first-time
+          // "connect". Derived from the same presence map the shelves split on.
+          mode={isConnected(connecting) ? 'manage' : 'connect'}
           isAdmin={isAdmin}
           open
           onOpenChange={(o) => {
