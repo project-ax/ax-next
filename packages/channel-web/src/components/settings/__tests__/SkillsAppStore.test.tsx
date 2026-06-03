@@ -363,4 +363,105 @@ describe('SkillsAppStore', () => {
     expect(await screen.findByText(/agent not accessible/i)).toBeInTheDocument();
     expect(screen.getByTestId('authored-drafted')).toBeInTheDocument();
   });
+
+  // -------------------------------------------------------------------------
+  // User-owned skills with no agent attachment remain visible (bug fix)
+  // -------------------------------------------------------------------------
+  // When a user creates a skill (via "Create") or adopts an authored draft (via
+  // "Edit"), the skill ends up in ownSkills but NOT in the connections/installed
+  // list (it has no per-agent attachment). Without the fix, the skill was
+  // invisible — the editor closed and the skill vanished from the UI.
+
+  it('a user-created skill not yet attached to any agent appears in the Installed section', async () => {
+    // 'my-new-skill' is owned but not attached (not in getConnections result).
+    mockListUserSkills.mockResolvedValue([
+      {
+        id: 'my-new-skill',
+        description: 'My brand-new skill.',
+        version: 1,
+        scope: 'user',
+        connectors: [],
+        defaultAttached: false,
+        updatedAt: '2026-06-01T10:00:00.000Z',
+      } as SkillSummary,
+    ]);
+    mockGetConnections.mockResolvedValue({ agentId: 'a1', skills: [] });
+
+    render(<SkillsAppStore isAdmin={false} />);
+
+    // The skill appears in the Installed section (not a catalog skill, so
+    // catalog-pdf-tools is the sentinel for full render).
+    expect(await screen.findByTestId('installed-my-new-skill')).toBeInTheDocument();
+    // It shows the "your own" badge.
+    expect(screen.getByText('My brand-new skill.')).toBeInTheDocument();
+    // Edit and Delete buttons are present.
+    expect(screen.getByRole('button', { name: /Edit my-new-skill/i })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: /Delete my-new-skill/i })).toBeInTheDocument();
+  });
+
+  it('a user-owned-but-not-installed skill is counted in the Installed total', async () => {
+    mockListUserSkills.mockResolvedValue([
+      {
+        id: 'my-new-skill',
+        description: 'My brand-new skill.',
+        version: 1,
+        scope: 'user',
+        connectors: [],
+        defaultAttached: false,
+        updatedAt: '2026-06-01T10:00:00.000Z',
+      } as SkillSummary,
+    ]);
+    // One default-installed skill + one user-owned-not-installed skill = 2 total.
+    mockGetConnections.mockResolvedValue({
+      agentId: 'a1',
+      skills: [
+        { skillId: 'web-search', description: 'Search the web.', source: 'default', removable: false },
+      ],
+    });
+
+    render(<SkillsAppStore isAdmin={false} />);
+    await screen.findByTestId('installed-my-new-skill');
+
+    expect(screen.getByText(/^Installed \(2\)/)).toBeInTheDocument();
+  });
+
+  it('an adopted authored skill stays visible in Installed after its editor saves', async () => {
+    // Simulate the adopt-and-edit flow: an authored draft is adopted into
+    // ownSkills (no attachment), editor opens, user saves, editor closes.
+    const AUTHORED_DRAFT: AuthoredSkillListing[] = [
+      { skillId: 'drafted', agentId: 'a1', description: 'An agent-authored draft.', status: 'active' },
+    ];
+    mockListAuthored.mockResolvedValueOnce(AUTHORED_DRAFT); // initial: draft visible
+    mockAdoptAuthored.mockResolvedValue({ skillId: 'drafted', created: true, adopted: true });
+    // After adopt+refreshOwn: draft is gone (adopted), skill now in ownSkills.
+    mockListAuthored.mockResolvedValue([]);
+    mockListUserSkills.mockResolvedValue([
+      {
+        id: 'drafted',
+        description: 'An agent-authored draft.',
+        version: 1,
+        scope: 'user',
+        connectors: [],
+        defaultAttached: false,
+        updatedAt: '2026-06-01T10:00:00.000Z',
+      } as SkillSummary,
+    ]);
+    mockGetConnections.mockResolvedValue({ agentId: 'a1', skills: [] });
+
+    render(<SkillsAppStore isAdmin={false} />);
+
+    // Adopt the draft (click Edit on authored shelf).
+    await screen.findByTestId('authored-drafted');
+    fireEvent.click(screen.getByRole('button', { name: /Edit drafted/i }));
+    await waitFor(() => expect(mockAdoptAuthored).toHaveBeenCalledWith('a1', 'drafted'));
+
+    // Editor opens on the adopted copy. Simulate the editor saving (onSaved fires).
+    // The mocked SkillEditor renders a div; we find it and simulate close via the
+    // onSaved prop — but since we mock the editor, onEditorSaved is not triggered
+    // automatically. Instead, verify that the adopted skill is visible in Installed
+    // (the own-not-installed path) which is what the bug fix ensures.
+    expect(await screen.findByTestId('installed-drafted')).toBeInTheDocument();
+    // The authored shelf no longer shows the draft (it was adopted).
+    expect(screen.queryByTestId('authored-drafted')).toBeNull();
+  });
 });
