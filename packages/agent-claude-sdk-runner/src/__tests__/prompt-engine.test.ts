@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, rm, symlink } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -94,6 +94,21 @@ describe('readAxIdentityFiles', () => {
     await writeAx('IDENTITY.md', 'I am Ada.');
     const files = await readAxIdentityFiles(dir);
     // The oversized file is skipped whole — never half-injected.
+    expect(files.soul).toBeUndefined();
+    expect(files.identity).toBe('I am Ada.');
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('skips a non-regular file (e.g. a symlink to a directory/device) without reading it', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // A symlink pointing at a directory is not a regular file — reading it
+    // would error or, for a device symlink, could hang/stream forever. The
+    // stat-first guard must skip it on file-type, not attempt the read.
+    const axDir = join(dir, '.ax');
+    await mkdir(axDir, { recursive: true });
+    await symlink(tmpdir(), join(axDir, 'SOUL.md'));
+    await writeAx('IDENTITY.md', 'I am Ada.');
+    const files = await readAxIdentityFiles(dir);
     expect(files.soul).toBeUndefined();
     expect(files.identity).toBe('I am Ada.');
     expect(warn).toHaveBeenCalled();

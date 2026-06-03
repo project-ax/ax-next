@@ -1,9 +1,21 @@
 // ---------------------------------------------------------------------------
 // File-based identity prompt-engine (conversational-agent-identity, Phase 1).
 //
-// On every turn the runner reads `${workspaceRoot}/.ax/` and composes the SDK
-// `systemPrompt` from versioned modules + the agent's own identity files. Three
-// modes, decided purely by which `.ax/` files exist:
+// The runner reads `${workspaceRoot}/.ax/` and composes the SDK `systemPrompt`
+// from versioned modules + the agent's own identity files. Three modes, decided
+// purely by which `.ax/` files exist:
+//
+// WHEN this runs: once per SDK `query()` spawn (at runner boot — see main.ts).
+// The runner drives ONE long-lived `query()` per warm sandbox and the SDK has
+// no mid-query `setSystemPrompt`, so a warm sandbox reused for later turns keeps
+// the prompt composed at spawn until it respawns. This matches the existing
+// `agentConfig.systemPrompt` + `system-prompt:augment` lifecycle exactly (the
+// orchestrator already only augments on the fresh-spawn path). Practical
+// consequence for bootstrap: a bootstrap turn that writes IDENTITY/SOUL and
+// deletes BOOTSTRAP.md graduates to normal mode on the NEXT spawn, not on the
+// next message in the same warm `query()`. The bootstrap first-run flow (design
+// Phase 2) owns forcing that respawn / not keeping the bootstrap session warm;
+// it is out of scope for this engine.
 //
 //   1. BOOTSTRAP mode  — `.ax/BOOTSTRAP.md` present → the system prompt is
 //      EXACTLY and ONLY that file's content. The agent wakes up inside the
@@ -37,7 +49,7 @@
 // plain prose for the LLM — never interpolated into a shell, path, SQL, or URL.
 // ---------------------------------------------------------------------------
 
-import { readFile } from 'node:fs/promises';
+import { readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   buildFallbackPrompt,
@@ -99,27 +111,50 @@ export function identityEvolutionNote(): string {
   ].join(' ');
 }
 
-/** Read one `.ax/` file. Returns undefined on any miss (absent, read error, or
- * over the hard cap). Over-cap is logged so a corrupt/runaway file is visible.
- * The size check reads the file then measures byte length — `.ax/` files are
- * small, so a stat+read race isn't worth the extra syscall. */
+/** Read one `.ax/` file. Returns undefined on any miss (absent, not a regular
+ * file, over the hard cap, or read error).
+ *
+ * `stat` runs BEFORE `readFile` so the size/type gate bounds memory: an
+ * agent-writable `.ax/` file could be a multi-GB blob, a directory, or a
+ * symlink to a device (`/dev/zero`) — reading any of those first would
+ * OOM/hang/error at runner startup. `stat` follows symlinks, so its `isFile()`
+ * + `size` reflect the symlink TARGET; a non-regular target (dir/device) or an
+ * over-cap target is skipped without ever opening the content. Skipping the
+ * whole file (rather than truncating) keeps identity from being half-injected.
+ * The skip is logged so a corrupt/runaway file is visible. */
 async function readAxFile(axDir: string, name: string): Promise<string | undefined> {
-  let content: string;
+  const path = join(axDir, name);
+  let info;
   try {
-    content = await readFile(join(axDir, name), 'utf8');
+    info = await stat(path);
   } catch {
-    // ENOENT (file absent) is the common case; any read error → treat as absent.
+    // ENOENT (file absent) is the common case; any stat error → treat as absent.
     return undefined;
   }
-  if (Buffer.byteLength(content, 'utf8') > MAX_AX_FILE_BYTES) {
-    // Skip the whole file rather than truncate mid-content — a half-injected
-    // identity is worse than an absent one. Logged so the oversize is visible.
+  if (!info.isFile()) {
+    // A directory, device, socket, or symlink-to-such at an identity path is
+    // never legitimate — skip without reading (a device read could hang).
     console.warn(
-      `prompt-engine: .ax/${name} exceeds ${MAX_AX_FILE_BYTES} bytes; skipping (not injecting it this turn)`,
+      `prompt-engine: .ax/${name} is not a regular file; skipping (not injecting it this turn)`,
     );
     return undefined;
   }
-  return content;
+  if (info.size > MAX_AX_FILE_BYTES) {
+    // Bound memory before reading: skip the whole oversized file rather than
+    // truncate mid-content (a half-injected identity is worse than an absent
+    // one). Logged so the oversize is visible.
+    console.warn(
+      `prompt-engine: .ax/${name} is ${info.size} bytes (> ${MAX_AX_FILE_BYTES}); skipping (not injecting it this turn)`,
+    );
+    return undefined;
+  }
+  try {
+    return await readFile(path, 'utf8');
+  } catch {
+    // A race (file removed/replaced between stat and read) or permission error
+    // → treat as absent. The size was already bounded by the stat above.
+    return undefined;
+  }
 }
 
 /**
@@ -200,9 +235,9 @@ function hasIdentityFiles(files: AxIdentityFiles): boolean {
 }
 
 /**
- * Build the SDK `systemPrompt` for this turn, reading `${workspaceRoot}/.ax/`
+ * Build the SDK `systemPrompt` for this spawn, reading `${workspaceRoot}/.ax/`
  * and dispatching by mode (see the file header). Async because it reads the
- * identity files from the durable workspace each turn.
+ * identity files from the durable workspace.
  *
  * @param agentSystemPrompt the frozen `agentConfig.systemPrompt` — in normal
  *   mode it prepends on top (carrying the host `system-prompt:augment`); in
@@ -219,6 +254,16 @@ export async function buildSystemPrompt(
   const files = await readAxIdentityFiles(workspaceRoot);
 
   // Bootstrap mode is exclusive: the BOOTSTRAP.md content IS the entire prompt.
+  //
+  // TRUST NOTE (design Phase 1 ↔ Phase 3): `.ax/` files are agent-writable, and
+  // the identity validator (`@ax/validator-identity`, design Phase 3) that gates
+  // legitimate identity/BOOTSTRAP changes is not wired yet. In the intended flow
+  // the host seeds BOOTSTRAP.md at create and the agent deletes it once; until
+  // the validator lands, a prompt-injected turn that re-creates `.ax/BOOTSTRAP.md`
+  // would make THIS branch run it verbatim (suppressing the floor) on the next
+  // spawn. That hardening is the validator's job (its bootstrap-window policy is
+  // the approval signal) and is explicitly Phase 3 in the design — not closed in
+  // this phase. Tracked as a same-epic follow-up.
   if (files.bootstrap !== undefined) {
     return files.bootstrap;
   }
