@@ -203,6 +203,8 @@ function agentsMockPlugin(args: { allowedFor: Set<string> }): Plugin {
       bus.registerService('agents:create', 'mock-agents', async () => ({
         agent: { id: 'agt_new', displayName: 'New', visibility: 'personal' },
       }));
+      // (workspace:apply — channel-web's TASK-140 hard call — is provided by
+      // createMockWorkspacePlugin in this harness, not here.)
     },
   };
 }

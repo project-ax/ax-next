@@ -18,6 +18,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ax/agent-identity-templates": "workspace:*",
     "@ax/core": "workspace:*",
     "@ax/skills-parser": "workspace:*",
     "kysely": "0.28.17",

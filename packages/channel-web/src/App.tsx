@@ -40,7 +40,7 @@ import { shouldShowAgentBootstrap } from './lib/agent-bootstrap-gate';
 import { sessionStoreActions } from './lib/session-store';
 import { useTitleEvents } from './lib/use-title-events';
 import { useHydrateAgents } from './components/AgentChip';
-import { AgentBootstrap } from './components/onboard/AgentBootstrap';
+import { FirstRunAutoCreate } from './components/onboard/FirstRunAutoCreate';
 import { LoginPage } from './components/LoginPage';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
@@ -207,15 +207,16 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // 'error' deliberately falls through to the chat shell — a transient blip
   // must not force an existing user into the create flow; "+ New agent"
   // remains available from the agent menu.
-  const noAgents = agentsStatus === 'ready' && agents.length === 0;
+  //
+  // TASK-140: no form. We auto-create a BARE agent (the server seeds
+  // `.ax/BOOTSTRAP.md`) and drop straight into its chat, where it bootstraps
+  // its own identity through conversation. `onDone` closes the explicit
+  // "+ New agent" flag; the first-run path keeps it false and relies on the
+  // hydrated non-empty agent list flipping the gate.
   if (shouldShowAgentBootstrap({ agentsStatus, agentCount: agents.length, createAgentOpen })) {
     return (
       <UserProvider value={user}>
-        <AgentBootstrap
-          canCancel={!noAgents}
-          onCancel={() => setCreateAgentOpen(false)}
-          onDone={() => setCreateAgentOpen(false)}
-        />
+        <FirstRunAutoCreate onDone={() => setCreateAgentOpen(false)} />
         <ToastStack />
       </UserProvider>
     );

@@ -21,6 +21,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@ax/agent-identity-templates": "workspace:*",
     "@ax/agents": "workspace:*",
     "@ax/conversations": "workspace:*",
     "@ax/core": "workspace:*",

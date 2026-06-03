@@ -10,6 +10,7 @@ import { checkAccess } from './acl.js';
 import { listAuthoredSkills } from './authored-skills.js';
 import { projectAuthoredBundle } from './authored-caps.js';
 import { registerAdminAgentRoutes } from './admin-routes.js';
+import { runIdentityBackfill } from './backfill-identity.js';
 import { runAgentsMigration, type AgentsDatabase } from './migrations.js';
 import {
   createAgentStore,
@@ -137,6 +138,20 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           hook: 'connectors:resolve',
           degradation:
             "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected",
+        },
+        // TASK-140 identity backfill seeds .ax/IDENTITY.md + .ax/SOUL.md into
+        // each existing agent's /permanent at init. OPTIONAL, not a hard call:
+        // a preset that strips the workspace plugin must still boot — the
+        // backfill no-ops via its own `hasService` guard, and those agents get
+        // their identity later via the runner string fallback.
+        {
+          hook: 'workspace:apply',
+          degradation:
+            'identity backfill is skipped (no workspace backend) — agents fall back to the runner string identity until a workspace backend is present',
+        },
+        {
+          hook: 'workspace:read',
+          degradation: 'identity backfill is skipped (no workspace backend)',
         },
       ],
       subscribes: ['bootstrap:reset-cleanup'],
@@ -473,6 +488,15 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           return undefined;
         },
       );
+
+      // TASK-140: one-shot, idempotent identity backfill. Runs LAST — after
+      // every service is registered and (by the optionalCalls edge above) after
+      // the workspace backend has initialized, so `workspace:apply`/`read` are
+      // live. Guarded + best-effort inside: a no-op without a workspace backend,
+      // and a per-agent failure is logged + skipped, never thrown. Awaited so a
+      // fresh deploy has `.ax/` files before the first chat, but the routine
+      // swallows its own errors so this can't fail boot.
+      await runIdentityBackfill({ bus, store: localStore, initCtx });
     },
 
     async shutdown() {

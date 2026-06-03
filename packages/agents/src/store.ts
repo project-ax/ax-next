@@ -87,6 +87,14 @@ function validateDisplayName(value: unknown): string {
 }
 
 function validateSystemPrompt(value: unknown): string {
+  // TASK-140: an ABSENT systemPrompt is now legal — a BARE agent (the
+  // conversational-first-run path) has no identity string; its identity lives
+  // in `.ax/` files. undefined/null → '' so `agents:create` can mint a bare
+  // agent. A PRESENT non-string is still a hard reject (that's a malformed
+  // payload, not an intentional omission). The column itself dies in Phase 4.
+  if (value === undefined || value === null) {
+    return '';
+  }
   if (typeof value !== 'string') {
     throw invalid('systemPrompt must be a string');
   }
@@ -496,6 +504,13 @@ export interface AgentStore {
    */
   listAllIds(): Promise<string[]>;
   /**
+   * Full hydration of EVERY agent row. Used by the TASK-140 identity backfill,
+   * which needs each agent's displayName + system_prompt + owner to write its
+   * `.ax/` identity files. Same trust posture as listAllIds (background, no
+   * ACL — the caller is the boot-time migration, not a user request).
+   */
+  listAll(): Promise<Agent[]>;
+  /**
    * Personal-agent (owner_type='user') ids paired with their owner user
    * ids. Backs `agents:list-personal-owners` — same trust posture as
    * listAllIds (background-loop caller, no ACL). Excludes team agents.
@@ -675,6 +690,15 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
         .orderBy('agent_id')
         .execute();
       return rows.map((r) => r.agent_id);
+    },
+
+    async listAll() {
+      const rows = await db
+        .selectFrom('agents_v1_agents')
+        .selectAll('agents_v1_agents')
+        .orderBy('agent_id')
+        .execute();
+      return rows.map(rowToAgent);
     },
 
     async listPersonalAgentOwners() {

@@ -150,6 +150,17 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
           degradation:
             "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected",
         },
+        // TASK-140 identity backfill — optional so a workspace-stripped preset
+        // still boots (the routine no-ops via its own hasService guard).
+        {
+          hook: 'workspace:apply',
+          degradation:
+            'identity backfill is skipped (no workspace backend) — agents fall back to the runner string identity until a workspace backend is present',
+        },
+        {
+          hook: 'workspace:read',
+          degradation: 'identity backfill is skipped (no workspace backend)',
+        },
       ],
       subscribes: ['bootstrap:reset-cleanup'],
     });
@@ -624,6 +635,72 @@ describe('@ax/agents service hooks (round trip)', () => {
       { skillId: 'openai' },
     );
     expect(r).toEqual({ attached: false });
+  });
+
+  it('TASK-140: identity backfill seeds .ax/IDENTITY.md + .ax/SOUL.md for an existing agent (real store + bus routing)', async () => {
+    // A workspace mock capturing apply()s, keyed by the ctx's agentId so we can
+    // prove the seed is routed to the agent's own workspace. workspace:read
+    // returns not-found (the agent has no identity files yet).
+    const applies: Array<{ agentId: string; userId: string; changes: unknown }> = [];
+    const h = await makeHarness({
+      extraServices: {
+        'workspace:read': async () => ({ found: false }),
+        'workspace:apply': async (ctx: unknown, input: unknown) => {
+          const c = ctx as { agentId: string; userId: string };
+          applies.push({ agentId: c.agentId, userId: c.userId, changes: (input as { changes: unknown }).changes });
+          return { version: 'v1', delta: { before: null, after: 'v1', changes: [] } };
+        },
+      },
+    });
+
+    // Create an agent with a legacy system_prompt — the row the backfill targets.
+    const created = await h.bus.call<CreateInput, CreateOutput>('agents:create', h.ctx(), {
+      actor: { userId: 'u_owner', isAdmin: false },
+      input: makeInput({ displayName: 'Ada', systemPrompt: 'You are warm and precise.' }),
+    });
+
+    // Reconstruct the store over the SAME db the plugin uses, then run the
+    // backfill exactly as init does — exercising the real listAll + real bus
+    // routing through the workspace mock.
+    const { db } = await h.bus.call<unknown, { db: import('kysely').Kysely<unknown> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    const { createAgentStore } = await import('../store.js');
+    const { runIdentityBackfill } = await import('../backfill-identity.js');
+    const store = createAgentStore(db as import('kysely').Kysely<import('../migrations.js').AgentsDatabase>);
+    await runIdentityBackfill({ bus: h.bus, store, initCtx: h.ctx() });
+
+    expect(applies).toHaveLength(1);
+    expect(applies[0]!.agentId).toBe(created.agent.id);
+    expect(applies[0]!.userId).toBe('u_owner');
+    const dec = (b: Uint8Array): string => new TextDecoder().decode(b);
+    const byPath = new Map(
+      (applies[0]!.changes as Array<{ path: string; content?: Uint8Array }>).map((ch) => [
+        ch.path,
+        ch.content ? dec(ch.content) : undefined,
+      ]),
+    );
+    expect(byPath.get('.ax/IDENTITY.md')).toBe('You are Ada, a helpful personal assistant.');
+    expect(byPath.get('.ax/SOUL.md')).toBe('You are warm and precise.');
+
+    // Idempotent re-run: with .ax/IDENTITY.md now "present" the backfill writes
+    // nothing more. Re-running against a fresh bus stub whose read reports the
+    // file as found is cleaner than re-registering workspace:read on the booted
+    // bus (the duplicate-producer guard would reject that). The store is the
+    // real one, so this still exercises the real listAll.
+    applies.length = 0;
+    const idempotentBus = {
+      hasService: (n: string) => n === 'workspace:apply' || n === 'workspace:read',
+      call: async (hook: string) => {
+        if (hook === 'workspace:read') return { found: true };
+        applies.push({ agentId: 'x', userId: 'x', changes: [] });
+        return { version: 'v1', delta: { before: null, after: 'v1', changes: [] } };
+      },
+    } as unknown as typeof h.bus;
+    await runIdentityBackfill({ bus: idempotentBus, store, initCtx: h.ctx() });
+    expect(applies).toHaveLength(0);
   });
 });
 
