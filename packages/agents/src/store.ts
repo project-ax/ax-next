@@ -504,6 +504,13 @@ export interface AgentStore {
    */
   listAllIds(): Promise<string[]>;
   /**
+   * Full hydration of EVERY agent row. Used by the TASK-140 identity backfill,
+   * which needs each agent's displayName + system_prompt + owner to write its
+   * `.ax/` identity files. Same trust posture as listAllIds (background, no
+   * ACL — the caller is the boot-time migration, not a user request).
+   */
+  listAll(): Promise<Agent[]>;
+  /**
    * Personal-agent (owner_type='user') ids paired with their owner user
    * ids. Backs `agents:list-personal-owners` — same trust posture as
    * listAllIds (background-loop caller, no ACL). Excludes team agents.
@@ -683,6 +690,15 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
         .orderBy('agent_id')
         .execute();
       return rows.map((r) => r.agent_id);
+    },
+
+    async listAll() {
+      const rows = await db
+        .selectFrom('agents_v1_agents')
+        .selectAll('agents_v1_agents')
+        .orderBy('agent_id')
+        .execute();
+      return rows.map(rowToAgent);
     },
 
     async listPersonalAgentOwners() {

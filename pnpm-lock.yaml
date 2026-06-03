@@ -150,6 +150,9 @@ importers:
 
   packages/agents:
     dependencies:
+      '@ax/agent-identity-templates':
+        specifier: workspace:*
+        version: link:../agent-identity-templates
       '@ax/core':
         specifier: workspace:*
         version: link:../core
