@@ -366,6 +366,9 @@ importers:
 
   packages/channel-web:
     dependencies:
+      '@ax/agent-identity-templates':
+        specifier: workspace:*
+        version: link:../agent-identity-templates
       '@ax/agents':
         specifier: workspace:*
         version: link:../agents

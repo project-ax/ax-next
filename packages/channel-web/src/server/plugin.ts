@@ -98,6 +98,12 @@ export function createChannelWebServerPlugin(
         // like onboarding's Default Agent. Hard dep — the route is dead
         // without it.
         'agents:create',
+        // TASK-140: the bootstrap route seeds .ax/BOOTSTRAP.md into the new
+        // agent's /permanent via workspace:apply. channel-web only loads in the
+        // k8s preset, which always loads a workspace backend, so this is a hard
+        // dep (the seed itself is best-effort at runtime — a failure logs, the
+        // route still returns 201).
+        'workspace:apply',
         'conversations:get-by-req-id',
         'conversations:create',
         'conversations:get',
