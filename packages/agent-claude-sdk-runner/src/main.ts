@@ -1099,7 +1099,7 @@ export async function main(): Promise<number> {
         //
         // I-P0-1 in docs/plans/2026-05-17-skill-install-phase-0-impl.md.
         settingSources: ['user'],
-        // The file-based prompt-engine composed this for the current turn
+        // The file-based prompt-engine composed this at spawn for this session
         // (see `composedSystemPrompt` above). It also folds in the
         // ephemeral-scratch / python-venv operational notes (paired with
         // additionalDirectories above) and handles the SDK quirk that `append`

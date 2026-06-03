@@ -103,12 +103,32 @@ describe('readAxIdentityFiles', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     // A symlink pointing at a directory is not a regular file — reading it
     // would error or, for a device symlink, could hang/stream forever. The
-    // stat-first guard must skip it on file-type, not attempt the read.
+    // lstat-first guard must skip it on file-type, not attempt the read.
     const axDir = join(dir, '.ax');
     await mkdir(axDir, { recursive: true });
     await symlink(tmpdir(), join(axDir, 'SOUL.md'));
     await writeAx('IDENTITY.md', 'I am Ada.');
     const files = await readAxIdentityFiles(dir);
+    expect(files.soul).toBeUndefined();
+    expect(files.identity).toBe('I am Ada.');
+    expect(warn).toHaveBeenCalled();
+  });
+
+  it('rejects a symlink to a REGULAR file outside .ax/ (workspace-escape / secret leak) without reading the target', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // The dangerous case: `.ax/SOUL.md` -> a regular file outside the
+    // workspace (e.g. /proc/self/environ, or here a secret file). `stat`
+    // would FOLLOW the link and `readFile` would inject the target's contents
+    // (the runner's env / IPC token) into the system prompt. `lstat` must
+    // reject the symlink itself, so the target is never read.
+    const secret = join(dir, 'secret-outside.txt');
+    await writeFile(secret, 'AX_AUTH_TOKEN=super-secret', 'utf8');
+    const axDir = join(dir, '.ax');
+    await mkdir(axDir, { recursive: true });
+    await symlink(secret, join(axDir, 'SOUL.md'));
+    await writeAx('IDENTITY.md', 'I am Ada.');
+    const files = await readAxIdentityFiles(dir);
+    // The symlinked file is rejected; its target's secret never surfaces.
     expect(files.soul).toBeUndefined();
     expect(files.identity).toBe('I am Ada.');
     expect(warn).toHaveBeenCalled();

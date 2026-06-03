@@ -49,7 +49,7 @@
 // plain prose for the LLM — never interpolated into a shell, path, SQL, or URL.
 // ---------------------------------------------------------------------------
 
-import { readFile, stat } from 'node:fs/promises';
+import { readFile, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
 import {
   buildFallbackPrompt,
@@ -111,31 +111,43 @@ export function identityEvolutionNote(): string {
   ].join(' ');
 }
 
-/** Read one `.ax/` file. Returns undefined on any miss (absent, not a regular
- * file, over the hard cap, or read error).
+/** Read one `.ax/` file. Returns undefined on any miss (absent, a symlink, not
+ * a regular file, over the hard cap, or read error).
  *
- * `stat` runs BEFORE `readFile` so the size/type gate bounds memory: an
- * agent-writable `.ax/` file could be a multi-GB blob, a directory, or a
- * symlink to a device (`/dev/zero`) — reading any of those first would
- * OOM/hang/error at runner startup. `stat` follows symlinks, so its `isFile()`
- * + `size` reflect the symlink TARGET; a non-regular target (dir/device) or an
- * over-cap target is skipped without ever opening the content. Skipping the
- * whole file (rather than truncating) keeps identity from being half-injected.
- * The skip is logged so a corrupt/runaway file is visible. */
+ * `lstat` (NOT `stat`) runs BEFORE `readFile` for two reasons:
+ *
+ *  1. Security — `.ax/` files are agent-writable, so the agent could point
+ *     `.ax/SOUL.md` at a symlink to a regular file OUTSIDE the workspace
+ *     (`/proc/self/environ`, the runner's auth/proxy token file, `~/.ssh/...`).
+ *     `stat` follows the link and `readFile` would inject that target's bytes
+ *     straight into the system prompt — a workspace escape + secret leak to the
+ *     model. `lstat` reports the LINK itself: `isFile()` is false for any
+ *     symlink, so a symlinked identity path is rejected and the target is never
+ *     opened. Identity reads stay strictly inside `.ax/`.
+ *
+ *  2. Memory/liveness — the size/type gate also bounds reads: a multi-GB blob,
+ *     a directory, or a device at an identity path is skipped on type/size
+ *     BEFORE any content is loaded, so a runaway/corrupt file can't OOM or hang
+ *     runner startup.
+ *
+ * Skipping the whole file (rather than truncating) keeps identity from being
+ * half-injected; every skip is logged so a corrupt/hostile file is visible. */
 async function readAxFile(axDir: string, name: string): Promise<string | undefined> {
   const path = join(axDir, name);
   let info;
   try {
-    info = await stat(path);
+    info = await lstat(path);
   } catch {
-    // ENOENT (file absent) is the common case; any stat error → treat as absent.
+    // ENOENT (file absent) is the common case; any lstat error → treat as absent.
     return undefined;
   }
   if (!info.isFile()) {
-    // A directory, device, socket, or symlink-to-such at an identity path is
-    // never legitimate — skip without reading (a device read could hang).
+    // A symlink (isFile() is false under lstat), directory, device, or socket
+    // at an identity path is never legitimate — skip without reading. This is
+    // the symlink-escape guard: a symlink to a secret file outside `.ax/` is
+    // rejected here, so its target never reaches the prompt.
     console.warn(
-      `prompt-engine: .ax/${name} is not a regular file; skipping (not injecting it this turn)`,
+      `prompt-engine: .ax/${name} is not a regular file (symlink/dir/device); skipping (not injecting it this turn)`,
     );
     return undefined;
   }
@@ -151,8 +163,12 @@ async function readAxFile(axDir: string, name: string): Promise<string | undefin
   try {
     return await readFile(path, 'utf8');
   } catch {
-    // A race (file removed/replaced between stat and read) or permission error
-    // → treat as absent. The size was already bounded by the stat above.
+    // A race (file removed/replaced between lstat and read) or permission error
+    // → treat as absent. The size + non-symlink were already verified by lstat;
+    // a TOCTOU swap to a symlink between lstat and open is not exploitable here
+    // because the value only flows into the LLM prompt as prose (no shell/path
+    // re-resolution), and the read would have to win a sub-ms race on a file
+    // only this session can write.
     return undefined;
   }
 }
