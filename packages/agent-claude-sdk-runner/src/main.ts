@@ -49,7 +49,7 @@ import { createPreToolUseHook } from './pre-tool-use.js';
 import { materializeUploads, resolveMaterializedPath, uploadsBaseDir } from './materialize-uploads.js';
 import { setupProxy } from './proxy-startup.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
-import { buildSystemPrompt } from './system-prompt.js';
+import { buildSystemPrompt } from './prompt-engine.js';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
 import { createSkillProposeExecutor } from './skill-propose-executor.js';
 import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
@@ -871,6 +871,26 @@ export async function main(): Promise<number> {
       proxyStartup.anthropicEnv.NODE_EXTRA_CA_CERTS,
   });
 
+  // Conversational-agent-identity (Phase 1): the file-based prompt-engine reads
+  // `${workspaceRoot}/.ax/` and composes the system prompt for THIS turn —
+  // bootstrap mode (BOOTSTRAP.md verbatim), normal mode (safety floor + the
+  // agent's IDENTITY/SOUL/AGENTS files + evolution guidance + operational
+  // notes), or the legacy string fallback when no `.ax/` identity exists yet
+  // (the half-wired bridge; closed in Phase 4). agentConfig.systemPrompt is
+  // USER-AUTHORED and carries the host `system-prompt:augment` contribution
+  // (prepended on top in normal mode; the whole base in fallback) — it is
+  // intended for the LLM and is never interpolated into shell, paths, or HTML.
+  // The `.ax/` files are agent-authored (untrusted): the hardcoded safety floor
+  // is always injected in normal mode and no file can suppress it. Computed
+  // before query() because the engine reads files (async) and the SDK options
+  // literal can't await inline.
+  const composedSystemPrompt = await buildSystemPrompt(
+    agentConfig.systemPrompt,
+    env.workspaceRoot,
+    env.ephemeralRoot,
+    pythonVenvReady,
+  );
+
   try {
     const queryIter = query({
       prompt: userMessages(),
@@ -1014,8 +1034,9 @@ export async function main(): Promise<number> {
         // work (scratch clones, build caches) somewhere that never
         // round-trips. Omitted when the sandbox didn't wire one — no
         // phantom directory. (The matching system-prompt note that tells
-        // the agent this directory exists is added via buildSystemPrompt
-        // below; both are gated on the same env.ephemeralRoot.)
+        // the agent this directory exists is added by the prompt-engine
+        // (`composedSystemPrompt` above); both are gated on the same
+        // env.ephemeralRoot.)
         ...(env.ephemeralRoot !== undefined
           ? { additionalDirectories: [env.ephemeralRoot] }
           : {}),
@@ -1078,23 +1099,12 @@ export async function main(): Promise<number> {
         //
         // I-P0-1 in docs/plans/2026-05-17-skill-install-phase-0-impl.md.
         settingSources: ['user'],
-        // Week 9.5: use the frozen agentConfig.systemPrompt the host wrote
-        // at session-creation time. An empty string falls back to the SDK
-        // preset (the dev-agents-stub seeds a default; production agents
-        // require non-empty by validation). systemPrompt is USER-AUTHORED
-        // and intended for the LLM — not interpolated into shell, paths,
-        // or HTML.
-        //
-        // buildSystemPrompt also appends the ephemeral-scratch note when
-        // env.ephemeralRoot is set (paired with additionalDirectories
-        // above). It handles the SDK quirk that `append` is a no-op on a
-        // custom string prompt vs. the preset form.
-        systemPrompt: buildSystemPrompt(
-          agentConfig.systemPrompt,
-          env.workspaceRoot,
-          env.ephemeralRoot,
-          pythonVenvReady,
-        ),
+        // The file-based prompt-engine composed this for the current turn
+        // (see `composedSystemPrompt` above). It also folds in the
+        // ephemeral-scratch / python-venv operational notes (paired with
+        // additionalDirectories above) and handles the SDK quirk that `append`
+        // is a no-op on a custom string prompt vs. the preset form.
+        systemPrompt: composedSystemPrompt,
       },
     });
 
