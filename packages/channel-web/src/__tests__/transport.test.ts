@@ -257,7 +257,7 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect(types[types.length - 1]).toBe('finish');
   });
 
-  test('thinking chunks are emitted with a separate id and providerMetadata', async () => {
+  test('thinking chunks stream as native reasoning parts (start/delta/end)', async () => {
     const transport = new AxChatTransport({ getAgentId: () => 'a' });
     const body =
       `data: {"reqId":"r1","text":"...thinking","kind":"thinking"}\n\n` +
@@ -268,14 +268,22 @@ describe('AxChatTransport SSE chunk parsing', () => {
       type: string;
       delta?: string;
       id?: string;
-      providerMetadata?: Record<string, unknown>;
     }>;
-    const thinkingDelta = chunks.find(
-      (c) => c.type === 'text-delta' && c.id?.startsWith('thinking-'),
+    // Thinking is a native AI-SDK `reasoning` part under id `thinking-N`, so
+    // assistant-ui renders it via its Reasoning component and folds it into the
+    // collapsed chain-of-thought — NOT a `text` part (which rendered visibly).
+    const reasoningStart = chunks.find(
+      (c) => c.type === 'reasoning-start' && c.id?.startsWith('thinking-'),
     );
-    expect(thinkingDelta).toBeTruthy();
-    expect(thinkingDelta?.delta).toBe('...thinking');
-    expect(thinkingDelta?.providerMetadata?.['ax']).toEqual({ thinking: true });
+    expect(reasoningStart).toBeTruthy();
+    const reasoningDelta = chunks.find(
+      (c) => c.type === 'reasoning-delta' && c.id === reasoningStart?.id,
+    );
+    expect(reasoningDelta?.delta).toBe('...thinking');
+    // Reasoning content never leaks onto a `text` part.
+    expect(
+      chunks.some((c) => c.type === 'text-delta' && c.delta === '...thinking'),
+    ).toBe(false);
 
     const textDelta = chunks.find(
       (c) => c.type === 'text-delta' && c.id?.startsWith('text-'),
@@ -283,11 +291,11 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect(textDelta).toBeTruthy();
     expect(textDelta?.delta).toBe('answer');
 
-    // Thinking part is closed when text begins.
-    const thinkingEnd = chunks.find(
-      (c) => c.type === 'text-end' && c.id === thinkingDelta?.id,
+    // The reasoning part is closed (reasoning-end) when text begins.
+    const reasoningEnd = chunks.find(
+      (c) => c.type === 'reasoning-end' && c.id === reasoningStart?.id,
     );
-    expect(thinkingEnd).toBeTruthy();
+    expect(reasoningEnd).toBeTruthy();
   });
 
   test('survives SSE frames split across decoder chunks', async () => {

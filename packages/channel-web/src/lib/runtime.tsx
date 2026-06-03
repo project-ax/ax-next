@@ -12,7 +12,6 @@ import { createAxHistoryAdapter } from './history-adapter';
 import { AxChatTransport } from './transport';
 import { useAgentStore } from './agent-store';
 import { sessionStoreActions, useSessionStore } from './session-store';
-import { useThinkingStore } from './thinking-store';
 import { AxAttachmentAdapter } from './ax-attachment-adapter';
 import { setActiveConversationId } from './use-conversation-id';
 import { applyTurnError } from './turn-error';
@@ -21,17 +20,16 @@ import { resumeActions } from './resume-actions';
 const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   const id = useAuiState(({ threadListItem }) => threadListItem.id);
   const aui = useAui();
-  // Re-fetch with ?includeThinking=true when the toggle flips on, so the
-  // history adapter pulls thinking blocks the next time a thread loads.
-  const { visible: thinkingVisible } = useThinkingStore();
 
+  // Always pull thinking blocks on reload — they render as a collapsed
+  // chain-of-thought (ChainOfThought), hidden by default but available when
+  // the user opens the disclosure, so history must carry them.
   const history = useMemo(
     () =>
-      createAxHistoryAdapter(
-        () => aui.threadListItem().getState().remoteId,
-        { includeThinking: thinkingVisible },
-      ),
-    [aui, thinkingVisible],
+      createAxHistoryAdapter(() => aui.threadListItem().getState().remoteId, {
+        includeThinking: true,
+      }),
+    [aui],
   );
 
   // Phase 3: AxAttachmentAdapter mediates POST /api/attachments. Stable

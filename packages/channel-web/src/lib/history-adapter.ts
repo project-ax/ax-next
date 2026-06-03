@@ -80,22 +80,19 @@ function blocksToParts(
       continue;
     }
     if (block.type === 'thinking') {
-      // Thinking blocks come through only when ?includeThinking=true.
-      // Tag with providerMetadata so the renderer can hide / collapse.
-      parts.push({
-        type: 'text',
-        text: block.thinking ?? '',
-        providerMetadata: { ax: { thinking: true } },
-      });
+      // Thinking blocks come through only when ?includeThinking=true. Emit a
+      // native `reasoning` part so assistant-ui renders it via its Reasoning
+      // component and MessagePrimitive.GroupedParts folds it into the collapsed
+      // chain-of-thought — matching the live-stream path (transport.ts emits
+      // reasoning-start/-delta/-end). (It used to ride as a `text` part tagged
+      // with providerMetadata.ax.thinking, which rendered as plain visible
+      // prose once the toggle was on.)
+      parts.push({ type: 'reasoning', text: block.thinking ?? '' });
       continue;
     }
     if (block.type === 'redacted_thinking') {
-      // No human-readable content — surface as a placeholder when present.
-      parts.push({
-        type: 'text',
-        text: '[redacted thinking]',
-        providerMetadata: { ax: { thinking: true, redacted: true } },
-      });
+      // No human-readable content — surface as a placeholder reasoning part.
+      parts.push({ type: 'reasoning', text: '[redacted thinking]' });
       continue;
     }
     if (block.type === 'image') {

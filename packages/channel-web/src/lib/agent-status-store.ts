@@ -6,9 +6,9 @@
  * retrying…"). Lives outside the chat timeline so nothing here is
  * persisted to history.
  *
- * Same `useSyncExternalStore` shape as `search-store.ts` /
- * `thinking-store.ts`: a small in-module `state` object plus a
- * subscriber set, with a typed `agentStatusActions` object for callers.
+ * Same `useSyncExternalStore` shape as `search-store.ts`: a small in-module
+ * `state` object plus a subscriber set, with a typed `agentStatusActions`
+ * object for callers.
  *
  * Visibility model: a single `mode` discriminator drives CSS state.
  *   - 'hidden'  — row collapsed (`opacity: 0`, no pointer-events).
