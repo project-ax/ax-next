@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { makeAgentContext } from '@ax/core';
+import { makeAgentContext, PluginError } from '@ax/core';
 import { backfillIdentityFile } from '@ax/agent-identity-templates';
 import {
   runIdentityBackfill,
@@ -113,6 +113,82 @@ describe('runIdentityBackfill', () => {
     const { bus, applies } = fakeBus({ applyThrowsFor: new Set(['bad']) });
     await runIdentityBackfill({ bus, store, initCtx });
     expect(applies.map((a) => a.agentId)).toEqual(['good']);
+  });
+
+  it('retries with cause.actualParent when the first apply hits parent-mismatch (agent with an existing /permanent)', async () => {
+    // An agent that has been used (chat transcripts committed) already has a
+    // non-empty `main`, so the first apply with parent:null is a CAS miss.
+    const store = fakeStore([
+      { id: 'used', ownerId: 'u1', ownerType: 'user', displayName: 'Used', systemPrompt: 'soul' },
+    ]);
+    const applyParents: unknown[] = [];
+    let calls = 0;
+    const bus = {
+      hasService: () => true,
+      call: vi.fn(async (hook: string, _ctx: unknown, input: unknown) => {
+        if (hook === 'workspace:read') return { found: false };
+        // workspace:apply
+        applyParents.push((input as { parent: unknown }).parent);
+        calls += 1;
+        if (calls === 1) {
+          throw new PluginError({
+            code: 'parent-mismatch',
+            plugin: '@ax/test',
+            message: 'expected null, got abc123',
+            cause: { actualParent: 'abc123' },
+          });
+        }
+        return { version: 'v2', delta: { before: 'abc123', after: 'v2', changes: [] } };
+      }),
+    } as unknown as Parameters<typeof runIdentityBackfill>[0]['bus'];
+
+    await runIdentityBackfill({ bus, store, initCtx });
+
+    // First apply with parent:null (CAS miss), retried with the actual head.
+    expect(applyParents).toEqual([null, 'abc123']);
+  });
+
+  it('logs + skips (does not loop) when the retried apply also fails', async () => {
+    const store = fakeStore([
+      { id: 'used', ownerId: 'u1', ownerType: 'user', displayName: 'Used', systemPrompt: 'soul' },
+    ]);
+    let calls = 0;
+    const bus = {
+      hasService: () => true,
+      call: vi.fn(async (hook: string) => {
+        if (hook === 'workspace:read') return { found: false };
+        calls += 1;
+        // Always parent-mismatch — the retry must NOT recurse forever.
+        throw new PluginError({
+          code: 'parent-mismatch',
+          plugin: '@ax/test',
+          message: 'mismatch',
+          cause: { actualParent: `head-${calls}` },
+        });
+      }),
+    } as unknown as Parameters<typeof runIdentityBackfill>[0]['bus'];
+
+    await runIdentityBackfill({ bus, store, initCtx });
+    // Exactly 2 applies: the parent:null attempt + ONE retry. No infinite loop.
+    expect(calls).toBe(2);
+  });
+
+  it('does NOT retry on a non-parent-mismatch error', async () => {
+    const store = fakeStore([
+      { id: 'a1', ownerId: 'u1', ownerType: 'user', displayName: 'A', systemPrompt: 'x' },
+    ]);
+    let applyCalls = 0;
+    const bus = {
+      hasService: () => true,
+      call: vi.fn(async (hook: string) => {
+        if (hook === 'workspace:read') return { found: false };
+        applyCalls += 1;
+        throw new Error('transport down');
+      }),
+    } as unknown as Parameters<typeof runIdentityBackfill>[0]['bus'];
+
+    await runIdentityBackfill({ bus, store, initCtx });
+    expect(applyCalls).toBe(1); // no retry on a generic failure
   });
 
   it('routes EACH agent under its OWN owner (distinct ctxs)', async () => {

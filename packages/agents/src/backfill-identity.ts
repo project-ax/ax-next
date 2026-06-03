@@ -1,6 +1,7 @@
 import {
   makeAgentContext,
   makeReqId,
+  PluginError,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
@@ -40,6 +41,21 @@ interface WorkspaceReadResult {
   found: boolean;
 }
 
+/** Extract the storage tier's actual head from a `parent-mismatch` PluginError's
+ * `cause.actualParent` (the established workspace CAS contract — see
+ * git-engine's `parentMismatch`). Returns the value (a `WorkspaceVersion`
+ * string or null) when the error is a parent-mismatch carrying it, or the
+ * sentinel `NO_ACTUAL_PARENT` otherwise so the caller knows NOT to retry. */
+const NO_ACTUAL_PARENT = Symbol('no-actual-parent');
+function actualParentFromMismatch(err: unknown): string | null | typeof NO_ACTUAL_PARENT {
+  if (!(err instanceof PluginError) || err.code !== 'parent-mismatch') {
+    return NO_ACTUAL_PARENT;
+  }
+  const cause = err.cause as { actualParent?: string | null } | undefined;
+  if (cause === undefined || !('actualParent' in cause)) return NO_ACTUAL_PARENT;
+  return cause.actualParent ?? null;
+}
+
 /**
  * One-shot, idempotent migration: give every EXISTING personal agent the two
  * `.ax/` identity files the file-reading runner (Phase 1) now expects, so that
@@ -60,6 +76,14 @@ interface WorkspaceReadResult {
  * skipped — a team workspace has no single personal-owner ctx to route the
  * apply under, and routing a default identity under a team is a policy
  * question, not a migration (mirrors `agents:list-personal-owners`).
+ *
+ * Existing-history agents: a USED agent already has a non-empty `/permanent`
+ * (chat transcripts, attachments), so the first apply with `parent: null` is a
+ * CAS miss (`parent-mismatch`). We retry ONCE with the storage tier's actual
+ * head from `cause.actualParent` — exactly the established workspace-CAS rebase
+ * contract — so the migration reaches the very agents that have been used (not
+ * just freshly-created empty ones). A single retry (no loop) bounds the cost; a
+ * second failure is logged + skipped.
  *
  * Best-effort per agent: an apply/read failure is logged and the loop
  * continues — the migration must never block boot. No-op when no workspace
@@ -101,20 +125,33 @@ export async function runIdentityBackfill(deps: IdentityBackfillDeps): Promise<v
       // idempotent skip. We never overwrite an agent's own identity.
       if (existing.found) continue;
 
-      await bus.call('workspace:apply', ctx, {
-        changes: [
-          {
-            path: '.ax/IDENTITY.md',
-            kind: 'put',
-            content: enc(backfillIdentityFile(agent.displayName)),
-          },
-          { path: '.ax/SOUL.md', kind: 'put', content: enc(agent.systemPrompt) },
-        ],
-        // First apply against a brand-new `/permanent`: the git backend
-        // lazy-creates `main` (verified "first apply creates main" path).
-        parent: null,
-        reason: 'identity-backfill',
-      });
+      const changes = [
+        {
+          path: '.ax/IDENTITY.md',
+          kind: 'put' as const,
+          content: enc(backfillIdentityFile(agent.displayName)),
+        },
+        { path: '.ax/SOUL.md', kind: 'put' as const, content: enc(agent.systemPrompt) },
+      ];
+      // First attempt with parent:null — correct for a never-used agent (the
+      // git backend lazy-creates `main`). For a USED agent whose `/permanent`
+      // already has history, this is a CAS miss; retry ONCE with the actual
+      // head (the established parent-mismatch rebase contract).
+      try {
+        await bus.call('workspace:apply', ctx, {
+          changes,
+          parent: null,
+          reason: 'identity-backfill',
+        });
+      } catch (applyErr) {
+        const actual = actualParentFromMismatch(applyErr);
+        if (actual === NO_ACTUAL_PARENT) throw applyErr; // not a parent-mismatch → real failure
+        await bus.call('workspace:apply', ctx, {
+          changes,
+          parent: actual,
+          reason: 'identity-backfill',
+        });
+      }
     } catch (err) {
       initCtx.logger.warn('agents_identity_backfill_failed', {
         plugin: PLUGIN_NAME,
