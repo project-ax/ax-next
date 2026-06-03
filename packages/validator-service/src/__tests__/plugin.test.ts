@@ -83,6 +83,13 @@ describe('validateServices (pure)', () => {
     if (r.verdict === 'invalid') expect(r.reason).toMatch(/restartPolicy/);
   });
 
+  it('does NOT flag a legitimate env var whose NAME collides with forbidden vocab', () => {
+    // `env` keys are user-defined env-var names, not descriptor structure. An env
+    // var literally named `container` must pass — it cannot influence scheduling.
+    const r = validateServices([{ ...wellFormed(), env: { container: 'app', pod: 'web' } }]);
+    expect(r).toEqual({ verdict: 'clean' });
+  });
+
   it('rejects an over-cap env (>32 entries)', () => {
     const env: Record<string, string> = {};
     for (let i = 0; i < 33; i++) env[`K${i}`] = 'v';

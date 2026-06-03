@@ -35,7 +35,17 @@ const FORBIDDEN_SET = new Set<string>(FORBIDDEN_VOCAB);
  * {@link FORBIDDEN_VOCAB}. Returns the offending key (original casing) or
  * `null` when clean. Arrays are walked element-wise; non-object leaves are
  * ignored (we flag KEYS, not values — a value of "pod" is a legitimate string).
+ *
+ * `env` is a USER-DEFINED `Record<string,string>` of environment-variable names
+ * → values; its keys are passed through to the service and cannot influence how
+ * a backend SCHEDULES anything, so they are NOT descriptor structure. We do not
+ * descend into an `env` value — a legitimate env var literally named `container`
+ * (`env: { container: '…' }`) must not trip the structural scan. The structural
+ * smuggling we DO guard (a `pod`/`securityContext`/… sibling of name/image, or a
+ * forbidden key inside `healthcheck`) is still caught.
  */
+const SKIP_DESCENT_KEYS = new Set<string>(['env']);
+
 export function findForbiddenVocab(value: unknown): string | null {
   if (Array.isArray(value)) {
     for (const el of value) {
@@ -47,6 +57,8 @@ export function findForbiddenVocab(value: unknown): string | null {
   if (value !== null && typeof value === 'object') {
     for (const [key, child] of Object.entries(value)) {
       if (FORBIDDEN_SET.has(key.toLowerCase())) return key;
+      // Don't treat a user-data sub-map's keys (env var names) as structure.
+      if (SKIP_DESCENT_KEYS.has(key)) continue;
       const hit = findForbiddenVocab(child);
       if (hit !== null) return hit;
     }
