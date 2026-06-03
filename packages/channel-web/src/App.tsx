@@ -38,6 +38,7 @@ import { hydrateTheme } from './lib/theme';
 import { useAgentStore } from './lib/agent-store';
 import { shouldShowAgentBootstrap } from './lib/agent-bootstrap-gate';
 import { sessionStoreActions } from './lib/session-store';
+import { bootstrapKickoff } from './lib/bootstrap-kickoff';
 import { useTitleEvents } from './lib/use-title-events';
 import { useHydrateAgents } from './components/AgentChip';
 import { FirstRunAutoCreate } from './components/onboard/FirstRunAutoCreate';
@@ -247,6 +248,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
           onDone={() => {
             setCreateAgentOpen(false);
             setBootstrapAgentName(null);
+            bootstrapKickoff.trigger();
           }}
         />
         <ToastStack />
