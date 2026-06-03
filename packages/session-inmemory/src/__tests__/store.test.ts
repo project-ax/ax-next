@@ -54,7 +54,8 @@ describe('@ax/session-inmemory store', () => {
       userId: 'u-1',
       agentId: 'a-1',
       agentConfig: {
-        systemPrompt: 'be helpful',
+        displayName: 'Test Agent',
+        systemPromptAugment: 'be helpful',
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude-sonnet-4-7',
@@ -75,7 +76,8 @@ describe('@ax/session-inmemory store', () => {
       userId: 'u-1',
       agentId: 'a-1',
       agentConfig: {
-        systemPrompt: 'be helpful',
+        displayName: 'Test Agent',
+        systemPromptAugment: 'be helpful',
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude-sonnet-4-7',

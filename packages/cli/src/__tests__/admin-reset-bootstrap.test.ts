@@ -351,11 +351,11 @@ describe('admin reset-bootstrap — happy paths', () => {
       await sql`
         INSERT INTO agents_v1_agents (
           agent_id, owner_type, owner_id, visibility, display_name, model,
-          system_prompt, allowed_tools, mcp_config_ids, created_at, updated_at
+          allowed_tools, mcp_config_ids, created_at, updated_at
         )
         VALUES (
           'agt_test', 'user', 'usr_test', 'personal', 'Test Agent',
-          'claude-sonnet-4-6', 'You are helpful.', '[]', '[]', NOW(), NOW()
+          'claude-sonnet-4-6', '[]', '[]', NOW(), NOW()
         )
       `.execute(k);
       await sql`

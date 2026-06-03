@@ -32,7 +32,8 @@ const OWNER: { userId: string; agentId: string; agentConfig: AgentConfig } = {
   userId: 'u-http-prop',
   agentId: 'a-http-prop',
   agentConfig: {
-    systemPrompt: 'be helpful',
+    displayName: 'Test Agent',
+    systemPromptAugment: 'be helpful',
     allowedTools: [],
     mcpConfigIds: [],
     model: 'claude-sonnet-4-7',

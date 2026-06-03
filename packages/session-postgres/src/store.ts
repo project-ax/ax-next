@@ -20,7 +20,12 @@ export const OWNER_MISSING = 'owner-missing';
 // ---------------------------------------------------------------------------
 
 export interface AgentConfig {
-  systemPrompt: string;
+  /** The agent's display name — the runner's fallback identity when the agent
+   * has no `.ax/IDENTITY.md` (TASK-142). */
+  displayName: string;
+  /** The host `system-prompt:augment` contribution, prepended on top of the
+   * composed prompt. Empty when no augment provider is registered. */
+  systemPromptAugment: string;
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;

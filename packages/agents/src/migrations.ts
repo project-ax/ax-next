@@ -32,7 +32,6 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
       owner_type TEXT NOT NULL,
       visibility TEXT NOT NULL,
       display_name TEXT NOT NULL,
-      system_prompt TEXT NOT NULL,
       allowed_tools JSONB NOT NULL,
       mcp_config_ids JSONB NOT NULL,
       model TEXT NOT NULL,
@@ -94,6 +93,19 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
     ALTER TABLE agents_v1_agents
       ADD COLUMN IF NOT EXISTS connector_attachments JSONB NOT NULL DEFAULT '[]'
   `.execute(db);
+
+  // TASK-142 (conversational-agent-identity Phase 4): DROP the legacy
+  // `system_prompt` column. Identity now lives exclusively in the agent's
+  // `.ax/` files (IDENTITY.md / SOUL.md / AGENTS.md) — the single source of
+  // truth (Invariant #4). Every agent was migrated to `.ax/` files in Phase 2
+  // (#304) and every reader was repointed in Phases 1–4, so the column carries
+  // nothing live. `DROP COLUMN IF EXISTS` makes this idempotent + forward-only:
+  // a brand-new DB never had the column (we removed it from CREATE TABLE
+  // above); an already-deployed DB drops it here once.
+  await sql`
+    ALTER TABLE agents_v1_agents
+      DROP COLUMN IF EXISTS system_prompt
+  `.execute(db);
 }
 
 /**
@@ -106,7 +118,6 @@ export interface AgentsRow {
   owner_type: string;
   visibility: string;
   display_name: string;
-  system_prompt: string;
   allowed_tools: unknown;
   mcp_config_ids: unknown;
   model: string;

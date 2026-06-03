@@ -314,7 +314,8 @@ describe('sandbox:open-session (k8s)', () => {
           userId: 'u-1',
           agentId: 'agt-1',
           agentConfig: {
-            systemPrompt: 'be helpful',
+            displayName: 'Test Agent',
+            systemPromptAugment: 'be helpful',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -351,7 +352,8 @@ describe('sandbox:open-session (k8s)', () => {
           userId: 'u-1',
           agentId: 'agt-1',
           agentConfig: {
-            systemPrompt: 'be helpful',
+            displayName: 'Test Agent',
+            systemPromptAugment: 'be helpful',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',

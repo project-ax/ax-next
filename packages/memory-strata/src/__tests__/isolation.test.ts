@@ -1,10 +1,18 @@
 import { describe, expect, it, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HookBus, makeAgentContext, type AgentOutcome, type LlmCallInput, type LlmCallOutput } from '@ax/core';
 import { createMemoryStrataPlugin } from '../plugin.js';
 import { systemFile, INBOX_DIR } from '../paths.js';
+
+/** Write an agent's `.ax/IDENTITY.md` under `<root>/permanent/.ax/`, where
+ * memory-strata's composeIdentityFromFiles (TASK-142) reads it from. */
+async function writeAxIdentity(root: string, identity: string): Promise<void> {
+  const axDir = join(root, 'permanent', '.ax');
+  await mkdir(axDir, { recursive: true });
+  await writeFile(join(axDir, 'IDENTITY.md'), identity, 'utf8');
+}
 
 // I8: per-agent isolation. Two agents are configured with their own
 // workspace roots — their memory trees must NOT cross-contaminate.
@@ -27,19 +35,18 @@ afterEach(async () => {
 
 interface AgentSpec {
   id: string;
-  systemPrompt: string;
   model: string;
 }
 
 function buildBus(agents: Record<string, AgentSpec>, llmText: string): HookBus {
   const bus = new HookBus();
-  bus.registerService<{ agentId: string; userId: string }, { agent: { systemPrompt: string; model: string } }>(
+  bus.registerService<{ agentId: string; userId: string }, { agent: { model: string } }>(
     'agents:resolve',
     'test-agents',
     async (_ctx, input) => {
       const a = agents[input.agentId];
       if (!a) throw new Error(`unknown agent ${input.agentId}`);
-      return { agent: { systemPrompt: a.systemPrompt, model: a.model } };
+      return { agent: { model: a.model } };
     },
   );
   bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'test-llm', async () => ({
@@ -68,13 +75,19 @@ describe('per-agent memory isolation (I8)', () => {
   it('keeps each agent\'s memory tree confined to its own workspace root', async () => {
     const bus = buildBus(
       {
-        atlas: { id: 'atlas', systemPrompt: 'I am Atlas.', model: 'claude-haiku-4-5-20251001' },
-        zephyr: { id: 'zephyr', systemPrompt: 'I am Zephyr.', model: 'claude-haiku-4-5-20251001' },
+        atlas: { id: 'atlas', model: 'claude-haiku-4-5-20251001' },
+        zephyr: { id: 'zephyr', model: 'claude-haiku-4-5-20251001' },
       },
       JSON.stringify([
         { fact: 'User prefers atlas-only fact.', subject: 'user', factType: 'preference', confidence: 0.9 },
       ]),
     );
+
+    // TASK-142: agent.md is seeded from each agent's composed `.ax/` identity,
+    // written under its own workspace root. The isolation guarantee is that
+    // neither root's agent.md leaks the other's identity.
+    await writeAxIdentity(rootA, 'I am Atlas.');
+    await writeAxIdentity(rootB, 'I am Zephyr.');
 
     const plugin = createMemoryStrataPlugin();
     await plugin.init?.({ bus, config: {} });

@@ -61,7 +61,6 @@ beforeEach(() => {
     ownerType: 'user',
     visibility: 'personal',
     displayName: 'Test Agent',
-    systemPrompt: '',
     allowedTools: [],
     mcpConfigIds: [],
     model: 'claude-sonnet-4-6',

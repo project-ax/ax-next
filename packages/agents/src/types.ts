@@ -31,7 +31,6 @@ export interface Agent {
   ownerType: 'user' | 'team';
   visibility: 'personal' | 'team';
   displayName: string;
-  systemPrompt: string;
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
@@ -64,13 +63,10 @@ export interface Agent {
  */
 export interface AgentInput {
   displayName: string;
-  /**
-   * TASK-140: OPTIONAL. A BARE agent (the conversational-first-run path)
-   * carries no system prompt — its identity lives in `.ax/` files, not this
-   * column. Absent / null → stored as `''`. A present non-string is still a
-   * hard reject. (Phase 4 drops the column entirely.)
-   */
-  systemPrompt?: string;
+  // TASK-142: there is no `systemPrompt` field anymore. An agent's identity
+  // lives in its `.ax/` files (IDENTITY.md / SOUL.md / AGENTS.md) — the single
+  // source of truth (Invariant #4). A new agent is created bare; its identity
+  // is authored through the conversational bootstrap or the admin file editor.
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
@@ -136,7 +132,6 @@ const AgentSchema = z.object({
   ownerType: z.union([z.literal('user'), z.literal('team')]),
   visibility: z.union([z.literal('personal'), z.literal('team')]),
   displayName: z.string(),
-  systemPrompt: z.string(),
   allowedTools: z.array(z.string()),
   mcpConfigIds: z.array(z.string()),
   model: z.string(),
@@ -270,9 +265,9 @@ export interface SetConnectorAttachmentsOutput {
 
 /**
  * FIRED by `agents:resolve` after a successful ACL check. Generic-only:
- * subscribers see ids and visibility, NEVER the system_prompt or tool
- * lists (those are sensitive and per-tenant). Audit observers in
- * Week 10-12 will subscribe to this.
+ * subscribers see ids and visibility, NEVER the tool lists or other
+ * sensitive per-tenant fields. Audit observers in Week 10-12 will
+ * subscribe to this.
  */
 export interface AgentsResolvedEvent {
   agentId: string;

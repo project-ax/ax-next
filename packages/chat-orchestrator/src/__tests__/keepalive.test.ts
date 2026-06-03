@@ -8,7 +8,7 @@ import { createChatOrchestratorPlugin } from '../index.js';
 
 const TEST_AGENT = {
   id: 'test-agent', ownerId: 'test-user', ownerType: 'user' as const,
-  visibility: 'personal' as const, displayName: 'Test', systemPrompt: 'be helpful',
+  visibility: 'personal' as const, displayName: 'Test',
   allowedTools: ['file.read'], mcpConfigIds: [], model: 'claude-sonnet-4-7', workspaceRef: null,
 };
 

@@ -213,16 +213,26 @@ function agentsMockPlugin(args: { allow: boolean }): Plugin {
     manifest: {
       name: 'mock-agents',
       version: '0.0.0',
-      registers: ['agents:resolve', 'agents:list-for-user', 'agents:create', 'workspace:apply'],
+      registers: [
+        'agents:resolve',
+        'agents:list-for-user',
+        'agents:create',
+        'workspace:apply',
+        'workspace:read',
+      ],
       calls: [],
       subscribes: [],
     },
     init({ bus }) {
       // TASK-140: channel-web declares workspace:apply as a hard call (the
-      // bootstrap route seeds .ax/BOOTSTRAP.md). This suite doesn't drive that
-      // route, so a no-op registration satisfies the verifyCalls walk.
+      // bootstrap route seeds .ax/BOOTSTRAP.md). TASK-142: workspace:read too
+      // (the identity editor reads .ax/ files). This suite doesn't drive those
+      // routes, so no-op registrations satisfy the verifyCalls walk.
       bus.registerService('workspace:apply', 'mock-agents', async () => {
         return { version: 'v0', delta: { before: null, after: 'v0', changes: [] } };
+      });
+      bus.registerService('workspace:read', 'mock-agents', async () => {
+        return { found: false };
       });
       bus.registerService('agents:resolve', 'mock-agents', async () => {
         if (!args.allow) {
@@ -452,6 +462,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'agents:list-for-user',
         'agents:create',
         'workspace:apply',
+        'workspace:read',
         'conversations:get-by-req-id',
         'conversations:create',
         'conversations:get',

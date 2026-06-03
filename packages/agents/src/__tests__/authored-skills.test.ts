@@ -92,7 +92,6 @@ async function createPersonalAgent(h: TestHarness, userId: string): Promise<stri
     actor: { userId, isAdmin: false },
     input: {
       displayName: 'Test Agent',
-      systemPrompt: 'You are helpful.',
       allowedTools: [],
       mcpConfigIds: [],
       model: 'claude-opus-4-7',

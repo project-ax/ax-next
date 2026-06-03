@@ -105,11 +105,10 @@ export async function runCompletionTransaction(
         actor: { userId: input.adminUserId, isAdmin: true },
         input: {
           displayName: 'Default Agent',
-          // Generic placeholder so the runner's
-          // owner.agentConfig.systemPrompt validator (requireString,
-          // non-empty) doesn't reject the very first chat. Operator
-          // can edit via /admin/agents after onboarding.
-          systemPrompt: 'You are a helpful assistant.',
+          // TASK-142: a BARE agent — no system prompt. Its identity lives in its
+          // `.ax/` files, authored through the conversational bootstrap or the
+          // admin file editor. The runner's fallback identity is the
+          // displayName until then.
           allowedTools: [],
           mcpConfigIds: [],
           model: input.defaultModel,

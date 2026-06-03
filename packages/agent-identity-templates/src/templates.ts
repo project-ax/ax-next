@@ -113,11 +113,12 @@ export const SOUL_SCAFFOLD = `# Soul
 `;
 
 /**
- * The canonical one-line IDENTITY.md body the backfill writes for an EXISTING
- * agent. Names the agent (closing the "says Claude" gap) without attempting to
- * split identity from personality (design open-question #4 — the whole legacy
- * `system_prompt` goes verbatim into SOUL.md instead).
+ * The canonical one-line fallback identity, naming the agent (closing the "says
+ * Claude" gap). The runner injects this as the `## Identity` body in normal mode
+ * when an agent has no `.ax/IDENTITY.md` of its own (a brand-new or file-less
+ * agent) — see `@ax/agent-claude-sdk-runner`'s prompt-engine. Versioned here so
+ * the runner imports the same constant rather than duplicating the line.
  */
-export function backfillIdentityFile(displayName: string): string {
+export function fallbackIdentityLine(displayName: string): string {
   return `You are ${displayName}, a helpful personal assistant.`;
 }

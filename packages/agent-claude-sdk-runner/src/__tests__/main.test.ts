@@ -407,7 +407,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -538,7 +539,7 @@ describe('main()', () => {
         disallowedTools: string[];
         mcpServers: Record<string, unknown>;
         settingSources: string[];
-        systemPrompt: { type: string; preset: string; append?: string };
+        systemPrompt: string;
         env: {
           ANTHROPIC_BASE_URL?: string;
           ANTHROPIC_API_KEY: string;
@@ -573,13 +574,17 @@ describe('main()', () => {
     // so a project-discoverable workspace skills dir would bypass the host
     // projection + quarantine gate.
     expect(queryArg.options.settingSources).toEqual(['user']);
-    expect(queryArg.options.systemPrompt).toMatchObject({
-      type: 'preset',
-      preset: 'claude_code',
-    });
-    // The workspace note is always appended (steers attachment-path resolution
+    // TASK-142: the composed system prompt is always a plain STRING now (the
+    // SDK-preset / string-fallback path was removed). With no `.ax/` identity
+    // files, the runner composes normal mode with the displayName fallback
+    // identity line + the operational notes.
+    expect(typeof queryArg.options.systemPrompt).toBe('string');
+    expect(queryArg.options.systemPrompt).toContain(
+      'You are Test Agent, a helpful personal assistant.',
+    );
+    // The workspace note is always present (steers attachment-path resolution
     // away from home dirs); it references the `.ax/uploads/` namespace.
-    expect(queryArg.options.systemPrompt.append).toContain('.ax/uploads');
+    expect(queryArg.options.systemPrompt).toContain('.ax/uploads');
     expect(queryArg.options.env.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(queryArg.options.env.ANTHROPIC_API_KEY).toBe(
       COMPLETE_ENV.ANTHROPIC_API_KEY,
@@ -683,7 +688,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -789,7 +795,8 @@ describe('main()', () => {
           userId: 'u',
           agentId: 'a',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -854,7 +861,8 @@ describe('main()', () => {
           userId: 'u',
           agentId: 'a',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -899,7 +907,8 @@ describe('main()', () => {
           userId: 'u',
           agentId: 'a',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -952,7 +961,8 @@ describe('main()', () => {
           userId: 'u',
           agentId: 'a',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1009,7 +1019,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1057,7 +1068,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1103,7 +1115,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1186,7 +1199,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1321,7 +1335,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1410,7 +1425,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1521,7 +1537,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1583,7 +1600,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1706,7 +1724,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1754,7 +1773,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1831,7 +1851,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1883,7 +1904,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1933,7 +1955,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -1982,7 +2005,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -2037,7 +2061,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -2112,7 +2137,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2200,7 +2226,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2249,7 +2276,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2305,7 +2333,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2378,7 +2407,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2455,7 +2485,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2538,7 +2569,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2609,7 +2641,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2670,7 +2703,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2739,7 +2773,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2804,7 +2839,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2868,7 +2904,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2933,7 +2970,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -2985,7 +3023,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -3141,7 +3180,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -3213,7 +3253,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -3305,7 +3346,8 @@ describe('main()', () => {
           userId: 'u-test',
           agentId: 'a-test',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -3404,7 +3446,8 @@ describe('main()', () => {
             userId: 'u-test',
             agentId: 'a-test',
             agentConfig: {
-              systemPrompt: '',
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-7',
@@ -3481,7 +3524,8 @@ describe('main()', () => {
           userId: 'u',
           agentId: 'a',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -3589,7 +3633,8 @@ describe('main()', () => {
           userId: 'u',
           agentId: 'a',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -3685,7 +3730,8 @@ describe('main()', () => {
           userId: 'u',
           agentId: 'a',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
@@ -3756,7 +3802,8 @@ describe('main()', () => {
           userId: 'u',
           agentId: 'a',
           agentConfig: {
-            systemPrompt: '',
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',

@@ -424,7 +424,8 @@ describe('events', () => {
 
 describe('session.get-config', () => {
   const baseConfig = {
-    systemPrompt: 'be helpful',
+    displayName: 'Test Agent',
+    systemPromptAugment: 'be helpful',
     allowedTools: ['file.read'],
     mcpConfigIds: [],
     model: 'claude-sonnet-4-7',

@@ -38,7 +38,6 @@ export async function hydrateAgentsOnce(): Promise<void> {
       tag: '',
       desc: '',
       color: agentColorFor(a.agentId),
-      system_prompt: '',
       allowed_tools: [],
       mcp_config_ids: [],
       model: '',

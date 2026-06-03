@@ -10,7 +10,7 @@ export interface Agent {
   tag: string;
   desc: string;
   color: string;
-  system_prompt: string;
+  // TASK-142: no `system_prompt` — identity lives in the agent's `.ax/` files.
   allowed_tools: string[];
   mcp_config_ids: string[];
   model: string;
@@ -27,7 +27,6 @@ export interface AgentInput {
   tag?: string;
   desc?: string;
   color?: string;
-  system_prompt?: string;
   allowed_tools?: string[];
   mcp_config_ids?: string[];
   model?: string;

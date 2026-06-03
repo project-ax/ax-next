@@ -411,7 +411,8 @@ describe('ProxyConfigSchema', () => {
 describe('AgentConfigSchema', () => {
   it('accepts a valid agent config', () => {
     const result = AgentConfigSchema.safeParse({
-      systemPrompt: 'be helpful',
+      displayName: 'Helper',
+      systemPromptAugment: 'be helpful',
       allowedTools: ['Read'],
       mcpConfigIds: [],
       model: 'claude',
@@ -421,7 +422,8 @@ describe('AgentConfigSchema', () => {
 
   it('rejects a missing model', () => {
     const result = AgentConfigSchema.safeParse({
-      systemPrompt: 'be helpful',
+      displayName: 'Helper',
+      systemPromptAugment: 'be helpful',
       allowedTools: [],
       mcpConfigIds: [],
     });

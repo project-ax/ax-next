@@ -659,7 +659,8 @@ describe('dispatcher', () => {
         userId: 'u-1',
         agentId: 'a-1',
         agentConfig: {
-          systemPrompt: 'be helpful',
+          displayName: 'Test Agent',
+          systemPromptAugment: 'be helpful',
           allowedTools: [],
           mcpConfigIds: [],
           model: 'claude-sonnet-4-7',
@@ -784,7 +785,8 @@ describe('dispatcher', () => {
         userId: 'u-1',
         agentId: 'a-1',
         agentConfig: {
-          systemPrompt: 'be helpful',
+          displayName: 'Test Agent',
+          systemPromptAugment: 'be helpful',
           allowedTools: [],
           mcpConfigIds: [],
           model: 'claude-sonnet-4-7',
@@ -860,7 +862,8 @@ describe('dispatcher', () => {
         userId: 'u-1',
         agentId: 'a-1',
         agentConfig: {
-          systemPrompt: 'be helpful',
+          displayName: 'Test Agent',
+          systemPromptAugment: 'be helpful',
           allowedTools: [],
           mcpConfigIds: [],
           model: 'claude-sonnet-4-7',

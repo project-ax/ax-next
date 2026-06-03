@@ -8,7 +8,6 @@ describe('agents return schemas', () => {
     ownerType: 'user',
     visibility: 'personal',
     displayName: 'Helper',
-    systemPrompt: 'be helpful',
     allowedTools: ['bash', 'web-search'],
     mcpConfigIds: ['m1'],
     model: 'claude',

@@ -34,7 +34,8 @@ interface SessionConfig {
   userId: string;
   agentId: string;
   agentConfig: {
-    systemPrompt: string;
+    displayName: string;
+    systemPromptAugment: string;
     allowedTools: string[];
     mcpConfigIds: string[];
     model: string;
@@ -113,7 +114,8 @@ describe('tool:list with per-agent scope', () => {
           userId: 'user-a',
           agentId: 'agent-a',
           agentConfig: {
-            systemPrompt: 'a',
+            displayName: 'Test Agent',
+            systemPromptAugment: 'a',
             model: 'claude-opus-4-7',
             allowedTools: ['bash'],
             mcpConfigIds: ['alpha'],
@@ -224,7 +226,8 @@ describe('tool:list with per-agent scope', () => {
           userId: 'user-a',
           agentId: 'agent-a',
           agentConfig: {
-            systemPrompt: 'a',
+            displayName: 'Test Agent',
+            systemPromptAugment: 'a',
             model: 'claude-opus-4-7',
             allowedTools: ['read_file'],
             mcpConfigIds: ['alpha'],
@@ -237,7 +240,8 @@ describe('tool:list with per-agent scope', () => {
           userId: 'user-b',
           agentId: 'agent-b',
           agentConfig: {
-            systemPrompt: 'b',
+            displayName: 'Test Agent',
+            systemPromptAugment: 'b',
             model: 'claude-opus-4-7',
             allowedTools: ['read_file'],
             mcpConfigIds: ['beta'],

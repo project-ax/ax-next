@@ -1,5 +1,6 @@
 import type { AgentContext, AgentOutcome, HookBus, Plugin } from '@ax/core';
 import { bootstrapMemoryTree } from './bootstrap.js';
+import { composeIdentityFromFiles } from './compose-identity.js';
 import { runConsolidation, type ConsolidationInput, type ConsolidationResult } from './consolidator.js';
 import { createDebouncer, type Debouncer } from './debounce.js';
 import { registerInject } from './inject.js';
@@ -85,7 +86,7 @@ export interface MemoryStrataConfig {
 }
 
 interface AgentResolveResponse {
-  agent: { systemPrompt: string; model: string };
+  agent: { model: string };
 }
 
 /**
@@ -337,13 +338,17 @@ async function handleChatStart(bus: HookBus, ctx: AgentContext): Promise<void> {
   const agent = await resolveAgent(bus, ctx);
   if (agent === null) {
     // No agent record (e.g., a synthetic ctx without a registered agent).
-    // Skip silently — without a system prompt the bootstrap would seed a
-    // confusing placeholder. The next chat for a real agent will seed.
+    // Skip silently — the next chat for a real agent will seed.
     return;
   }
+  // TASK-142: seed `system/agent.md` from the agent's COMPOSED identity (its
+  // own `.ax/IDENTITY.md` + `.ax/SOUL.md`), not the dropped `system_prompt`
+  // column. Empty when the agent hasn't authored its identity yet (still
+  // bootstrapping) — bootstrapMemoryTree seeds a placeholder body in that case.
+  const composedIdentity = await composeIdentityFromFiles(ctx.workspace.rootPath);
   await bootstrapMemoryTree({
     workspaceRoot: ctx.workspace.rootPath,
-    agentSystemPrompt: agent.systemPrompt,
+    composedIdentity,
   });
 }
 
@@ -403,14 +408,14 @@ async function kickOffObserver(
 async function resolveAgent(
   bus: HookBus,
   ctx: AgentContext,
-): Promise<{ systemPrompt: string; model: string } | null> {
+): Promise<{ model: string } | null> {
   try {
     const out = await bus.call<{ agentId: string; userId: string }, AgentResolveResponse>(
       'agents:resolve',
       ctx,
       { agentId: ctx.agentId, userId: ctx.userId },
     );
-    return { systemPrompt: out.agent.systemPrompt, model: out.agent.model };
+    return { model: out.agent.model };
   } catch (err) {
     ctx.logger.debug('memory_strata_agent_resolve_failed', {
       err: err instanceof Error ? err : new Error(String(err)),

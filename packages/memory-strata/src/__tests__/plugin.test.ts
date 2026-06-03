@@ -25,7 +25,6 @@ interface AgentRow {
   ownerType: 'user' | 'team';
   visibility: 'personal' | 'team';
   displayName: string;
-  systemPrompt: string;
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
@@ -42,7 +41,6 @@ function fakeAgent(overrides: Partial<AgentRow> = {}): AgentRow {
     ownerType: 'user',
     visibility: 'personal',
     displayName: 'Test Agent',
-    systemPrompt: 'You are a friendly research assistant.',
     allowedTools: [],
     mcpConfigIds: [],
     model: 'claude-haiku-4-5-20251001',
@@ -51,6 +49,22 @@ function fakeAgent(overrides: Partial<AgentRow> = {}): AgentRow {
     updatedAt: now,
     ...overrides,
   };
+}
+
+/** Write the agent's `.ax/` identity files under `<workspaceRoot>/permanent/.ax/`
+ * — where `composeIdentityFromFiles` (TASK-142) reads them from. */
+async function writeAxIdentity(
+  workspace: string,
+  files: { identity?: string; soul?: string },
+): Promise<void> {
+  const axDir = join(workspace, 'permanent', '.ax');
+  await mkdir(axDir, { recursive: true });
+  if (files.identity !== undefined) {
+    await writeFile(join(axDir, 'IDENTITY.md'), files.identity, 'utf8');
+  }
+  if (files.soul !== undefined) {
+    await writeFile(join(axDir, 'SOUL.md'), files.soul, 'utf8');
+  }
 }
 
 function buildBus(opts: {
@@ -102,15 +116,37 @@ describe('createMemoryStrataPlugin', () => {
     expect(plugin.manifest.calls).toContain('tool:register');
   });
 
-  it('bootstraps the memory tree on chat:start', async () => {
-    const bus = buildBus({ llmText: '[]', agent: fakeAgent({ systemPrompt: 'I am Atlas.' }) });
+  it('bootstraps the memory tree on chat:start, seeding agent.md from the composed .ax/ identity', async () => {
+    // TASK-142: agent.md is seeded from the agent's COMPOSED identity (its
+    // `.ax/IDENTITY.md` + `.ax/SOUL.md`), not the dropped system_prompt column.
+    await writeAxIdentity(workspaceRoot, {
+      identity: 'I am Atlas.',
+      soul: 'I value rigor.',
+    });
+    const bus = buildBus({ llmText: '[]', agent: fakeAgent() });
     const plugin = createMemoryStrataPlugin();
     await plugin.init?.({ bus, config: {} });
 
     await bus.fire('chat:start', makeCtx(workspaceRoot), {});
 
     const raw = await readFile(join(workspaceRoot, systemFile('agent')), 'utf8');
+    expect(raw).toContain('## Identity');
     expect(raw).toContain('I am Atlas.');
+    expect(raw).toContain('## Soul');
+    expect(raw).toContain('I value rigor.');
+  });
+
+  it('seeds agent.md with a placeholder when the agent has no .ax/ identity files yet', async () => {
+    // A still-bootstrapping agent has no IDENTITY/SOUL — agent.md gets a
+    // placeholder body rather than an empty section.
+    const bus = buildBus({ llmText: '[]', agent: fakeAgent() });
+    const plugin = createMemoryStrataPlugin();
+    await plugin.init?.({ bus, config: {} });
+
+    await bus.fire('chat:start', makeCtx(workspaceRoot), {});
+
+    const raw = await readFile(join(workspaceRoot, systemFile('agent')), 'utf8');
+    expect(raw).toContain('not authored its identity yet');
   });
 
   it('runs the Observer on chat:end and writes to inbox', async () => {

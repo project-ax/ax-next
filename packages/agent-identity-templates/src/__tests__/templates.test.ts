@@ -3,7 +3,7 @@ import {
   BOOTSTRAP_TEMPLATE,
   IDENTITY_SCAFFOLD,
   SOUL_SCAFFOLD,
-  backfillIdentityFile,
+  fallbackIdentityLine,
 } from '../index.js';
 
 describe('agent-identity-templates', () => {
@@ -21,9 +21,9 @@ describe('agent-identity-templates', () => {
     expect(SOUL_SCAFFOLD).toContain('# Soul');
   });
 
-  it('backfillIdentityFile names the agent', () => {
-    expect(backfillIdentityFile('Ada')).toBe('You are Ada, a helpful personal assistant.');
-    expect(backfillIdentityFile('Sol the Helper')).toBe(
+  it('fallbackIdentityLine names the agent', () => {
+    expect(fallbackIdentityLine('Ada')).toBe('You are Ada, a helpful personal assistant.');
+    expect(fallbackIdentityLine('Sol the Helper')).toBe(
       'You are Sol the Helper, a helpful personal assistant.',
     );
   });

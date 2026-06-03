@@ -29,7 +29,7 @@ beforeEach(async () => {
 async function seedAgent(id: string) {
   await db.insertInto('agents_v1_agents').values({
     agent_id: id, owner_id: 'u1', owner_type: 'user', visibility: 'personal',
-    display_name: 'a', system_prompt: '', allowed_tools: JSON.stringify([]),
+    display_name: 'a', allowed_tools: JSON.stringify([]),
     mcp_config_ids: JSON.stringify([]), model: 'claude-opus-4-7',
     workspace_ref: null,
   } as never).execute();

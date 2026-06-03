@@ -27,7 +27,6 @@ function buildMocks(opts: {
         ownerType: 'user',
         visibility: 'personal',
         displayName: 'A',
-        systemPrompt: '',
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude-sonnet-4-7',

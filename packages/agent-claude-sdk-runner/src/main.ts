@@ -871,21 +871,22 @@ export async function main(): Promise<number> {
       proxyStartup.anthropicEnv.NODE_EXTRA_CA_CERTS,
   });
 
-  // Conversational-agent-identity (Phase 1): the file-based prompt-engine reads
+  // Conversational-agent-identity: the file-based prompt-engine reads
   // `${workspaceRoot}/.ax/` and composes the system prompt for THIS turn —
-  // bootstrap mode (BOOTSTRAP.md verbatim), normal mode (safety floor + the
+  // bootstrap mode (BOOTSTRAP.md verbatim) or normal mode (safety floor + the
   // agent's IDENTITY/SOUL/AGENTS files + evolution guidance + operational
-  // notes), or the legacy string fallback when no `.ax/` identity exists yet
-  // (the half-wired bridge; closed in Phase 4). agentConfig.systemPrompt is
-  // USER-AUTHORED and carries the host `system-prompt:augment` contribution
-  // (prepended on top in normal mode; the whole base in fallback) — it is
-  // intended for the LLM and is never interpolated into shell, paths, or HTML.
+  // notes; a file-less agent falls back to its displayName identity line).
+  // `agentConfig.systemPromptAugment` carries the host `system-prompt:augment`
+  // contribution, prepended on top in normal mode; `agentConfig.displayName` is
+  // the host-controlled fallback identity used when no IDENTITY.md exists. Both
+  // are intended for the LLM and never interpolated into shell, paths, or HTML.
   // The `.ax/` files are agent-authored (untrusted): the hardcoded safety floor
   // is always injected in normal mode and no file can suppress it. Computed
   // before query() because the engine reads files (async) and the SDK options
   // literal can't await inline.
   const composedSystemPrompt = await buildSystemPrompt(
-    agentConfig.systemPrompt,
+    agentConfig.displayName,
+    agentConfig.systemPromptAugment,
     env.workspaceRoot,
     env.ephemeralRoot,
     pythonVenvReady,

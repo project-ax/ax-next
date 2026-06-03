@@ -58,6 +58,24 @@ function requireString(
   }
 }
 
+/** Like requireString but allows the empty string — for fields that are
+ * legitimately empty (e.g. `systemPromptAugment`, which is '' whenever no
+ * `system-prompt:augment` provider is registered). */
+function requireStringAllowEmpty(
+  value: unknown,
+  field: string,
+  hookName: string,
+): asserts value is string {
+  if (typeof value !== 'string') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'${field}' must be a string`,
+    });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // validateOwner — runs at session:create time on the optional `owner`
 // field. We require the full triple (no half-set owners) because a
@@ -101,7 +119,13 @@ function validateOwner(
     });
   }
   const cfg = agentConfig as Record<string, unknown>;
-  requireString(cfg.systemPrompt, 'owner.agentConfig.systemPrompt', hookName);
+  requireString(cfg.displayName, 'owner.agentConfig.displayName', hookName);
+  // systemPromptAugment is '' whenever no augment provider is registered.
+  requireStringAllowEmpty(
+    cfg.systemPromptAugment,
+    'owner.agentConfig.systemPromptAugment',
+    hookName,
+  );
   requireString(cfg.model, 'owner.agentConfig.model', hookName);
   if (!Array.isArray(cfg.allowedTools) || !cfg.allowedTools.every((t) => typeof t === 'string')) {
     throw new PluginError({
@@ -147,7 +171,8 @@ function validateOwner(
     userId,
     agentId,
     agentConfig: {
-      systemPrompt: cfg.systemPrompt as string,
+      displayName: cfg.displayName as string,
+      systemPromptAugment: cfg.systemPromptAugment as string,
       allowedTools: cfg.allowedTools as string[],
       mcpConfigIds: cfg.mcpConfigIds as string[],
       model: cfg.model as string,

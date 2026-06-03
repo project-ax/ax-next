@@ -41,7 +41,6 @@ const TEST_AGENT = {
   ownerType: 'user' as const,
   visibility: 'personal' as const,
   displayName: 'Test',
-  systemPrompt: 'be helpful',
   allowedTools: ['file.read'],
   mcpConfigIds: [],
   model: 'claude-sonnet-4-7',

@@ -79,7 +79,6 @@ describe('mock admin agents', () => {
           tag: 'misc',
           desc: 'a new agent',
           color: '#abcdef',
-          system_prompt: 'do things',
           allowed_tools: [],
           mcp_config_ids: [],
           model: 'claude-sonnet-4-6',

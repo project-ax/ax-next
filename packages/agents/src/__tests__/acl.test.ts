@@ -33,7 +33,6 @@ function makePersonalAgent(overrides: Partial<Agent> = {}): Agent {
     ownerType: 'user',
     visibility: 'personal',
     displayName: 'A',
-    systemPrompt: '',
     allowedTools: [],
     mcpConfigIds: [],
     model: 'claude-opus-4-7',
@@ -184,7 +183,6 @@ async function makeIntegrationHarness(): Promise<TestHarness> {
 function teamAgentInput(overrides: Partial<AgentInput> = {}): AgentInput {
   return {
     displayName: 'Team Agent',
-    systemPrompt: 'For the team.',
     allowedTools: ['bash.run'],
     mcpConfigIds: [],
     model: 'claude-opus-4-7',

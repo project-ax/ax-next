@@ -29,7 +29,8 @@ const OWNER = {
   userId: 'u-1',
   agentId: 'a-1',
   agentConfig: {
-    systemPrompt: 'you are a poet',
+    displayName: 'Test Agent',
+    systemPromptAugment: 'you are a poet',
     allowedTools: ['file.read'],
     mcpConfigIds: ['mcp-1'],
     model: 'claude-sonnet-4-7',

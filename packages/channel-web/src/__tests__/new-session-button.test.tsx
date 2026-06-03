@@ -35,7 +35,6 @@ beforeEach(() => {
       desc: '',
       color: '#7aa6c9',
       tag: 'work',
-      system_prompt: '',
       allowed_tools: [],
       mcp_config_ids: [],
       model: '',
