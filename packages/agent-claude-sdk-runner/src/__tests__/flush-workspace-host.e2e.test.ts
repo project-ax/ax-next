@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildHostToolEntries } from '../host-mcp-server.js';
 import { commitNotifyWithResync, flushWorkspaceToHost } from '../commit-notify-resync.js';
 import { commitTurnAndBundle } from '../git-workspace.js';
+import { rmScratch } from './rm-scratch.js';
 
 // ---------------------------------------------------------------------------
 // BUG-W2 real-path regression: a host tool that declares
@@ -134,7 +135,14 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
-  await fs.rm(scratch, { recursive: true, force: true });
+  // Each test stands up a REAL bare git mirror (`mirror.git`) under `scratch`.
+  // git's `gc.autoDetach` defaults TRUE, so a push/fetch can spawn a detached
+  // `git gc --auto` that keeps writing into `mirror.git/info` after the
+  // foreground git we awaited exited. A plain recursive `fs.rm` can then hit
+  // `ENOTEMPTY` rmdir'ing `mirror.git/info` mid-write. `rmScratch` adds Node's
+  // maxRetries/retryDelay to ride out that transient race. Harness-only:
+  // production never fs.rm's a live mirror. (TASK-145)
+  await rmScratch(scratch);
 });
 
 /**
