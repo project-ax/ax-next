@@ -44,6 +44,15 @@ and is consumed by **`@ax/connectors`**; the orchestrator folds it via
 — exactly like `allowedHosts` / `mcpServers` / `packages` already are. Wherever the memo
 says "skill capability," read "connector capability." (See invariant **I11**.)
 
+**Operator-confirmed 2026-06-03 (do NOT re-open):** connectors, not an agent-level field.
+Rationale: the heavy slices (S1/S3/S4 + the S2 descriptor) are identical regardless of home;
+connectors give the **admin-approval wall for free** (satisfies I8's "admin-allowlisted
+images" — a pending connector grants zero reach until approved), agents have no such wall
+and would force net-new image-allowlist governance. An agent already attaches connectors
+(`Agent.connectorAttachments`, TASK-107), so per-agent scoping is preserved. The naming
+stretch ("a connector that provides local sidecars") is accepted; frame it as a *service
+bundle* connector in the UI copy (S6).
+
 ---
 
 ## Decisions baked in (do NOT re-litigate — from the completed spike)
