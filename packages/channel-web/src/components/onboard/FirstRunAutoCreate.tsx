@@ -48,8 +48,8 @@ export function FirstRunAutoCreate({ onDone }: { onDone: () => void }) {
       cancelled = true;
     };
     // `attempt` is a dep so "Try again" (which resets `ran` + bumps `attempt`)
-    // re-runs the effect. `onDone` is stable from the caller.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    // re-runs the effect. `onDone` is intentionally not a dep — it's a stable
+    // caller callback, and the `ran` ref already guards against re-creation.
   }, [attempt]);
 
   if (err !== null) {
