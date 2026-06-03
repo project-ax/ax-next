@@ -125,6 +125,29 @@ describe('createAuthoredConnectorsStore', () => {
     expect(drafts[0]!.proposal).toEqual(caps());
   });
 
+  it('listPendingForUser returns only PENDING drafts across the user’s agents, each carrying agentId', async () => {
+    const db = makeKysely();
+    await runConnectorsMigration(db);
+    const store = createAuthoredConnectorsStore(db);
+
+    // Two pending drafts under different agents + one that gets activated.
+    await store.upsert({ ownerUserId: 'u', agentId: 'a2', connectorId: 'linear', name: 'Linear', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await store.upsert({ ownerUserId: 'u', agentId: 'a1', connectorId: 'gmail', name: 'Gmail', usageNote: '', keyMode: 'personal', proposal: caps() });
+    await store.upsert({ ownerUserId: 'u', agentId: 'a1', connectorId: 'slack', name: 'Slack', usageNote: '', keyMode: 'personal', proposal: caps() });
+    // A different user's pending draft must NOT leak.
+    await store.upsert({ ownerUserId: 'other', agentId: 'a1', connectorId: 'notion', name: 'Notion', usageNote: '', keyMode: 'personal', proposal: caps() });
+    // Activate one of u's drafts — it's approved, so it must drop off the pending list.
+    await store.activate({ ownerUserId: 'u', agentId: 'a1', connectorId: 'slack' });
+
+    const pending = await store.listPendingForUser('u');
+    // Deterministic order: connector_id asc (gmail, linear), each with its agentId.
+    expect(pending.map((d) => ({ connectorId: d.connectorId, agentId: d.agentId, status: d.status }))).toEqual([
+      { connectorId: 'gmail', agentId: 'a1', status: 'pending' },
+      { connectorId: 'linear', agentId: 'a2', status: 'pending' },
+    ]);
+    expect(pending[0]!.proposal).toEqual(caps());
+  });
+
   it('re-propose REPLACES the row (created:false) and re-opens the gate to pending', async () => {
     const db = makeKysely();
     await runConnectorsMigration(db);

@@ -366,6 +366,21 @@ export interface ListAuthoredOutput {
   drafts: AuthoredConnectorDraftDescriptor[];
 }
 
+/** One pending draft surfaced ACROSS the user's agents (Settings fallback);
+ *  carries `agentId` so the approve action knows which (user, agent) authored
+ *  it. */
+export interface PendingAuthoredConnectorDescriptor
+  extends AuthoredConnectorDraftDescriptor {
+  agentId: string;
+}
+
+export interface ListAuthoredPendingInput {
+  userId: string;
+}
+export interface ListAuthoredPendingOutput {
+  drafts: PendingAuthoredConnectorDescriptor[];
+}
+
 export interface ActivateAuthoredInput {
   ownerUserId: string;
   agentId: string;
@@ -488,6 +503,14 @@ export const InstallAuthoredOutputSchema = z.object({
 export const ListAuthoredOutputSchema = z.object({
   drafts: z.array(AuthoredConnectorDraftSchema),
 }) as unknown as ZodType<ListAuthoredOutput>;
+
+const PendingAuthoredConnectorSchema = AuthoredConnectorDraftSchema.extend({
+  agentId: z.string(),
+});
+
+export const ListAuthoredPendingOutputSchema = z.object({
+  drafts: z.array(PendingAuthoredConnectorSchema),
+}) as unknown as ZodType<ListAuthoredPendingOutput>;
 
 export const ActivateAuthoredOutputSchema = z.object({
   activated: z.boolean(),

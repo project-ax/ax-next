@@ -185,6 +185,72 @@ export async function deleteConnector(
   if (!res.ok) throw new Error(`delete connector: ${res.status}`);
 }
 
+// ---------------------------------------------------------------------------
+// Authored-connector drafts (the Settings "Proposed by your assistant" fallback,
+// 2026-06-03). A connector the assistant proposed mid-turn lands as a PENDING
+// authored draft; the approval card surfaces it in chat, but if that's missed
+// the user can list + approve drafts here too. Always the owner-scoped
+// `/settings/connectors/authored` surface (the route is owner-scoped by session,
+// so admins use it too — it's about "what my assistant proposed", not curation).
+// ---------------------------------------------------------------------------
+
+/** One pending authored draft surfaced for the Settings fallback. `agentId` is
+ *  the agent that authored it — needed by the approve call (the user no longer
+ *  picks the agent). `proposal` is the declared, UNAPPROVED capability surface. */
+export interface PendingAuthoredConnector {
+  connectorId: string;
+  agentId: string;
+  name: string;
+  usageNote: string;
+  keyMode: ConnectorKeyMode;
+  status: 'pending';
+  proposal: ConnectorCapabilities;
+}
+
+/** List the session user's pending authored connector drafts across all their
+ *  agents. A preset without the connectors plugin returns an empty list (the
+ *  shelf renders nothing). */
+export async function listAuthoredPending(): Promise<PendingAuthoredConnector[]> {
+  const res = await fetch('/settings/connectors/authored', { credentials: 'include' });
+  if (!res.ok) throw new Error(`list proposed connectors: ${res.status}`);
+  const body = (await res.json()) as { drafts: PendingAuthoredConnector[] };
+  return body.drafts;
+}
+
+/** What the approval card displayed — the TOCTOU narrowing guard forwarded to
+ *  the grant (it can only NARROW the re-resolved proposal, never widen it). */
+export interface AuthoredApprovalShown {
+  hosts: string[];
+  slots: string[];
+  npm: string[];
+  pypi: string[];
+}
+
+/**
+ * Approve a pending authored connector draft outside chat. The caller must have
+ * already written any required key(s) to the vault (`setDestinationCredential`),
+ * exactly like the in-chat card. `agentId` comes from the listed draft. No secret
+ * crosses this call — only domain ids + the shown guard.
+ */
+export async function approveAuthoredConnector(
+  connectorId: string,
+  args: { agentId: string; shown: AuthoredApprovalShown },
+): Promise<void> {
+  const res = await fetch(
+    `/settings/connectors/authored/${encodeURIComponent(connectorId)}/approve`,
+    {
+      method: 'POST',
+      headers: writeHeaders,
+      credentials: 'include',
+      body: JSON.stringify({ agentId: args.agentId, shown: args.shown }),
+    },
+  );
+  if (!res.ok) {
+    const excerpt = await res.text().catch(() => '');
+    throw new Error(messageFrom(excerpt) || `approve connector: ${res.status}`);
+  }
+}
+
 /**
  * The connector Test probe verdict (TASK-108 — the connector equivalent of the
  * old MCP `/test`). `reachable` = set up to work; `unreachable` = config is

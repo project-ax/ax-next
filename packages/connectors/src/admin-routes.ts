@@ -14,10 +14,38 @@ import type {
   GetOutput,
   ListInput,
   ListOutput,
+  ListAuthoredPendingInput,
+  ListAuthoredPendingOutput,
   UpsertInput,
   UpsertOutput,
 } from './types.js';
 import { deriveCredentialPlan } from './credential-plan.js';
+
+// Structural mirrors of the orchestrator's authored-connector grant hook
+// (registered by @ax/chat-orchestrator) + the agents ACL gate. Re-declared here
+// per Invariant I2 (no cross-plugin import); the orchestrator validates
+// authoritatively, so this is just the call shape. The grant re-resolves the
+// agent's OWN authored drafts host-side (server-authoritative), so an unknown /
+// foreign connectorId returns `not-authored` — it can never approve a draft the
+// caller doesn't own.
+interface ApplyAuthoredConnectorGrantInputLike {
+  /** Omitted on this path: a Settings approval has no live conversation
+   *  (the "approve-ahead" branch — writes approval rows + promotes to the
+   *  registry + flips the draft active, with no warm-session retire). */
+  conversationId?: string;
+  userId: string;
+  agentId: string;
+  connectorId: string;
+  shown?: { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] };
+}
+type ApplyAuthoredConnectorGrantOutputLike =
+  | { applied: true; respawned: boolean }
+  | { applied: false; reason: 'not-authored' };
+
+interface AgentsResolveInputLike {
+  agentId: string;
+  userId: string;
+}
 
 // ---------------------------------------------------------------------------
 // HTTP route handlers for /admin/connectors[/:id].
@@ -580,6 +608,126 @@ export function createConnectorRouteHandlers(
       });
       res.status(200).json(result);
     },
+
+    /**
+     * GET /settings/connectors/authored — the Settings "Proposed by your
+     * assistant" fallback list. Returns the session user's PENDING authored
+     * connector drafts across ALL their agents (each carrying its `agentId` so
+     * the approve action knows which (user, agent) authored it). Owner-scoped at
+     * the store layer — a foreign user's draft can never appear. No request body.
+     * Mechanism-agnostic: the response carries only the declared capability
+     * surface (hosts / slot names / packages), never a secret.
+     */
+    async listAuthoredPending(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      if (!deps.bus.hasService('connectors:list-authored-pending')) {
+        // The preset doesn't expose authored drafts — surface an empty list
+        // rather than an error (the shelf simply renders nothing).
+        res.status(200).json({ drafts: [] });
+        return;
+      }
+      try {
+        const out = await deps.bus.call<
+          ListAuthoredPendingInput,
+          ListAuthoredPendingOutput
+        >('connectors:list-authored-pending', ctx, { userId: actor.id });
+        res.status(200).json({ drafts: out.drafts });
+      } catch (err) {
+        handleHookError(err, res);
+      }
+    },
+
+    /**
+     * POST /settings/connectors/authored/:id/approve — approve a pending authored
+     * connector draft OUTSIDE chat (the Settings fallback for a missed/dismissed
+     * card). Body `{ agentId, shown? }`. The user has already written the key to
+     * their own vault (client-side, `setDestinationCredential`), exactly like the
+     * in-chat card; this only triggers the grant.
+     *
+     * Security: `userId` is forced from the session; `agentId` comes from the
+     * draft the client listed. We ACL-gate `agents:resolve(agentId, userId)` for
+     * defense-in-depth (a user may only approve under an agent they can reach),
+     * then call the orchestrator's `agent:apply-authored-connector-grant` with
+     * NO conversationId (the approve-ahead path: writes approval rows, promotes
+     * the draft into the registry, flips it active — no warm-session retire). The
+     * grant re-resolves the agent's OWN drafts host-side, so an unknown / foreign
+     * id is `not-authored` → 409 (nothing approved). No secret crosses this route.
+     */
+    async approveAuthored(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      const connectorId = req.params.id;
+      if (typeof connectorId !== 'string' || connectorId.length === 0) {
+        res.status(400).json({ error: 'missing-id' });
+        return;
+      }
+      const parsed = parseAndValidateBody(req.body);
+      if (!parsed.ok) {
+        res.status(parsed.status).json({ error: parsed.message });
+        return;
+      }
+      const raw = (parsed.value ?? {}) as Record<string, unknown>;
+      const agentId = typeof raw.agentId === 'string' ? raw.agentId : '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'agentId is required' });
+        return;
+      }
+      // `shown` is the same TOCTOU narrowing guard the in-chat card sends —
+      // optional + forwarded verbatim; the grant intersects it with the
+      // re-resolved proposal (it can only NARROW, never widen).
+      const shown = raw.shown as
+        | { hosts: string[]; slots: string[]; npm: string[]; pypi: string[] }
+        | undefined;
+
+      // Defense-in-depth ACL gate: the caller may only approve under an agent
+      // they can reach. forbidden → 403, not-found → 404. Gated on the hook being
+      // present (it always is in the k8s preset; a stripped preset skips the gate
+      // and relies on the owner-scoped grant re-resolution below).
+      if (deps.bus.hasService('agents:resolve')) {
+        try {
+          await deps.bus.call<AgentsResolveInputLike, unknown>('agents:resolve', ctx, {
+            agentId,
+            userId: actor.id,
+          });
+        } catch (err) {
+          if (err instanceof PluginError) {
+            if (err.code === 'forbidden') {
+              res.status(403).json({ error: 'forbidden' });
+              return;
+            }
+            res.status(404).json({ error: 'agent-not-found' });
+            return;
+          }
+          throw err;
+        }
+      }
+
+      if (!deps.bus.hasService('agent:apply-authored-connector-grant')) {
+        res.status(409).json({ error: 'connector-grant-unavailable' });
+        return;
+      }
+      try {
+        const out = await deps.bus.call<
+          ApplyAuthoredConnectorGrantInputLike,
+          ApplyAuthoredConnectorGrantOutputLike
+        >('agent:apply-authored-connector-grant', ctx, {
+          userId: actor.id,
+          agentId,
+          connectorId,
+          ...(shown !== undefined ? { shown } : {}),
+          // conversationId intentionally omitted — approve-ahead (no live turn).
+        });
+        if (!out.applied) {
+          // not-authored: the id isn't one of this (user, agent)'s pending drafts.
+          res.status(409).json({ error: 'not-authored' });
+          return;
+        }
+        res.status(200).json({ applied: true });
+      } catch (err) {
+        handleHookError(err, res);
+      }
+    },
   };
 }
 
@@ -653,6 +801,19 @@ export async function registerUserConnectorRoutes(
   }> = [
     { method: 'GET', path: '/settings/connectors', handler: handlers.list },
     { method: 'POST', path: '/settings/connectors', handler: handlers.create },
+    // The Settings "Proposed by your assistant" fallback: list the user's
+    // pending authored drafts + approve one outside chat. Registered BEFORE the
+    // `/:id` patterns so `authored` is never captured as an `:id`.
+    {
+      method: 'GET',
+      path: '/settings/connectors/authored',
+      handler: handlers.listAuthoredPending,
+    },
+    {
+      method: 'POST',
+      path: '/settings/connectors/authored/:id/approve',
+      handler: handlers.approveAuthored,
+    },
     { method: 'GET', path: '/settings/connectors/:id', handler: handlers.show },
     { method: 'PATCH', path: '/settings/connectors/:id', handler: handlers.update },
     {

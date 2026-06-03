@@ -19,7 +19,10 @@ import { sql, type Kysely } from 'kysely';
 import type { Capabilities, KeyMode } from './types.js';
 import { CapabilitiesSchema } from './types.js';
 import { validateKeyMode } from './store.js';
-import { scopedAuthoredConnectors } from './scope.js';
+import {
+  scopedAuthoredConnectors,
+  scopedAuthoredConnectorsByUser,
+} from './scope.js';
 import type { ConnectorDatabase, ConnectorsAuthoredRow } from './migrations.js';
 
 const PLUGIN_NAME = '@ax/connectors';
@@ -40,6 +43,13 @@ export interface AuthoredConnectorDraft {
   updatedAt: string;
 }
 
+/** A pending draft listed ACROSS the user's agents (the Settings fallback).
+ *  Carries `agentId` because the approve action needs the (user, agent) the
+ *  draft was authored under, and the user no longer picks the agent. */
+export interface PendingAuthoredConnectorDraft extends AuthoredConnectorDraft {
+  agentId: string;
+}
+
 export interface UpsertAuthoredConnectorInput {
   ownerUserId: string;
   agentId: string;
@@ -58,6 +68,10 @@ export interface AuthoredConnectorsStore {
   /** List the agent's authored connector drafts (any status), sorted by
    *  connector_id — the card source + grant re-resolution. */
   list(ownerUserId: string, agentId: string): Promise<AuthoredConnectorDraft[]>;
+  /** List the user's PENDING drafts across ALL their agents, each carrying its
+   *  `agentId`, sorted by connector_id asc (then agent_id) for a stable order.
+   *  Backs the Settings "Proposed by your assistant" fallback. */
+  listPendingForUser(userId: string): Promise<PendingAuthoredConnectorDraft[]>;
   /** Flip a `pending` draft to `active` (on approval). Status-guarded: only a
    *  `pending` row transitions, so the call is idempotent + race-safe (a
    *  concurrent duplicate approval flips zero rows the second time). Returns
@@ -152,6 +166,18 @@ export function createAuthoredConnectorsStore(
         .orderBy('connector_id', 'asc')
         .execute();
       return rows.map((r) => rowToDraft(r as ConnectorsAuthoredRow));
+    },
+
+    async listPendingForUser(userId) {
+      const rows = await scopedAuthoredConnectorsByUser(db, { userId })
+        .where('status', '=', 'pending')
+        .orderBy('connector_id', 'asc')
+        .orderBy('agent_id', 'asc')
+        .execute();
+      return rows.map((r) => {
+        const row = r as ConnectorsAuthoredRow;
+        return { ...rowToDraft(row), agentId: row.agent_id };
+      });
     },
 
     async activate({ ownerUserId, agentId, connectorId }) {

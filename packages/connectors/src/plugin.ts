@@ -42,6 +42,7 @@ import {
   GetOutputSchema,
   InstallAuthoredOutputSchema,
   ListAuthoredOutputSchema,
+  ListAuthoredPendingOutputSchema,
   ListDefaultsOutputSchema,
   ListOutputSchema,
   ResolveOutputSchema,
@@ -60,6 +61,8 @@ import {
   type InstallAuthoredOutput,
   type ListAuthoredInput,
   type ListAuthoredOutput,
+  type ListAuthoredPendingInput,
+  type ListAuthoredPendingOutput,
   type ListDefaultsInput,
   type ListDefaultsOutput,
   type ListInput,
@@ -149,6 +152,10 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         // flips it active on a human grant; clear-authored is the reject path.
         'connectors:install-authored',
         'connectors:list-authored',
+        // The user's PENDING drafts across all their agents — the Settings
+        // "Proposed by your assistant" fallback read (a draft proposed mid-turn
+        // is approvable outside chat, so a missed card isn't a dead end).
+        'connectors:list-authored-pending',
         'connectors:activate-authored',
         'connectors:clear-authored',
       ],
@@ -233,8 +240,10 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         // The live registry store is passed alongside the authored-draft store so
         // the handler can dedup a re-propose against an already-active connector
         // (TASK-114) — both stores are this plugin's, so no cross-plugin import.
-        async (_ctx, input) =>
-          installAuthoredConnector(localAuthored, localStore, input),
+        // bus+ctx are threaded so a fresh PENDING write fires `connectors:proposed`
+        // (the orchestrator surfaces the approval card at proposal time).
+        async (ctx, input) =>
+          installAuthoredConnector(localAuthored, localStore, bus, ctx, input),
         { returns: InstallAuthoredOutputSchema },
       );
 
@@ -243,6 +252,18 @@ export function createConnectorsPlugin(config: ConnectorsConfig = {}): Plugin {
         PLUGIN_NAME,
         async (_ctx, input) => listAuthoredConnectors(localAuthored, input),
         { returns: ListAuthoredOutputSchema },
+      );
+
+      bus.registerService<ListAuthoredPendingInput, ListAuthoredPendingOutput>(
+        'connectors:list-authored-pending',
+        PLUGIN_NAME,
+        // The registry store is passed so the handler can drop any pending draft
+        // whose id is already an active registry connector for this owner (a
+        // belt-and-suspenders against showing an already-connected service on the
+        // "Proposed" shelf). Both stores are this plugin's — no cross-plugin import.
+        async (_ctx, input) =>
+          listAuthoredPendingForUser(localAuthored, localStore, input),
+        { returns: ListAuthoredPendingOutputSchema },
       );
 
       bus.registerService<ActivateAuthoredInput, ActivateAuthoredOutput>(
@@ -573,6 +594,8 @@ function assembleProposal(input: InstallAuthoredInput): Capabilities {
 async function installAuthoredConnector(
   store: AuthoredConnectorsStore,
   registry: ConnectorStore,
+  bus: HookBus,
+  ctx: AgentContext,
   input: InstallAuthoredInput,
 ): Promise<InstallAuthoredOutput> {
   const hookName = 'connectors:install-authored';
@@ -616,6 +639,29 @@ async function installAuthoredConnector(
     keyMode,
     proposal,
   });
+
+  // Notify subscribers that a PENDING draft was just written so the
+  // chat-orchestrator can fire the approval card at proposal time (mid-turn) —
+  // the user sees it on the current turn rather than only at the start of their
+  // NEXT message. Storage-agnostic ids only; no capability/secret rides this
+  // event (the orchestrator re-resolves the draft via connectors:list-authored).
+  // Best-effort: the bus isolates subscriber throws, but a fire failure must not
+  // fail the install — the draft is persisted, and the turn-start card path
+  // remains a backstop. NOT fired on the alreadyActive no-op above (no new draft).
+  try {
+    await bus.fire('connectors:proposed', ctx, {
+      ownerUserId,
+      agentId,
+      connectorId,
+      status: 'pending',
+    });
+  } catch (err) {
+    ctx.logger.warn('connectors_proposed_fire_failed', {
+      connectorId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
+
   return { connectorId, status: 'pending' };
 }
 
@@ -635,6 +681,35 @@ async function listAuthoredConnectors(
       proposal: d.proposal,
     })),
   };
+}
+
+async function listAuthoredPendingForUser(
+  store: AuthoredConnectorsStore,
+  registry: ConnectorStore,
+  input: ListAuthoredPendingInput,
+): Promise<ListAuthoredPendingOutput> {
+  const userId = requireUserId(input.userId, 'connectors:list-authored-pending');
+  const pending = await store.listPendingForUser(userId);
+  // Drop any pending draft whose id is already an active (not-deleted) registry
+  // connector for THIS owner — it's already connectable on the normal shelves,
+  // so it shouldn't also appear as "proposed". (Normally impossible: approval
+  // flips the draft to `active` AND the TASK-114 dedup blocks a re-propose for an
+  // already-registered id. Cheap defense against any drift.)
+  const drafts: ListAuthoredPendingOutput['drafts'] = [];
+  for (const d of pending) {
+    const live = await registry.getByIdNotDeleted(userId, d.connectorId);
+    if (live !== null) continue;
+    drafts.push({
+      connectorId: d.connectorId,
+      agentId: d.agentId,
+      name: d.name,
+      usageNote: d.usageNote,
+      keyMode: d.keyMode,
+      status: d.status,
+      proposal: d.proposal,
+    });
+  }
+  return { drafts };
 }
 
 async function activateAuthoredConnector(

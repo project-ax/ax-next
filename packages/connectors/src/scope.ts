@@ -59,3 +59,22 @@ export function scopedAuthoredConnectors(
     .where('owner_user_id', '=', scope.ownerUserId)
     .where('agent_id', '=', scope.agentId);
 }
+
+/**
+ * Owner-only authored-draft scope — every draft the user owns ACROSS all their
+ * agents (no agent_id predicate). Backs `listPendingForUser`, the Settings
+ * "Proposed by your assistant" fallback: a connector proposed mid-turn is
+ * per-(owner, agent), but the user shouldn't have to know which agent proposed
+ * it, so the fallback aggregates by owner. Routed through this helper so the
+ * bare-tenant-table read lives in `scope.ts` (lint I7), same as the scoped reads
+ * above. Still owner-scoped — a foreign user's draft can never be observed.
+ */
+export function scopedAuthoredConnectorsByUser(
+  db: Kysely<ConnectorDatabase>,
+  scope: { userId: string },
+) {
+  return db
+    .selectFrom('connectors_v1_authored')
+    .selectAll('connectors_v1_authored')
+    .where('owner_user_id', '=', scope.userId);
+}
