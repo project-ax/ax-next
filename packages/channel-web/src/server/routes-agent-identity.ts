@@ -89,9 +89,13 @@ interface WorkspaceApplyChange {
   kind: 'put' | 'delete';
   content?: Uint8Array;
 }
+// `parent` is the storage-agnostic version token the apply CAS-checks against
+// (opaque — never resolved as a path). null = "the workspace has no commits
+// yet" (a brand-new agent); a token = an existing head. We start at null and
+// retry once with the tier's actual head on a CAS miss (see save()).
 interface WorkspaceApplyInput {
   changes: WorkspaceApplyChange[];
-  parent: null;
+  parent: string | null;
   reason?: string;
 }
 
@@ -107,6 +111,23 @@ const IdentityBody = z
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder('utf-8').decode(b);
+
+// Extract the storage tier's actual head from a `parent-mismatch` PluginError's
+// `cause.actualParent` (the established workspace CAS contract — see the backfill
+// + git-engine `parentMismatch`). Returns the value (a version token or null)
+// when the error is a parent-mismatch carrying it, or the sentinel
+// NO_ACTUAL_PARENT so the caller knows NOT to retry.
+const NO_ACTUAL_PARENT = Symbol('no-actual-parent');
+function actualParentFromMismatch(
+  err: unknown,
+): string | null | typeof NO_ACTUAL_PARENT {
+  if (!(err instanceof PluginError) || err.code !== 'parent-mismatch') {
+    return NO_ACTUAL_PARENT;
+  }
+  const cause = err.cause as { actualParent?: string | null } | undefined;
+  if (cause === undefined || !('actualParent' in cause)) return NO_ACTUAL_PARENT;
+  return cause.actualParent ?? null;
+}
 
 export interface AgentIdentityRoutesDeps {
   bus: HookBus;
@@ -265,11 +286,27 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
       }
 
       try {
-        await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', ctx, {
-          changes,
-          parent: null,
-          reason: 'agent-identity-edit',
-        });
+        // First attempt with parent:null — correct for a never-committed
+        // workspace (the git backend lazy-creates `main`). For an agent whose
+        // `/permanent` already has history (the seeded BOOTSTRAP.md, transcripts,
+        // a prior identity edit) — i.e. essentially every real agent — this is a
+        // CAS miss; retry ONCE with the tier's actual head from
+        // `cause.actualParent` (the established workspace-CAS rebase contract).
+        try {
+          await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', ctx, {
+            changes,
+            parent: null,
+            reason: 'agent-identity-edit',
+          });
+        } catch (applyErr) {
+          const actual = actualParentFromMismatch(applyErr);
+          if (actual === NO_ACTUAL_PARENT) throw applyErr; // not a CAS miss → real failure
+          await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', ctx, {
+            changes,
+            parent: actual,
+            reason: 'agent-identity-edit',
+          });
+        }
         res.status(200).json({ ok: true });
       } catch (err) {
         // A validator-identity veto (injection scan / non-canonical BOOTSTRAP)

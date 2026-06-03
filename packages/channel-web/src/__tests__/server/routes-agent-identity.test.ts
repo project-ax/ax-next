@@ -59,8 +59,13 @@ function busWith(opts: {
   files?: Record<string, string>;
   /** When set, workspace:apply rejects with this reason (validator veto). */
   applyRejectReason?: string;
+  /** When set, the FIRST workspace:apply (parent:null) throws a parent-mismatch
+   * echoing this head; the retry (parent=this) succeeds. Models an agent with
+   * existing /permanent history. */
+  actualParentOnFirstApply?: string | null;
 }): { bus: HookBus; applies: Applied[] } {
   const applies: Applied[] = [];
+  let applyCount = 0;
   const bus = new HookBus();
   bus.registerService('auth:require-user', 'auth', async () => {
     if (opts.user === 'reject')
@@ -89,6 +94,7 @@ function busWith(opts: {
       : { found: true, bytes: enc(content) };
   });
   bus.registerService('workspace:apply', 'workspace', async (ctx, input) => {
+    applyCount += 1;
     if (opts.applyRejectReason !== undefined) {
       // Mirror the @ax/core apply facade: a workspace:pre-apply veto
       // (validator-identity) surfaces as PluginError{code:'rejected'} whose
@@ -98,6 +104,21 @@ function busWith(opts: {
         plugin: 'workspace',
         hookName: 'workspace:apply',
         message: opts.applyRejectReason,
+      });
+    }
+    // First apply against an agent with existing history → CAS miss echoing the
+    // tier's actual head; the route retries with that head.
+    if (
+      opts.actualParentOnFirstApply !== undefined &&
+      applyCount === 1 &&
+      (input as { parent: unknown }).parent === null
+    ) {
+      throw new PluginError({
+        code: 'parent-mismatch',
+        plugin: 'workspace',
+        hookName: 'workspace:apply',
+        message: 'expected parent oid-abc, got null',
+        cause: { actualParent: opts.actualParentOnFirstApply },
       });
     }
     applies.push({ ctx, input: input as Applied['input'] });
@@ -199,6 +220,24 @@ describe('PUT /admin/agents/:id/identity', () => {
     );
     const byPath = new Map(applies[0]!.input.changes.map((c) => [c.path, c]));
     expect(byPath.get('.ax/AGENTS.md')!.kind).toBe('delete');
+  });
+
+  it('retries with the tier head on a parent-mismatch (agent with existing /permanent history)', async () => {
+    // The first apply (parent:null) is a CAS miss for an agent that already has
+    // a committed workspace (the seeded BOOTSTRAP.md / transcripts). The route
+    // must retry ONCE with cause.actualParent — otherwise every real agent's
+    // identity edit 500s.
+    const { bus, applies } = busWith({ actualParentOnFirstApply: 'oid-head-7' });
+    const h = makeAgentIdentityHandlers({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await h.save(
+      fakeReq({ params: { id: 'agt-1' }, body: { identity: 'I am Ada.', soul: 's' } }),
+      res,
+    );
+    expect(captured.statusCode).toBe(200);
+    // The SUCCESSFUL apply (the retry) carried the echoed head as parent.
+    expect(applies).toHaveLength(1);
+    expect(applies[0]!.input.parent).toBe('oid-head-7');
   });
 
   it('surfaces a validator-identity veto as 400 with the reason', async () => {
