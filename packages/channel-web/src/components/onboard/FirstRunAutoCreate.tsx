@@ -17,7 +17,13 @@ import { agentStoreActions } from '../../lib/agent-store';
  * A `ran` ref guards React 18 StrictMode's intentional double-invoke of effects
  * in dev, so we never create two agents from one mount.
  */
-export function FirstRunAutoCreate({ onDone }: { onDone: () => void }) {
+export function FirstRunAutoCreate({
+  agentName,
+  onDone,
+}: {
+  agentName: string;
+  onDone: () => void;
+}) {
   const ran = useRef(false);
   const [err, setErr] = useState<string | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -28,7 +34,7 @@ export function FirstRunAutoCreate({ onDone }: { onDone: () => void }) {
     let cancelled = false;
     void (async () => {
       try {
-        const agent = await autoCreateBareAgent();
+        const agent = await autoCreateBareAgent(agentName);
         if (cancelled) return;
         // Select + hydrate so the App-level gate flips (agent list no longer
         // empty) and the chat shell renders this agent.
@@ -48,8 +54,9 @@ export function FirstRunAutoCreate({ onDone }: { onDone: () => void }) {
       cancelled = true;
     };
     // `attempt` is a dep so "Try again" (which resets `ran` + bumps `attempt`)
-    // re-runs the effect. `onDone` is intentionally not a dep — it's a stable
-    // caller callback, and the `ran` ref already guards against re-creation.
+    // re-runs the effect. `agentName` and `onDone` are intentionally omitted —
+    // they're stable for the lifetime of this mount, and the `ran` ref already
+    // guards against re-creation.
   }, [attempt]);
 
   if (err !== null) {

@@ -93,7 +93,7 @@ export function AgentMenu({ agents, activeId, onPick, onCreateNew }: AgentMenuPr
             <AvatarTile size={22} background="muted">
               <span aria-hidden="true" className="text-[13px] leading-none text-muted-foreground">+</span>
             </AvatarTile>
-            <span className="text-[14px] tracking-[-0.01em] leading-[1.1] text-foreground">New agent</span>
+            <span className="text-[14px] tracking-[-0.01em] leading-[1.1] text-foreground">New agent…</span>
           </button>
         )}
         <div className="px-2.5 pt-2 pb-1 text-[10.5px] tracking-[0.04em] text-ink-ghost text-center">

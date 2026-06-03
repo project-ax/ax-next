@@ -217,6 +217,16 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
     [installed],
   );
 
+  // OWN-NOT-IN-CONNECTIONS = user-owned skills (created or adopted) that are not
+  // already surfaced by the connections union. These have no explicit attachment and
+  // are not default-attached via the connections response, so without this they
+  // would become invisible after the editor closes. Shown in the Installed section
+  // so the user can edit or delete them.
+  const ownNotInstalled = useMemo(
+    () => [...ownSkills.values()].filter((s) => !installedIds.has(s.id)),
+    [ownSkills, installedIds],
+  );
+
   // NOT-INSTALLED = catalog minus what's already installed on this agent, then
   // filtered by the search box (id or description).
   const notInstalled = useMemo(() => {
@@ -368,7 +378,7 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
 
   // ---- render -----------------------------------------------------------
 
-  const installedCount = installed?.length ?? 0;
+  const installedCount = (installed?.length ?? 0) + ownNotInstalled.length;
   const notInstalledCount = notInstalled.length;
 
   return (
@@ -439,16 +449,68 @@ export function SkillsAppStore({ isAdmin }: { isAdmin: boolean }) {
             </p>
           ) : installed === null ? (
             <p className="text-sm text-muted-foreground">Loading…</p>
-          ) : installed.length === 0 ? (
+          ) : installed.length === 0 && ownNotInstalled.length === 0 ? (
             <p className="text-sm text-muted-foreground">
               No skills installed yet. Install one from your workspace below, or
               create your own.
             </p>
           ) : (
             <div className="flex flex-col divide-y divide-border rounded-md border border-border">
+              {/* User-created or adopted skills that have no agent attachment yet.
+                  They exist in ownSkills but aren't returned by getConnections, so
+                  without this they'd be invisible after the editor closes (the bug). */}
+              {ownNotInstalled.map((s) => (
+                <div
+                  key={`own-${s.id}`}
+                  data-testid={`installed-${s.id}`}
+                  className="flex items-center gap-3 px-3 py-2.5"
+                >
+                  <div className="flex-1 min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm truncate">{s.description || s.id}</span>
+                      <Badge variant="secondary" className="text-[10px] shrink-0">
+                        your own
+                      </Badge>
+                    </div>
+                    <span className="font-mono text-xs text-muted-foreground">{s.id}</span>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setEditor({ mode: 'edit-user', skillId: s.id })}
+                      aria-label={`Edit ${s.id}`}
+                    >
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => {
+                        setShareResult(null);
+                        setPendingShare(s.id);
+                      }}
+                      aria-label={`Submit ${s.id} to workspace`}
+                    >
+                      <Share2 className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setPendingDelete({ skillId: s.id, scope: 'user' })}
+                      aria-label={`Delete ${s.id}`}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </div>
+              ))}
               {installed.map((s) => {
                 const own = ownSkills.get(s.skillId);
-                const isOwn = s.source === 'user' && own !== undefined;
+                // Show Edit/Share/Delete for any installed skill the user owns —
+                // not just source='user' (explicit attachment), but also
+                // source='default' when the user created a default-attached skill.
+                const isOwn = own !== undefined;
                 return (
                   <div
                     key={s.skillId}

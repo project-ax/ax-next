@@ -41,6 +41,7 @@ import { sessionStoreActions } from './lib/session-store';
 import { useTitleEvents } from './lib/use-title-events';
 import { useHydrateAgents } from './components/AgentChip';
 import { FirstRunAutoCreate } from './components/onboard/FirstRunAutoCreate';
+import { NewAgentDialog } from './components/onboard/NewAgentDialog';
 import { LoginPage } from './components/LoginPage';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
@@ -147,6 +148,9 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // `createAgentOpen` drives the explicit "+ New agent" entry into the
   // bootstrap flow (the first-run gate below uses the empty-list signal).
   const [createAgentOpen, setCreateAgentOpen] = useState(false);
+  // `bootstrapAgentName` holds the name the user enters in the NewAgentDialog
+  // before the bootstrap starts. null = dialog not yet submitted.
+  const [bootstrapAgentName, setBootstrapAgentName] = useState<string | null>(null);
   // Mobile slide-over open state (Task 27). Used to render the scrim
   // that closes the sidebar on tap. Desktop CSS hides the scrim.
   const sidebarOpen = useSidebarOpen();
@@ -203,20 +207,48 @@ const AppContent = ({ user }: { user: AuthUser }) => {
     );
   }
 
-  // First-run (no personal agent yet) OR the explicit "+ New agent" entry.
+  // First-run (no personal agent yet) OR the explicit "+ New agent…" entry.
   // 'error' deliberately falls through to the chat shell — a transient blip
-  // must not force an existing user into the create flow; "+ New agent"
+  // must not force an existing user into the create flow; "+ New agent…"
   // remains available from the agent menu.
   //
-  // TASK-140: no form. We auto-create a BARE agent (the server seeds
-  // `.ax/BOOTSTRAP.md`) and drop straight into its chat, where it bootstraps
-  // its own identity through conversation. `onDone` closes the explicit
-  // "+ New agent" flag; the first-run path keeps it false and relies on the
-  // hydrated non-empty agent list flipping the gate.
+  // Two-phase bootstrap:
+  //   Phase 1 (bootstrapAgentName === null): show NewAgentDialog so the user
+  //     picks a name before anything is created. For first-run the dialog is
+  //     non-dismissible (Escape / outside click is ignored — they must create
+  //     an agent). For the explicit "New agent…" path the dialog can be
+  //     cancelled, which closes the gate.
+  //   Phase 2 (bootstrapAgentName !== null): auto-create with the chosen name
+  //     and drop into the bootstrap chat.
   if (shouldShowAgentBootstrap({ agentsStatus, agentCount: agents.length, createAgentOpen })) {
+    const isFirstRun = agents.length === 0 && !createAgentOpen;
+    if (bootstrapAgentName === null) {
+      return (
+        <UserProvider value={user}>
+          <NewAgentDialog
+            open={true}
+            onOpenChange={(open) => {
+              if (!open && !isFirstRun) {
+                // Explicit "New agent…" path — allow cancel
+                setCreateAgentOpen(false);
+              }
+              // First-run: ignore close attempts — the user must create an agent
+            }}
+            onCreate={(name) => setBootstrapAgentName(name)}
+          />
+          <ToastStack />
+        </UserProvider>
+      );
+    }
     return (
       <UserProvider value={user}>
-        <FirstRunAutoCreate onDone={() => setCreateAgentOpen(false)} />
+        <FirstRunAutoCreate
+          agentName={bootstrapAgentName}
+          onDone={() => {
+            setCreateAgentOpen(false);
+            setBootstrapAgentName(null);
+          }}
+        />
         <ToastStack />
       </UserProvider>
     );
@@ -245,7 +277,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
                 />
               )}
               <main className="flex flex-1 flex-col min-w-0 min-h-0 h-full">
-                <SessionHeader onCreateAgent={() => setCreateAgentOpen(true)} />
+                <SessionHeader onCreateAgent={() => { setBootstrapAgentName(null); setCreateAgentOpen(true); }} />
                 <Thread />
               </main>
             </>
