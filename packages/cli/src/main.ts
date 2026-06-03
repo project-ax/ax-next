@@ -18,6 +18,7 @@ import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
 import { createValidatorRoutinePlugin } from '@ax/validator-routine';
+import { createValidatorIdentityPlugin } from '@ax/validator-identity';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
@@ -223,6 +224,15 @@ export async function main(opts: MainOptions): Promise<number> {
   // presets/k8s/src/index.ts and the Phase B canary describe block in
   // preset.test.ts.
   plugins.push(createValidatorRoutinePlugin());
+
+  // Phase 3 (conversational-agent-identity): validator-identity subscribes to
+  // workspace:pre-apply and gates the agent's writes to its own identity files
+  // (.ax/IDENTITY.md / .ax/SOUL.md / .ax/AGENTS.md / .ax/BOOTSTRAP.md) under the
+  // bootstrap-window policy. A pure subscriber that works anywhere
+  // workspace:pre-apply fires (its workspace:read dep is an optionalCall that
+  // degrades to the post-bootstrap policy) — load in local CLI dev too so an
+  // identity self-edit gets the same injection veto + bootstrap gate as prod.
+  plugins.push(createValidatorIdentityPlugin());
 
   // Sandbox. Config only admits 'subprocess' today; the switch is future-
   // proofing for when alternate sandbox providers land.

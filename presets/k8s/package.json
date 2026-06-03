@@ -23,6 +23,7 @@
   "dependencies": {
     "@ax/admin-settings-routes": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
+    "@ax/agent-identity-templates": "workspace:*",
     "@ax/agents": "workspace:*",
     "@ax/attachments": "workspace:*",
     "@ax/audit-log": "workspace:*",
@@ -62,6 +63,7 @@
     "@ax/tool-artifact-publish": "workspace:*",
     "@ax/tool-connector-propose": "workspace:*",
     "@ax/tool-skill-propose": "workspace:*",
+    "@ax/validator-identity": "workspace:*",
     "@ax/validator-routine": "workspace:*",
     "@ax/validator-skill": "workspace:*",
     "@ax/web-tools": "workspace:*",

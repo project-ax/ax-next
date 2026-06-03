@@ -48,6 +48,7 @@
     "@ax/web-tools": "workspace:*",
     "@ax/preset-k8s": "workspace:*",
     "@ax/test-harness": "workspace:*",
+    "@ax/validator-identity": "workspace:*",
     "@ax/validator-routine": "workspace:*",
     "@ax/validator-skill": "workspace:*",
     "zod": "^3.23.8"

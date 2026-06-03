@@ -12,6 +12,7 @@ import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
 import { createValidatorRoutinePlugin } from '@ax/validator-routine';
+import { createValidatorIdentityPlugin } from '@ax/validator-identity';
 import { createRoutinesPlugin } from '@ax/routines';
 import { createRoutinesAdminRoutesPlugin } from '@ax/routines-admin-routes';
 import { createMcpClientPlugin, createToolDispatcherPlugin } from '@ax/mcp-client';
@@ -609,6 +610,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // observe-only hook subscribers with no dependencies of their own.
   plugins.push(createValidatorSkillPlugin());
   plugins.push(createValidatorRoutinePlugin());
+  // Phase 3 (conversational-agent-identity): gates the agent's writes to its
+  // own /permanent/.ax/ identity files. Subscribes workspace:pre-apply; reads
+  // the committed .ax/BOOTSTRAP.md at the parent version (via the workspace:read
+  // registered by the git-server client) to decide the bootstrap window. Same
+  // observe-and-veto shape as the two validators above.
+  plugins.push(createValidatorIdentityPlugin());
   plugins.push(createRoutinesPlugin());
 
   // Phase D: admin routes for the Routines modal. Mounts /settings/routines/*
