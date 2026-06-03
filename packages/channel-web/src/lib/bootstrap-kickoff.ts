@@ -18,7 +18,7 @@ type AppendFn = (text: string) => void;
 let _append: AppendFn | null = null;
 let _pending = false;
 
-const KICKOFF_TEXT = "let's get started";
+const KICKOFF_TEXT = 'hi';
 
 export const bootstrapKickoff = {
   /**
