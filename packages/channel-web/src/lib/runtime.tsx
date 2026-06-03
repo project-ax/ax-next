@@ -16,6 +16,7 @@ import { AxAttachmentAdapter } from './ax-attachment-adapter';
 import { setActiveConversationId } from './use-conversation-id';
 import { applyTurnError } from './turn-error';
 import { resumeActions } from './resume-actions';
+import { bootstrapKickoff } from './bootstrap-kickoff';
 
 const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   const id = useAuiState(({ threadListItem }) => threadListItem.id);
@@ -82,6 +83,19 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   resumeActions.registerRegenerate(() => {
     void chatRef.current?.regenerate();
   });
+  // Bootstrap kickoff: when a new agent was just created, App.tsx calls
+  // bootstrapKickoff.trigger() before the chat runtime is mounted. Register here
+  // so the pending kickoff fires as soon as the runtime is ready. The chatRef
+  // ensures we always append against the latest chat instance without needing
+  // to re-register on every render.
+  useEffect(() => {
+    bootstrapKickoff.register((text) => {
+      void chatRef.current?.sendMessage({ text });
+    });
+    return () => {
+      bootstrapKickoff.unregister();
+    };
+  }, []);
   return useAISDKRuntime(chat, {
     adapters: { history, attachments },
   });
