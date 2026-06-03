@@ -72,6 +72,13 @@ interface HostGrantsListInput {
 interface HostGrantsListOutput {
   hosts: Array<{ host: string; grantedAt: string }>;
 }
+// The Settings one-list view: every grant the user owns across ALL their agents.
+interface HostGrantsListForUserInput {
+  ownerUserId: string;
+}
+interface HostGrantsListForUserOutput {
+  grants: Array<{ host: string; agentId: string; grantedAt: string }>;
+}
 interface HostGrantsRevokeInput {
   ownerUserId: string;
   agentId: string;
@@ -144,6 +151,13 @@ export interface ConnectionsResponse {
 export interface AllowedSitesResponse {
   agentId: string;
   hosts: Array<{ host: string; grantedAt: string }>;
+}
+
+/** The flat, all-agents allowed-sites view: every grant the user owns, each row
+ *  carrying its `agentId` so the Settings UI can list each host once and show
+ *  which agents it applies to. */
+export interface AllAllowedSitesResponse {
+  grants: Array<{ host: string; agentId: string; grantedAt: string }>;
 }
 
 /** One installable global-catalog skill for the app-store "Not installed" shelf. */
@@ -469,6 +483,29 @@ export function makeConnectionsHandlers(deps: { bus: HookBus; initCtx: AgentCont
         }
         throw err;
       }
+    },
+
+    /**
+     * GET /api/chat/allowed-sites — the flat, all-agents view. Returns every
+     * grant the session user owns across ALL their agents (each row carries its
+     * agentId), so the Settings panel can list each host once and show which
+     * agents it applies to. Owner-scoped at the store; no per-agent ACL needed
+     * here because the list only ever contains the caller's OWN grants. Degrades
+     * to an empty list when @ax/host-grants isn't loaded.
+     */
+    async listAllowedSitesForUser(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      let grants: AllAllowedSitesResponse['grants'] = [];
+      if (bus.hasService('host-grants:list-for-user')) {
+        const r = await bus.call<HostGrantsListForUserInput, HostGrantsListForUserOutput>(
+          'host-grants:list-for-user',
+          initCtx,
+          { ownerUserId: userId },
+        );
+        grants = r.grants;
+      }
+      res.status(200).json({ grants } satisfies AllAllowedSitesResponse);
     },
 
     /** GET /api/chat/allowed-sites/:agentId */

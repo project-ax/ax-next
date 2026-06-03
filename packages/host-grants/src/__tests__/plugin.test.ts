@@ -9,6 +9,8 @@ import type {
   HostGrantsGrantOutput,
   HostGrantsListInput,
   HostGrantsListOutput,
+  HostGrantsListForUserInput,
+  HostGrantsListForUserOutput,
   HostGrantsRevokeInput,
   HostGrantsRevokeOutput,
 } from '../types.js';
@@ -48,10 +50,47 @@ describe('@ax/host-grants plugin', () => {
     expect(createHostGrantsPlugin().manifest).toEqual({
       name: '@ax/host-grants',
       version: '0.0.0',
-      registers: ['host-grants:grant', 'host-grants:list', 'host-grants:revoke'],
+      registers: [
+        'host-grants:grant',
+        'host-grants:list',
+        'host-grants:list-for-user',
+        'host-grants:revoke',
+      ],
       calls: ['database:get-instance'],
       subscribes: [],
     });
+  });
+
+  it('host-grants:list-for-user returns the user’s grants across agents over the bus', async () => {
+    const h = await makeHarness();
+    for (const [agentId, host] of [
+      ['a1', 'a.example.com'],
+      ['a2', 'a.example.com'],
+      ['a1', 'b.example.com'],
+    ] as const) {
+      await h.bus.call<HostGrantsGrantInput, HostGrantsGrantOutput>('host-grants:grant', h.ctx(), {
+        ownerUserId: 'u1',
+        agentId,
+        host,
+      });
+    }
+    // A different user's grant must not leak.
+    await h.bus.call<HostGrantsGrantInput, HostGrantsGrantOutput>('host-grants:grant', h.ctx(), {
+      ownerUserId: 'u2',
+      agentId: 'a1',
+      host: 'leak.example.com',
+    });
+
+    const out = await h.bus.call<HostGrantsListForUserInput, HostGrantsListForUserOutput>(
+      'host-grants:list-for-user',
+      h.ctx(),
+      { ownerUserId: 'u1' },
+    );
+    expect(out.grants.map((g) => ({ host: g.host, agentId: g.agentId }))).toEqual([
+      { host: 'a.example.com', agentId: 'a1' },
+      { host: 'a.example.com', agentId: 'a2' },
+      { host: 'b.example.com', agentId: 'a1' },
+    ]);
   });
 
   it('grant → list → revoke round-trips over the bus', async () => {

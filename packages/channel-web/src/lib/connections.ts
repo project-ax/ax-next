@@ -164,3 +164,45 @@ export async function revokeAllowedSite(agentId: string, host: string): Promise<
   );
   if (!res.ok && res.status !== 204) throw new Error(`revoke-site: ${res.status}`);
 }
+
+// --- Allowed sites: the flat, all-agents view ------------------------------
+// One grant per (agent, host). The Settings panel lists each host once and shows
+// which agents it applies to; "all agents" is just "every agent you have right
+// now" (a grant per agent), so the per-agent egress least-privilege boundary is
+// unchanged — this is a management view over the same per-(user, agent) rows.
+
+/** One grant in the flat view — carries the `agentId` it applies to. */
+export interface AllAllowedSite {
+  host: string;
+  agentId: string;
+  grantedAt: string;
+}
+
+/** Every allowed-site grant the user owns across all their agents. */
+export async function listAllAllowedSites(): Promise<AllAllowedSite[]> {
+  const res = await fetch('/api/chat/allowed-sites', { credentials: 'include' });
+  if (!res.ok) throw new Error(`allowed-sites: ${res.status}`);
+  const body = (await res.json()) as { grants: AllAllowedSite[] };
+  return body.grants;
+}
+
+/**
+ * Reconcile which agents a host applies to: grant it for newly-checked agents,
+ * revoke it for unchecked ones. Built on the existing per-(agent) grant/revoke
+ * routes, so the egress model is untouched — this only adds/removes per-agent
+ * rows to match `desiredAgentIds`. `currentAgentIds` is the host's existing
+ * agent set (so we only touch the deltas). A grant error (e.g. the 256-per-agent
+ * cap) propagates with its friendly message; revokes are best-effort/idempotent.
+ */
+export async function setSiteAgents(
+  host: string,
+  desiredAgentIds: readonly string[],
+  currentAgentIds: readonly string[],
+): Promise<void> {
+  const desired = new Set(desiredAgentIds);
+  const current = new Set(currentAgentIds);
+  const toAdd = [...desired].filter((a) => !current.has(a));
+  const toRemove = [...current].filter((a) => !desired.has(a));
+  for (const agentId of toAdd) await addAllowedSite(agentId, host);
+  for (const agentId of toRemove) await revokeAllowedSite(agentId, host);
+}
