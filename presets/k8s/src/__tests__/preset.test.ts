@@ -1014,6 +1014,17 @@ describe('loadK8sConfigFromEnv', () => {
     );
   });
 
+  // Regression (codex P2): a TCP port WITHOUT an advertised endpoint would
+  // start the listener on 0.0.0.0 but advertise the undialable bind address
+  // (tcp://0.0.0.0:<port> → http://0.0.0.0:<port>) to cross-pod runners. The
+  // chart always sets both, but a partial env (port alone) must fail loud, not
+  // ship a silently-unreachable proxy.
+  it('throws when AX_PROXY_TCP_PORT is set without AX_PROXY_ADVERTISED_ENDPOINT', () => {
+    expect(() =>
+      loadK8sConfigFromEnv(minRequired({ AX_PROXY_TCP_PORT: '8888' })),
+    ).toThrow(/advertised|AX_PROXY_ADVERTISED_ENDPOINT/i);
+  });
+
   it('leaves the TCP proxy knobs unset when their env vars are empty (legacy hostPath default)', () => {
     const cfg = loadK8sConfigFromEnv(
       minRequired({

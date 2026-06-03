@@ -593,6 +593,47 @@ describeIfHelm('ax-next chart: credential-proxy TCP Service (TASK-149)', () => {
     }
   });
 
+  it('TCP mode: the host-network NetworkPolicy admits runner INGRESS on the proxy port (else CNI denies the connect)', () => {
+    // Regression (codex P1): the sandbox-restrict egress rule opens the
+    // RUNNER side, but the host pod's own ingress policy must also admit the
+    // proxy port — otherwise packets to the proxy Service's target port are
+    // denied at the CNI layer before reaching the host container, and every
+    // TCP-mode proxy connect fails despite a correct AX_PROXY_ENDPOINT.
+    const docs = helmTemplate([...tcpArgs, '--set', 'networkPolicies.enabled=true']);
+    const np = docs.find(
+      (d) =>
+        d.kind === 'NetworkPolicy' &&
+        d.metadata?.name === 'ax-test-ax-next-host-network',
+    );
+    expect(np, 'host-network NetworkPolicy renders').toBeDefined();
+    const ingress: Array<{
+      from?: Array<{ podSelector?: { matchLabels?: Record<string, string> } }>;
+      ports?: Array<{ port?: number; protocol?: string }>;
+    }> = np?.spec?.ingress ?? [];
+    // A rule that admits the proxy port FROM runner pods (ax.io/plane: execution).
+    const runnerProxyIngress = ingress.some(
+      (rule) =>
+        (rule.from ?? []).some(
+          (f) => f.podSelector?.matchLabels?.['ax.io/plane'] === 'execution',
+        ) && (rule.ports ?? []).some((p) => p.port === 8888 && p.protocol === 'TCP'),
+    );
+    expect(runnerProxyIngress, 'host admits runner ingress on the proxy port').toBe(true);
+  });
+
+  it('default (hostPath posture): the host-network NetworkPolicy has NO proxy ingress rule', () => {
+    const docs = helmTemplate(['--set', 'networkPolicies.enabled=true']);
+    const np = docs.find(
+      (d) =>
+        d.kind === 'NetworkPolicy' &&
+        d.metadata?.name === 'ax-test-ax-next-host-network',
+    );
+    const ingress: Array<{ ports?: Array<{ port?: number }> }> = np?.spec?.ingress ?? [];
+    const hasProxyPort = ingress.some((rule) =>
+      (rule.ports ?? []).some((p) => p.port === 8888),
+    );
+    expect(hasProxyPort, 'no proxy ingress rule in hostPath mode').toBe(false);
+  });
+
   it('TCP mode: the sandbox-restrict NetworkPolicy adds an egress rule to the proxy Service port', () => {
     const docs = helmTemplate([...tcpArgs, '--set', 'networkPolicies.enabled=true']);
     const np = docs.find(

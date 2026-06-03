@@ -541,6 +541,18 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // returns in TCP mode (the bind address 0.0.0.0:<port> isn't dialable
   // cross-pod).
   const tcpPort = config.credentialProxy?.tcpPort;
+  if (tcpPort !== undefined && config.credentialProxy?.advertisedEndpoint === undefined) {
+    // Defense in depth (codex P2): the env loader already rejects this, but a
+    // hand-rolled config could still reach here. Without an advertised
+    // endpoint the proxy advertises its bind address (0.0.0.0:<port>), which
+    // cross-pod runners can't dial.
+    throw new PluginError({
+      code: 'invalid-config',
+      plugin: '@ax/preset-k8s',
+      message:
+        'credentialProxy.tcpPort requires credentialProxy.advertisedEndpoint — the bind address is not dialable cross-pod',
+    });
+  }
   const credentialProxyCfg: Parameters<typeof createCredentialProxyPlugin>[0] =
     tcpPort !== undefined
       ? {
@@ -1522,6 +1534,18 @@ export function loadK8sConfigFromEnv(
       ...(config.credentialProxy ?? {}),
       advertisedEndpoint: env.AX_PROXY_ADVERTISED_ENDPOINT,
     };
+  }
+  // TASK-149 — a TCP listen port WITHOUT an advertised endpoint would bind
+  // 0.0.0.0 but advertise the undialable bind address (tcp://0.0.0.0:<port>)
+  // to cross-pod runners. The chart always stamps both together; fail loud on
+  // a partial config rather than ship a silently-unreachable proxy.
+  if (
+    config.credentialProxy?.tcpPort !== undefined &&
+    config.credentialProxy.advertisedEndpoint === undefined
+  ) {
+    throw new Error(
+      'AX_PROXY_TCP_PORT requires AX_PROXY_ADVERTISED_ENDPOINT — the bind address (0.0.0.0:<port>) is not dialable cross-pod; set the cluster Service URL',
+    );
   }
   // Static-file serving for channel-web's SPA bundle. The chart's default
   // points this at `/opt/ax-next/host/web` — a stable path the agent
