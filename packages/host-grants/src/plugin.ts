@@ -5,11 +5,14 @@ import { createHostGrantsStore, type HostGrantsStore } from './store.js';
 import {
   HostGrantsGrantOutputSchema,
   HostGrantsListOutputSchema,
+  HostGrantsListForUserOutputSchema,
   HostGrantsRevokeOutputSchema,
   type HostGrantsGrantInput,
   type HostGrantsGrantOutput,
   type HostGrantsListInput,
   type HostGrantsListOutput,
+  type HostGrantsListForUserInput,
+  type HostGrantsListForUserOutput,
   type HostGrantsRevokeInput,
   type HostGrantsRevokeOutput,
 } from './types.js';
@@ -34,7 +37,12 @@ export function createHostGrantsPlugin(): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['host-grants:grant', 'host-grants:list', 'host-grants:revoke'],
+      registers: [
+        'host-grants:grant',
+        'host-grants:list',
+        'host-grants:list-for-user',
+        'host-grants:revoke',
+      ],
       calls: ['database:get-instance'],
       subscribes: [],
     },
@@ -72,6 +80,15 @@ export function createHostGrantsPlugin(): Plugin {
           ),
         }),
         { returns: HostGrantsListOutputSchema },
+      );
+
+      bus.registerService<HostGrantsListForUserInput, HostGrantsListForUserOutput>(
+        'host-grants:list-for-user',
+        PLUGIN_NAME,
+        async (_ctx, input) => ({
+          grants: await store!.listForUser(requireField(input.ownerUserId, 'ownerUserId')),
+        }),
+        { returns: HostGrantsListForUserOutputSchema },
       );
 
       bus.registerService<HostGrantsRevokeInput, HostGrantsRevokeOutput>(

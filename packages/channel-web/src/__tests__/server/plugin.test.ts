@@ -490,6 +490,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
             'the Settings "Allowed sites" panel shows no persisted hosts (the live reactive wall still applies per session)',
         },
         {
+          hook: 'host-grants:list-for-user',
+          degradation:
+            'the Settings "Allowed sites" one-list panel shows no persisted hosts',
+        },
+        {
           hook: 'host-grants:revoke',
           degradation:
             'the Settings "Allowed sites" Revoke control is a no-op (no persisted grants to remove)',

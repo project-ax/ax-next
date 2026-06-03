@@ -49,6 +49,7 @@ describe('channel-web Connections BFF', () => {
   let bus: HookBus;
   let detachCalls: Array<{ userId: string; agentId: string; skillId: string }>;
   let grantListCalls: Array<{ ownerUserId: string; agentId: string }>;
+  let forUserListCalls: Array<{ ownerUserId: string }>;
   let grantCalls: Array<{ ownerUserId: string; agentId: string; host: string }>;
   let revokeCalls: Array<{ ownerUserId: string; agentId: string; host: string }>;
 
@@ -56,6 +57,7 @@ describe('channel-web Connections BFF', () => {
     bus = new HookBus();
     detachCalls = [];
     grantListCalls = [];
+    forUserListCalls = [];
     grantCalls = [];
     revokeCalls = [];
     bus.registerService('auth:require-user', 'auth', async () => ({
@@ -107,6 +109,16 @@ describe('channel-web Connections BFF', () => {
     bus.registerService('host-grants:list', 'host-grants', async (_c, i: unknown) => {
       grantListCalls.push(i as { ownerUserId: string; agentId: string });
       return { hosts: [{ host: 'status.example.com', grantedAt: '2026-05-20T00:00:00Z' }] };
+    });
+    bus.registerService('host-grants:list-for-user', 'host-grants', async (_c, i: unknown) => {
+      forUserListCalls.push(i as { ownerUserId: string });
+      return {
+        grants: [
+          { host: 'a.example.com', agentId: 'a1', grantedAt: '2026-05-20T00:00:00Z' },
+          { host: 'a.example.com', agentId: 'a2', grantedAt: '2026-05-20T00:00:00Z' },
+          { host: 'b.example.com', agentId: 'a1', grantedAt: '2026-05-20T00:00:00Z' },
+        ],
+      };
     });
     bus.registerService('host-grants:grant', 'host-grants', async (_c, i: unknown) => {
       grantCalls.push(i as { ownerUserId: string; agentId: string; host: string });
@@ -353,6 +365,51 @@ describe('channel-web Connections BFF', () => {
       await h.listAllowedSites(mkReq({ agentId: 'a1' }), res);
       expect(captured.statusCode).toBe(200);
       expect(captured.body).toEqual({ agentId: 'a1', hosts: [] });
+    });
+  });
+
+  describe('GET /api/chat/allowed-sites (flat, all-agents)', () => {
+    it('lists every grant the user owns across agents (owner-forced from auth)', async () => {
+      const h = makeConnectionsHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.listAllowedSitesForUser(mkReq({}), res);
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual({
+        grants: [
+          { host: 'a.example.com', agentId: 'a1', grantedAt: '2026-05-20T00:00:00Z' },
+          { host: 'a.example.com', agentId: 'a2', grantedAt: '2026-05-20T00:00:00Z' },
+          { host: 'b.example.com', agentId: 'a1', grantedAt: '2026-05-20T00:00:00Z' },
+        ],
+      });
+      // ownerUserId SERVER-FORCED from auth ('u1'); no agentId, no per-agent ACL.
+      expect(forUserListCalls).toEqual([{ ownerUserId: 'u1' }]);
+    });
+
+    it('401s an unauthenticated caller', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => {
+        throw new (await import('@ax/core')).PluginError({
+          code: 'unauthenticated',
+          plugin: 'auth',
+          message: 'no cookie',
+        });
+      });
+      const h = makeConnectionsHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.listAllowedSitesForUser(mkReq({}), res);
+      expect(captured.statusCode).toBe(401);
+    });
+
+    it('degrades to empty when @ax/host-grants is absent', async () => {
+      const b = new HookBus();
+      b.registerService('auth:require-user', 'auth', async () => ({
+        user: { id: 'u1', isAdmin: false },
+      }));
+      const h = makeConnectionsHandlers({ bus: b, initCtx });
+      const { res, captured } = mkRes();
+      await h.listAllowedSitesForUser(mkReq({}), res);
+      expect(captured.statusCode).toBe(200);
+      expect(captured.body).toEqual({ grants: [] });
     });
   });
 

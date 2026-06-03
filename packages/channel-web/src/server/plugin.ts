@@ -162,6 +162,14 @@ export function createChannelWebServerPlugin(
             'the Settings "Allowed sites" panel shows no persisted hosts (the live reactive wall still applies per session)',
         },
         {
+          // The Settings "Allowed sites" one-list view reads every grant the user
+          // owns across all their agents. Same k8s-preset-only degradation as
+          // host-grants:list.
+          hook: 'host-grants:list-for-user',
+          degradation:
+            'the Settings "Allowed sites" one-list panel shows no persisted hosts',
+        },
+        {
           // TASK-54 — the Settings "Allowed sites" panel's Revoke control removes
           // a durable grant so it is not re-loaded into the next session's
           // allowlist. Degrades to an idempotent no-op without host-grants.
@@ -409,6 +417,15 @@ export function createChannelWebServerPlugin(
           method: 'DELETE' as const,
           path: '/api/chat/connections/:agentId/skills/:skillId',
           handler: connections.detach,
+        },
+        // The flat, all-agents view (the Settings one-list panel): every grant the
+        // user owns across all their agents. Registered as an EXACT route, so it
+        // takes precedence over the `/:agentId` pattern below (router tries exact
+        // before patterns).
+        {
+          method: 'GET' as const,
+          path: '/api/chat/allowed-sites',
+          handler: connections.listAllowedSitesForUser,
         },
         {
           method: 'GET' as const,

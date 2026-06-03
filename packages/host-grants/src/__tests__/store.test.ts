@@ -79,6 +79,25 @@ describe('host-grants store', () => {
     expect(await s.list('u1', 'a1')).toEqual([]);
   });
 
+  it('listForUser returns every grant across the user’s agents (each row carries agentId), owner-scoped', async () => {
+    const s = await freshStore();
+    await s.grant({ ownerUserId: 'u1', agentId: 'a2', host: 'b.example.com' });
+    await s.grant({ ownerUserId: 'u1', agentId: 'a1', host: 'b.example.com' });
+    await s.grant({ ownerUserId: 'u1', agentId: 'a1', host: 'a.example.com' });
+    await s.grant({ ownerUserId: 'u2', agentId: 'a1', host: 'leak.example.com' });
+
+    const rows = await s.listForUser('u1');
+    // Ordered host asc, then agentId asc — deterministic for the UI grouping.
+    expect(rows.map((r) => ({ host: r.host, agentId: r.agentId }))).toEqual([
+      { host: 'a.example.com', agentId: 'a1' },
+      { host: 'b.example.com', agentId: 'a1' },
+      { host: 'b.example.com', agentId: 'a2' },
+    ]);
+    expect(typeof rows[0]?.grantedAt).toBe('string');
+    // u2's grant never leaks into u1's view.
+    expect(rows.some((r) => r.host === 'leak.example.com')).toBe(false);
+  });
+
   it('rejects an invalid host', async () => {
     const s = await freshStore();
     for (const host of [

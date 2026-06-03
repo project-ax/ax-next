@@ -17,9 +17,20 @@ export interface HostGrant {
   grantedAt: string;
 }
 
+/** A grant as seen ACROSS the user's agents — carries `agentId` because the
+ *  Settings "Allowed sites" surface lists each host once and shows which agents
+ *  it applies to. */
+export interface HostGrantForUser extends HostGrant {
+  agentId: string;
+}
+
 export interface HostGrantsStore {
   grant(input: { ownerUserId: string; agentId: string; host: string }): Promise<{ created: boolean }>;
   list(ownerUserId: string, agentId: string): Promise<HostGrant[]>;
+  /** Every grant the user owns across ALL their agents (each row carries its
+   *  agentId), ordered host asc then agentId asc. Owner-scoped — a foreign
+   *  user's rows are never returned. Backs the Settings one-list view. */
+  listForUser(ownerUserId: string): Promise<HostGrantForUser[]>;
   revoke(input: { ownerUserId: string; agentId: string; host: string }): Promise<{ revoked: boolean }>;
 }
 
@@ -70,6 +81,21 @@ export function createHostGrantsStore(db: Kysely<HostGrantsDatabase>): HostGrant
         .orderBy('host', 'asc')
         .execute();
       return rows.map((r) => ({ host: r.host, grantedAt: r.created_at.toISOString() }));
+    },
+
+    async listForUser(ownerUserId) {
+      const rows = await db
+        .selectFrom('host_grants_v1_grants')
+        .select(['host', 'agent_id', 'created_at'])
+        .where('owner_user_id', '=', ownerUserId)
+        .orderBy('host', 'asc')
+        .orderBy('agent_id', 'asc')
+        .execute();
+      return rows.map((r) => ({
+        host: r.host,
+        agentId: r.agent_id,
+        grantedAt: r.created_at.toISOString(),
+      }));
     },
 
     async revoke({ ownerUserId, agentId, host }) {

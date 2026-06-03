@@ -211,6 +211,7 @@ describe('@ax/preset-k8s wiring', () => {
     expect(hg!.manifest.registers).toEqual([
       'host-grants:grant',
       'host-grants:list',
+      'host-grants:list-for-user',
       'host-grants:revoke',
     ]);
   });
