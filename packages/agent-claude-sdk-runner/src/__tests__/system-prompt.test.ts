@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  buildSystemPrompt,
+  buildFallbackPrompt,
   capabilityHandoffNote,
   ephemeralScratchNote,
   pythonVenvNote,
@@ -21,10 +21,10 @@ describe('workspaceNote', () => {
   });
 });
 
-describe('buildSystemPrompt', () => {
+describe('buildFallbackPrompt', () => {
   describe('workspace note (always present)', () => {
     it('appends the workspace note onto a custom string prompt', () => {
-      const result = buildSystemPrompt('You are a helpful agent.', WS, undefined);
+      const result = buildFallbackPrompt('You are a helpful agent.', WS, undefined);
       expect(typeof result).toBe('string');
       const text = result as string;
       expect(text.startsWith('You are a helpful agent.\n\n')).toBe(true);
@@ -32,7 +32,7 @@ describe('buildSystemPrompt', () => {
     });
 
     it('uses the preset append carrying the workspace note for an empty prompt', () => {
-      expect(buildSystemPrompt('', WS, undefined)).toEqual({
+      expect(buildFallbackPrompt('', WS, undefined)).toEqual({
         type: 'preset',
         preset: 'claude_code',
         append: `${workspaceNote(WS)}\n\n${capabilityHandoffNote()}\n\n${skillAuthoringNote()}`,
@@ -44,7 +44,7 @@ describe('buildSystemPrompt', () => {
     it('concatenates workspace + scratch notes onto a custom string prompt', () => {
       // The SDK preset `append` is a no-op on a string systemPrompt, so the
       // helper must concatenate the notes itself.
-      const result = buildSystemPrompt('Custom prompt.', WS, '/ephemeral');
+      const result = buildFallbackPrompt('Custom prompt.', WS, '/ephemeral');
       expect(typeof result).toBe('string');
       const text = result as string;
       expect(text.startsWith('Custom prompt.\n\n')).toBe(true);
@@ -53,7 +53,7 @@ describe('buildSystemPrompt', () => {
     });
 
     it('uses the preset append (workspace + scratch) for an empty prompt', () => {
-      const result = buildSystemPrompt('', WS, '/tmp/ax-scratch');
+      const result = buildFallbackPrompt('', WS, '/tmp/ax-scratch');
       expect(result).toEqual({
         type: 'preset',
         preset: 'claude_code',
@@ -72,13 +72,13 @@ describe('buildSystemPrompt', () => {
 
   describe('JIT capability-handoff note (always present)', () => {
     it('includes the continue-automatically guidance for an empty prompt', () => {
-      const out = buildSystemPrompt('', WS, undefined);
+      const out = buildFallbackPrompt('', WS, undefined);
       const text = typeof out === 'string' ? out : (out.append ?? '');
       expect(text.toLowerCase()).toContain('continue automatically');
     });
 
     it('appends the handoff note onto a custom string prompt', () => {
-      const out = buildSystemPrompt('You are helpful.', WS, undefined);
+      const out = buildFallbackPrompt('You are helpful.', WS, undefined);
       const text = out as string;
       expect(text).toContain(capabilityHandoffNote());
       expect(text.toLowerCase()).toContain('continue automatically');
@@ -100,7 +100,7 @@ describe('buildSystemPrompt', () => {
     });
 
     it('carries the cold-start narration on the empty-prompt preset append', () => {
-      const out = buildSystemPrompt('', WS, undefined);
+      const out = buildFallbackPrompt('', WS, undefined);
       const text = typeof out === 'string' ? out : (out.append ?? '');
       expect(text.toLowerCase()).toContain('asked your admin');
     });
@@ -115,12 +115,12 @@ describe('buildSystemPrompt', () => {
     });
 
     it('is appended to a custom string prompt', () => {
-      const out = buildSystemPrompt('You are helpful.', WS, undefined) as string;
+      const out = buildFallbackPrompt('You are helpful.', WS, undefined) as string;
       expect(out).toContain(skillAuthoringNote());
     });
 
     it('rides the empty-prompt preset append', () => {
-      const out = buildSystemPrompt('', WS, undefined);
+      const out = buildFallbackPrompt('', WS, undefined);
       const append = typeof out === 'string' ? out : (out.append ?? '');
       expect(append).toContain(skillAuthoringNote());
     });
@@ -128,13 +128,13 @@ describe('buildSystemPrompt', () => {
 
   describe('python venv note', () => {
     it('omits the python note when the venv is not active', () => {
-      const result = buildSystemPrompt('Custom prompt.', WS, '/ephemeral', false);
+      const result = buildFallbackPrompt('Custom prompt.', WS, '/ephemeral', false);
       const text = typeof result === 'string' ? result : (result.append ?? '');
       expect(text).not.toContain(pythonVenvNote());
     });
 
     it('appends the python note onto a custom string prompt when active', () => {
-      const result = buildSystemPrompt('Custom prompt.', WS, '/ephemeral', true);
+      const result = buildFallbackPrompt('Custom prompt.', WS, '/ephemeral', true);
       expect(typeof result).toBe('string');
       const text = result as string;
       expect(text).toContain(pythonVenvNote());
@@ -143,21 +143,21 @@ describe('buildSystemPrompt', () => {
     });
 
     it('uses the preset append for an empty prompt when active', () => {
-      const result = buildSystemPrompt('', WS, '/ephemeral', true);
+      const result = buildFallbackPrompt('', WS, '/ephemeral', true);
       expect(typeof result).toBe('object');
       const append = (result as { append?: string }).append ?? '';
       expect(append).toContain(pythonVenvNote());
     });
 
     it('can emit the python note even without an ephemeral scratch note', () => {
-      const result = buildSystemPrompt('Custom.', WS, undefined, true);
+      const result = buildFallbackPrompt('Custom.', WS, undefined, true);
       const text = result as string;
       expect(text).toContain(pythonVenvNote());
       expect(text).toContain(workspaceNote(WS));
     });
 
     it('defaults pythonVenvActive to false (3-arg call)', () => {
-      const result = buildSystemPrompt('Custom.', WS, '/ephemeral');
+      const result = buildFallbackPrompt('Custom.', WS, '/ephemeral');
       const text = result as string;
       expect(text).not.toContain(pythonVenvNote());
     });

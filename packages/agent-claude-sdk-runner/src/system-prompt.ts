@@ -141,37 +141,63 @@ export function skillAuthoringNote(): string {
 }
 
 /**
- * Build the SDK `systemPrompt` value from the agent's frozen prompt, the
- * workspace root, and the optional ephemeral scratch root.
+ * Assemble the runner-authored operational notes block, in order:
+ *   workspace → (ephemeral-scratch?) → (python-venv?) → capability-handoff →
+ *   skill-authoring.
  *
- * Always appends the workspace note (the root is always known); also appends
- * the ephemeral-scratch note (when `ephemeralRoot` is present) and the
- * python-venv note (when `pythonVenvActive`). Notes are joined with the prompt
- * the same way:
+ * Always includes the workspace note (the root is always known); the
+ * ephemeral-scratch and python-venv notes are conditional on the sandbox
+ * having wired a scratch tier / venv. The capability-handoff and
+ * skill-authoring notes are always present (harmless when the corresponding
+ * tools aren't wired). Returns a single string joined by blank lines —
+ * always non-empty.
+ *
+ * Shared by the legacy `buildFallbackPrompt` (below) AND the file-based
+ * prompt-engine's normal mode (`prompt-engine.ts`), so the operational notes
+ * are assembled in exactly one place.
+ */
+export function operationalNotes(
+  workspaceRoot: string,
+  ephemeralRoot: string | undefined,
+  pythonVenvActive = false,
+): string {
+  const notes: string[] = [workspaceNote(workspaceRoot)];
+  if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
+  if (pythonVenvActive) notes.push(pythonVenvNote());
+  // Always last two: the JIT capability-handoff note (design §7) so the agent
+  // doesn't narrate a mid-conversation connect/approval handoff, and the
+  // skill-authoring spawn-time-discovery constraint (TASK-74 §D6). Both
+  // harmless when the corresponding tools aren't wired.
+  notes.push(capabilityHandoffNote());
+  notes.push(skillAuthoringNote());
+  return notes.join('\n\n');
+}
+
+/**
+ * Legacy string-fallback system prompt: builds the SDK `systemPrompt` value
+ * from the agent's frozen prompt string, the workspace root, and the optional
+ * ephemeral scratch root.
+ *
+ * This is the **string-fallback bridge** (design Phase 1): the file-based
+ * prompt-engine (`prompt-engine.ts`) calls this only when there are no `.ax/`
+ * identity files and no `BOOTSTRAP.md`, so a mid-migration agent that hasn't
+ * been given identity files yet still gets its legacy prompt. Phase 4 removes
+ * this path once every agent has files.
+ *
+ * Notes are joined with the prompt the same way:
  * - Empty agent prompt => `claude_code` preset (notes via the SDK's native
  *   `append`).
  * - Non-empty agent prompt => the verbatim string with the notes concatenated
  *   ourselves (the preset `append` is a no-op on strings).
  */
-export function buildSystemPrompt(
+export function buildFallbackPrompt(
   agentSystemPrompt: string,
   workspaceRoot: string,
   ephemeralRoot: string | undefined,
   pythonVenvActive = false,
 ): SdkSystemPrompt {
-  const notes: string[] = [workspaceNote(workspaceRoot)];
-  if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
-  if (pythonVenvActive) notes.push(pythonVenvNote());
-  // Always last: the JIT capability-handoff note (design §7) so the agent
-  // doesn't narrate a mid-conversation connect/approval handoff. Harmless when
-  // no connect tool exists.
-  notes.push(capabilityHandoffNote());
-  // TASK-74 (design §D6): the spawn-time-discovery constraint for skill_propose
-  // — a proposed skill is available next turn, not this one. Harmless when no
-  // skill_propose tool is wired.
-  notes.push(skillAuthoringNote());
   // `note` is always non-empty (the workspace note is unconditional).
-  const note = notes.join('\n\n');
+  const note = operationalNotes(workspaceRoot, ephemeralRoot, pythonVenvActive);
 
   if (agentSystemPrompt.length > 0) {
     return `${agentSystemPrompt}\n\n${note}`;
