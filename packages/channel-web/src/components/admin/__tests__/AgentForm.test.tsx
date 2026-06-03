@@ -32,6 +32,7 @@ vi.mock('../AuthoredSkillsSection', () => ({
 
 import {
   listAdminAgents,
+  createAgent,
   deleteAgent,
   listTeams,
   patchAgent,
@@ -58,6 +59,17 @@ const AGENT: AdminAgent = {
   connectorAttachments: [],
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
+};
+
+// A wildcard/bare agent — persisted with an empty allowedTools (a valid,
+// store-allowed state). The combined AgentForm Save must NOT force this agent
+// to enumerate tools just to edit its identity (TASK-147).
+const BARE_AGENT: AdminAgent = {
+  ...AGENT,
+  id: 'agent-bare',
+  displayName: 'Bare Bot',
+  allowedTools: [],
+  mcpConfigIds: [],
 };
 
 describe('AgentForm — styled delete confirm', () => {
@@ -225,5 +237,108 @@ describe('AgentForm — file-based identity editor (TASK-142)', () => {
         operating: 'Prefer SI units.',
       }),
     );
+  });
+});
+
+describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(listTeams).mockResolvedValue([]);
+    vi.mocked(listConnectors).mockResolvedValue([]);
+    vi.mocked(patchAgent).mockResolvedValue(undefined);
+    vi.mocked(patchAgentConnectorAttachments).mockResolvedValue(BARE_AGENT);
+    vi.mocked(putAgentIdentity).mockResolvedValue(undefined);
+    vi.mocked(createAgent).mockResolvedValue(AGENT);
+    vi.mocked(getAgentIdentity).mockResolvedValue({
+      identity: 'I am Bare.',
+      soul: 'old soul',
+      operating: '',
+    });
+  });
+
+  it('an identity-only edit on a wildcard/bare agent saves without forcing a tool list', async () => {
+    mockList.mockResolvedValue([BARE_AGENT]);
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Bare Bot')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    await waitFor(() =>
+      expect((screen.getByLabelText('Soul') as HTMLTextAreaElement).value).toBe(
+        'old soul',
+      ),
+    );
+
+    // Change ONLY the identity files; leave Allowed tools empty (the agent is
+    // bare and the user has no intention of enumerating tools).
+    fireEvent.change(screen.getByLabelText('Soul'), {
+      target: { value: 'I value freedom.' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    // The identity write must happen — the tools gate must NOT abort the submit.
+    await waitFor(() =>
+      expect(putAgentIdentity).toHaveBeenCalledWith('agent-bare', {
+        identity: 'I am Bare.',
+        soul: 'I value freedom.',
+        operating: '',
+      }),
+    );
+    expect(
+      screen.queryByText(/must list at least one tool/i),
+    ).toBeNull();
+
+    // The PATCH must NOT send the empty wildcard pair (allowedTools=[] AND
+    // mcpConfigIds=[]) — the server rejects that combo. Those fields are omitted
+    // so the agent stays bare.
+    expect(patchAgent).toHaveBeenCalledTimes(1);
+    const patchBody = vi.mocked(patchAgent).mock.calls[0]?.[1] ?? {};
+    expect(patchBody).not.toHaveProperty('allowedTools');
+    expect(patchBody).not.toHaveProperty('mcpConfigIds');
+  });
+
+  it('still blocks a NEW agent that lists no tools (gate preserved on create)', async () => {
+    mockList.mockResolvedValue([]);
+    render(<AgentForm isAdmin />);
+    await waitFor(() =>
+      expect(screen.getByText(/No agents yet/i)).toBeTruthy(),
+    );
+
+    fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
+    fireEvent.change(screen.getByLabelText('Name'), {
+      target: { value: 'Toolless' },
+    });
+    // Leave Allowed tools empty.
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/must list at least one tool/i)).toBeTruthy(),
+    );
+    expect(createAgent).not.toHaveBeenCalled();
+    expect(putAgentIdentity).not.toHaveBeenCalled();
+  });
+
+  it('still blocks clearing the tool list on an agent that HAD tools (no silent demotion to wildcard)', async () => {
+    mockList.mockResolvedValue([AGENT]); // allowedTools: ['Bash']
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('Allowed tools') as HTMLInputElement).value,
+      ).toBe('Bash'),
+    );
+
+    // Clear the previously-populated tool list.
+    fireEvent.change(screen.getByLabelText('Allowed tools'), {
+      target: { value: '' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(screen.getByText(/must list at least one tool/i)).toBeTruthy(),
+    );
+    expect(patchAgent).not.toHaveBeenCalled();
+    expect(putAgentIdentity).not.toHaveBeenCalled();
   });
 });
