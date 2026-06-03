@@ -1059,3 +1059,25 @@ Design: `docs/plans/2026-06-01-credentials-into-connectors-design.md` (source of
 | 2026-06-03 | Runner normal-mode "no IDENTITY.md" fallback = `You are <displayName>, a helpful personal assistant.` (not the legacy `claude_code` preset) | Card: orchestrator passes displayName as the runner's fallback identity. Removing `buildFallbackPrompt` means the preset/string path is gone; every agent now goes through normal mode with floor+notes. | Keep preset path (violates Invariant #3 window-close — that IS the fallback being removed). |
 | 2026-06-03 | REMOVE `runIdentityBackfill` + `backfillIdentityFile` as dead post-migration code | The backfill sourced SOUL.md from the legacy `system_prompt`; with the column dropped there is nothing to backfill FROM, and #304 already ran it on every existing agent. Keeping it dead-wired violates the half-wired policy. | Leave it (dead code referencing a dropped column → won't compile / lies about source of truth). |
 | 2026-06-03 | Admin editor reads/writes `.ax/` via NEW channel-web BFF routes (GET/PUT /admin/agents/:id/identity) under owner ctx, not via a new hook | `agents:create` loses a field (boundary review) rather than the system gaining a hook; the routes reuse existing `workspace:read`/`workspace:apply` (pre-apply → validator-identity). Models on routes-agent-bootstrap. | Add an `agents:*` identity hook (premature abstraction; the validator already owns the policy). |
+
+## 2026-06-03 — TASK-142 shipped as PR #305 (Phase 4 conversational-agent-identity)
+
+Drops `agents_v1_agents.system_prompt` (DROP COLUMN IF EXISTS migration). Closes the
+half-wired string-fallback window (Invariant #3): `.ax/` files are the only identity
+source of truth (Invariant #4). Key changes:
+- Runner `buildSystemPrompt(displayName, augment, …)` — removed `buildFallbackPrompt` +
+  the claude_code-preset path; no-IDENTITY.md falls back to a `You are <displayName>, …`
+  line (the canonical `fallbackIdentityLine` in @ax/agent-identity-templates, formerly
+  `backfillIdentityFile`). Bootstrap trust-note updated (validator wired in TASK-141).
+- `AgentConfig` session snapshot: `systemPrompt` → `displayName` + new `systemPromptAugment`,
+  threaded through ipc-protocol/session-*/sandbox-*/mcp-client/chat-orchestrator.
+- File-based admin editor: AgentForm Identity/Soul/Operating(→AGENTS.md, opt-in) via new
+  channel-web GET/PUT /admin/agents/:id/identity (workspace:read + workspace:apply →
+  validator-identity). Route added `workspace:read` to channel-web manifest calls.
+- memory-strata seeds system/agent.md from composed `.ax/` identity (new compose-identity.ts,
+  reads `<rootPath>/permanent/.ax/`).
+- Removed dead runIdentityBackfill + its plugin wiring + workspace optionalCalls.
+Two bugs caught pre-merge: (1) empty `systemPromptAugment` rejected by session requireString —
+fixed with requireStringAllowEmpty (only surfaced in @ax/cli e2e); (2) identity PUT
+parent:null was a strict-CAS miss → 500 for existing-history agents — fixed with the
+parent-mismatch retry contract.
