@@ -177,6 +177,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/teams',
         '@ax/tool-artifact-publish',
         '@ax/tool-dispatcher',
+        '@ax/validator-identity',
         '@ax/validator-routine',
         '@ax/validator-skill',
         '@ax/workspace-git',
@@ -576,6 +577,44 @@ describe('@ax/preset-k8s — routines Phase B core (half-wired window closes her
     const v = plugins.find((p) => p.manifest.name === '@ax/validator-routine');
     expect(v, '@ax/validator-routine plugin').toBeDefined();
     expect(v!.manifest.subscribes).toContain('workspace:pre-apply');
+  });
+});
+
+// Phase 3 conversational-agent-identity (2026-06-03). @ax/validator-identity is
+// the THIRD workspace:pre-apply subscriber (after validator-skill +
+// validator-routine). It gates the agent's writes to its own /permanent/.ax/
+// identity files under the bootstrap-window policy. No half-wired window: it
+// loads in the preset here AND is exercised end-to-end through the Phase-3
+// commit-notify canary (acceptance.test.ts boots the full k8s preset, so every
+// workspace:apply runs through this subscriber).
+describe('@ax/preset-k8s — validator-identity (Phase 3)', () => {
+  it('@ax/validator-identity is present in the default plugin set', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names).toContain('@ax/validator-identity');
+  });
+
+  it('@ax/validator-identity subscribes to workspace:pre-apply', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const v = plugins.find((p) => p.manifest.name === '@ax/validator-identity');
+    expect(v, '@ax/validator-identity plugin').toBeDefined();
+    expect(v!.manifest.subscribes).toContain('workspace:pre-apply');
+  });
+
+  it('@ax/validator-identity declares workspace:read as an OPTIONAL call (degrades, never crashes bootstrap)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const v = plugins.find((p) => p.manifest.name === '@ax/validator-identity');
+    expect(v, '@ax/validator-identity plugin').toBeDefined();
+    expect(v!.manifest.calls).toEqual([]);
+    expect((v!.manifest.optionalCalls ?? []).map((o) => o.hook)).toContain(
+      'workspace:read',
+    );
+    // The optionalCall must be satisfiable in this preset (a backend registers
+    // workspace:read) so the bootstrap window is actually resolvable in prod.
+    const allRegistered = new Set<string>(
+      plugins.flatMap((p) => p.manifest.registers),
+    );
+    expect(allRegistered.has('workspace:read')).toBe(true);
   });
 });
 
