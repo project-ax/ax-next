@@ -58,7 +58,7 @@ import { operationalNotes, type SdkSystemPrompt } from './system-prompt.js';
 // the shared pure-data templates package so the runner imports it rather than
 // duplicating the line (Invariant #4). `displayName` is host-controlled (the
 // agent row's display name), never model/user/tool input.
-import { fallbackIdentityLine } from './identity-templates.js';
+import { fallbackIdentityLine, bootstrapPreamble } from './identity-templates.js';
 
 /** Per-file hard cap on an `.ax/` identity file. A file larger than this is
  * skipped whole (logged), never truncated mid-content — identity is never
@@ -277,8 +277,13 @@ export async function buildSystemPrompt(
   // template — so the only BOOTSTRAP.md this branch ever runs verbatim is the
   // trusted compile-time script (floor-by-design) or the host's own seed. The
   // un-gated-bootstrap-trust window flagged in Phase 1 is therefore CLOSED.
+  //
+  // The canonical template doesn't encode the agent's pre-assigned name (the
+  // validator gate checks bytes on disk — it only covers WRITEs, not what we
+  // forward to the SDK). Prepend a trusted runner-authored preamble so the agent
+  // knows its display name from the first message.
   if (files.bootstrap !== undefined) {
-    return files.bootstrap;
+    return `${bootstrapPreamble(displayName)}\n\n${files.bootstrap}`;
   }
 
   // Normal mode — the ONLY other mode. Compose from the identity files + the

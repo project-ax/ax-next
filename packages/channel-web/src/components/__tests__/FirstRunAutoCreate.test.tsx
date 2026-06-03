@@ -13,17 +13,18 @@ describe('FirstRunAutoCreate', () => {
     vi.restoreAllMocks();
   });
 
-  it('auto-creates a bare agent, selects it, hydrates, then calls onDone', async () => {
+  it('auto-creates a bare agent with the given name, selects it, hydrates, then calls onDone', async () => {
     const create = vi
       .spyOn(autoCreate, 'autoCreateBareAgent')
-      .mockResolvedValue({ agentId: 'a9', displayName: 'New agent', visibility: 'personal' });
+      .mockResolvedValue({ agentId: 'a9', displayName: 'My agent', visibility: 'personal' });
     const hyd = vi.spyOn(hydrate, 'hydrateAgentsOnce').mockResolvedValue();
     const select = vi.spyOn(agentStoreActions, 'setSelectedAgent');
     const onDone = vi.fn();
 
-    render(<FirstRunAutoCreate onDone={onDone} />);
+    render(<FirstRunAutoCreate agentName="My agent" onDone={onDone} />);
 
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    expect(create).toHaveBeenCalledWith('My agent');
     await waitFor(() => expect(onDone).toHaveBeenCalledTimes(1));
     expect(select).toHaveBeenCalledWith('a9');
     expect(hyd).toHaveBeenCalledTimes(1);
@@ -32,11 +33,11 @@ describe('FirstRunAutoCreate', () => {
   it('creates exactly once across a StrictMode-style double mount', async () => {
     const create = vi
       .spyOn(autoCreate, 'autoCreateBareAgent')
-      .mockResolvedValue({ agentId: 'a9', displayName: 'New agent', visibility: 'personal' });
+      .mockResolvedValue({ agentId: 'a9', displayName: 'My agent', visibility: 'personal' });
     vi.spyOn(hydrate, 'hydrateAgentsOnce').mockResolvedValue();
 
-    const { rerender } = render(<FirstRunAutoCreate onDone={vi.fn()} />);
-    rerender(<FirstRunAutoCreate onDone={vi.fn()} />);
+    const { rerender } = render(<FirstRunAutoCreate agentName="My agent" onDone={vi.fn()} />);
+    rerender(<FirstRunAutoCreate agentName="My agent" onDone={vi.fn()} />);
 
     await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
     // Give any stray second invocation a tick to (not) happen.
@@ -46,7 +47,7 @@ describe('FirstRunAutoCreate', () => {
 
   it('shows a Try again affordance when create fails', async () => {
     vi.spyOn(autoCreate, 'autoCreateBareAgent').mockRejectedValue(new Error('boom'));
-    render(<FirstRunAutoCreate onDone={vi.fn()} />);
+    render(<FirstRunAutoCreate agentName="My agent" onDone={vi.fn()} />);
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy(),
     );
@@ -55,7 +56,7 @@ describe('FirstRunAutoCreate', () => {
   it('does NOT call onDone when create fails', async () => {
     vi.spyOn(autoCreate, 'autoCreateBareAgent').mockRejectedValue(new Error('boom'));
     const onDone = vi.fn();
-    render(<FirstRunAutoCreate onDone={onDone} />);
+    render(<FirstRunAutoCreate agentName="My agent" onDone={onDone} />);
     await waitFor(() =>
       expect(screen.getByRole('button', { name: /try again/i })).toBeTruthy(),
     );

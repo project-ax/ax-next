@@ -9,7 +9,7 @@ import {
   readAxIdentityFiles,
   safetyFloorNote,
 } from '../prompt-engine.js';
-import { fallbackIdentityLine } from '../identity-templates.js';
+import { fallbackIdentityLine, bootstrapPreamble } from '../identity-templates.js';
 import {
   capabilityHandoffNote,
   ephemeralScratchNote,
@@ -206,13 +206,16 @@ describe('composeNormalModePrompt (pinned order, inject-if-present)', () => {
 });
 
 describe('buildSystemPrompt — bootstrap mode (exclusive)', () => {
-  it('returns BOOTSTRAP.md content verbatim and NOTHING else', async () => {
+  it('prepends the name preamble then BOOTSTRAP.md; no normal-mode content leaks in', async () => {
     const bootstrap = '# Bootstrap\nYou just woke up. Talk to your user.';
     await writeAx('BOOTSTRAP.md', bootstrap);
     // Identity files present too — bootstrap still wins and is exclusive.
     await writeAx('IDENTITY.md', 'I am Ada.');
     const out = await buildSystemPrompt('Display Name', 'AUGMENT', dir, '/ephemeral', true);
-    expect(out).toBe(bootstrap);
+    // Preamble names the agent, then the bootstrap script follows.
+    expect(out).toBe(`${bootstrapPreamble('Display Name')}\n\n${bootstrap}`);
+    expect(out).toContain('Display Name');
+    expect(out).toContain(bootstrap);
     // Exclusivity: none of the normal-mode content leaks in.
     expect(out).not.toContain(safetyFloorNote());
     expect(out).not.toContain('AUGMENT');
