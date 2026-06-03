@@ -90,7 +90,7 @@ describe('createAxHistoryAdapter', () => {
     await expect(adapter.withFormat!(makeFormatAdapter()).load()).rejects.toThrow();
   });
 
-  it('thinking blocks are tagged with providerMetadata so the renderer can hide them', async () => {
+  it('thinking blocks decode to native reasoning parts (collapsed chain-of-thought)', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
       json: async () => ({
@@ -114,11 +114,10 @@ describe('createAxHistoryAdapter', () => {
     const decoded = result.messages[0]!.message;
     const parts = (decoded.content as { parts: Array<Record<string, unknown>> }).parts;
     expect(parts).toHaveLength(2);
-    expect(parts[0]).toMatchObject({
-      type: 'text',
-      text: 'reasoning step',
-      providerMetadata: { ax: { thinking: true } },
-    });
+    // Thinking → a native `reasoning` part (assistant-ui renders it via its
+    // Reasoning component, folded into the collapsed chain-of-thought), NOT a
+    // `text` part tagged with providerMetadata (which rendered as visible prose).
+    expect(parts[0]).toMatchObject({ type: 'reasoning', text: 'reasoning step' });
     expect(parts[1]).toMatchObject({ type: 'text', text: 'final answer' });
     expect(parts[1]?.['providerMetadata']).toBeUndefined();
   });

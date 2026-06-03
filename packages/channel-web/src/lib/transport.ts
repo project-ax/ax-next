@@ -16,9 +16,10 @@
  *
  *        - `{ reqId, text, kind: 'text' | 'thinking' }` — content delta.
  *          We stream `kind === 'text'` chunks as `text-delta` UIMessage-
- *          Chunks under id `text-N`. `kind === 'thinking'` chunks are
- *          emitted under a separate id `thinking-N` so the per-message
- *          toggle (Task 21) can hide them.
+ *          Chunks under id `text-N`. `kind === 'thinking'` chunks stream as
+ *          native AI-SDK `reasoning` parts (reasoning-start/-delta/-end) under
+ *          id `thinking-N`, so assistant-ui renders them through its Reasoning
+ *          component and folds them into the collapsed chain-of-thought.
  *
  *        - `{ reqId, done: true }` — terminator. We close the open part(s)
  *          and emit a `finish` UIMessageChunk (`finishReason: 'stop'`).
@@ -704,7 +705,7 @@ function createParseCtx(): ParseCtx {
         ctx.openText = null;
       }
       if (ctx.openThinking !== null) {
-        controller.enqueue({ type: 'text-end', id: ctx.openThinking });
+        controller.enqueue({ type: 'reasoning-end', id: ctx.openThinking });
         ctx.openThinking = null;
       }
     },
@@ -741,7 +742,7 @@ async function consumeSseAttempt(
   const ensureOpenForKind = (kind: 'text' | 'thinking'): string => {
     if (kind === 'text') {
       if (ctx.openThinking !== null) {
-        controller.enqueue({ type: 'text-end', id: ctx.openThinking });
+        controller.enqueue({ type: 'reasoning-end', id: ctx.openThinking });
         ctx.openThinking = null;
       }
       if (ctx.openText === null) {
@@ -758,11 +759,12 @@ async function consumeSseAttempt(
     if (ctx.openThinking === null) {
       ctx.openThinking = `thinking-${ctx.thinkingCounter}`;
       ctx.thinkingCounter += 1;
-      controller.enqueue({
-        type: 'text-start',
-        id: ctx.openThinking,
-        providerMetadata: { ax: { thinking: true } },
-      });
+      // Thinking streams as a native AI-SDK `reasoning` part (reasoning-start
+      // /-delta /-end) so assistant-ui renders it via its Reasoning component
+      // and MessagePrimitive.GroupedParts can fold it into the collapsed
+      // chain-of-thought. (It used to ride as a `text` part tagged with
+      // providerMetadata.ax.thinking, which rendered as plain visible prose.)
+      controller.enqueue({ type: 'reasoning-start', id: ctx.openThinking });
     }
     return ctx.openThinking;
   };
@@ -892,14 +894,11 @@ async function consumeSseAttempt(
             agentStatusActions.set('Thinking…');
           }
           const id = ensureOpenForKind(frame.kind);
-          enqueueContent({
-            type: 'text-delta',
-            id,
-            delta: frame.text,
-            ...(frame.kind === 'thinking'
-              ? { providerMetadata: { ax: { thinking: true } } }
-              : {}),
-          });
+          enqueueContent(
+            frame.kind === 'thinking'
+              ? { type: 'reasoning-delta', id, delta: frame.text }
+              : { type: 'text-delta', id, delta: frame.text },
+          );
           continue;
         }
         // tool-use frame

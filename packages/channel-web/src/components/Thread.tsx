@@ -34,15 +34,17 @@ import {
   ThreadPrimitive,
   useAttachment,
   useMessage,
+  type PartState,
+  type ToolCallMessagePartProps,
 } from '@assistant-ui/react';
-import { Brain, Check, Copy, Pencil, RotateCcw } from 'lucide-react';
+import { Check, Copy, Pencil, RotateCcw } from 'lucide-react';
 import type { FC } from 'react';
 import { useSearchStore } from '../lib/search-store';
-import { thinkingStoreActions, useThinkingStore } from '../lib/thinking-store';
 import { MarkdownText } from './MarkdownText';
 import { Composer } from './Composer';
 import { SearchBar } from './SearchBar';
-import { ArtifactPublishTool, ToolFallback, ToolGroup } from './ToolUse';
+import { ChainOfThought, ReasoningText } from './ChainOfThought';
+import { ArtifactPublishTool, ToolFallback } from './ToolUse';
 import { AttachmentChip } from './AttachmentChip';
 import { decodeAttachmentPath } from '../lib/history-adapter';
 import { useConversationId } from '../lib/use-conversation-id';
@@ -58,9 +60,27 @@ import {
 // resolves whether the part carries the live SDK name or an already-stripped /
 // legacy bare name — otherwise the published-artifact download chip degrades to
 // the raw tool panel (TASK-81).
-const ARTIFACT_PUBLISH_BY_NAME = {
+const ARTIFACT_PUBLISH_BY_NAME: Record<string, FC<ToolCallMessagePartProps>> = {
   [ARTIFACT_PUBLISH_TOOL_NAME]: ArtifactPublishTool,
   [MCP_ARTIFACT_PUBLISH_TOOL_NAME]: ArtifactPublishTool,
+};
+
+// `MessagePrimitive.GroupedParts` folds an assistant turn's `reasoning` +
+// `tool-call` parts into one collapsed chain-of-thought (see ChainOfThought).
+// Tool calls that produce a user-facing deliverable (the artifact-publish
+// download chip) stay OUTSIDE the disclosure so the download isn't buried —
+// they return an empty group path and render at the top level.
+type CotGroupKey = 'group-chain-of-thought';
+const IN_CHAIN_OF_THOUGHT: readonly CotGroupKey[] = ['group-chain-of-thought'];
+const UNGROUPED: readonly CotGroupKey[] = [];
+const STANDALONE_TOOL_NAMES = new Set(Object.keys(ARTIFACT_PUBLISH_BY_NAME));
+
+const groupChainOfThought = (part: PartState): readonly CotGroupKey[] => {
+  if (part.type === 'reasoning') return IN_CHAIN_OF_THOUGHT;
+  if (part.type === 'tool-call') {
+    return STANDALONE_TOOL_NAMES.has(part.toolName) ? UNGROUPED : IN_CHAIN_OF_THOUGHT;
+  }
+  return UNGROUPED;
 };
 
 const MSG_ACTION_CLASS =
@@ -247,24 +267,6 @@ const UserMessage: FC = () => (
   </MessagePrimitive.Root>
 );
 
-const ThinkingToggle: FC = () => {
-  const { visible } = useThinkingStore();
-  const label = visible ? 'Hide thinking' : 'Show thinking';
-  return (
-    <button
-      type="button"
-      className={`${MSG_ACTION_CLASS} ${visible ? 'text-foreground bg-muted' : ''}`}
-      data-testid="thinking-toggle"
-      aria-pressed={visible ? 'true' : 'false'}
-      aria-label={label}
-      title={label}
-      onClick={() => thinkingStoreActions.toggle()}
-    >
-      <Brain size={13} aria-hidden="true" strokeWidth={1.4} />
-    </button>
-  );
-};
-
 const AssistantMessage: FC = () => (
   <MessagePrimitive.Root asChild>
     <div className="msg agent mb-[22px] relative max-w-full" data-role="assistant">
@@ -275,16 +277,33 @@ const AssistantMessage: FC = () => (
           whitespace-pre-wrap break-words
         "
       >
-        <MessagePrimitive.Parts
-          components={{
-            Text: MarkdownText,
-            tools: {
-              by_name: ARTIFACT_PUBLISH_BY_NAME,
-              Fallback: ToolFallback,
-            },
-            ToolGroup,
+        <MessagePrimitive.GroupedParts groupBy={groupChainOfThought}>
+          {({ part, children }) => {
+            switch (part.type) {
+              // The coalesced reasoning + tool-call run → collapsed disclosure.
+              case 'group-chain-of-thought':
+                return (
+                  <ChainOfThought status={part.status} indices={part.indices}>
+                    {children}
+                  </ChainOfThought>
+                );
+              // The visible answer prose.
+              case 'text':
+                return <MarkdownText />;
+              // One thought, rendered muted inside the disclosure.
+              case 'reasoning':
+                return <ReasoningText text={part.text} />;
+              // Artifact-publish renders its download chip (standalone, outside
+              // the disclosure); every other tool gets the raw detail panel.
+              case 'tool-call': {
+                const Tool = ARTIFACT_PUBLISH_BY_NAME[part.toolName] ?? ToolFallback;
+                return <Tool {...part} />;
+              }
+              default:
+                return null;
+            }
           }}
-        />
+        </MessagePrimitive.GroupedParts>
       </div>
       <ActionBarPrimitive.Root
         className="
@@ -306,7 +325,6 @@ const AssistantMessage: FC = () => (
             <RotateCcw size={13} aria-hidden="true" strokeWidth={1.4} />
           </button>
         </ActionBarPrimitive.Reload>
-        <ThinkingToggle />
       </ActionBarPrimitive.Root>
     </div>
   </MessagePrimitive.Root>
