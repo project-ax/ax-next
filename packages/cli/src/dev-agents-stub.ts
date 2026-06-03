@@ -38,12 +38,6 @@ export interface DevAgentsStubConfig {
    */
   defaultAgentId?: string;
   /**
-   * System prompt the runner sees via `session:get-config`. Empty string
-   * is allowed but discouraged — the LLM behaves better with explicit
-   * instructions even in dev.
-   */
-  systemPrompt?: string;
-  /**
    * Allow-list of tool names the runner advertises. Defaults to a wildcard-
    * equivalent empty array which the dispatcher (Task 7) interprets as
    * "all native tools, no MCP filter."
@@ -92,10 +86,8 @@ export function createDevAgentsStubPlugin(
   cfg: DevAgentsStubConfig = {},
 ): Plugin {
   const defaultAgentId = cfg.defaultAgentId ?? 'dev';
-  // Non-empty default so the session-store's validateOwner (which requires
-  // a non-empty string) accepts the stub's payload. Production agents have
-  // their own non-empty prompt; dev users override via cfg.systemPrompt.
-  const systemPrompt = cfg.systemPrompt ?? 'You are a helpful assistant.';
+  // TASK-142: no system_prompt — the dev agent's identity comes from its `.ax/`
+  // files (or, when it has none, the runner's displayName fallback identity).
   const allowedTools = [...(cfg.allowedTools ?? [])];
   const mcpConfigIds = [...(cfg.mcpConfigIds ?? [])];
   const model = cfg.model ?? 'claude-sonnet-4-6';
@@ -130,7 +122,6 @@ export function createDevAgentsStubPlugin(
               ownerType: 'user' as const,
               visibility: 'personal' as const,
               displayName: 'Dev agent',
-              systemPrompt,
               allowedTools,
               mcpConfigIds,
               model,

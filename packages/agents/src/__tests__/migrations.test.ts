@@ -63,6 +63,39 @@ describe('runAgentsMigration', () => {
     );
   });
 
+  it('TASK-142: the system_prompt column does NOT exist after migration', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const cols = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'agents_v1_agents' AND column_name = 'system_prompt'
+    `.execute(db);
+    expect(cols.rows).toHaveLength(0);
+  });
+
+  it('TASK-142: DROP COLUMN migration removes a pre-existing system_prompt column (idempotent forward-only)', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    // Simulate a DB deployed BEFORE the drop: re-add the legacy column, then
+    // re-run the migration. The DROP COLUMN IF EXISTS must remove it again.
+    await sql`ALTER TABLE agents_v1_agents ADD COLUMN system_prompt TEXT NOT NULL DEFAULT ''`.execute(
+      db,
+    );
+    const before = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'agents_v1_agents' AND column_name = 'system_prompt'
+    `.execute(db);
+    expect(before.rows).toHaveLength(1);
+
+    await runAgentsMigration(db); // re-run — DROP COLUMN IF EXISTS fires.
+
+    const after = await sql<{ column_name: string }>`
+      SELECT column_name FROM information_schema.columns
+       WHERE table_name = 'agents_v1_agents' AND column_name = 'system_prompt'
+    `.execute(db);
+    expect(after.rows).toHaveLength(0);
+  });
+
   it('CHECK constraint rejects bad owner_type', async () => {
     const db = makeKysely();
     await runAgentsMigration(db);
@@ -76,7 +109,6 @@ describe('runAgentsMigration', () => {
           owner_type: 'galaxy', // not in (user, team)
           visibility: 'personal',
           display_name: 'A',
-          system_prompt: 'p',
           allowed_tools: JSON.stringify([]) as unknown,
           mcp_config_ids: JSON.stringify([]) as unknown,
           model: 'claude-opus-4-7',
@@ -105,7 +137,6 @@ describe('runAgentsMigration', () => {
           owner_type: 'user',
           visibility: 'public', // not in (personal, team)
           display_name: 'A',
-          system_prompt: 'p',
           allowed_tools: JSON.stringify([]) as unknown,
           mcp_config_ids: JSON.stringify([]) as unknown,
           model: 'claude-opus-4-7',
@@ -133,7 +164,6 @@ describe('runAgentsMigration', () => {
           owner_type: 'user',
           visibility: 'team', // user owner with team visibility — illegal
           display_name: 'A',
-          system_prompt: 'p',
           allowed_tools: JSON.stringify([]) as unknown,
           mcp_config_ids: JSON.stringify([]) as unknown,
           model: 'claude-opus-4-7',
@@ -160,7 +190,6 @@ describe('runAgentsMigration', () => {
           owner_type: 'user',
           visibility: 'personal',
           display_name: 'P',
-          system_prompt: '',
           allowed_tools: JSON.stringify([]) as unknown,
           mcp_config_ids: JSON.stringify([]) as unknown,
           model: 'claude-opus-4-7',
@@ -174,7 +203,6 @@ describe('runAgentsMigration', () => {
           owner_type: 'team',
           visibility: 'team',
           display_name: 'T',
-          system_prompt: '',
           allowed_tools: JSON.stringify([]) as unknown,
           mcp_config_ids: JSON.stringify([]) as unknown,
           model: 'claude-opus-4-7',
@@ -248,7 +276,6 @@ describe('runAgentsMigration', () => {
         owner_type: 'user',
         visibility: 'personal',
         display_name: 'SA',
-        system_prompt: '',
         allowed_tools: JSON.stringify([]) as unknown,
         mcp_config_ids: JSON.stringify([]) as unknown,
         model: 'claude-opus-4-7',
@@ -279,7 +306,6 @@ describe('runAgentsMigration', () => {
         owner_type: 'user',
         visibility: 'personal',
         display_name: 'X',
-        system_prompt: '',
         allowed_tools: JSON.stringify([]) as unknown,
         mcp_config_ids: JSON.stringify([]) as unknown,
         model: 'claude-opus-4-7',

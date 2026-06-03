@@ -33,6 +33,8 @@ import {
   createAgent,
   patchAgent,
   patchAgentConnectorAttachments,
+  getAgentIdentity,
+  putAgentIdentity,
   deleteAgent,
   listTeams,
   type AdminAgent,
@@ -66,7 +68,13 @@ type FormState = {
   displayName: string;
   visibility: 'personal' | 'team';
   teamId: string;
-  systemPrompt: string;
+  /** The agent's `.ax/` identity files (TASK-142), replacing the old single
+   *  "system prompt" field. `identity` ← IDENTITY.md, `soul` ← SOUL.md,
+   *  `operating` ← the optional advanced AGENTS.md override. Loaded async on
+   *  edit-open via getAgentIdentity; saved via putAgentIdentity. */
+  identity: string;
+  soul: string;
+  operating: string;
   model: string;
   allowedTools: string;
   /** The connectors attached to this agent, by id. Saved to the first-class
@@ -79,7 +87,9 @@ const emptyForm = (): FormState => ({
   displayName: '',
   visibility: 'personal',
   teamId: '',
-  systemPrompt: '',
+  identity: '',
+  soul: '',
+  operating: '',
   model: MODELS[0] ?? 'claude-sonnet-4-6',
   allowedTools: '',
   connectorIds: [],
@@ -89,7 +99,11 @@ const formFromAgent = (a: AdminAgent): FormState => ({
   displayName: a.displayName,
   visibility: a.visibility,
   teamId: a.visibility === 'team' ? a.ownerId : '',
-  systemPrompt: a.systemPrompt,
+  // Identity files are loaded separately (getAgentIdentity) once the form
+  // opens — start blank and fill them in when the fetch resolves.
+  identity: '',
+  soul: '',
+  operating: '',
   model: a.model || MODELS[0] || 'claude-sonnet-4-6',
   allowedTools: (a.allowedTools ?? []).join(', '),
   connectorIds: a.connectorAttachments ?? [],
@@ -112,6 +126,10 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const [form, setForm] = useState<FormState>(() => emptyForm());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Whether the agent's `.ax/` identity files are still loading (edit view).
+  // The identity textareas are disabled until the fetch resolves so a save
+  // can't race a half-loaded form and blank a file the user never saw.
+  const [identityLoading, setIdentityLoading] = useState(false);
   // The agent awaiting delete confirmation (null = no dialog). Styled-confirm
   // pattern (TASK-117: project-wide styled Dialog) — no OS `window.confirm`.
   const [pendingDelete, setPendingDelete] = useState<AdminAgent | null>(null);
@@ -147,6 +165,38 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
       .then((c) => setConnectors((c ?? []).filter((conn) => isAdmin || conn.keyMode === 'personal')))
       .catch(() => setConnectors([]));
   }, [editing, isAdmin]);
+
+  // TASK-142 — load the agent's `.ax/` identity files when editing an existing
+  // agent. A new agent has no files yet (its workspace is seeded on first save),
+  // so we skip the fetch for 'new'. The `cancelled` guard drops a stale resolve
+  // if the user navigates away (or to another agent) before it lands, so we
+  // never splice one agent's identity into another's form.
+  useEffect(() => {
+    if (editing === null || editing === 'new') return;
+    const agentId = editing.id;
+    let cancelled = false;
+    setIdentityLoading(true);
+    void getAgentIdentity(agentId)
+      .then((files) => {
+        if (cancelled) return;
+        setForm((f) => ({
+          ...f,
+          identity: files.identity,
+          soul: files.soul,
+          operating: files.operating,
+        }));
+      })
+      .catch(() => {
+        // Best-effort: a load failure leaves the fields blank (editable). The
+        // save still works — it just writes what's on screen.
+      })
+      .finally(() => {
+        if (!cancelled) setIdentityLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editing]);
 
   const startNew = () => {
     setError(null);
@@ -193,7 +243,6 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     }
     const base: AdminAgentInput = {
       displayName: form.displayName.trim(),
-      systemPrompt: form.systemPrompt,
       model: form.model,
       allowedTools,
       mcpConfigIds,
@@ -212,7 +261,6 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
         // backend accepts on update.
         const patch: Partial<AdminAgentInput> = {
           displayName: base.displayName,
-          systemPrompt: base.systemPrompt,
           model: base.model,
           allowedTools: base.allowedTools,
           mcpConfigIds: base.mcpConfigIds,
@@ -228,6 +276,16 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
       // TASK-107 — save the connector attachments to the first-class store. A
       // separate PATCH so the agent id exists (new agents are created first).
       await patchAgentConnectorAttachments(agentId, form.connectorIds);
+      // TASK-142 — save the agent's `.ax/` identity files (IDENTITY.md /
+      // SOUL.md / AGENTS.md) through workspace:apply (→ validator-identity). A
+      // separate PUT after the agent exists (new agents are created first, like
+      // the connector save). The server creates AGENTS.md only when `operating`
+      // is non-empty.
+      await putAgentIdentity(agentId, {
+        identity: form.identity,
+        soul: form.soul,
+        operating: form.operating,
+      });
       await refresh();
       setEditing(null);
     } catch (err) {
@@ -468,17 +526,70 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
             </select>
           </div>
 
-          {/* System prompt */}
+          {/* Identity files (TASK-142). The agent's identity lives in its
+              `.ax/` files, not a single "system prompt" string. Identity ←
+              IDENTITY.md, Soul ← SOUL.md, Operating instructions (advanced) ←
+              the optional AGENTS.md override. */}
           <div className="flex flex-col gap-2">
-            <Label htmlFor="agent-system-prompt">System prompt</Label>
+            <Label htmlFor="agent-identity">Identity</Label>
             <Textarea
-              id="agent-system-prompt"
-              rows={5}
-              value={form.systemPrompt}
+              id="agent-identity"
+              rows={4}
+              placeholder="Who this agent is — name, what it is, how it presents itself."
+              value={form.identity}
+              disabled={editing !== 'new' && identityLoading}
               onChange={(e) =>
-                setForm((f) => ({ ...f, systemPrompt: e.target.value }))
+                setForm((f) => ({ ...f, identity: e.target.value }))
               }
             />
+            <p className="text-xs text-muted-foreground">
+              {editing !== 'new' && identityLoading
+                ? 'Loading the agent’s identity files…'
+                : 'Saved to the agent’s .ax/IDENTITY.md.'}
+            </p>
+          </div>
+
+          {/* Soul */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="agent-soul">Soul</Label>
+            <Textarea
+              id="agent-soul"
+              rows={5}
+              placeholder="This agent’s values, voice, and the boundaries it holds."
+              value={form.soul}
+              disabled={editing !== 'new' && identityLoading}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, soul: e.target.value }))
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              Saved to the agent’s .ax/SOUL.md.
+            </p>
+          </div>
+
+          {/* Operating instructions — advanced, optional → .ax/AGENTS.md. */}
+          <div className="flex flex-col gap-2">
+            <Label htmlFor="agent-operating">
+              Operating instructions{' '}
+              <span className="font-normal text-muted-foreground">
+                (advanced, optional)
+              </span>
+            </Label>
+            <Textarea
+              id="agent-operating"
+              rows={4}
+              placeholder="Default behaviors and house rules that override how this agent operates. Leave blank for none."
+              value={form.operating}
+              disabled={editing !== 'new' && identityLoading}
+              onChange={(e) =>
+                setForm((f) => ({ ...f, operating: e.target.value }))
+              }
+            />
+            <p className="text-xs text-muted-foreground">
+              Only created when you enter something here (the agent’s
+              .ax/AGENTS.md). The fixed safety floor always applies and can’t be
+              overridden.
+            </p>
           </div>
 
           {/* Allowed tools */}

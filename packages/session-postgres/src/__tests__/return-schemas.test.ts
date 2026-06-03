@@ -40,7 +40,8 @@ describe('session-postgres return schemas', () => {
       userId: 'u1',
       agentId: 'a1',
       agentConfig: {
-        systemPrompt: 'p',
+        displayName: 'Test Agent',
+        systemPromptAugment: 'p',
         allowedTools: ['bash'],
         mcpConfigIds: ['m1'],
         model: 'claude',

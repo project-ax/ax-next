@@ -15,6 +15,8 @@ vi.mock('@/lib/admin', () => ({
   createAgent: vi.fn(),
   patchAgent: vi.fn(),
   patchAgentConnectorAttachments: vi.fn(),
+  getAgentIdentity: vi.fn(),
+  putAgentIdentity: vi.fn(),
   deleteAgent: vi.fn(),
   listTeams: vi.fn(),
 }));
@@ -28,7 +30,15 @@ vi.mock('../AuthoredSkillsSection', () => ({
   AuthoredSkillsSection: () => null,
 }));
 
-import { listAdminAgents, deleteAgent, listTeams } from '@/lib/admin';
+import {
+  listAdminAgents,
+  deleteAgent,
+  listTeams,
+  patchAgent,
+  patchAgentConnectorAttachments,
+  getAgentIdentity,
+  putAgentIdentity,
+} from '@/lib/admin';
 import { listConnectors } from '@/lib/connectors';
 
 const mockList = vi.mocked(listAdminAgents);
@@ -40,7 +50,6 @@ const AGENT: AdminAgent = {
   ownerType: 'user',
   visibility: 'personal',
   displayName: 'Research Bot',
-  systemPrompt: '',
   allowedTools: ['Bash'],
   mcpConfigIds: [],
   model: 'claude-sonnet-4-6',
@@ -140,6 +149,81 @@ describe('AgentForm — non-admin owner-scoped sources', () => {
     fireEvent.click(screen.getByRole('button', { name: /new agent/i }));
     await waitFor(() =>
       expect(listConnectors).toHaveBeenCalledWith('/admin/connectors'),
+    );
+  });
+});
+
+describe('AgentForm — file-based identity editor (TASK-142)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockList.mockResolvedValue([AGENT]);
+    vi.mocked(listTeams).mockResolvedValue([]);
+    vi.mocked(listConnectors).mockResolvedValue([]);
+    vi.mocked(patchAgent).mockResolvedValue(undefined);
+    vi.mocked(patchAgentConnectorAttachments).mockResolvedValue(AGENT);
+    vi.mocked(putAgentIdentity).mockResolvedValue(undefined);
+  });
+
+  it('opening edit loads the agent’s .ax/ identity files into the three fields', async () => {
+    vi.mocked(getAgentIdentity).mockResolvedValue({
+      identity: 'I am Ada.',
+      soul: 'I value clarity.',
+      operating: 'Always use metric units.',
+    });
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+
+    // The editor reads the files via workspace:read (mocked at the wire).
+    await waitFor(() =>
+      expect(getAgentIdentity).toHaveBeenCalledWith('agent-1'),
+    );
+    await waitFor(() => {
+      expect((screen.getByLabelText('Identity') as HTMLTextAreaElement).value).toBe(
+        'I am Ada.',
+      );
+    });
+    expect((screen.getByLabelText('Soul') as HTMLTextAreaElement).value).toBe(
+      'I value clarity.',
+    );
+    expect(
+      (screen.getByLabelText(/Operating instructions/) as HTMLTextAreaElement).value,
+    ).toBe('Always use metric units.');
+  });
+
+  it('saving writes the edited identity files back via putAgentIdentity (workspace:apply)', async () => {
+    vi.mocked(getAgentIdentity).mockResolvedValue({
+      identity: 'I am Ada.',
+      soul: 'old soul',
+      operating: '',
+    });
+    render(<AgentForm isAdmin />);
+    await waitFor(() => expect(screen.getByText('Research Bot')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'edit' }));
+    await waitFor(() =>
+      expect((screen.getByLabelText('Soul') as HTMLTextAreaElement).value).toBe(
+        'old soul',
+      ),
+    );
+
+    // Edit the soul + add an operating override.
+    fireEvent.change(screen.getByLabelText('Soul'), {
+      target: { value: 'I value rigor.' },
+    });
+    fireEvent.change(screen.getByLabelText(/Operating instructions/), {
+      target: { value: 'Prefer SI units.' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+
+    await waitFor(() =>
+      expect(putAgentIdentity).toHaveBeenCalledWith('agent-1', {
+        identity: 'I am Ada.',
+        soul: 'I value rigor.',
+        operating: 'Prefer SI units.',
+      }),
     );
   });
 });

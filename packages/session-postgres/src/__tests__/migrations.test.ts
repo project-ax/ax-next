@@ -175,7 +175,8 @@ describe('runSessionMigration v2', () => {
     try {
       await runSessionMigration(db);
       const config = {
-        systemPrompt: 'untrusted user-authored prompt',
+        displayName: 'Test Agent',
+        systemPromptAugment: 'untrusted host-augment prompt',
         allowedTools: ['file.read', 'bash.exec'],
         mcpConfigIds: ['mcp-1', 'mcp-2'],
         model: 'claude-sonnet-4-7',

@@ -23,7 +23,8 @@ const OWNER: { userId: string; agentId: string; agentConfig: AgentConfig } = {
   userId: 'u-1',
   agentId: 'a-1',
   agentConfig: {
-    systemPrompt: 'be helpful',
+    displayName: 'Test Agent',
+    systemPromptAugment: 'be helpful',
     allowedTools: ['file.read'],
     mcpConfigIds: [],
     model: 'claude-sonnet-4-7',

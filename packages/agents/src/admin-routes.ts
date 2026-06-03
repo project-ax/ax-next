@@ -110,10 +110,6 @@ const displayNameSchema = z
     'displayName must not have leading or trailing whitespace',
   );
 
-const systemPromptSchema = z
-  .string()
-  .max(32 * 1024, 'systemPrompt must be at most 32 KiB');
-
 const allowedToolsSchema = z
   .array(z.string().regex(TOOL_NAME_RE, 'allowedTools entry has invalid shape'))
   .max(100, 'allowedTools must have at most 100 entries');
@@ -145,7 +141,6 @@ const workspaceRefSchema = z
 const createBodySchema = z
   .object({
     displayName: displayNameSchema,
-    systemPrompt: systemPromptSchema,
     allowedTools: allowedToolsSchema,
     mcpConfigIds: mcpConfigIdsSchema,
     model: modelSchema,
@@ -180,7 +175,6 @@ const createBodySchema = z
 const updateBodySchema = z
   .object({
     displayName: displayNameSchema.optional(),
-    systemPrompt: systemPromptSchema.optional(),
     allowedTools: allowedToolsSchema.optional(),
     mcpConfigIds: mcpConfigIdsSchema.optional(),
     model: modelSchema.optional(),
@@ -373,7 +367,6 @@ function serializeAgent(a: Agent): Record<string, unknown> {
     ownerType: a.ownerType,
     visibility: a.visibility,
     displayName: a.displayName,
-    systemPrompt: a.systemPrompt,
     allowedTools: a.allowedTools,
     mcpConfigIds: a.mcpConfigIds,
     model: a.model,

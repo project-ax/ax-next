@@ -37,7 +37,9 @@ export interface AdminAgent {
   ownerType: 'user' | 'team';
   visibility: 'personal' | 'team';
   displayName: string;
-  systemPrompt: string;
+  // TASK-142: no `systemPrompt` — an agent's identity lives in its `.ax/` files
+  // (IDENTITY.md / SOUL.md / AGENTS.md), edited via the identity file editor
+  // (getAgentIdentity / putAgentIdentity below), not this record.
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
@@ -53,13 +55,58 @@ export interface AdminAgent {
 
 export interface AdminAgentInput {
   displayName: string;
-  systemPrompt: string;
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
   visibility: 'personal' | 'team';
   teamId?: string;
   workspaceRef?: string | null;
+}
+
+/**
+ * The agent's identity files, read from / written to its `.ax/` directory via
+ * the workspace hooks (TASK-142). `identity` ← `.ax/IDENTITY.md`, `soul` ←
+ * `.ax/SOUL.md`, `operating` ← `.ax/AGENTS.md` (the optional advanced
+ * operating-instructions override). Each is '' when the file is absent.
+ */
+export interface AgentIdentityFiles {
+  identity: string;
+  soul: string;
+  operating: string;
+}
+
+/** GET the agent's `.ax/` identity files for the editor. */
+export async function getAgentIdentity(id: string): Promise<AgentIdentityFiles> {
+  const res = await fetch(`/admin/agents/${encodeURIComponent(id)}/identity`, {
+    credentials: 'include',
+  });
+  if (!res.ok) throw new Error(`get agent identity: ${res.status}`);
+  return (await res.json()) as AgentIdentityFiles;
+}
+
+/** PUT the agent's `.ax/` identity files (IDENTITY.md / SOUL.md / AGENTS.md).
+ * The server writes through `workspace:apply` (→ validator-identity). `operating`
+ * is created only when non-empty; clearing it deletes `.ax/AGENTS.md`. */
+export async function putAgentIdentity(
+  id: string,
+  files: AgentIdentityFiles,
+): Promise<void> {
+  const res = await fetch(`/admin/agents/${encodeURIComponent(id)}/identity`, {
+    method: 'PUT',
+    headers: writeHeaders,
+    credentials: 'include',
+    body: JSON.stringify(files),
+  });
+  if (!res.ok) {
+    let detail = '';
+    try {
+      const body = (await res.json()) as { error?: string };
+      detail = body.error ? `: ${body.error}` : '';
+    } catch {
+      // non-JSON body — fall through with the status only.
+    }
+    throw new Error(`save agent identity: ${res.status}${detail}`);
+  }
 }
 
 export async function listAdminAgents(): Promise<AdminAgent[]> {

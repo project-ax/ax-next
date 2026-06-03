@@ -27,7 +27,7 @@ describe('bootstrapMemoryTree', () => {
   it('seeds system/{agent,user,session}.md with valid frontmatter', async () => {
     await bootstrapMemoryTree({
       workspaceRoot,
-      agentSystemPrompt: 'You are a helpful assistant who likes long walks.',
+      composedIdentity: 'You are a helpful assistant who likes long walks.',
     });
 
     const root = join(workspaceRoot, MEMORY_ROOT);
@@ -48,9 +48,9 @@ describe('bootstrapMemoryTree', () => {
     }
   });
 
-  it("seeds agent.md body from the agent's system prompt", async () => {
+  it("seeds agent.md body from the composed identity", async () => {
     const prompt = 'You are Atlas, a friendly research assistant.';
-    await bootstrapMemoryTree({ workspaceRoot, agentSystemPrompt: prompt });
+    await bootstrapMemoryTree({ workspaceRoot, composedIdentity: prompt });
 
     const raw = await readFile(join(workspaceRoot, systemFile('agent')), 'utf8');
     const { body } = splitFrontmatter(raw);
@@ -58,11 +58,11 @@ describe('bootstrapMemoryTree', () => {
   });
 
   it('is idempotent — second call leaves existing files untouched', async () => {
-    await bootstrapMemoryTree({ workspaceRoot, agentSystemPrompt: 'first' });
+    await bootstrapMemoryTree({ workspaceRoot, composedIdentity: 'first' });
     const path = join(workspaceRoot, systemFile('agent'));
     const before = await readFile(path, 'utf8');
 
-    await bootstrapMemoryTree({ workspaceRoot, agentSystemPrompt: 'second' });
+    await bootstrapMemoryTree({ workspaceRoot, composedIdentity: 'second' });
     const after = await readFile(path, 'utf8');
 
     expect(after).toBe(before);
@@ -83,7 +83,7 @@ describe('bootstrapMemoryTree', () => {
     const prompts = Array.from({ length: 20 }, (_, i) => `prompt-${String(i).padStart(2, '0')}`);
     const results = await Promise.allSettled(
       prompts.map((p) =>
-        bootstrapMemoryTree({ workspaceRoot, agentSystemPrompt: p }),
+        bootstrapMemoryTree({ workspaceRoot, composedIdentity: p }),
       ),
     );
 
@@ -101,11 +101,11 @@ describe('bootstrapMemoryTree', () => {
     const second = join(workspaceRoot, 'second-agent-workspace');
     await bootstrapMemoryTree({
       workspaceRoot,
-      agentSystemPrompt: 'agent A',
+      composedIdentity: 'agent A',
     });
     await bootstrapMemoryTree({
       workspaceRoot: second,
-      agentSystemPrompt: 'agent B',
+      composedIdentity: 'agent B',
     });
 
     const a = await readFile(join(workspaceRoot, systemFile('agent')), 'utf8');

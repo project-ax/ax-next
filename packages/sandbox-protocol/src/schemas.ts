@@ -42,7 +42,8 @@ const MCP_ENV_LEN_MAX = 256;
 // session row is written atomically. The session-postgres / session-inmemory
 // plugins declare the same shape; the orchestrator constructs it.
 export const AgentConfigSchema = z.object({
-  systemPrompt: z.string(),
+  displayName: z.string(),
+  systemPromptAugment: z.string(),
   allowedTools: z.array(z.string()),
   mcpConfigIds: z.array(z.string()),
   model: z.string(),

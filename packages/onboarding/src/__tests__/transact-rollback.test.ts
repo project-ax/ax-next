@@ -102,7 +102,6 @@ describe('@ax/onboarding — db:transact cross-plugin rollback (I9)', () => {
             actor: { userId: 'admin-id', isAdmin: true },
             input: {
               displayName: 'Tx Test Agent',
-              systemPrompt: '',
               allowedTools: [],
               mcpConfigIds: [],
               model: 'claude-sonnet-4-6',

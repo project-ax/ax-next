@@ -14,4 +14,5 @@ export {
   BOOTSTRAP_TEMPLATE,
   IDENTITY_SCAFFOLD,
   SOUL_SCAFFOLD,
+  fallbackIdentityLine,
 } from '@ax/agent-identity-templates';

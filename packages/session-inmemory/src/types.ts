@@ -11,18 +11,26 @@ import type { AgentMessage } from '@ax/core';
 // import @ax/agents (Invariant I2 — no cross-plugin imports). A drift would
 // show up at the resolveAgent → session:create call site.
 //
-// NB: `systemPrompt` is USER-AUTHORED (an admin pasted it into POST /admin/
-// agents). Subscribers downstream of session:create that read this field
-// must treat it as untrusted — it flows into an LLM prompt, never into a
-// shell, never into a SQL query, never into HTML. Branding lives at the
-// hook surface (@ax/chat-orchestrator → sandbox:open-session) where the
-// flow is observable; carrying the brand all the way through every plain
-// `string` field would balloon the type for limited gain.
+// NB: `displayName` and `systemPromptAugment` flow into the LLM prompt
+// (the runner's fallback identity + the memory injection). Subscribers
+// downstream of session:create that read them must treat them as untrusted —
+// they flow into an LLM prompt, never into a shell, never into a SQL query,
+// never into HTML. Branding lives at the hook surface (@ax/chat-orchestrator →
+// sandbox:open-session) where the flow is observable; carrying the brand all
+// the way through every plain `string` field would balloon the type for
+// limited gain. (TASK-142 dropped the legacy `systemPrompt` field — identity
+// now lives in the agent's `.ax/` files.)
 // ---------------------------------------------------------------------------
 
 export interface AgentConfig {
-  /** User-authored. Treat as untrusted; intended sole destination is the LLM prompt. */
-  systemPrompt: string;
+  /** The agent's display name — the runner's fallback identity, used when the
+   * agent has no `.ax/IDENTITY.md` of its own (TASK-142). Intended destination
+   * is the LLM prompt. */
+  displayName: string;
+  /** The host `system-prompt:augment` contribution (e.g. memory-strata's
+   * injection), prepended on top of the composed system prompt. Empty when no
+   * augment provider is registered. Intended destination is the LLM prompt. */
+  systemPromptAugment: string;
   /** Tool-name allow-list. Validated when the agent was created. */
   allowedTools: string[];
   /** MCP-config allow-list. Empty = no MCP tools. */
@@ -246,7 +254,8 @@ export const SessionGetConfigOutputSchema = z.object({
   userId: z.string(),
   agentId: z.string(),
   agentConfig: z.object({
-    systemPrompt: z.string(),
+    displayName: z.string(),
+    systemPromptAugment: z.string(),
     allowedTools: z.array(z.string()),
     mcpConfigIds: z.array(z.string()),
     model: z.string(),

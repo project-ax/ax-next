@@ -220,7 +220,6 @@ async function mintSecondUserCookie(): Promise<{ userId: string; cookie: string 
 function makeBody(overrides: Partial<AgentInput> = {}): AgentInput {
   return {
     displayName: 'My Agent',
-    systemPrompt: 'You are helpful.',
     allowedTools: ['bash.run'],
     mcpConfigIds: [],
     model: 'claude-opus-4-7',
@@ -273,7 +272,6 @@ interface SerializedAgent {
   ownerType: 'user' | 'team';
   visibility: 'personal' | 'team';
   displayName: string;
-  systemPrompt: string;
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
@@ -345,13 +343,14 @@ describe('@ax/agents admin routes', () => {
 
   it('POST /admin/agents with body > 64 KiB → 413', async () => {
     const cookie = await signIn(stack);
-    // The store caps systemPrompt at 32 KiB; the API caps the WHOLE body
-    // at 64 KiB. Push systemPrompt into the cap range to exceed total
-    // body without tripping the http-server's 1 MiB cap.
+    // The admin API caps the WHOLE body at 64 KiB (well under the
+    // http-server's 1 MiB cap). The 413 fires on BODY SIZE, before schema
+    // validation — so a giant extra field (rejected by .strict() later, but
+    // never reached) exercises the size gate. ~70 KiB clears the cap.
     const huge = 'a'.repeat(70 * 1024);
     const r = await http(stack.port, 'POST', '/admin/agents', {
       cookie,
-      body: makeBody({ systemPrompt: huge }),
+      body: { ...makeBody(), bloat: huge },
     });
     expect(r.status).toBe(413);
     expect((r.body as { error: string }).error).toBe('body-too-large');

@@ -1,33 +1,31 @@
 // ---------------------------------------------------------------------------
-// System-prompt assembly for the claude-agent-sdk query.
+// Runner-authored operational notes for the claude-agent-sdk query.
 //
-// Two inputs converge here:
-//   1. The agent's frozen, USER-AUTHORED system prompt (empty => fall back
-//      to the SDK's `claude_code` preset).
-//   2. A runner-authored operational note describing the session-scoped
-//      scratch directory (`ephemeralRoot`), when the sandbox provided one.
+// These notes describe the runtime environment to the LLM: where the
+// workspace root is, the session-scoped scratch directory (`ephemeralRoot`),
+// the python venv, the JIT capability-handoff behavior, and the skill-
+// authoring discovery constraint.
 //
-// The note is a FIXED runner-authored string with `ephemeralRoot`
-// interpolated. `ephemeralRoot` originates from the sandbox provider
-// (AX_EPHEMERAL_ROOT, host-controlled) — never from the model, the user,
-// or tool output — so there is no untrusted-input path into the prompt
-// here. It is plain prose for the LLM; not interpolated into a shell,
-// path, SQL, or URL.
+// Each note is a FIXED runner-authored string with host-controlled values
+// interpolated (`workspaceRoot` = AX_WORKSPACE_ROOT, `ephemeralRoot` =
+// AX_EPHEMERAL_ROOT) — never from the model, the user, or tool output — so
+// there is no untrusted-input path into the prompt here. It is plain prose
+// for the LLM; not interpolated into a shell, path, SQL, or URL.
 //
-// SDK quirk this module exists to handle: the preset form accepts an
-// `append` field, but it "has no effect when systemPrompt is a string"
-// (sdk.d.ts). So for a custom string prompt we must concatenate the note
-// ourselves; for the preset we use the native `append`.
+// The composed system prompt is always a plain string (the file-based
+// prompt-engine assembles it from the agent's `.ax/` identity files + these
+// notes — see prompt-engine.ts). The legacy `claude_code` preset / string-
+// fallback path was removed in the conversational-agent-identity Phase 4
+// (TASK-142) when the `system_prompt` column was dropped.
 // ---------------------------------------------------------------------------
 
 /**
- * The shape the SDK's `options.systemPrompt` accepts that we actually
- * produce. The SDK also accepts `string[]` and other presets; we only emit
- * a plain string (custom prompt) or the `claude_code` preset.
+ * The shape the SDK's `options.systemPrompt` accepts that we produce. We only
+ * ever emit a plain string — the file-based prompt-engine composes one from
+ * the agent's identity files + the runner's operational notes. (The SDK also
+ * accepts presets / `string[]`; we no longer use them.)
  */
-export type SdkSystemPrompt =
-  | string
-  | { type: 'preset'; preset: 'claude_code'; append?: string };
+export type SdkSystemPrompt = string;
 
 /**
  * Operational note telling the agent where its workspace is and how to resolve
@@ -152,9 +150,8 @@ export function skillAuthoringNote(): string {
  * tools aren't wired). Returns a single string joined by blank lines —
  * always non-empty.
  *
- * Shared by the legacy `buildFallbackPrompt` (below) AND the file-based
- * prompt-engine's normal mode (`prompt-engine.ts`), so the operational notes
- * are assembled in exactly one place.
+ * Consumed by the file-based prompt-engine's normal mode (`prompt-engine.ts`),
+ * so the operational notes are assembled in exactly one place.
  */
 export function operationalNotes(
   workspaceRoot: string,
@@ -171,39 +168,4 @@ export function operationalNotes(
   notes.push(capabilityHandoffNote());
   notes.push(skillAuthoringNote());
   return notes.join('\n\n');
-}
-
-/**
- * Legacy string-fallback system prompt: builds the SDK `systemPrompt` value
- * from the agent's frozen prompt string, the workspace root, and the optional
- * ephemeral scratch root.
- *
- * This is the **string-fallback bridge** (design Phase 1): the file-based
- * prompt-engine (`prompt-engine.ts`) calls this only when there are no `.ax/`
- * identity files and no `BOOTSTRAP.md`, so a mid-migration agent that hasn't
- * been given identity files yet still gets its legacy prompt. Phase 4 removes
- * this path once every agent has files.
- *
- * Notes are joined with the prompt the same way:
- * - Empty agent prompt => `claude_code` preset (notes via the SDK's native
- *   `append`).
- * - Non-empty agent prompt => the verbatim string with the notes concatenated
- *   ourselves (the preset `append` is a no-op on strings).
- */
-export function buildFallbackPrompt(
-  agentSystemPrompt: string,
-  workspaceRoot: string,
-  ephemeralRoot: string | undefined,
-  pythonVenvActive = false,
-): SdkSystemPrompt {
-  // `note` is always non-empty (the workspace note is unconditional).
-  const note = operationalNotes(workspaceRoot, ephemeralRoot, pythonVenvActive);
-
-  if (agentSystemPrompt.length > 0) {
-    return `${agentSystemPrompt}\n\n${note}`;
-  }
-
-  return note.length > 0
-    ? { type: 'preset', preset: 'claude_code', append: note }
-    : { type: 'preset', preset: 'claude_code' };
 }

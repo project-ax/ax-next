@@ -11,10 +11,14 @@ export interface BootstrapInput {
    */
   workspaceRoot: string;
   /**
-   * The agent's persona / system prompt. Becomes the body of `agent.md`
-   * so the agent can re-read its own purpose from disk on cold-start.
+   * The agent's composed identity — its `.ax/IDENTITY.md` + `.ax/SOUL.md`
+   * rendered as markdown (TASK-142; previously the legacy `system_prompt`
+   * string). Becomes the body of `agent.md` so the agent can re-read its own
+   * identity from disk on cold-start. Empty string when the agent has no
+   * identity files yet (e.g. still bootstrapping) — agent.md is seeded with a
+   * placeholder body in that case.
    */
-  agentSystemPrompt: string;
+  composedIdentity: string;
 }
 
 /**
@@ -41,7 +45,7 @@ export async function bootstrapMemoryTree(
     await mkdir(dirname(abs), { recursive: true });
 
     const fm = systemFrontmatter(name, nowIso);
-    const body = systemBody(name, input.agentSystemPrompt);
+    const body = systemBody(name, input.composedIdentity);
 
     // Atomic create-if-not-exists. `wx` is `O_CREAT | O_EXCL` — exactly
     // one writer wins on a race; the rest get EEXIST. Prevents the
@@ -75,14 +79,24 @@ function systemFrontmatter(name: SystemFileName, nowIso: string): MemoryFrontmat
 }
 
 const SYSTEM_SUMMARIES: Record<SystemFileName, string> = {
-  agent: 'The agent persona and system prompt — always loaded into context.',
+  agent: 'The agent identity (IDENTITY.md + SOUL.md) — always loaded into context.',
   user: 'Active user profile and durable preferences — always loaded into context.',
   session: 'Rolling summary of the current chat session — always loaded into context.',
 };
 
-function systemBody(name: SystemFileName, agentSystemPrompt: string): string {
+function systemBody(name: SystemFileName, composedIdentity: string): string {
   if (name === 'agent') {
-    return `# Agent\n\n${agentSystemPrompt}\n`;
+    // The composed identity (IDENTITY.md + SOUL.md). Empty when the agent has
+    // no identity files yet (still bootstrapping) — seed a placeholder so the
+    // file exists and gets filled in once the agent authors its identity. (The
+    // seed is idempotent: a later bootstrap with a real identity won't
+    // overwrite this file, but a real identity is seeded on the FIRST chat that
+    // resolves one — the placeholder only persists for a never-identified
+    // agent.)
+    const body = composedIdentity.trim().length > 0
+      ? composedIdentity
+      : '_The agent has not authored its identity yet._';
+    return `# Agent\n\n${body}\n`;
   }
   if (name === 'user') {
     return [

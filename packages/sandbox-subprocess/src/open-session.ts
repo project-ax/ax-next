@@ -174,7 +174,8 @@ interface SessionCreateInput {
     userId: string;
     agentId: string;
     agentConfig: {
-      systemPrompt: string;
+      displayName: string;
+      systemPromptAugment: string;
       allowedTools: string[];
       mcpConfigIds: string[];
       model: string;

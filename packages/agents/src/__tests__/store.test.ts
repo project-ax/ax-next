@@ -36,7 +36,6 @@ const ALLOWED = ['claude-opus-4-7', 'claude-sonnet-4-6'];
 function makeInput(overrides: Partial<AgentInput> = {}): AgentInput {
   return {
     displayName: 'My Agent',
-    systemPrompt: 'You are a helpful assistant.',
     allowedTools: ['bash.run', 'fs.read'],
     mcpConfigIds: [],
     model: 'claude-opus-4-7',
@@ -81,38 +80,10 @@ describe('validation', () => {
     ).toThrow(/leading or trailing whitespace/);
   });
 
-  it('rejects systemPrompt > 32 KiB', () => {
-    expect(() =>
-      validateCreateInput(
-        makeInput({ systemPrompt: 'a'.repeat(32 * 1024 + 1) }),
-        vctx,
-      ),
-    ).toThrow(/systemPrompt must be at most/);
-  });
-
-  it('TASK-140: defaults an ABSENT systemPrompt to empty string (bare create)', () => {
-    const input = makeInput();
-    delete (input as { systemPrompt?: string }).systemPrompt;
-    const out = validateCreateInput(input, vctx);
-    expect(out.systemPrompt).toBe('');
-  });
-
-  it('TASK-140: defaults a null systemPrompt to empty string', () => {
-    const out = validateCreateInput(
-      makeInput({ systemPrompt: null as unknown as string }),
-      vctx,
-    );
-    expect(out.systemPrompt).toBe('');
-  });
-
-  it('TASK-140: still rejects a PRESENT non-string systemPrompt', () => {
-    expect(() =>
-      validateCreateInput(
-        makeInput({ systemPrompt: 123 as unknown as string }),
-        vctx,
-      ),
-    ).toThrow(/systemPrompt must be a string/);
-  });
+  // TASK-142: the `system_prompt` column + validator are gone — an agent's
+  // identity lives in its `.ax/` files. `agents:create` no longer accepts a
+  // `systemPrompt` field (its zod schema `.strip()`s/rejects it; the store
+  // never reads it).
 
   it('rejects model not in allow-list', () => {
     expect(() =>
@@ -334,7 +305,6 @@ describe('store + scopedAgents', () => {
     const updated = await store.update(created.id, updatedPatch);
     expect(updated.displayName).toBe('Renamed');
     // unchanged fields preserved
-    expect(updated.systemPrompt).toBe(created.systemPrompt);
     expect(updated.model).toBe(created.model);
   });
 

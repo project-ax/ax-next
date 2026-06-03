@@ -2,5 +2,5 @@ export {
   BOOTSTRAP_TEMPLATE,
   IDENTITY_SCAFFOLD,
   SOUL_SCAFFOLD,
-  backfillIdentityFile,
+  fallbackIdentityLine,
 } from './templates.js';

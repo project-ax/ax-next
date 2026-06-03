@@ -45,7 +45,7 @@ function buildMocks(opts: {
     'agents:resolve': async () => ({
       agent: {
         id: 'agent-1', ownerId: 'user-1', ownerType: 'user', visibility: 'personal',
-        displayName: 'A', systemPrompt: '', allowedTools: [], mcpConfigIds: [],
+        displayName: 'A', allowedTools: [], mcpConfigIds: [],
         model: 'claude-sonnet-4-7', workspaceRef: null,
       },
     }),

@@ -289,3 +289,19 @@ tombstone it; a non-admin's delete still purges their own `scope:'user'` refs.
 Corollary: don't "skip the dangerous op entirely" if doing so orphans state with no UI home —
 the credentials-into-connectors PR removed the Credentials tab, so skipping the global purge
 would have left a workspace connector's company key unreachable. Keep the op, gate the authority.
+
+## AgentConfig session-snapshot fields use requireString — empty-string fields need requireStringAllowEmpty (TASK-142, 2026-06-03)
+
+The session backends (`@ax/session-inmemory`, `@ax/session-postgres`) validate the
+frozen `agentConfig` on `session:create` with a `requireString` helper that REJECTS
+the empty string (`value.length === 0` → invalid-payload). When TASK-142 added
+`agentConfig.systemPromptAugment` (the `system-prompt:augment` carrier, which is `''`
+whenever no augment provider is registered — the common case, including the CLI),
+guarding it with `requireString` broke EVERY chat with no memory-strata loaded:
+`session:create` rejected → the orchestrator surfaced it as `sandbox-open-failed` (the
+error is swallowed into a generic terminated outcome, so the root cause is invisible
+in logs). Fix: a sibling `requireStringAllowEmpty` (type-only, no length check) for
+legitimately-empty string fields. Lesson: when adding a string field to AgentConfig
+that can be empty, do NOT reuse `requireString` — and this class of break only shows
+up in the `@ax/cli` e2e (real subprocess sandbox open), NOT in per-package unit tests
+whose fixtures all set non-empty values. Run the broad affected set.

@@ -2,8 +2,10 @@
  * Admin agents form — Task 22.
  *
  * Covers AgentForm CRUD flow against the real `/admin/agents` wire shape
- * (camelCase: displayName / systemPrompt / allowedTools / mcpConfigIds /
- * model / visibility / teamId / ...).
+ * (camelCase: displayName / allowedTools / mcpConfigIds / model / visibility /
+ * teamId / ...). TASK-142: the agent's identity lives in its `.ax/` files,
+ * edited via the file editor + a separate PUT to /admin/agents/:id/identity —
+ * not a `systemPrompt` field on this wire.
  *
  * TASK-98/107: the raw `mcpConfigIds` chip field was replaced by a connector
  * PICKER (a checkbox list over `/admin/connectors`). TASK-107 — selected
@@ -18,7 +20,7 @@
  *
  *   1. AgentForm lists existing agents from `/admin/agents` and renders
  *      their displayName.
- *   2. Clicking "+ New agent" reveals the form (name, system prompt, etc.).
+ *   2. Clicking "+ New agent" reveals the form (name, identity files, etc.).
  *   3. Filling + submitting the form POSTs to `/admin/agents` with the
  *      camelCase shape AND the `X-Requested-With: ax-admin` CSRF header.
  *   4. Clicking "edit" on a row populates the form WITHOUT throwing —
@@ -60,7 +62,6 @@ const sampleAgent = (over: Partial<Record<string, unknown>> = {}) => ({
   ownerType: 'user',
   visibility: 'personal',
   displayName: 'ax',
-  systemPrompt: 'be helpful',
   allowedTools: ['bash'],
   mcpConfigIds: [],
   connectorAttachments: [],
@@ -110,7 +111,11 @@ describe('AdminSettings — agents tab', () => {
     await waitFor(() => screen.getByText(/New agent/i));
     fireEvent.click(screen.getByText(/New agent/i));
     expect(screen.getByLabelText(/name/i)).toBeTruthy();
-    expect(screen.getByLabelText(/system prompt/i)).toBeTruthy();
+    // TASK-142: the single "system prompt" textarea is replaced by the
+    // file-based identity editor (Identity / Soul / Operating instructions).
+    expect(screen.getByLabelText('Identity')).toBeTruthy();
+    expect(screen.getByLabelText('Soul')).toBeTruthy();
+    expect(screen.getByLabelText(/Operating instructions/)).toBeTruthy();
   });
 
   it('submitting the form POSTs to /admin/agents with camelCase + CSRF header', async () => {
@@ -125,6 +130,8 @@ describe('AdminSettings — agents tab', () => {
     fetchMock.mockResolvedValueOnce(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
     // TASK-107 — connector-attachments PATCH after create
     fetchMock.mockResolvedValueOnce(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
+    // TASK-142 — identity PUT after create
+    fetchMock.mockResolvedValueOnce(jsonOk({ ok: true }));
     // re-fetch agents after save
     fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
 
@@ -134,13 +141,18 @@ describe('AdminSettings — agents tab', () => {
     fireEvent.change(screen.getByLabelText(/name/i), {
       target: { value: 'new-bot' },
     });
-    fireEvent.change(screen.getByLabelText(/system prompt/i), {
-      target: { value: 'be helpful' },
+    // TASK-142: identity is authored via the file editor (Identity / Soul), not
+    // a single "system prompt" field — and saved via a separate PUT (below).
+    fireEvent.change(screen.getByLabelText('Identity'), {
+      target: { value: 'I am new-bot.' },
+    });
+    fireEvent.change(screen.getByLabelText('Soul'), {
+      target: { value: 'I am helpful.' },
     });
     fireEvent.change(screen.getByLabelText(/allowed tools/i), {
       target: { value: 'bash' },
     });
-    fireEvent.click(screen.getByText(/Save/i));
+    fireEvent.click(screen.getByRole('button', { name: /Save/i }));
     await waitFor(() => {
       const calls = fetchMock.mock.calls;
       const post = calls.find(
@@ -152,13 +164,29 @@ describe('AdminSettings — agents tab', () => {
       const opts = post?.[1] as RequestInit;
       const body = JSON.parse(String(opts.body));
       expect(body.displayName).toBe('new-bot');
-      expect(body.systemPrompt).toBe('be helpful');
+      // TASK-142: the POST body no longer carries systemPrompt — identity is a
+      // separate PUT (asserted below).
+      expect(body.systemPrompt).toBeUndefined();
       expect(body.allowedTools).toEqual(['bash']);
       // TASK-107 — connectors no longer ride mcpConfigIds (MCP-only meaning).
       expect(body.mcpConfigIds).toEqual([]);
       expect(body.visibility).toBe('personal');
       const headers = opts.headers as Record<string, string>;
       expect(headers['x-requested-with']).toBe('ax-admin');
+    });
+    // TASK-142: the identity files are PUT to /admin/agents/:id/identity after
+    // the agent is created.
+    await waitFor(() => {
+      const put = fetchMock.mock.calls.find(
+        ([url, opts]) =>
+          String(url) === '/admin/agents/agent-x/identity' &&
+          (opts as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(put).toBeTruthy();
+      const body = JSON.parse(String((put![1] as RequestInit).body));
+      expect(body.identity).toBe('I am new-bot.');
+      expect(body.soul).toBe('I am helpful.');
+      expect(body.operating).toBe('');
     });
     // TASK-107 — the connector-attachments PATCH was issued against the new id.
     await waitFor(() => {
@@ -218,7 +246,7 @@ describe('AdminSettings — agents tab', () => {
     // Check the GitHub connector.
     const ghCheckbox = await screen.findByRole('checkbox', { name: /Attach GitHub/i });
     fireEvent.click(ghCheckbox);
-    fireEvent.click(screen.getByText(/Save/i));
+    fireEvent.click(screen.getByRole('button', { name: /Save/i }));
 
     await waitFor(() => {
       const patch = fetchMock.mock.calls.find(
@@ -240,7 +268,6 @@ describe('AdminSettings — agents tab', () => {
         agents: [
           sampleAgent({
             displayName: 'probe',
-            systemPrompt: 'reply ok',
             allowedTools: ['bash', 'read_file'],
             // TASK-107 — the attached connector lives in the first-class store now.
             connectorAttachments: ['gh'],
@@ -274,6 +301,10 @@ describe('AdminSettings — agents tab', () => {
       }
       if (/\/admin\/skills(\?|$)/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
       if (/authored-skills/.test(url)) return Promise.resolve(jsonOk({ skills: [] }));
+      // TASK-142 — the edit view loads the agent's `.ax/` identity files.
+      if (/\/identity$/.test(url)) {
+        return Promise.resolve(jsonOk({ identity: 'I am probe.', soul: '', operating: '' }));
+      }
       return Promise.resolve(jsonOk({ teams: [] }));
     });
 

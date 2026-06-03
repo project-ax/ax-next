@@ -6,6 +6,7 @@ import {
 } from '@ax/core';
 import { createChunkBuffer, type ChunkBuffer } from './chunk-buffer.js';
 import { makeAgentBootstrapHandler } from './routes-agent-bootstrap.js';
+import { makeAgentIdentityHandlers } from './routes-agent-identity.js';
 import { makeAllowHostHandler } from './routes-allow-host.js';
 import { registerAttachmentsRoutes } from './routes-attachments.js';
 import { registerChatRoutes } from './routes-chat.js';
@@ -99,11 +100,16 @@ export function createChannelWebServerPlugin(
         // without it.
         'agents:create',
         // TASK-140: the bootstrap route seeds .ax/BOOTSTRAP.md into the new
-        // agent's /permanent via workspace:apply. channel-web only loads in the
-        // k8s preset, which always loads a workspace backend, so this is a hard
-        // dep (the seed itself is best-effort at runtime — a failure logs, the
-        // route still returns 201).
+        // agent's /permanent via workspace:apply. TASK-142: the admin identity
+        // editor (PUT /admin/agents/:id/identity) also writes the agent's
+        // .ax/IDENTITY|SOUL|AGENTS.md through workspace:apply (→ pre-apply →
+        // validator-identity). channel-web only loads in the k8s preset, which
+        // always loads a workspace backend, so this is a hard dep.
         'workspace:apply',
+        // TASK-142: the admin identity editor (GET /admin/agents/:id/identity)
+        // reads the agent's .ax/ files via workspace:read. Same hard-dep
+        // rationale as workspace:apply (k8s preset always has a backend).
+        'workspace:read',
         'conversations:get-by-req-id',
         'conversations:create',
         'conversations:get',
@@ -345,6 +351,31 @@ export function createChannelWebServerPlugin(
         },
       );
       unregisterRoutes.push(agentBootstrapRoute.unregister);
+
+      // TASK-142 — the admin file-based identity editor. GET reads the agent's
+      // .ax/IDENTITY|SOUL|AGENTS.md (workspace:read); PUT writes them
+      // (workspace:apply → pre-apply → validator-identity). Owner-scoped via
+      // agents:resolve; CSRF-gated on PUT by @ax/http-server. Ships with its
+      // consumer (AgentForm's file editor) in the same PR (I3).
+      const agentIdentity = makeAgentIdentityHandlers({ bus, initCtx });
+      for (const [method, handler] of [
+        ['GET', agentIdentity.show],
+        ['PUT', agentIdentity.save],
+      ] as const) {
+        const route = await bus.call<unknown, { unregister: () => void }>(
+          'http:register-route',
+          initCtx,
+          {
+            method,
+            path: '/admin/agents/:id/identity',
+            handler: handler as unknown as (
+              req: RouteRequest,
+              res: RouteResponse,
+            ) => Promise<void>,
+          },
+        );
+        unregisterRoutes.push(route.unregister);
+      }
 
       // TASK-42 — the Settings "Connections" surface. GET returns the per-(user,
       // agent) merged skills list (default + agent-global + per-user); DELETE

@@ -149,7 +149,6 @@ async function createPersonalAgent(
       actor: { userId, isAdmin: false },
       input: {
         displayName: 'Test Agent',
-        systemPrompt: 'You are helpful.',
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude-opus-4-7',
@@ -376,7 +375,6 @@ describe('POST /admin/agents/:id/authored-skills/promote', () => {
       actor: { userId: 'u1', isAdmin: false },
       input: {
         displayName: 'Team Agent',
-        systemPrompt: 'You are helpful.',
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude-opus-4-7',

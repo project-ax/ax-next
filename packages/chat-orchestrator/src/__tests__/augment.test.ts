@@ -15,17 +15,19 @@ import { createChatOrchestratorPlugin } from '../index.js';
 //
 // The orchestrator calls `system-prompt:augment` between the agents:resolve
 // step and the fresh-spawn proxy/sandbox open. Contributions are concatenated
-// in array order (joined with "\n\n", empty bodies filtered) and PREPENDED to
-// `agentConfig.systemPrompt` before forwarding into `sandbox:open-session`.
+// in array order (joined with "\n\n", empty bodies filtered) and written to
+// `agentConfig.systemPromptAugment` (its own field since TASK-142 — the runner
+// prepends it on top of the composed `.ax/` identity prompt) before forwarding
+// into `sandbox:open-session`.
 //
 // Properties under test:
-//   1. Provider registered → sandbox sees the prepended prompt.
-//   2. Provider absent → sandbox sees the original prompt unchanged.
+//   1. Provider registered → sandbox sees the augment in systemPromptAugment.
+//   2. Provider absent → systemPromptAugment stays empty.
 //   3. Multiple contributions concat in array order; empty bodies filtered.
-//   4. Provider throw → chat completes with un-augmented prompt
+//   4. Provider throw → chat completes with empty augment
 //      (fire-and-degrade; failures don't abort the chat).
 //   5. Routed-into-live-sandbox path: augment NOT called — the runner
-//      already has its baked-in systemPrompt.
+//      already has its baked-in systemPromptAugment.
 // ---------------------------------------------------------------------------
 
 const TEST_AGENT = {
@@ -34,7 +36,6 @@ const TEST_AGENT = {
   ownerType: 'user' as const,
   visibility: 'personal' as const,
   displayName: 'Test',
-  systemPrompt: 'BASE-PROMPT',
   allowedTools: ['file.read'],
   mcpConfigIds: [],
   model: 'claude-sonnet-4-7',
@@ -63,7 +64,7 @@ interface AugmentMocks {
   trace: {
     augmentCalls: number;
     sandboxOpen: number;
-    lastSystemPrompt: string | undefined;
+    lastSystemPromptAugment: string | undefined;
     lastQueuedMessage: AgentMessage | undefined;
   };
 }
@@ -81,7 +82,7 @@ function buildMocks(opts: {
   const trace: AugmentMocks['trace'] = {
     augmentCalls: 0,
     sandboxOpen: 0,
-    lastSystemPrompt: undefined,
+    lastSystemPromptAugment: undefined,
     lastQueuedMessage: undefined,
   };
 
@@ -100,9 +101,9 @@ function buildMocks(opts: {
       trace.sandboxOpen += 1;
       const i = input as {
         sessionId: string;
-        owner: { agentConfig: { systemPrompt: string } };
+        owner: { agentConfig: { systemPromptAugment: string } };
       };
-      trace.lastSystemPrompt = i.owner.agentConfig.systemPrompt;
+      trace.lastSystemPromptAugment = i.owner.agentConfig.systemPromptAugment;
       const originatingReqId = ctx.reqId;
       // Fire chat:end on the next tick to resolve the orchestrator's waiter.
       setImmediate(() => {
@@ -200,7 +201,7 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
     expect(outcome.kind).toBe('complete');
     expect(mocks.trace.augmentCalls).toBe(1);
     expect(mocks.trace.sandboxOpen).toBe(1);
-    expect(mocks.trace.lastSystemPrompt).toBe('INJECT-ME\n\nBASE-PROMPT');
+    expect(mocks.trace.lastSystemPromptAugment).toBe('INJECT-ME');
   });
 
   it('augment provider not registered → sandbox sees the original prompt unchanged', async () => {
@@ -225,7 +226,7 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
 
     expect(outcome.kind).toBe('complete');
     expect(mocks.trace.augmentCalls).toBe(0);
-    expect(mocks.trace.lastSystemPrompt).toBe('BASE-PROMPT');
+    expect(mocks.trace.lastSystemPromptAugment).toBe('');
   });
 
   it('multiple contributions concat in order; empty bodies filtered', async () => {
@@ -261,7 +262,7 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
 
     // Concat order: 'A', 'B' (empty filtered) joined with '\n\n', then
     // separator '\n\n', then base prompt.
-    expect(mocks.trace.lastSystemPrompt).toBe('A\n\nB\n\nBASE-PROMPT');
+    expect(mocks.trace.lastSystemPromptAugment).toBe('A\n\nB');
   });
 
   it('augment provider throws → chat completes with un-augmented prompt', async () => {
@@ -294,7 +295,7 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
     expect(outcome.kind).toBe('complete');
     expect(mocks.trace.augmentCalls).toBe(1);
     // Original prompt forwarded — augmentation never landed.
-    expect(mocks.trace.lastSystemPrompt).toBe('BASE-PROMPT');
+    expect(mocks.trace.lastSystemPromptAugment).toBe('');
   });
 
   it('routed path (live sandbox) does NOT call system-prompt:augment', async () => {

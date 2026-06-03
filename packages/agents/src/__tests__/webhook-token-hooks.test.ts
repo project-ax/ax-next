@@ -57,7 +57,7 @@ async function createAgent(harness: TestHarness, ownerUserId: string): Promise<s
     {
       actor: { userId: ownerUserId, isAdmin: false },
       input: {
-        displayName: 'a', systemPrompt: '', allowedTools: [], mcpConfigIds: [],
+        displayName: 'a', allowedTools: [], mcpConfigIds: [],
         model: 'claude-opus-4-7', visibility: 'personal',
       },
     },
@@ -162,7 +162,7 @@ describe('agents:resolve does NOT expose webhookToken (Finding #3 regression)', 
     >('agents:create', harness.ctx({ userId: 'u1' }), {
       actor: { userId: 'u1', isAdmin: false },
       input: {
-        displayName: 'b', systemPrompt: '', allowedTools: [], mcpConfigIds: [],
+        displayName: 'b', allowedTools: [], mcpConfigIds: [],
         model: 'claude-opus-4-7', visibility: 'personal',
       },
     });

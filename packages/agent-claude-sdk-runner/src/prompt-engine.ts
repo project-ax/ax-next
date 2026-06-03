@@ -22,22 +22,23 @@
 //      bootstrap script; nothing else is injected (no floor, no notes, no
 //      augment). Exclusive.
 //
-//   2. NORMAL mode     — no BOOTSTRAP.md but ≥1 of {IDENTITY,SOUL,AGENTS}.md
-//      present → compose, in order:
-//        [agentConfig.systemPrompt prepend]   (carries the host system-prompt:augment)
+//   2. NORMAL mode     — no BOOTSTRAP.md (the ONLY other mode) → compose, in
+//      order:
+//        [augment prepend]                    (the host system-prompt:augment)
 //        + [safety floor]                     (hardcoded, NOT editable)
 //        + [.ax/AGENTS.md if present]         (operating-behavior overrides)
-//        + ## Identity (.ax/IDENTITY.md if present)
+//        + ## Identity (.ax/IDENTITY.md if present, ELSE the displayName
+//          fallback identity "You are <displayName>, a helpful personal
+//          assistant.")
 //        + ## Soul     (.ax/SOUL.md if present)
 //        + identity-evolution guidance
 //        + operational notes (workspace / ephemeral? / venv? / handoff / skills)
 //      Each `.ax/` file is inject-if-present; the floor + evolution + notes are
-//      always present.
-//
-//   3. STRING fallback — no BOOTSTRAP.md and no identity files → the legacy
-//      `buildFallbackPrompt` string path, so an agent that hasn't been given
-//      `.ax/` files yet still gets its frozen `agentConfig.systemPrompt`. This
-//      is the half-wired bridge; design Phase 4 removes it.
+//      always present. There is NO string-fallback / SDK-preset path anymore:
+//      the `system_prompt` column was dropped (conversational-agent-identity
+//      Phase 4 / TASK-142), so every non-bootstrap spawn is normal mode. An
+//      agent with no identity files at all still gets a coherent prompt — the
+//      displayName fallback identity line + floor + notes.
 //
 // Untrusted-input note (Invariant #5): the `.ax/` files are agent-authored
 // (model output round-tripped through the workspace) and therefore UNTRUSTED.
@@ -51,11 +52,13 @@
 
 import { readFile, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
-import {
-  buildFallbackPrompt,
-  operationalNotes,
-  type SdkSystemPrompt,
-} from './system-prompt.js';
+import { operationalNotes, type SdkSystemPrompt } from './system-prompt.js';
+// The fallback identity line ("You are <displayName>, …") is the SAME canonical
+// constant the Phase 2 identity backfill wrote into IDENTITY.md — versioned in
+// the shared pure-data templates package so the runner imports it rather than
+// duplicating the line (Invariant #4). `displayName` is host-controlled (the
+// agent row's display name), never model/user/tool input.
+import { fallbackIdentityLine } from './identity-templates.js';
 
 /** Per-file hard cap on an `.ax/` identity file. A file larger than this is
  * skipped whole (logged), never truncated mid-content — identity is never
@@ -196,8 +199,7 @@ export async function readAxIdentityFiles(workspaceRoot: string): Promise<AxIden
 
 export interface ComposeNormalModeInput {
   /** Prepended on top of everything — carries the host `system-prompt:augment`
-   * contribution (and, during the Phase-1 migration window, any legacy
-   * `agentConfig.systemPrompt`). Empty string => no prepend slot. */
+   * contribution. Empty string => no prepend slot. */
   prepend?: string;
   /** `.ax/AGENTS.md` body, if present. */
   agents?: string;
@@ -241,28 +243,24 @@ export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
   return parts.join('\n\n');
 }
 
-/** True iff any of the normal-mode identity files is present. */
-function hasIdentityFiles(files: AxIdentityFiles): boolean {
-  return (
-    files.agents !== undefined ||
-    files.identity !== undefined ||
-    files.soul !== undefined
-  );
-}
-
 /**
  * Build the SDK `systemPrompt` for this spawn, reading `${workspaceRoot}/.ax/`
  * and dispatching by mode (see the file header). Async because it reads the
- * identity files from the durable workspace.
+ * identity files from the durable workspace. Always returns a plain string —
+ * there is no SDK-preset / string-fallback path (TASK-142 dropped it).
  *
- * @param agentSystemPrompt the frozen `agentConfig.systemPrompt` — in normal
- *   mode it prepends on top (carrying the host `system-prompt:augment`); in
- *   fallback mode it IS the base.
+ * @param displayName the agent's display name — the runner's FALLBACK identity,
+ *   used in normal mode only when the agent has no `.ax/IDENTITY.md` of its own
+ *   ("You are <displayName>, a helpful personal assistant."). Host-controlled.
+ * @param augment the host `system-prompt:augment` contribution (e.g. the
+ *   memory-strata injection), prepended on top in normal mode. Empty string =>
+ *   no prepend.
  * @param workspaceRoot the durable workspace root (`/permanent` by default);
  *   `.ax/` lives directly under it.
  */
 export async function buildSystemPrompt(
-  agentSystemPrompt: string,
+  displayName: string,
+  augment: string,
   workspaceRoot: string,
   ephemeralRoot: string | undefined,
   pythonVenvActive = false,
@@ -271,32 +269,29 @@ export async function buildSystemPrompt(
 
   // Bootstrap mode is exclusive: the BOOTSTRAP.md content IS the entire prompt.
   //
-  // TRUST NOTE (design Phase 1 ↔ Phase 3): `.ax/` files are agent-writable, and
-  // the identity validator (`@ax/validator-identity`, design Phase 3) that gates
-  // legitimate identity/BOOTSTRAP changes is not wired yet. In the intended flow
-  // the host seeds BOOTSTRAP.md at create and the agent deletes it once; until
-  // the validator lands, a prompt-injected turn that re-creates `.ax/BOOTSTRAP.md`
-  // would make THIS branch run it verbatim (suppressing the floor) on the next
-  // spawn. That hardening is the validator's job (its bootstrap-window policy is
-  // the approval signal) and is explicitly Phase 3 in the design — not closed in
-  // this phase. Tracked as a same-epic follow-up.
+  // TRUST NOTE (TASK-142, conversational-agent-identity Phase 3↔4): `.ax/` files
+  // are agent-writable, but a re-created/forged `.ax/BOOTSTRAP.md` can no longer
+  // re-open the bootstrap window: `@ax/validator-identity` (Phase 3 / TASK-141)
+  // is wired as a `workspace:pre-apply` subscriber and HARD-VETOES any agent
+  // `put` to BOOTSTRAP.md whose bytes don't match the canonical host-seeded
+  // template — so the only BOOTSTRAP.md this branch ever runs verbatim is the
+  // trusted compile-time script (floor-by-design) or the host's own seed. The
+  // un-gated-bootstrap-trust window flagged in Phase 1 is therefore CLOSED.
   if (files.bootstrap !== undefined) {
     return files.bootstrap;
   }
 
-  // Normal mode: compose from the identity files + the hardcoded floor + notes.
-  if (hasIdentityFiles(files)) {
-    const notes = operationalNotes(workspaceRoot, ephemeralRoot, pythonVenvActive);
-    return composeNormalModePrompt({
-      prepend: agentSystemPrompt,
-      ...(files.agents !== undefined ? { agents: files.agents } : {}),
-      ...(files.identity !== undefined ? { identity: files.identity } : {}),
-      ...(files.soul !== undefined ? { soul: files.soul } : {}),
-      notes,
-    });
-  }
-
-  // String fallback (the half-wired bridge): no identity files and no
-  // BOOTSTRAP.md → the legacy frozen string path.
-  return buildFallbackPrompt(agentSystemPrompt, workspaceRoot, ephemeralRoot, pythonVenvActive);
+  // Normal mode — the ONLY other mode. Compose from the identity files + the
+  // hardcoded floor + notes. When the agent has no IDENTITY.md, fall back to the
+  // displayName identity line so a file-less agent still gets a coherent "who am
+  // I". (SOUL.md / AGENTS.md remain inject-if-present.)
+  const notes = operationalNotes(workspaceRoot, ephemeralRoot, pythonVenvActive);
+  const identity = files.identity ?? fallbackIdentityLine(displayName);
+  return composeNormalModePrompt({
+    prepend: augment,
+    ...(files.agents !== undefined ? { agents: files.agents } : {}),
+    identity,
+    ...(files.soul !== undefined ? { soul: files.soul } : {}),
+    notes,
+  });
 }

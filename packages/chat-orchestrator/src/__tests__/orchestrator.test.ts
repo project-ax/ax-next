@@ -22,7 +22,6 @@ const TEST_AGENT = {
   ownerType: 'user' as const,
   visibility: 'personal' as const,
   displayName: 'Test',
-  systemPrompt: 'be helpful',
   allowedTools: ['file.read'],
   mcpConfigIds: [],
   model: 'claude-sonnet-4-7',
@@ -982,7 +981,6 @@ describe('chat-orchestrator', () => {
         agent: {
           ...TEST_AGENT,
           id: 'a-resolved',
-          systemPrompt: 'you are a poet',
           allowedTools: ['file.read', 'bash.exec'],
           mcpConfigIds: ['mcp-1'],
           model: 'claude-opus-4-7',
@@ -1043,7 +1041,8 @@ describe('chat-orchestrator', () => {
         userId: string;
         agentId: string;
         agentConfig: {
-          systemPrompt: string;
+          displayName: string;
+          systemPromptAugment: string;
           allowedTools: string[];
           mcpConfigIds: string[];
           model: string;
@@ -1053,7 +1052,11 @@ describe('chat-orchestrator', () => {
     expect(last.owner.userId).toBe('test-user');
     expect(last.owner.agentId).toBe('a-resolved');
     expect(last.owner.agentConfig).toEqual({
-      systemPrompt: 'you are a poet',
+      // TASK-142: the frozen config carries the agent's displayName (the
+      // runner's fallback identity) and an EMPTY systemPromptAugment (no augment
+      // provider is registered in this test).
+      displayName: 'Test',
+      systemPromptAugment: '',
       // TASK-51/76: this agent is non-wildcard (explicit tools + mcpConfigIds),
       // so the always-on broker tools (incl. skill_propose, TASK-76) are locked
       // into the frozen allowedTools at session-open. The agent's own tools come

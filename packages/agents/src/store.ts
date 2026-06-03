@@ -14,15 +14,12 @@ const PLUGIN_NAME = '@ax/agents';
 // for owner_type / visibility / pairing; everything else is enforced here
 // because length limits and regex tests don't translate cleanly to SQL.
 //
-// `system_prompt` is intentionally not pattern-matched — it's free-form
-// text by design (it's the prompt). We cap its length and store it
-// verbatim. It flows untrusted to the LLM via the chat path; that's the
-// expected shape. The Week 9.5 plan §Invariant I8 calls this out.
+// TASK-142: the legacy `system_prompt` column + its validator are gone —
+// identity lives in the agent's `.ax/` files now (Invariant #4).
 // ---------------------------------------------------------------------------
 
 const DISPLAY_NAME_MIN = 1;
 const DISPLAY_NAME_MAX = 128;
-const SYSTEM_PROMPT_MAX = 32 * 1024; // 32 KiB
 const ALLOWED_TOOLS_MAX = 100;
 const MCP_CONFIG_IDS_MAX = 50;
 const WORKSPACE_REF_MAX = 256;
@@ -82,24 +79,6 @@ function validateDisplayName(value: unknown): string {
   }
   if (value !== value.trim()) {
     throw invalid('displayName must not have leading or trailing whitespace');
-  }
-  return value;
-}
-
-function validateSystemPrompt(value: unknown): string {
-  // TASK-140: an ABSENT systemPrompt is now legal — a BARE agent (the
-  // conversational-first-run path) has no identity string; its identity lives
-  // in `.ax/` files. undefined/null → '' so `agents:create` can mint a bare
-  // agent. A PRESENT non-string is still a hard reject (that's a malformed
-  // payload, not an intentional omission). The column itself dies in Phase 4.
-  if (value === undefined || value === null) {
-    return '';
-  }
-  if (typeof value !== 'string') {
-    throw invalid('systemPrompt must be a string');
-  }
-  if (value.length > SYSTEM_PROMPT_MAX) {
-    throw invalid(`systemPrompt must be at most ${SYSTEM_PROMPT_MAX} chars`);
   }
   return value;
 }
@@ -246,7 +225,6 @@ function validateTeamId(value: unknown): string {
 
 interface ValidatedAgentInput {
   displayName: string;
-  systemPrompt: string;
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
@@ -266,7 +244,6 @@ export function validateCreateInput(
   }
   return {
     displayName: validateDisplayName(input.displayName),
-    systemPrompt: validateSystemPrompt(input.systemPrompt),
     allowedTools: validateAllowedTools(input.allowedTools),
     mcpConfigIds: validateMcpConfigIds(input.mcpConfigIds),
     model: validateModel(input.model, vctx.allowedModels),
@@ -296,9 +273,6 @@ export function validateUpdatePatch(
   const out: Partial<ValidatedAgentInput> = {};
   if (patch.displayName !== undefined) {
     out.displayName = validateDisplayName(patch.displayName);
-  }
-  if (patch.systemPrompt !== undefined) {
-    out.systemPrompt = validateSystemPrompt(patch.systemPrompt);
   }
   if (patch.allowedTools !== undefined) {
     out.allowedTools = validateAllowedTools(patch.allowedTools);
@@ -424,7 +398,6 @@ function rowToAgent(row: AgentsRow): Agent {
     ownerType: row.owner_type,
     visibility: row.visibility,
     displayName: row.display_name,
-    systemPrompt: row.system_prompt,
     allowedTools,
     mcpConfigIds,
     model: row.model,
@@ -504,10 +477,9 @@ export interface AgentStore {
    */
   listAllIds(): Promise<string[]>;
   /**
-   * Full hydration of EVERY agent row. Used by the TASK-140 identity backfill,
-   * which needs each agent's displayName + system_prompt + owner to write its
-   * `.ax/` identity files. Same trust posture as listAllIds (background, no
-   * ACL — the caller is the boot-time migration, not a user request).
+   * Full hydration of EVERY agent row. A background, no-ACL enumeration (same
+   * trust posture as listAllIds — the caller is a boot-time loop, not a user
+   * request).
    */
   listAll(): Promise<Agent[]>;
   /**
@@ -548,7 +520,6 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           owner_type: ownerType,
           visibility: validated.visibility,
           display_name: validated.displayName,
-          system_prompt: validated.systemPrompt,
           // Kysely's pg dialect serializes JSONB on the way down; pass the
           // arrays directly. (Verified vs. session-postgres patterns.)
           allowed_tools: JSON.stringify(validated.allowedTools) as unknown,
@@ -566,7 +537,6 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'owner_type',
           'visibility',
           'display_name',
-          'system_prompt',
           'allowed_tools',
           'mcp_config_ids',
           'model',
@@ -585,7 +555,6 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
       const now = new Date();
       const setClause: Record<string, unknown> = { updated_at: now };
       if (patch.displayName !== undefined) setClause.display_name = patch.displayName;
-      if (patch.systemPrompt !== undefined) setClause.system_prompt = patch.systemPrompt;
       if (patch.allowedTools !== undefined) {
         setClause.allowed_tools = JSON.stringify(patch.allowedTools);
       }
@@ -605,7 +574,6 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'owner_type',
           'visibility',
           'display_name',
-          'system_prompt',
           'allowed_tools',
           'mcp_config_ids',
           'model',
@@ -725,7 +693,6 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'owner_type',
           'visibility',
           'display_name',
-          'system_prompt',
           'allowed_tools',
           'mcp_config_ids',
           'model',
@@ -761,7 +728,6 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'owner_type',
           'visibility',
           'display_name',
-          'system_prompt',
           'allowed_tools',
           'mcp_config_ids',
           'model',

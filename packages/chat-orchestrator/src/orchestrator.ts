@@ -280,7 +280,6 @@ interface AgentRecord {
   ownerType: 'user' | 'team';
   visibility: 'personal' | 'team';
   displayName: string;
-  systemPrompt: string;
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
@@ -525,7 +524,7 @@ interface SessionIsAliveOutput {
 // orchestrator is a no-op — no augmentation, identical to today.
 //
 // Note: augmentation applies ONLY on the fresh-spawn path. The routed-into-
-// existing-sandbox path reuses the originally-frozen `agentConfig.systemPrompt`
+// existing-sandbox path reuses the originally-frozen `agentConfig.systemPromptAugment`
 // that was baked into the runner's session at first spawn — re-augmenting
 // mid-conversation would silently shift the prompt under the running agent,
 // which neither matches caller expectations nor improves anything (the
@@ -1232,7 +1231,13 @@ export function createOrchestrator(
     //    live edits to the agent row (via /admin/agents PATCH in Task 9)
     //    do not affect in-flight sessions.
     const agentConfig: AgentConfig = {
-      systemPrompt: agent.systemPrompt,
+      // The runner's fallback identity (used when the agent has no
+      // `.ax/IDENTITY.md`). TASK-142 dropped the `system_prompt` column —
+      // identity lives in the agent's `.ax/` files now.
+      displayName: agent.displayName,
+      // Seeded empty; the `system-prompt:augment` step below sets it on the
+      // fresh-spawn path (the runner prepends it on top in normal mode).
+      systemPromptAugment: '',
       // TASK-51 (JIT §P4): lock the always-on broker tools into every
       // multi-tenant agent's effective allowedTools (default+locked). For a
       // wildcard agent (empty allowedTools+mcpConfigIds) this is a no-op — it
@@ -1468,7 +1473,7 @@ export function createOrchestrator(
     }
 
     // Phase 2B — system-prompt:augment. Fresh-spawn path only: a routed
-    // agent:invoke reuses an existing live sandbox whose systemPrompt was
+    // agent:invoke reuses an existing live sandbox whose systemPromptAugment was
     // baked into the runner at first spawn; re-augmenting mid-conversation
     // would silently shift the prompt under the running agent (and the
     // runner doesn't reload it anyway).
@@ -1476,6 +1481,10 @@ export function createOrchestrator(
     // Single-provider service hook (one registration at MVP; promoted to
     // a subscriber chain in Phase 5+ if a second provider lands). When
     // unregistered: no-op — identical to pre-Phase-2B behavior.
+    //
+    // The contribution lands on `agentConfig.systemPromptAugment` (its own
+    // field since TASK-142); the runner prepends it on top of the composed
+    // `.ax/` identity prompt in normal mode.
     //
     // Failure-mode: augmentation is fire-and-degrade. A throw doesn't abort
     // the chat; we log and fall through with the un-augmented prompt. The
@@ -1493,9 +1502,9 @@ export function createOrchestrator(
           .join('\n\n');
         if (extra.length > 0) {
           // Mutate the struct's field, not the binding. agentConfig is still
-          // a const reference to the same object; only the systemPrompt
+          // a const reference to the same object; only the systemPromptAugment
           // property changes before it gets frozen on the new session.
-          agentConfig.systemPrompt = `${extra}\n\n${agentConfig.systemPrompt}`;
+          agentConfig.systemPromptAugment = extra;
         }
       } catch (err) {
         ctx.logger.warn('system_prompt_augment_failed', {
