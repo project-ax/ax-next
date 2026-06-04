@@ -549,6 +549,26 @@ describe('buildPodSpec', () => {
         expect(byName('GIT_SSL_CAINFO')).toBe(TCP_CA_PATH);
         expect(byName('DENO_CERT')).toBe(TCP_CA_PATH);
       });
+
+      it('treats a per-session TCP endpoint as TCP mode EVEN when config.proxyEndpoint is unset (codex P2a)', () => {
+        // Regression: the CA-delivery decision must follow what the runner
+        // ACTUALLY gets — a TCP endpoint with no hostPath mount — not a second
+        // config knob (config.proxyEndpoint) a programmatic caller might forget
+        // to set in lockstep. With pc.endpoint set and no hostPath, the runner
+        // has no mounted cert, so AX_PROXY_CA_PEM + the tmpfs cert path MUST be
+        // stamped regardless of config.proxyEndpoint.
+        const cfgNoEndpoint = resolveConfig({ hostIpcUrl: 'http://test-host:8080' });
+        expect(cfgNoEndpoint.proxyEndpoint).toBe('');
+        const spec = buildPodSpec('p', tcpProxyInput, cfgNoEndpoint);
+        const env = (
+          spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+        ).containers[0]!.env;
+        const byName = (n: string) => env.find((e) => e.name === n)?.value;
+        expect(byName('AX_PROXY_CA_PEM')).toBe(
+          '-----BEGIN CERTIFICATE-----\ntcp-ca\n-----END CERTIFICATE-----\n',
+        );
+        expect(byName('NODE_EXTRA_CA_CERTS')).toBe(TCP_CA_PATH);
+      });
     });
 
     it('does NOT stamp AX_PROXY_CA_PEM in hostPath mode (cert is mounted)', () => {

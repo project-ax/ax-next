@@ -559,6 +559,33 @@ describeIfHelm('ax-next chart: credential-proxy TCP Service (TASK-149)', () => {
     expect(ports.some((p: { port?: number }) => p.port === 8888)).toBe(true);
   });
 
+  it('TCP mode: the proxy Service name does NOT collide with the host Service under a long fullnameOverride (codex P2b)', () => {
+    // Regression: `printf "%s-proxy" fullname | trunc 63` truncates AFTER
+    // appending, so a 62-63 char fullname loses the `-proxy` suffix and the
+    // proxy Service renders with the SAME name as the host Service — helm then
+    // refuses two Services with one name. The helper must reserve the suffix
+    // before truncating (like the git-server-experimental helper).
+    const longName = 'a'.repeat(62);
+    const docs = helmTemplate([
+      ...tcpArgs,
+      '--set', `fullnameOverride=${longName}`,
+    ]);
+    const services = docs.filter((d) => d.kind === 'Service');
+    const names = services.map((s) => s.metadata?.name);
+    // No two Services may share a name (helm refuses a duplicate-name install).
+    expect(new Set(names).size, `Service names must be unique: ${names.join(', ')}`).toBe(
+      names.length,
+    );
+    // The proxy Service must render with its own distinct, suffix-preserved name.
+    const proxySvc = services.find(
+      (s) => s.metadata?.labels?.['ax.io/service'] === 'credential-proxy',
+    );
+    expect(proxySvc, 'proxy Service renders').toBeDefined();
+    expect(proxySvc?.metadata?.name, 'proxy name keeps a -proxy-derived form').toMatch(
+      /-proxy$/,
+    );
+  });
+
   it('TCP mode: host Deployment stamps the TCP proxy env (K8S_PROXY_ENDPOINT + AX_PROXY_TCP_PORT + AX_PROXY_ADVERTISED_ENDPOINT) and NOT the hostPath env', () => {
     const docs = helmTemplate(tcpArgs);
     const host = docs.find(

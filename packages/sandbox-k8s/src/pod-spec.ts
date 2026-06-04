@@ -456,18 +456,22 @@ export function buildPodSpec(
   //    path at boot (see @ax/agent-claude-sdk-runner proxy-ca-from-env).
   //    Cert env vars point at that tmpfs path.
   //
-  // TCP mode is discriminated by `config.proxyEndpoint` being set AND the
-  // per-session `proxyConfig.endpoint` being present (a `http://` Service
-  // URL); everything else uses the mounted hostPath posture.
+  // TCP mode is discriminated by the per-session `proxyConfig.endpoint` being
+  // present (a `http://` direct/Service URL — the Unix-socket posture uses
+  // `proxyConfig.unixSocketPath` instead) AND there being NO hostPath mount to
+  // carry the CA. We deliberately key off `pc.endpoint` + the absence of a
+  // hostPath rather than `config.proxyEndpoint`: the CA-delivery decision must
+  // follow what the runner ACTUALLY gets (a TCP endpoint with no mounted cert),
+  // not a second config knob a programmatic caller might forget to set in
+  // lockstep — a mismatch there would stamp AX_PROXY_ENDPOINT while leaving the
+  // CA vars pointing at the unmounted hostPath path (every TLS call would fail).
   const proxyEnv: EnvVar[] = [];
   if (input.proxyConfig !== undefined) {
     const pc = input.proxyConfig;
     // TCP-Service posture: no hostPath, the proxy is reached over a cluster
     // Service URL and the CA arrives by env. The runner writes the PEM here.
     const tcpMode =
-      config.proxyEndpoint.length > 0 &&
-      config.proxySocketHostPath.length === 0 &&
-      pc.endpoint !== undefined;
+      config.proxySocketHostPath.length === 0 && pc.endpoint !== undefined;
     // Where the runner finds the MITM CA. hostPath mode → the mounted shared
     // dir; TCP mode → a tmpfs path the runner writes from AX_PROXY_CA_PEM.
     // (HOME is /home/runner, a tmpfs emptyDir already mounted + writable.)

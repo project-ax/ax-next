@@ -119,7 +119,8 @@ listener in production-gVisor mode. Selects the HOST pod (the proxy listens
 inside the host container).
 */}}
 {{- define "ax-next.credentialProxyComponentName" -}}
-{{- printf "%s-proxy" (include "ax-next.fullname" .) | trunc 63 | trimSuffix "-" -}}
+{{- $base := include "ax-next.fullname" . | trunc 57 | trimSuffix "-" -}}
+{{- printf "%s-proxy" $base | trunc 63 | trimSuffix "-" -}}
 {{- end -}}
 
 {{/*
