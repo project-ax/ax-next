@@ -13,7 +13,7 @@
 // ---------------------------------------------------------------------------
 
 import { createHash } from 'node:crypto';
-import { buildGitCredentialEnv } from '@ax/sandbox-protocol';
+import { buildGitCredentialEnv, type ServiceDescriptorParsed } from '@ax/sandbox-protocol';
 import type { ResolvedSandboxK8sConfig } from './config.js';
 
 const K8S_LABEL_MAX_BYTES = 63;
@@ -148,6 +148,17 @@ export interface BuildPodSpecInput {
      */
     credentials?: Array<{ slot: string; kind: 'api-key'; placeholder?: string | undefined }>;
   }>;
+  /**
+   * TASK-151 — dev SERVICES the orchestrator folded from the agent's connector
+   * capabilities. Each descriptor renders as a NATIVE k8s sidecar (an
+   * `initContainers[]` entry with `restartPolicy: 'Always'`), NEVER a plain
+   * `containers[]` entry — see `renderServiceSidecars` for why that distinction
+   * is load-bearing (I1). The type is the wire-validated
+   * `ServiceDescriptorParsed` from `@ax/sandbox-protocol`; the descriptor is
+   * backend-agnostic (no k8s vocabulary, I1) and digest-pinned (I8) by the time
+   * it reaches here.
+   */
+  services?: ServiceDescriptorParsed[];
 }
 
 interface EnvVar {
@@ -170,6 +181,116 @@ export interface PodSpec {
     labels: Record<string, string>;
   };
   spec: Record<string, unknown>;
+}
+
+/**
+ * The locked-down container security context the runner, the sdk-scaffold init
+ * container, AND every service sidecar all share (I5). A service image is
+ * third-party and adjacent to the untrusted runner, so it gets the SAME locked
+ * posture: non-root uid/gid 1000, no privilege escalation, read-only rootfs,
+ * all linux capabilities dropped. Anything a service legitimately writes goes to
+ * a per-service `emptyDir` mount (see `renderServiceSidecars`).
+ */
+const CONTAINER_SECURITY = {
+  runAsNonRoot: true,
+  runAsUser: 1000,
+  runAsGroup: 1000,
+  allowPrivilegeEscalation: false,
+  readOnlyRootFilesystem: true,
+  capabilities: { drop: ['ALL'] },
+} as const;
+
+interface ServiceSidecarRender {
+  /** The `initContainers[]` entries — one native sidecar per service. */
+  initContainers: Record<string, unknown>[];
+  /** The matching `emptyDir` volumes — one per service writable path. */
+  volumes: Array<{ name: string; emptyDir: Record<string, never> }>;
+}
+
+/**
+ * TASK-151 — render each declared service descriptor as a NATIVE k8s sidecar.
+ *
+ * The load-bearing distinction (I1): a service is a long-running process (a DB,
+ * a broker). Rendered as a plain `containers[]` entry under the pod's
+ * `restartPolicy: Never`, the pod NEVER reaches `Succeeded`/`Failed` (those
+ * phases require ALL containers to terminate), so `watchPodExit`
+ * (lifecycle.ts:192) loops until the 6h `activeDeadlineSeconds` — a pod leak.
+ * Native sidecars (`initContainers` with `restartPolicy: Always`) do NOT count
+ * toward pod completion: the pod completes when the runner (`containers[0]`)
+ * exits, and the kubelet tears the sidecars down. So services MUST render here,
+ * NOT in `containers[]`.
+ *
+ * Each sidecar gets:
+ *  - the same locked `CONTAINER_SECURITY` as the runner (I5) — third-party,
+ *    untrusted-adjacent, so no looser posture;
+ *  - ONLY the descriptor's own `env` (I5/I1) — no AX_* / proxy / git env leak
+ *    onto a third-party image; the egress lock (I4) is enforced at the NetworkPolicy
+ *    layer, not via env, and the descriptor never encodes a bind address;
+ *  - `ports` → `containerPort`s;
+ *  - per-`writablePaths` `emptyDir` mounts (rootfs stays read-only, I5);
+ *  - an optional `startupProbe` from the descriptor's `healthcheck` (I6) — under
+ *    native-sidecar semantics the kubelet starts the main container once the
+ *    sidecars' startup probes pass.
+ *  - per-service resourcing from config (NOT a descriptor field — keeps the
+ *    descriptor backend-agnostic, I1).
+ */
+function renderServiceSidecars(
+  services: ServiceDescriptorParsed[],
+  config: ResolvedSandboxK8sConfig,
+): ServiceSidecarRender {
+  const initContainers: Record<string, unknown>[] = [];
+  const volumes: Array<{ name: string; emptyDir: Record<string, never> }> = [];
+
+  for (const service of services) {
+    // The descriptor `name` is constrained to ID_RE (lowercase alnum + dashes)
+    // at the wire, so `svc-<name>` and `svc-<name>-<i>` are valid k8s
+    // container/volume names without further sanitization. The index keeps a
+    // service's multiple writable paths — and paths shared across services —
+    // collision-free.
+    const containerName = `svc-${service.name}`;
+
+    const volumeMounts: Array<{ name: string; mountPath: string }> = [];
+    service.writablePaths.forEach((mountPath, i) => {
+      const volName = `svc-${service.name}-${i}`;
+      volumeMounts.push({ name: volName, mountPath });
+      volumes.push({ name: volName, emptyDir: {} });
+    });
+
+    const sidecar: Record<string, unknown> = {
+      name: containerName,
+      image: service.image,
+      // Native-sidecar marker: a `restartPolicy: Always` init container is
+      // treated by the kubelet as a sidecar — it starts before the main
+      // container, stays running alongside it, and does NOT gate pod
+      // completion. This is the whole point (I1).
+      restartPolicy: 'Always',
+      securityContext: CONTAINER_SECURITY,
+      env: Object.entries(service.env).map(([name, value]) => ({ name, value })),
+      ports: service.ports.map((containerPort) => ({ containerPort })),
+      resources: {
+        limits: { cpu: config.serviceCpuLimit, memory: config.serviceMemoryLimit },
+        requests: { cpu: config.serviceCpuRequest, memory: config.serviceMemoryRequest },
+      },
+      volumeMounts,
+    };
+
+    if (service.healthcheck !== undefined) {
+      // A startupProbe (not a readinessProbe) — under native-sidecar semantics
+      // the kubelet holds the main container until the sidecars' startup probes
+      // pass. Generous failureThreshold × periodSeconds so the kubelet's own
+      // per-probe budget also covers JVM cold-start + image pull (I6); the
+      // pod-level readiness budget in config scales separately.
+      const probeBudget = { periodSeconds: 5, failureThreshold: 60, timeoutSeconds: 3 };
+      sidecar.startupProbe =
+        service.healthcheck.kind === 'tcp'
+          ? { tcpSocket: { port: service.healthcheck.port }, ...probeBudget }
+          : { exec: { command: service.healthcheck.command }, ...probeBudget };
+    }
+
+    initContainers.push(sidecar);
+  }
+
+  return { initContainers, volumes };
 }
 
 export function buildPodSpec(
@@ -390,14 +511,15 @@ export function buildPodSpec(
     })),
   ];
 
-  const containerSecurity = {
-    runAsNonRoot: true,
-    runAsUser: 1000,
-    runAsGroup: 1000,
-    allowPrivilegeEscalation: false,
-    readOnlyRootFilesystem: true,
-    capabilities: { drop: ['ALL'] },
-  };
+  const containerSecurity = CONTAINER_SECURITY;
+
+  // TASK-151 — native service sidecars. Rendered as `initContainers` with
+  // `restartPolicy: 'Always'` (NEVER `containers[]`, I1 — see
+  // `renderServiceSidecars`). When any service is present the pod also gains
+  // `securityContext.fsGroup: 1000` so the per-service `emptyDir`s are
+  // group-writable by the non-root sidecar (I5).
+  const services = input.services ?? [];
+  const sidecarRender = renderServiceSidecars(services, config);
 
   const spec: Record<string, unknown> = {
     // Userspace kernel (gVisor) — adds a second isolation layer between
@@ -407,6 +529,12 @@ export function buildPodSpec(
     ...(config.runtimeClassName.length > 0
       ? { runtimeClassName: config.runtimeClassName }
       : {}),
+    // TASK-151 (I5): pod-level fsGroup so the per-service `emptyDir` mounts are
+    // owned by gid 1000 and writable by the non-root sidecars (their rootfs
+    // stays read-only). Set ONLY when services are present — a service-less
+    // runner pod keeps its existing (fsGroup-free) shape so this change is a
+    // strict superset and nothing about the no-services path moves.
+    ...(services.length > 0 ? { securityContext: { fsGroup: 1000 } } : {}),
     restartPolicy: 'Never',
     // The runner doesn't talk to the k8s API. Mounting a service-account
     // token would let a compromised runner enumerate the namespace, query
@@ -517,6 +645,10 @@ export function buildPodSpec(
         volumeMounts: [{ name: 'home', mountPath: '/home/runner' }],
         securityContext: containerSecurity,
       },
+      // TASK-151 — service sidecars go AFTER sdk-scaffold (ordering: scaffold →
+      // service sidecars → runner). `restartPolicy: 'Always'` makes each a
+      // native sidecar (I1).
+      ...sidecarRender.initContainers,
     ],
     volumes: [
       { name: 'tmp', emptyDir: {} },
@@ -528,6 +660,9 @@ export function buildPodSpec(
       { name: 'home', emptyDir: { medium: 'Memory' } },
       { name: 'permanent', emptyDir: {} },
       { name: 'ephemeral', emptyDir: {} },
+      // TASK-151 — one emptyDir per service writablePaths entry (I5). Named
+      // `svc-<service>-<i>` to match the sidecar's volumeMounts.
+      ...sidecarRender.volumes,
       // hostPath bridge between host pod's credential-proxy and the
       // runner pod. The host writes its Unix socket and CA cert PEM
       // into a directory backed by this same node-filesystem path; the
