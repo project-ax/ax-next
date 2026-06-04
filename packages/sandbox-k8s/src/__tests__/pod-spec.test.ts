@@ -818,6 +818,7 @@ describe('buildPodSpec', () => {
       ports?: Array<{ containerPort: number }>;
       volumeMounts?: Array<{ name: string; mountPath: string }>;
       startupProbe?: Record<string, unknown>;
+      terminationMessagePolicy?: string;
     };
     const podOf = (services: Svc[]) =>
       buildPodSpec('pod-svc', { ...baseInput, services }, baseResolved()).spec as {
@@ -845,6 +846,17 @@ describe('buildPodSpec', () => {
       const spec = podOf([svc({ name: 'postgres' }), svc({ name: 'kafka', ports: [9092] })]);
       expect(spec.containers).toHaveLength(1);
       expect(spec.containers[0]!.name).toBe('runner');
+    });
+
+    it('each sidecar carries terminationMessagePolicy: FallbackToLogsOnError (TASK-160)', () => {
+      // So the kubelet copies the crashed sidecar's log tail into
+      // state.terminated.message — the host self-diagnoses an EROFS startup
+      // failure from pod STATUS, no pods/log API call needed for the common case.
+      const spec = podOf([svc({ name: 'postgres' }), svc({ name: 'redis', ports: [6379] })]);
+      const sidecars = spec.initContainers.filter((c) => c.name !== 'sdk-scaffold');
+      for (const c of sidecars) {
+        expect(c.terminationMessagePolicy).toBe('FallbackToLogsOnError');
+      }
     });
 
     it('each sidecar carries the locked-down securityContext (I5)', () => {

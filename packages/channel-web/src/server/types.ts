@@ -89,6 +89,13 @@ export type PhaseKind = 'sandbox-starting';
  * the client maps it to a user-facing label. Without it the client's
  * "Thinking…" spinner hangs forever (the 25 s keepalive keeps the
  * connection open).
+ *
+ * TASK-160 — the error frame may also carry an OPTIONAL `detail` field: a
+ * bounded, sanitized, author-facing free-text line (e.g. a dev-service-sidecar
+ * self-diagnosis naming the offending service + writablePath). It is still NOT
+ * a pod name / backend identifier; it's the human-readable specifics that the
+ * stable reason code can't carry. The client renders it as UNTRUSTED plain text
+ * beneath the mapped label.
  */
 /**
  * Payload for the `chat:permission-request` subscriber hook AND the inner
@@ -190,7 +197,11 @@ export type SseFrame =
   | StreamChunk
   | { reqId: string; phase: PhaseKind }
   | { reqId: string; done: true }
-  | { reqId: string; error: string }
+  // `error` is the stable backend-agnostic reason code; `detail` (TASK-160) is
+  // an OPTIONAL author-facing free-text line (e.g. a dev-service-sidecar
+  // self-diagnosis), bounded + sanitized upstream and rendered as UNTRUSTED
+  // text by the client. Omitted for ordinary errors.
+  | { reqId: string; error: string; detail?: string }
   | { reqId: string; permissionRequest: PermissionRequest };
 
 /**

@@ -5,6 +5,7 @@ import { PluginError, type AgentContext, type AgentMessage, type AgentOutcome, t
 // imports across plugins are allowed (erased at compile time); this keeps the
 // orchestrator's `AgentConfig` / `ProxyConfig` shapes pinned to the same
 // definition the sandbox backends validate against. See @ax/sandbox-protocol.
+import { formatServiceDiagnosis } from '@ax/sandbox-protocol';
 import type { AgentConfig, ProxyConfig, ServiceDescriptorParsed } from '@ax/sandbox-protocol';
 import {
   buildAuthoredConnectorCard,
@@ -996,14 +997,27 @@ export function createOrchestrator(
     ctx: AgentContext,
     reqId: string,
     reason: string,
+    detail?: string,
   ): Promise<void> {
     // Log so operators can confirm the host detected the abnormal end and
     // signalled the client — the previously-silent path is what made Fault A
     // hard to diagnose. (The `reason` is orchestrator vocabulary, e.g.
     // `sandbox-terminated`; the matching `pod_exited`/`pod_killed` lines come
     // from the sandbox provider's own exit watcher.)
-    ctx.logger.info('chat_turn_error', { reqId, reason });
-    await bus.fire('chat:turn-error', ctx, { reqId, reason });
+    //
+    // TASK-160 — `detail` is an OPTIONAL author-facing free-text line that rides
+    // alongside the stable `reason` code (the client maps the code to a label
+    // and renders `detail` as untrusted text underneath). It carries the
+    // self-diagnosis of a dev-service-sidecar startup failure ("service 'kafka'
+    // couldn't write /opt/kafka …"). Already bounded + sanitized upstream
+    // (formatServiceDiagnosis); we forward it verbatim and the renderer treats
+    // it as untrusted text. Omitted for ordinary errors so the wire stays lean.
+    ctx.logger.info('chat_turn_error', { reqId, reason, ...(detail !== undefined ? { detail } : {}) });
+    await bus.fire('chat:turn-error', ctx, {
+      reqId,
+      reason,
+      ...(detail !== undefined ? { detail } : {}),
+    });
   }
 
   // Fault A (routed/warm path) — a sandbox that dies mid-turn re-broadcasts
@@ -2285,15 +2299,37 @@ export function createOrchestrator(
           { sessionId },
         )
         .catch(() => undefined);
+      // TASK-160 — when the sandbox backend self-diagnosed a dev-service-sidecar
+      // startup failure (a missing writablePath → EROFS, etc.), it threw a
+      // PluginError carrying a neutral `diagnosis` ({ service, path?, reason }).
+      // Surface an author-facing, actionable message instead of the opaque
+      // generic reason: a dedicated stable code + a formatted (bounded,
+      // sanitized, untrusted-safe) `detail` line. The diagnosis is rendered as
+      // text — never interpolated into a prompt/command.
+      const diagnosis =
+        err instanceof PluginError && err.diagnosis !== undefined
+          ? err.diagnosis
+          : undefined;
+      const isServiceFailure =
+        diagnosis !== undefined && typeof diagnosis.service === 'string';
+      const reason = isServiceFailure ? 'dev-service-failed' : 'sandbox-open-failed';
+      const detail = isServiceFailure
+        ? formatServiceDiagnosis({
+            service: String(diagnosis.service),
+            ...(typeof diagnosis.path === 'string' ? { path: diagnosis.path } : {}),
+            reason:
+              typeof diagnosis.reason === 'string' ? diagnosis.reason : 'startup failed',
+          })
+        : undefined;
       const outcome: AgentOutcome = {
         kind: 'terminated',
-        reason: 'sandbox-open-failed',
+        reason,
         error: err,
       };
       // F2b — surface on the SSE. This early return unregistered the waiter
       // above, so onChatEnd won't fire turn-error for the chat:end below; we
       // hold the original ctx.reqId here, so the SSE matches by reqId.
-      await fireTurnError(ctx, ctx.reqId, outcome.reason);
+      await fireTurnError(ctx, ctx.reqId, outcome.reason, detail);
       await bus.fire('chat:end', ctx, { outcome });
       return outcome;
     }

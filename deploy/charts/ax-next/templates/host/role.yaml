@@ -5,15 +5,31 @@
 # cluster-scoped reach.
 #
 # Verb set is minimal:
-#   - create / delete : start and stop runner pods.
-#   - get / list / watch : observe pod state for readiness + exit detection.
+#   - pods            create / delete       : start and stop runner pods.
+#   - pods            get / list / watch    : observe pod state for readiness +
+#                                             exit detection.
+#   - pods/log        get                   : TASK-160 — read a BOUNDED tail of a
+#                                             FAILED dev-service sidecar's log so
+#                                             the host can self-diagnose a startup
+#                                             failure (e.g. EROFS on a dir missing
+#                                             from writablePaths) and surface the
+#                                             offending path to the connector
+#                                             author. `get` ONLY (no list/watch);
+#                                             read at most once per failed
+#                                             open-session, never in steady state.
+#                                             The PRIMARY diagnosis path reads the
+#                                             kubelet-captured
+#                                             `terminationMessage` (no API call);
+#                                             this is the fallback for a
+#                                             CrashLoopBackOff sidecar that is
+#                                             `waiting` (no terminated.message).
 #
 # Verbs we DELIBERATELY DO NOT GRANT:
 #   - pods/exec, pods/attach, pods/portforward — host never enters a runner
 #     pod. All host↔runner traffic flows over HTTP via the runner's TCP
 #     endpoint (see @ax/sandbox-k8s — runnerEndpoint).
-#   - pods/log — no debugging via API. Operators tail logs with kubectl
-#     directly when needed; the host doesn't need it for steady-state.
+#   - pods/log create/* beyond `get` — the host only ever GETs a bounded tail
+#     for a failed session's diagnosis; it never streams (follow) logs.
 #   - patch / update — pods are immutable from the host's view. New session
 #     = new pod.
 #   - secrets, configmaps — host gets its own secrets via its pod env;
@@ -33,3 +49,8 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["create", "delete", "get", "list", "watch"]
+  # TASK-160 — bounded read of a FAILED dev-service sidecar's log for
+  # self-diagnosis. `get` only; see the header comment for the full rationale.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]

@@ -476,6 +476,59 @@ describe('@ax/channel-web SSE handler', () => {
     }
   });
 
+  // TASK-160 — a dev-service-sidecar failure rides an optional `detail` on the
+  // turn-error; the live error frame carries it through to the client.
+  it('turn-error: forwards the optional detail on the live error frame', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+      await bus.fire('chat:turn-error', initCtx, {
+        reqId: 'r-test',
+        reason: 'dev-service-failed',
+        detail: "Dev service 'kafka' couldn't write /opt/kafka (read-only filesystem) — add /opt/kafka to the service's writablePaths.",
+      });
+      const frames = captured.streamWrites.filter((s) => s.startsWith('data:'));
+      const last = frames[frames.length - 1]!;
+      expect(JSON.parse(last.slice(6).trim())).toEqual({
+        reqId: 'r-test',
+        error: 'dev-service-failed',
+        detail:
+          "Dev service 'kafka' couldn't write /opt/kafka (read-only filesystem) — add /opt/kafka to the service's writablePaths.",
+      });
+      expect(captured.streamClosed).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('turn-error fired before connect → replays the detail too', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      await bus.fire('chat:turn-error', initCtx, {
+        reqId: 'r-test',
+        reason: 'dev-service-failed',
+        detail: "Dev service 'db' couldn't write /data/db (permission denied) — add /data/db to the service's writablePaths.",
+      });
+      const req = fakeReq();
+      const { res, captured } = fakeRes();
+      await handler(req, res);
+      const frames = captured.streamWrites.filter((s) => s.startsWith('data:'));
+      expect(frames.map((f) => JSON.parse(f.slice(6).trim()))).toEqual([
+        {
+          reqId: 'r-test',
+          error: 'dev-service-failed',
+          detail:
+            "Dev service 'db' couldn't write /data/db (permission denied) — add /data/db to the service's writablePaths.",
+        },
+      ]);
+      expect(captured.streamClosed).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
   // TASK-22 — the pre-SSE-connect race. channel-web returns 202 to
   // POST /api/chat/messages and the browser opens GET /api/chat/stream/:reqId
   // SEPARATELY. A fast session-open failure (e.g. a credential-resolution

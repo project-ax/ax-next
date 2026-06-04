@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   HookBus,
+  PluginError,
   makeAgentContext,
   createLogger,
   type AgentOutcome,
@@ -110,8 +111,11 @@ interface ServicesCanaryMocks {
   trace: {
     sandboxOpen: number;
     lastServices: ServiceDescriptorParsed[] | undefined;
-    turnErrors: Array<{ reqId: string; reason: string }>;
+    turnErrors: Array<{ reqId: string; reason: string; detail?: string }>;
   };
+  /** TASK-160 — when set, `sandbox:open-session` throws this instead of
+   *  succeeding (simulates a backend self-diagnosed sidecar failure). */
+  openSessionThrows: { current: unknown };
 }
 
 // Connector capabilities shaped exactly like @ax/connectors' ResolveOutput
@@ -140,6 +144,7 @@ function buildMocks(
     lastServices: undefined,
     turnErrors: [],
   };
+  const openSessionThrows: { current: unknown } = { current: undefined };
 
   const services: Record<string, ServiceHandler> = {
     'agents:resolve': async () => ({ agent: { ...TEST_AGENT } }),
@@ -156,6 +161,10 @@ function buildMocks(
       trace.sandboxOpen += 1;
       const i = input as { sessionId: string; services?: ServiceDescriptorParsed[] };
       trace.lastServices = i.services;
+      // TASK-160 — simulate a backend that self-diagnosed a sidecar failure.
+      if (openSessionThrows.current !== undefined) {
+        throw openSessionThrows.current;
+      }
       const originatingReqId = ctx.reqId;
       // Resolve the orchestrator's waiter on the next tick.
       setImmediate(() => {
@@ -178,7 +187,7 @@ function buildMocks(
     },
   };
 
-  return { services, trace };
+  return { services, trace, openSessionThrows };
 }
 
 async function makeHarness(
@@ -197,8 +206,12 @@ async function makeHarness(
   busRef.current = h.bus;
   // Record every chat:turn-error broadcast (undeclared subscriber event).
   h.bus.subscribe('chat:turn-error', '@ax/services-canary-spy', async (_ctx, payload) => {
-    const p = payload as { reqId: string; reason: string };
-    mocks.trace.turnErrors.push({ reqId: p.reqId, reason: p.reason });
+    const p = payload as { reqId: string; reason: string; detail?: string };
+    mocks.trace.turnErrors.push({
+      reqId: p.reqId,
+      reason: p.reason,
+      ...(p.detail !== undefined ? { detail: p.detail } : {}),
+    });
     return undefined;
   });
   return h;
@@ -334,5 +347,47 @@ describe('dev-services-in-sandbox CI canary (TASK-155)', () => {
     expect((outcome as { reason: string }).reason).toBe('connector-services-invalid');
     expect(mocks.trace.sandboxOpen).toBe(0);
     expect(mocks.trace.turnErrors.some((e) => e.reason === 'connector-services-invalid')).toBe(true);
+  });
+
+  // TASK-160 — the SELF-DIAGNOSING failure path, end to end through the REAL
+  // orchestrator: a backend that throws a PluginError carrying a neutral
+  // `diagnosis` ({ service, path, reason }) is surfaced to the author as
+  // `dev-service-failed` + an actionable `detail` line naming the service +
+  // offending path. (The backend-specific detection is unit-tested in each
+  // sandbox plugin; this proves the orchestrator's surfacing.)
+  it('failure path: a sidecar startup failure → terminated(dev-service-failed) + actionable detail', async () => {
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks(busRef, [
+      { id: 'kafka-only', capabilities: connectorCaps([KAFKA_SVC]) },
+    ]);
+    mocks.openSessionThrows.current = new PluginError({
+      code: 'service-sidecar-failed',
+      plugin: '@ax/sandbox-k8s',
+      hookName: 'sandbox:open-session',
+      message: "dev service 'kafka' failed to start",
+      diagnosis: {
+        service: 'kafka',
+        path: '/var/lib/kafka/data',
+        reason: 'read-only filesystem',
+      },
+    });
+    const h = await makeHarness(busRef, mocks);
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      canaryCtx('svc-canary-sidecar-fail'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('dev-service-failed');
+    // The author-facing error frame names the service + path + the fix.
+    const frame = mocks.trace.turnErrors.find((e) => e.reason === 'dev-service-failed');
+    expect(frame).toBeDefined();
+    expect(frame!.detail).toContain("'kafka'");
+    expect(frame!.detail).toContain('/var/lib/kafka/data');
+    expect(frame!.detail).toContain('writablePaths');
+    // Single-line, untrusted-safe (no control chars survived the formatter).
+    expect(frame!.detail).not.toMatch(/[\u0000-\u001f\u007f-\u009f]/);
   });
 });

@@ -26,6 +26,7 @@ import {
   composeUp,
   defaultComposeRunner,
   descriptorsToComposeProject,
+  diagnoseComposeFailure,
   tcpHealthPorts,
   waitForTcpPorts,
   type ComposeRunner,
@@ -710,6 +711,23 @@ export async function openSessionImpl(
       });
       await waitForTcpPorts(tcpHealthPorts(requestedServices), { host: '127.0.0.1' });
     } catch (cause) {
+      // TASK-160 — SELF-DIAGNOSE the failure (name the service + offending path)
+      // from a BOUNDED compose-logs tail BEFORE we tear the project down. The
+      // diagnosis rides the thrown error's neutral `diagnosis` field, which the
+      // orchestrator surfaces to the author. Best-effort: if we can't attribute
+      // it, the error stays generic. Capture logs before unwind (down -v reaps
+      // the containers, so the logs are gone afterward).
+      let diagnosis;
+      try {
+        diagnosis = await diagnoseComposeFailure(composeRunner, {
+          projectName: composeProjectNameValue,
+          composeJson,
+          services: requestedServices,
+          upError: cause,
+        });
+      } catch {
+        // best-effort
+      }
       await unwindAfterServicesFailure();
       throw new PluginError({
         code: 'services-up-failed',
@@ -717,6 +735,7 @@ export async function openSessionImpl(
         hookName: HOOK_NAME,
         message: `failed to bring up dev services for session ${created.sessionId}`,
         cause,
+        ...(diagnosis !== undefined ? { diagnosis: { ...diagnosis } } : {}),
       });
     }
   }

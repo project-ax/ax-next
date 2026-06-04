@@ -116,6 +116,13 @@ interface BufferEntry {
    * sweep reaps it like any other entry once the connect window passes.
    */
   turnError: string | null;
+  /**
+   * TASK-160 — optional author-facing free-text detail accompanying the
+   * terminal turn-error reason (e.g. the dev-service-sidecar self-diagnosis).
+   * Single-slot, paired with `turnError`. Bounded + sanitized upstream
+   * (formatServiceDiagnosis); rendered as untrusted text by the client.
+   */
+  turnErrorDetail: string | null;
   /** Wall-clock ms at the most recent append. */
   lastWriteMs: number;
 }
@@ -140,13 +147,13 @@ export interface ChunkBuffer {
    * the very first event for this reqId — fast pre-SSE-connect failures emit
    * no chunks or phase at all).
    */
-  appendTurnError(reqId: string, reason: string): void;
+  appendTurnError(reqId: string, reason: string, detail?: string): void;
   /** Snapshot of the current chunks for a reqId, in insertion order. */
   tail(reqId: string): readonly StreamChunk[];
   /** Latest phase for a reqId, or null. Cleared by the first content chunk. */
   tailPhase(reqId: string): PhaseKind | null;
-  /** Terminal turn-error reason for a reqId, or null. */
-  tailTurnError(reqId: string): string | null;
+  /** Terminal turn-error reason + optional detail for a reqId, or null. */
+  tailTurnError(reqId: string): { reason: string; detail?: string } | null;
   /** Drop the entry for `reqId`. Idempotent. Also drops any pending host
    *  approval card stored under this reqId (host cards are session/turn-scoped
    *  — once the turn ends the reactive-wall card is no longer live). */
@@ -308,6 +315,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
           reclaimedAtMs: null,
           phase: null,
           turnError: null,
+          turnErrorDetail: null,
           lastWriteMs: now(),
         });
         return stamped;
@@ -351,6 +359,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
           reclaimedAtMs: null,
           phase,
           turnError: null,
+          turnErrorDetail: null,
           lastWriteMs: now(),
         });
         return;
@@ -365,7 +374,7 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
       existing.lastWriteMs = now();
     },
 
-    appendTurnError(reqId, reason) {
+    appendTurnError(reqId, reason, detail) {
       const existing = map.get(reqId);
       if (existing === undefined) {
         map.set(reqId, {
@@ -375,11 +384,13 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
           reclaimedAtMs: null,
           phase: null,
           turnError: reason,
+          turnErrorDetail: detail ?? null,
           lastWriteMs: now(),
         });
         return;
       }
       existing.turnError = reason;
+      existing.turnErrorDetail = detail ?? null;
       existing.lastWriteMs = now();
     },
 
@@ -397,7 +408,11 @@ export function createChunkBuffer(opts: ChunkBufferOptions = {}): ChunkBuffer {
     },
 
     tailTurnError(reqId) {
-      return map.get(reqId)?.turnError ?? null;
+      const entry = map.get(reqId);
+      if (entry === undefined || entry.turnError === null) return null;
+      return entry.turnErrorDetail !== null
+        ? { reason: entry.turnError, detail: entry.turnErrorDetail }
+        : { reason: entry.turnError };
     },
 
     evictReqId(reqId) {

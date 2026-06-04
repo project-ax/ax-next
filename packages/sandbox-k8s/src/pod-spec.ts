@@ -312,6 +312,14 @@ function renderServiceSidecars(
         limits: { cpu: config.serviceCpuLimit, memory: config.serviceMemoryLimit },
         requests: { cpu: config.serviceCpuRequest, memory: config.serviceMemoryRequest },
       },
+      // TASK-160 — when this sidecar crashes on startup (commonly EROFS for a
+      // dir not in writablePaths), `FallbackToLogsOnError` makes the kubelet
+      // copy the (bounded) tail of the container's log into
+      // `state.terminated.message`. The host then self-diagnoses the offending
+      // path from that field WITHOUT needing the `pods/log` API capability (the
+      // primary path in lifecycle.ts diagnoseServiceSidecars). The message is
+      // capped by the kubelet's terminationMessage limit (~4 KiB).
+      terminationMessagePolicy: 'FallbackToLogsOnError',
       volumeMounts,
     };
 

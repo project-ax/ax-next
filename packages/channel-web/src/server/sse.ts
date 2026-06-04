@@ -251,7 +251,13 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // this path is meant to surface.
     const replayTurnError = deps.buffer.tailTurnError(reqId);
     if (replayTurnError !== null) {
-      safeWrite({ reqId, error: replayTurnError });
+      safeWrite({
+        reqId,
+        error: replayTurnError.reason,
+        ...(replayTurnError.detail !== undefined
+          ? { detail: replayTurnError.detail }
+          : {}),
+      });
       deps.buffer.evictReqId(reqId);
       cleanup();
       try {
@@ -354,12 +360,16 @@ export function createSseHandler(deps: SseHandlerDeps) {
     // resolveWaiterFor recovered, since the IPC server restamps ctx.reqId), so
     // a turn-error never closes a co-resident turn's stream on the same
     // conversation. Emit an `error` frame, evict, and close.
-    deps.bus.subscribe<{ reqId?: string; reason?: string }>(
+    deps.bus.subscribe<{ reqId?: string; reason?: string; detail?: string }>(
       'chat:turn-error',
       turnErrorSubKey,
       async (_ctx, payload) => {
         if (payload.reqId !== reqId) return undefined;
-        safeWrite({ reqId, error: payload.reason ?? 'unknown' });
+        safeWrite({
+          reqId,
+          error: payload.reason ?? 'unknown',
+          ...(typeof payload.detail === 'string' ? { detail: payload.detail } : {}),
+        });
         deps.buffer.evictReqId(reqId);
         cleanup();
         try {
@@ -534,12 +544,16 @@ export function createPhaseFillSubscriber(buffer: ChunkBuffer) {
 export function createTurnErrorFillSubscriber(buffer: ChunkBuffer) {
   return async function (
     _ctx: AgentContext,
-    payload: { reqId?: string; reason?: string },
+    payload: { reqId?: string; reason?: string; detail?: string },
   ): Promise<undefined> {
     if (typeof payload?.reqId !== 'string' || payload.reqId.length === 0) {
       return undefined;
     }
-    buffer.appendTurnError(payload.reqId, payload.reason ?? 'unknown');
+    buffer.appendTurnError(
+      payload.reqId,
+      payload.reason ?? 'unknown',
+      typeof payload.detail === 'string' ? payload.detail : undefined,
+    );
     return undefined;
   };
 }

@@ -576,4 +576,121 @@ describe('sandbox:open-session (k8s)', () => {
       // no services → flat 60ms, NOT scaled.
     ).rejects.toMatchObject({ message: expect.stringContaining('within 60ms') });
   });
+
+  // TASK-160 — when a declared service sidecar crashes on startup the readiness
+  // wait times out; before rolling back, the impl self-diagnoses the failure
+  // and throws an enriched PluginError carrying a neutral `diagnosis`.
+  it('surfaces a service-sidecar startup failure with the service + offending path (EROFS)', async () => {
+    const api = makeMockK8sApi();
+    // The pod is stuck Pending because the kafka sidecar crashlooped.
+    api.setReadResponses({
+      status: {
+        phase: 'Pending',
+        initContainerStatuses: [
+          { name: 'sdk-scaffold', state: { terminated: { exitCode: 0 } } },
+          { name: 'svc-kafka', state: { waiting: { reason: 'CrashLoopBackOff' } } },
+        ],
+      },
+    });
+    api.setLogResponse(
+      'svc-kafka',
+      'starting kafka...\nmkdir: cannot create directory /opt/kafka/data: Read-only file system',
+    );
+    const h = await createTestHarness({
+      plugins: [
+        createSessionInmemoryPlugin(),
+        createSandboxK8sPlugin({
+          api,
+          namespace: 'ax-test',
+          image: 'ax-next/agent:test',
+          hostIpcUrl: TEST_HOST_IPC_URL,
+          readinessPollMs: 1,
+          readinessTimeoutMs: 5,
+          perServiceColdStartMs: 5,
+        }),
+      ],
+    });
+    const err = await h.bus
+      .call('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-kafka-erofs',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        services: [
+          {
+            name: 'kafka',
+            image: PINNED_SVC_IMAGE,
+            ports: [9092],
+            env: {},
+            writablePaths: [],
+          },
+        ],
+      })
+      .then(
+        () => {
+          throw new Error('expected open-session to reject');
+        },
+        (e: unknown) => e,
+      );
+    expect(err).toMatchObject({
+      code: 'service-sidecar-failed',
+      diagnosis: {
+        service: 'kafka',
+        path: '/opt/kafka/data',
+        reason: 'read-only filesystem',
+      },
+    });
+    // Rollback still happened — the pod was deleted.
+    expect(api.deletes.length).toBeGreaterThan(0);
+  });
+
+  it('keeps the generic timeout error (no diagnosis) when no sidecar is failing', async () => {
+    const api = makeMockK8sApi();
+    // Pod never Ready, but the sidecar is merely still initializing — not a
+    // crash. No diagnosis should be produced.
+    api.setReadResponses({
+      status: {
+        phase: 'Pending',
+        initContainerStatuses: [
+          { name: 'svc-kafka', state: { waiting: { reason: 'PodInitializing' } } },
+        ],
+      },
+    });
+    const h = await createTestHarness({
+      plugins: [
+        createSessionInmemoryPlugin(),
+        createSandboxK8sPlugin({
+          api,
+          namespace: 'ax-test',
+          image: 'ax-next/agent:test',
+          hostIpcUrl: TEST_HOST_IPC_URL,
+          readinessPollMs: 1,
+          readinessTimeoutMs: 5,
+          perServiceColdStartMs: 5,
+        }),
+      ],
+    });
+    const err = await h.bus
+      .call('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-init',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        services: [
+          {
+            name: 'kafka',
+            image: PINNED_SVC_IMAGE,
+            ports: [9092],
+            env: {},
+            writablePaths: [],
+          },
+        ],
+      })
+      .then(
+        () => {
+          throw new Error('expected open-session to reject');
+        },
+        (e: unknown) => e,
+      );
+    expect(err).toMatchObject({ code: 'pod-readiness-timeout' });
+    expect((err as { diagnosis?: unknown }).diagnosis).toBeUndefined();
+  });
 });

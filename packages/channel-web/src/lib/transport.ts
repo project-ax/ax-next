@@ -129,7 +129,15 @@ const SSE_OPEN_RETRYABLE_STATUS = new Set([404, 425, 429, 502, 503, 504]);
  */
 const ERROR_LABELS: Record<string, string> = {
   'chat-run-timeout': 'The agent timed out. Retry to continue.',
+  // TASK-160 — a declared dev service failed to start. The actionable
+  // specifics (which service, which path) ride the optional `detail` field and
+  // are appended below; this is the headline.
+  'dev-service-failed': 'A dev service failed to start.',
 };
+
+/** Max chars of the untrusted `detail` line we render (defense-in-depth — it's
+ *  already bounded + sanitized server-side; this is a final client-side clamp). */
+const MAX_DETAIL_CHARS = 400;
 
 /** Shape of one SSE `data:` JSON payload. Matches `SseFrame` in src/server/types.ts.
  *  `seq` (TASK-23) is the host-minted monotonic per-reqId cursor on content
@@ -157,7 +165,7 @@ type SseFrame =
     }
   | { reqId: string; phase: string }
   | { reqId: string; done: true }
-  | { reqId: string; error: string }
+  | { reqId: string; error: string; detail?: string }
   | {
       reqId: string;
       permissionRequest:
@@ -826,9 +834,19 @@ async function consumeSseAttempt(
         // a connection drop: a reconnect wouldn't help, so we surface it.
         if ('error' in frame && typeof frame.error === 'string') {
           ctx.closeOpen(controller);
+          const label = ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR;
+          // TASK-160 — append the optional author-facing `detail` line (e.g. a
+          // dev-service-sidecar self-diagnosis). It's UNTRUSTED text: already
+          // bounded + control-char-stripped server-side, we clamp it once more
+          // and render it as plain text (it is never interpreted as markup —
+          // the AgentStatus error row shows the string verbatim).
+          const detail =
+            'detail' in frame && typeof frame.detail === 'string'
+              ? frame.detail.slice(0, MAX_DETAIL_CHARS).trim()
+              : '';
           controller.enqueue({
             type: 'error',
-            errorText: ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR,
+            errorText: detail.length > 0 ? `${label}\n${detail}` : label,
           });
           return 'server-error';
         }

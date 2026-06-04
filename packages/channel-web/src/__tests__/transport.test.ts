@@ -16,6 +16,7 @@ import {
   AxChatTransport,
   toContentBlocksForTesting,
   CONNECTION_LOST,
+  DEFAULT_TURN_ERROR,
 } from '../lib/transport';
 import {
   agentStatusActions,
@@ -255,6 +256,38 @@ describe('AxChatTransport SSE chunk parsing', () => {
     const types = chunks.map((c) => c.type);
     expect(types).toContain('text-end');
     expect(types[types.length - 1]).toBe('finish');
+  });
+
+  // TASK-160 — a server `error` frame carrying a dev-service-failed reason +
+  // an author-facing `detail` line renders the mapped label PLUS the detail.
+  test('server error frame: dev-service-failed renders label + detail line', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const detail =
+      "Dev service 'kafka' couldn't write /opt/kafka (read-only filesystem) — add /opt/kafka to the service's writablePaths.";
+    const body =
+      `data: ${JSON.stringify({ reqId: 'r1', error: 'dev-service-failed', detail })}\n\n`;
+    const chunks = (await drain(asProcess(transport)(sseStream(body)))) as Array<{
+      type: string;
+      errorText?: string;
+    }>;
+    const errorChunk = chunks.find((c) => c.type === 'error');
+    expect(errorChunk).toBeDefined();
+    expect(errorChunk!.errorText).toContain('A dev service failed to start.');
+    expect(errorChunk!.errorText).toContain('/opt/kafka');
+    expect(errorChunk!.errorText).toContain('writablePaths');
+  });
+
+  // An error frame WITHOUT a detail behaves exactly as before — the bare label,
+  // no trailing newline/detail.
+  test('server error frame: unknown reason with no detail falls back to DEFAULT_TURN_ERROR', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body = `data: {"reqId":"r1","error":"sandbox-open-failed"}\n\n`;
+    const chunks = (await drain(asProcess(transport)(sseStream(body)))) as Array<{
+      type: string;
+      errorText?: string;
+    }>;
+    const errorChunk = chunks.find((c) => c.type === 'error');
+    expect(errorChunk?.errorText).toBe(DEFAULT_TURN_ERROR);
   });
 
   test('thinking chunks stream as native reasoning parts (start/delta/end)', async () => {

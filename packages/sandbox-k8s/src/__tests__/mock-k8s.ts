@@ -28,6 +28,18 @@ export interface MockPodStatus {
       };
     };
   }>;
+  initContainerStatuses?: Array<{
+    name: string;
+    state?: {
+      waiting?: { reason?: string; message?: string };
+      terminated?: {
+        exitCode?: number;
+        signal?: number;
+        reason?: string;
+        message?: string;
+      };
+    };
+  }>;
 }
 
 export interface MockPod {
@@ -46,10 +58,21 @@ export interface MockK8sApi extends K8sCoreApi {
   }>;
   /** Captured read requests. */
   readonly reads: Array<{ name: string; namespace: string }>;
+  /** Captured pod-log read requests. */
+  readonly logReads: Array<{
+    name: string;
+    namespace: string;
+    container: string;
+    tailLines?: number;
+    previous?: boolean;
+  }>;
   /** Set or replace the next-N read responses; the LAST element sticks. */
   setReadResponses(...pods: MockPod[]): void;
   /** Make the next read fail with the given error. */
   setReadError(err: unknown): void;
+  /** Stub the log returned for a given container (keyed by container name). A
+   *  `previous: true` read falls back to the same stub. Unset → throws. */
+  setLogResponse(container: string, text: string): void;
   /** Make createNamespacedPod fail. */
   setCreateError(err: unknown): void;
   /** Make deleteNamespacedPod fail. */
@@ -62,6 +85,8 @@ export function makeMockK8sApi(): MockK8sApi {
   const creates: MockK8sApi['creates'] = [];
   const deletes: MockK8sApi['deletes'] = [];
   const reads: MockK8sApi['reads'] = [];
+  const logReads: MockK8sApi['logReads'] = [];
+  const logResponses = new Map<string, string>();
   let readQueue: MockPod[] = [{ status: { phase: 'Pending' } }];
   let readError: unknown = undefined;
   let createError: unknown = undefined;
@@ -71,11 +96,15 @@ export function makeMockK8sApi(): MockK8sApi {
     creates,
     deletes,
     reads,
+    logReads,
     setReadResponses(...pods) {
       readQueue = pods.length > 0 ? [...pods] : [{ status: { phase: 'Pending' } }];
     },
     setReadError(err) {
       readError = err;
+    },
+    setLogResponse(container, text) {
+      logResponses.set(container, text);
     },
     setCreateError(err) {
       createError = err;
@@ -108,6 +137,20 @@ export function makeMockK8sApi(): MockK8sApi {
       const next =
         readQueue.length > 1 ? readQueue.shift() ?? readQueue[0] : readQueue[0];
       return next as unknown;
+    },
+    async readNamespacedPodLog(req) {
+      logReads.push({
+        name: req.name,
+        namespace: req.namespace,
+        container: req.container,
+        tailLines: req.tailLines,
+        previous: req.previous,
+      });
+      const text = logResponses.get(req.container);
+      if (text === undefined) {
+        throw new Error(`no log stubbed for container ${req.container}`);
+      }
+      return text;
     },
     async deleteNamespacedPod(req) {
       deletes.push({
