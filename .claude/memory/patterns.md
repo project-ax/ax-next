@@ -309,3 +309,31 @@ legitimately-empty string fields. Lesson: when adding a string field to AgentCon
 that can be empty, do NOT reuse `requireString` — and this class of break only shows
 up in the `@ax/cli` e2e (real subprocess sandbox open), NOT in per-package unit tests
 whose fixtures all set non-empty values. Run the broad affected set.
+
+---
+## 2026-06-04 — Connector "service bundle" declaration surface (TASK-154)
+
+- **Curated compose→descriptor translation lives in `@ax/skills-parser`** (`compose-translate.ts`,
+  `translateComposeToServices(yaml)`), NOT in connectors or channel-web. skills-parser already
+  deps `js-yaml` (the repo's only YAML parser — never add a second) AND owns
+  `ServiceDescriptorSchema`, and it's on the eslint runtime-import allowlist, so BOTH `@ax/connectors`
+  and `@ax/channel-web` may runtime-import it. The helper is an ALLOW-LIST map (only
+  `{image, environment, ports, healthcheck}` cross), DROPS+reports `volumes`/`privileged`/`cap_add`/
+  `network_mode:host`/`devices`/`pid`/`ipc`/`userns_mode`/`security_opt` (I10), FLAGS un-pinned
+  images as `invalid` (I8, never auto-drops), never spawns. Safe `js-yaml` `load()` + WeakSet
+  cyclic guard, mirroring `manifest.ts`.
+- **A connector's `services` capability ALREADY round-trips through the store** —
+  `CapabilitiesSchema` in `packages/connectors/src/types.ts` carries `services` (TASK-150) and the
+  admin route upserts capabilities verbatim. So "persist services" = a round-trip test, not new
+  store code. BUT channel-web's `capabilitiesFromForm` (`lib/connector-form.ts`) built only
+  `{allowedHosts,credentials,mcpServers,packages}` — it silently WIPED a service-bundle connector's
+  `services` on any edit. Lesson: when a new capability field lands in the store, audit the
+  channel-web FORM serializer too — it's a separate source that drops un-handled fields.
+- **channel-web added `@ax/skills-parser` as a real `dependencies` entry + tsconfig `references`**
+  (it's runtime YAML-parsing code, not type-only). After adding a workspace dep: `pnpm install`,
+  add the `references` path, rebuild the dep's dist before the consumer's tsc/vitest resolves it.
+- **shadcn forms in channel-web use `Label`+`flex flex-col gap-2`, NOT `Field`/`FieldGroup`** — the
+  v4 Field primitive is not installed (tailwind v3, base:radix). Match the established pattern;
+  invariant #6's source of truth is the existing channel-web install, not the shadcn-skill v4 docs.
+- **Worktree under `.claude/worktrees/` needs its own `pnpm install`** (node_modules absent on a
+  fresh worktree) AND a full `pnpm build` before any cross-package test resolves `@ax/*` dist.

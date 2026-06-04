@@ -7,9 +7,12 @@ import {
   summaryToForm,
   connectorIdFromName,
   splitList,
+  applyComposeToForm,
   type ConnectorFormState,
 } from '../connector-form';
 import { emptyCapabilities, type Connector } from '../connectors';
+
+const PINNED = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
 
 const baseConnector = (over: Partial<Connector> = {}): Connector => ({
   id: 'gdrive',
@@ -401,6 +404,134 @@ describe('connector-form helpers', () => {
     };
     const caps = capabilitiesFromForm(f);
     expect(caps.packages.npm).toEqual(['new-lead', 'keep-me']);
+  });
+
+  // --- services (TASK-154 — dev service bundle) ---------------------------
+
+  it('emptyConnectorForm has no declared services', () => {
+    expect(emptyConnectorForm().services).toEqual([]);
+  });
+
+  it('formFromConnector reads declared services off capabilities', () => {
+    const c = baseConnector({
+      capabilities: {
+        ...emptyCapabilities(),
+        services: [
+          { name: 'db', image: PINNED, ports: [5432], env: { K: 'v' }, writablePaths: [] },
+        ],
+      },
+    });
+    const f = formFromConnector(c);
+    expect(f.services).toEqual([
+      { name: 'db', image: PINNED, ports: [5432], env: { K: 'v' }, writablePaths: [] },
+    ]);
+  });
+
+  it('capabilitiesFromForm carries declared services onto the proposal', () => {
+    const f: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'PG bundle',
+      mechanism: 'direct-api',
+      services: [
+        { name: 'db', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
+      ],
+    };
+    const caps = capabilitiesFromForm(f);
+    expect(caps.services).toEqual([
+      { name: 'db', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
+    ]);
+  });
+
+  it('capabilitiesFromForm OMITS services when none declared (back-compat)', () => {
+    const caps = capabilitiesFromForm({ ...emptyConnectorForm(), name: 'x' });
+    expect(caps.services).toBeUndefined();
+  });
+
+  it('editing an MCP connector that declares services does NOT wipe them (the merge bug)', () => {
+    // Before TASK-154 capabilitiesFromForm dropped `services` — any edit of a
+    // service-bundle connector silently erased its services. Round-trip must
+    // preserve them.
+    const c = baseConnector({
+      capabilities: {
+        ...emptyCapabilities(),
+        mcpServers: [
+          { name: 'gdrive', transport: 'stdio', command: 'mcp-gdrive', args: [], allowedHosts: [], credentials: [] },
+        ],
+        services: [
+          { name: 'db', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
+        ],
+      },
+    });
+    const f = formFromConnector(c);
+    // Edit something unrelated (the command), submit.
+    const caps = capabilitiesFromForm({ ...f, command: 'mcp-gdrive-v2' });
+    expect(caps.mcpServers[0]!.command).toBe('mcp-gdrive-v2');
+    expect(caps.services).toEqual([
+      { name: 'db', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
+    ]);
+  });
+
+  it('applyComposeToForm populates service rows from a clean pinned compose', () => {
+    const yaml = `
+services:
+  db:
+    image: ${PINNED}
+    ports: ["5432:5432"]
+    environment:
+      POSTGRES_PASSWORD: secret
+`;
+    const f = { ...emptyConnectorForm(), name: 'PG' };
+    const result = applyComposeToForm(f, yaml);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.form.services).toEqual([
+      { name: 'db', image: PINNED, ports: [5432], env: { POSTGRES_PASSWORD: 'secret' }, writablePaths: [] },
+    ]);
+    expect(result.drops).toEqual([]);
+    expect(result.invalid).toEqual([]);
+  });
+
+  it('applyComposeToForm surfaces dropped unsafe fields and un-pinned-image flags', () => {
+    const yaml = `
+services:
+  db:
+    image: ${PINNED}
+    privileged: true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+  cache:
+    image: redis:7
+`;
+    const f = { ...emptyConnectorForm(), name: 'PG' };
+    const result = applyComposeToForm(f, yaml);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // db crossed (pinned), with privileged + the socket volume dropped + reported.
+    expect(result.form.services.map((s) => s.name)).toEqual(['db']);
+    const fields = result.drops.map((d) => d.field);
+    expect(fields).toContain('privileged');
+    expect(fields).toContain('volumes');
+    // redis:7 is un-pinned → flagged invalid for the author to pin.
+    expect(result.invalid.map((i) => i.name)).toEqual(['cache']);
+  });
+
+  it('applyComposeToForm returns ok:false on unusable paste (not YAML / no services)', () => {
+    const f = { ...emptyConnectorForm(), name: 'PG' };
+    expect(applyComposeToForm(f, '- not a mapping').ok).toBe(false);
+    expect(applyComposeToForm(f, 'version: "3"').ok).toBe(false);
+  });
+
+  it('applyComposeToForm REPLACES existing services (not append) so re-paste is idempotent', () => {
+    const f = {
+      ...emptyConnectorForm(),
+      name: 'PG',
+      services: [{ name: 'old', image: PINNED, ports: [1], env: {}, writablePaths: [] }],
+    };
+    const yaml = `services:\n  db:\n    image: ${PINNED}\n`;
+    const result = applyComposeToForm(f, yaml);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.form.services.map((s) => s.name)).toEqual(['db']);
   });
 
   it('summaryToForm carries the metadata subset incl. defaultAttached', () => {

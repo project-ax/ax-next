@@ -36,6 +36,7 @@
  */
 import { useEffect, useState } from 'react';
 import { X } from 'lucide-react';
+import type { ComposeDrop, ComposeInvalid } from '@ax/skills-parser';
 import {
   getConnector,
   createConnector,
@@ -44,12 +45,15 @@ import {
   type ConnectorKeyMode,
   type ConnectorVisibility,
   type ConnectorRouteBase,
+  type ServiceDescriptor,
 } from '@/lib/connectors';
 import {
   emptyConnectorForm,
   emptySlotRow,
+  emptyServiceRow,
   formFromConnector,
   capabilitiesFromForm,
+  applyComposeToForm,
   summaryToForm,
   connectorIdFromName,
   type ConnectorFormState,
@@ -69,7 +73,14 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import {
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  CardDescription,
+} from '@/components/ui/card';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import {
   Select,
@@ -109,6 +120,295 @@ const MECHANISM_OPTIONS: { value: Mechanism; label: string }[] = [
   { value: 'direct-api', label: 'Direct API' },
   { value: 'cli', label: 'Command-line tool' },
 ];
+
+// --- service-row (de)serialization (TASK-154) -------------------------------
+// The descriptor's `ports` (number[]) / `env` (record) / `writablePaths`
+// (string[]) edit as plain text in the form, so the author types comfortably;
+// we parse back to the descriptor shape. The store re-validates everything
+// against the canonical schema, so loose parsing here is fine — it never widens
+// what crosses (an out-of-range port / non-absolute path is rejected server-side
+// and at the wire).
+
+const portsToText = (ports: number[]): string => ports.join(', ');
+const textToPorts = (s: string): number[] =>
+  s
+    .split(',')
+    .map((x) => Number.parseInt(x.trim(), 10))
+    .filter((n) => Number.isInteger(n));
+
+const envToText = (env: Record<string, string>): string =>
+  Object.entries(env)
+    .map(([k, v]) => `${k}=${v}`)
+    .join('\n');
+const textToEnv = (s: string): Record<string, string> => {
+  const out: Record<string, string> = {};
+  for (const line of s.split('\n')) {
+    const t = line.trim();
+    if (t.length === 0) continue;
+    const eq = t.indexOf('=');
+    if (eq === -1) out[t] = '';
+    else out[t.slice(0, eq).trim()] = t.slice(eq + 1);
+  }
+  return out;
+};
+
+const pathsToText = (paths: string[]): string => paths.join(', ');
+const textToPaths = (s: string): string[] =>
+  s
+    .split(',')
+    .map((x) => x.trim())
+    .filter(Boolean);
+
+/** Whether an image string is digest-pinned (mirrors the descriptor regex). The
+ *  UI flags an un-pinned image inline so the author pins it before save (I8). */
+const isDigestPinned = (image: string): boolean =>
+  /.+@sha256:[0-9a-f]{64}$/.test(image.trim());
+
+/**
+ * The Services ("service bundle") section — declare dev services a connector
+ * brings alongside the sandbox (a database, a cache, …). Paste a
+ * docker-compose.yml to translate (curated: host mounts / privileged / cap_add /
+ * network_mode:host / socket mounts are DROPPED and reported, un-pinned images
+ * flagged) or add/edit services by hand. Composes shadcn `Card` / `Alert` /
+ * `Button` / `Input` / `Label` / `Textarea` + semantic tokens (invariant #6).
+ */
+function ServicesSection({
+  services,
+  onChange,
+}: {
+  services: ServiceDescriptor[];
+  onChange: (next: ServiceDescriptor[]) => void;
+}) {
+  const [compose, setCompose] = useState('');
+  const [drops, setDrops] = useState<ComposeDrop[]>([]);
+  const [invalid, setInvalid] = useState<ComposeInvalid[]>([]);
+  const [composeError, setComposeError] = useState<string | null>(null);
+
+  const translate = () => {
+    setComposeError(null);
+    // applyComposeToForm REPLACES `services` with the translated set, so the
+    // form we hand it only needs to be a valid shell — the current `services`
+    // would be overwritten anyway. We lift the result's services up via onChange.
+    const result = applyComposeToForm(emptyConnectorForm(), compose);
+    if (!result.ok) {
+      setComposeError(result.error);
+      setDrops([]);
+      setInvalid([]);
+      return;
+    }
+    onChange(result.form.services);
+    setDrops(result.drops);
+    setInvalid(result.invalid);
+  };
+
+  const updateService = (i: number, patch: Partial<ServiceDescriptor>) =>
+    onChange(services.map((s, idx) => (idx === i ? { ...s, ...patch } : s)));
+  const removeService = (i: number) =>
+    onChange(services.filter((_, idx) => idx !== i));
+
+  return (
+    <Card className="border-border">
+      <CardHeader>
+        <CardTitle className="text-base">Services</CardTitle>
+        <CardDescription>
+          Make this a service bundle — declare a database, cache, or other service
+          your assistant gets running alongside its sandbox. Paste a Compose file
+          to start, or add one by hand.
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-4">
+        {/* Compose paste → curated translate. */}
+        <div className="flex flex-col gap-2">
+          <Label htmlFor="connector-compose">
+            Paste a docker-compose.yml (optional)
+          </Label>
+          <Textarea
+            id="connector-compose"
+            rows={4}
+            className="font-mono text-xs"
+            placeholder={'services:\n  db:\n    image: postgres@sha256:...\n    ports: ["5432:5432"]'}
+            value={compose}
+            onChange={(e) => setCompose(e.target.value)}
+          />
+          <div className="flex items-center justify-between gap-2">
+            <p className="text-xs text-muted-foreground">
+              We translate it — we don’t run it. Anything that can’t safely cross
+              into the sandbox gets dropped, and we’ll tell you what.
+            </p>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={translate}
+              disabled={compose.trim().length === 0}
+            >
+              Translate compose
+            </Button>
+          </div>
+        </div>
+
+        {composeError && (
+          <Alert variant="destructive">
+            <AlertDescription>
+              We couldn’t read that as a Compose file: {composeError}
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* I10 — what we removed because it can’t cross into the sandbox. */}
+        {drops.length > 0 && (
+          <Alert>
+            <AlertTitle>We removed a few things</AlertTitle>
+            <AlertDescription>
+              <p className="mb-1">
+                These can’t cross into the sandbox — they’re how a container breaks
+                out of one, so we left them behind:
+              </p>
+              <ul className="list-disc pl-5">
+                {drops.map((d, i) => (
+                  <li key={i}>
+                    <span className="font-mono">{d.field}</span> on{' '}
+                    <span className="font-mono">{d.service}</span>
+                    {d.value ? <span className="text-muted-foreground"> ({d.value})</span> : null}
+                  </li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* I8 — un-pinned images (and other un-translatable services). */}
+        {invalid.length > 0 && (
+          <Alert variant="destructive">
+            <AlertTitle>A few services need a fix</AlertTitle>
+            <AlertDescription>
+              <ul className="list-disc pl-5">
+                {invalid.map((iv, i) => (
+                  <li key={i}>
+                    <span className="font-mono">{iv.name}</span>: {iv.reason}
+                  </li>
+                ))}
+              </ul>
+            </AlertDescription>
+          </Alert>
+        )}
+
+        {/* Declared service rows. */}
+        {services.length === 0 ? (
+          <p className="text-xs text-muted-foreground">
+            No services declared — this connector adds reach, not a running service.
+          </p>
+        ) : (
+          services.map((svc, i) => (
+            <div
+              key={i}
+              className="flex flex-col gap-2 rounded-md border border-border p-3"
+            >
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-muted-foreground">
+                  Service {i + 1}
+                </span>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  aria-label={`Remove service ${i + 1}`}
+                  onClick={() => removeService(i)}
+                >
+                  <X className="h-3.5 w-3.5" />
+                </Button>
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`svc-name-${i}`} className="text-xs">
+                  Name
+                </Label>
+                <Input
+                  id={`svc-name-${i}`}
+                  type="text"
+                  className="font-mono"
+                  placeholder="e.g. db"
+                  value={svc.name}
+                  onChange={(e) => updateService(i, { name: e.target.value })}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`svc-image-${i}`} className="text-xs">
+                  Image (digest-pinned)
+                </Label>
+                <Input
+                  id={`svc-image-${i}`}
+                  type="text"
+                  className="font-mono"
+                  placeholder="e.g. postgres@sha256:…"
+                  value={svc.image}
+                  onChange={(e) => updateService(i, { image: e.target.value })}
+                />
+                {svc.image.trim().length > 0 && !isDigestPinned(svc.image) && (
+                  <p className="text-xs text-destructive">
+                    Pin this image to an immutable digest (…@sha256:&lt;64 hex&gt;) —
+                    a floating tag can change under us.
+                  </p>
+                )}
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`svc-ports-${i}`} className="text-xs">
+                  Ports (comma-separated)
+                </Label>
+                <Input
+                  id={`svc-ports-${i}`}
+                  type="text"
+                  className="font-mono"
+                  placeholder="e.g. 5432"
+                  value={portsToText(svc.ports)}
+                  onChange={(e) => updateService(i, { ports: textToPorts(e.target.value) })}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`svc-env-${i}`} className="text-xs">
+                  Environment (one KEY=value per line)
+                </Label>
+                <Textarea
+                  id={`svc-env-${i}`}
+                  rows={2}
+                  className="font-mono text-xs"
+                  placeholder="POSTGRES_PASSWORD=…"
+                  value={envToText(svc.env)}
+                  onChange={(e) => updateService(i, { env: textToEnv(e.target.value) })}
+                />
+              </div>
+              <div className="flex flex-col gap-1.5">
+                <Label htmlFor={`svc-paths-${i}`} className="text-xs">
+                  Writable paths (comma-separated, absolute)
+                </Label>
+                <Input
+                  id={`svc-paths-${i}`}
+                  type="text"
+                  className="font-mono"
+                  placeholder="/var/lib/postgresql/data"
+                  value={pathsToText(svc.writablePaths)}
+                  onChange={(e) =>
+                    updateService(i, { writablePaths: textToPaths(e.target.value) })
+                  }
+                />
+              </div>
+            </div>
+          ))
+        )}
+
+        <div>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onChange([...services, emptyServiceRow()])}
+          >
+            Add service
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export function ConnectorEditDialog({
   target,
@@ -545,6 +845,12 @@ export function ConnectorEditDialog({
               )}
             </div>
           </div>
+
+          {/* Services (service bundle) — independent of the mechanism choice. */}
+          <ServicesSection
+            services={form.services}
+            onChange={(services) => setForm((f) => ({ ...f, services }))}
+          />
 
           {error && (
             <Alert variant="destructive">

@@ -23,6 +23,7 @@
     { "path": "../ipc-protocol" },
     { "path": "../attachments" },
     { "path": "../skills" },
+    { "path": "../skills-parser" },
     { "path": "../routines" },
     { "path": "../validator-routine" }
   ]

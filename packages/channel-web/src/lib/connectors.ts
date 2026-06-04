@@ -35,6 +35,17 @@
  * `lib/admin.ts`.
  */
 
+// TASK-154 — the neutral dev-service descriptor. Type-only import of the
+// canonical shape from the pure-parser package @ax/skills-parser (allowed by the
+// eslint runtime-import allowlist; here we only need the TYPE, which is erased).
+// A connector's declared services ride its opaque `capabilities` fill, exactly
+// like mcpServers/packages.
+import type { ServiceDescriptor } from '@ax/skills-parser';
+
+/** Re-export so consumers in channel-web (the form, the dialog) reference one
+ *  descriptor type. */
+export type { ServiceDescriptor };
+
 /** Which owner-scoped route bundle a call targets (TASK-129). */
 export type ConnectorRouteBase = '/admin/connectors' | '/settings/connectors';
 
@@ -77,6 +88,16 @@ export interface ConnectorCapabilities {
   credentials: ConnectorCredentialSlot[];
   mcpServers: ConnectorMcpServerSpec[];
   packages: { npm: string[]; pypi: string[] };
+  /**
+   * TASK-154 — declared dev SERVICES (a "service bundle" connector). Each names
+   * a digest-pinned image + ports/env/writablePaths the unit of work wants
+   * alongside its sandbox; the orchestrator folds them onto `sandbox:open-session`
+   * (TASK-153). OPTIONAL on the wire so existing capability literals + legacy rows
+   * compile/round-trip unchanged — the server's `CapabilitiesSchema` defaults it
+   * to `[]`. Never carries a secret: service `env` is author-declared config (a
+   * secret is a `credentials` SLOT name, resolved by the proxy inside the sandbox).
+   */
+  services?: ServiceDescriptor[];
 }
 
 export type ConnectorKeyMode = 'personal' | 'workspace';

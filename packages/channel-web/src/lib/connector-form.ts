@@ -32,6 +32,11 @@
  * beyond-first entries untouched.
  */
 import {
+  translateComposeToServices,
+  type ComposeDrop,
+  type ComposeInvalid,
+} from '@ax/skills-parser';
+import {
   emptyCapabilities,
   type Connector,
   type ConnectorSummary,
@@ -40,6 +45,7 @@ import {
   type ConnectorVisibility,
   type ConnectorMcpServerSpec,
   type ConnectorCredentialSlot,
+  type ServiceDescriptor,
 } from './connectors';
 
 export type Transport = 'stdio' | 'http';
@@ -95,6 +101,15 @@ export interface ConnectorFormState {
   /** Structured credential-slot rows (TASK-124 per-slot shape). */
   credentialSlots: CredentialSlotRow[];
   /**
+   * TASK-154 — declared dev SERVICES (the "service bundle" slice). Independent of
+   * the backing-mechanism choice (an MCP / Direct API / CLI connector may ALSO
+   * declare services). Edited directly as descriptors (digest-pinned image +
+   * ports/env/writablePaths) and carried onto the proposal verbatim. The form
+   * either edits them by hand or fills them from a pasted compose file via
+   * {@link applyComposeToForm}.
+   */
+  services: ServiceDescriptor[];
+  /**
    * The loaded connector's full capabilities (empty for a new connector). The
    * form edits the LEADING slice for the chosen mechanism; beyond-first
    * mcpServers / packages and the leading server's inner env/hosts/creds are
@@ -120,6 +135,7 @@ export const emptyConnectorForm = (): ConnectorFormState => ({
   packageName: '',
   allowedHosts: '',
   credentialSlots: [],
+  services: [],
   baseCapabilities: emptyCapabilities(),
 });
 
@@ -184,6 +200,9 @@ export function formFromConnector(c: Connector): ConnectorFormState {
     packageName: pkg.name,
     allowedHosts: caps.allowedHosts.join(', '),
     credentialSlots: caps.credentials.map(slotToRow),
+    // TASK-154 — declared services ride alongside the mechanism slice; read them
+    // straight off the loaded capabilities (absent ⟹ no services).
+    services: caps.services ?? [],
     baseCapabilities: caps,
   };
 }
@@ -267,11 +286,62 @@ export function capabilitiesFromForm(
     if (name) packages[reg] = [name, ...packages[reg]];
   }
 
+  // TASK-154 — declared services are independent of the mechanism slice (any
+  // connector may also be a service bundle), so they're carried verbatim from the
+  // form, NOT derived from baseCapabilities. Omitting the key when empty keeps a
+  // non-service connector's proposal byte-identical to before (back-compat: the
+  // server defaults `services` to []).
   return {
     allowedHosts,
     credentials,
     mcpServers,
     packages,
+    ...(form.services.length > 0 ? { services: form.services } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Services (TASK-154) — manual row edits + curated compose paste.
+// ---------------------------------------------------------------------------
+
+/** A blank service row for manual entry. `image` un-pinned by default so the
+ *  author pastes a real digest-pinned ref; `writablePaths` defaults to []. */
+export const emptyServiceRow = (): ServiceDescriptor => ({
+  name: '',
+  image: '',
+  ports: [],
+  env: {},
+  writablePaths: [],
+});
+
+/** The outcome of pasting a compose file into the form. `ok:false` carries a
+ *  human-readable reason the paste was unusable (not YAML / not a mapping / no
+ *  services). `ok:true` carries the new form (services REPLACED, not appended, so
+ *  a re-paste is idempotent) plus what we removed (`drops`, I10) and flagged
+ *  (`invalid`, e.g. un-pinned images, I8) for the author to see. */
+export type ApplyComposeResult =
+  | { ok: true; form: ConnectorFormState; drops: ComposeDrop[]; invalid: ComposeInvalid[] }
+  | { ok: false; error: string };
+
+/**
+ * Translate a pasted `docker-compose.yml` and fold the resulting descriptors
+ * into the form's `services`. CURATED: the heavy lifting (drop host mounts /
+ * privileged / cap_add / network_mode:host / socket mounts, flag un-pinned
+ * images, never shell out) lives in the pure `@ax/skills-parser`
+ * `translateComposeToServices` — this is just the form-state glue. Services are
+ * REPLACED (not appended) so re-pasting a corrected file doesn't duplicate.
+ */
+export function applyComposeToForm(
+  form: ConnectorFormState,
+  composeYaml: string,
+): ApplyComposeResult {
+  const r = translateComposeToServices(composeYaml);
+  if (!r.ok) return { ok: false, error: r.error };
+  return {
+    ok: true,
+    form: { ...form, services: r.services },
+    drops: r.drops,
+    invalid: r.invalid,
   };
 }
 

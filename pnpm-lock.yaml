@@ -394,6 +394,9 @@ importers:
       '@ax/skills':
         specifier: workspace:*
         version: link:../skills
+      '@ax/skills-parser':
+        specifier: workspace:*
+        version: link:../skills-parser
       '@ax/validator-routine':
         specifier: workspace:*
         version: link:../validator-routine

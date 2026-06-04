@@ -293,6 +293,156 @@ describe('ConnectorEditDialog', () => {
     expect(base).toBe('/settings/connectors');
   });
 
+  // --- services section (TASK-154 — service bundle) -----------------------
+
+  const PINNED = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
+
+  it('renders a Services (service bundle) section with a compose paste box', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    await screen.findByLabelText(/service name/i);
+    // The section title (an exact "Services" text node) + paste box + translate.
+    expect(
+      screen.getByText((_, el) => el?.textContent === 'Services'),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText(/paste a docker-compose/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole('button', { name: /translate compose/i }),
+    ).toBeInTheDocument();
+  });
+
+  it('pasting a compose with a host mount shows the "we removed these" drop notice', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    await screen.findByLabelText(/service name/i);
+    const paste = screen.getByLabelText(/paste a docker-compose/i);
+    fireEvent.change(paste, {
+      target: {
+        value: `services:\n  db:\n    image: ${PINNED}\n    privileged: true\n    volumes:\n      - /var/run/docker.sock:/var/run/docker.sock\n`,
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/we removed a few things/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByText(/can.?t cross into the sandbox/i)).toBeInTheDocument();
+    // The dropped field names appear in the notice list (also echoed in the
+    // paste box, hence getAllByText — at least one is the drop-list <li>).
+    expect(screen.getAllByText(/privileged/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/volumes/).length).toBeGreaterThan(0);
+  });
+
+  it('pasting a compose with an un-pinned image surfaces a pin-the-image flag', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    await screen.findByLabelText(/service name/i);
+    const paste = screen.getByLabelText(/paste a docker-compose/i);
+    fireEvent.change(paste, {
+      target: { value: `services:\n  cache:\n    image: redis:7\n` },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    await waitFor(() =>
+      expect(screen.getByText(/pin/i)).toBeInTheDocument(),
+    );
+    // The un-pinned service did not silently become a usable descriptor.
+    expect(screen.queryByDisplayValue('redis:7')).toBeNull();
+  });
+
+  it('a malformed compose paste shows an error, not a crash', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    await screen.findByLabelText(/service name/i);
+    const paste = screen.getByLabelText(/paste a docker-compose/i);
+    fireEvent.change(paste, { target: { value: '- not a mapping' } });
+    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/couldn.?t read that as a compose file/i),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it('a translated pinned service submits onto capabilities.services', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    const name = await screen.findByLabelText(/service name/i);
+    fireEvent.change(name, { target: { value: 'PG bundle' } });
+    const paste = screen.getByLabelText(/paste a docker-compose/i);
+    fireEvent.change(paste, {
+      target: {
+        value: `services:\n  db:\n    image: ${PINNED}\n    ports: ["5432:5432"]\n`,
+      },
+    });
+    fireEvent.click(screen.getByRole('button', { name: /translate compose/i }));
+    await waitFor(() => expect(screen.getByDisplayValue(PINNED)).toBeInTheDocument());
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
+    expect(body.capabilities.services).toEqual([
+      { name: 'db', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
+    ]);
+  });
+
+  it('edit mode prefills declared services from the loaded connector', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue({
+      ...FULL,
+      capabilities: {
+        ...FULL.capabilities,
+        services: [
+          { name: 'db', image: PINNED, ports: [5432], env: {}, writablePaths: [] },
+        ],
+      },
+    });
+    render(
+      <ConnectorEditDialog
+        target={SUMMARY}
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    await screen.findByLabelText(/service name/i);
+    await waitFor(() =>
+      expect(screen.getByDisplayValue(PINNED)).toBeInTheDocument(),
+    );
+  });
+
   it('surfaces a save error from the server', async () => {
     vi.spyOn(connectorsLib, 'createConnector').mockRejectedValue(
       new Error('connector id taken'),
