@@ -5,7 +5,7 @@ import { PluginError, type AgentContext, type AgentMessage, type AgentOutcome, t
 // imports across plugins are allowed (erased at compile time); this keeps the
 // orchestrator's `AgentConfig` / `ProxyConfig` shapes pinned to the same
 // definition the sandbox backends validate against. See @ax/sandbox-protocol.
-import type { AgentConfig, ProxyConfig } from '@ax/sandbox-protocol';
+import type { AgentConfig, ProxyConfig, ServiceDescriptorParsed } from '@ax/sandbox-protocol';
 import {
   buildAuthoredConnectorCard,
   authoredConnectorCardDedupKey,
@@ -20,6 +20,7 @@ import {
   resolveSkillReferencedConnectors,
   foldConnectorCaps,
   connectorCredentialEnvName,
+  ConnectorServiceCollisionError,
   type FoldConnectorResult,
 } from './connector-union.js';
 
@@ -646,6 +647,16 @@ interface OpenSessionInput {
    * to materialize (Phase 0's empty skills/ dir is left as-is).
    */
   installedSkills?: InstalledSkillForSandbox[];
+  /**
+   * TASK-153 — dev SERVICES folded from the agent's admin-approved connectors'
+   * `capabilities.services` (a database, a cache, …). Each is the canonical
+   * `ServiceDescriptorParsed` wire shape; both sandbox backends re-validate it at
+   * the boundary (digest-pin, caps, no smuggled backend vocab) and render it
+   * (k8s native sidecars / subprocess docker-compose). Omitted when no connector
+   * declares one. Capped at 8 by the wire schema. Half-wired window stays OPEN
+   * until the S7 end-to-end canary closes it.
+   */
+  services?: ServiceDescriptorParsed[];
 }
 interface OpenSessionHandle {
   kill(): Promise<void>;
@@ -1903,12 +1914,55 @@ export function createOrchestrator(
     );
     const allConnectors = [...effectiveConnectors, ...skillReferencedConnectors];
 
-    const connectorFold: FoldConnectorResult = foldConnectorCaps(
-      allConnectors,
-      baseAllowSet,
-      baseCreds,
-      slotOwners,
-    );
+    // TASK-153 — fold the connectors' Capabilities, including their dev SERVICES.
+    // The fold THROWS `ConnectorServiceCollisionError` if two connectors declare
+    // the same service name (a misconfiguration, refused loudly). We then run the
+    // canonical `services:validate` (TASK-150) over the folded list when the
+    // validator is loaded (hasService-gated — a stripped CLI preset without
+    // @ax/validator-service folds unvalidated; the sandbox backends re-validate
+    // at the wire regardless, defense-in-depth). Either failure maps to a clean
+    // `terminated` outcome (NOT an uncaught throw — runAgentInvoke must always
+    // return an AgentOutcome; an uncaught throw here would hang the SSE, the same
+    // failure mode TASK-22 fixed for proxy-open). I8 — only ADMIN-APPROVED
+    // connectors reach `allConnectors`: `connectors:resolve` reads only the LIVE
+    // owner-scoped table, so a pending/unapproved connector resolves to nothing
+    // and contributes zero services.
+    let connectorFold: FoldConnectorResult;
+    let foldedServices: ServiceDescriptorParsed[];
+    try {
+      connectorFold = foldConnectorCaps(allConnectors, baseAllowSet, baseCreds, slotOwners);
+      foldedServices = connectorFold.services;
+      if (foldedServices.length > 0 && bus.hasService('services:validate')) {
+        const verdict = await bus.call<
+          { services: unknown[] },
+          { verdict: 'clean' } | { verdict: 'invalid'; reason: string }
+        >('services:validate', ctx, { services: foldedServices });
+        if (verdict.verdict !== 'clean') {
+          throw new ConnectorServicesInvalidError(verdict.reason);
+        }
+      }
+    } catch (err) {
+      const reason =
+        err instanceof ConnectorServiceCollisionError ||
+        err instanceof ConnectorServicesInvalidError
+          ? 'connector-services-invalid'
+          : 'connector-services-internal';
+      ctx.logger.warn('connector_services_fold_failed', {
+        reason,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      const outcome: AgentOutcome = {
+        kind: 'terminated',
+        reason,
+        error: err,
+      };
+      // Pre-waiter early-return: surface on the SSE so the client doesn't hang
+      // (coarse `reason` only — never the raw err / descriptor detail). Same
+      // shape as the chat:start / agent-resolve early-returns above.
+      await fireTurnError(ctx, ctx.reqId, outcome.reason);
+      await bus.fire('chat:end', ctx, { outcome });
+      return outcome;
+    }
     // Append connector slots AFTER the skill slots so the bare-env projection's
     // first-writer-wins keeps SKILL precedence on a shared bare name (a connector
     // and a skill both reading `LINEAR_API_KEY` → the skill wins the flat-env
@@ -2168,6 +2222,11 @@ export function createOrchestrator(
         // returns early with `proxy-not-loaded` otherwise).
         proxyConfig,
         ...(allInstalledSkills.length > 0 ? { installedSkills: allInstalledSkills } : {}),
+        // TASK-153 — dev services folded from the agent's admin-approved
+        // connectors (deduped by name + validated above). Omitted when none, so
+        // non-connector / CLI paths leave the field unset. Both backends render
+        // it; the wire schema re-validates (digest-pin, caps, no smuggled vocab).
+        ...(foldedServices.length > 0 ? { services: foldedServices } : {}),
       };
       const opened = await bus.call<OpenSessionInput, OpenSessionResult>(
         'sandbox:open-session',
@@ -2955,6 +3014,19 @@ class ChatTimeoutError extends Error {
   constructor(ms: number) {
     super(`agent:invoke timed out after ${ms}ms`);
     this.name = 'ChatTimeoutError';
+  }
+}
+
+// TASK-153 — `services:validate` returned a non-clean verdict on the folded
+// connector dev services. Distinct from the cross-connector collision (thrown by
+// the fold itself) so the catch can map BOTH to the same coarse terminated
+// `reason` while keeping the named cause on the audit outcome. The reason string
+// (which may name the offending descriptor field) stays host-side; only the
+// coarse `connector-services-invalid` reason crosses to the client.
+class ConnectorServicesInvalidError extends Error {
+  constructor(public readonly verdictReason: string) {
+    super(`connector dev services failed validation: ${verdictReason}`);
+    this.name = 'ConnectorServicesInvalidError';
   }
 }
 

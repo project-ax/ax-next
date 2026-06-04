@@ -43,6 +43,12 @@ import { createHash } from 'node:crypto';
 // ---------------------------------------------------------------------------
 
 import type { HookBus, AgentContext } from '@ax/core';
+// I12 — the dev-SERVICE descriptor type is the CANONICAL wire shape from
+// @ax/sandbox-protocol (an eslint-allow-listed pure schema package that
+// chat-orchestrator already depends on type-only for AgentConfig / ProxyConfig).
+// We forward each connector's parsed `services` verbatim onto the
+// `sandbox:open-session` payload; the sandbox backends re-validate at the wire.
+import type { ServiceDescriptorParsed } from '@ax/sandbox-protocol';
 
 // Structural mirror of @ax/skills-parser's McpServerSpec (I2). The orchestrator
 // forwards it verbatim into the sandbox; the sandbox schemas re-validate.
@@ -63,6 +69,16 @@ export interface ConnectorCapabilities {
   credentials: Array<{ slot: string; kind: string; description?: string; account?: string }>;
   mcpServers: ConnectorMcpServerSpec[];
   packages?: { npm?: string[]; pypi?: string[] };
+  /**
+   * TASK-153 — dev SERVICES the connector wants alongside the sandbox (a
+   * database, a cache, …). The CANONICAL `ServiceDescriptorParsed` wire shape
+   * (@ax/sandbox-protocol), forwarded verbatim onto `sandbox:open-session`.
+   * OPTIONAL: a connector resolve / capabilities literal that predates the
+   * field (and the existing connector test fixtures) carries no `services`,
+   * which folds as "no services". `@ax/skills-parser`'s `CapabilitiesSchema`
+   * `.default([])`s it, so a store round-trip always yields an array.
+   */
+  services?: ServiceDescriptorParsed[];
 }
 
 // Structural mirror of @ax/connectors' ResolveOutput / list-defaults connector
@@ -317,6 +333,29 @@ export function connectorSandboxDirId(connectorId: string): string {
   return id;
 }
 
+/**
+ * TASK-153 — thrown by `foldConnectorCaps` when two DIFFERENT connectors both
+ * declare a dev service with the SAME `name`. One service name = one descriptor;
+ * a cross-connector collision is a misconfiguration we refuse LOUDLY rather than
+ * silently merging two (possibly different) images/ports under one name. The
+ * orchestrator catches this and maps it to a terminated outcome (it never
+ * propagates uncaught — `runAgentInvoke` must always return an AgentOutcome).
+ */
+export class ConnectorServiceCollisionError extends Error {
+  constructor(
+    public readonly serviceName: string,
+    public readonly firstConnectorId: string,
+    public readonly secondConnectorId: string,
+  ) {
+    super(
+      `dev service name "${serviceName}" is declared by two connectors ` +
+        `("${firstConnectorId}" and "${secondConnectorId}") — a service name ` +
+        `must be unique across the agent's connectors`,
+    );
+    this.name = 'ConnectorServiceCollisionError';
+  }
+}
+
 /** What `foldConnectorCaps` mutates / returns — the same objects the skill union
  *  built, plus the connector-specific outputs the orchestrator threads onward. */
 export interface FoldConnectorResult {
@@ -338,6 +377,14 @@ export interface FoldConnectorResult {
   connectorSlotEnvNames: Array<{ envName: string; bareSlot: string }>;
   needsNpmRegistry: boolean;
   needsPypiRegistry: boolean;
+  /**
+   * TASK-153 — the union of every connector's declared dev services, deduped by
+   * `name`. The orchestrator threads this onto `sandbox:open-session.services`
+   * (after a `services:validate` pass) so both backends render it. A
+   * cross-connector name collision throws `ConnectorServiceCollisionError`
+   * instead of landing here. Empty when no connector declares a service.
+   */
+  services: ServiceDescriptorParsed[];
 }
 
 /**
@@ -364,6 +411,10 @@ export function foldConnectorCaps(
   const connectorSlotEnvNames: Array<{ envName: string; bareSlot: string }> = [];
   let needsNpmRegistry = false;
   let needsPypiRegistry = false;
+  // TASK-153 — dev services, deduped by `name`. The map value remembers which
+  // connector contributed the descriptor so a cross-connector collision can name
+  // BOTH connectors in the loud error.
+  const servicesByName = new Map<string, { connectorId: string; descriptor: ServiceDescriptorParsed }>();
 
   for (const c of connectors) {
     // Hosts → shared egress allowlist (idempotent dedup vs skill hosts).
@@ -407,6 +458,21 @@ export function foldConnectorCaps(
     if (pkgs?.npm?.length) needsNpmRegistry = true;
     if (pkgs?.pypi?.length) needsPypiRegistry = true;
 
+    // TASK-153 — dev services → the `sandbox:open-session.services` payload.
+    // Dedup by `name` across connectors. WITHIN one connector a repeated name is
+    // the same author's concern (last-wins, idempotent); ACROSS two DIFFERENT
+    // connectors a shared name is a misconfiguration we refuse LOUDLY (one
+    // service name = one descriptor — silently merging two possibly-different
+    // images/ports under one name would be a footgun). The orchestrator catches
+    // the throw and maps it to a terminated outcome.
+    for (const svc of c.capabilities.services ?? []) {
+      const existing = servicesByName.get(svc.name);
+      if (existing !== undefined && existing.connectorId !== c.id) {
+        throw new ConnectorServiceCollisionError(svc.name, existing.connectorId, c.id);
+      }
+      servicesByName.set(svc.name, { connectorId: c.id, descriptor: svc });
+    }
+
     // mcpServers → an installed-skill entry so the EXISTING per-dir `.mcp.json`
     // materialization runs. Always emit an entry (even with no mcpServers) so the
     // usage note reaches the model as a SKILL.md — that's the connector's "how to
@@ -436,5 +502,6 @@ export function foldConnectorCaps(
     });
   }
 
-  return { installedEntries, connectorSlotEnvNames, needsNpmRegistry, needsPypiRegistry };
+  const services = [...servicesByName.values()].map((v) => v.descriptor);
+  return { installedEntries, connectorSlotEnvNames, needsNpmRegistry, needsPypiRegistry, services };
 }
