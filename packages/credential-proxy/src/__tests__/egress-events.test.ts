@@ -404,6 +404,101 @@ describe('event.http-egress emission', () => {
     }
   });
 
+  // ── proxy:drain-session-egress-blocks (agent-visible egress note) ──────
+
+  it('records an ATTRIBUTED allowlist block so the session can drain it (and drain clears it)', async () => {
+    const upstream: HTTPServer = httpCreate((_req, res) => res.end('SHOULD NOT REACH'));
+    const upPort = await new Promise<number>((r) =>
+      upstream.listen(0, '127.0.0.1', () => r((upstream.address() as { port: number }).port)),
+    );
+    try {
+      kernel = await boot();
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
+      const opened = await bus.call<unknown, { proxyEndpoint: string; proxyAuthToken: string }>(
+        'proxy:open-session',
+        ctx(),
+        {
+          sessionId: 's1',
+          userId: 'u1',
+          agentId: 'a1',
+          allowlist: ['other.example.com'], // 127.0.0.1 NOT allowed → block
+          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+        },
+      );
+      const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
+
+      // Send the per-session proxy token so the allowlist MISS is attributed to
+      // s1 (production: the runner's HTTPS_PROXY carries this). Without it the
+      // block is unattributed and never buffered.
+      const dispatcher = new ProxyAgent({
+        uri: `http://127.0.0.1:${proxyPort}`,
+        proxyTunnel: false,
+        token: 'Basic ' + Buffer.from(`ax:${opened.proxyAuthToken}`).toString('base64'),
+      });
+      const res = await fetch(`http://127.0.0.1:${upPort}/`, { dispatcher } as RequestInit);
+      expect(res.status).toBe(403);
+      await new Promise<void>((r) => setImmediate(r));
+      // Sanity: the block WAS attributed to s1 (else the buffer can't key it).
+      expect(captured[0]!.sessionId).toBe('s1');
+
+      const s1ctx = makeAgentContext({ sessionId: 's1', agentId: 'a1', userId: 'u1' });
+      const drained = await bus.call<Record<string, never>, { hosts: string[] }>(
+        'proxy:drain-session-egress-blocks',
+        s1ctx,
+        {},
+      );
+      expect(drained.hosts).toEqual(['127.0.0.1']);
+
+      // Drain is surface-once — a second drain is empty.
+      const drained2 = await bus.call<Record<string, never>, { hosts: string[] }>(
+        'proxy:drain-session-egress-blocks',
+        s1ctx,
+        {},
+      );
+      expect(drained2.hosts).toEqual([]);
+    } finally {
+      await new Promise<void>((r) => upstream.close(() => r()));
+    }
+  });
+
+  it('does NOT buffer a private-IP (SSRF) block — we never coach the agent around a security block', async () => {
+    try {
+      kernel = await boot();
+      await bus.call('credentials:set', ctx(), { ref: 'r1', userId: 'u1', value: 'sk-secret' });
+      const opened = await bus.call<unknown, { proxyEndpoint: string; proxyAuthToken: string }>(
+        'proxy:open-session',
+        ctx(),
+        {
+          sessionId: 's1',
+          userId: 'u1',
+          agentId: 'a1',
+          allowlist: ['127.0.0.1'], // host allowed; the PRIVATE-IP gate blocks it
+          credentials: { ANTHROPIC_API_KEY: { ref: 'r1', kind: 'api-key' } },
+        },
+      );
+      const proxyPort = parseInt(opened.proxyEndpoint.split(':').pop()!, 10);
+      const dispatcher = new ProxyAgent({
+        uri: `http://127.0.0.1:${proxyPort}`,
+        proxyTunnel: false,
+        token: 'Basic ' + Buffer.from(`ax:${opened.proxyAuthToken}`).toString('base64'),
+      });
+      const res = await fetch(`http://127.0.0.1/`, { dispatcher } as RequestInit); // nosemgrep: typescript.react.security.react-insecure-request.react-insecure-request
+      expect(res.status).toBe(403);
+      await new Promise<void>((r) => setImmediate(r));
+      expect(captured[0]!.blockedReason).toBe('private-ip');
+
+      const s1ctx = makeAgentContext({ sessionId: 's1', agentId: 'a1', userId: 'u1' });
+      const drained = await bus.call<Record<string, never>, { hosts: string[] }>(
+        'proxy:drain-session-egress-blocks',
+        s1ctx,
+        {},
+      );
+      expect(drained.hosts).toEqual([]);
+    } finally {
+      // No upstream to close; the request never reaches one.
+    }
+  });
+
   it('fires for an over-cap upload with blockedReason=request-body-too-large + status 413 (TASK-24)', async () => {
     // A plain-HTTP upload over the per-request body cap is a local DoS guard,
     // but audit/security subscribers should still see it as a policy-blocked

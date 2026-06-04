@@ -631,7 +631,7 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the eighteen expected keys (TASK-68 adds blob.*; TASK-67 adds the resume-transcript callers; TASK-74 adds skill.propose)', () => {
+  it('IPC_TIMEOUTS_MS has the nineteen expected keys (TASK-68 adds blob.*; TASK-67 adds the resume-transcript callers; TASK-74 adds skill.propose; egress-note adds proxy.drain-egress-blocks)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
@@ -654,6 +654,9 @@ describe('timeouts', () => {
       'session.get-transcript',
       // TASK-74 (out-of-git Part D): the skill authoring chokepoint.
       'skill.propose',
+      // Agent-visible egress-block note: runner drains its session's
+      // allowlist-blocked hosts at PostToolUse.
+      'proxy.drain-egress-blocks',
     ].sort();
     expect(Object.keys(IPC_TIMEOUTS_MS).sort()).toEqual(expected);
   });

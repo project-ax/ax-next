@@ -1099,7 +1099,19 @@ export async function main(): Promise<number> {
           PostToolUse: [
             {
               hooks: [
-                createPostToolUseHook({ client }),
+                createPostToolUseHook({
+                  client,
+                  // Agent-visible egress-block note: after a Bash tool, drain the
+                  // hosts this session was allowlist-blocked on and inject a
+                  // remediation note. The host returns `{ hosts: [] }` when no
+                  // egress proxy is loaded, so this degrades to no-note silently.
+                  drainEgressBlocks: async () => {
+                    const r = (await client.call('proxy.drain-egress-blocks', {})) as {
+                      hosts: string[];
+                    };
+                    return r.hosts;
+                  },
+                }),
               ],
             },
           ],

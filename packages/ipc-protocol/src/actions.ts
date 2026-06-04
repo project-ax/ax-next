@@ -382,6 +382,39 @@ export const WorkspaceReadResponseSchema = z.discriminatedUnion('found', [
 export type WorkspaceReadResponse = z.infer<typeof WorkspaceReadResponseSchema>;
 
 // ---------------------------------------------------------------------------
+// proxy.drain-egress-blocks — agent-visible egress-block note.
+//
+// Exposes the host's `proxy:drain-session-egress-blocks` service hook to
+// runners over IPC. The runner drains this at PostToolUse: if the agent's
+// command was egress-blocked (an allowlist miss — e.g. a prebuilt-binary CLI
+// downloading from a GitHub release), the host returns the blocked host(s) and
+// the runner injects an actionable remediation note into the agent's context
+// (otherwise the agent sees only a cryptic `statusCode=403` and flails).
+//
+// Auth: the request body is EMPTY by design — exactly like session.get-config.
+// The host reads the session from `ctx.sessionId` (bearer-token-bound by the
+// IPC server), NEVER from the body, so an agent can only drain ITS OWN session.
+// A non-empty body is a hard 400 here (`.strict({})`), keeping the
+// no-sessionId-smuggling invariant visible at the schema layer. The drained
+// hosts are destinations the agent already chose to reach — no information gain
+// and no egress change (this never widens an allowlist; cf. proxy:add-host,
+// which is deliberately NOT exposed over IPC for exactly that reason).
+export const ProxyDrainEgressBlocksRequestSchema = z.object({}).strict();
+export type ProxyDrainEgressBlocksRequest = z.infer<
+  typeof ProxyDrainEgressBlocksRequestSchema
+>;
+
+export const ProxyDrainEgressBlocksResponseSchema = z.object({
+  /** Hostnames the caller's session was allowlist-blocked on since the last
+   *  drain (deduped, capped, surface-once). Empty when nothing was blocked or
+   *  the deployment has no egress proxy (the single-session CLI). */
+  hosts: z.array(z.string()),
+});
+export type ProxyDrainEgressBlocksResponse = z.infer<
+  typeof ProxyDrainEgressBlocksResponseSchema
+>;
+
+// ---------------------------------------------------------------------------
 // session.get-config
 //
 // Runner → host RPC fetched at boot. Authentication is the bearer token
