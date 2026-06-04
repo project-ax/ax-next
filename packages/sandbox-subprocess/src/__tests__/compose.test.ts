@@ -8,6 +8,8 @@ import {
   composeAvailable,
   composeUp,
   composeDown,
+  composeLogs,
+  diagnoseComposeFailure,
   waitForTcpPorts,
   LOOPBACK_HOST,
   type ComposeRunner,
@@ -241,5 +243,132 @@ describe('waitForTcpPorts', () => {
     await expect(
       waitForTcpPorts([1], { deadlineMs: 300, intervalMs: 50 }),
     ).rejects.toThrow(/not ready/);
+  });
+});
+
+// A fake runner that routes by the compose verb in the argv (the verb sits
+// after `-p <proj> -f -`). Lets a test script `up` vs `logs` separately.
+function verbRoutingRunner(
+  byVerb: Record<string, ComposeRunResult>,
+): { run: ComposeRunner; calls: Array<{ args: string[]; stdin?: string }> } {
+  const calls: Array<{ args: string[]; stdin?: string }> = [];
+  const run: ComposeRunner = async (args, opts) => {
+    calls.push({ args, stdin: opts?.stdin });
+    const verb = args.find((a) => ['up', 'down', 'logs', 'version'].includes(a)) ?? '';
+    return byVerb[verb] ?? { code: 0, stdout: '', stderr: '' };
+  };
+  return { run, calls };
+}
+
+describe('composeLogs (TASK-160)', () => {
+  it('fetches a bounded --no-color --tail log on stdin and returns stdout', async () => {
+    const { run, calls } = verbRoutingRunner({
+      logs: { code: 0, stdout: 'kafka  | crashed', stderr: '' },
+    });
+    const out = await composeLogs(run, { projectName: 'ax-svc-x', composeJson: '{}' });
+    expect(out).toBe('kafka  | crashed');
+    expect(calls[0].args).toEqual([
+      'compose', '-p', 'ax-svc-x', '-f', '-', 'logs', '--no-color', '--tail', '20',
+    ]);
+    expect(calls[0].stdin).toBe('{}');
+  });
+
+  it('returns empty string (never throws) when the runner errors', async () => {
+    const run: ComposeRunner = async () => {
+      throw new Error('docker daemon gone');
+    };
+    await expect(
+      composeLogs(run, { projectName: 'p', composeJson: '{}' }),
+    ).resolves.toBe('');
+  });
+});
+
+describe('diagnoseComposeFailure (TASK-160)', () => {
+  it('names the service + offending path from the compose-logs tail (EROFS)', async () => {
+    const { run } = verbRoutingRunner({
+      logs: {
+        code: 0,
+        stdout:
+          'postgres  | initdb: error: could not create directory "/var/lib/postgresql/data": Read-only file system',
+        stderr: '',
+      },
+    });
+    const diagnosis = await diagnoseComposeFailure(run, {
+      projectName: 'ax-svc-x',
+      composeJson: '{}',
+      services: [svc({ name: 'postgres', ports: [5432] })],
+      upError: new Error('docker compose up failed (exit 1): service exited'),
+    });
+    expect(diagnosis).toEqual({
+      service: 'postgres',
+      path: '/var/lib/postgresql/data',
+      reason: 'read-only filesystem',
+    });
+  });
+
+  it('falls back to scanning the up-error message when logs are empty', async () => {
+    const { run } = verbRoutingRunner({
+      logs: { code: 0, stdout: '', stderr: '' },
+    });
+    const diagnosis = await diagnoseComposeFailure(run, {
+      projectName: 'ax-svc-x',
+      composeJson: '{}',
+      services: [svc({ name: 'mongo' })],
+      upError: new Error(
+        'docker compose up failed (exit 1): chown /data/db: permission denied',
+      ),
+    });
+    expect(diagnosis).toEqual({
+      service: 'mongo',
+      path: '/data/db',
+      reason: 'permission denied',
+    });
+  });
+
+  it('returns undefined for a generic failure with no recognizable shape', async () => {
+    const { run } = verbRoutingRunner({
+      logs: { code: 0, stdout: 'mongo  | shutting down with code 14', stderr: '' },
+    });
+    const diagnosis = await diagnoseComposeFailure(run, {
+      projectName: 'ax-svc-x',
+      composeJson: '{}',
+      services: [svc({ name: 'mongo' })],
+      upError: new Error('docker compose up failed (exit 1)'),
+    });
+    expect(diagnosis).toBeUndefined();
+  });
+
+  it('returns undefined when no services were declared', async () => {
+    const { run, calls } = verbRoutingRunner({});
+    const diagnosis = await diagnoseComposeFailure(run, {
+      projectName: 'ax-svc-x',
+      composeJson: '{}',
+      services: [],
+      upError: new Error('boom'),
+    });
+    expect(diagnosis).toBeUndefined();
+    // No docker call — nothing to diagnose.
+    expect(calls).toHaveLength(0);
+  });
+
+  it('attributes to the first declared service when the log line names none', async () => {
+    const { run } = verbRoutingRunner({
+      logs: {
+        code: 0,
+        stdout: 'mkdir /opt/data: Read-only file system',
+        stderr: '',
+      },
+    });
+    const diagnosis = await diagnoseComposeFailure(run, {
+      projectName: 'ax-svc-x',
+      composeJson: '{}',
+      services: [svc({ name: 'kafka' }), svc({ name: 'zookeeper' })],
+      upError: new Error('up failed'),
+    });
+    expect(diagnosis).toEqual({
+      service: 'kafka',
+      path: '/opt/data',
+      reason: 'read-only filesystem',
+    });
   });
 });

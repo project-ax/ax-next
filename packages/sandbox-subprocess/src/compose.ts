@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process';
 import * as net from 'node:net';
-import type { ServiceDescriptorParsed } from '@ax/sandbox-protocol';
+import {
+  extractWritablePathFromLog,
+  type ServiceDescriptorParsed,
+  type ServiceStartupDiagnosis,
+} from '@ax/sandbox-protocol';
 
 // ---------------------------------------------------------------------------
 // Descriptor → `docker compose` translation (TASK-152)
@@ -264,6 +268,108 @@ export async function composeDown(
   return run(['compose', '-p', args.projectName, '-f', '-', 'down', '-v'], {
     stdin: args.composeJson,
   });
+}
+
+// ---------------------------------------------------------------------------
+// Failure self-diagnosis (TASK-160)
+//
+// When `composeUp` fails (a service crashed on startup — most often EROFS
+// because a dir it writes isn't in `writablePaths`, which we render as `tmpfs`),
+// surface an author-facing diagnosis naming the service + offending path. We
+// read a BOUNDED `docker compose logs` tail and scan it for the failure shape.
+//
+// SECURITY: the service log is UNTRUSTED (arbitrary connector image). We cap the
+// captured tail (`--tail N` at docker + a slice here) and `extractWritablePath-
+// FromLog` extracts only an absolute-path token — never echoes the raw log.
+// Best-effort: any failure returns undefined and the caller keeps the generic
+// error.
+// ---------------------------------------------------------------------------
+
+/** Max chars of compose-logs output we scan (defense-in-depth; `--tail` bounds
+ *  it at the source too). */
+const COMPOSE_LOG_TAIL_LINES = 20;
+const COMPOSE_LOG_MAX_CHARS = 4096;
+
+/**
+ * Fetch a bounded log tail for the project's services. `--no-color` + `--tail`
+ * keep it small and ANSI-free. Best-effort: returns '' on any failure.
+ */
+export async function composeLogs(
+  run: ComposeRunner,
+  args: { projectName: string; composeJson: string },
+): Promise<string> {
+  try {
+    const res = await run(
+      [
+        'compose',
+        '-p',
+        args.projectName,
+        '-f',
+        '-',
+        'logs',
+        '--no-color',
+        '--tail',
+        String(COMPOSE_LOG_TAIL_LINES),
+      ],
+      { stdin: args.composeJson },
+    );
+    return (res.stdout || res.stderr || '').slice(-COMPOSE_LOG_MAX_CHARS);
+  } catch {
+    return '';
+  }
+}
+
+/**
+ * Diagnose a `composeUp` failure into a backend-agnostic
+ * {@link ServiceStartupDiagnosis}. Reads a bounded compose-logs tail; if no log
+ * names the failure, falls back to scanning the bounded `up` error message. We
+ * attribute to the FIRST declared service whose name appears on the matching
+ * log line (else the first declared service). Returns undefined when nothing
+ * matches a known failure shape.
+ */
+export async function diagnoseComposeFailure(
+  run: ComposeRunner,
+  args: {
+    projectName: string;
+    composeJson: string;
+    services: readonly ServiceDescriptorParsed[];
+    upError: unknown;
+  },
+): Promise<ServiceStartupDiagnosis | undefined> {
+  if (args.services.length === 0) return undefined;
+  const logTail = await composeLogs(run, {
+    projectName: args.projectName,
+    composeJson: args.composeJson,
+  });
+  const upMsg =
+    args.upError instanceof Error
+      ? args.upError.message.slice(-COMPOSE_LOG_MAX_CHARS)
+      : '';
+  // Prefer the compose logs (they name the path); fall back to the up error.
+  const sources = [logTail, upMsg];
+
+  for (const source of sources) {
+    if (source.length === 0) continue;
+    const { path, reason } = extractWritablePathFromLog(source);
+    // Only treat as a service-startup diagnosis when we recognized a real
+    // failure shape (a path, or a non-default reason). A bare 'startup failed'
+    // from this source means the scan didn't match — try the next source.
+    if (path === undefined && reason === 'startup failed') continue;
+
+    // Attribute to the service whose name appears on a matching line, else the
+    // first declared service (compose `docker compose logs` prefixes each line
+    // with `<service>  | ...`).
+    const named = args.services.find((s) =>
+      new RegExp(`(^|[^a-z0-9-])${escapeRegExp(s.name)}([^a-z0-9-]|$)`, 'm').test(source),
+    );
+    const service = (named ?? args.services[0]!).name;
+    return path !== undefined ? { service, path, reason } : { service, reason };
+  }
+  return undefined;
+}
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 /**

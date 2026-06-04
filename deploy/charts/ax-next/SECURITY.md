@@ -9,10 +9,13 @@ either side and the isolation story collapses. This note captures the
 
 ## Security review (chart)
 
-- **Sandbox:** Host pod's ServiceAccount gets a Role with exactly five verbs on
-  `pods` (`create`, `delete`, `get`, `list`, `watch`) in ONE namespace
-  (`.Values.namespace.runner`). No `pods/exec`, no `pods/attach`, no `pods/log`,
-  no `patch`/`update`, no cluster-scoped reach. Two NetworkPolicies enforce the
+- **Sandbox:** Host pod's ServiceAccount gets a Role with five verbs on
+  `pods` (`create`, `delete`, `get`, `list`, `watch`) plus `get` on `pods/log`
+  (TASK-160 — a bounded, once-per-failed-session read of a crashed dev-service
+  sidecar's log tail, for self-diagnosis; see below) in ONE namespace
+  (`.Values.namespace.runner`). No `pods/exec`, no `pods/attach`, no log
+  streaming/follow, no `patch`/`update`, no cluster-scoped reach. Two
+  NetworkPolicies enforce the
   fence: runner pods have empty ingress + egress only to the host pod and DNS;
   the host pod ingresses from runner pods + its own namespace and egresses only
   to postgres / k8s API / DNS / HTTPS. Pod `securityContext` defaults
@@ -40,9 +43,12 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["create", "delete", "get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
 ```
 
-That's it. Five verbs on one resource in one namespace.
+Five verbs on `pods`, plus a single `get` on `pods/log`, in one namespace.
 
 - `create` — `@ax/sandbox-k8s` calls `createNamespacedPod` to spawn a runner
   for each session. Without it, no sessions.
@@ -57,20 +63,39 @@ That's it. Five verbs on one resource in one namespace.
   `Failed`) and routes that into `session:terminate`. Could be replaced with
   poll, but watch is cheaper at apiserver and we already handle disconnect
   cases.
+- `get` on `pods/log` (TASK-160) — when a declared dev-service sidecar fails to
+  start (most often EROFS, because a dir it writes isn't in `writablePaths`),
+  the host reads a **bounded** tail (`tailLines: 20`) of that one sidecar's log
+  exactly once, on the failed `open-session` path, to extract the offending
+  path and tell the connector author. We tighten this two ways. First, it's the
+  **fallback**, not the primary: the sidecars carry
+  `terminationMessagePolicy: FallbackToLogsOnError`, so for a *terminated*
+  container the kubelet has already copied the log tail into
+  `state.terminated.message` — which the host reads from the pod status it
+  *already* gets, no `pods/log` call at all. The API read only happens for a
+  `CrashLoopBackOff` sidecar still in `waiting` (no `terminated.message` yet).
+  Second, the grant is **`get` only** — no `list`, no `watch`, no follow/stream;
+  the host can fetch a finite tail but can't tail logs continuously. The
+  captured text is treated as untrusted (bounded, scanned for an absolute-path
+  token, control-chars stripped, rendered as plain text — see
+  `@ax/sandbox-protocol`'s `service-diagnosis.ts`); it is never interpolated
+  into a prompt, command, or path.
 
 ### What we deliberately do NOT grant
 
-The legacy v1 chart's Role granted `pods/exec`, `pods/attach`, `pods/log`,
-and `patch`. We dropped all of them.
+The legacy v1 chart's Role granted `pods/exec`, `pods/attach`, `pods/log`
+(full), and `patch`. We dropped all of them except a narrowed `pods/log: get`
+(TASK-160 — justified above).
 
 - `pods/exec`, `pods/attach`, `pods/portforward` — the host never enters a
   runner pod. All host↔runner traffic is HTTP over TCP via the runner pod's
   port (the `runnerEndpoint` returned by `sandbox:open-session`). Granting
   exec would mean a host-side compromise could shell into runners; we don't
   need it, so we don't have it.
-- `pods/log` — no debugging via the API. If an operator needs to inspect a
-  runner's stdout, they `kubectl logs` directly. The host has no use case
-  that needs streaming pod logs through its own SA.
+- `pods/log` beyond `get` — the host gets a finite tail of a *failed* sidecar's
+  log for self-diagnosis (above), but never `watch`/follow and never for the
+  runner container in steady state. An operator inspecting a healthy runner's
+  stdout still `kubectl logs` directly.
 - `patch` / `update` — runner pods are immutable from the host's point of
   view. Need a different config? Make a new pod. There's no path that
   requires editing an existing one.

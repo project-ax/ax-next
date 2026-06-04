@@ -760,3 +760,32 @@ describeIfHelm('ax-next chart: dev-services k8s 1.29+ guard (TASK-157)', () => {
     expect(host, 'escape hatch lets the render through').toBeDefined();
   });
 });
+
+describeIfHelm('ax-next chart: host RBAC Role (TASK-160)', () => {
+  it('grants pods verbs + a narrow pods/log:get for sidecar-failure diagnosis', () => {
+    const docs = helmTemplate([]);
+    const role = docs.find(
+      (d) =>
+        d.kind === 'Role' &&
+        d.metadata?.name === 'ax-test-ax-next-runner-manager',
+    );
+    expect(role, 'host runner-manager Role renders').toBeDefined();
+    const rules = (role!.rules ?? []) as Array<{
+      resources?: string[];
+      verbs?: string[];
+    }>;
+    const podsRule = rules.find((r) => (r.resources ?? []).includes('pods'));
+    expect(podsRule?.verbs?.sort()).toEqual(
+      ['create', 'delete', 'get', 'list', 'watch'].sort(),
+    );
+    // pods/log is granted ONLY `get` (TASK-160) — no list/watch/follow.
+    const logRule = rules.find((r) => (r.resources ?? []).includes('pods/log'));
+    expect(logRule, 'pods/log rule present').toBeDefined();
+    expect(logRule!.verbs).toEqual(['get']);
+    // Defense-in-depth: still no exec/attach/portforward anywhere in the Role.
+    const allResources = rules.flatMap((r) => r.resources ?? []);
+    expect(allResources).not.toContain('pods/exec');
+    expect(allResources).not.toContain('pods/attach');
+    expect(allResources).not.toContain('pods/portforward');
+  });
+});

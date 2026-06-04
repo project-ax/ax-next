@@ -225,7 +225,27 @@ describe('@ax/channel-web ChunkBuffer', () => {
     const buf = createChunkBuffer();
     try {
       buf.appendTurnError('r1', 'proxy-open-failed');
-      expect(buf.tailTurnError('r1')).toBe('proxy-open-failed');
+      expect(buf.tailTurnError('r1')).toEqual({ reason: 'proxy-open-failed' });
+    } finally {
+      buf.dispose();
+    }
+  });
+
+  // TASK-160 — the optional author-facing detail (dev-service-sidecar
+  // self-diagnosis) is stored + replayed alongside the reason.
+  it('appendTurnError carries an optional detail line for replay', () => {
+    const buf = createChunkBuffer();
+    try {
+      buf.appendTurnError(
+        'r1',
+        'dev-service-failed',
+        "Dev service 'kafka' couldn't write /opt/kafka (read-only filesystem) — add /opt/kafka to the service's writablePaths.",
+      );
+      expect(buf.tailTurnError('r1')).toEqual({
+        reason: 'dev-service-failed',
+        detail:
+          "Dev service 'kafka' couldn't write /opt/kafka (read-only filesystem) — add /opt/kafka to the service's writablePaths.",
+      });
     } finally {
       buf.dispose();
     }
@@ -248,7 +268,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
     const buf = createChunkBuffer();
     try {
       buf.appendTurnError('r-fast', 'proxy-open-failed');
-      expect(buf.tailTurnError('r-fast')).toBe('proxy-open-failed');
+      expect(buf.tailTurnError('r-fast')).toEqual({ reason: 'proxy-open-failed' });
       expect(buf.tail('r-fast')).toEqual([]);
     } finally {
       buf.dispose();
@@ -260,7 +280,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
     try {
       buf.appendTurnError('r1', 'proxy-open-failed');
       expect(buf.tailTurnError('r2')).toBeNull();
-      expect(buf.tailTurnError('r1')).toBe('proxy-open-failed');
+      expect(buf.tailTurnError('r1')).toEqual({ reason: 'proxy-open-failed' });
     } finally {
       buf.dispose();
     }
@@ -281,7 +301,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
     const buf = createChunkBuffer();
     try {
       buf.appendTurnError('r1', 'proxy-open-failed');
-      expect(buf.tailTurnError('r1')).toBe('proxy-open-failed');
+      expect(buf.tailTurnError('r1')).toEqual({ reason: 'proxy-open-failed' });
       // Past IDLE_TTL_MS (60s) + a sweep interval (30s) → entry reaped.
       vi.advanceTimersByTime(91_000);
       expect(buf.tailTurnError('r1')).toBeNull();
@@ -417,7 +437,7 @@ describe('@ax/channel-web ChunkBuffer', () => {
     try {
       buf.append({ reqId: 'r1', text: 'partial', kind: 'text' }); // seq 1, content
       buf.appendTurnError('r1', 'sandbox-terminated'); // terminal error, no listener
-      expect(buf.tailTurnError('r1')).toBe('sandbox-terminated');
+      expect(buf.tailTurnError('r1')).toEqual({ reason: 'sandbox-terminated' });
       // Past TTL + a sweep → the terminated entry is GONE, not a lingering shell.
       vi.advanceTimersByTime(91_000);
       expect(buf.tailTurnError('r1')).toBeNull();

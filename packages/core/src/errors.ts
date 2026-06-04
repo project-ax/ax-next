@@ -25,12 +25,24 @@ export interface PluginErrorOptions {
   message: string;
   hookName?: string;
   cause?: unknown;
+  /**
+   * Optional structured, AUTHOR-FACING diagnosis carried alongside the error.
+   * Generic on purpose so `@ax/core` stays dependency-free: a plugin attaches a
+   * small, neutral object (e.g. the dev-service-sidecar diagnosis from TASK-160
+   * — `{ service, path?, reason }`) that a downstream catch surfaces to the
+   * user. It MUST be a plain, already-bounded/sanitized, transport-neutral
+   * value (no backend vocab, no secrets, no unbounded text) — the consumer
+   * renders it as untrusted text. Omitted for ordinary errors.
+   */
+  diagnosis?: Record<string, unknown>;
 }
 
 export class PluginError extends Error {
   readonly code: PluginErrorCode;
   readonly plugin: string;
   readonly hookName?: string;
+  /** See {@link PluginErrorOptions.diagnosis}. */
+  readonly diagnosis?: Record<string, unknown>;
 
   constructor(opts: PluginErrorOptions) {
     super(opts.message, opts.cause !== undefined ? { cause: opts.cause } : undefined);
@@ -38,6 +50,7 @@ export class PluginError extends Error {
     this.code = opts.code;
     this.plugin = opts.plugin;
     if (opts.hookName !== undefined) this.hookName = opts.hookName;
+    if (opts.diagnosis !== undefined) this.diagnosis = opts.diagnosis;
   }
 
   // `cause` is intentionally omitted from toJSON() to keep stack traces out of

@@ -237,7 +237,7 @@ export function createChannelWebServerPlugin(
       // the prior turn-error evictor: storing (not evicting) is what makes
       // replay possible, and the buffer's IDLE_TTL sweep reaps the entry once
       // the connect window passes.
-      bus.subscribe<{ reqId?: string; reason?: string }>(
+      bus.subscribe<{ reqId?: string; reason?: string; detail?: string }>(
         'chat:turn-error',
         `${PLUGIN_NAME}/turn-error-fill`,
         createTurnErrorFillSubscriber(localBuffer),

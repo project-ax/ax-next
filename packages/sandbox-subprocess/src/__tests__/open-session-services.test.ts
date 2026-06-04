@@ -60,7 +60,9 @@ async function makeHarness(): Promise<{
 /** The compose verb in an argv (`version` is at index 1; `up`/`down` follow the
  *  `-p <proj> -f -` flags, so scan for the known verb rather than a fixed index). */
 function composeVerb(args: string[]): string | undefined {
-  return args.find((a) => a === 'version' || a === 'up' || a === 'down');
+  return args.find(
+    (a) => a === 'version' || a === 'up' || a === 'down' || a === 'logs',
+  );
 }
 
 /** A fake runner that records invocations and returns scripted results keyed by
@@ -68,6 +70,8 @@ function composeVerb(args: string[]): string | undefined {
 function fakeRunner(opts?: {
   available?: boolean;
   upResult?: ComposeRunResult;
+  /** TASK-160 — scripted `docker compose logs` output for the diagnosis path. */
+  logsResult?: ComposeRunResult;
 }): { run: ComposeRunner; calls: Array<{ args: string[]; stdin?: string }> } {
   const calls: Array<{ args: string[]; stdin?: string }> = [];
   const run: ComposeRunner = async (args, runOpts) => {
@@ -78,6 +82,9 @@ function fakeRunner(opts?: {
     }
     if (verb === 'up') {
       return opts?.upResult ?? { code: 0, stdout: '', stderr: '' };
+    }
+    if (verb === 'logs') {
+      return opts?.logsResult ?? { code: 0, stdout: '', stderr: '' };
     }
     // down (or anything else)
     return { code: 0, stdout: '', stderr: '' };
@@ -227,6 +234,72 @@ describe('sandbox:open-session — services bring-up (TASK-152)', () => {
     // The session we minted before bring-up was terminated on unwind.
     expect(spies.sessionTerminate).toHaveBeenCalled();
     expect(spies.ipcStop).toHaveBeenCalled();
+
+    await harness.close();
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  // TASK-160 — a bring-up failure caused by a missing writablePath self-diagnoses:
+  // the thrown PluginError carries a neutral `diagnosis` naming the service + path.
+  it('enriches the services-up-failed error with the offending service + path (EROFS)', async () => {
+    const ws = await mkWorkspace();
+    const { harness, spies } = await makeHarness();
+    const ctx = harness.ctx();
+    const { run, calls } = fakeRunner({
+      upResult: { code: 1, stdout: '', stderr: 'service "db" failed to start' },
+      logsResult: {
+        code: 0,
+        stdout:
+          'db  | initdb: error: could not create directory "/var/lib/postgresql/data": Read-only file system',
+        stderr: '',
+      },
+    });
+
+    const err = await openSessionImpl(
+      ctx,
+      { sessionId: 'svc-erofs-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, services: [pgService()] },
+      harness.bus,
+      run,
+    ).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as PluginError).code).toBe('services-up-failed');
+    expect((err as PluginError).diagnosis).toEqual({
+      service: 'db',
+      path: '/var/lib/postgresql/data',
+      reason: 'read-only filesystem',
+    });
+    // It captured logs BEFORE tearing the project down.
+    const logsIdx = calls.findIndex((c) => composeVerb(c.args) === 'logs');
+    const downIdx = calls.findIndex((c) => composeVerb(c.args) === 'down');
+    expect(logsIdx).toBeGreaterThanOrEqual(0);
+    expect(downIdx).toBeGreaterThan(logsIdx);
+    // Unwind still happened.
+    expect(spies.sessionTerminate).toHaveBeenCalled();
+
+    await harness.close();
+    await fs.rm(ws, { recursive: true, force: true });
+  });
+
+  it('leaves the error generic (no diagnosis) when the failure is unparseable', async () => {
+    const ws = await mkWorkspace();
+    const { harness } = await makeHarness();
+    const ctx = harness.ctx();
+    const { run } = fakeRunner({
+      upResult: { code: 1, stdout: '', stderr: 'pull access denied' },
+      logsResult: { code: 0, stdout: 'db  | exiting with code 1', stderr: '' },
+    });
+
+    const err = await openSessionImpl(
+      ctx,
+      { sessionId: 'svc-generic-1', workspaceRoot: ws, runnerBinary: ECHO_STUB, services: [pgService()] },
+      harness.bus,
+      run,
+    ).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(PluginError);
+    expect((err as PluginError).code).toBe('services-up-failed');
+    expect((err as PluginError).diagnosis).toBeUndefined();
 
     await harness.close();
     await fs.rm(ws, { recursive: true, force: true });

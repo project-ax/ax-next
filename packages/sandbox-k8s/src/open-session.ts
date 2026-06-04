@@ -18,7 +18,12 @@ import {
 import { computeReadinessBudgetMs, type ResolvedSandboxK8sConfig } from './config.js';
 import type { K8sCoreApi } from './k8s-api.js';
 import { killPod } from './kill.js';
-import { watchPodExit, waitForPodReady, type ExitInfo } from './lifecycle.js';
+import {
+  diagnoseServiceSidecars,
+  watchPodExit,
+  waitForPodReady,
+  type ExitInfo,
+} from './lifecycle.js';
 import { buildPodSpec } from './pod-spec.js';
 
 // ---------------------------------------------------------------------------
@@ -315,6 +320,43 @@ export function createOpenSession(deps: OpenSessionDeps) {
         podLog,
       });
     } catch (err) {
+      // TASK-160 — SELF-DIAGNOSE a service-sidecar startup failure BEFORE the
+      // cleanup deletes the pod. A declared dev service that can't start (most
+      // often EROFS because a dir it writes isn't in writablePaths) keeps the
+      // pod from ever reaching Ready, so the readiness wait fails with a
+      // generic timeout. When this session declared services, read the pod's
+      // current status + the offending sidecar's bounded log tail and, if we
+      // can name the service + path, throw an enriched error carrying a neutral
+      // `serviceDiagnosis` the orchestrator surfaces to the author. Best-effort
+      // — any failure here falls through to the original error.
+      let enriched: PluginError | undefined;
+      if ((input.services?.length ?? 0) > 0) {
+        try {
+          const pod = (await deps.api.readNamespacedPod({
+            name: podName,
+            namespace: deps.config.namespace,
+          })) as Parameters<typeof diagnoseServiceSidecars>[0]['pod'];
+          const diagnosis = await diagnoseServiceSidecars({
+            api: deps.api,
+            pod,
+            podName,
+            namespace: deps.config.namespace,
+            podLog,
+          });
+          if (diagnosis !== undefined) {
+            enriched = new PluginError({
+              code: 'service-sidecar-failed',
+              plugin: PLUGIN_NAME,
+              hookName: HOOK_NAME,
+              message: `dev service '${diagnosis.service}' failed to start in pod ${podName}`,
+              cause: err,
+              diagnosis: { ...diagnosis },
+            });
+          }
+        } catch {
+          // Diagnosis is best-effort — keep the original error.
+        }
+      }
       // Cleanup: kill the pod (idempotent — it may already be Failed)
       // and tear down the session.
       await killPod({
@@ -330,7 +372,7 @@ export function createOpenSession(deps: OpenSessionDeps) {
           { sessionId: created.sessionId },
         )
         .catch(() => undefined);
-      throw err;
+      throw enriched ?? err;
     }
 
     const runnerEndpoint = deps.config.hostIpcUrl;

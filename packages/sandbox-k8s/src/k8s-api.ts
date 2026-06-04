@@ -2,10 +2,12 @@
 // k8s-api — narrow facade over @kubernetes/client-node.
 //
 // We don't import the full CoreV1Api type into our public surface. Instead
-// we define a structural interface with just the four methods we use:
+// we define a structural interface with just the methods we use:
 //
 //   - createNamespacedPod
-//   - readNamespacedPod  (used by the readiness poller)
+//   - readNamespacedPod      (used by the readiness poller)
+//   - readNamespacedPodLog   (TASK-160: bounded sidecar log tail for the
+//                             self-diagnosing failure surface)
 //   - deleteNamespacedPod
 //   - listNamespacedPod  (used by isAvailable, today only via tests)
 //
@@ -44,6 +46,18 @@ export interface PodListRequest {
   limit?: number;
 }
 
+export interface PodLogRequest {
+  name: string;
+  namespace: string;
+  /** Which container's log to read (a service sidecar is `svc-<name>`). */
+  container: string;
+  /** Bound the captured output — only the last N lines (TASK-160). */
+  tailLines?: number;
+  /** Read the PREVIOUS terminated instance's log (set for a crashlooped
+   *  container whose current attempt hasn't logged yet). */
+  previous?: boolean;
+}
+
 /**
  * The bits of CoreV1Api we use. CoreV1Api implements this structurally;
  * tests can hand-roll a stub.
@@ -51,6 +65,14 @@ export interface PodListRequest {
 export interface K8sCoreApi {
   createNamespacedPod(req: PodCreateRequest): Promise<unknown>;
   readNamespacedPod(req: PodReadRequest): Promise<unknown>;
+  /**
+   * Read a container's log (bounded by `tailLines`). CoreV1Api implements
+   * this structurally; the bundled RBAC already grants `pods/log` (read-only).
+   * Returns the log as a string. TASK-160 — the only consumer is the
+   * service-sidecar failure diagnoser, which captures a small tail of an
+   * UNTRUSTED service image's log to extract the offending writablePath.
+   */
+  readNamespacedPodLog(req: PodLogRequest): Promise<string>;
   deleteNamespacedPod(req: PodDeleteRequest): Promise<unknown>;
   listNamespacedPod(req: PodListRequest): Promise<unknown>;
 }
