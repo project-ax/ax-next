@@ -263,6 +263,65 @@ describe('admin connector routes', () => {
     expect(list.map((c) => c.id)).toContain('gdrive');
   });
 
+  it('round-trips a `services` capability proposal through the store (TASK-154)', async () => {
+    // A "service bundle" connector DECLARES dev services on its capability
+    // proposal. The store re-validates capabilities (incl. `services`) on
+    // write+read via `CapabilitiesSchema`; the detail response must surface the
+    // declared services (name/image/ports/env/writablePaths). Service `env` is
+    // author-declared CONFIG, NOT a secret — secrets live in
+    // `capabilities.credentials` (credential SLOT names only). So surfacing the
+    // service env here is correct and leaks nothing.
+    const h = await makeHarness();
+    const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
+    currentActor = { id: 'userSvc', isAdmin: true };
+
+    const pinned = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
+    const caps: Capabilities = {
+      allowedHosts: [],
+      credentials: [],
+      mcpServers: [],
+      packages: { npm: [], pypi: [] },
+      services: [
+        {
+          name: 'db',
+          image: pinned,
+          ports: [5432],
+          env: { POSTGRES_PASSWORD: 'x' },
+          writablePaths: ['/var/lib/postgresql/data'],
+        },
+      ],
+    };
+
+    const { res: cRes, captured: cCap } = makeRes();
+    await handlers.create(
+      makeReq({
+        body: {
+          connectorId: 'pg-bundle',
+          name: 'Postgres bundle',
+          keyMode: 'personal',
+          visibility: 'private',
+          capabilities: caps,
+        },
+      }),
+      cRes,
+    );
+    expect(cCap.status).toBe(201);
+
+    const { res: gRes, captured: gCap } = makeRes();
+    await handlers.show(makeReq({ params: { id: 'pg-bundle' } }), gRes);
+    expect(gCap.status).toBe(200);
+    const got = (gCap.body as { connector: { capabilities: Capabilities } }).connector;
+    expect(got.capabilities.services).toEqual([
+      {
+        name: 'db',
+        image: pinned,
+        ports: [5432],
+        env: { POSTGRES_PASSWORD: 'x' },
+        writablePaths: ['/var/lib/postgresql/data'],
+      },
+    ]);
+  });
+
   it('forces actor id from session — a body-supplied userId cannot impersonate', async () => {
     const h = await makeHarness();
     const handlers = createAdminConnectorRouteHandlers({ bus: h.bus });
