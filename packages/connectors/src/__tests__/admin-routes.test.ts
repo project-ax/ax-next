@@ -1296,4 +1296,93 @@ describe('user connector AUTHORED routes (/settings/connectors/authored)', () =>
     expect(captured.status).toBe(409);
     expect((captured.body as { error: string }).error).toBe('not-authored');
   });
+
+  // DELETE /settings/connectors/authored/:id — the "Dismiss" action on the
+  // "Proposed by your assistant" shelf (2026-06-04). Lets a user reject a draft
+  // their assistant proposed WITHOUT first approving it (the old trap: the only
+  // shelf action was Approve, so dismissing meant entering a real/fake key just
+  // to promote it into the registry where Delete finally appeared). Reuses the
+  // dormant `connectors:clear-authored` hook. Owner-scoped from the session.
+  it('DELETE authored clears the session user’s pending draft, returns 204', async () => {
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    // A test-unique userId keeps this assertion isolated from drafts other tests
+    // seed into the shared DB (the list is owner-scoped).
+    await seedDraft(h, { userId: 'ru-clear', agentId: 'agent1', connectorId: 'linear' });
+
+    currentActor = { id: 'ru-clear', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.rejectAuthored(
+      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
+      res,
+    );
+    expect(captured.status).toBe(204);
+    expect(captured.ended).toBe(true);
+
+    // The draft is gone from this user's "Proposed" shelf.
+    const { res: lRes, captured: lCap } = makeRes();
+    await handlers.listAuthoredPending(makeReq({}), lRes);
+    expect((lCap.body as { drafts: unknown[] }).drafts).toEqual([]);
+  });
+
+  it('DELETE authored 404 when the draft belongs to another user (owner-scoped)', async () => {
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    await seedDraft(h, { userId: 'ru-owner', agentId: 'agent1', connectorId: 'linear' });
+
+    // A different user cannot clear ru-owner's draft — the clear is scoped to the
+    // session owner, so zero rows match → not-found.
+    currentActor = { id: 'ru-other', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.rejectAuthored(
+      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
+      res,
+    );
+    expect(captured.status).toBe(404);
+
+    // ru-owner's draft is untouched.
+    currentActor = { id: 'ru-owner', isAdmin: false };
+    const { res: lRes, captured: lCap } = makeRes();
+    await handlers.listAuthoredPending(makeReq({}), lRes);
+    expect((lCap.body as { drafts: Array<{ connectorId: string }> }).drafts).toHaveLength(1);
+  });
+
+  it('DELETE authored 400 when agentId is missing', async () => {
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = { id: 'userU', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.rejectAuthored(makeReq({ params: { id: 'linear' }, body: {} }), res);
+    expect(captured.status).toBe(400);
+  });
+
+  it('DELETE authored 401 when unauthenticated', async () => {
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    currentActor = null;
+    const { res, captured } = makeRes();
+    await handlers.rejectAuthored(
+      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
+      res,
+    );
+    expect(captured.status).toBe(401);
+  });
+
+  it('DELETE authored succeeds even when agents:resolve would forbid (no ACL gate)', async () => {
+    // Rejecting your OWN draft must never be blocked by agent reachability — a
+    // draft authored under an agent you can no longer reach (deleted / access
+    // revoked) would otherwise be un-dismissable, the exact trap we’re fixing.
+    const h = await makeAuthoredHarness();
+    const handlers = createConnectorRouteHandlers({ bus: h.bus, mode: 'user' });
+    await seedDraft(h, { userId: 'ru-nogate', agentId: 'agent1', connectorId: 'linear' });
+    agentsResolveVerdict = 'forbidden';
+
+    currentActor = { id: 'ru-nogate', isAdmin: false };
+    const { res, captured } = makeRes();
+    await handlers.rejectAuthored(
+      makeReq({ params: { id: 'linear' }, body: { agentId: 'agent1' } }),
+      res,
+    );
+    expect(captured.status).toBe(204);
+  });
 });

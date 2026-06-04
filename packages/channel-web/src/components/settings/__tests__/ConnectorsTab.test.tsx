@@ -162,6 +162,42 @@ describe('ConnectorsTab', () => {
     });
   });
 
+  it('offers a Dismiss action on a proposed connector', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredPending').mockResolvedValue([PROPOSED_LINEAR]);
+    render(<ConnectorsTab isAdmin={false} />);
+    const tile = await screen.findByTestId('proposed-connector-linear');
+    expect(within(tile).getByRole('button', { name: /dismiss/i })).toBeInTheDocument();
+  });
+
+  it('dismissing a proposed connector rejects it (no key) and refreshes the shelf', async () => {
+    vi.spyOn(connectorsLib, 'listAuthoredPending')
+      .mockResolvedValueOnce([PROPOSED_LINEAR]) // initial load
+      .mockResolvedValue([]); // after dismiss → shelf empties
+    const setCred = vi
+      .spyOn(credLib, 'setDestinationCredential')
+      .mockResolvedValue(undefined as unknown as Awaited<ReturnType<typeof credLib.setDestinationCredential>>);
+    const reject = vi
+      .spyOn(connectorsLib, 'rejectAuthoredConnector')
+      .mockResolvedValue(undefined);
+
+    render(<ConnectorsTab isAdmin={false} />);
+    const tile = await screen.findByTestId('proposed-connector-linear');
+    fireEvent.click(within(tile).getByRole('button', { name: /dismiss/i }));
+
+    // Confirm in the dialog (its own Dismiss button).
+    const dialog = await screen.findByRole('dialog');
+    fireEvent.click(within(dialog).getByRole('button', { name: /^dismiss$/i }));
+
+    await waitFor(() => expect(reject).toHaveBeenCalledTimes(1));
+    expect(reject).toHaveBeenCalledWith('linear', { agentId: 'agt_1' });
+    // Dismiss never touches the vault — that was the whole bug.
+    expect(setCred).not.toHaveBeenCalled();
+    // The shelf empties on refresh.
+    await waitFor(() =>
+      expect(screen.queryByTestId('proposed-connector-linear')).not.toBeInTheDocument(),
+    );
+  });
+
   it('renders Connected and Available section headers', async () => {
     render(<ConnectorsTab isAdmin={false} />);
     await screen.findByText('My Notion');

@@ -273,6 +273,33 @@ export async function approveAuthoredConnector(
 }
 
 /**
+ * Dismiss a pending authored connector draft (the "Proposed by your assistant"
+ * shelf, 2026-06-04). Rejects the proposal outright — no approve, no key entry.
+ * `agentId` comes from the listed draft (the composite key the clear scopes to).
+ *
+ * A 404 is treated as success: DELETE is idempotent, and a draft that's already
+ * gone (a double-click, or it was approved/re-proposed in another tab) is the
+ * exact end state the user asked for. Only an unexpected status throws.
+ */
+export async function rejectAuthoredConnector(
+  connectorId: string,
+  args: { agentId: string },
+): Promise<void> {
+  const res = await fetch(
+    `/settings/connectors/authored/${encodeURIComponent(connectorId)}`,
+    {
+      method: 'DELETE',
+      headers: writeHeaders,
+      credentials: 'include',
+      body: JSON.stringify({ agentId: args.agentId }),
+    },
+  );
+  if (res.ok || res.status === 404) return;
+  const excerpt = await res.text().catch(() => '');
+  throw new Error(messageFrom(excerpt) || `dismiss connector: ${res.status}`);
+}
+
+/**
  * The connector Test probe verdict (TASK-108 — the connector equivalent of the
  * old MCP `/test`). `reachable` = set up to work; `unreachable` = config is
  * malformed or its keys couldn't be verified; `needs-key` = a required
