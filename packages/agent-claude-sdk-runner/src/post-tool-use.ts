@@ -90,7 +90,11 @@ export function buildEgressBlockNote(hosts: string[]): string {
 export function createPostToolUseHook(
   opts: CreatePostToolUseHookOptions,
 ): HookCallback {
-  return async (input, toolUseID) => {
+  // The SDK's HookCallback is 3-ary `(input, toolUseID, { signal })`; declare
+  // the (unused) third param so the real call shape is honest — matches the
+  // sibling pre-tool-use hook and keeps callers from looking like they pass a
+  // superfluous argument (CodeQL).
+  return async (input, toolUseID, _options) => {
     // Defensive narrow — SDK matchers should route only PostToolUse here,
     // but we don't want a misconfigured hook map to leak a different
     // payload shape onto the wire.
