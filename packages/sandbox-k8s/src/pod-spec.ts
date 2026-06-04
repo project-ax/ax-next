@@ -207,6 +207,46 @@ interface ServiceSidecarRender {
   volumes: Array<{ name: string; emptyDir: Record<string, never> }>;
 }
 
+// k8s container + volume names are DNS-1123 LABELS — capped at 63 bytes (and
+// must start/end alphanumeric). The longest suffix we append to a service's
+// `svc-<name>` base is `-<i>` for a writable-path index; reserve room for a
+// two-digit index (writablePaths is capped at 16, so i ≤ 15 → `-15`, but keep
+// margin) plus the `svc-` prefix.
+const K8S_NAME_MAX_BYTES = 63;
+const SERVICE_NAME_HASH_SUFFIX_BYTES = 8;
+// Reserve `-<i>` (up to `-99`) so the per-writable-path volume name stays ≤ 63.
+const SERVICE_VOLUME_INDEX_RESERVE = 3;
+
+/**
+ * Build a deterministic, ≤63-byte k8s name BASE for a service sidecar.
+ *
+ * `ServiceDescriptorSchema`'s `ID_RE` permits a service name up to 64 chars,
+ * but `svc-<name>` (and `svc-<name>-<i>` for the per-writable-path volume) must
+ * fit the DNS-1123 63-byte label limit or the API server rejects the whole pod
+ * with an opaque 422 → session roll-back. When `svc-<name>` plus the index
+ * reserve would overflow, truncate and append a sha1 suffix so the base stays
+ * unique (two distinct long names that share a prefix get different bases).
+ * Short names (the common case — `postgres`, `kafka`, `mongo`) pass through
+ * unchanged.
+ */
+function serviceNameBase(serviceName: string): string {
+  const base = `svc-${serviceName}`;
+  if (base.length + SERVICE_VOLUME_INDEX_RESERVE <= K8S_NAME_MAX_BYTES) return base;
+  const hash = createHash('sha1')
+    .update(serviceName)
+    .digest('hex')
+    .slice(0, SERVICE_NAME_HASH_SUFFIX_BYTES);
+  // Budget: 63 − index-reserve − hash − 1 (the `-` joining head + hash).
+  const headBudget =
+    K8S_NAME_MAX_BYTES -
+    SERVICE_VOLUME_INDEX_RESERVE -
+    SERVICE_NAME_HASH_SUFFIX_BYTES -
+    1;
+  // Trim a trailing `-` so the head never ends non-alphanumeric before the join.
+  const head = base.slice(0, headBudget).replace(/-+$/, '');
+  return `${head}-${hash}`;
+}
+
 /**
  * TASK-151 — render each declared service descriptor as a NATIVE k8s sidecar.
  *
@@ -243,15 +283,16 @@ function renderServiceSidecars(
 
   for (const service of services) {
     // The descriptor `name` is constrained to ID_RE (lowercase alnum + dashes)
-    // at the wire, so `svc-<name>` and `svc-<name>-<i>` are valid k8s
-    // container/volume names without further sanitization. The index keeps a
-    // service's multiple writable paths — and paths shared across services —
-    // collision-free.
-    const containerName = `svc-${service.name}`;
+    // at the wire. `serviceNameBase` bounds `svc-<name>` to the DNS-1123 63-byte
+    // k8s name limit (ID_RE permits up to 64 chars, which would overflow); the
+    // per-writable-path index keeps a service's multiple paths — and paths
+    // shared across services — collision-free.
+    const nameBase = serviceNameBase(service.name);
+    const containerName = nameBase;
 
     const volumeMounts: Array<{ name: string; mountPath: string }> = [];
     service.writablePaths.forEach((mountPath, i) => {
-      const volName = `svc-${service.name}-${i}`;
+      const volName = `${nameBase}-${i}`;
       volumeMounts.push({ name: volName, mountPath });
       volumes.push({ name: volName, emptyDir: {} });
     });

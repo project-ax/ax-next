@@ -804,6 +804,32 @@ describe('buildPodSpec', () => {
       });
     });
 
+    it('keeps sidecar container + volume names within the 63-char k8s name limit (long service name)', () => {
+      // ServiceDescriptorSchema's ID_RE allows a name up to 64 chars, but k8s
+      // container + volume names are DNS-1123 labels capped at 63 chars. A
+      // naive `svc-<name>` (4 + up to 64 = 68) would render an invalid pod spec
+      // the API server rejects with an opaque 422 → session roll-back. The
+      // rendered names must stay <= 63 and remain collision-free.
+      const longName = 'a' + 'b'.repeat(63); // 64 chars — the ID_RE ceiling
+      const spec = buildPodSpec(
+        'pod-longname',
+        { ...baseInput, services: [svc({ name: longName, writablePaths: ['/data'] })] },
+        baseResolved(),
+      ).spec as {
+        initContainers: Array<{ name: string; volumeMounts?: Array<{ name: string }> }>;
+        volumes: Array<{ name: string }>;
+      };
+      const sidecar = spec.initContainers.find((c) => c.name !== 'sdk-scaffold')!;
+      expect(sidecar.name.length).toBeLessThanOrEqual(63);
+      for (const m of sidecar.volumeMounts ?? []) {
+        expect(m.name.length).toBeLessThanOrEqual(63);
+      }
+      // The mount name must still match a declared volume (no dangling mount).
+      for (const m of sidecar.volumeMounts ?? []) {
+        expect(spec.volumes.find((v) => v.name === m.name)).toBeDefined();
+      }
+    });
+
     it('leaves the spec untouched (no fsGroup, no extra volumes) when services is empty', () => {
       const spec = buildPodSpec('pod-empty', { ...baseInput, services: [] }, baseResolved())
         .spec as {
