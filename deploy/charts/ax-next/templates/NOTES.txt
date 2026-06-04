@@ -31,5 +31,26 @@ A few things worth double-checking on the way out:
 
   3. If NetworkPolicies are disabled, runner pods can reach anything on the
      cluster. That's the kind-dev default — not a production stance.
+{{- if .Values.sandbox.devServices.enabled }}
+
+  4. Dev-services are ENABLED (sandbox.devServices.enabled=true). These render
+     as native sidecars and REQUIRE Kubernetes 1.29+ (SidecarContainers GA).
+     This cluster reports {{ .Capabilities.KubeVersion.Version }}.
+{{- if .Values.sandbox.devServices.skipKubeVersionCheck }}
+     The 1.29+ preflight is SKIPPED (skipKubeVersionCheck=true). On a kubelet
+     older than 1.29 a service sidecar runs as a BLOCKING init container and the
+     runner pod hangs in Init — make sure every node is actually 1.29+.
+{{- else if semverCompare ">=1.29.0-0" .Capabilities.KubeVersion.Version }}
+     Looks good — this version satisfies the requirement. (Heads up: under
+     `helm template` this is helm's built-in stub version, not your cluster.)
+{{- else }}
+     WARNING: this is BELOW 1.29. On older kubelets the sidecar's
+     `restartPolicy: Always` is ignored, so the service runs as a BLOCKING init
+     container and the runner pod hangs in Init until the 6h deadline reaps it.
+     (If you're seeing this under `helm template`, it's checking helm's stub
+     version — pass --kube-version <your-cluster-version> to template as the
+     cluster sees it.)
+{{- end }}
+{{- end }}
 
 For the full security walk: deploy/charts/ax-next/SECURITY.md.

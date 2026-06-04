@@ -688,3 +688,75 @@ describeIfHelm('ax-next chart: credential-proxy TCP Service (TASK-149)', () => {
     expect(hasProxyPort, 'no proxy egress rule in hostPath mode').toBe(false);
   });
 });
+
+// TASK-157 — dev-services in the runner sandbox render as native k8s sidecars
+// (initContainers with restartPolicy: Always), which require Kubernetes 1.29+
+// (SidecarContainers GA). On older kubelets the restartPolicy is ignored and
+// the service runs as a BLOCKING init container, hanging the pod. The chart's
+// `ax-next.validateDevServicesKubeVersion` preflight fails fast when the
+// operator declares dev-services intent (sandbox.devServices.enabled=true) on a
+// cluster that can't be confirmed 1.29+.
+//
+// NOTE on `helm template` + `.Capabilities.KubeVersion`: with no `--kube-version`
+// flag, helm uses its BUILT-IN stub version (v1.28.0 in the pinned CI helm),
+// which is below 1.29 — so the "enabled, no kube-version" case is expected to
+// FAIL. The tests pass `--kube-version` explicitly to exercise both sides of the
+// 1.29 boundary deterministically, independent of which helm build runs them.
+describeIfHelm('ax-next chart: dev-services k8s 1.29+ guard (TASK-157)', () => {
+  it('default values (devServices disabled): renders cleanly, guard is inert', () => {
+    // The whole rest of the suite already renders with devServices off; this
+    // asserts the guard adds nothing to the default posture even when the
+    // built-in stub version is < 1.29.
+    const docs = helmTemplate([]);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+    );
+    expect(host, 'host Deployment renders with devServices off').toBeDefined();
+  });
+
+  it('devServices.enabled=true on a < 1.29 cluster → render fails with the 1.29+ message', () => {
+    const r = helmTemplateExpectFailure([
+      '--set', 'sandbox.devServices.enabled=true',
+      '--kube-version', '1.27.0',
+    ]);
+    expect(r.status, 'helm template should fail on an old cluster').not.toBe(0);
+    expect(r.stderr).toMatch(/requires Kubernetes 1\.29\+/);
+    // The failure mode is spelled out so an operator hitting this knows WHY.
+    expect(r.stderr).toMatch(/BLOCKING init container/);
+    expect(r.stderr).toMatch(/skipKubeVersionCheck/);
+  });
+
+  it('devServices.enabled=true on a 1.29+ cluster → renders cleanly', () => {
+    const docs = helmTemplate([
+      '--set', 'sandbox.devServices.enabled=true',
+      '--kube-version', '1.29.4',
+    ]);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+    );
+    expect(host, 'host Deployment renders on a 1.29+ cluster').toBeDefined();
+  });
+
+  it('devServices.enabled=true on a newer cluster (1.30) → renders cleanly', () => {
+    const docs = helmTemplate([
+      '--set', 'sandbox.devServices.enabled=true',
+      '--kube-version', '1.30.2',
+    ]);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+    );
+    expect(host, 'host Deployment renders on a 1.30 cluster').toBeDefined();
+  });
+
+  it('skipKubeVersionCheck=true bypasses the guard even on a < 1.29 cluster', () => {
+    const docs = helmTemplate([
+      '--set', 'sandbox.devServices.enabled=true',
+      '--set', 'sandbox.devServices.skipKubeVersionCheck=true',
+      '--kube-version', '1.27.0',
+    ]);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+    );
+    expect(host, 'escape hatch lets the render through').toBeDefined();
+  });
+});

@@ -2,6 +2,7 @@
 {{- include "ax-next.validateHostReplicas" . -}}
 {{- include "ax-next.validateBlobBackend" . -}}
 {{- include "ax-next.validateProxyTransport" . -}}
+{{- include "ax-next.validateDevServicesKubeVersion" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
