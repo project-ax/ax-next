@@ -6,6 +6,8 @@ import {
   type HookBus,
 } from '@ax/core';
 import type {
+  ClearAuthoredInput,
+  ClearAuthoredOutput,
   Connector,
   ConnectorSummary,
   DeleteInput,
@@ -728,6 +730,68 @@ export function createConnectorRouteHandlers(
         handleHookError(err, res);
       }
     },
+
+    /**
+     * DELETE /settings/connectors/authored/:id — DISMISS a pending authored
+     * connector draft the assistant proposed (the "Proposed by your assistant"
+     * shelf, 2026-06-04). Body `{ agentId }`. Before this route the only shelf
+     * action was Approve, so the sole way to get rid of an unwanted proposal was
+     * to approve it (entering a real or fake key to promote it into the registry)
+     * and THEN delete it from the Connected shelf — a genuinely bad trap.
+     *
+     * Security: `userId` is forced from the session and the underlying
+     * `connectors:clear-authored` deletes only rows scoped to `(ownerUserId,
+     * agentId, connectorId)`, so a user can only ever dismiss their OWN draft —
+     * a foreign / unknown (user, agent, connector) clears zero rows → 404.
+     *
+     * Deliberately NO `agents:resolve` ACL gate (unlike approve, which GRANTS
+     * reach and must verify the caller can reach the agent). Dismissing your own
+     * draft must work even when the authoring agent is gone or no longer
+     * reachable — gating it would re-create the exact trap of an
+     * un-dismissable orphan. No secret crosses this route.
+     */
+    async rejectAuthored(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      const connectorId = req.params.id;
+      if (typeof connectorId !== 'string' || connectorId.length === 0) {
+        res.status(400).json({ error: 'missing-id' });
+        return;
+      }
+      const parsed = parseAndValidateBody(req.body);
+      if (!parsed.ok) {
+        res.status(parsed.status).json({ error: parsed.message });
+        return;
+      }
+      const raw = (parsed.value ?? {}) as Record<string, unknown>;
+      const agentId = typeof raw.agentId === 'string' ? raw.agentId : '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'agentId is required' });
+        return;
+      }
+      if (!deps.bus.hasService('connectors:clear-authored')) {
+        // The preset doesn't expose authored drafts — nothing could have been
+        // proposed, so there is nothing to dismiss.
+        res.status(409).json({ error: 'connector-clear-unavailable' });
+        return;
+      }
+      try {
+        const out = await deps.bus.call<ClearAuthoredInput, ClearAuthoredOutput>(
+          'connectors:clear-authored',
+          ctx,
+          { ownerUserId: actor.id, agentId, connectorId },
+        );
+        if (!out.cleared) {
+          // No row matched (already gone, or not this owner's draft) — surface as
+          // 404, the same leak posture as a foreign-owned read.
+          res.status(404).json({ error: 'not-found' });
+          return;
+        }
+        res.status(204).end();
+      } catch (err) {
+        handleHookError(err, res);
+      }
+    },
   };
 }
 
@@ -813,6 +877,15 @@ export async function registerUserConnectorRoutes(
       method: 'POST',
       path: '/settings/connectors/authored/:id/approve',
       handler: handlers.approveAuthored,
+    },
+    {
+      // Dismiss a proposed draft (no approve, no key) — reuses
+      // `connectors:clear-authored`. The 4-segment path can't collide with the
+      // 3-segment `DELETE /settings/connectors/:id` below, but it's grouped with
+      // the other authored routes for clarity.
+      method: 'DELETE',
+      path: '/settings/connectors/authored/:id',
+      handler: handlers.rejectAuthored,
     },
     { method: 'GET', path: '/settings/connectors/:id', handler: handlers.show },
     { method: 'PATCH', path: '/settings/connectors/:id', handler: handlers.update },

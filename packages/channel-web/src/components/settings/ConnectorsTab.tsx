@@ -51,6 +51,7 @@ import {
   testConnector,
   deriveCredentialPlan,
   listAuthoredPending,
+  rejectAuthoredConnector,
   type ConnectorSummary,
   type ConnectorTestStatus,
   type ConnectorRouteBase,
@@ -195,6 +196,10 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
   // draft currently being approved (null = dialog closed).
   const [proposed, setProposed] = useState<PendingAuthoredConnector[]>([]);
   const [approving, setApproving] = useState<PendingAuthoredConnector | null>(null);
+  // The proposed draft awaiting dismiss confirmation (null = dialog closed).
+  const [dismissing, setDismissing] = useState<PendingAuthoredConnector | null>(
+    null,
+  );
 
   /**
    * Derive connected-state for a set of connectors from REAL credential presence.
@@ -327,6 +332,20 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
     } catch (e: unknown) {
       setError(e instanceof Error ? e.message : String(e));
       setPendingDelete(null);
+    }
+  };
+
+  const confirmDismiss = async () => {
+    if (!dismissing) return;
+    try {
+      await rejectAuthoredConnector(dismissing.connectorId, {
+        agentId: dismissing.agentId,
+      });
+      setDismissing(null);
+      refreshProposed();
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+      setDismissing(null);
     }
   };
 
@@ -475,6 +494,13 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
                     <StatusDot variant="pending" />
                     Awaiting your approval
                   </span>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => setDismissing(d)}
+                  >
+                    Dismiss
+                  </Button>
                   <Button size="sm" onClick={() => setApproving(d)}>
                     Approve
                   </Button>
@@ -599,6 +625,40 @@ export function ConnectorsTab({ isAdmin }: { isAdmin: boolean }) {
               </Button>
               <Button variant="destructive" onClick={() => void confirmDelete()}>
                 Delete
+              </Button>
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* Dismiss a proposed (pending authored) draft — reject it outright, no
+          approve and no key entry. Low-stakes + reversible (the assistant can
+          propose it again), so the copy is light and blameless. */}
+      {dismissing !== null && (
+        <Dialog
+          open
+          onOpenChange={(v) => {
+            if (!v) setDismissing(null);
+          }}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Dismiss this suggestion?</DialogTitle>
+            </DialogHeader>
+            <p className="text-sm text-muted-foreground">
+              We'll remove{' '}
+              <span className="font-medium text-foreground">
+                {dismissing.name}
+              </span>{' '}
+              from your proposals. No key needed — and your assistant can always
+              suggest it again later.
+            </p>
+            <div className="flex justify-end gap-2">
+              <Button variant="outline" onClick={() => setDismissing(null)}>
+                Keep
+              </Button>
+              <Button variant="destructive" onClick={() => void confirmDismiss()}>
+                Dismiss
               </Button>
             </div>
           </DialogContent>
