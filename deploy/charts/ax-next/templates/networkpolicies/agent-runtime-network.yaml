@@ -41,6 +41,15 @@ spec:
       ports:
         - port: {{ .Values.host.ports.ipc }}
           protocol: TCP
+        {{- if .Values.credentialProxy.tcp.enabled }}
+        # TASK-149 — credential-proxy TCP Service (production gVisor). The
+        # proxy listens inside THIS host pod, so runner pods reaching it over
+        # the proxy Service must be admitted here too. The matching runner
+        # EGRESS rule lives in sandbox-restrict.yaml; without BOTH halves the
+        # connect is denied at the CNI layer despite a correct AX_PROXY_ENDPOINT.
+        - port: {{ .Values.credentialProxy.tcp.port | default 8888 }}
+          protocol: TCP
+        {{- end }}
     # Anyone in the host's own namespace (ingress controller, port-forward).
     # Both ports — operators may forward either the IPC port (debugging
     # the runner back-channel) or the public surface (the normal /chat

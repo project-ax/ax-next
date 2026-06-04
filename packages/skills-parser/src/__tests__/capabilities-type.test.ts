@@ -25,6 +25,7 @@ describe('neutral Capabilities export (shared with @ax/connectors)', () => {
       credentials: [],
       mcpServers: [],
       packages: { npm: [], pypi: [] },
+      services: [],
     };
     // Both names + both directions must be assignable (same structural type).
     const legacy: SkillCapabilities = neutral;
@@ -34,6 +35,7 @@ describe('neutral Capabilities export (shared with @ax/connectors)', () => {
     expect(backToNeutral.credentials).toEqual([]);
     expect(backToNeutral.mcpServers).toEqual([]);
     expect(backToNeutral.packages).toEqual({ npm: [], pypi: [] });
+    expect(backToNeutral.services).toEqual([]);
   });
 
   it('exports the neutral sub-types used by the Capabilities shape', () => {
@@ -52,10 +54,12 @@ describe('neutral Capabilities export (shared with @ax/connectors)', () => {
       credentials: [slot],
       mcpServers: [mcp],
       packages: pkgs,
+      services: [],
     };
 
     expect(caps.credentials[0]?.slot).toBe('API_KEY');
     expect(caps.mcpServers[0]?.name).toBe('srv');
     expect(caps.packages.npm).toEqual([]);
+    expect(caps.services).toEqual([]);
   });
 });

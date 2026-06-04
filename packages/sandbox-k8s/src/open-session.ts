@@ -15,7 +15,7 @@ import {
   type OpenSessionInput,
   type OpenSessionParsed,
 } from '@ax/sandbox-protocol';
-import type { ResolvedSandboxK8sConfig } from './config.js';
+import { computeReadinessBudgetMs, type ResolvedSandboxK8sConfig } from './config.js';
 import type { K8sCoreApi } from './k8s-api.js';
 import { killPod } from './kill.js';
 import { watchPodExit, waitForPodReady, type ExitInfo } from './lifecycle.js';
@@ -213,6 +213,13 @@ export function createOpenSession(deps: OpenSessionDeps) {
         ...(input.installedSkills !== undefined && input.installedSkills.length > 0
           ? { installedSkills: input.installedSkills }
           : {}),
+        // TASK-151: pass dev services through to pod-spec so each renders as a
+        // native sidecar (initContainers + restartPolicy:Always). Spread-when-
+        // present mirrors installedSkills — a dropped field here silently
+        // disables sidecar rendering for the session.
+        ...(input.services !== undefined && input.services.length > 0
+          ? { services: input.services }
+          : {}),
         // Debug: forward the opt-in per-turn commit/resync trace flag from the
         // host env (set AX_COMMIT_TRACE=1 on the host deployment) into the
         // runner pod, so commit-trace.ts's decision trace is reachable in k8s
@@ -289,13 +296,22 @@ export function createOpenSession(deps: OpenSessionDeps) {
     //    pod IP here for the readiness signal (the API mock returns it),
     //    but it does NOT determine runnerEndpoint anymore — that's the
     //    host's @ax/ipc-http URL, fixed at preset-config time.
+    // TASK-151 (I6): native service sidecars start SEQUENTIALLY and each pays
+    // JVM cold-start + image pull, so the flat readinessTimeoutMs (tuned for a
+    // service-less runner Ready in ~5s) would time out a healthy multi-service
+    // pod. Scale the budget by service count. Service-less sessions keep 60s.
+    const readinessBudgetMs = computeReadinessBudgetMs({
+      baseTimeoutMs: deps.config.readinessTimeoutMs,
+      serviceCount: input.services?.length ?? 0,
+      perServiceColdStartMs: deps.config.perServiceColdStartMs,
+    });
     try {
       await waitForPodReady({
         api: deps.api,
         podName,
         namespace: deps.config.namespace,
         pollIntervalMs: deps.config.readinessPollMs,
-        timeoutMs: deps.config.readinessTimeoutMs,
+        timeoutMs: readinessBudgetMs,
         podLog,
       });
     } catch (err) {

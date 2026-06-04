@@ -2,9 +2,10 @@ export {
   createSandboxK8sPlugin,
   type CreateSandboxK8sPluginOptions,
 } from './plugin.js';
-export type {
-  SandboxK8sConfig,
-  ResolvedSandboxK8sConfig,
+export {
+  resolveConfig,
+  type SandboxK8sConfig,
+  type ResolvedSandboxK8sConfig,
 } from './config.js';
 export {
   OpenSessionInputSchema,

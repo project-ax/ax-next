@@ -522,3 +522,241 @@ describeIfHelm('ax-next chart: single-replica chat guard (ARCH-1)', () => {
     expect(r.stderr).toMatch(/replicas must be 1/);
   });
 });
+
+// TASK-149: the credential-proxy TCP-Service posture (production gVisor).
+// Mirrors the issue-#39 listener-split contract — the chart shape IS the
+// boundary contract, so we assert the rendered Service + NetworkPolicy egress
+// + host env in TCP mode and their absence in the default (hostPath) mode.
+describeIfHelm('ax-next chart: credential-proxy TCP Service (TASK-149)', () => {
+  const PROXY_SVC = 'ax-test-ax-next-proxy';
+  const HOST_DEPLOY = 'ax-test-ax-next-host';
+  const SANDBOX_NP = 'ax-test-ax-next-sandbox-restrict';
+
+  const tcpArgs = [
+    '--set', 'credentialProxy.tcp.enabled=true',
+    '--set', 'credentialProxy.tcp.port=8888',
+  ];
+
+  it('default (hostPath posture): NO proxy Service renders', () => {
+    const docs = helmTemplate([]);
+    const svc = docs.find(
+      (d) => d.kind === 'Service' && d.metadata?.name === PROXY_SVC,
+    );
+    expect(svc, 'no proxy Service in hostPath mode').toBeUndefined();
+  });
+
+  it('TCP mode: a ClusterIP proxy Service fronts the proxy port, selecting the host pod', () => {
+    const docs = helmTemplate(tcpArgs);
+    const svc = docs.find(
+      (d) => d.kind === 'Service' && d.metadata?.name === PROXY_SVC,
+    );
+    expect(svc, 'proxy Service renders in TCP mode').toBeDefined();
+    expect(svc?.spec?.type).toBe('ClusterIP');
+    // Selects the HOST pod (the proxy listens inside the host container) —
+    // the same stable selector label the host Service uses.
+    expect(svc?.spec?.selector?.['app.kubernetes.io/name']).toBe('ax-test-ax-next-host');
+    const ports = svc?.spec?.ports ?? [];
+    expect(ports.some((p: { port?: number }) => p.port === 8888)).toBe(true);
+  });
+
+  it('TCP mode: the proxy Service name does NOT collide with the host Service under a long fullnameOverride (codex P2b)', () => {
+    // Regression: `printf "%s-proxy" fullname | trunc 63` truncates AFTER
+    // appending, so a 62-63 char fullname loses the `-proxy` suffix and the
+    // proxy Service renders with the SAME name as the host Service — helm then
+    // refuses two Services with one name. The helper must reserve the suffix
+    // before truncating (like the git-server-experimental helper).
+    const longName = 'a'.repeat(62);
+    const docs = helmTemplate([
+      ...tcpArgs,
+      '--set', `fullnameOverride=${longName}`,
+    ]);
+    const services = docs.filter((d) => d.kind === 'Service');
+    const names = services.map((s) => s.metadata?.name);
+    // No two Services may share a name (helm refuses a duplicate-name install).
+    expect(new Set(names).size, `Service names must be unique: ${names.join(', ')}`).toBe(
+      names.length,
+    );
+    // The proxy Service must render with its own distinct, suffix-preserved name.
+    const proxySvc = services.find(
+      (s) => s.metadata?.labels?.['ax.io/service'] === 'credential-proxy',
+    );
+    expect(proxySvc, 'proxy Service renders').toBeDefined();
+    expect(proxySvc?.metadata?.name, 'proxy name keeps a -proxy-derived form').toMatch(
+      /-proxy$/,
+    );
+  });
+
+  it('TCP mode: host Deployment stamps the TCP proxy env (K8S_PROXY_ENDPOINT + AX_PROXY_TCP_PORT + AX_PROXY_ADVERTISED_ENDPOINT) and NOT the hostPath env', () => {
+    const docs = helmTemplate(tcpArgs);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === HOST_DEPLOY,
+    );
+    const env: Array<{ name: string; value?: string }> =
+      host?.spec?.template?.spec?.containers?.[0]?.env ?? [];
+    const byName = Object.fromEntries(env.map((e) => [e.name, e.value]));
+    expect(byName.AX_PROXY_TCP_PORT).toBe('8888');
+    expect(byName.AX_PROXY_ADVERTISED_ENDPOINT).toMatch(
+      /^tcp:\/\/ax-test-ax-next-proxy\..*\.svc\.cluster\.local:8888$/,
+    );
+    expect(byName.K8S_PROXY_ENDPOINT).toMatch(
+      /^http:\/\/ax-test-ax-next-proxy\..*\.svc\.cluster\.local:8888$/,
+    );
+    // The hostPath-only env must NOT appear in TCP mode.
+    expect(env.find((e) => e.name === 'K8S_PROXY_SOCKET_HOST_PATH')).toBeUndefined();
+  });
+
+  it('TCP mode: NO proxy-socket hostPath volume on the host pod', () => {
+    const docs = helmTemplate(tcpArgs);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === HOST_DEPLOY,
+    );
+    const vols: Array<{ name: string; hostPath?: unknown }> =
+      host?.spec?.template?.spec?.volumes ?? [];
+    const proxyVol = vols.find((v) => v.name === 'proxy-socket');
+    // The proxy-socket volume may still exist as an emptyDir (host listener
+    // local), but it must NOT be a hostPath in TCP mode.
+    if (proxyVol) {
+      expect(proxyVol.hostPath, 'proxy-socket must not be hostPath in TCP mode').toBeUndefined();
+    }
+  });
+
+  it('TCP mode: the host-network NetworkPolicy admits runner INGRESS on the proxy port (else CNI denies the connect)', () => {
+    // Regression (codex P1): the sandbox-restrict egress rule opens the
+    // RUNNER side, but the host pod's own ingress policy must also admit the
+    // proxy port — otherwise packets to the proxy Service's target port are
+    // denied at the CNI layer before reaching the host container, and every
+    // TCP-mode proxy connect fails despite a correct AX_PROXY_ENDPOINT.
+    const docs = helmTemplate([...tcpArgs, '--set', 'networkPolicies.enabled=true']);
+    const np = docs.find(
+      (d) =>
+        d.kind === 'NetworkPolicy' &&
+        d.metadata?.name === 'ax-test-ax-next-host-network',
+    );
+    expect(np, 'host-network NetworkPolicy renders').toBeDefined();
+    const ingress: Array<{
+      from?: Array<{ podSelector?: { matchLabels?: Record<string, string> } }>;
+      ports?: Array<{ port?: number; protocol?: string }>;
+    }> = np?.spec?.ingress ?? [];
+    // A rule that admits the proxy port FROM runner pods (ax.io/plane: execution).
+    const runnerProxyIngress = ingress.some(
+      (rule) =>
+        (rule.from ?? []).some(
+          (f) => f.podSelector?.matchLabels?.['ax.io/plane'] === 'execution',
+        ) && (rule.ports ?? []).some((p) => p.port === 8888 && p.protocol === 'TCP'),
+    );
+    expect(runnerProxyIngress, 'host admits runner ingress on the proxy port').toBe(true);
+  });
+
+  it('default (hostPath posture): the host-network NetworkPolicy has NO proxy ingress rule', () => {
+    const docs = helmTemplate(['--set', 'networkPolicies.enabled=true']);
+    const np = docs.find(
+      (d) =>
+        d.kind === 'NetworkPolicy' &&
+        d.metadata?.name === 'ax-test-ax-next-host-network',
+    );
+    const ingress: Array<{ ports?: Array<{ port?: number }> }> = np?.spec?.ingress ?? [];
+    const hasProxyPort = ingress.some((rule) =>
+      (rule.ports ?? []).some((p) => p.port === 8888),
+    );
+    expect(hasProxyPort, 'no proxy ingress rule in hostPath mode').toBe(false);
+  });
+
+  it('TCP mode: the sandbox-restrict NetworkPolicy adds an egress rule to the proxy Service port', () => {
+    const docs = helmTemplate([...tcpArgs, '--set', 'networkPolicies.enabled=true']);
+    const np = docs.find(
+      (d) => d.kind === 'NetworkPolicy' && d.metadata?.name === SANDBOX_NP,
+    );
+    expect(np, 'sandbox-restrict NetworkPolicy renders').toBeDefined();
+    const egress: Array<{ ports?: Array<{ port?: number; protocol?: string }> }> =
+      np?.spec?.egress ?? [];
+    const reachesProxyPort = egress.some((rule) =>
+      (rule.ports ?? []).some((p) => p.port === 8888 && p.protocol === 'TCP'),
+    );
+    expect(reachesProxyPort, 'runner egress reaches the proxy TCP port').toBe(true);
+  });
+
+  it('default (hostPath posture): the sandbox-restrict NetworkPolicy has NO proxy egress rule', () => {
+    const docs = helmTemplate(['--set', 'networkPolicies.enabled=true']);
+    const np = docs.find(
+      (d) => d.kind === 'NetworkPolicy' && d.metadata?.name === SANDBOX_NP,
+    );
+    expect(np).toBeDefined();
+    const egress: Array<{ ports?: Array<{ port?: number }> }> = np?.spec?.egress ?? [];
+    const hasProxyPort = egress.some((rule) =>
+      (rule.ports ?? []).some((p) => p.port === 8888),
+    );
+    expect(hasProxyPort, 'no proxy egress rule in hostPath mode').toBe(false);
+  });
+});
+
+// TASK-157 — dev-services in the runner sandbox render as native k8s sidecars
+// (initContainers with restartPolicy: Always), which require Kubernetes 1.29+
+// (SidecarContainers GA). On older kubelets the restartPolicy is ignored and
+// the service runs as a BLOCKING init container, hanging the pod. The chart's
+// `ax-next.validateDevServicesKubeVersion` preflight fails fast when the
+// operator declares dev-services intent (sandbox.devServices.enabled=true) on a
+// cluster that can't be confirmed 1.29+.
+//
+// NOTE on `helm template` + `.Capabilities.KubeVersion`: with no `--kube-version`
+// flag, helm uses its BUILT-IN stub version (v1.28.0 in the pinned CI helm),
+// which is below 1.29 — so the "enabled, no kube-version" case is expected to
+// FAIL. The tests pass `--kube-version` explicitly to exercise both sides of the
+// 1.29 boundary deterministically, independent of which helm build runs them.
+describeIfHelm('ax-next chart: dev-services k8s 1.29+ guard (TASK-157)', () => {
+  it('default values (devServices disabled): renders cleanly, guard is inert', () => {
+    // The whole rest of the suite already renders with devServices off; this
+    // asserts the guard adds nothing to the default posture even when the
+    // built-in stub version is < 1.29.
+    const docs = helmTemplate([]);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+    );
+    expect(host, 'host Deployment renders with devServices off').toBeDefined();
+  });
+
+  it('devServices.enabled=true on a < 1.29 cluster → render fails with the 1.29+ message', () => {
+    const r = helmTemplateExpectFailure([
+      '--set', 'sandbox.devServices.enabled=true',
+      '--kube-version', '1.27.0',
+    ]);
+    expect(r.status, 'helm template should fail on an old cluster').not.toBe(0);
+    expect(r.stderr).toMatch(/requires Kubernetes 1\.29\+/);
+    // The failure mode is spelled out so an operator hitting this knows WHY.
+    expect(r.stderr).toMatch(/BLOCKING init container/);
+    expect(r.stderr).toMatch(/skipKubeVersionCheck/);
+  });
+
+  it('devServices.enabled=true on a 1.29+ cluster → renders cleanly', () => {
+    const docs = helmTemplate([
+      '--set', 'sandbox.devServices.enabled=true',
+      '--kube-version', '1.29.4',
+    ]);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+    );
+    expect(host, 'host Deployment renders on a 1.29+ cluster').toBeDefined();
+  });
+
+  it('devServices.enabled=true on a newer cluster (1.30) → renders cleanly', () => {
+    const docs = helmTemplate([
+      '--set', 'sandbox.devServices.enabled=true',
+      '--kube-version', '1.30.2',
+    ]);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+    );
+    expect(host, 'host Deployment renders on a 1.30 cluster').toBeDefined();
+  });
+
+  it('skipKubeVersionCheck=true bypasses the guard even on a < 1.29 cluster', () => {
+    const docs = helmTemplate([
+      '--set', 'sandbox.devServices.enabled=true',
+      '--set', 'sandbox.devServices.skipKubeVersionCheck=true',
+      '--kube-version', '1.27.0',
+    ]);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === 'ax-test-ax-next-host',
+    );
+    expect(host, 'escape hatch lets the render through').toBeDefined();
+  });
+});

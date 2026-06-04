@@ -37,6 +37,7 @@ import {
 } from './listener.js';
 import { CredentialPlaceholderMap, SharedCredentialRegistry } from './registry.js';
 import { getOrCreateCA } from './ca.js';
+import { SessionEgressBlockBuffer } from './egress-block-buffer.js';
 
 const PLUGIN_NAME = '@ax/credential-proxy';
 
@@ -187,6 +188,22 @@ function parseHostPath(method: string, url: string): { host: string; path: strin
 
 export interface CredentialProxyConfig {
   listen: { kind: 'unix'; path: string } | { kind: 'tcp'; host?: string; port?: number };
+  /**
+   * Cluster-reachable endpoint `proxy:open-session` advertises to callers in
+   * TCP mode (TASK-149). The listener binds `0.0.0.0:<port>` inside the host
+   * pod, but a runner in ANOTHER pod reaches the proxy over a k8s Service —
+   * so the bind address (`tcp://0.0.0.0:<port>` / `tcp://127.0.0.1:<port>`)
+   * isn't dialable cross-pod. When set, open-session returns THIS value as
+   * `proxyEndpoint` instead of the bind address. Must be a `tcp://host:port`
+   * URL (the orchestrator's `endpointToProxyConfig` rewrites it to
+   * `http://host:port` for HTTPS_PROXY).
+   *
+   * Analogous to `@ax/sandbox-k8s` `hostIpcUrl`. Ignored for `unix` listen
+   * (the socket path IS the cross-pod address via the shared hostPath dir).
+   * Unset = advertise the bind address verbatim (today's behavior — correct
+   * for subprocess sandbox and same-host loopback).
+   */
+  advertisedEndpoint?: string;
   caDir?: string;
   /**
    * Max bytes the plain-HTTP forward path buffers for a single request body
@@ -257,6 +274,25 @@ interface RotateSessionOutput {
   envMap: Record<string, string>;
 }
 
+/**
+ * `proxy:drain-session-egress-blocks` — return AND clear the hosts the CALLER'S
+ * session was allowlist-blocked on since the last drain. The runner drains this
+ * at PostToolUse to inject an actionable remediation note into the agent's
+ * context (the agent's own `npx`/curl saw only a cryptic `statusCode=403`).
+ *
+ * SECURITY: the session is taken from `ctx.sessionId`, NOT from a request field
+ * — same posture as `session:get-config`. Over the IPC wire ctx.sessionId is
+ * bearer-token-bound, so an agent can only drain its OWN session; a drained
+ * host is a destination it already chose to reach (no information gain). The
+ * request body is therefore EMPTY by design.
+ */
+type DrainEgressBlocksInput = Record<string, never>;
+
+interface DrainEgressBlocksOutput {
+  /** Hostnames this session was allowlist-blocked on (deduped, capped). */
+  hosts: string[];
+}
+
 /** envName → original credential ref (so rotate can re-resolve). */
 type SessionCredentialRefs = Record<string, { ref: string; kind: string }>;
 
@@ -265,9 +301,17 @@ type SessionCredentialRefs = Record<string, { ref: string; kind: string }>;
 function buildEndpointString(
   listen: CredentialProxyConfig['listen'],
   listener: ProxyListener,
+  advertisedEndpoint: string | undefined,
 ): string {
   if (listen.kind === 'unix') {
     return `unix://${listen.path}`;
+  }
+  // TASK-149: in TCP mode prefer the operator-supplied advertised endpoint
+  // (the cluster Service URL) over the bind address — a runner in another pod
+  // can't dial 0.0.0.0/127.0.0.1. The endpoint must be a `tcp://host:port` URL
+  // (the orchestrator's endpointToProxyConfig parses the scheme).
+  if (advertisedEndpoint !== undefined && advertisedEndpoint.length > 0) {
+    return advertisedEndpoint;
   }
   const host = listen.host ?? '127.0.0.1';
   return `tcp://${host}:${listener.port}`;
@@ -291,6 +335,12 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
   // private state used only for rotation; the listener never reads it.
   const sessionCredentialRefs = new Map<string, SessionCredentialRefs>();
 
+  // Per-session accumulator of allowlist-blocked hosts (agent-visible egress
+  // note). onAudit records into it; proxy:drain-session-egress-blocks drains it;
+  // close-session forgets the session. Lives on the plugin instance — it's
+  // private state the listener never reads.
+  const egressBlocks = new SessionEgressBlockBuffer();
+
   const caDir = config.caDir ?? join(homedir(), '.ax', 'proxy-ca');
 
   return {
@@ -302,6 +352,7 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
         'proxy:rotate-session',
         'proxy:close-session',
         'proxy:add-host',
+        'proxy:drain-session-egress-blocks',
       ],
       calls: ['credentials:get'],
       subscribes: [],
@@ -348,6 +399,15 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
         };
         if (blockedReason !== undefined) payload.blockedReason = blockedReason;
 
+        // Accumulate ALLOWLIST blocks for the agent-visible egress note. Only
+        // allowlist misses — `private-ip` / `canary` are security blocks we must
+        // NOT coach the agent around. Skipped when unattributed (empty sessionId:
+        // no proxy token resolved → no session to surface it to). `host` is the
+        // agent's own attempted destination (parsed from the blocked request).
+        if (blockedReason === 'allowlist') {
+          egressBlocks.record(payload.sessionId, host);
+        }
+
         // Build a synthetic AgentContext for the fire — the listener's data
         // events run far from the original request context. sessionId/userId
         // come from the matching session (or empty strings on allowlist miss).
@@ -378,7 +438,11 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           ? { maxHttpRequestBodyBytes: config.maxHttpRequestBodyBytes }
           : {}),
       });
-      endpointString = buildEndpointString(config.listen, listener);
+      endpointString = buildEndpointString(
+        config.listen,
+        listener,
+        config.advertisedEndpoint,
+      );
 
       // 4a. proxy:open-session — resolve credentials, register placeholders,
       //     persist session config, return endpoint + CA + envMap.
@@ -538,6 +602,7 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           registry.deregister(sessionId);
           sessions.delete(sessionId);
           sessionCredentialRefs.delete(sessionId);
+          egressBlocks.forget(sessionId);
           return {};
         },
       );
@@ -600,6 +665,27 @@ export function createCredentialProxyPlugin(config: CredentialProxyConfig): Plug
           return sess.agentId !== undefined
             ? { added: true, agentId: sess.agentId }
             : { added: true };
+        },
+      );
+
+      // 4e. proxy:drain-session-egress-blocks — return + clear the hosts the
+      //     CALLER'S session was allowlist-blocked on. The runner drains this at
+      //     PostToolUse to inject a remediation note into the agent's context.
+      //
+      //     Unlike proxy:add-host (which IS host-internal-only because it WIDENS
+      //     egress), this is safe to expose to the untrusted runner over IPC: it
+      //     mutates nothing but its own per-session buffer and returns hostnames
+      //     the agent ALREADY tried to reach — zero egress change, zero info
+      //     gain, no other session reachable (the session is ctx.sessionId,
+      //     bearer-bound by the IPC server; the wire request body is empty).
+      bus.registerService<DrainEgressBlocksInput, DrainEgressBlocksOutput>(
+        'proxy:drain-session-egress-blocks',
+        PLUGIN_NAME,
+        async (ctx: AgentContext) => {
+          // sessionId from ctx (NOT a request field) — see the type's security
+          // note. An empty/absent ctx.sessionId drains nothing (returns []).
+          const sessionId = ctx.sessionId ?? '';
+          return { hosts: egressBlocks.drain(sessionId) };
         },
       );
     },

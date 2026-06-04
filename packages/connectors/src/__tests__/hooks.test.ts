@@ -61,6 +61,10 @@ function mcpCaps(): Capabilities {
       },
     ],
     packages: { npm: [], pypi: [] },
+    // TASK-150 — the store's CapabilitiesSchema defaults services to [] on
+    // parse, so a stored→read round-trip carries services: []. Set it here so
+    // the .toEqual round-trip assertions stay exact.
+    services: [],
   };
 }
 
@@ -71,6 +75,7 @@ function cliCaps(): Capabilities {
     credentials: [{ slot: 'sf', kind: 'api-key' }],
     mcpServers: [],
     packages: { npm: ['@salesforce/cli'], pypi: [] },
+    services: [],
   };
 }
 
@@ -242,6 +247,28 @@ describe('@ax/connectors hooks — resolve', () => {
     // management metadata (name/description/visibility).
     expect(resolved).not.toHaveProperty('name');
     expect(resolved).not.toHaveProperty('visibility');
+  });
+
+  it('resolve returns the connector usageNote (regression: it was dropped, so an owner-owned connector surfaced the generic fallback SKILL.md instead of its instructions)', async () => {
+    const h = await makeHarness();
+    await h.bus.call<UpsertInput, UpsertOutput>(
+      'connectors:upsert',
+      h.ctx({ userId: 'userA' }),
+      upsertInput({
+        connectorId: 'linear',
+        usageNote: 'Run `npx -y @schpet/linear-cli` to query Linear.',
+        capabilities: cliCaps(),
+      }),
+    );
+    const resolved = await h.bus.call<ResolveInput, ResolveOutput>(
+      'connectors:resolve',
+      h.ctx({ userId: 'userA' }),
+      { userId: 'userA', connectorId: 'linear' },
+    );
+    // The orchestrator folds `resolved.usageNote` into the connector's SKILL.md
+    // body; dropping it here forced the generic "...MCP servers wired..."
+    // fallback for every owner-owned (non-default) connector.
+    expect(resolved.usageNote).toBe('Run `npx -y @schpet/linear-cli` to query Linear.');
   });
 
   it('workspace keyMode resolves every slot to scope=global (the company key) + requires consent', async () => {

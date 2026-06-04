@@ -100,6 +100,36 @@ describe('@ax/preset-k8s wiring', () => {
     expect(unsatisfied).toEqual([]);
   });
 
+  // TASK-149: the TCP-Service credential-proxy posture assembles without error
+  // when both the port AND a non-empty advertised endpoint are present.
+  it('createK8sPlugins assembles the TCP credential-proxy when tcpPort + advertisedEndpoint are set', () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      credentialProxy: {
+        tcpPort: 8888,
+        advertisedEndpoint: 'tcp://ax-next-proxy.ax-next.svc.cluster.local:8888',
+      },
+    });
+    expect(plugins.length).toBeGreaterThan(0);
+  });
+
+  // Regression (codex P2/P3): a TCP port with a missing OR empty advertised
+  // endpoint must throw, not silently advertise the undialable bind address.
+  it('createK8sPlugins throws when tcpPort is set without an advertised endpoint', () => {
+    expect(() =>
+      createK8sPlugins({ ...stubConfig, credentialProxy: { tcpPort: 8888 } }),
+    ).toThrow(/advertisedEndpoint/i);
+  });
+
+  it('createK8sPlugins throws when tcpPort is set with an EMPTY advertised endpoint (codex P3)', () => {
+    expect(() =>
+      createK8sPlugins({
+        ...stubConfig,
+        credentialProxy: { tcpPort: 8888, advertisedEndpoint: '' },
+      }),
+    ).toThrow(/advertisedEndpoint/i);
+  });
+
   // The two invariant checks above run with the default `stubConfig`, which
   // doesn't enable titles. The conditional title plugins introduce a new
   // `llm:call:anthropic` registrant + matching subscriber call, so they need
@@ -179,10 +209,18 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/tool-dispatcher',
         '@ax/validator-identity',
         '@ax/validator-routine',
+        '@ax/validator-service',
         '@ax/validator-skill',
         '@ax/workspace-git',
       ].sort(),
     );
+  });
+
+  it('loads @ax/validator-service and registers services:validate (TASK-150)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const vs = plugins.find((p) => p.manifest.name === '@ax/validator-service');
+    expect(vs).toBeDefined();
+    expect(vs!.manifest.registers).toEqual(['services:validate']);
   });
 
   it('does NOT include local-mode-only plugins', () => {
@@ -976,6 +1014,58 @@ describe('loadK8sConfigFromEnv', () => {
       minRequired({ AX_PROXY_CA_DIR: '/var/run/ax/proxy-ca' }),
     );
     expect(cfg.credentialProxy?.caDir).toBe('/var/run/ax/proxy-ca');
+  });
+
+  // TASK-149: TCP-Service proxy posture (production gVisor). The chart sets
+  // AX_PROXY_TCP_PORT + AX_PROXY_ADVERTISED_ENDPOINT on the host pod and
+  // K8S_PROXY_ENDPOINT for the sandbox plugin.
+  it('reads AX_PROXY_TCP_PORT + AX_PROXY_ADVERTISED_ENDPOINT into credentialProxy', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({
+        AX_PROXY_TCP_PORT: '8888',
+        AX_PROXY_ADVERTISED_ENDPOINT:
+          'tcp://ax-next-proxy.ax-next.svc.cluster.local:8888',
+      }),
+    );
+    expect(cfg.credentialProxy?.tcpPort).toBe(8888);
+    expect(cfg.credentialProxy?.advertisedEndpoint).toBe(
+      'tcp://ax-next-proxy.ax-next.svc.cluster.local:8888',
+    );
+  });
+
+  it('reads K8S_PROXY_ENDPOINT into sandbox.proxyEndpoint', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({
+        K8S_PROXY_ENDPOINT: 'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+      }),
+    );
+    expect(cfg.sandbox?.proxyEndpoint).toBe(
+      'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+    );
+  });
+
+  // Regression (codex P2): a TCP port WITHOUT an advertised endpoint would
+  // start the listener on 0.0.0.0 but advertise the undialable bind address
+  // (tcp://0.0.0.0:<port> → http://0.0.0.0:<port>) to cross-pod runners. The
+  // chart always sets both, but a partial env (port alone) must fail loud, not
+  // ship a silently-unreachable proxy.
+  it('throws when AX_PROXY_TCP_PORT is set without AX_PROXY_ADVERTISED_ENDPOINT', () => {
+    expect(() =>
+      loadK8sConfigFromEnv(minRequired({ AX_PROXY_TCP_PORT: '8888' })),
+    ).toThrow(/advertised|AX_PROXY_ADVERTISED_ENDPOINT/i);
+  });
+
+  it('leaves the TCP proxy knobs unset when their env vars are empty (legacy hostPath default)', () => {
+    const cfg = loadK8sConfigFromEnv(
+      minRequired({
+        AX_PROXY_TCP_PORT: '',
+        AX_PROXY_ADVERTISED_ENDPOINT: '',
+        K8S_PROXY_ENDPOINT: '',
+      }),
+    );
+    expect(cfg.credentialProxy?.tcpPort).toBeUndefined();
+    expect(cfg.credentialProxy?.advertisedEndpoint).toBeUndefined();
+    expect(cfg.sandbox?.proxyEndpoint).toBeUndefined();
   });
 
   it('reads BIND_HOST and PORT into ipc.host/port', () => {

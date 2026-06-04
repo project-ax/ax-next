@@ -11,6 +11,7 @@ import {
   ConversationStoreRunnerSessionResponseSchema,
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
+  ProxyDrainEgressBlocksResponseSchema,
   SkillProposeResponseSchema,
   SessionAppendTranscriptResponseSchema,
   SessionReplaceTranscriptResponseSchema,
@@ -122,6 +123,8 @@ const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   // TASK-74 (out-of-git Part D): skill.propose's small JSON response
   // `{ skillId, status, reason? }`. Ordinary JSON `call()` action.
   'skill.propose': SkillProposeResponseSchema,
+  // Agent-visible egress-block note: small JSON response `{ hosts: string[] }`.
+  'proxy.drain-egress-blocks': ProxyDrainEgressBlocksResponseSchema,
 };
 
 export interface IpcClientOptions {

@@ -131,6 +131,55 @@ CI doesn't run `kubeconform` today; flagged as a follow-up.
 - `AX_CREDENTIALS_KEY` is required and never has a default. If you lose it,
   the secrets it encrypted become unrecoverable. Treat it like a database
   password.
+- **Dev-services need Kubernetes 1.29+.** If you enable dev-services in the
+  sandbox (`sandbox.devServices.enabled=true`), your cluster has to be 1.29 or
+  newer. The chart refuses to install on anything older — see
+  "Dev-services require Kubernetes 1.29+" below for why.
+
+## Dev-services require Kubernetes 1.29+
+
+Agents can declare "dev-dependency services" — a database, a message broker —
+that run right next to the runner so a checked-out repo can reach them at
+`localhost`. On Kubernetes we render each one as a *native sidecar*: an init
+container with `restartPolicy: Always`.
+
+That little `restartPolicy: Always` is doing a lot of work, and it only works on
+**Kubernetes 1.29 or newer**. That's the release where the SidecarContainers
+feature went GA (on by default). Before 1.29, the kubelet doesn't know what to do
+with a restart policy on an init container, so it just... ignores it.
+
+Here's the part that bites: when it's ignored, the service falls back to being a
+plain, *blocking* init container. The kubelet waits for it to finish before it
+starts the runner — but a database doesn't finish. It runs forever, which is its
+whole job. So the pod sits in `Init` until the 6-hour deadline reaps it, the
+session never starts, and there's no error to tell you why. Just a runner that
+never shows up. Not fun to debug at 3am.
+
+So we made the chart loud about it:
+
+- `sandbox.devServices.enabled` defaults to `false`. Leave it there if you don't
+  use dev-services — nothing changes.
+- Flip it to `true` only on a 1.29+ cluster. The chart runs a preflight that
+  fails `helm install` / `helm upgrade` if the cluster reports anything older,
+  with a message that points right back here.
+- One gotcha: `helm template` doesn't talk to your cluster, so it checks helm's
+  built-in stub version instead of yours. To render the chart the way your
+  cluster will see it, pass `--kube-version`:
+
+  ```bash
+  helm template ax-next deploy/charts/ax-next \
+    --set sandbox.devServices.enabled=true \
+    --kube-version 1.29.0 \
+    --set credentials.key=dGVzdA== --set http.cookieKey=$(printf '0%.0s' {1..64})
+  ```
+
+- If you've confirmed your cluster is 1.29+ another way (or you're on a vendor
+  distro whose version string doesn't sort cleanly under semver), you can bypass
+  the preflight with `sandbox.devServices.skipKubeVersionCheck=true`. Do that
+  deliberately — it hands you back the silent-hang footgun.
+
+The full threat-model walk is in
+[`charts/ax-next/SECURITY.md`](charts/ax-next/SECURITY.md).
 
 ## Credentials key rotation — please read before `helm upgrade`
 

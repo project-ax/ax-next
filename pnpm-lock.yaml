@@ -394,6 +394,9 @@ importers:
       '@ax/skills':
         specifier: workspace:*
         version: link:../skills
+      '@ax/skills-parser':
+        specifier: workspace:*
+        version: link:../skills-parser
       '@ax/validator-routine':
         specifier: workspace:*
         version: link:../validator-routine
@@ -561,6 +564,9 @@ importers:
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../ipc-server
+      '@ax/sandbox-k8s':
+        specifier: workspace:*
+        version: link:../sandbox-k8s
       '@ax/sandbox-subprocess':
         specifier: workspace:*
         version: link:../sandbox-subprocess
@@ -570,6 +576,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/validator-service':
+        specifier: workspace:*
+        version: link:../validator-service
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
@@ -660,6 +669,9 @@ importers:
       '@ax/validator-routine':
         specifier: workspace:*
         version: link:../validator-routine
+      '@ax/validator-service':
+        specifier: workspace:*
+        version: link:../validator-service
       '@ax/validator-skill':
         specifier: workspace:*
         version: link:../validator-skill
@@ -1733,6 +1745,9 @@ importers:
       js-yaml:
         specifier: ^4.1.0
         version: 4.1.1
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@types/js-yaml':
         specifier: ^4.0.9
@@ -1990,6 +2005,28 @@ importers:
       typescript:
         specifier: ^5.4.0
         version: 5.9.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
+
+  packages/validator-service:
+    dependencies:
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ax/skills-parser':
+        specifier: workspace:*
+        version: link:../skills-parser
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
       vitest:
         specifier: ^4.1.4
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.0.10(@types/node@25.6.0)(esbuild@0.27.7)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
@@ -2285,6 +2322,9 @@ importers:
       '@ax/validator-routine':
         specifier: workspace:*
         version: link:../../packages/validator-routine
+      '@ax/validator-service':
+        specifier: workspace:*
+        version: link:../../packages/validator-service
       '@ax/validator-skill':
         specifier: workspace:*
         version: link:../../packages/validator-skill
@@ -8296,7 +8336,7 @@ snapshots:
       jose: 5.10.0
       kysely: 0.28.17
       nanostores: 1.3.0
-      zod: 4.3.6
+      zod: 4.4.3
     optionalDependencies:
       '@opentelemetry/api': 1.9.0
 

@@ -13,6 +13,7 @@ import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
 import { createValidatorRoutinePlugin } from '@ax/validator-routine';
 import { createValidatorIdentityPlugin } from '@ax/validator-identity';
+import { createValidatorServicePlugin } from '@ax/validator-service';
 import { createRoutinesPlugin } from '@ax/routines';
 import { createRoutinesAdminRoutesPlugin } from '@ax/routines-admin-routes';
 import { createMcpClientPlugin, createToolDispatcherPlugin } from '@ax/mcp-client';
@@ -257,8 +258,18 @@ export interface K8sPresetConfig {
      * + CA cert are reachable cross-pod. See sandbox-k8s/config.ts for
      * the full security caveat. Empty / unset = no shared mount; the
      * runner crashes at boot with `missing AX_PROXY_*`.
+     *
+     * Mutually exclusive with `proxyEndpoint` (sandbox-k8s rejects both).
      */
     proxySocketHostPath?: string;
+    /**
+     * Cluster-reachable URL of the credential-proxy TCP Service (TASK-149,
+     * the production-gVisor posture — GKE Sandbox bans hostPath). When set,
+     * runner pods get NO proxy hostPath mount; pod-spec stamps the proxy
+     * endpoint + delivers the MITM CA as an env var. Mutually exclusive with
+     * `proxySocketHostPath`. See sandbox-k8s/config.ts.
+     */
+    proxyEndpoint?: string;
   };
   /**
    * IPC listener config — the host pod's @ax/ipc-http TCP listener that
@@ -384,6 +395,19 @@ export interface K8sPresetConfig {
   credentialProxy?: {
     socketPath?: string;
     caDir?: string;
+    /**
+     * TASK-149 — TCP listen port. When set, the credential-proxy listens on
+     * `0.0.0.0:<tcpPort>` instead of a Unix socket, and `advertisedEndpoint`
+     * (below) is the cluster Service URL `proxy:open-session` returns. The
+     * production-gVisor posture; mutually exclusive with `socketPath`.
+     */
+    tcpPort?: number;
+    /**
+     * TASK-149 — cluster-reachable `tcp://host:port` Service URL the proxy
+     * advertises to runner pods (the bind address `0.0.0.0:<port>` isn't
+     * dialable cross-pod). Required alongside `tcpPort` for the TCP posture.
+     */
+    advertisedEndpoint?: string;
   };
   /**
    * When true, load @ax/credentials-admin-routes — mounts
@@ -510,12 +534,45 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // credentials store (POST /admin/credentials, Phase 9.5); the proxy
   // resolves them at proxy:open-session time and substitutes the
   // ax-cred:<hex> placeholder into outbound headers mid-flight.
-  const credentialProxyCfg: Parameters<typeof createCredentialProxyPlugin>[0] = {
-    listen: {
-      kind: 'unix',
-      path: config.credentialProxy?.socketPath ?? '/var/run/ax/proxy.sock',
-    },
-  };
+  // TASK-149: two transports. TCP-Service (production gVisor — GKE Sandbox
+  // bans hostPath) when `tcpPort` is set; Unix-socket-over-hostPath (kind /
+  // single-node) otherwise. They are mutually exclusive — the chart's values
+  // pick one. `advertisedEndpoint` is the cluster Service URL open-session
+  // returns in TCP mode (the bind address 0.0.0.0:<port> isn't dialable
+  // cross-pod).
+  const tcpPort = config.credentialProxy?.tcpPort;
+  // Empty string counts as MISSING (codex P3) — a hand-rolled config with
+  // `advertisedEndpoint: ''` would otherwise slip past the guard and let
+  // buildEndpointString fall back to advertising the undialable bind address.
+  const advertisedEndpoint =
+    config.credentialProxy?.advertisedEndpoint !== undefined &&
+    config.credentialProxy.advertisedEndpoint.length > 0
+      ? config.credentialProxy.advertisedEndpoint
+      : undefined;
+  if (tcpPort !== undefined && advertisedEndpoint === undefined) {
+    // Defense in depth (codex P2): the env loader already rejects this, but a
+    // hand-rolled config could still reach here. Without an advertised
+    // endpoint the proxy advertises its bind address (0.0.0.0:<port>), which
+    // cross-pod runners can't dial.
+    throw new PluginError({
+      code: 'invalid-config',
+      plugin: '@ax/preset-k8s',
+      message:
+        'credentialProxy.tcpPort requires a non-empty credentialProxy.advertisedEndpoint — the bind address is not dialable cross-pod',
+    });
+  }
+  const credentialProxyCfg: Parameters<typeof createCredentialProxyPlugin>[0] =
+    tcpPort !== undefined
+      ? {
+          listen: { kind: 'tcp', host: '0.0.0.0', port: tcpPort },
+          advertisedEndpoint: advertisedEndpoint!,
+        }
+      : {
+          listen: {
+            kind: 'unix',
+            path: config.credentialProxy?.socketPath ?? '/var/run/ax/proxy.sock',
+          },
+        };
   if (config.credentialProxy?.caDir !== undefined) {
     credentialProxyCfg.caDir = config.credentialProxy.caDir;
   }
@@ -616,6 +673,14 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // registered by the git-server client) to decide the bootstrap window. Same
   // observe-and-veto shape as the two validators above.
   plugins.push(createValidatorIdentityPlugin());
+  // TASK-150: validator-service registers `services:validate` — the neutral
+  // dev-SERVICE descriptor validator (digest-pin I8, descriptor caps, named
+  // rejection of smuggled backend vocab I2). A pure, no-dep service hook (no
+  // spawn / file I/O / DB / network), same observe-only shape as the validators
+  // above. Loaded unconditionally (CLI/k8s parity). OPENS the half-wired window:
+  // the validator + the `services` schema field exist, but nothing folds a
+  // service descriptor onto a session yet.
+  plugins.push(createValidatorServicePlugin());
   plugins.push(createRoutinesPlugin());
 
   // Phase D: admin routes for the Routines modal. Mounts /settings/routines/*
@@ -732,6 +797,9 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
       : {}),
     ...(config.sandbox?.proxySocketHostPath !== undefined
       ? { proxySocketHostPath: config.sandbox.proxySocketHostPath }
+      : {}),
+    ...(config.sandbox?.proxyEndpoint !== undefined
+      ? { proxyEndpoint: config.sandbox.proxyEndpoint }
       : {}),
   };
   plugins.push(createSandboxK8sPlugin(sandboxOpts));
@@ -1259,6 +1327,14 @@ export function loadK8sConfigFromEnv(
     // sandbox-k8s/config.ts for the SECURITY trade-off.
     sandbox.proxySocketHostPath = env.K8S_PROXY_SOCKET_HOST_PATH;
   }
+  if (env.K8S_PROXY_ENDPOINT !== undefined && env.K8S_PROXY_ENDPOINT !== '') {
+    // TASK-149 — TCP-Service proxy posture (production gVisor). The
+    // cluster-reachable proxy Service URL. When set, runner pods get NO
+    // hostPath proxy mount; pod-spec stamps the proxy endpoint + delivers
+    // the MITM CA via AX_PROXY_CA_PEM. Mutually exclusive with
+    // K8S_PROXY_SOCKET_HOST_PATH (sandbox-k8s/config.ts rejects both).
+    sandbox.proxyEndpoint = env.K8S_PROXY_ENDPOINT;
+  }
   if (env.K8S_IMAGE_PULL_SECRETS !== undefined && env.K8S_IMAGE_PULL_SECRETS !== '') {
     sandbox.imagePullSecrets = env.K8S_IMAGE_PULL_SECRETS.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
   }
@@ -1437,6 +1513,45 @@ export function loadK8sConfigFromEnv(
       ...(config.credentialProxy ?? {}),
       caDir: env.AX_PROXY_CA_DIR,
     };
+  }
+  // TASK-149 — TCP-Service proxy posture. When the chart routes runner pods
+  // through the proxy over a k8s Service (production gVisor), it stamps the
+  // listen port + the cluster-reachable advertised Service URL. The proxy
+  // listens on 0.0.0.0:<tcpPort> and open-session returns advertisedEndpoint
+  // (the bind address isn't dialable cross-pod). Mutually exclusive with the
+  // Unix-socket hostPath posture (AX_PROXY_SOCKET_PATH / K8S_PROXY_SOCKET_*).
+  if (env.AX_PROXY_TCP_PORT !== undefined && env.AX_PROXY_TCP_PORT !== '') {
+    const port = Number(env.AX_PROXY_TCP_PORT);
+    if (!Number.isFinite(port) || port <= 0 || port > 65535) {
+      throw new Error(
+        `invalid AX_PROXY_TCP_PORT=${env.AX_PROXY_TCP_PORT}; expected a positive integer`,
+      );
+    }
+    config.credentialProxy = {
+      ...(config.credentialProxy ?? {}),
+      tcpPort: port,
+    };
+  }
+  if (
+    env.AX_PROXY_ADVERTISED_ENDPOINT !== undefined &&
+    env.AX_PROXY_ADVERTISED_ENDPOINT !== ''
+  ) {
+    config.credentialProxy = {
+      ...(config.credentialProxy ?? {}),
+      advertisedEndpoint: env.AX_PROXY_ADVERTISED_ENDPOINT,
+    };
+  }
+  // TASK-149 — a TCP listen port WITHOUT an advertised endpoint would bind
+  // 0.0.0.0 but advertise the undialable bind address (tcp://0.0.0.0:<port>)
+  // to cross-pod runners. The chart always stamps both together; fail loud on
+  // a partial config rather than ship a silently-unreachable proxy.
+  if (
+    config.credentialProxy?.tcpPort !== undefined &&
+    config.credentialProxy.advertisedEndpoint === undefined
+  ) {
+    throw new Error(
+      'AX_PROXY_TCP_PORT requires AX_PROXY_ADVERTISED_ENDPOINT — the bind address (0.0.0.0:<port>) is not dialable cross-pod; set the cluster Service URL',
+    );
   }
   // Static-file serving for channel-web's SPA bundle. The chart's default
   // points this at `/opt/ax-next/host/web` — a stable path the agent

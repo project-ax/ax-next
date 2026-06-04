@@ -1,6 +1,8 @@
 {{- include "ax-next.validateWorkspaceBackend" . -}}
 {{- include "ax-next.validateHostReplicas" . -}}
 {{- include "ax-next.validateBlobBackend" . -}}
+{{- include "ax-next.validateProxyTransport" . -}}
+{{- include "ax-next.validateDevServicesKubeVersion" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -94,6 +96,15 @@ spec:
             - name: public-http
               containerPort: {{ .Values.host.ports.publicHttp }}
               protocol: TCP
+            {{- if .Values.credentialProxy.tcp.enabled }}
+            # @ax/credential-proxy TCP listener (TASK-149, production gVisor).
+            # The credential-proxy-service.yaml ClusterIP Service targets this
+            # named port so runner pods reach the proxy over the cluster
+            # network instead of a hostPath socket.
+            - name: proxy
+              containerPort: {{ .Values.credentialProxy.tcp.port | default 8888 }}
+              protocol: TCP
+            {{- end }}
           env:
             - name: AX_CONFIG_PATH
               value: "/etc/ax-next/ax.config.yaml"
@@ -191,6 +202,21 @@ spec:
             # private filesystem and the runner can't reach it.
             - name: AX_PROXY_CA_DIR
               value: "/var/run/ax/proxy-ca"
+            {{- else if .Values.credentialProxy.tcp.enabled }}
+            # TASK-149 — TCP-Service proxy posture (production gVisor). The
+            # credential-proxy listens on a TCP port (AX_PROXY_TCP_PORT) and
+            # advertises the cluster Service URL (AX_PROXY_ADVERTISED_ENDPOINT)
+            # so runner pods get a dialable address. The sandbox plugin stamps
+            # the SAME Service URL on each runner as the proxy endpoint
+            # (K8S_PROXY_ENDPOINT) and delivers the MITM CA via AX_PROXY_CA_PEM
+            # — NO hostPath mount. Mutually exclusive with the hostPath block
+            # above (validateProxyTransport rejects both).
+            - name: AX_PROXY_TCP_PORT
+              value: {{ .Values.credentialProxy.tcp.port | default 8888 | quote }}
+            - name: AX_PROXY_ADVERTISED_ENDPOINT
+              value: {{ include "ax-next.credentialProxyAdvertisedEndpoint" . | quote }}
+            - name: K8S_PROXY_ENDPOINT
+              value: {{ include "ax-next.credentialProxyServiceUrl" . | quote }}
             {{- end }}
 
             # Cluster-internal URL runner pods use to reach our IPC listener

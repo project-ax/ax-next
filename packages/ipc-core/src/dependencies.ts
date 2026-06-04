@@ -159,6 +159,17 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
         'POST /skill.propose returns 500 — the runner cannot propose an authored skill; unreachable in deployments without a skills store.',
     },
     {
+      // Agent-visible egress-block note. Reached on /proxy.drain-egress-blocks,
+      // but only when @ax/credential-proxy is loaded (the k8s preset). The
+      // single-session CLI has no egress proxy / allowlist gate, so the handler
+      // short-circuits to `{ hosts: [] }` via hasService rather than calling
+      // this hook — making it required would fail the CLI's bootstrap
+      // verifyCalls.
+      hook: 'proxy:drain-session-egress-blocks',
+      degradation:
+        'POST /proxy.drain-egress-blocks returns { hosts: [] } without calling the hook — no egress proxy means no allowlist blocks to surface; the agent simply gets no egress-block note.',
+    },
+    {
       // TASK-67 (out-of-git Part B / B2): the runner-side resume-transcript
       // callers. Reached on the /session.append-transcript /
       // .replace-transcript / .get-transcript routes, but only in a

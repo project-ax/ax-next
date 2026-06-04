@@ -4,6 +4,7 @@ import type {
   CapabilitySlot,
   McpServerSpec,
   PackagesSpec,
+  ServiceDescriptor,
 } from '@ax/skills-parser';
 // Type-only import of the derived plan entry — no runtime cycle (types are
 // erased; credential-plan.ts imports the domain types from here).
@@ -38,7 +39,7 @@ import type { CredentialPlanEntry } from './credential-plan.js';
 // TYPE-import the interface and re-declare the zod validator LOCALLY below, so
 // no runtime edge to @ax/skills-parser is created.
 // ---------------------------------------------------------------------------
-export type { Capabilities, CapabilitySlot, McpServerSpec, PackagesSpec };
+export type { Capabilities, CapabilitySlot, McpServerSpec, PackagesSpec, ServiceDescriptor };
 
 /**
  * Local zod validator for the type-imported {@link Capabilities} shape. The
@@ -80,11 +81,49 @@ const PackagesSpecSchema = z.object({
   pypi: z.array(z.string()),
 });
 
+// TASK-150 — the neutral dev-service descriptor. Canonical shape lives in
+// @ax/skills-parser (`ServiceDescriptorSchema`); re-declared LOCALLY here so the
+// store's CapabilitiesSchema round-trips `services` while keeping the
+// @ax/skills-parser import TYPE-only (I2 — same stance as the McpServerSpec
+// re-declaration above). `.strict()` rejects smuggled backend vocabulary (I2);
+// the digest-pin regex enforces I8. The store stores this verbatim; the wire
+// (@ax/sandbox-protocol) and @ax/validator-service re-validate independently.
+const ServicePortSchema = z.number().int().min(1).max(65535);
+const HealthcheckSchema = z.union([
+  z.object({ kind: z.literal('tcp'), port: ServicePortSchema }).strict(),
+  z
+    .object({
+      kind: z.literal('exec'),
+      command: z.array(z.string().max(256)).min(1).max(16),
+    })
+    .strict(),
+]);
+const ServiceDescriptorSchema = z
+  .object({
+    name: z.string().regex(/^[a-z][a-z0-9-]{0,63}$/),
+    image: z.string().regex(/.+@sha256:[0-9a-f]{64}$/),
+    ports: z.array(ServicePortSchema).max(16),
+    env: z.record(z.string().max(256), z.string().max(2048)).superRefine((rec, ctx) => {
+      if (Object.keys(rec).length > 32) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `env may declare at most 32 entries, got ${Object.keys(rec).length}`,
+        });
+      }
+    }),
+    healthcheck: HealthcheckSchema.optional(),
+    writablePaths: z.array(z.string().regex(/^\//).max(256)).max(16).default([]),
+  })
+  .strict();
+
 export const CapabilitiesSchema = z.object({
   allowedHosts: z.array(z.string()),
   credentials: z.array(CapabilitySlotSchema),
   mcpServers: z.array(McpServerSpecSchema),
   packages: PackagesSpecSchema,
+  // Optional on ingress (legacy rows + existing callers omit it); the schema
+  // defaults it to `[]` so a parsed Capabilities always carries `services`.
+  services: z.array(ServiceDescriptorSchema).max(8).default([]),
 }) as unknown as ZodType<Capabilities>;
 
 // ---------------------------------------------------------------------------
@@ -249,6 +288,17 @@ export interface ResolveInput {
 export interface ResolveOutput {
   id: string;
   keyMode: KeyMode;
+  /**
+   * The connector's "how to use me" blurb. Storage-agnostic, model-facing text
+   * (not management chrome like name/description) — the orchestrator folds it
+   * into the connector's synthetic SKILL.md body so the agent learns how to use
+   * the connector. Empty string when the owner left it blank, in which case the
+   * orchestrator falls back to a generic blurb. MUST be carried here: it's the
+   * ONLY resolve path for owner-owned / per-agent-attached connectors (only
+   * `connectors:list-defaults` returns it otherwise), so dropping it silently
+   * stripped every non-default connector's instructions.
+   */
+  usageNote: string;
   /** The mechanism-agnostic fill the resolver routes on. */
   capabilities: Capabilities;
   /**
@@ -475,6 +525,7 @@ const CredentialPlanEntrySchema = z.object({
 export const ResolveOutputSchema = z.object({
   id: z.string(),
   keyMode: KeyModeSchema,
+  usageNote: z.string(),
   capabilities: CapabilitiesSchema,
   credentialPlan: z.array(CredentialPlanEntrySchema),
   requiresSharedKeyConsent: z.boolean(),

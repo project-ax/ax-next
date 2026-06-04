@@ -19,6 +19,17 @@ import {
   type OpenSessionParsed,
 } from '@ax/sandbox-protocol';
 import { allowlistFromParent } from './env.js';
+import {
+  composeAvailable,
+  composeDown,
+  composeProjectName,
+  composeUp,
+  defaultComposeRunner,
+  descriptorsToComposeProject,
+  tcpHealthPorts,
+  waitForTcpPorts,
+  type ComposeRunner,
+} from './compose.js';
 
 // ---------------------------------------------------------------------------
 // sandbox:open-session
@@ -205,6 +216,10 @@ export async function openSessionImpl(
   ctx: AgentContext,
   rawInput: unknown,
   bus: HookBus,
+  // TASK-152 — injectable `docker compose` runner so unit tests can drive the
+  // services bring-up/teardown WITHOUT a real Docker daemon. Defaults to the
+  // real `docker` spawn in production.
+  composeRunner: ComposeRunner = defaultComposeRunner,
 ): Promise<OpenSessionResult> {
   // 1. Validate input — Zod errors surface as PluginError('invalid-payload').
   const parseResult = OpenSessionInputSchema.safeParse(rawInput);
@@ -218,6 +233,37 @@ export async function openSessionImpl(
     });
   }
   const input: OpenSessionParsed = parseResult.data;
+
+  // 1b. TASK-152 — dev services. When the caller declared `services`, we'll
+  //     bring them up via `docker compose` on a per-session project (below,
+  //     after the runner spawns). FAIL LOUD here if Docker is unavailable —
+  //     before we mint a session, start the listener, or create any tempdir —
+  //     so a "services requested but no Docker" request unwinds NOTHING and the
+  //     caller gets a clear error instead of a half-open session (the runner
+  //     would otherwise come up with no database to reach). The compose project
+  //     name is derived from sessionId; we capture it for the teardown closure.
+  const requestedServices = input.services ?? [];
+  const composeProject =
+    requestedServices.length > 0
+      ? descriptorsToComposeProject(requestedServices)
+      : undefined;
+  const composeProjectNameValue =
+    requestedServices.length > 0 ? composeProjectName(input.sessionId) : undefined;
+  if (requestedServices.length > 0) {
+    const available = await composeAvailable(composeRunner);
+    if (!available) {
+      throw new PluginError({
+        code: 'services-unavailable',
+        plugin: PLUGIN_NAME,
+        hookName: HOOK_NAME,
+        message:
+          `session requested ${requestedServices.length} dev service(s) but ` +
+          `\`docker compose\` is not available on this host — refusing to open a ` +
+          `half-wired session with no services. Install / start Docker, or open ` +
+          `the session without services.`,
+      });
+    }
+  }
 
   // 2. Pre-check: runner binary exists and is readable. I8 says a caller that
   //    forgot to configure this gets a LOUD error — don't wait for spawn()'s
@@ -627,6 +673,54 @@ export async function openSessionImpl(
     });
   }
 
+  // 7b. TASK-152 — bring the per-session `docker compose` project up now that
+  //     the runner has spawned. The runner won't drive a turn (and so won't
+  //     reach a service) until THIS hook returns, so it's safe to bring the
+  //     services up between spawn and return. We `up -d --wait` (compose blocks
+  //     on healthchecked services) then host-side `waitForTcpPorts` for the
+  //     `tcp`-healthcheck descriptors (we can't assume a probe binary inside an
+  //     arbitrary service image). On ANY failure we kill the child, tear the
+  //     compose project down, unwind the session/listener/tempdir, and throw —
+  //     never leave a half-open session with dead services. The availability
+  //     probe at step 1b already guaranteed Docker is reachable.
+  if (composeProject !== undefined && composeProjectNameValue !== undefined) {
+    const composeJson = JSON.stringify(composeProject);
+    const unwindAfterServicesFailure = async (): Promise<void> => {
+      // Kill the runner we just spawned (it has nothing to do with no services).
+      try {
+        child.kill('SIGKILL');
+      } catch {
+        // Already gone — fine.
+      }
+      await composeDown(composeRunner, {
+        projectName: composeProjectNameValue,
+        composeJson,
+      }).catch(() => undefined);
+      await bus.call('ipc:stop', ctx, { sessionId: created.sessionId }).catch(() => undefined);
+      await bus
+        .call('session:terminate', ctx, { sessionId: created.sessionId })
+        .catch(() => undefined);
+      await unlockInstalledSkillsDir(installedSkillsDir);
+      await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
+    };
+    try {
+      await composeUp(composeRunner, {
+        projectName: composeProjectNameValue,
+        composeJson,
+      });
+      await waitForTcpPorts(tcpHealthPorts(requestedServices), { host: '127.0.0.1' });
+    } catch (cause) {
+      await unwindAfterServicesFailure();
+      throw new PluginError({
+        code: 'services-up-failed',
+        plugin: PLUGIN_NAME,
+        hookName: HOOK_NAME,
+        message: `failed to bring up dev services for session ${created.sessionId}`,
+        cause,
+      });
+    }
+  }
+
   // 8. Exited promise. Resolves once the child's stdio pipes are drained
   //    (close) — not exit, which fires before pipes drain.
   const exited = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
@@ -671,6 +765,31 @@ export async function openSessionImpl(
           sessionId: created.sessionId,
           err: err instanceof Error ? err.message : String(err),
         });
+      }
+      // TASK-152 — tear down the per-session `docker compose` project alongside
+      // the tempdir. `down -v` reaps the containers, the per-project network,
+      // and anonymous/tmpfs volumes so a session never leaks running services.
+      // Best-effort: a teardown failure is logged at warn, never thrown (the
+      // caller already has `exited`).
+      if (composeProject !== undefined && composeProjectNameValue !== undefined) {
+        try {
+          const res = await composeDown(composeRunner, {
+            projectName: composeProjectNameValue,
+            composeJson: JSON.stringify(composeProject),
+          });
+          if (res.code !== 0) {
+            ctx.logger.warn('services_teardown_nonzero', {
+              sessionId: created.sessionId,
+              code: res.code,
+              stderr: res.stderr.trim(),
+            });
+          }
+        } catch (err) {
+          ctx.logger.warn('services_teardown_failed', {
+            sessionId: created.sessionId,
+            err: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     })();
   });

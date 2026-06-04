@@ -113,6 +113,98 @@ where to phone home.
 {{- end }}
 
 {{/*
+Credential-proxy Service component name (TASK-149). <release>-<chart>-proxy,
+truncated to 63 chars. The ClusterIP Service that fronts the proxy's TCP
+listener in production-gVisor mode. Selects the HOST pod (the proxy listens
+inside the host container).
+*/}}
+{{- define "ax-next.credentialProxyComponentName" -}}
+{{- $base := include "ax-next.fullname" . | trunc 57 | trimSuffix "-" -}}
+{{- printf "%s-proxy" $base | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
+Cluster-internal `tcp://host:port` URL the credential-proxy advertises to
+runner pods in TCP mode. Computed from the proxy Service name + namespace +
+TCP port. The proxy plugin returns this from proxy:open-session so runner
+pods (in another namespace) get a dialable address — the bind address
+0.0.0.0:<port> isn't reachable cross-pod. Analogous to ax-next.hostIpcUrl.
+*/}}
+{{- define "ax-next.credentialProxyAdvertisedEndpoint" -}}
+{{- $port := .Values.credentialProxy.tcp.port | default 8888 -}}
+{{- printf "tcp://%s.%s.svc.cluster.local:%d" (include "ax-next.credentialProxyComponentName" .) (include "ax-next.hostNamespace" .) (int $port) -}}
+{{- end }}
+
+{{/*
+Same proxy Service URL with an `http://` scheme — what the sandbox plugin
+stamps as K8S_PROXY_ENDPOINT (the orchestrator routes HTTPS_PROXY through it).
+*/}}
+{{- define "ax-next.credentialProxyServiceUrl" -}}
+{{- $port := .Values.credentialProxy.tcp.port | default 8888 -}}
+{{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.credentialProxyComponentName" .) (include "ax-next.hostNamespace" .) (int $port) -}}
+{{- end }}
+
+{{/*
+Fail-fast guard (TASK-149): the two proxy transports are mutually exclusive.
+hostPath (sandbox.proxySocketHostPath) is the kind / single-node Unix-socket
+posture; TCP (credentialProxy.tcp.enabled) is the production-gVisor Service
+posture. Setting both is a config error — the runner can't key off an
+ambiguous transport.
+*/}}
+{{- define "ax-next.validateProxyTransport" -}}
+{{- if and .Values.sandbox.proxySocketHostPath .Values.credentialProxy.tcp.enabled -}}
+{{- fail "credential-proxy: sandbox.proxySocketHostPath (hostPath) and credentialProxy.tcp.enabled (TCP Service) are mutually exclusive — pick exactly one proxy transport. hostPath is kind/single-node; TCP is the production-gVisor posture (GKE Sandbox bans hostPath)." -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
+Fail-fast guard (TASK-157): dev-services in the runner sandbox require k8s 1.29+.
+
+The dev-services feature (TASK-149..155) renders each declared service (a DB, a
+broker) as a NATIVE k8s sidecar — an `initContainer` with `restartPolicy: Always`.
+That restartPolicy-on-an-init-container shape is the SidecarContainers feature,
+which only went GA (on by default) in Kubernetes 1.29.
+
+On an older kubelet the `restartPolicy: Always` is SILENTLY IGNORED. The service
+then runs as a plain, BLOCKING init container: the kubelet waits for it to finish
+before starting the runner — but a database never finishes. The pod hangs in
+`Init` until `activeDeadlineSeconds` (6h) reaps it, and the session never starts.
+No error, no event, just a runner that never comes up. A genuine production
+footgun, so we'd rather catch it at `helm install` than at 3am.
+
+So: when an operator declares intent to run dev-services on this cluster
+(`sandbox.devServices.enabled=true`), we check the cluster's reported version
+and fail the render/install if it can't be confirmed 1.29+.
+
+IMPORTANT — what `.Capabilities.KubeVersion` actually reflects:
+  - `helm install` / `helm upgrade` (live cluster): the REAL apiserver version.
+    This is where the guard does its job — it blocks a bad install.
+  - `helm template` (no cluster): helm's BUILT-IN stub version, NOT your cluster.
+    So a bare `helm template` with devServices.enabled can fail on a perfectly
+    fine cluster (and vice versa). Pass `--kube-version <your-cluster-version>`
+    to template the way the cluster will see it.
+
+Escape hatch: `sandbox.devServices.skipKubeVersionCheck=true` bypasses the gate
+for operators who've confirmed 1.29+ out of band (or who run a vendor distro
+whose reported version doesn't sort cleanly under semver). Use it deliberately —
+it turns a hard stop back into the silent-hang footgun above.
+
+The `-0` suffix on the constraint makes pre-release versions (e.g. a `1.29.0-rc.1`
+kubelet) satisfy `>=1.29.0`; without it semver excludes pre-releases.
+
+Invoked from host/deployment.yaml, which always renders.
+*/}}
+{{- define "ax-next.validateDevServicesKubeVersion" -}}
+{{- if .Values.sandbox.devServices.enabled -}}
+{{- if not .Values.sandbox.devServices.skipKubeVersionCheck -}}
+{{- if not (semverCompare ">=1.29.0-0" .Capabilities.KubeVersion.Version) -}}
+{{- fail (printf "sandbox.devServices.enabled=true requires Kubernetes 1.29+ (SidecarContainers GA), but this cluster reports %s. On older kubelets the service sidecar's `restartPolicy: Always` is ignored, so the service runs as a BLOCKING init container and the runner pod hangs in Init until the 6h deadline reaps it — silently. Upgrade the cluster to 1.29+, or (if you've confirmed 1.29+ another way) set sandbox.devServices.skipKubeVersionCheck=true. NOTE: `helm template` reports helm's built-in stub version, not your cluster — pass --kube-version <your-cluster-version> to template as the cluster sees it." .Capabilities.KubeVersion.Version) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+
+{{/*
 git-server component name. <release>-<chart>-git-server, truncated to 63
 chars (DNS label limit). Source of truth for the Deployment, Service,
 ServiceAccount, and the PVC name prefix.

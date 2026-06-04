@@ -22,6 +22,9 @@ import { makeMockK8sApi, type MockK8sApi } from './mock-k8s.js';
 
 const FAST_POLL = { readinessPollMs: 1, readinessTimeoutMs: 2_000 };
 const TEST_HOST_IPC_URL = 'http://test-host:8080';
+// TASK-151 — a digest-pinned (I8) service image the OpenSessionInputSchema's
+// re-validation at the open-session boundary accepts.
+const PINNED_SVC_IMAGE = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
 
 async function makeHarness(api: MockK8sApi) {
   return createTestHarness({
@@ -458,5 +461,119 @@ describe('sandbox:open-session (k8s)', () => {
       },
     );
     expect(api.creates).toHaveLength(1);
+  });
+
+  // -----------------------------------------------------------------------
+  // TASK-151 — dev service sidecars + readiness budget threading.
+  // -----------------------------------------------------------------------
+
+  it('renders declared services[] as native sidecars in the created pod spec', async () => {
+    const api = makeMockK8sApi();
+    api.setReadResponses(readyPod());
+    const h = await makeHarness(api);
+    await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+      sessionId: 'sess-svc',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      services: [
+        {
+          name: 'postgres',
+          image: PINNED_SVC_IMAGE,
+          ports: [5432],
+          env: { POSTGRES_PASSWORD: 'x' },
+          healthcheck: { kind: 'tcp', port: 5432 },
+          writablePaths: ['/var/lib/postgresql/data'],
+        },
+      ],
+    });
+    const body = api.creates[0]!.body as {
+      spec: {
+        securityContext?: { fsGroup?: number };
+        containers: Array<{ name: string }>;
+        initContainers: Array<{ name: string; restartPolicy?: string }>;
+      };
+    };
+    // Runner stays the sole containers[] entry (I1 — services never leak there).
+    expect(body.spec.containers).toHaveLength(1);
+    expect(body.spec.containers[0]!.name).toBe('runner');
+    const sidecar = body.spec.initContainers.find((c) => c.name === 'svc-postgres');
+    expect(sidecar).toBeDefined();
+    expect(sidecar!.restartPolicy).toBe('Always');
+    expect(body.spec.securityContext?.fsGroup).toBe(1000);
+  });
+
+  it('scales the readiness budget by service count (I6) — timeout error reflects base + N*coldStart', async () => {
+    // The pod never reaches Ready, so waitForPodReady times out. The error
+    // message embeds the timeoutMs it was given, which proves the scaled
+    // budget (base + serviceCount * perServiceColdStartMs) reached
+    // waitForPodReady — not the flat readinessTimeoutMs. We use tiny config
+    // values so the timeout fires fast.
+    const api = makeMockK8sApi();
+    api.setReadResponses({ status: { phase: 'Pending' } }); // never Ready
+    const h = await createTestHarness({
+      plugins: [
+        createSessionInmemoryPlugin(),
+        createSandboxK8sPlugin({
+          api,
+          namespace: 'ax-test',
+          image: 'ax-next/agent:test',
+          hostIpcUrl: TEST_HOST_IPC_URL,
+          readinessPollMs: 1,
+          readinessTimeoutMs: 10,
+          perServiceColdStartMs: 25,
+        }),
+      ],
+    });
+    await expect(
+      h.bus.call('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-svc-timeout',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        services: [
+          {
+            name: 'a',
+            image: PINNED_SVC_IMAGE,
+            ports: [5432],
+            env: {},
+            writablePaths: [],
+          },
+          {
+            name: 'b',
+            image: PINNED_SVC_IMAGE,
+            ports: [5433],
+            env: {},
+            writablePaths: [],
+          },
+        ],
+      }),
+      // base 10 + 2 services * 25 = 60ms.
+    ).rejects.toMatchObject({ message: expect.stringContaining('within 60ms') });
+  });
+
+  it('keeps the flat readiness budget for a service-less session (60ms base, no scaling)', async () => {
+    const api = makeMockK8sApi();
+    api.setReadResponses({ status: { phase: 'Pending' } }); // never Ready
+    const h = await createTestHarness({
+      plugins: [
+        createSessionInmemoryPlugin(),
+        createSandboxK8sPlugin({
+          api,
+          namespace: 'ax-test',
+          image: 'ax-next/agent:test',
+          hostIpcUrl: TEST_HOST_IPC_URL,
+          readinessPollMs: 1,
+          readinessTimeoutMs: 60,
+          perServiceColdStartMs: 25,
+        }),
+      ],
+    });
+    await expect(
+      h.bus.call('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-noservices-timeout',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+      }),
+      // no services → flat 60ms, NOT scaled.
+    ).rejects.toMatchObject({ message: expect.stringContaining('within 60ms') });
   });
 });
