@@ -179,6 +179,57 @@ as whatever UID the agent image expects. Production hardening of the host
 pod (non-root host, restricted SA, dedicated SCC) is a follow-up; flagged
 in "Known limits."
 
+## Dev-services require Kubernetes 1.29+
+
+Agents can declare "dev-dependency services" — a database, a broker — that
+run alongside the runner so a checked-out repo can reach them at `localhost`.
+On Kubernetes, `@ax/sandbox-k8s` renders each one as a **native sidecar**: an
+init container carrying `restartPolicy: Always`. That shape — a restart policy
+on an init container — is the SidecarContainers feature, and it only went GA
+(on by default) in **Kubernetes 1.29**.
+
+This is a hard cluster-version requirement, and the failure mode on older
+clusters is nasty *because it's silent*:
+
+- On a kubelet older than 1.29, the `restartPolicy: Always` is **ignored**.
+- The service then runs as a plain, **blocking** init container. The kubelet
+  waits for it to terminate before starting the runner — but a database is a
+  long-running process, so it never terminates.
+- The pod hangs in `Init` until `activeDeadlineSeconds` (6h) reaps it. The
+  session never starts. There's no error and no event — just a runner that
+  never comes up.
+
+We don't want that discovered in production (or during a manual-acceptance walk
+on a too-old kind cluster), so the chart fails fast:
+
+- `sandbox.devServices.enabled` defaults to `false`. Leave it there and nothing
+  about the render changes — the guard is inert.
+- Set it `true` to declare you intend to run dev-services on this cluster. The
+  chart then runs a preflight (`ax-next.validateDevServicesKubeVersion`, invoked
+  from `host/deployment.yaml`) that compares `.Capabilities.KubeVersion` against
+  `>=1.29.0-0` and **fails the render/install** with a pointed message if the
+  cluster is older.
+- `sandbox.devServices.skipKubeVersionCheck=true` is the escape hatch — for
+  operators who've confirmed 1.29+ out of band, or whose distro reports a
+  version string that doesn't sort cleanly under semver. It re-arms the
+  silent-hang footgun, so use it deliberately.
+
+**Caveat — what `.Capabilities.KubeVersion` reflects.** At `helm install` /
+`helm upgrade` against a live cluster, it's the real apiserver version, and the
+guard does its job. Under `helm template` (no cluster), it's helm's *built-in
+stub version*, not yours — so a bare `helm template` with dev-services enabled
+can fail on a perfectly fine cluster (and vice versa). Pass
+`--kube-version <your-cluster-version>` to template the way the cluster will see
+it. This is a real limit of Helm's offline rendering, not something the chart
+can paper over — flagged honestly so it doesn't surprise anyone running a
+GitOps render pipeline.
+
+The guard is a chart-level signal only; it does not change how the feature
+behaves at runtime. The runtime feature is driven per-session by what an agent's
+approved connectors declare (TASK-153). The in-pod sidecar security posture
+(digest-pinned images, the inherited egress lock, per-service writable mounts,
+`fsGroup`) lives in `packages/sandbox-k8s/SECURITY.md`.
+
 ## git-server pod
 
 When `workspace.backend: http` and `gitServer.enabled: true`, the chart

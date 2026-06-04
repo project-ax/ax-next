@@ -256,6 +256,40 @@ sandbox:
   # proxy transport. The chart fails fast at template time if both are set.
   proxySocketHostPath: ""
 
+  # ─── Dev-services in the sandbox (REQUIRES Kubernetes 1.29+) ───
+  # Agents can declare "dev-dependency services" (a database, a broker, …)
+  # that run alongside the runner so a checked-out repo can talk to them at
+  # localhost. The k8s backend renders each one as a NATIVE SIDECAR — an
+  # initContainer with `restartPolicy: Always`. That shape is the
+  # SidecarContainers feature, which only went GA (on by default) in
+  # Kubernetes 1.29.
+  #
+  # THE FAILURE MODE ON OLDER CLUSTERS (read this before you flip it on):
+  # on a kubelet older than 1.29, `restartPolicy: Always` on an init
+  # container is SILENTLY IGNORED. The service then runs as a plain,
+  # BLOCKING init container — the kubelet waits for it to exit before
+  # starting the runner, but a database never exits. The runner pod hangs
+  # in `Init` until the 6h `activeDeadlineSeconds` reaps it, and the session
+  # never starts. No error, no event. Just a runner that never comes up.
+  #
+  # So this is a declaration of intent: leave it `false` if you don't use
+  # dev-services. Set it `true` only on a 1.29+ cluster — the chart then
+  # runs a preflight that FAILS `helm install`/`upgrade` if the cluster's
+  # reported version is below 1.29. (Note: `helm template` checks helm's
+  # built-in stub version, not your cluster — pass `--kube-version` to
+  # template as the cluster will see it.)
+  #
+  # The runtime feature itself is driven per-session by what an agent's
+  # approved connectors declare; this flag does NOT enable or disable the
+  # feature, it only turns on the cluster-version guard. See SECURITY.md.
+  devServices:
+    enabled: false
+    # Escape hatch: bypass the 1.29+ preflight when you've confirmed the
+    # cluster is new enough another way, or run a vendor distro whose
+    # reported version doesn't sort cleanly under semver. Use deliberately —
+    # it re-arms the silent-hang footgun described above.
+    skipKubeVersionCheck: false
+
 # ─── Credential-proxy TCP transport (production gVisor) ──────────
 # GKE Sandbox (gVisor) bans `hostPath`, so the kind-only socket posture
 # above can't run there. TCP mode moves the credential-proxy onto a TCP
