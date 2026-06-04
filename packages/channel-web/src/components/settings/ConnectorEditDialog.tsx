@@ -186,10 +186,10 @@ function ServicesSection({
 
   const translate = () => {
     setComposeError(null);
-    const result = applyComposeToForm(
-      { ...emptyConnectorForm(), services },
-      compose,
-    );
+    // applyComposeToForm REPLACES `services` with the translated set, so the
+    // form we hand it only needs to be a valid shell — the current `services`
+    // would be overwritten anyway. We lift the result's services up via onChange.
+    const result = applyComposeToForm(emptyConnectorForm(), compose);
     if (!result.ok) {
       setComposeError(result.error);
       setDrops([]);
