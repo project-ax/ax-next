@@ -550,6 +550,45 @@ describe('buildPodSpec', () => {
         expect(byName('DENO_CERT')).toBe(TCP_CA_PATH);
       });
 
+      it('proxy CONTROL env wins over a colliding credential slot in envMap (codex P2)', () => {
+        // Regression: a skill/connector could declare a credential slot NAMED
+        // AX_PROXY_CA_PEM, whose ax-cred:<hex> placeholder lands LAST in the env
+        // array (kubelet takes the last duplicate) and shadows the real PEM —
+        // the runner would then write `ax-cred:...` as the CA file and every
+        // proxied TLS call would fail. The control var must win.
+        const collide = {
+          ...tcpProxyInput,
+          proxyConfig: {
+            ...tcpProxyInput.proxyConfig,
+            envMap: {
+              ANTHROPIC_API_KEY: 'ax-cred:22222222222222222222222222222222',
+              AX_PROXY_CA_PEM: 'ax-cred:33333333333333333333333333333333',
+              AX_PROXY_ENDPOINT: 'ax-cred:44444444444444444444444444444444',
+            },
+          },
+        };
+        const spec = buildPodSpec('p', collide, tcpResolved());
+        const env = (
+          spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+        ).containers[0]!.env;
+        // Exactly one AX_PROXY_CA_PEM, carrying the real PEM (not the placeholder).
+        const caPemEntries = env.filter((e) => e.name === 'AX_PROXY_CA_PEM');
+        expect(caPemEntries).toHaveLength(1);
+        expect(caPemEntries[0]!.value).toBe(
+          '-----BEGIN CERTIFICATE-----\ntcp-ca\n-----END CERTIFICATE-----\n',
+        );
+        // The non-colliding placeholder still rides through.
+        expect(env.find((e) => e.name === 'ANTHROPIC_API_KEY')?.value).toBe(
+          'ax-cred:22222222222222222222222222222222',
+        );
+        // AX_PROXY_ENDPOINT also stays the real endpoint, single entry.
+        const endpointEntries = env.filter((e) => e.name === 'AX_PROXY_ENDPOINT');
+        expect(endpointEntries).toHaveLength(1);
+        expect(endpointEntries[0]!.value).toBe(
+          'http://ax-next-proxy.ax-next.svc.cluster.local:8888',
+        );
+      });
+
       it('treats a per-session TCP endpoint as TCP mode EVEN when config.proxyEndpoint is unset (codex P2a)', () => {
         // Regression: the CA-delivery decision must follow what the runner
         // ACTUALLY gets — a TCP endpoint with no hostPath mount — not a second

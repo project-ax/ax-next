@@ -100,6 +100,36 @@ describe('@ax/preset-k8s wiring', () => {
     expect(unsatisfied).toEqual([]);
   });
 
+  // TASK-149: the TCP-Service credential-proxy posture assembles without error
+  // when both the port AND a non-empty advertised endpoint are present.
+  it('createK8sPlugins assembles the TCP credential-proxy when tcpPort + advertisedEndpoint are set', () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      credentialProxy: {
+        tcpPort: 8888,
+        advertisedEndpoint: 'tcp://ax-next-proxy.ax-next.svc.cluster.local:8888',
+      },
+    });
+    expect(plugins.length).toBeGreaterThan(0);
+  });
+
+  // Regression (codex P2/P3): a TCP port with a missing OR empty advertised
+  // endpoint must throw, not silently advertise the undialable bind address.
+  it('createK8sPlugins throws when tcpPort is set without an advertised endpoint', () => {
+    expect(() =>
+      createK8sPlugins({ ...stubConfig, credentialProxy: { tcpPort: 8888 } }),
+    ).toThrow(/advertisedEndpoint/i);
+  });
+
+  it('createK8sPlugins throws when tcpPort is set with an EMPTY advertised endpoint (codex P3)', () => {
+    expect(() =>
+      createK8sPlugins({
+        ...stubConfig,
+        credentialProxy: { tcpPort: 8888, advertisedEndpoint: '' },
+      }),
+    ).toThrow(/advertisedEndpoint/i);
+  });
+
   // The two invariant checks above run with the default `stubConfig`, which
   // doesn't enable titles. The conditional title plugins introduce a new
   // `llm:call:anthropic` registrant + matching subscriber call, so they need

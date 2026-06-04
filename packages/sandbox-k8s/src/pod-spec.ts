@@ -529,7 +529,19 @@ export function buildPodSpec(
       // egress (including blocked, allowlist-miss requests) to this session.
       proxyEnv.push({ name: 'AX_PROXY_TOKEN', value: pc.proxyAuthToken });
     }
+    // Proxy CONTROL env wins over credential slots (TASK-149, codex P2). The
+    // placeholder envMap is appended last so per-session credentials win over
+    // ordinary env — but a skill/connector could declare a credential slot
+    // NAMED like one of our control vars (e.g. `AX_PROXY_CA_PEM`), whose
+    // `ax-cred:<hex>` placeholder would then shadow the real value (the kubelet
+    // takes the LAST entry for a duplicate env name). For AX_PROXY_CA_PEM that
+    // means the runner writes an `ax-cred:` string as the CA file and every
+    // proxied TLS call fails. Reserve the control names: drop any envMap key
+    // that collides with a var we already stamped. (Mirrors the TASK-86
+    // trusted-base-wins precedent — control env is trusted, slot env isn't.)
+    const reservedProxyEnv = new Set(proxyEnv.map((e) => e.name));
     for (const [k, v] of Object.entries(pc.envMap)) {
+      if (reservedProxyEnv.has(k)) continue;
       proxyEnv.push({ name: k, value: v });
     }
   }

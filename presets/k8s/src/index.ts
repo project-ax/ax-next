@@ -541,7 +541,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // returns in TCP mode (the bind address 0.0.0.0:<port> isn't dialable
   // cross-pod).
   const tcpPort = config.credentialProxy?.tcpPort;
-  if (tcpPort !== undefined && config.credentialProxy?.advertisedEndpoint === undefined) {
+  // Empty string counts as MISSING (codex P3) — a hand-rolled config with
+  // `advertisedEndpoint: ''` would otherwise slip past the guard and let
+  // buildEndpointString fall back to advertising the undialable bind address.
+  const advertisedEndpoint =
+    config.credentialProxy?.advertisedEndpoint !== undefined &&
+    config.credentialProxy.advertisedEndpoint.length > 0
+      ? config.credentialProxy.advertisedEndpoint
+      : undefined;
+  if (tcpPort !== undefined && advertisedEndpoint === undefined) {
     // Defense in depth (codex P2): the env loader already rejects this, but a
     // hand-rolled config could still reach here. Without an advertised
     // endpoint the proxy advertises its bind address (0.0.0.0:<port>), which
@@ -550,16 +558,14 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
       code: 'invalid-config',
       plugin: '@ax/preset-k8s',
       message:
-        'credentialProxy.tcpPort requires credentialProxy.advertisedEndpoint — the bind address is not dialable cross-pod',
+        'credentialProxy.tcpPort requires a non-empty credentialProxy.advertisedEndpoint — the bind address is not dialable cross-pod',
     });
   }
   const credentialProxyCfg: Parameters<typeof createCredentialProxyPlugin>[0] =
     tcpPort !== undefined
       ? {
           listen: { kind: 'tcp', host: '0.0.0.0', port: tcpPort },
-          ...(config.credentialProxy?.advertisedEndpoint !== undefined
-            ? { advertisedEndpoint: config.credentialProxy.advertisedEndpoint }
-            : {}),
+          advertisedEndpoint: advertisedEndpoint!,
         }
       : {
           listen: {
