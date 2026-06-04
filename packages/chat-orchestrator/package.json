@@ -23,9 +23,11 @@
   },
   "devDependencies": {
     "@ax/ipc-server": "workspace:*",
+    "@ax/sandbox-k8s": "workspace:*",
     "@ax/sandbox-subprocess": "workspace:*",
     "@ax/session-inmemory": "workspace:*",
     "@ax/test-harness": "workspace:*",
+    "@ax/validator-service": "workspace:*",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.4"

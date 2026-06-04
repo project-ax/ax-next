@@ -561,6 +561,9 @@ importers:
       '@ax/ipc-server':
         specifier: workspace:*
         version: link:../ipc-server
+      '@ax/sandbox-k8s':
+        specifier: workspace:*
+        version: link:../sandbox-k8s
       '@ax/sandbox-subprocess':
         specifier: workspace:*
         version: link:../sandbox-subprocess
@@ -570,6 +573,9 @@ importers:
       '@ax/test-harness':
         specifier: workspace:*
         version: link:../test-harness
+      '@ax/validator-service':
+        specifier: workspace:*
+        version: link:../validator-service
       '@types/node':
         specifier: ^25.6.0
         version: 25.6.0
