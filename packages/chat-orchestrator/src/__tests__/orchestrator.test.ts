@@ -2495,6 +2495,8 @@ describe('chat-orchestrator', () => {
         credentials: Array<{ slot: string; kind: 'api-key'; account?: string }>;
         mcpServers?: unknown[];
         packages?: { npm?: string[]; pypi?: string[] };
+        // TASK-153 — optional dev services the connector declares.
+        services?: unknown[];
       }
     >,
   ): { resolveCalls: string[]; services: Record<string, ServiceHandler> } {
@@ -2515,12 +2517,29 @@ describe('chat-orchestrator', () => {
               credentials: c.credentials,
               mcpServers: c.mcpServers ?? [],
               packages: c.packages ?? { npm: [], pypi: [] },
+              // TASK-153 — pass declared services through; the store round-trips
+              // `services: []` for a connector that declares none.
+              services: c.services ?? [],
             },
             credentialPlan: [],
             requiresSharedKeyConsent: false,
           };
         },
       },
+    };
+  }
+
+  // TASK-153 — a well-formed dev SERVICE descriptor (digest-pinned image, the
+  // canonical wire shape). `writablePaths` set explicitly since fixtures forward
+  // the descriptor verbatim.
+  function svc(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      name: 'postgres',
+      image: 'postgres@sha256:' + 'a'.repeat(64),
+      ports: [5432],
+      env: { POSTGRES_PASSWORD: 'devsecret' },
+      writablePaths: [],
+      ...over,
     };
   }
 
@@ -2722,6 +2741,211 @@ describe('chat-orchestrator', () => {
     expect(openIn.credentials['skill:github:GITHUB_TOKEN']).toBeUndefined();
     // No connector resolution happened (the skill referenced none).
     expect(connHook.resolveCalls).toEqual([]);
+  });
+
+  // ---------------------------------------------------------------------
+  // TASK-153 — fold the connectors' `capabilities.services` onto the
+  // `sandbox:open-session` payload. Only ADMIN-APPROVED connectors reach the
+  // fold (connectors:resolve reads only the live owner-scoped table — I8). The
+  // descriptors are deduped by name; a cross-connector name collision is a
+  // loud terminated outcome. `services:validate` (TASK-150) gates the folded
+  // list when loaded.
+  // ---------------------------------------------------------------------
+
+  /** Wire an agent whose owner owns the named connectors (the effective-set
+   *  private-items path), each resolved via connectors:resolve. */
+  function buildServicesScenario(opts: {
+    connectors: Record<
+      string,
+      {
+        allowedHosts: string[];
+        credentials: Array<{ slot: string; kind: 'api-key' }>;
+        services?: unknown[];
+      }
+    >;
+    extraServices?: Record<string, ServiceHandler>;
+  }) {
+    const proxy = buildProxyHooks();
+    const connHook = buildConnectorResolveHook(opts.connectors);
+    const busRef: { current: HookBus | null } = { current: null };
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: {
+          ...TEST_AGENT,
+          allowedHosts: ['api.anthropic.com'],
+          requiredCredentials: {
+            ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+          },
+        },
+      }),
+      openSession: makeChatEndOpenSession(busRef),
+    });
+    // The owner's PRIVATE connectors path: connectors:list returns ids, each
+    // resolved via connectors:resolve. This is the approved-connector wall — a
+    // pending connector would have no row, so it never resolves.
+    const listHook: Record<string, ServiceHandler> = {
+      'connectors:list': async () => ({
+        connectors: Object.keys(opts.connectors).map((id) => ({ id })),
+      }),
+    };
+    Object.assign(
+      mocks.services,
+      proxy.services,
+      connHook.services,
+      listHook,
+      opts.extraServices ?? {},
+    );
+    return { proxy, connHook, busRef, mocks };
+  }
+
+  it('TASK-153: a connector dev service reaches the sandbox:open-session payload', async () => {
+    const { busRef, mocks } = buildServicesScenario({
+      connectors: {
+        db: {
+          allowedHosts: [],
+          credentials: [],
+          services: [svc({ name: 'postgres' })],
+        },
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('svc-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    const sandboxIn = mocks.calls.lastSandboxInput as {
+      services?: Array<{ name: string; image: string }>;
+    };
+    expect(sandboxIn.services).toHaveLength(1);
+    expect(sandboxIn.services![0]!.name).toBe('postgres');
+    expect(sandboxIn.services![0]!.image).toBe('postgres@sha256:' + 'a'.repeat(64));
+  });
+
+  it('TASK-153: no connector services → the payload omits the services field', async () => {
+    const { busRef, mocks } = buildServicesScenario({
+      connectors: {
+        plain: { allowedHosts: ['api.example.com'], credentials: [] },
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('no-svc-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    const sandboxIn = mocks.calls.lastSandboxInput as { services?: unknown };
+    expect(sandboxIn.services).toBeUndefined();
+  });
+
+  it('TASK-153: a cross-connector service-name collision is a loud terminated outcome (no sandbox spawn)', async () => {
+    const { busRef, mocks } = buildServicesScenario({
+      connectors: {
+        a: { allowedHosts: [], credentials: [], services: [svc({ name: 'postgres' })] },
+        b: {
+          allowedHosts: [],
+          credentials: [],
+          services: [svc({ name: 'postgres', image: 'postgres@sha256:' + 'b'.repeat(64) })],
+        },
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('collide-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('connector-services-invalid');
+    // The sandbox was NEVER opened — the collision short-circuits before spawn.
+    expect(mocks.calls.sandboxOpen).toBe(0);
+  });
+
+  it('TASK-153: services:validate rejecting the folded list → terminated, no sandbox spawn', async () => {
+    let validateCalled = 0;
+    const { busRef, mocks } = buildServicesScenario({
+      connectors: {
+        db: { allowedHosts: [], credentials: [], services: [svc({ name: 'postgres' })] },
+      },
+      extraServices: {
+        'services:validate': async (_ctx, input) => {
+          validateCalled += 1;
+          // Assert the fold ran under the REAL owner ctx (no synthetic actor) by
+          // confirming the folded descriptor reached the validator verbatim.
+          const svcs = (input as { services: Array<{ name: string }> }).services;
+          expect(svcs.map((s) => s.name)).toEqual(['postgres']);
+          return { verdict: 'invalid', reason: 'simulated rejection' };
+        },
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('validate-reject-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(validateCalled).toBe(1);
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe('connector-services-invalid');
+    expect(mocks.calls.sandboxOpen).toBe(0);
+  });
+
+  it('TASK-153: services:validate accepting the folded list → services reach the payload', async () => {
+    let validateCalled = 0;
+    const { busRef, mocks } = buildServicesScenario({
+      connectors: {
+        db: { allowedHosts: [], credentials: [], services: [svc({ name: 'postgres' })] },
+      },
+      extraServices: {
+        'services:validate': async () => {
+          validateCalled += 1;
+          return { verdict: 'clean' };
+        },
+      },
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      ],
+    });
+    busRef.current = h.bus;
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('validate-clean-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(validateCalled).toBe(1);
+    expect(outcome.kind).toBe('complete');
+    const sandboxIn = mocks.calls.lastSandboxInput as { services?: Array<{ name: string }> };
+    expect(sandboxIn.services).toHaveLength(1);
+    expect(sandboxIn.services![0]!.name).toBe('postgres');
   });
 
   it('TASK-33: a per-user attachment unions a per-user-only skill BODY (resolve threads ownerUserId)', async () => {

@@ -11,6 +11,7 @@ import {
   foldConnectorCaps,
   connectorCredentialEnvName,
   connectorSandboxDirId,
+  ConnectorServiceCollisionError,
   type ResolvedConnectorForOrch,
 } from '../connector-union.js';
 
@@ -43,6 +44,18 @@ const CAPS = (over: Partial<ResolvedConnectorForOrch['capabilities']> = {}) => (
   credentials: [{ slot: 'EXAMPLE_KEY', kind: 'api-key' as const }],
   mcpServers: [],
   packages: { npm: [], pypi: [] },
+  ...over,
+});
+
+// TASK-153 — a well-formed dev SERVICE descriptor (digest-pinned image, the
+// canonical @ax/sandbox-protocol shape). `writablePaths` defaults to [] on parse
+// but a literal must set it (the orchestrator forwards the PARSED descriptor).
+const SVC = (over: Record<string, unknown> = {}) => ({
+  name: 'postgres',
+  image: 'postgres@sha256:' + 'a'.repeat(64),
+  ports: [5432],
+  env: { POSTGRES_PASSWORD: 'devsecret' },
+  writablePaths: [],
   ...over,
 });
 
@@ -504,5 +517,102 @@ describe('foldConnectorCaps', () => {
     const skillMd = r.installedEntries[0]!.files.find((f) => f.path === 'SKILL.md')!;
     expect(skillMd.contents).toContain('bare');
     expect(skillMd.contents.length).toBeGreaterThan(10);
+  });
+
+  // --- TASK-153 dev services fold -------------------------------------------
+
+  it('folds a connector dev service onto the result services list', () => {
+    const r = foldConnectorCaps(
+      [{ id: 'db', capabilities: CAPS({ services: [SVC()] }) }],
+      new Set(),
+      {},
+      new Map(),
+    );
+    expect(r.services).toHaveLength(1);
+    expect(r.services[0]!.name).toBe('postgres');
+    expect(r.services[0]!.image).toBe('postgres@sha256:' + 'a'.repeat(64));
+  });
+
+  it('returns an empty services list when no connector declares one', () => {
+    const r = foldConnectorCaps(
+      [{ id: 'plain', capabilities: CAPS() }],
+      new Set(),
+      {},
+      new Map(),
+    );
+    expect(r.services).toEqual([]);
+  });
+
+  it('unions services across connectors (distinct names coexist)', () => {
+    const r = foldConnectorCaps(
+      [
+        { id: 'db', capabilities: CAPS({ services: [SVC({ name: 'postgres' })] }) },
+        { id: 'cache', capabilities: CAPS({ services: [SVC({ name: 'redis' })] }) },
+      ],
+      new Set(),
+      {},
+      new Map(),
+    );
+    expect(r.services.map((s) => s.name).sort()).toEqual(['postgres', 'redis']);
+  });
+
+  it('dedups a service name a SINGLE connector lists twice (idempotent, no throw)', () => {
+    const r = foldConnectorCaps(
+      [
+        {
+          id: 'db',
+          capabilities: CAPS({ services: [SVC({ name: 'postgres' }), SVC({ name: 'postgres' })] }),
+        },
+      ],
+      new Set(),
+      {},
+      new Map(),
+    );
+    expect(r.services).toHaveLength(1);
+    expect(r.services[0]!.name).toBe('postgres');
+  });
+
+  it('throws ConnectorServiceCollisionError when TWO connectors declare the same service name', () => {
+    expect(() =>
+      foldConnectorCaps(
+        [
+          { id: 'a', capabilities: CAPS({ services: [SVC({ name: 'postgres' })] }) },
+          {
+            id: 'b',
+            capabilities: CAPS({
+              services: [SVC({ name: 'postgres', image: 'postgres@sha256:' + 'b'.repeat(64) })],
+            }),
+          },
+        ],
+        new Set(),
+        {},
+        new Map(),
+      ),
+    ).toThrow(ConnectorServiceCollisionError);
+  });
+
+  it('the collision error names BOTH connectors and the colliding service', () => {
+    let caught: unknown;
+    try {
+      foldConnectorCaps(
+        [
+          { id: 'alpha', capabilities: CAPS({ services: [SVC({ name: 'postgres' })] }) },
+          { id: 'beta', capabilities: CAPS({ services: [SVC({ name: 'postgres' })] }) },
+        ],
+        new Set(),
+        {},
+        new Map(),
+      );
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(ConnectorServiceCollisionError);
+    const err = caught as ConnectorServiceCollisionError;
+    expect(err.serviceName).toBe('postgres');
+    expect(err.firstConnectorId).toBe('alpha');
+    expect(err.secondConnectorId).toBe('beta');
+    expect(err.message).toContain('postgres');
+    expect(err.message).toContain('alpha');
+    expect(err.message).toContain('beta');
   });
 });
