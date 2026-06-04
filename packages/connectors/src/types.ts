@@ -288,6 +288,17 @@ export interface ResolveInput {
 export interface ResolveOutput {
   id: string;
   keyMode: KeyMode;
+  /**
+   * The connector's "how to use me" blurb. Storage-agnostic, model-facing text
+   * (not management chrome like name/description) — the orchestrator folds it
+   * into the connector's synthetic SKILL.md body so the agent learns how to use
+   * the connector. Empty string when the owner left it blank, in which case the
+   * orchestrator falls back to a generic blurb. MUST be carried here: it's the
+   * ONLY resolve path for owner-owned / per-agent-attached connectors (only
+   * `connectors:list-defaults` returns it otherwise), so dropping it silently
+   * stripped every non-default connector's instructions.
+   */
+  usageNote: string;
   /** The mechanism-agnostic fill the resolver routes on. */
   capabilities: Capabilities;
   /**
@@ -514,6 +525,7 @@ const CredentialPlanEntrySchema = z.object({
 export const ResolveOutputSchema = z.object({
   id: z.string(),
   keyMode: KeyModeSchema,
+  usageNote: z.string(),
   capabilities: CapabilitiesSchema,
   credentialPlan: z.array(CredentialPlanEntrySchema),
   requiresSharedKeyConsent: z.boolean(),

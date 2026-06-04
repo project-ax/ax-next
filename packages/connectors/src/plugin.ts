@@ -506,7 +506,12 @@ async function resolveConnector(
   // The mechanism-agnostic spec descriptor the future router routes on — id +
   // keyMode + the opaque capabilities fill. Deliberately NOT the management
   // metadata (name/description): the resolve surface can evolve (union shared +
-  // catalog) without widening the management read.
+  // catalog) without widening the management read. `usageNote` IS carried,
+  // though — it's the model-facing "how to use me" text the orchestrator folds
+  // into the connector's SKILL.md body, and resolve is the only path that
+  // reaches it for owner-owned / per-agent-attached connectors. Omitting it
+  // silently stripped every non-default connector's instructions (the agent
+  // saw only the generic "...MCP servers wired..." fallback).
   //
   // TASK-96 — reach-by-attachment: the derived credentialPlan maps the
   // connector's keyMode to the credential SCOPE each slot's key attaches to
@@ -521,6 +526,7 @@ async function resolveConnector(
   return {
     id: connector.id,
     keyMode: connector.keyMode,
+    usageNote: connector.usageNote,
     capabilities: connector.capabilities,
     credentialPlan: deriveCredentialPlan(connector),
     requiresSharedKeyConsent: requiresSharedKeyConsent(connector),
