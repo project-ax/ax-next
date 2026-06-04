@@ -56,6 +56,7 @@ import {
   applyComposeToForm,
   summaryToForm,
   connectorIdFromName,
+  STARTER_SERVICE_EXAMPLES,
   type ConnectorFormState,
   type Mechanism,
   type Transport,
@@ -394,6 +395,48 @@ function ServicesSection({
             </div>
           ))
         )}
+
+        {/* TASK-159 — proven starter examples (NOT an exhaustive list). One click
+            drops the descriptor (digest-pinned image + the writable paths it needs)
+            into a new row. Each service sidecar inherits the runner's locked posture
+            (read-only root filesystem), so it must declare a writable path for every
+            dir the image scribbles into — data dir, /tmp, caches. Bring your own
+            with the Compose paste above; these are just a running start. */}
+        <div className="flex flex-col gap-2 rounded-md border border-dashed border-border p-3">
+          <div className="flex flex-col gap-0.5">
+            <Label className="text-xs">Start from an example</Label>
+            <p className="text-xs text-muted-foreground">
+              A couple of services we’ve proven on a real cluster — examples, not an
+              exhaustive list. Each one already declares the writable paths it needs.
+            </p>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            {STARTER_SERVICE_EXAMPLES.map((ex) => (
+              <Button
+                key={ex.label}
+                type="button"
+                variant="outline"
+                size="sm"
+                title={ex.description}
+                onClick={() =>
+                  // Deep-copy so two clicks of the same chip don't alias the
+                  // shared constant's nested arrays/record across form rows.
+                  onChange([
+                    ...services,
+                    {
+                      ...ex.service,
+                      ports: [...ex.service.ports],
+                      env: { ...ex.service.env },
+                      writablePaths: [...ex.service.writablePaths],
+                    },
+                  ])
+                }
+              >
+                {ex.label}
+              </Button>
+            ))}
+          </div>
+        </div>
 
         <div>
           <Button

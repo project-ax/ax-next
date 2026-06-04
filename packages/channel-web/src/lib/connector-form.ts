@@ -314,6 +314,83 @@ export const emptyServiceRow = (): ServiceDescriptor => ({
   writablePaths: [],
 });
 
+/** A labelled starter service the author can drop into the form with one click. */
+export interface StarterServiceExample {
+  /** Short pick-list label (e.g. "MongoDB"). */
+  label: string;
+  /** One line on what it is + why these writable paths (the locked-sidecar hint). */
+  description: string;
+  /** The ready-to-edit descriptor — digest-pinned image + the proven writablePaths. */
+  service: ServiceDescriptor;
+}
+
+/**
+ * TASK-159 — a SMALL set of PROVEN starter examples, NOT an exhaustive catalog.
+ *
+ * The `services` capability is image-agnostic: any digest-pinned image + the
+ * writable paths it needs + admin approval. We deliberately do NOT ship a curated
+ * image registry — that's a version/CVE-churn treadmill, and authors usually bring
+ * their own services (the Compose paste above translates an existing
+ * docker-compose.yml). These are just a running start.
+ *
+ * The whole trick (see `packages/sandbox-k8s/SECURITY.md` → "Dev-service sidecars:
+ * declare every writable path"): a sidecar inherits the runner pod's locked posture
+ * (read-only root filesystem, non-root, all caps dropped), so it must declare a
+ * writable path for EVERY directory the image writes — data dir, `/tmp` for unix
+ * sockets and lock files, and any cache/install dir the image scribbles into. Miss
+ * one and the container dies at startup with an opaque EROFS / permission error.
+ *
+ * The Mongo and Kafka-native refs + writable paths below were proven on a real kind
+ * cluster (the TASK-156 acceptance walk). Kafka has a cautionary twin: the JVM
+ * `apache/kafka` image FAILS under the read-only rootfs because it writes a
+ * Class-Data-Sharing archive (`.jsa`) into its install dir `/opt/kafka` — so we
+ * point at the GraalVM `apache/kafka-native` build, which has no CDS step. When in
+ * doubt, a rootless/native build beats a JVM image here.
+ *
+ * Each example's image is digest-pinned (`…@sha256:<64 hex>`) and each writable
+ * path is absolute — the same shape the descriptor schema enforces server-side.
+ */
+export const STARTER_SERVICE_EXAMPLES: readonly StarterServiceExample[] = [
+  {
+    label: 'MongoDB',
+    description:
+      'Document database. Writes its data files to /data/db and uses /tmp for its socket.',
+    service: {
+      name: 'mongo',
+      image:
+        'docker.io/library/mongo@sha256:4b5bf3c2bb7516164f6dcb44acce4fdcb428abfe5771a1128304a0f34ab9ff7c',
+      ports: [27017],
+      env: {},
+      writablePaths: ['/data/db', '/tmp'],
+    },
+  },
+  {
+    label: 'Kafka (native)',
+    description:
+      'Event broker, GraalVM-native build (no JVM Class-Data-Sharing write). The JVM apache/kafka image fails on a read-only rootfs — use this one.',
+    service: {
+      name: 'kafka',
+      image:
+        'docker.io/apache/kafka-native@sha256:c20b97f0a3990771f52bf7855ccb9ae82ac683a357a101482ba349dfb2ae0cdb',
+      ports: [9092],
+      env: {},
+      writablePaths: [
+        '/var/lib/kafka/data',
+        '/tmp',
+        '/opt/kafka/config',
+        '/opt/kafka/logs',
+        '/mnt/shared/config',
+      ],
+    },
+  },
+];
+
+// Postgres/Redis are obvious next candidates, but a real digest can't be derived
+// without pulling the registry, and a made-up sha256 would resolve to nothing — so
+// we ship only the two examples we actually proved (Mongo + Kafka-native) rather
+// than fabricate pins. Pasting your own docker-compose.yml (with real digests) is
+// the supported path for everything else; the approval wall is the curation point.
+
 /** The outcome of pasting a compose file into the form. `ok:false` carries a
  *  human-readable reason the paste was unusable (not YAML / not a mapping / no
  *  services). `ok:true` carries the new form (services REPLACED, not appended, so
