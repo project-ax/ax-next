@@ -53,6 +53,24 @@ spec:
       ports:
         - port: {{ .Values.host.ports.ipc }}
           protocol: TCP
+    {{- if .Values.credentialProxy.tcp.enabled }}
+    # TASK-149 — credential-proxy TCP Service (production gVisor). In TCP
+    # mode the runner reaches the proxy over a ClusterIP Service instead of
+    # a hostPath socket, so it needs an egress hole to the proxy port on the
+    # host pod. This is the ONLY new reach, and it goes to the proxy (the
+    # egress chokepoint) — NOT the internet. The proxy listens inside the
+    # host container, so this targets the same host pod as the IPC rule.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ include "ax-next.hostNamespace" . }}
+          podSelector:
+            matchLabels:
+              {{- include "ax-next.selectorLabels" (dict "component" "host" "context" $) | nindent 14 }}
+      ports:
+        - port: {{ .Values.credentialProxy.tcp.port | default 8888 }}
+          protocol: TCP
+    {{- end }}
     # DNS (cluster DNS lives in kube-system).
     - ports:
         - port: 53

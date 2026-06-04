@@ -437,29 +437,49 @@ export function buildPodSpec(
 
   // Per-session credential-proxy env (Phase 1a, k8s side). The runner-
   // side `setupProxy()` keys off AX_PROXY_UNIX_SOCKET (k8s) or
-  // AX_PROXY_ENDPOINT (subprocess) — exactly one. NODE_EXTRA_CA_CERTS +
+  // AX_PROXY_ENDPOINT (subprocess/TCP) — exactly one. NODE_EXTRA_CA_CERTS +
   // SSL_CERT_FILE point at the proxy's MITM root cert so the SDK trusts
   // it. The placeholder envMap (e.g. ANTHROPIC_API_KEY=ax-cred:<hex>)
   // merges last so per-session credentials win over anything else.
   //
-  // The CA cert path is `<config.proxySocketHostPath>/proxy-ca/ca.crt`
-  // mounted at `/var/run/ax/proxy-ca/ca.crt` — the host's
-  // `@ax/credential-proxy` writes it there at boot when caDir is set
-  // to a path inside the shared dir. When `proxySocketHostPath` is
-  // unset, no mount happens and the env stamps still resolve to the
-  // expected runner-side path; the runner crashes when the bridge
-  // can't dial the socket. That's the intended fail-loud posture.
+  // Two CA-delivery postures (TASK-149):
+  //
+  //  - hostPath / Unix socket (kind, single-node): the CA cert is mounted
+  //    at `/var/run/ax/proxy-ca/ca.crt` via the shared hostPath dir — the
+  //    host's `@ax/credential-proxy` writes it there at boot when caDir is
+  //    set inside the shared dir. Cert env vars point at that mounted path.
+  //
+  //  - TCP / Service (production gVisor — GKE Sandbox bans hostPath): there
+  //    is NO shared dir, so the host can't write the cert into the runner
+  //    pod. Instead the CA PEM rides as `AX_PROXY_CA_PEM` (a public key,
+  //    safe inside the sandbox per I1) and the RUNNER writes it to a tmpfs
+  //    path at boot (see @ax/agent-claude-sdk-runner proxy-ca-from-env).
+  //    Cert env vars point at that tmpfs path.
+  //
+  // TCP mode is discriminated by the per-session `proxyConfig.endpoint` being
+  // present (a `http://` direct/Service URL — the Unix-socket posture uses
+  // `proxyConfig.unixSocketPath` instead) AND there being NO hostPath mount to
+  // carry the CA. We deliberately key off `pc.endpoint` + the absence of a
+  // hostPath rather than `config.proxyEndpoint`: the CA-delivery decision must
+  // follow what the runner ACTUALLY gets (a TCP endpoint with no mounted cert),
+  // not a second config knob a programmatic caller might forget to set in
+  // lockstep — a mismatch there would stamp AX_PROXY_ENDPOINT while leaving the
+  // CA vars pointing at the unmounted hostPath path (every TLS call would fail).
   const proxyEnv: EnvVar[] = [];
   if (input.proxyConfig !== undefined) {
     const pc = input.proxyConfig;
-    proxyEnv.push({
-      name: 'NODE_EXTRA_CA_CERTS',
-      value: '/var/run/ax/proxy-ca/ca.crt',
-    });
-    proxyEnv.push({
-      name: 'SSL_CERT_FILE',
-      value: '/var/run/ax/proxy-ca/ca.crt',
-    });
+    // TCP-Service posture: no hostPath, the proxy is reached over a cluster
+    // Service URL and the CA arrives by env. The runner writes the PEM here.
+    const tcpMode =
+      config.proxySocketHostPath.length === 0 && pc.endpoint !== undefined;
+    // Where the runner finds the MITM CA. hostPath mode → the mounted shared
+    // dir; TCP mode → a tmpfs path the runner writes from AX_PROXY_CA_PEM.
+    // (HOME is /home/runner, a tmpfs emptyDir already mounted + writable.)
+    const caCertPath = tcpMode
+      ? '/home/runner/.ax/proxy-ca/ca.crt'
+      : '/var/run/ax/proxy-ca/ca.crt';
+    proxyEnv.push({ name: 'NODE_EXTRA_CA_CERTS', value: caCertPath });
+    proxyEnv.push({ name: 'SSL_CERT_FILE', value: caCertPath });
     // TASK-12: NODE_EXTRA_CA_CERTS / SSL_CERT_FILE only steer Node's TLS
     // (the SDK's undici fetch). The `git` binary the Bash tool spawns is
     // libcurl/OpenSSL-backed and reads NEITHER — it verifies the proxy's
@@ -468,10 +488,7 @@ export function buildPodSpec(
     // local issuer certificate` (the CLI-1 walk-fail). Stamp the SAME CA
     // path the Node vars use; the runner forwards GIT_SSL_CAINFO into the
     // SDK subprocess via the GIT_ prefix allowlist (see proxy-startup.ts).
-    proxyEnv.push({
-      name: 'GIT_SSL_CAINFO',
-      value: '/var/run/ax/proxy-ca/ca.crt',
-    });
+    proxyEnv.push({ name: 'GIT_SSL_CAINFO', value: caCertPath });
     // TASK-62: Deno-compiled CLIs the Bash tool spawns (e.g.
     // `npx @schpet/linear-cli`, which ships a Deno binary) use rustls with a
     // bundled Mozilla root store and read NEITHER NODE_EXTRA_CA_CERTS nor
@@ -482,10 +499,14 @@ export function buildPodSpec(
     // surfaced by the linear-cli skill. Stamp the SAME CA path the Node/git
     // vars use; the runner forwards DENO_CERT into the SDK subprocess
     // explicitly (see proxy-startup.ts).
-    proxyEnv.push({
-      name: 'DENO_CERT',
-      value: '/var/run/ax/proxy-ca/ca.crt',
-    });
+    proxyEnv.push({ name: 'DENO_CERT', value: caCertPath });
+    // TASK-149: in TCP mode the runner has no mounted cert — deliver the PEM
+    // as an env var it writes to `caCertPath` at boot. Omitted in hostPath
+    // mode (the cert is already mounted; re-writing it is pointless and the
+    // runner's writer no-ops when the file exists, so hostPath still wins).
+    if (tcpMode) {
+      proxyEnv.push({ name: 'AX_PROXY_CA_PEM', value: pc.caCertPem });
+    }
     if (pc.endpoint !== undefined) {
       proxyEnv.push({ name: 'AX_PROXY_ENDPOINT', value: pc.endpoint });
       proxyEnv.push({ name: 'HTTPS_PROXY', value: pc.endpoint });
@@ -508,7 +529,19 @@ export function buildPodSpec(
       // egress (including blocked, allowlist-miss requests) to this session.
       proxyEnv.push({ name: 'AX_PROXY_TOKEN', value: pc.proxyAuthToken });
     }
+    // Proxy CONTROL env wins over credential slots (TASK-149, codex P2). The
+    // placeholder envMap is appended last so per-session credentials win over
+    // ordinary env — but a skill/connector could declare a credential slot
+    // NAMED like one of our control vars (e.g. `AX_PROXY_CA_PEM`), whose
+    // `ax-cred:<hex>` placeholder would then shadow the real value (the kubelet
+    // takes the LAST entry for a duplicate env name). For AX_PROXY_CA_PEM that
+    // means the runner writes an `ax-cred:` string as the CA file and every
+    // proxied TLS call fails. Reserve the control names: drop any envMap key
+    // that collides with a var we already stamped. (Mirrors the TASK-86
+    // trusted-base-wins precedent — control env is trusted, slot env isn't.)
+    const reservedProxyEnv = new Set(proxyEnv.map((e) => e.name));
     for (const [k, v] of Object.entries(pc.envMap)) {
+      if (reservedProxyEnv.has(k)) continue;
       proxyEnv.push({ name: k, value: v });
     }
   }

@@ -48,6 +48,7 @@ import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { materializeUploads, resolveMaterializedPath, uploadsBaseDir } from './materialize-uploads.js';
 import { setupProxy } from './proxy-startup.js';
+import { writeProxyCaFromEnv } from './proxy-ca-from-env.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { buildSystemPrompt } from './prompt-engine.js';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
@@ -115,6 +116,26 @@ export async function main(): Promise<number> {
   } catch (err) {
     process.stderr.write(
       `runner: ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return 2;
+  }
+
+  // TASK-149: in TCP-Service mode (production gVisor — no hostPath), the
+  // host can't mount the proxy MITM CA into this pod, so it ships the PEM as
+  // AX_PROXY_CA_PEM and we write it to the tmpfs cert path BEFORE the SDK (or
+  // any TLS) runs. No-op when the cert is already mounted (hostPath mode
+  // wins) or when the env isn't set (subprocess / no-proxy). A write failure
+  // here is bootstrap-fatal — without the CA the SDK's fetch to the proxy
+  // dies with an SSL verification error on its first call. Mirrors the
+  // subprocess backend's CA-write (sandbox-subprocess/open-session.ts).
+  try {
+    const outcome = await writeProxyCaFromEnv();
+    if (outcome === 'written') {
+      process.stderr.write('runner: wrote proxy MITM CA from AX_PROXY_CA_PEM\n');
+    }
+  } catch (err) {
+    process.stderr.write(
+      `runner: proxy CA write failed: ${err instanceof Error ? err.message : String(err)}\n`,
     );
     return 2;
   }
