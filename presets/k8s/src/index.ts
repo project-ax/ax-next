@@ -13,6 +13,7 @@ import { auditLogPlugin } from '@ax/audit-log';
 import { createValidatorSkillPlugin } from '@ax/validator-skill';
 import { createValidatorRoutinePlugin } from '@ax/validator-routine';
 import { createValidatorIdentityPlugin } from '@ax/validator-identity';
+import { createValidatorServicePlugin } from '@ax/validator-service';
 import { createRoutinesPlugin } from '@ax/routines';
 import { createRoutinesAdminRoutesPlugin } from '@ax/routines-admin-routes';
 import { createMcpClientPlugin, createToolDispatcherPlugin } from '@ax/mcp-client';
@@ -616,6 +617,14 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // registered by the git-server client) to decide the bootstrap window. Same
   // observe-and-veto shape as the two validators above.
   plugins.push(createValidatorIdentityPlugin());
+  // TASK-150: validator-service registers `services:validate` — the neutral
+  // dev-SERVICE descriptor validator (digest-pin I8, descriptor caps, named
+  // rejection of smuggled backend vocab I2). A pure, no-dep service hook (no
+  // spawn / file I/O / DB / network), same observe-only shape as the validators
+  // above. Loaded unconditionally (CLI/k8s parity). OPENS the half-wired window:
+  // the validator + the `services` schema field exist, but nothing folds a
+  // service descriptor onto a session yet.
+  plugins.push(createValidatorServicePlugin());
   plugins.push(createRoutinesPlugin());
 
   // Phase D: admin routes for the Routines modal. Mounts /settings/routines/*

@@ -6,7 +6,21 @@ import {
   OpenSessionInputSchema,
   OpenSessionResultSchema,
   ProxyConfigSchema,
+  ServiceDescriptorSchema,
 } from '../schemas.js';
+
+const PINNED_IMAGE = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
+
+function validServiceDescriptor(): Record<string, unknown> {
+  return {
+    name: 'postgres',
+    image: PINNED_IMAGE,
+    ports: [5432],
+    env: { POSTGRES_PASSWORD: 'x' },
+    healthcheck: { kind: 'tcp', port: 5432 },
+    writablePaths: ['/var/lib/postgresql/data'],
+  };
+}
 
 // ---------------------------------------------------------------------------
 // @ax/sandbox-protocol — shared contract for the `sandbox:open-session` payload.
@@ -527,6 +541,96 @@ describe('OpenSessionInputSchema', () => {
       },
     });
     expect(result.success).toBe(false);
+  });
+
+  // --- TASK-150 services (wire re-validation) -------------------------------
+  it('accepts an input carrying a well-formed services array', () => {
+    const result = OpenSessionInputSchema.safeParse({
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      services: [validServiceDescriptor()],
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('still accepts an input with no services (back-compat)', () => {
+    const result = OpenSessionInputSchema.safeParse({
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+    });
+    expect(result.success).toBe(true);
+  });
+
+  it('rejects a service whose image is not digest-pinned (I8 at the wire)', () => {
+    const result = OpenSessionInputSchema.safeParse({
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      services: [{ ...validServiceDescriptor(), image: 'postgres:16' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a service with a non-absolute writablePath', () => {
+    const result = OpenSessionInputSchema.safeParse({
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      services: [{ ...validServiceDescriptor(), writablePaths: ['var/lib/data'] }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects a service carrying smuggled backend vocabulary (strict) (I2)', () => {
+    const result = OpenSessionInputSchema.safeParse({
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      services: [{ ...validServiceDescriptor(), runtimeClassName: 'gvisor' }],
+    });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects more than 8 services (carrier cap)', () => {
+    const services = Array.from({ length: 9 }, (_, i) => ({
+      ...validServiceDescriptor(),
+      name: `svc-${i}`,
+    }));
+    const result = OpenSessionInputSchema.safeParse({
+      sessionId: 'sess-1',
+      workspaceRoot: '/tmp/ws',
+      runnerBinary: '/opt/ax/runner.js',
+      services,
+    });
+    expect(result.success).toBe(false);
+  });
+});
+
+// --- ServiceDescriptorSchema (standalone wire re-validation) ----------------
+describe('ServiceDescriptorSchema', () => {
+  it('accepts a well-formed descriptor', () => {
+    expect(ServiceDescriptorSchema.safeParse(validServiceDescriptor()).success).toBe(true);
+  });
+
+  it('rejects an over-cap env (>32 entries)', () => {
+    const env: Record<string, string> = {};
+    for (let i = 0; i < 33; i++) env[`K${i}`] = 'v';
+    const result = ServiceDescriptorSchema.safeParse({ ...validServiceDescriptor(), env });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects an out-of-range port', () => {
+    expect(
+      ServiceDescriptorSchema.safeParse({ ...validServiceDescriptor(), ports: [0] }).success,
+    ).toBe(false);
+  });
+
+  it('defaults writablePaths to [] when omitted', () => {
+    const { writablePaths: _drop, ...rest } = validServiceDescriptor();
+    const parsed = ServiceDescriptorSchema.parse(rest);
+    expect(parsed.writablePaths).toEqual([]);
   });
 });
 

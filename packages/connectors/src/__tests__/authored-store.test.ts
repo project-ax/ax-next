@@ -39,6 +39,9 @@ function caps(): Capabilities {
     credentials: [{ slot: 'LINEAR_API_KEY', kind: 'api-key' }],
     mcpServers: [],
     packages: { npm: [], pypi: [] },
+    // TASK-150 — the store's CapabilitiesSchema defaults services to [] on
+    // parse; set it here so the read-back round-trip assertions stay exact.
+    services: [],
   };
 }
 
