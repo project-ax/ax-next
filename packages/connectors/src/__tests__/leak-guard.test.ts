@@ -110,6 +110,9 @@ describe('@ax/connectors hook surface — no leaked backing-mechanism fields', (
     const keys = topLevelKeysOutsideCapabilities(ResolveOutputSchema);
     expect(keys).toContain('credentialPlan');
     expect(keys).toContain('requiresSharedKeyConsent');
+    // usageNote is storage-agnostic, model-facing text (the orchestrator folds
+    // it into the connector's SKILL.md body) — resolve MUST carry it.
+    expect(keys).toContain('usageNote');
     expect(keys).toContain('slot');
     expect(keys).toContain('scope');
     expect(keys).toContain('ref');
