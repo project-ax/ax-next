@@ -94,6 +94,11 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   // few indexed writes + a blob put host-side. 30 s covers the optional LLM safety
   // scan the `skills:scan` subscriber may run before the gate classifies.
   'skill.propose': 30_000,
+  // `proxy.drain-egress-blocks` — the runner drains its session's allowlist-
+  // blocked hosts at PostToolUse (empty request, a small string array back).
+  // Single in-memory map read host-side. 5 s is generous; this rides the hot
+  // tool-loop path, so fail-fast (and skip the note) beats stalling a turn.
+  'proxy.drain-egress-blocks': 5_000,
 });
 
 /** The closed set of sandbox→host RPC action names. */
