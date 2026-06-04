@@ -626,6 +626,223 @@ describe('buildPodSpec', () => {
     });
   });
 
+  // TASK-151 — dev SERVICE sidecars. Each declared `services[]` descriptor
+  // renders as a NATIVE k8s sidecar: an `initContainers[]` entry with
+  // `restartPolicy: 'Always'`. This is load-bearing (I1): a plain `containers[]`
+  // service (a long-running DB/broker) would never terminate, so under
+  // `restartPolicy: Never` the pod never reaches Succeeded/Failed and
+  // `watchPodExit` loops until the 6h deadline — a pod leak. Native sidecars
+  // don't count toward pod completion, so the pod completes when the runner
+  // (containers[0]) exits.
+  describe('service sidecars (TASK-151, I1/I4/I5/I6)', () => {
+    const PINNED =
+      'docker.io/library/postgres@sha256:0000000000000000000000000000000000000000000000000000000000000000';
+    type Svc = {
+      name: string;
+      image: string;
+      ports: number[];
+      env: Record<string, string>;
+      writablePaths: string[];
+      healthcheck?:
+        | { kind: 'tcp'; port: number }
+        | { kind: 'exec'; command: string[] };
+    };
+    const svc = (over: Partial<Svc> = {}): Svc => ({
+      name: 'postgres',
+      image: PINNED,
+      ports: [5432],
+      env: { POSTGRES_PASSWORD: 'x' },
+      writablePaths: ['/var/lib/postgresql/data'],
+      healthcheck: { kind: 'tcp', port: 5432 },
+      ...over,
+    });
+
+    type InitC = {
+      name: string;
+      image: string;
+      restartPolicy?: string;
+      securityContext?: Record<string, unknown>;
+      env?: Array<{ name: string; value: string }>;
+      ports?: Array<{ containerPort: number }>;
+      volumeMounts?: Array<{ name: string; mountPath: string }>;
+      startupProbe?: Record<string, unknown>;
+    };
+    const podOf = (services: Svc[]) =>
+      buildPodSpec('pod-svc', { ...baseInput, services }, baseResolved()).spec as {
+        securityContext?: { fsGroup?: number };
+        containers: Array<{ name: string; securityContext: Record<string, unknown> }>;
+        initContainers: InitC[];
+        volumes: Array<{ name: string; emptyDir?: object }>;
+      };
+
+    it('renders N services as N native sidecars (initContainers, restartPolicy Always) + sdk-scaffold', () => {
+      const spec = podOf([svc({ name: 'postgres' }), svc({ name: 'redis', ports: [6379] })]);
+      const sidecars = spec.initContainers.filter((c) => c.name !== 'sdk-scaffold');
+      expect(sidecars).toHaveLength(2);
+      // sdk-scaffold still present, and FIRST (ordering: scaffold → sidecars).
+      expect(spec.initContainers[0]!.name).toBe('sdk-scaffold');
+      for (const c of sidecars) {
+        expect(c.restartPolicy).toBe('Always');
+      }
+    });
+
+    it('I1 regression: zero service containers land in containers[]; runner stays containers[0]', () => {
+      // The leak path the spike found: a service rendered as a plain
+      // `containers[]` entry never terminates, so the pod never completes
+      // under restartPolicy:Never → watchPodExit loops → 6h pod leak.
+      const spec = podOf([svc({ name: 'postgres' }), svc({ name: 'kafka', ports: [9092] })]);
+      expect(spec.containers).toHaveLength(1);
+      expect(spec.containers[0]!.name).toBe('runner');
+    });
+
+    it('each sidecar carries the locked-down securityContext (I5)', () => {
+      const spec = podOf([svc()]);
+      const sidecar = spec.initContainers.find((c) => c.name !== 'sdk-scaffold')!;
+      expect(sidecar.securityContext).toMatchObject({
+        runAsNonRoot: true,
+        runAsUser: 1000,
+        runAsGroup: 1000,
+        allowPrivilegeEscalation: false,
+        readOnlyRootFilesystem: true,
+        capabilities: { drop: ['ALL'] },
+      });
+    });
+
+    it('sets pod fsGroup: 1000 iff services are present (I5)', () => {
+      const withSvc = podOf([svc()]);
+      expect(withSvc.securityContext?.fsGroup).toBe(1000);
+      const without = buildPodSpec('pod-none', baseInput, baseResolved()).spec as {
+        securityContext?: { fsGroup?: number };
+      };
+      expect(without.securityContext?.fsGroup).toBeUndefined();
+    });
+
+    it('renders one emptyDir volume + mount per writablePaths entry (I5)', () => {
+      const spec = podOf([
+        svc({ name: 'mongo', writablePaths: ['/data/db', '/data/configdb'] }),
+      ]);
+      const sidecar = spec.initContainers.find((c) => c.name === 'svc-mongo')!;
+      expect(sidecar.volumeMounts).toEqual([
+        { name: 'svc-mongo-0', mountPath: '/data/db' },
+        { name: 'svc-mongo-1', mountPath: '/data/configdb' },
+      ]);
+      const volNames = spec.volumes.map((v) => v.name);
+      expect(volNames).toContain('svc-mongo-0');
+      expect(volNames).toContain('svc-mongo-1');
+      for (const n of ['svc-mongo-0', 'svc-mongo-1']) {
+        expect(spec.volumes.find((v) => v.name === n)!.emptyDir).toEqual({});
+      }
+    });
+
+    it('stamps ONLY the descriptor env on a sidecar — no AX_*/proxy/git env leak (I5)', () => {
+      const spec = podOf([svc({ name: 'pg', env: { POSTGRES_PASSWORD: 'pw', PGDATA: '/data/db' } })]);
+      const sidecar = spec.initContainers.find((c) => c.name === 'svc-pg')!;
+      expect(sidecar.env).toEqual([
+        { name: 'POSTGRES_PASSWORD', value: 'pw' },
+        { name: 'PGDATA', value: '/data/db' },
+      ]);
+      const names = (sidecar.env ?? []).map((e) => e.name);
+      for (const leaked of [
+        'AX_AUTH_TOKEN',
+        'AX_SESSION_ID',
+        'NODE_EXTRA_CA_CERTS',
+        'GIT_CONFIG_NOSYSTEM',
+        'AX_RUNNER_ENDPOINT',
+      ]) {
+        expect(names).not.toContain(leaked);
+      }
+    });
+
+    it('maps descriptor ports to containerPorts', () => {
+      const spec = podOf([svc({ name: 'kafka', ports: [9092, 9093] })]);
+      const sidecar = spec.initContainers.find((c) => c.name === 'svc-kafka')!;
+      expect(sidecar.ports).toEqual([{ containerPort: 9092 }, { containerPort: 9093 }]);
+    });
+
+    it('derives a startupProbe.tcpSocket from a {kind:tcp} healthcheck (I6)', () => {
+      const spec = podOf([svc({ name: 'pg', healthcheck: { kind: 'tcp', port: 5432 } })]);
+      const sidecar = spec.initContainers.find((c) => c.name === 'svc-pg')!;
+      expect(sidecar.startupProbe).toMatchObject({ tcpSocket: { port: 5432 } });
+      expect((sidecar.startupProbe as { exec?: unknown }).exec).toBeUndefined();
+    });
+
+    it('derives a startupProbe.exec from a {kind:exec} healthcheck (I6)', () => {
+      const spec = podOf([
+        svc({
+          name: 'mongo',
+          healthcheck: { kind: 'exec', command: ['mongosh', '--eval', 'db.runCommand("ping")'] },
+        }),
+      ]);
+      const sidecar = spec.initContainers.find((c) => c.name === 'svc-mongo')!;
+      expect(sidecar.startupProbe).toMatchObject({
+        exec: { command: ['mongosh', '--eval', 'db.runCommand("ping")'] },
+      });
+      expect((sidecar.startupProbe as { tcpSocket?: unknown }).tcpSocket).toBeUndefined();
+    });
+
+    it('omits startupProbe when the descriptor declares no healthcheck', () => {
+      const { healthcheck: _drop, ...rest } = svc({ name: 'cache' });
+      const spec = podOf([rest as Svc]);
+      const sidecar = spec.initContainers.find((c) => c.name === 'svc-cache')!;
+      expect(sidecar.startupProbe).toBeUndefined();
+    });
+
+    it('applies per-service resourcing from config', () => {
+      const cfg = resolveConfig({
+        hostIpcUrl: 'http://host:80',
+        serviceCpuLimit: '2',
+        serviceMemoryLimit: '2Gi',
+        serviceCpuRequest: '250m',
+        serviceMemoryRequest: '768Mi',
+      });
+      const spec = buildPodSpec('pod-res', { ...baseInput, services: [svc({ name: 'kafka' })] }, cfg)
+        .spec as { initContainers: Array<{ name: string; resources?: Record<string, unknown> }> };
+      const sidecar = spec.initContainers.find((c) => c.name === 'svc-kafka')!;
+      expect(sidecar.resources).toEqual({
+        limits: { cpu: '2', memory: '2Gi' },
+        requests: { cpu: '250m', memory: '768Mi' },
+      });
+    });
+
+    it('keeps sidecar container + volume names within the 63-char k8s name limit (long service name)', () => {
+      // ServiceDescriptorSchema's ID_RE allows a name up to 64 chars, but k8s
+      // container + volume names are DNS-1123 labels capped at 63 chars. A
+      // naive `svc-<name>` (4 + up to 64 = 68) would render an invalid pod spec
+      // the API server rejects with an opaque 422 → session roll-back. The
+      // rendered names must stay <= 63 and remain collision-free.
+      const longName = 'a' + 'b'.repeat(63); // 64 chars — the ID_RE ceiling
+      const spec = buildPodSpec(
+        'pod-longname',
+        { ...baseInput, services: [svc({ name: longName, writablePaths: ['/data'] })] },
+        baseResolved(),
+      ).spec as {
+        initContainers: Array<{ name: string; volumeMounts?: Array<{ name: string }> }>;
+        volumes: Array<{ name: string }>;
+      };
+      const sidecar = spec.initContainers.find((c) => c.name !== 'sdk-scaffold')!;
+      expect(sidecar.name.length).toBeLessThanOrEqual(63);
+      for (const m of sidecar.volumeMounts ?? []) {
+        expect(m.name.length).toBeLessThanOrEqual(63);
+      }
+      // The mount name must still match a declared volume (no dangling mount).
+      for (const m of sidecar.volumeMounts ?? []) {
+        expect(spec.volumes.find((v) => v.name === m.name)).toBeDefined();
+      }
+    });
+
+    it('leaves the spec untouched (no fsGroup, no extra volumes) when services is empty', () => {
+      const spec = buildPodSpec('pod-empty', { ...baseInput, services: [] }, baseResolved())
+        .spec as {
+        securityContext?: { fsGroup?: number };
+        initContainers: Array<{ name: string }>;
+        volumes: Array<{ name: string }>;
+      };
+      expect(spec.securityContext?.fsGroup).toBeUndefined();
+      expect(spec.initContainers.map((c) => c.name)).toEqual(['sdk-scaffold']);
+      expect(spec.volumes.find((v) => v.name.startsWith('svc-'))).toBeUndefined();
+    });
+  });
+
   // Phase 1 (skill-install): AX_INSTALLED_SKILLS_JSON env var wiring (I-P1-3).
   //
   // K8s pods can't have the host write files into them at create-time, so
