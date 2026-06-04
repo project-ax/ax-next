@@ -418,6 +418,40 @@ describe('ConnectorEditDialog', () => {
     ]);
   });
 
+  it('a starter-example chip drops its proven descriptor onto capabilities.services (TASK-159)', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    const name = await screen.findByLabelText(/service name/i);
+    fireEvent.change(name, { target: { value: 'Mongo bundle' } });
+    // One click on the MongoDB example chip fills a service row with the proven
+    // digest-pinned image + writable paths — no half-wired dead constant.
+    fireEvent.click(screen.getByRole('button', { name: /^MongoDB$/ }));
+    const mongoImage =
+      'docker.io/library/mongo@sha256:4b5bf3c2bb7516164f6dcb44acce4fdcb428abfe5771a1128304a0f34ab9ff7c';
+    await waitFor(() =>
+      expect(screen.getByDisplayValue(mongoImage)).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+    const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
+    expect(body.capabilities.services).toEqual([
+      {
+        name: 'mongo',
+        image: mongoImage,
+        ports: [27017],
+        env: {},
+        writablePaths: ['/data/db', '/tmp'],
+      },
+    ]);
+  });
+
   it('edit mode prefills declared services from the loaded connector', async () => {
     vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue({
       ...FULL,

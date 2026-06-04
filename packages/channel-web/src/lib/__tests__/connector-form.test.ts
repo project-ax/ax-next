@@ -8,9 +8,11 @@ import {
   connectorIdFromName,
   splitList,
   applyComposeToForm,
+  STARTER_SERVICE_EXAMPLES,
   type ConnectorFormState,
 } from '../connector-form';
 import { emptyCapabilities, type Connector } from '../connectors';
+import { ServiceDescriptorSchema } from '@ax/skills-parser';
 
 const PINNED = 'docker.io/library/postgres@sha256:' + 'a'.repeat(64);
 
@@ -549,5 +551,49 @@ services:
     expect(partial.connectorId).toBe('org-github');
     expect(partial.defaultAttached).toBe(true);
     expect(partial.keyMode).toBe('workspace');
+  });
+});
+
+describe('STARTER_SERVICE_EXAMPLES (TASK-159)', () => {
+  it('ships a small set — examples, not a catalog', () => {
+    // A guard rail against this constant quietly growing into a registry. If a
+    // future example is genuinely proven, bump the bound deliberately.
+    expect(STARTER_SERVICE_EXAMPLES.length).toBeGreaterThanOrEqual(2);
+    expect(STARTER_SERVICE_EXAMPLES.length).toBeLessThanOrEqual(4);
+  });
+
+  it('every example parses as a valid, digest-pinned ServiceDescriptor', () => {
+    for (const ex of STARTER_SERVICE_EXAMPLES) {
+      expect(ex.label.length).toBeGreaterThan(0);
+      expect(ex.description.length).toBeGreaterThan(0);
+      // The canonical schema enforces digest-pinning + absolute writablePaths +
+      // caps; if an example drifts off-shape it fails here, not in production.
+      const parsed = ServiceDescriptorSchema.parse(ex.service);
+      expect(parsed.image).toMatch(/@sha256:[0-9a-f]{64}$/);
+      for (const p of parsed.writablePaths) expect(p.startsWith('/')).toBe(true);
+    }
+  });
+
+  it('carries the proven Mongo + Kafka-native pins and writable paths exactly', () => {
+    const byLabel = (label: string) =>
+      STARTER_SERVICE_EXAMPLES.find((e) => e.label === label)?.service;
+
+    const mongo = byLabel('MongoDB');
+    expect(mongo?.image).toBe(
+      'docker.io/library/mongo@sha256:4b5bf3c2bb7516164f6dcb44acce4fdcb428abfe5771a1128304a0f34ab9ff7c',
+    );
+    expect(mongo?.writablePaths).toEqual(['/data/db', '/tmp']);
+
+    const kafka = byLabel('Kafka (native)');
+    expect(kafka?.image).toBe(
+      'docker.io/apache/kafka-native@sha256:c20b97f0a3990771f52bf7855ccb9ae82ac683a357a101482ba349dfb2ae0cdb',
+    );
+    expect(kafka?.writablePaths).toEqual([
+      '/var/lib/kafka/data',
+      '/tmp',
+      '/opt/kafka/config',
+      '/opt/kafka/logs',
+      '/mnt/shared/config',
+    ]);
   });
 });

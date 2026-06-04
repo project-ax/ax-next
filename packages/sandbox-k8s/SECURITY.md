@@ -87,6 +87,54 @@ Pod env is built from VALIDATED values plus a fixed allowlist (`AX_SESSION_ID`, 
 
 `extraEnv` is for non-secret env layered on top (e.g., `AX_PROXY_UNIX_SOCKET` for the credential-proxy bridge). It does NOT validate values — a host-side caller passing `extraEnv` is trusted to pass non-secret strings. We chose not to validate here because the host plugin assembling the call IS the trust boundary; if a caller wanted to put `KUBECONFIG=...` in `extraEnv`, that's their bug, and the runner pod has no way to reach the host's kubeconfig regardless.
 
+## Dev-service sidecars: declare every writable path
+
+An approved connector can declare a "dev service" — a database, a broker, a cache — that runs alongside the runner so a checked-out repo can reach it at `localhost`. On Kubernetes each one renders as a **native sidecar** (an init container carrying `restartPolicy: Always`), and here's the part that surprises people: **the sidecar inherits the runner pod's locked posture.** Same `readOnlyRootFilesystem: true`, same non-root UID, same `fsGroup: 1000`, same all-caps-dropped. That's by design — a service image is just more untrusted code we're running next to the runner, and we're not going to hand it a writable root filesystem and root just because it calls itself "the database."
+
+The catch: most off-the-shelf service images assume they own a normal, writable filesystem. They write a data directory, a socket, a PID file, a lock file, a cache. Under a read-only root, every one of those writes fails. So the descriptor has a `writablePaths` field, and the rule is blunt:
+
+**Declare a writable path for EVERY directory the image writes to. Miss one and the container dies at startup** — usually with an opaque `EROFS` (read-only file system) or `Permission denied` error that names a path you didn't expect.
+
+Each declared path becomes a small `emptyDir`-backed `tmpfs` mount on that sidecar (per-pod, ephemeral, gone when the pod terminates — same as the runner's writable mounts). It is NOT a host volume or a persistent claim; a dev service's data does not survive the session, and that's intentional (it's a dev dependency, not your production database).
+
+### How to find the paths
+
+There's no shortcut today (TASK-160 will make this self-diagnosing — it surfaces the offending path straight from the sidecar's startup failure; once it lands, this gets a lot less manual):
+
+1. Declare the obvious data directory and run a session that brings the service up.
+2. If the sidecar crash-loops, read its logs. Look for `EROFS` / `Permission denied` / "read-only file system" and the path it was trying to write.
+3. Add that path to `writablePaths`. Repeat until the service starts clean.
+
+It's a little tedious the first time per image, but you do it once and the descriptor is reusable.
+
+### The usual suspects (gotchas)
+
+These are the writes people forget, in rough order of how often they bite:
+
+- **`/tmp`** — almost everything wants it, often for a unix socket or a lock file. Add it pre-emptively; it's the single most common miss.
+- **PID / lock files** — sometimes in `/var/run` or `/run`, sometimes next to the data dir.
+- **Cache directories** — package caches, JIT caches, compiled-template caches. They love to live somewhere unexpected like `/opt/<thing>/cache` or a dotdir under `$HOME`.
+- **Install-dir writes** — the nastiest, because they mean the image writes into the directory it was installed in (`/opt/<thing>`, `/usr/local/<thing>`). The worst offender is a **JVM Class-Data-Sharing (CDS) archive**: a JVM image dumps a `.jsa` file into its install dir on first run, and a read-only rootfs flatly refuses. **The fix is usually a different image, not a longer `writablePaths` list** — prefer a rootless or GraalVM-native build that doesn't write into its install dir at all. (See the Kafka cautionary tale below.)
+
+When in doubt: a native/rootless build beats a JVM image here. The JVM's "write back into where I'm installed" habits fight the read-only rootfs at every turn, and chasing each write with a new writable path is how you end up granting the service most of its filesystem back — which defeats the point.
+
+### Proven starter examples (NOT an exhaustive list)
+
+We deliberately do **not** ship a curated image registry. The `services` capability is image-agnostic — any digest-pinned image plus the writable paths it needs plus an admin's approval — and a blessed-image catalog is a version/CVE-churn treadmill that teaches nothing transferable. Authors usually bring their own services anyway (the connector UI's Compose paste translates an existing `docker-compose.yml`). So here are a couple we've actually proven on a real cluster, framed as a running start, not a list to pick from:
+
+| Service | Image (digest-pinned) | `writablePaths` |
+| --- | --- | --- |
+| **MongoDB** | `docker.io/library/mongo@sha256:4b5bf3c2…ab9ff7c` | `/data/db`, `/tmp` |
+| **Kafka (GraalVM native)** | `docker.io/apache/kafka-native@sha256:c20b97f0…ae0cdb` | `/var/lib/kafka/data`, `/tmp`, `/opt/kafka/config`, `/opt/kafka/logs`, `/mnt/shared/config` |
+
+(The full 64-hex digests live in `STARTER_SERVICE_EXAMPLES` in `packages/channel-web/src/lib/connector-form.ts`, which is also what powers the one-click "Start from an example" chips in the connector's Services section.)
+
+**Cautionary tale — the JVM Kafka image FAILS.** The plain `docker.io/apache/kafka` image is a JVM build, and on a read-only rootfs it dies at startup: it tries to write its Class-Data-Sharing archive (`.jsa`) into `/opt/kafka`, its own install directory, and the read-only filesystem says no. You can't fix that with `writablePaths` without making `/opt/kafka` writable — which hands a service most of its install tree back. The right fix is the image: **use `apache/kafka-native`**, the GraalVM-native build, which has no CDS step and no install-dir write. This is the canonical example of "prefer a native/rootless build" in practice.
+
+### Where curation happens
+
+We provide the **mechanism** (the `services` capability + native-sidecar rendering), the **technique** (this section), and a couple of **starters** — not a central registry. The per-org curation point is the **admin approval wall**: a service rides on a connector, an agent-authored connector lands as a `PENDING` draft, and an admin has to approve it before it grants any reach (the connector-approval gate, TASK-93/94). That's where each organization decides which images it trusts — the approval wall is the allowlist, scoped to one org's blessed set, not a thing we ship a global opinion about. The descriptor also requires the image to be **digest-pinned** (`…@sha256:<64 hex>`) at every hop, so an approved entry can't have its bytes swapped under the org after the fact.
+
 ## Prompt injection / untrusted content
 
 This plugin doesn't process model output or tool output directly. Everything that crosses the pod boundary is opaque bytes from the runner's perspective and opaque pod-status JSON from this plugin's perspective.

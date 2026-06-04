@@ -230,6 +230,33 @@ approved connectors declare (TASK-153). The in-pod sidecar security posture
 (digest-pinned images, the inherited egress lock, per-service writable mounts,
 `fsGroup`) lives in `packages/sandbox-k8s/SECURITY.md`.
 
+### Writable paths: the locked-sidecar technique
+
+Here's the one thing that trips authors, so it's worth flagging at the operator
+level too: a service sidecar inherits the runner pod's locked posture —
+`readOnlyRootFilesystem: true`, non-root, all caps dropped. Most off-the-shelf
+images assume a writable filesystem, so the descriptor's `writablePaths` field
+must name **every** directory the image writes to (its data dir, `/tmp` for
+sockets and lock files, any cache or install dir). Miss one and the sidecar dies
+at startup with an opaque `EROFS` / permission error. The common gotchas (`/tmp`,
+PID/lock files, cache dirs, and the JVM Class-Data-Sharing write that makes the
+plain `apache/kafka` image fail where `apache/kafka-native` succeeds), the
+how-to-find-them recipe, and a couple of proven starter examples
+(Mongo + Kafka-native) live in the package note's **"Dev-service sidecars:
+declare every writable path"** section. Authors mostly meet this through the
+connector UI's Services section (the Compose paste + the one-click "Start from an
+example" chips), not this doc — but if a sidecar won't come up, that's the
+section to read.
+
+**Curation is per-org, via the approval wall — not a registry we ship.** We
+provide the mechanism, the technique, and a couple of starters; we deliberately do
+NOT ship a blessed-image catalog (a version/CVE-churn treadmill). A dev service
+rides on a connector, and an agent-authored connector lands as a `PENDING` draft
+that an admin must approve before it grants any reach (the connector-approval gate,
+TASK-93/94). That approval step is where each organization curates its own trusted
+image set. Combined with the descriptor's mandatory digest-pinning, an approved
+entry can't have its bytes swapped afterward.
+
 ## git-server pod
 
 When `workspace.backend: http` and `gitServer.enabled: true`, the chart
