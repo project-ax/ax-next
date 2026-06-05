@@ -435,6 +435,24 @@ scenario in [`MANUAL-ACCEPTANCE.md`](MANUAL-ACCEPTANCE.md). The short form:
 kubectl -n ax-next logs deploy/ax-next-host | grep -E 'token: ax_bs_|open:  http' | head -2
 ```
 
+> **Token not in the logs?** It's printed **once**, only on the boot where the
+> plugin first generates it (empty `bootstrap_state`). If the host pod has
+> restarted since — very likely after a churny bring-up — that line is gone, and
+> the current pod won't reprint (a `pending` row already exists). The token is
+> stored *hashed*, so it can't be read back; **re-mint** it instead (runs inside
+> the pod since the DB is private-IP):
+>
+> ```bash
+> kubectl exec -n ax-next deploy/ax-next-host -- \
+>   node /opt/ax-next/host/dist/main.js admin reset-bootstrap
+> ```
+>
+> This prints a fresh `token: ax_bs_…` + the `open:` URL. No `--force` needed
+> unless `bootstrap_state` is already `completed`. (If exec returns
+> `No agent available`, that's a transient GKE konnectivity blip — retry.) To
+> sidestep this entirely, set `onboarding.bootstrapToken` (a value you choose,
+> ideally from a Secret) so the token never depends on ephemeral stdout.
+
 Open `https://$DOMAIN/setup?token=ax_bs_<...>` (or the port-forward URL), then:
 
 1. **Create your admin account** (name + email).
