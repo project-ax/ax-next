@@ -330,10 +330,30 @@ EOF
 
 ## Step 6 — Edit the overlay and install
 
-Open [`charts/ax-next/gke-values.yaml`](charts/ax-next/gke-values.yaml) and fill
-in every `# >>> EDIT`: the image repo/tag, the domain (in `ingress.host`,
-`http.allowedOrigins`, `onboarding.publicBaseUrl`), and confirm the static-IP /
-cert names match Step 5.
+Keep your real values **out of the tracked template.** Rather than editing
+`gke-values.yaml` in place, put just the keys you're changing into a gitignored
+override file and layer it on top. (`*.local.yaml` is gitignored, so your
+project / domain / registry values never land in git.)
+
+Create `deploy/charts/ax-next/gke-values.local.yaml`:
+
+```yaml
+image:
+  # The host MUST be the REGIONAL Artifact Registry (<region>-docker.pkg.dev),
+  # matching where you pushed — NOT the multi-region us-docker.pkg.dev.
+  repository: us-central1-docker.pkg.dev/<PROJECT_ID>/ax-next/agent
+workspace:
+  storage: 20Gi
+ingress:
+  host: your.domain.example            # also the A-record + ManagedCertificate domain
+http:
+  allowedOrigins:
+    - https://your.domain.example      # MUST exactly match the origin, or the CSRF gate 403s
+onboarding:
+  publicBaseUrl: https://your.domain.example
+# If you named the static IP / cert something other than ax-next-ip / ax-next-cert
+# in Step 5, override ingress.annotations here too.
+```
 
 Helm needs the (conditioned-off) Postgres subchart present in `charts/` before it
 will render, so build dependencies once:
@@ -343,18 +363,16 @@ helm repo add bitnami https://charts.bitnami.com/bitnami
 helm dependency build deploy/charts/ax-next
 ```
 
-Install:
+Install — template first, your overrides second (later `-f` wins):
 
 ```bash
 helm upgrade --install ax-next deploy/charts/ax-next \
   --namespace ax-next \
   -f deploy/charts/ax-next/gke-values.yaml \
+  -f deploy/charts/ax-next/gke-values.local.yaml \
   --set credentials.key="$AX_CREDENTIALS_KEY" \
   --set http.cookieKey="$AX_HTTP_COOKIE_KEY"
 ```
-
-(If you'd rather not edit the file, override via flags instead, e.g.
-`--set image.repository=$IMAGE --set image.tag=$TAG --set ingress.host=$DOMAIN`.)
 
 ---
 
