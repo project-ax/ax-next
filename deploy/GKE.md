@@ -44,8 +44,10 @@ The good news is most of it works *in our favour*:
 
 ## Prerequisites
 
-- An existing **GKE Autopilot** cluster and `kubectl` pointed at it
-  (`gcloud container clusters get-credentials <cluster> --region <region>`).
+- An existing **GKE Autopilot** cluster. You'll point `kubectl` at it in Step 0
+  below — don't assume your current context already is it. A local kind/minikube
+  context is a classic mix-up, and every `kubectl` step here would then silently
+  target the wrong cluster.
 - `gcloud`, `kubectl`, `helm` 3.x, and `docker` with `buildx`.
 - A **domain name** you control (for the managed certificate + DNS).
 - Project IAM enough to create: Cloud SQL instances, Artifact Registry repos,
@@ -61,6 +63,20 @@ export VPC=default                   # the cluster's VPC network name
 export DOMAIN=ax.example.com         # the hostname you'll serve on
 export TAG=v0.0.1                    # an immutable image tag (NOT :latest)
 export IMAGE=$REGION-docker.pkg.dev/$PROJECT_ID/ax-next/agent
+```
+
+---
+
+## Step 0 — Point kubectl at the GKE cluster
+
+Every `kubectl` step below targets your **current context** — so make it the GKE
+cluster first. If you've been running ax-next on kind, your context is almost
+certainly still pointed there, and the namespace/secret/install steps would land
+on the wrong cluster.
+
+```bash
+gcloud container clusters get-credentials <cluster-name> --region $REGION --project $PROJECT_ID
+kubectl config current-context   # sanity-check: should name your GKE cluster
 ```
 
 ---
@@ -88,20 +104,27 @@ gcloud services vpc-peerings connect \
 ```bash
 export DB_PASSWORD=$(openssl rand -base64 24)   # SAVE THIS (goes in a Secret below)
 
+# --edition=ENTERPRISE is REQUIRED to use a custom tier (db-custom-*). Without it,
+# a project that defaults new instances to ENTERPRISE_PLUS rejects the custom tier
+# ("Invalid Tier db-custom-2-7680 for ENTERPRISE_PLUS Edition"). Enterprise Plus
+# only takes predefined db-perf-optimized-N-* machines. --storage-auto-increase
+# grows the disk before it fills; the limit caps runaway growth.
 gcloud sql instances create ax-next-db \
   --project=$PROJECT_ID --region=$REGION \
   --database-version=POSTGRES_17 \
-  --tier=db-custom-2-7680 \
+  --edition=ENTERPRISE --tier=db-custom-2-7680 \
+  --storage-auto-increase --storage-auto-increase-limit=200 \
   --network=projects/$PROJECT_ID/global/networks/$VPC \
   --no-assign-ip \
-  --require-ssl
+  --ssl-mode=ENCRYPTED_ONLY
 
 gcloud sql databases create ax_next --instance=ax-next-db --project=$PROJECT_ID
 gcloud sql users create ax_next --instance=ax-next-db --password="$DB_PASSWORD" --project=$PROJECT_ID
 
-# Grab the private IP — you'll need it for the DSN.
+# Grab the private IP — you'll need it for the DSN. --no-assign-ip means the
+# instance has ONLY a private address, so ipAddresses[0] is it.
 export DB_PRIVATE_IP=$(gcloud sql instances describe ax-next-db --project=$PROJECT_ID \
-  --format='value(ipAddresses.filter("type:PRIVATE").extract("ipAddress").flatten())')
+  --format='value(ipAddresses[0].ipAddress)')
 echo "Cloud SQL private IP: $DB_PRIVATE_IP"
 ```
 
@@ -110,6 +133,12 @@ echo "Cloud SQL private IP: $DB_PRIVATE_IP"
 > Google-recommended pattern) would need a chart change. Private-IP + a DSN
 > Secret works with the chart as-is. Moving to the Auth Proxy + Workload Identity
 > + IAM auth is a documented follow-up (see [the bottom](#what-this-does-not-cover)).
+
+> **Neither sizing choice locks you in.** Storage can be increased online with no
+> downtime at any time (it only ever grows — you can't shrink in place without an
+> export/migrate), and you can later do an in-place **Enterprise → Enterprise Plus**
+> edition upgrade (sub-second downtime, keeps the same name / IP / DSN) if you
+> need the data cache or more performance. So start small and grow.
 
 ### 1c. Enable pgvector (only if you'll use memory/strata plugins)
 
