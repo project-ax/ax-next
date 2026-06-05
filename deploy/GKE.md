@@ -108,12 +108,15 @@ export DB_PASSWORD=$(openssl rand -base64 24)   # SAVE THIS (goes in a Secret be
 # a project that defaults new instances to ENTERPRISE_PLUS rejects the custom tier
 # ("Invalid Tier db-custom-2-7680 for ENTERPRISE_PLUS Edition"). Enterprise Plus
 # only takes predefined db-perf-optimized-N-* machines. --storage-auto-increase
-# grows the disk before it fills; the limit caps runaway growth.
+# (GA) grows the disk before it fills, so you never run out. To CAP that growth,
+# --storage-auto-increase-limit=N is beta-only on create — add it later via
+# `gcloud beta sql instances patch ax-next-db --storage-auto-increase-limit=N`
+# or the Console. Storage only ever grows; it can't shrink in place.
 gcloud sql instances create ax-next-db \
   --project=$PROJECT_ID --region=$REGION \
   --database-version=POSTGRES_17 \
   --edition=ENTERPRISE --tier=db-custom-2-7680 \
-  --storage-auto-increase --storage-auto-increase-limit=200 \
+  --storage-auto-increase \
   --network=projects/$PROJECT_ID/global/networks/$VPC \
   --no-assign-ip \
   --ssl-mode=ENCRYPTED_ONLY
