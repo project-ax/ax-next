@@ -809,6 +809,35 @@ describeIfHelm('ax-next chart: ingress backend port (GKE ingress fix)', () => {
   });
 });
 
+describeIfHelm('ax-next chart: serve /chat bearer token (AX_SERVE_TOKEN)', () => {
+  // `serve.existingSecret` wires AX_SERVE_TOKEN from an operator-created Secret so
+  // POST /chat requires a bearer token. Default-empty preserves the current
+  // (open, with a boot warning) behaviour so nothing breaks for port-forward
+  // deploys; a public-ingress deploy is expected to set it.
+  it('default: no AX_SERVE_TOKEN env (open /chat preserved, no breakage)', () => {
+    const env = findHostEnv(helmTemplate([]));
+    expect(env.find((e) => e.name === 'AX_SERVE_TOKEN')).toBeUndefined();
+  });
+
+  it('serve.existingSecret set: AX_SERVE_TOKEN sourced from that Secret, key defaults to token', () => {
+    const env = findHostEnv(helmTemplate(['--set', 'serve.existingSecret=my-serve-secret']));
+    const t = env.find((e) => e.name === 'AX_SERVE_TOKEN');
+    const ref = (t?.valueFrom as { secretKeyRef?: { name?: string; key?: string } } | undefined)
+      ?.secretKeyRef;
+    expect(ref?.name).toBe('my-serve-secret');
+    expect(ref?.key).toBe('token');
+  });
+
+  it('serve.secretKey overrides the Secret key', () => {
+    const env = findHostEnv(
+      helmTemplate(['--set', 'serve.existingSecret=my-serve-secret', '--set', 'serve.secretKey=bearer']),
+    );
+    const t = env.find((e) => e.name === 'AX_SERVE_TOKEN');
+    const ref = (t?.valueFrom as { secretKeyRef?: { key?: string } } | undefined)?.secretKeyRef;
+    expect(ref?.key).toBe('bearer');
+  });
+});
+
 describeIfHelm('ax-next chart: host RBAC Role (TASK-160)', () => {
   it('grants pods verbs + a narrow pods/log:get for sidecar-failure diagnosis', () => {
     const docs = helmTemplate([]);

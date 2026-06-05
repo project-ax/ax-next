@@ -374,6 +374,33 @@ helm upgrade --install ax-next deploy/charts/ax-next \
   --set http.cookieKey="$AX_HTTP_COOKIE_KEY"
 ```
 
+### Lock down `/chat` (required with a public ingress)
+
+The `serve` subcommand's raw **`POST /chat`** endpoint is open by default — fine
+behind a port-forward, but with the public Ingress you're enabling it becomes a
+public, unauthenticated **agent-execution** endpoint (anyone could POST a prompt
+and burn your Anthropic tokens). The authenticated web UI uses `/api/chat`, a
+different path, so gating `/chat` doesn't affect normal use.
+
+Create a token Secret, back it up, and point the chart at it via `serve.existingSecret`:
+
+```bash
+SERVE_TOKEN=$(openssl rand -hex 32)
+kubectl create secret generic ax-next-serve-token -n ax-next --from-literal=token="$SERVE_TOKEN"
+printf '%s' "$SERVE_TOKEN" | gcloud secrets create ax-next-serve-token \
+  --data-file=- --replication-policy=automatic --project=$PROJECT_ID
+```
+
+Then add to `gke-values.local.yaml` and re-run the install above:
+
+```yaml
+serve:
+  existingSecret: ax-next-serve-token
+```
+
+After this, `/chat` callers need `Authorization: Bearer $SERVE_TOKEN`. (The
+token's in a Secret, not your values/shell history — same posture as the DB DSN.)
+
 ---
 
 ## Step 7 — Wait for it to come up
