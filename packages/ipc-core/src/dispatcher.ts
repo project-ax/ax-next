@@ -115,12 +115,12 @@ ACTIONS.set('/skill.propose', { method: 'POST', handler: skillProposeHandler });
 // Agent-visible egress-block note: the runner drains its session's allowlist-
 // blocked hosts at PostToolUse. Empty JSON request, `{ hosts: string[] }` back.
 ACTIONS.set('/proxy.drain-egress-blocks', { method: 'POST', handler: proxyDrainEgressBlocksHandler });
-// TASK-67 (out-of-git Part B / B2): resume-transcript JSON actions. append takes
-// a small JSON request + returns a JSON envelope; get-transcript takes a JSON
-// request and returns a BINARY response (HandlerBinary) — still an ordinary
-// ACTION (the REQUEST body is JSON). replace-transcript's REQUEST body is raw
-// octet-stream → it's a BINARY_ACTION below.
-ACTIONS.set('/session.append-transcript', { method: 'POST', handler: sessionAppendTranscriptHandler });
+// TASK-67 (out-of-git Part B / B2): resume-transcript actions. get-transcript
+// takes a JSON request and returns a BINARY response (HandlerBinary) — still an
+// ordinary ACTION (the REQUEST body is JSON). append-transcript and
+// replace-transcript both stream their delta/whole jsonl as a raw octet-stream
+// REQUEST body → they're BINARY_ACTIONS below (a single turn that Reads a large
+// attachment can push even the per-turn delta past the 4 MiB JSON cap).
 ACTIONS.set('/session.get-transcript', { method: 'POST', handler: sessionGetTranscriptHandler });
 
 // Maximum inbound blob body for the raw-body REQUEST-direction channel
@@ -133,14 +133,19 @@ const MAX_BLOB_BODY_BYTES = 100 * 1024 * 1024;
 
 // BINARY_ACTIONS — POST actions whose REQUEST body is a raw octet-stream (NOT
 // JSON), read via `readRawBody` under MAX_BLOB_BODY_BYTES instead of the 4 MiB
-// JSON cap. Today only `blob.put` (the runner streams artifact bytes inbound).
+// JSON cap. `blob.put` streams artifact bytes inbound; the two transcript-ship
+// actions stream jsonl bytes inbound (their `fromSeq`/`prefixHash` integrity
+// metadata travels as query params — see `sessionAppendTranscriptHandler`).
 const BINARY_ACTIONS = new Map<string, {
   method: 'POST';
   handler: BinaryActionHandler;
 }>();
 BINARY_ACTIONS.set('/blob.put', { method: 'POST', handler: blobPutHandler });
-// TASK-67: the resync path streams the WHOLE jsonl as a raw octet-stream
-// REQUEST body (it can exceed the 4 MiB JSON cap on a long session).
+// TASK-67: append ships the per-turn delta; replace ships the WHOLE jsonl on the
+// resync path. Both ride the raw octet-stream channel so a turn that Reads a
+// large attachment (its jsonl line carries base64 image/document blocks) can't
+// overflow the 4 MiB JSON cap and terminate the runner.
+BINARY_ACTIONS.set('/session.append-transcript', { method: 'POST', handler: sessionAppendTranscriptHandler });
 BINARY_ACTIONS.set('/session.replace-transcript', { method: 'POST', handler: sessionReplaceTranscriptHandler });
 
 type EventSpec = {
@@ -360,7 +365,7 @@ export async function dispatch(
     const bodyRead = await readRawBodyOrWriteError(req, res, MAX_BLOB_BODY_BYTES);
     if (!bodyRead.ok) return;
     try {
-      const result = await binaryAction.handler(bodyRead.value, ctx, bus);
+      const result = await binaryAction.handler(bodyRead.value, ctx, bus, url);
       writeResult(res, result);
     } catch (err) {
       logInternalError(ctx.logger, pathname, err);

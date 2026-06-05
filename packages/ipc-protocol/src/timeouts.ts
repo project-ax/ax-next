@@ -72,11 +72,15 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   'attachments.list': 10_000,
   // TASK-67 (out-of-git Part B / B2): resume-transcript callers.
   //
-  // `session.append-transcript` — the per-turn delta: a few new jsonl lines as
-  // a small JSON body + an integrity hash. Single indexed multi-row INSERT
-  // host-side. 10 s is generous; a turn that can't ship in 10 s has a bigger
-  // problem than the transcript.
-  'session.append-transcript': 10_000,
+  // `session.append-transcript` — the per-turn delta: the new jsonl lines as a
+  // raw octet-stream REQUEST body + a `fromSeq`/`prefixHash` integrity hint in
+  // the query. USUALLY a few small lines, but a single turn that Reads a large
+  // attachment writes one jsonl line carrying base64 image/document blocks — so
+  // the delta can be multi-MB. Shares replace/get's 120 s ceiling: the duration
+  // scales with delta size, and capping lower would relocate a large-Read
+  // transfer into a timeout (the very failure mode that moved append off the
+  // 4 MiB JSON channel). Idempotent on `(fromSeq, prefixHash)`.
+  'session.append-transcript': 120_000,
   // `session.replace-transcript` — the rare resync path: the runner streams the
   // WHOLE jsonl as a raw octet-stream REQUEST body (the SDK rewrote earlier
   // bytes). Duration scales with the transcript size, so the per-attempt ceiling

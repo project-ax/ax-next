@@ -225,16 +225,29 @@ export interface IpcClient {
    * The REQUEST-direction binary channel (TASK-68): POST `bytes` as the RAW
    * `application/octet-stream` request body and parse a small JSON response.
    * The mirror of `callBinary` — outbound bytes instead of inbound. Used for
-   * `blob.put`: the runner streams an artifact's bytes (up to the host's blob
-   * cap) without base64-inflating them into a JSON field or hitting the 4 MiB
-   * `MAX_FRAME` JSON cap. The response is a small `{sha256,size}` envelope,
-   * Zod-validated against the matching schema. `blob.put` is content-addressed
-   * and therefore idempotent, so a transient-error retry that re-streams the
-   * same bytes is safe.
+   * `blob.put` (artifact bytes) and the two transcript-ship actions
+   * (`session.append-transcript` per-turn delta, `session.replace-transcript`
+   * resync whole-file): each streams jsonl/artifact bytes up to the host's blob
+   * cap without base64-inflating them into a JSON field or hitting the 4 MiB
+   * `MAX_FRAME` JSON cap. The response is a small JSON envelope, Zod-validated
+   * against the matching schema.
+   *
+   * `query` carries any out-of-band request metadata (e.g. append-transcript's
+   * `fromSeq`/`prefixHash` integrity hints) as URL query params — the binary
+   * body has no JSON envelope to hold them. `blob.put` is content-addressed (so
+   * a transient-error retry that re-streams the same bytes is safe); the
+   * transcript actions are idempotent on `(fromSeq, prefixHash)` for the same
+   * reason.
    */
-  callBinaryUpload<Action extends 'blob.put' | 'session.replace-transcript'>(
+  callBinaryUpload<
+    Action extends
+      | 'blob.put'
+      | 'session.append-transcript'
+      | 'session.replace-transcript',
+  >(
     action: Action,
     bytes: Buffer,
+    query?: Record<string, string>,
   ): Promise<unknown>;
 
   event(eventName: string, payload: unknown): Promise<void>;
@@ -1045,19 +1058,30 @@ export function createIpcClient(opts: IpcClientOptions): IpcClient {
   };
 
   const callBinaryUpload = async <
-    Action extends 'blob.put' | 'session.replace-transcript',
+    Action extends
+      | 'blob.put'
+      | 'session.append-transcript'
+      | 'session.replace-transcript',
   >(
     action: Action,
     bytes: Buffer,
+    query?: Record<string, string>,
   ): Promise<unknown> => {
     const timeoutMs = timeoutFor(action);
+    // Append out-of-band metadata (e.g. append-transcript fromSeq/prefixHash) as
+    // query params — the listener strips the query before the content-type gate
+    // and the dispatcher routes on pathname, so this never affects routing.
+    const qs =
+      query !== undefined && Object.keys(query).length > 0
+        ? `?${new URLSearchParams(query).toString()}`
+        : '';
     return withRetry(
       classifyRetry,
       elapsedBudgetFor(action),
       async () => {
         const raw = await requestOnceUploadBinary({
           target,
-          pathWithQuery: `/${action}`,
+          pathWithQuery: `/${action}${qs}`,
           token: opts.token,
           body: bytes,
           timeoutMs,

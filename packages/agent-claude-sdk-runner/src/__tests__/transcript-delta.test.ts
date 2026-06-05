@@ -103,14 +103,26 @@ function fakeClient(over: Partial<IpcClient>): IpcClient {
   } as unknown as IpcClient;
 }
 
+// The append ships over the binary-upload channel: callBinaryUpload(action,
+// body, query). This mock routes by action so the resync path (append probe →
+// whole-file replace) returns the right shape for each leg.
+function uploadRouter(
+  appendResp: unknown,
+  replaceResp: unknown = { maxSeq: 0 },
+): ReturnType<typeof vi.fn> {
+  return vi.fn(async (action: string) =>
+    action === 'session.append-transcript' ? appendResp : replaceResp,
+  );
+}
+
 describe('shipTranscriptDelta', () => {
-  it('ships the new complete lines and advances the threaded state', async () => {
+  it('ships the new complete lines over the binary channel (not the capped JSON call) and advances state', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
     try {
       const body = 'l1\nl2\nl3\n';
       writeJsonl(root, 'sess', body);
-      const call = vi.fn(async () => ({ outcome: 'appended', maxSeq: 3 }));
-      const client = fakeClient({ call: call as never });
+      const callBinaryUpload = uploadRouter({ outcome: 'appended', maxSeq: 3 });
+      const client = fakeClient({ callBinaryUpload: callBinaryUpload as never });
 
       const res = await shipTranscriptDelta({
         client,
@@ -121,15 +133,47 @@ describe('shipTranscriptDelta', () => {
       expect(res.outcome).toBe('appended');
       expect(res.sentSeq).toBe(3);
       expect(res.sentOffset).toBe(body.length);
-      // The append carried the empty-prefix hash + all three lines.
-      const arg = call.mock.calls[0]![1] as {
-        fromSeq: number;
-        prefixHash: string;
-        lines: string[];
-      };
-      expect(arg.fromSeq).toBe(0);
-      expect(arg.lines).toEqual(['l1', 'l2', 'l3']);
-      expect(arg.prefixHash).toBe(createHash('sha256').digest('hex'));
+      // The delta rides the uncapped binary channel — NEVER the 4 MiB JSON
+      // `call` the host would reject as `body too large`.
+      expect(client.call).not.toHaveBeenCalled();
+      const [action, sentBody, query] = callBinaryUpload.mock.calls[0]!;
+      expect(action).toBe('session.append-transcript');
+      expect((sentBody as Buffer).toString('utf8')).toBe(body);
+      // fromSeq + empty-prefix hash ride the query (fromSeq is a string there).
+      expect(query).toEqual({
+        fromSeq: '0',
+        prefixHash: createHash('sha256').digest('hex'),
+      });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('ships a single jsonl line larger than the 4 MiB JSON cap over the binary channel', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
+    try {
+      // The shape a Read-of-a-PDF tool_result takes: one `user` jsonl line
+      // carrying base64 image/document blocks, well over the 4 MiB MAX_FRAME.
+      const bigLine = JSON.stringify({
+        type: 'user',
+        message: { content: 'x'.repeat(5 * 1024 * 1024) },
+      });
+      writeJsonl(root, 'sess', bigLine + '\n');
+      const callBinaryUpload = uploadRouter({ outcome: 'appended', maxSeq: 1 });
+      const client = fakeClient({ callBinaryUpload: callBinaryUpload as never });
+
+      const res = await shipTranscriptDelta({
+        client,
+        workspaceRoot: root,
+        sessionId: 'sess',
+        state: { sentOffset: 0, sentSeq: 0 },
+      });
+      expect(res.outcome).toBe('appended');
+      // The >4 MiB delta must NOT touch the JSON `call` path — that's the crash.
+      expect(client.call).not.toHaveBeenCalled();
+      const [, sentBody] = callBinaryUpload.mock.calls[0]!;
+      expect((sentBody as Buffer).length).toBeGreaterThan(4 * 1024 * 1024);
+      expect((sentBody as Buffer).toString('utf8')).toBe(bigLine + '\n');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -140,8 +184,8 @@ describe('shipTranscriptDelta', () => {
     try {
       const body = 'l1\nl2\nl3\n';
       writeJsonl(root, 'sess', body);
-      const call = vi.fn(async () => ({ outcome: 'appended', maxSeq: 3 }));
-      const client = fakeClient({ call: call as never });
+      const callBinaryUpload = uploadRouter({ outcome: 'appended', maxSeq: 3 });
+      const client = fakeClient({ callBinaryUpload: callBinaryUpload as never });
 
       const res = await shipTranscriptDelta({
         client,
@@ -150,15 +194,13 @@ describe('shipTranscriptDelta', () => {
         // Already shipped l1 (offset after 'l1\n', seq 1).
         state: { sentOffset: 'l1\n'.length, sentSeq: 1 },
       });
-      const arg = call.mock.calls[0]![1] as {
-        fromSeq: number;
-        prefixHash: string;
-        lines: string[];
-      };
-      expect(arg.fromSeq).toBe(1);
-      expect(arg.lines).toEqual(['l2', 'l3']);
+      const [, sentBody, query] = callBinaryUpload.mock.calls[0]!;
+      expect((sentBody as Buffer).toString('utf8')).toBe('l2\nl3\n');
       // prefixHash = sha256 of the already-shipped bytes 'l1\n'.
-      expect(arg.prefixHash).toBe(hashBytes(Buffer.from('l1\n')));
+      expect(query).toEqual({
+        fromSeq: '1',
+        prefixHash: hashBytes(Buffer.from('l1\n')),
+      });
       expect(res.sentOffset).toBe(body.length);
     } finally {
       rmSync(root, { recursive: true, force: true });
@@ -170,12 +212,11 @@ describe('shipTranscriptDelta', () => {
     try {
       const body = 'rewritten1\nrewritten2\n';
       writeJsonl(root, 'sess', body);
-      const call = vi.fn(async () => ({ outcome: 'resync-required', maxSeq: 1 }));
-      const callBinaryUpload = vi.fn(async () => ({ maxSeq: 2 }));
-      const client = fakeClient({
-        call: call as never,
-        callBinaryUpload: callBinaryUpload as never,
-      });
+      const callBinaryUpload = uploadRouter(
+        { outcome: 'resync-required', maxSeq: 1 },
+        { maxSeq: 2 },
+      );
+      const client = fakeClient({ callBinaryUpload: callBinaryUpload as never });
 
       const res = await shipTranscriptDelta({
         client,
@@ -186,9 +227,12 @@ describe('shipTranscriptDelta', () => {
       expect(res.outcome).toBe('resynced');
       expect(res.sentSeq).toBe(2);
       expect(res.sentOffset).toBe(body.length);
-      // Re-shipped the WHOLE file (byte-identical to the on-disk jsonl).
-      const sentBytes = callBinaryUpload.mock.calls[0]![1] as Buffer;
-      expect(sentBytes.toString('utf8')).toBe(body);
+      // Two binary uploads: the append probe, then the whole-file replace.
+      expect(callBinaryUpload).toHaveBeenCalledTimes(2);
+      const replaceCall = callBinaryUpload.mock.calls.find(
+        (c) => c[0] === 'session.replace-transcript',
+      )!;
+      expect((replaceCall[1] as Buffer).toString('utf8')).toBe(body);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -201,26 +245,28 @@ describe('shipTranscriptDelta', () => {
       // past sentOffset. The empty-lines append probes the prefix → the host
       // returns resync-required → we re-ship the whole file (never silent stale).
       writeJsonl(root, 'sess', 'rewritten\n');
-      const call = vi.fn(async () => ({ outcome: 'resync-required', maxSeq: 1 }));
-      const callBinaryUpload = vi.fn(async () => ({ maxSeq: 1 }));
-      const client = fakeClient({
-        call: call as never,
-        callBinaryUpload: callBinaryUpload as never,
-      });
+      const callBinaryUpload = uploadRouter(
+        { outcome: 'resync-required', maxSeq: 1 },
+        { maxSeq: 1 },
+      );
+      const client = fakeClient({ callBinaryUpload: callBinaryUpload as never });
       const res = await shipTranscriptDelta({
         client,
         workspaceRoot: root,
         sessionId: 'sess',
         state: { sentOffset: 'rewritten\n'.length, sentSeq: 1 },
       });
-      // The probe carried zero new lines.
-      const probeArg = call.mock.calls[0]![1] as { lines: string[] };
-      expect(probeArg.lines).toEqual([]);
+      // The probe carried zero new lines (an empty octet-stream body).
+      const appendCall = callBinaryUpload.mock.calls.find(
+        (c) => c[0] === 'session.append-transcript',
+      )!;
+      expect((appendCall[1] as Buffer).length).toBe(0);
       // ...and the resync re-shipped the whole file.
       expect(res.outcome).toBe('resynced');
-      expect(callBinaryUpload).toHaveBeenCalled();
-      const sent = callBinaryUpload.mock.calls[0]![1] as Buffer;
-      expect(sent.toString('utf8')).toBe('rewritten\n');
+      const replaceCall = callBinaryUpload.mock.calls.find(
+        (c) => c[0] === 'session.replace-transcript',
+      )!;
+      expect((replaceCall[1] as Buffer).toString('utf8')).toBe('rewritten\n');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -231,8 +277,8 @@ describe('shipTranscriptDelta', () => {
     try {
       writeJsonl(root, 'sess', 'l1\n');
       // The empty-lines probe returns appended (prefix intact, nothing inserted).
-      const call = vi.fn(async () => ({ outcome: 'appended', maxSeq: 1 }));
-      const client = fakeClient({ call: call as never });
+      const callBinaryUpload = uploadRouter({ outcome: 'appended', maxSeq: 1 });
+      const client = fakeClient({ callBinaryUpload: callBinaryUpload as never });
       const res = await shipTranscriptDelta({
         client,
         workspaceRoot: root,
@@ -240,10 +286,13 @@ describe('shipTranscriptDelta', () => {
         state: { sentOffset: 'l1\n'.length, sentSeq: 1 },
       });
       expect(res.outcome).toBe('noop');
-      // It DID probe (zero new lines) — the host confirmed the prefix.
-      const probeArg = call.mock.calls[0]![1] as { lines: string[]; fromSeq: number };
-      expect(probeArg.lines).toEqual([]);
-      expect(probeArg.fromSeq).toBe(1);
+      // It DID probe (zero new lines, empty body) — the host confirmed the prefix.
+      const [, sentBody, query] = callBinaryUpload.mock.calls[0]!;
+      expect((sentBody as Buffer).length).toBe(0);
+      expect(query).toEqual({
+        fromSeq: '1',
+        prefixHash: hashBytes(Buffer.from('l1\n')),
+      });
       // State unchanged.
       expect(res.sentOffset).toBe('l1\n'.length);
       expect(res.sentSeq).toBe(1);

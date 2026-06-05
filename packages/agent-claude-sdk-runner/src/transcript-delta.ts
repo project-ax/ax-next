@@ -133,11 +133,23 @@ export async function shipTranscriptDelta(input: {
   // So every turn either confirms the prefix is intact or resyncs — never leaves
   // the host stale (B3 no-omission), regardless of whether the rewrite shrank,
   // grew, or kept the file length.
-  const resp = (await client.call('session.append-transcript', {
-    fromSeq: state.sentSeq,
-    prefixHash,
-    lines,
-  })) as { outcome: 'appended' | 'resync-required'; maxSeq: number };
+  //
+  // The delta rides the RAW octet-stream channel (like the resync whole-file
+  // ship below), NOT a JSON `call`: a single turn that Reads a large attachment
+  // writes one jsonl line carrying base64 image/document blocks, so even the
+  // per-turn delta can exceed the 4 MiB JSON `MAX_FRAME` — which the host
+  // rejected as `body too large`, terminating the runner and killing the pod.
+  // The lines are the body (`\n`-joined + terminated, byte-identical to the
+  // on-disk bytes the host re-hashes); `fromSeq`/`prefixHash` ride the query.
+  const body = Buffer.from(
+    lines.length > 0 ? lines.join('\n') + '\n' : '',
+    'utf8',
+  );
+  const resp = (await client.callBinaryUpload(
+    'session.append-transcript',
+    body,
+    { fromSeq: String(state.sentSeq), prefixHash },
+  )) as { outcome: 'appended' | 'resync-required'; maxSeq: number };
 
   if (resp.outcome === 'appended') {
     if (lines.length === 0) {
