@@ -152,10 +152,23 @@ a throwaway pod *inside* the cluster (the only thing that can reach the private 
 right now):
 
 ```bash
-kubectl run pgvector-init -n default --rm -i --restart=Never \
-  --image=postgres:17 --env="PGPASSWORD=$DB_PASSWORD" -- \
+# NB: don't use `-i`/attach here. On GKE the apiserver→node streaming path
+# (konnectivity) can briefly be unavailable right after Autopilot spins up a
+# node, so attach/logs fail with "No agent available" even though the pod runs
+# fine. Instead, run it detached and confirm via the pod's *status* phase, which
+# comes through a different path. CREATE EXTENSION IF NOT EXISTS is idempotent,
+# so a re-run after a streaming blip is harmless.
+kubectl run pgvector-init -n default --restart=Never \
+  --image=postgres:17 --env="PGPASSWORD=$DB_PASSWORD" --command -- \
   psql "host=$DB_PRIVATE_IP user=ax_next dbname=ax_next sslmode=require" \
-  -c "CREATE EXTENSION IF NOT EXISTS vector;"
+     -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# Succeeded = the extension was created. (If this times out, the SQL failed —
+# `kubectl describe pod pgvector-init -n default` reads API events, unaffected
+# by the streaming blip.)
+kubectl wait --for=jsonpath='{.status.phase}'=Succeeded pod/pgvector-init -n default --timeout=120s
+kubectl logs pgvector-init -n default 2>/dev/null || true
+kubectl delete pod pgvector-init -n default
 ```
 
 ---
