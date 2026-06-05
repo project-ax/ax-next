@@ -404,6 +404,15 @@ instance (`--backup-start-time` / the console). That covers the database; it doe
 
 ## Troubleshooting
 
+**`gcloud sql instances create` returns `[INTERNAL_ERROR]` (but the instance is
+fine).** The create can take ~5+ minutes; the CLI sometimes stops waiting and
+surfaces a misleading `INTERNAL_ERROR` while the backend keeps going. **Don't
+delete and retry** — check first: `gcloud sql instances list` will show
+`ax-next-db` in `PENDING_CREATE`, and `gcloud sql operations list --instance=ax-next-db`
+shows the CREATE op still `RUNNING` with no error. Wait it out
+(`gcloud sql operations wait <op-id> --project=$PROJECT_ID`); it'll land
+`RUNNABLE`. Only delete + retry if the operation actually ends with an error.
+
 **Runner pod crashes at boot with `missing AX_PROXY_*`.** The TCP credential-proxy
 isn't wired. Confirm the overlay has `credentialProxy.tcp.enabled=true` and
 `sandbox.proxySocketHostPath=""`, that the `ax-next-proxy` ClusterIP Service
@@ -426,10 +435,11 @@ backend targets the `public-http` port (the chart now pins this; a stale render
 pointing at `http` is the classic cause of a wired-but-dead backend).
 
 **Host pod `CrashLoopBackOff` with a DB/SSL error.** The DSN or SSL mode is off.
-If you see an SSL handshake failure, the instance's `--require-ssl` and the DSN's
-`sslmode` disagree — try `sslmode=require` (or `sslmode=no-verify` as a fallback;
-`@ax/database-postgres` passes the URL straight to `pg`). If it's a connection
-refusal, re-check `$DB_PRIVATE_IP` and that the cluster's VPC is the peered one.
+If you see an SSL handshake failure, the instance's SSL setting
+(`--ssl-mode=ENCRYPTED_ONLY`) and the DSN's `sslmode` disagree — try
+`sslmode=require` (or `sslmode=no-verify` as a fallback; `@ax/database-postgres`
+passes the URL straight to `pg`). If it's a connection refusal, re-check
+`$DB_PRIVATE_IP` and that the cluster's VPC is the peered one.
 
 **`exec format error` in any pod.** The image is the wrong architecture. Rebuild
 with `--platform linux/amd64`.
