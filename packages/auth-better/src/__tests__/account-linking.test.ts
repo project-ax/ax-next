@@ -33,7 +33,11 @@ const { createBetterAuthHandler } = await import('../handler.js');
 const stubDb = {} as Kysely<AuthBetterDatabase>;
 
 type AccountConfig = {
-  accountLinking?: { enabled?: boolean; trustedProviders?: string[] };
+  accountLinking?: {
+    enabled?: boolean;
+    trustedProviders?: string[];
+    requireLocalEmailVerified?: boolean;
+  };
 };
 
 describe('createBetterAuthHandler — account linking', () => {
@@ -47,6 +51,16 @@ describe('createBetterAuthHandler — account linking', () => {
     const account = capturedConfigs[0]?.['account'] as AccountConfig | undefined;
     expect(account?.accountLinking?.enabled).toBe(true);
     expect(account?.accountLinking?.trustedProviders).toEqual(['google', 'github']);
+  });
+
+  it('disables requireLocalEmailVerified so the unverified wizard admin can link', () => {
+    // better-auth defaults requireLocalEmailVerified to true; the wizard admin
+    // has email_verified=false, so the trustedProviders bypass alone is NOT
+    // enough — this second clause must also be cleared or sign-in still throws
+    // account_not_linked.
+    createBetterAuthHandler({ database: stubDb, providers: [] });
+    const account = capturedConfigs[0]?.['account'] as AccountConfig | undefined;
+    expect(account?.accountLinking?.requireLocalEmailVerified).toBe(false);
   });
 
   it('does NOT trust generic oidc (email-verification varies by IdP)', () => {
