@@ -761,6 +761,54 @@ describeIfHelm('ax-next chart: dev-services k8s 1.29+ guard (TASK-157)', () => {
   });
 });
 
+describeIfHelm('ax-next chart: ingress backend port (GKE ingress fix)', () => {
+  // Regression: the Ingress backend targeted a service port named `http`,
+  // but the host Service only exposes `ipc` and `public-http`. A GCE/any
+  // Ingress pointing at a non-existent port name wires no backend — the LB
+  // returns 404/502 and there's no loud failure. The fix points the backend
+  // at `public-http` (the public surface). This guard pins the wiring so it
+  // can't silently rebreak.
+  const HOST_SVC = 'ax-test-ax-next-host';
+  const ingressArgs = [
+    '--set', 'ingress.enabled=true',
+    '--set', 'ingress.host=ax.example.com',
+  ];
+
+  it('ingress.enabled=true: backend targets the host Service port named public-http', () => {
+    const docs = helmTemplate(ingressArgs);
+    const ing = docs.find((d) => d.kind === 'Ingress');
+    expect(ing, 'Ingress renders when enabled').toBeDefined();
+    const backend =
+      ing?.spec?.rules?.[0]?.http?.paths?.[0]?.backend?.service;
+    expect(backend?.name).toBe(HOST_SVC);
+    expect(backend?.port?.name).toBe('public-http');
+  });
+
+  it('the public-http port name actually exists on the host Service (cross-check)', () => {
+    // Belt-and-suspenders: the backend port name is only meaningful if the
+    // Service truly publishes it. Assert both halves from one render so a
+    // future rename of the Service port can't desync the Ingress.
+    const docs = helmTemplate(ingressArgs);
+    const svc = docs.find(
+      (d) => d.kind === 'Service' && d.metadata?.name === HOST_SVC,
+    );
+    const portNames = (svc?.spec?.ports ?? []).map(
+      (p: { name?: string }) => p.name,
+    );
+    expect(portNames).toContain('public-http');
+
+    const ing = docs.find((d) => d.kind === 'Ingress');
+    const backendPortName =
+      ing?.spec?.rules?.[0]?.http?.paths?.[0]?.backend?.service?.port?.name;
+    expect(portNames).toContain(backendPortName);
+  });
+
+  it('ingress.enabled=false (default): no Ingress renders', () => {
+    const docs = helmTemplate([]);
+    expect(docs.find((d) => d.kind === 'Ingress')).toBeUndefined();
+  });
+});
+
 describeIfHelm('ax-next chart: host RBAC Role (TASK-160)', () => {
   it('grants pods verbs + a narrow pods/log:get for sidecar-failure diagnosis', () => {
     const docs = helmTemplate([]);

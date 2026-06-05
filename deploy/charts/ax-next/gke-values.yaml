@@ -1,0 +1,173 @@
+# GKE Autopilot overlay.
+#
+# The production analogue of kind-dev-values.yaml. Where kind turns the
+# security posture OFF (no gVisor, no NetworkPolicy, hostPath proxy socket),
+# Autopilot turns it ON and the chart's prod-path knobs come into play.
+#
+# Pairs with deploy/GKE.md — read that for the full bring-up (Cloud SQL,
+# Artifact Registry, static IP + DNS + ManagedCertificate, the wizard walk).
+# Everything marked `# >>> EDIT` below is environment-specific and must be set
+# before install (some here, some via `--set` so they don't live in the file).
+#
+# Why these choices (see deploy/GKE.md "Design notes" for the long version):
+#   - Autopilot schedules gVisor pods for you — no Sandbox node pool to manage.
+#   - gVisor + Autopilot ban hostPath, so the credential-proxy runs in TCP mode.
+#   - Autopilot runs Dataplane V2, so NetworkPolicies actually enforce (on).
+#   - Chat is single-replica-locked, so we use the `local` workspace backend and
+#     park blobs on the same PVC (`fs`) — no git-server StatefulSet, no object
+#     store. Durable object storage (GCS) needs a small chart change; deferred.
+#   - Postgres is Cloud SQL (external), reached over private IP from a DSN Secret.
+
+replicas: 1
+
+# ─── Image ────────────────────────────────────────────────────────
+# >>> EDIT: point at your Artifact Registry repo. Build for linux/amd64
+# (Autopilot nodes are amd64) and push BOTH this and the runner share it.
+# See deploy/GKE.md "Build and push the image".
+image:
+  repository: us-docker.pkg.dev/PROJECT_ID/ax-next/agent   # >>> EDIT
+  tag: "v0.0.1"                                             # >>> EDIT (immutable tag, not :latest)
+  pullPolicy: IfNotPresent
+
+# Runner pods are created here by @ax/sandbox-k8s. The chart does NOT create
+# this namespace — you do, ahead of install (see runbook). Its PodSecurity
+# label should be `restricted` (runbook covers it).
+namespace:
+  runner: ax-next-runners
+
+# ─── Host pod resources (Autopilot-tuned) ────────────────────────
+# Autopilot bills on requests and enforces a CPU:memory ratio (1:1–1:6.5) plus
+# per-Pod floors. We set requests == limits (Guaranteed QoS) so Autopilot does
+# not silently resize the Pod, and give a heavy turn real headroom — the
+# credential-proxy MITM'ing a multi-MB download on top of the chat orchestrator
+# OOM-killed the host at 512Mi during kind testing (TASK-24).
+host:
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      cpu: "1"
+      memory: 2Gi
+
+# ─── Workspace + blobs: both on one host PVC ─────────────────────
+# Single-replica posture. `local` keeps the bare git repos on the host PVC;
+# `fs` blobs (attachments/artifacts/skill bundles) land in a sibling dir on the
+# SAME PVC. No git-server StatefulSet, no MinIO, no GCS.
+#
+# storageClassName empty → Autopilot's default (`standard-rwo`, a Balanced PD).
+# For better IOPS set `premium-rwo`. THERE IS NO BACKUP — the runbook's DR
+# section covers PD snapshots; pick one before real users arrive.
+workspace:
+  backend: local
+  storage: 20Gi               # >>> EDIT to taste; blobs share this volume
+  storageClassName: ""        # "" → standard-rwo; or "premium-rwo"
+  accessMode: ReadWriteOnce
+  mountPath: /var/lib/ax-next/workspaces
+
+gitServer:
+  enabled: false              # local backend → no git-server tier
+
+blob:
+  backend: fs                 # blobs on the host PVC (sibling of the workspace)
+  fs:
+    root: ""                  # "" → <workspace.mountPath>/blobs
+
+minio:
+  enabled: false              # dev-only object store; prod uses fs (above)
+
+# ─── Runner sandbox: gVisor via Autopilot GKE Sandbox ────────────
+# Autopilot schedules pods with runtimeClassName: gvisor onto sandboxed nodes
+# automatically — no node pool to create. Needs GKE >= 1.27.4-gke.800 (any
+# current Autopilot release qualifies). proxySocketHostPath MUST stay empty:
+# hostPath is banned under gVisor/Autopilot, so the proxy uses TCP mode below.
+sandbox:
+  runtimeClassName: gvisor
+  proxySocketHostPath: ""
+  # Leave dev-services off unless you use them. If you flip this on, your
+  # cluster must be 1.29+ (Autopilot is) — the chart preflights it.
+  devServices:
+    enabled: false
+
+# ─── Credential-proxy: TCP listener + ClusterIP Service ──────────
+# The prod-gVisor transport (TASK-149). Runner pods reach the proxy over the
+# cluster network instead of a shared hostPath socket; the MITM CA is delivered
+# to each runner as an env var. Mutually exclusive with proxySocketHostPath.
+credentialProxy:
+  tcp:
+    enabled: true
+    port: 8888
+
+# ─── Postgres: Cloud SQL (external) ──────────────────────────────
+# The host reads DATABASE_URL from a Secret you create out-of-band (the runbook
+# builds the DSN against the Cloud SQL private IP). Embedded subchart disabled.
+# NOTE: external mode SKIPS the pgvector init Job — if you enable memory/strata
+# plugins you must run `CREATE EXTENSION vector` against the Cloud SQL DB
+# yourself (runbook covers it).
+postgres:
+  external:
+    enabled: true
+    existingSecret: ax-next-db   # >>> EDIT if you named the Secret differently
+    secretKey: url               # key inside the Secret holding the DSN
+  embedded:
+    enabled: false
+
+# ─── NetworkPolicies: ON (Autopilot enforces them) ───────────────
+networkPolicies:
+  enabled: true
+
+# ─── Ingress: GCE external LB + Google-managed cert ──────────────
+# className `gce` selects the built-in external Application Load Balancer
+# (the HttpLoadBalancing add-on can't be disabled on Autopilot). On VPC-native
+# clusters (Autopilot always is) the controller wires a NEG to the ClusterIP
+# Service automatically — no NodePort needed. tls=false on purpose: Google-
+# managed certs attach via the annotation + a ManagedCertificate CRD, NOT the
+# spec.tls block. The LB health check auto-derives from the host's /health
+# readiness probe.
+#
+# >>> EDIT host + the two annotation values to match the static IP name and
+# ManagedCertificate name you create in the runbook.
+ingress:
+  enabled: true
+  className: gce
+  host: ax.example.com                                       # >>> EDIT (your domain)
+  tls: false
+  annotations:
+    kubernetes.io/ingress.global-static-ip-name: ax-next-ip  # >>> EDIT (reserved global IP name)
+    networking.gke.io/managed-certificates: ax-next-cert     # >>> EDIT (ManagedCertificate name)
+
+# ─── HTTP server (public surface) ────────────────────────────────
+# cookieKey signs the auth session cookie — provide via `--set http.cookieKey=`
+# (kept out of this file so it isn't committed). allowedOrigins is the exact-
+# match CSRF allow-list; set it to your real HTTPS origin.
+http:
+  cookieKey: ""                                  # provide via --set (openssl rand -hex 32)
+  allowedOrigins:
+    - https://ax.example.com                     # >>> EDIT (must match your domain, https)
+
+# ─── Onboarding ──────────────────────────────────────────────────
+# publicBaseUrl is the URL printed in the first-run banner and used by the
+# wizard — set it to your real external URL so the magic link is clickable.
+onboarding:
+  bootstrapToken: ""                             # optional; else scraped from host stdout
+  publicBaseUrl: https://ax.example.com          # >>> EDIT (your domain)
+
+# Admin credentials routes power the Settings → Provider keys / Model config
+# tabs. On by default; left explicit here so it's obvious it's wanted.
+credentials:
+  admin:
+    enabled: true
+
+# anthropic.apiKey stays empty — the first-run wizard collects one and stores
+# it encrypted in the credentials table. Set it only if you want a host-wide
+# shared key in env (which also enables auto-titling on the host pod).
+anthropic:
+  apiKey: ""
+
+# ─── Runtime config ──────────────────────────────────────────────
+config:
+  preset: k8s
+  models:
+    default: ["claude-sonnet-4-5"]
+  history:
+    maxTurns: 50

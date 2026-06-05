@@ -35,8 +35,11 @@ updating the security note.
 ## Deploy to a local kind cluster
 
 The kind path is the canary path — if the chart installs and the host pod is
-healthy on kind, the chart's basic shape is sound. Real-cluster deploy is
-covered in [`MANUAL-ACCEPTANCE.md`](MANUAL-ACCEPTANCE.md) once Task 21 lands.
+healthy on kind, the chart's basic shape is sound. Real-cluster acceptance
+criteria live in [`MANUAL-ACCEPTANCE.md`](MANUAL-ACCEPTANCE.md); for a full
+**GKE Autopilot** bring-up (gVisor runners, Cloud SQL, managed-cert ingress)
+follow the step-by-step runbook in [`GKE.md`](GKE.md) with the
+[`gke-values.yaml`](charts/ax-next/gke-values.yaml) overlay.
 
 ```bash
 # 0. Prereqs:
