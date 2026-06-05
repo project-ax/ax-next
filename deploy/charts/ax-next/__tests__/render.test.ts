@@ -838,6 +838,42 @@ describeIfHelm('ax-next chart: serve /chat bearer token (AX_SERVE_TOKEN)', () =>
   });
 });
 
+describeIfHelm('ax-next chart: LB health-check NetworkPolicy ingress (lbHealthCheckCidrs)', () => {
+  // Cloud LBs (GKE GCLB) probe the pod IP directly from provider ranges; with an
+  // enforcing CNI those must be admitted on the public surface or the backend
+  // shows UNHEALTHY (502s) despite a healthy pod. Empty default = no rule (kind /
+  // non-cloud unaffected); the cloud overlay sets the ranges.
+  const HOST_NP = 'ax-test-ax-next-host-network';
+
+  it('default (empty): host NetworkPolicy has NO ipBlock health-check rule', () => {
+    const docs = helmTemplate(['--set', 'networkPolicies.enabled=true']);
+    const np = docs.find((d) => d.kind === 'NetworkPolicy' && d.metadata?.name === HOST_NP);
+    const ingress = (np?.spec?.ingress ?? []) as Array<{
+      from?: Array<{ ipBlock?: { cidr?: string } }>;
+    }>;
+    expect(ingress.some((r) => (r.from ?? []).some((f) => f.ipBlock))).toBe(false);
+  });
+
+  it('lbHealthCheckCidrs set: an ipBlock rule admits those CIDRs on the public-http port', () => {
+    const docs = helmTemplate([
+      '--set', 'networkPolicies.enabled=true',
+      '--set-json', 'networkPolicies.lbHealthCheckCidrs=["35.191.0.0/16","130.211.0.0/22"]',
+    ]);
+    const np = docs.find((d) => d.kind === 'NetworkPolicy' && d.metadata?.name === HOST_NP);
+    const ingress = (np?.spec?.ingress ?? []) as Array<{
+      from?: Array<{ ipBlock?: { cidr?: string } }>;
+      ports?: Array<{ port?: number; protocol?: string }>;
+    }>;
+    const rule = ingress.find((r) => (r.from ?? []).some((f) => f.ipBlock));
+    expect(rule, 'health-check ipBlock rule present').toBeDefined();
+    const cidrs = (rule?.from ?? []).map((f) => f.ipBlock?.cidr);
+    expect(cidrs).toContain('35.191.0.0/16');
+    expect(cidrs).toContain('130.211.0.0/22');
+    // Admitted on the public surface (9090), not the IPC port.
+    expect(rule?.ports?.some((p) => p.port === 9090 && p.protocol === 'TCP')).toBe(true);
+  });
+});
+
 describeIfHelm('ax-next chart: host RBAC Role (TASK-160)', () => {
   it('grants pods verbs + a narrow pods/log:get for sidecar-failure diagnosis', () => {
     const docs = helmTemplate([]);

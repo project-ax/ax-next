@@ -118,8 +118,14 @@ postgres:
     enabled: false
 
 # ─── NetworkPolicies: ON (Autopilot enforces them) ───────────────
+# Autopilot runs Dataplane V2, so policies actually enforce — which means the
+# GCE LB's health-check probes (from Google's ranges) must be admitted on the
+# public surface, or the backend shows UNHEALTHY and 502s despite a healthy pod.
 networkPolicies:
   enabled: true
+  lbHealthCheckCidrs:
+    - 35.191.0.0/16
+    - 130.211.0.0/22
 
 # ─── Ingress: GCE external LB + Google-managed cert ──────────────
 # className `gce` selects the built-in external Application Load Balancer

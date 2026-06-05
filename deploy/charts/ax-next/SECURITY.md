@@ -155,6 +155,14 @@ Applies to pods labeled `app.kubernetes.io/name: <release>-host` in
     inbound IPC connection.
   - Anything in the host's own namespace on the same port — covers ingress
     controllers, port-forwards, mesh sidecars.
+  - Cloud load-balancer health-check ranges on the public surface, **only when
+    `networkPolicies.lbHealthCheckCidrs` is set** (empty by default, so this rule
+    is absent on kind / non-cloud). A cloud LB probes the pod IP directly from
+    provider-owned ranges; with an enforcing CNI those must be admitted or the LB
+    marks the backend UNHEALTHY (502s) despite a healthy pod. The GKE overlay sets
+    GCP's `35.191.0.0/16` + `130.211.0.0/22`. This widens ingress on a port that is
+    already the intended public surface, so the exposure delta is the health-check
+    source range only.
 - **Egress allowed to:**
   - Postgres (5432) — DB writes.
   - k8s API server (443 + 6443; the dual port covers Calico DNAT edge

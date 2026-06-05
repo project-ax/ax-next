@@ -523,8 +523,17 @@ onboarding:
 # `enabled: true` is the safe default. Disabling is supported only for
 # kind-dev (where Calico/Cilium are not installed and policies are
 # silently no-ops anyway).
+#
+# `lbHealthCheckCidrs`: source ranges allowed to reach the host's PUBLIC
+# surface (publicHttp) for cloud LOAD-BALANCER HEALTH CHECKS. Empty by default
+# (cloud-agnostic). With a NetworkPolicy-enforcing CNI, a cloud LB's health-check
+# probes hit the pod IP directly from provider-owned ranges; if they aren't
+# admitted, the LB marks the backend UNHEALTHY and serves 502s despite a healthy
+# pod. GCP GCLB uses 35.191.0.0/16 + 130.211.0.0/22 (set in the GKE overlay).
+# Other providers: AWS/Azure health checks come from the LB subnet — list it here.
 networkPolicies:
   enabled: true
+  lbHealthCheckCidrs: []
 
 # ─── Ingress ─────────────────────────────────────────────────────
 # Off by default — production deploys typically front the host with a
