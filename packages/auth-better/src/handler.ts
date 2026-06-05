@@ -227,6 +227,20 @@ function build(input: HandlerInput): BuiltHandler {
       // plumbed from AX_AUTH_SECRET in the preset/chart) — without it better-auth
       // derives an ephemeral per-process key and tokens won't survive a restart.
       encryptOAuthTokens: true,
+      // Auto-link a social sign-in to an EXISTING user when the email matches.
+      // Without this, the onboarding wizard's admin — created as an email
+      // identity with NO password (local password support is deferred) — can
+      // never sign in: the configured OAuth provider returns `account_not_linked`
+      // because better-auth won't link to a pre-existing email by default. Google
+      // and GitHub assert verified emails (and Google is further domain-gated in
+      // `databaseHooks.user.create.before` below), so trusting them to link by
+      // matching email is safe. Generic OIDC is intentionally NOT trusted —
+      // email-verification guarantees vary by IdP; revisit when generic-OAuth
+      // lands properly (the Task 1.4 placeholder above).
+      accountLinking: {
+        enabled: true,
+        trustedProviders: ['google', 'github'],
+      },
       fields: {
         userId: 'user_id',
         accountId: 'account_id',
