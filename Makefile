@@ -44,10 +44,31 @@ DEV_VOLUME_NAME  := dev-web
 HOST_MOUNTPOINT  := /opt/ax-next/host/web
 SPA_DIST         := packages/channel-web/dist-web
 
+# ─── GKE deploy (real cluster — see deploy/GKE.md) ──────────────────────────
+# `make gke-deploy` builds a linux/amd64 image, pushes it to your Artifact
+# Registry, and helm-upgrades the GKE release. Env-specific values live in
+# gke-values.local.yaml (gitignored) — the image repo is READ from it so this
+# committed Makefile stays project-agnostic.
+#
+# Tag = the current git short SHA: immutable + unique per commit, so each deploy
+# re-pulls cleanly (no `:dev` + IfNotPresent staleness) and the running image
+# maps straight back to a commit. Commit before deploying; for an uncommitted
+# spin pass GKE_TAG=... explicitly.
+#
+# Secrets are NOT passed: the chart's Secret is lookup-stable, so an UPGRADE
+# reuses the credentials.key / cookie key already in the cluster. (First install
+# is the explicit `helm install` in deploy/GKE.md, which seeds them.)
+GKE_VALUES        := deploy/charts/ax-next/gke-values.yaml
+GKE_LOCAL_VALUES  := deploy/charts/ax-next/gke-values.local.yaml
+GKE_RELEASE       := ax-next
+GKE_PLATFORM      := linux/amd64
+GKE_IMAGE_REPO    ?= $(shell awk '/^image:/{f=1} f&&/repository:/{print $$2; exit}' $(GKE_LOCAL_VALUES) 2>/dev/null)
+GKE_TAG           ?= $(shell git rev-parse --short HEAD)
+
 SHELL := /bin/bash
 .SHELLFLAGS := -eu -o pipefail -c
 
-.PHONY: help dev-fast image dev-mount-up dev-mount-down rollout build-spa kind-prune reset-bootstrap
+.PHONY: help dev-fast image dev-mount-up dev-mount-down rollout build-spa kind-prune reset-bootstrap gke-deploy
 
 help:
 	@echo "Targets:"
@@ -58,6 +79,7 @@ help:
 	@echo "  dev-mount-up    Patch the deployment to add the dev-web mount."
 	@echo "  dev-mount-down  Remove the dev-web mount from the deployment."
 	@echo "  rollout         Restart the host deployment and wait for it."
+	@echo "  gke-deploy      Build+push linux/amd64 image (tag=git SHA) + helm upgrade GKE."
 
 # ----------------------------------------------------------------------------
 # dev-fast — SPA-only fast loop
@@ -178,3 +200,30 @@ reset-bootstrap:
 	kubectl -n $(NAMESPACE) exec deploy/$(DEPLOYMENT) -- \
 	  node /opt/ax-next/host/dist/main.js admin reset-bootstrap --force
 	@echo "==> Open the printed claim URL OR refresh https://localhost:9090 — App.tsx will redirect to /setup."
+
+# ----------------------------------------------------------------------------
+# gke-deploy — build+push the agent image to Artifact Registry and helm-upgrade
+# the GKE release. See the GKE deploy block near the top for the variable
+# contract (image repo read from gke-values.local.yaml, tag = git SHA, secrets
+# reused via the lookup-stable Secret). Full first-time setup: deploy/GKE.md.
+#
+# Reuses NAMESPACE / DEPLOYMENT (ax-next / ax-next-host) from the kind block —
+# the release name + objects are the same on GKE.
+# ----------------------------------------------------------------------------
+gke-deploy:
+	@test -f "$(GKE_LOCAL_VALUES)" || { echo "ERROR: $(GKE_LOCAL_VALUES) missing — put your env overrides there (deploy/GKE.md Step 6)."; exit 1; }
+	@test -n "$(GKE_IMAGE_REPO)" || { echo "ERROR: image.repository not found in $(GKE_LOCAL_VALUES); set it there or pass GKE_IMAGE_REPO=..."; exit 1; }
+	@CTX=$$(kubectl config current-context); \
+	  case "$$CTX" in \
+	    kind-*) echo "REFUSING: kubectl context '$$CTX' is a kind cluster, not GKE. Switch with 'gcloud container clusters get-credentials ...'."; exit 1;; \
+	    *) echo "==> Target context: $$CTX";; \
+	  esac
+	@git diff --quiet HEAD 2>/dev/null || echo "==> WARNING: working tree is dirty; tag $(GKE_TAG) is the last commit. Commit, or pass GKE_TAG=... for a unique image."
+	@echo "==> Building + pushing $(GKE_IMAGE_REPO):$(GKE_TAG) ($(GKE_PLATFORM))"
+	docker buildx build --platform $(GKE_PLATFORM) -t $(GKE_IMAGE_REPO):$(GKE_TAG) -f $(DOCKERFILE) --push .
+	@echo "==> helm upgrade $(GKE_RELEASE) → image.tag=$(GKE_TAG)"
+	helm upgrade --install $(GKE_RELEASE) deploy/charts/ax-next --namespace $(NAMESPACE) \
+	  -f $(GKE_VALUES) -f $(GKE_LOCAL_VALUES) \
+	  --set image.tag=$(GKE_TAG)
+	kubectl -n $(NAMESPACE) rollout status deployment/$(DEPLOYMENT) --timeout=300s
+	@echo "==> Deployed $(GKE_IMAGE_REPO):$(GKE_TAG)"
