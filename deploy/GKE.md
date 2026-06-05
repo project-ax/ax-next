@@ -242,8 +242,36 @@ export AX_CREDENTIALS_KEY=$(openssl rand -base64 32)
 export AX_HTTP_COOKIE_KEY=$(openssl rand -hex 32)
 ```
 
-**Save both somewhere durable right now** (Secret Manager, a sealed-secret, your
-vault). The rules:
+**Back them up to Secret Manager right now** — IAM-controlled, versioned, and
+off-cluster. (The chart does write them into the in-cluster `ax-next-secrets`
+Secret with `resource-policy: keep`, so they survive `helm uninstall` — but that's
+in-cluster state, not a backup. Lose the namespace/cluster and they're gone.) Use
+`printf '%s'`, **not** `echo`, so no trailing newline is baked into the stored
+value — a stray `\n` makes the retrieved key differ from what helm installed:
+
+```bash
+gcloud services enable secretmanager.googleapis.com --project=$PROJECT_ID
+
+printf '%s' "$AX_CREDENTIALS_KEY" | gcloud secrets create ax-next-credentials-key \
+  --data-file=- --replication-policy=automatic --project=$PROJECT_ID
+printf '%s' "$AX_HTTP_COOKIE_KEY" | gcloud secrets create ax-next-http-cookie-key \
+  --data-file=- --replication-policy=automatic --project=$PROJECT_ID
+# The DB password from Step 1b belongs here too — same criticality.
+printf '%s' "$DB_PASSWORD" | gcloud secrets create ax-next-db-password \
+  --data-file=- --replication-policy=automatic --project=$PROJECT_ID
+```
+
+To re-fetch them before a later `helm upgrade` (command substitution strips the
+trailing newline, so the value round-trips exactly):
+
+```bash
+export AX_CREDENTIALS_KEY=$(gcloud secrets versions access latest \
+  --secret=ax-next-credentials-key --project=$PROJECT_ID)
+export AX_HTTP_COOKIE_KEY=$(gcloud secrets versions access latest \
+  --secret=ax-next-http-cookie-key --project=$PROJECT_ID)
+```
+
+The rules:
 
 - `AX_CREDENTIALS_KEY` encrypts every stored credential at rest. Lose it or
   change it and every stored secret is **unrecoverable**. There is no recovery
