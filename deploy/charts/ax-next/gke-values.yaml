@@ -24,8 +24,13 @@ replicas: 1
 # >>> EDIT: point at your Artifact Registry repo. Build for linux/amd64
 # (Autopilot nodes are amd64) and push BOTH this and the runner share it.
 # See deploy/GKE.md "Build and push the image".
+#
+# The host prefix MUST be the REGIONAL Artifact Registry host where you pushed,
+# i.e. `<region>-docker.pkg.dev` (e.g. us-central1-docker.pkg.dev). The
+# multi-region `us-docker.pkg.dev` is a DIFFERENT location — a regional repo does
+# not resolve there, and pods fail with "Cannot pull image ... from the registry".
 image:
-  repository: us-docker.pkg.dev/PROJECT_ID/ax-next/agent   # >>> EDIT
+  repository: us-central1-docker.pkg.dev/PROJECT_ID/ax-next/agent   # >>> EDIT (region + PROJECT_ID)
   tag: "v0.0.1"                                             # >>> EDIT (immutable tag, not :latest)
   pullPolicy: IfNotPresent
 

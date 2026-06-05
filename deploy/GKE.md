@@ -226,14 +226,19 @@ kubectl label namespace ax-next-runners \
 ### 4a. The database DSN
 
 ```bash
-DSN="postgresql://ax_next:${DB_PASSWORD}@${DB_PRIVATE_IP}:5432/ax_next?sslmode=require"
+DSN="postgresql://ax_next:${DB_PASSWORD}@${DB_PRIVATE_IP}:5432/ax_next?sslmode=no-verify"
 kubectl create secret generic ax-next-db -n ax-next --from-literal=url="$DSN"
 ```
 
-`sslmode=require` encrypts the connection without verifying the server cert —
-fine to start, given it's a private IP inside your VPC. To verify the cert
-(`verify-ca`/`verify-full`) you'd mount the Cloud SQL server CA; that's a
-hardening step, not a launch blocker.
+Use **`sslmode=no-verify`**, not `require`. `@ax/database-postgres` hands the URL
+straight to `pg`, and current `pg`/`pg-connection-string` treats `require` (and
+`verify-ca`) as `verify-full` — it tries to verify Cloud SQL's server cert against
+a CA the pod doesn't carry, and the host crashes at boot with
+`unable to verify the first certificate`. `no-verify` keeps the connection
+encrypted but skips CA verification, which is fine over a private VPC IP. To
+*verify* the cert instead (`verify-full`), mount the Cloud SQL server CA
+(`gcloud sql instances describe ax-next-db --format='value(serverCaCert.cert)'`)
+and add `sslrootcert=<path>` — a hardening step, not a launch blocker.
 
 ### 4b. The encryption + cookie keys (read this twice)
 
@@ -475,11 +480,14 @@ the backend-service health in the console tell you. (3) Confirm the Ingress
 backend targets the `public-http` port (the chart now pins this; a stale render
 pointing at `http` is the classic cause of a wired-but-dead backend).
 
-**Host pod `CrashLoopBackOff` with a DB/SSL error.** The DSN or SSL mode is off.
-If you see an SSL handshake failure, the instance's SSL setting
-(`--ssl-mode=ENCRYPTED_ONLY`) and the DSN's `sslmode` disagree — try
-`sslmode=require` (or `sslmode=no-verify` as a fallback; `@ax/database-postgres`
-passes the URL straight to `pg`). If it's a connection refusal, re-check
+**Host pod crashes at boot with `@ax/storage-postgres init failed: unable to
+verify the first certificate`.** The DSN uses `sslmode=require` (or `verify-ca`).
+Current `pg`/`pg-connection-string` treats those as `verify-full` and tries to
+validate Cloud SQL's server cert against a CA the pod doesn't have. Fix the DSN
+in the `ax-next-db` Secret to `sslmode=no-verify` (encrypt, skip CA check) and
+`kubectl rollout restart deployment/ax-next-host -n ax-next` so it re-reads the
+Secret. (A Secret change does NOT roll the pod on its own — `DATABASE_URL` is
+injected from it at pod start.) If instead it's a connection *refusal*, re-check
 `$DB_PRIVATE_IP` and that the cluster's VPC is the peered one.
 
 **`exec format error` in any pod.** The image is the wrong architecture. Rebuild
