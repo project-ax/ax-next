@@ -227,6 +227,30 @@ function build(input: HandlerInput): BuiltHandler {
       // plumbed from AX_AUTH_SECRET in the preset/chart) — without it better-auth
       // derives an ephemeral per-process key and tokens won't survive a restart.
       encryptOAuthTokens: true,
+      // Auto-link a social sign-in to an EXISTING user when the email matches.
+      // Without this, the onboarding wizard's admin — created as an email
+      // identity with NO password (local password support is deferred) and with
+      // `email_verified: false` (the wizard never verifies the typed address) —
+      // can never sign in: the OAuth provider returns `account_not_linked`.
+      //
+      // better-auth (link-account.mjs) throws that error via TWO independent
+      // clauses, and both must be cleared:
+      //   1. `!isTrustedProvider && !userInfo.emailVerified` — cleared by
+      //      `trustedProviders` (Google/GitHub assert verified emails).
+      //   2. `requireLocalEmailVerified && !dbUser.user.emailVerified` —
+      //      `requireLocalEmailVerified` DEFAULTS TO TRUE, and the wizard admin's
+      //      local email is unverified, so this fires even for a trusted provider.
+      //      We set it false: safe here because the trusted provider verifies the
+      //      email AND Google is domain-gated (`databaseHooks.user.create.before`
+      //      below), so the OAuth round-trip itself proves ownership. better-auth
+      //      then flips the local user's emailVerified to true on link.
+      // Generic OIDC is intentionally NOT trusted — email-verification guarantees
+      // vary by IdP; revisit when generic-OAuth lands (Task 1.4 placeholder above).
+      accountLinking: {
+        enabled: true,
+        trustedProviders: ['google', 'github'],
+        requireLocalEmailVerified: false,
+      },
       fields: {
         userId: 'user_id',
         accountId: 'account_id',

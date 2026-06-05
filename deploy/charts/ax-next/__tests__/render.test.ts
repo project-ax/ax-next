@@ -761,6 +761,119 @@ describeIfHelm('ax-next chart: dev-services k8s 1.29+ guard (TASK-157)', () => {
   });
 });
 
+describeIfHelm('ax-next chart: ingress backend port (GKE ingress fix)', () => {
+  // Regression: the Ingress backend targeted a service port named `http`,
+  // but the host Service only exposes `ipc` and `public-http`. A GCE/any
+  // Ingress pointing at a non-existent port name wires no backend — the LB
+  // returns 404/502 and there's no loud failure. The fix points the backend
+  // at `public-http` (the public surface). This guard pins the wiring so it
+  // can't silently rebreak.
+  const HOST_SVC = 'ax-test-ax-next-host';
+  const ingressArgs = [
+    '--set', 'ingress.enabled=true',
+    '--set', 'ingress.host=ax.example.com',
+  ];
+
+  it('ingress.enabled=true: backend targets the host Service port named public-http', () => {
+    const docs = helmTemplate(ingressArgs);
+    const ing = docs.find((d) => d.kind === 'Ingress');
+    expect(ing, 'Ingress renders when enabled').toBeDefined();
+    const backend =
+      ing?.spec?.rules?.[0]?.http?.paths?.[0]?.backend?.service;
+    expect(backend?.name).toBe(HOST_SVC);
+    expect(backend?.port?.name).toBe('public-http');
+  });
+
+  it('the public-http port name actually exists on the host Service (cross-check)', () => {
+    // Belt-and-suspenders: the backend port name is only meaningful if the
+    // Service truly publishes it. Assert both halves from one render so a
+    // future rename of the Service port can't desync the Ingress.
+    const docs = helmTemplate(ingressArgs);
+    const svc = docs.find(
+      (d) => d.kind === 'Service' && d.metadata?.name === HOST_SVC,
+    );
+    const portNames = (svc?.spec?.ports ?? []).map(
+      (p: { name?: string }) => p.name,
+    );
+    expect(portNames).toContain('public-http');
+
+    const ing = docs.find((d) => d.kind === 'Ingress');
+    const backendPortName =
+      ing?.spec?.rules?.[0]?.http?.paths?.[0]?.backend?.service?.port?.name;
+    expect(portNames).toContain(backendPortName);
+  });
+
+  it('ingress.enabled=false (default): no Ingress renders', () => {
+    const docs = helmTemplate([]);
+    expect(docs.find((d) => d.kind === 'Ingress')).toBeUndefined();
+  });
+});
+
+describeIfHelm('ax-next chart: serve /chat bearer token (AX_SERVE_TOKEN)', () => {
+  // `serve.existingSecret` wires AX_SERVE_TOKEN from an operator-created Secret so
+  // POST /chat requires a bearer token. Default-empty preserves the current
+  // (open, with a boot warning) behaviour so nothing breaks for port-forward
+  // deploys; a public-ingress deploy is expected to set it.
+  it('default: no AX_SERVE_TOKEN env (open /chat preserved, no breakage)', () => {
+    const env = findHostEnv(helmTemplate([]));
+    expect(env.find((e) => e.name === 'AX_SERVE_TOKEN')).toBeUndefined();
+  });
+
+  it('serve.existingSecret set: AX_SERVE_TOKEN sourced from that Secret, key defaults to token', () => {
+    const env = findHostEnv(helmTemplate(['--set', 'serve.existingSecret=my-serve-secret']));
+    const t = env.find((e) => e.name === 'AX_SERVE_TOKEN');
+    const ref = (t?.valueFrom as { secretKeyRef?: { name?: string; key?: string } } | undefined)
+      ?.secretKeyRef;
+    expect(ref?.name).toBe('my-serve-secret');
+    expect(ref?.key).toBe('token');
+  });
+
+  it('serve.secretKey overrides the Secret key', () => {
+    const env = findHostEnv(
+      helmTemplate(['--set', 'serve.existingSecret=my-serve-secret', '--set', 'serve.secretKey=bearer']),
+    );
+    const t = env.find((e) => e.name === 'AX_SERVE_TOKEN');
+    const ref = (t?.valueFrom as { secretKeyRef?: { key?: string } } | undefined)?.secretKeyRef;
+    expect(ref?.key).toBe('bearer');
+  });
+});
+
+describeIfHelm('ax-next chart: LB health-check NetworkPolicy ingress (lbHealthCheckCidrs)', () => {
+  // Cloud LBs (GKE GCLB) probe the pod IP directly from provider ranges; with an
+  // enforcing CNI those must be admitted on the public surface or the backend
+  // shows UNHEALTHY (502s) despite a healthy pod. Empty default = no rule (kind /
+  // non-cloud unaffected); the cloud overlay sets the ranges.
+  const HOST_NP = 'ax-test-ax-next-host-network';
+
+  it('default (empty): host NetworkPolicy has NO ipBlock health-check rule', () => {
+    const docs = helmTemplate(['--set', 'networkPolicies.enabled=true']);
+    const np = docs.find((d) => d.kind === 'NetworkPolicy' && d.metadata?.name === HOST_NP);
+    const ingress = (np?.spec?.ingress ?? []) as Array<{
+      from?: Array<{ ipBlock?: { cidr?: string } }>;
+    }>;
+    expect(ingress.some((r) => (r.from ?? []).some((f) => f.ipBlock))).toBe(false);
+  });
+
+  it('lbHealthCheckCidrs set: an ipBlock rule admits those CIDRs on the public-http port', () => {
+    const docs = helmTemplate([
+      '--set', 'networkPolicies.enabled=true',
+      '--set-json', 'networkPolicies.lbHealthCheckCidrs=["35.191.0.0/16","130.211.0.0/22"]',
+    ]);
+    const np = docs.find((d) => d.kind === 'NetworkPolicy' && d.metadata?.name === HOST_NP);
+    const ingress = (np?.spec?.ingress ?? []) as Array<{
+      from?: Array<{ ipBlock?: { cidr?: string } }>;
+      ports?: Array<{ port?: number; protocol?: string }>;
+    }>;
+    const rule = ingress.find((r) => (r.from ?? []).some((f) => f.ipBlock));
+    expect(rule, 'health-check ipBlock rule present').toBeDefined();
+    const cidrs = (rule?.from ?? []).map((f) => f.ipBlock?.cidr);
+    expect(cidrs).toContain('35.191.0.0/16');
+    expect(cidrs).toContain('130.211.0.0/22');
+    // Admitted on the public surface (9090), not the IPC port.
+    expect(rule?.ports?.some((p) => p.port === 9090 && p.protocol === 'TCP')).toBe(true);
+  });
+});
+
 describeIfHelm('ax-next chart: host RBAC Role (TASK-160)', () => {
   it('grants pods verbs + a narrow pods/log:get for sidecar-failure diagnosis', () => {
     const docs = helmTemplate([]);

@@ -137,6 +137,19 @@ spec:
               value: "1"
             {{- end }}
 
+            {{- if .Values.serve.existingSecret }}
+            # `serve` subcommand — bearer token gating POST /chat. When set,
+            # /chat requires `Authorization: Bearer <token>`; unset leaves /chat
+            # open (a boot warning fires). Sourced from an operator-created
+            # Secret so the token never lands in values / shell history. Strongly
+            # recommended whenever ingress.enabled=true (see values.yaml `serve:`).
+            - name: AX_SERVE_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.serve.existingSecret }}
+                  key: {{ .Values.serve.secretKey | default "token" }}
+            {{- end }}
+
             # Auth providers are DB-driven via @ax/auth-better — the
             # operator walks /setup/* (Phase 2 onboarding wizard) once,
             # then adds providers from /admin/auth/providers/* at runtime.

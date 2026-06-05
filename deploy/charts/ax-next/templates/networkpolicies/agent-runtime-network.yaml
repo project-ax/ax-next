@@ -63,6 +63,21 @@ spec:
           protocol: TCP
         - port: {{ .Values.host.ports.publicHttp }}
           protocol: TCP
+    {{- with .Values.networkPolicies.lbHealthCheckCidrs }}
+    # Cloud load-balancer health-check probes reach the pod IP directly on the
+    # public surface from provider-owned ranges (GCP GCLB: 35.191.0.0/16 +
+    # 130.211.0.0/22). With a NetworkPolicy-enforcing CNI they must be admitted
+    # explicitly, or the LB marks the backend UNHEALTHY (502s) despite a healthy
+    # pod. Empty by default (cloud-agnostic); the cloud overlay sets the ranges.
+    - from:
+        {{- range . }}
+        - ipBlock:
+            cidr: {{ . | quote }}
+        {{- end }}
+      ports:
+        - port: {{ $.Values.host.ports.publicHttp }}
+          protocol: TCP
+    {{- end }}
   egress:
     # PostgreSQL.
     - ports:

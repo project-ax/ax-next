@@ -437,6 +437,26 @@ http:
   cookieKey: ""
   allowedOrigins: []
 
+# ─── Serve / `/chat` endpoint auth (`serve` subcommand) ──────────
+# The `serve` subcommand exposes POST /chat — a raw single-turn chat endpoint,
+# SEPARATE from channel-web's authenticated /api/chat surface. When AX_SERVE_TOKEN
+# is set, /chat requires `Authorization: Bearer <token>`; when unset, /chat is
+# OPEN to anything that can route to the port (the host logs a boot warning).
+#
+# That's acceptable with an ingress-off / port-forward-only posture, but once a
+# public Ingress is enabled (ingress.enabled=true) an unset token makes /chat a
+# public, unauthenticated agent-execution endpoint. SET A TOKEN for public deploys.
+#
+# Point `existingSecret` at a Secret you create out-of-band — the token then
+# stays off the command line and out of values (same posture as
+# postgres.external.existingSecret):
+#   kubectl create secret generic ax-next-serve-token -n <ns> \
+#     --from-literal=token="$(openssl rand -hex 32)"
+# Empty (default) → AX_SERVE_TOKEN is not set (open /chat + the boot warning).
+serve:
+  existingSecret: ""   # name of a Secret holding the bearer token
+  secretKey: token     # key within that Secret
+
 # ----- Onboarding ------------------------------------------------------
 # First-run wizard. The plugin auto-generates a bootstrap token at first
 # boot if `bootstrapToken` is empty AND no row exists in `bootstrap_state`
@@ -503,8 +523,17 @@ onboarding:
 # `enabled: true` is the safe default. Disabling is supported only for
 # kind-dev (where Calico/Cilium are not installed and policies are
 # silently no-ops anyway).
+#
+# `lbHealthCheckCidrs`: source ranges allowed to reach the host's PUBLIC
+# surface (publicHttp) for cloud LOAD-BALANCER HEALTH CHECKS. Empty by default
+# (cloud-agnostic). With a NetworkPolicy-enforcing CNI, a cloud LB's health-check
+# probes hit the pod IP directly from provider-owned ranges; if they aren't
+# admitted, the LB marks the backend UNHEALTHY and serves 502s despite a healthy
+# pod. GCP GCLB uses 35.191.0.0/16 + 130.211.0.0/22 (set in the GKE overlay).
+# Other providers: AWS/Azure health checks come from the LB subnet — list it here.
 networkPolicies:
   enabled: true
+  lbHealthCheckCidrs: []
 
 # ─── Ingress ─────────────────────────────────────────────────────
 # Off by default — production deploys typically front the host with a

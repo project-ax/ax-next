@@ -19,6 +19,10 @@ npm-debug.log*
 
 # Local dev helm values — holds a credentials encryption key; not source
 ax-values.yaml
+# Per-environment helm value overrides (real project/domain/registry values).
+# Pattern: a `*.local.yaml` layered on top of a tracked template via `helm -f`.
+# See deploy/GKE.md. Never source — keep real values out of the repo.
+*.local.yaml
 
 .vscode/
 .idea/

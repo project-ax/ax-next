@@ -32,5 +32,11 @@ spec:
               service:
                 name: {{ include "ax-next.hostComponentName" . }}
                 port:
-                  name: http
+                  # Must match a named port on the host Service (service.yaml).
+                  # That Service exposes `ipc` (runner back-channel, :80) and
+                  # `public-http` (the public surface — /chat, /setup, /health,
+                  # /admin/*, /auth/*). Ingress MUST target `public-http`; a
+                  # value of `http` matches no port and the LB never wires a
+                  # backend (silent 404/502). See render.test.ts ingress guard.
+                  name: public-http
 {{- end }}
