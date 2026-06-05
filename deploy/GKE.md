@@ -517,13 +517,32 @@ rejection. `kubectl describe pod -n ax-next-runners <pod>` shows the real reason
 in Events. Runner resources are the plugin's defaults and aren't a helm knob yet;
 Autopilot rounds requests up to its floors.
 
+**Ingress `ADDRESS` stays empty for 10+ min; cert is `FailedNotVisible`; no LB
+resources exist.** The GKE load-balancer controller (glbc) isn't acting on the
+Ingress at all. Tell-tale: `kubectl describe ingress ax-next-host -n ax-next`
+shows `Events: <none>` and no `Address`, and `gcloud compute forwarding-rules
+list --global` shows nothing for your static IP (still `RESERVED`). The usual
+cause is the **ingress class**: glbc keys off the legacy
+`kubernetes.io/ingress.class: "gce"` **annotation**, and many GKE clusters have
+**no IngressClass objects** (`kubectl get ingressclass` → "No resources found"),
+so the `ingressClassName: gce` *field* references a class that doesn't exist and
+glbc silently ignores the Ingress. The overlay uses the annotation + empty
+`className` for this reason. If you previously installed with `ingressClassName`,
+delete the stuck Ingress so it's recreated cleanly with the annotation:
+`kubectl delete ingress ax-next-host -n ax-next` then re-run the install. Within
+a minute you should see glbc events and `ADDRESS` populate.
+
 **LB returns 404 / 502; cert stuck `Provisioning`.** In order: (1) DNS must
 resolve `$DOMAIN` to the reserved static IP (`dig $DOMAIN`); the cert never goes
 Active otherwise. (2) The backend health check must pass — it auto-derives from
 the host's `/health` readiness probe; `kubectl describe ingress -n ax-next` and
-the backend-service health in the console tell you. (3) Confirm the Ingress
-backend targets the `public-http` port (the chart now pins this; a stale render
-pointing at `http` is the classic cause of a wired-but-dead backend).
+the backend-service health in the console tell you. (3) With
+`networkPolicies.enabled=true`, the host policy must admit the cloud LB
+health-check ranges (`networkPolicies.lbHealthCheckCidrs`; the GKE overlay sets
+GCP's `35.191.0.0/16` + `130.211.0.0/22`) or the backend shows UNHEALTHY despite
+a healthy pod. (4) Confirm the Ingress backend targets the `public-http` port
+(the chart pins this; a stale render pointing at `http` is the classic cause of a
+wired-but-dead backend).
 
 **Host pod crashes at boot with `@ax/storage-postgres init failed: unable to
 verify the first certificate`.** The DSN uses `sslmode=require` (or `verify-ca`).

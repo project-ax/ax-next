@@ -140,10 +140,18 @@ networkPolicies:
 # ManagedCertificate name you create in the runbook.
 ingress:
   enabled: true
-  className: gce
+  # GKE's load-balancer controller (glbc) is selected via the LEGACY
+  # `kubernetes.io/ingress.class: gce` ANNOTATION (below), NOT the
+  # `ingressClassName` field. Many GKE clusters have NO IngressClass objects at
+  # all (`kubectl get ingressclass` → "No resources found"), so
+  # `ingressClassName: gce` references a class that doesn't exist and glbc
+  # SILENTLY IGNORES the Ingress — no events, no NEG, no LB, ADDRESS stays empty.
+  # Leaving className empty means the chart omits the ingressClassName field.
+  className: ""
   host: ax.example.com                                       # >>> EDIT (your domain)
   tls: false
   annotations:
+    kubernetes.io/ingress.class: gce                         # selects glbc (see note above)
     kubernetes.io/ingress.global-static-ip-name: ax-next-ip  # >>> EDIT (reserved global IP name)
     networking.gke.io/managed-certificates: ax-next-cert     # >>> EDIT (ManagedCertificate name)
 
