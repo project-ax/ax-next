@@ -1,6 +1,6 @@
 import { PluginError, type AgentContext, type HookBus } from '@ax/core';
 import {
-  SessionAppendTranscriptRequestSchema,
+  SessionAppendTranscriptMetaSchema,
   SessionAppendTranscriptResponseSchema,
   SessionGetTranscriptRequestSchema,
   SessionReplaceTranscriptResponseSchema,
@@ -69,15 +69,37 @@ interface AppendTranscriptResult {
   maxSeq: number;
 }
 
-export const sessionAppendTranscriptHandler: ActionHandler = async (
-  rawPayload,
+export const sessionAppendTranscriptHandler: BinaryActionHandler = async (
+  body,
   ctx,
   bus,
+  url,
 ) => {
-  const parsed = SessionAppendTranscriptRequestSchema.safeParse(rawPayload);
+  // REQUEST-direction binary: the delta lines are the raw octet-stream body
+  // (split on `\n`, same as replace-transcript), so a turn that Read a large
+  // attachment can't overflow the 4 MiB JSON cap. The `fromSeq`/`prefixHash`
+  // integrity metadata ride as QUERY PARAMS. Missing/malformed → 400. A
+  // `?conversationId=…` smuggled onto the query is NEVER read — the host
+  // resolves the conversationId from the session row (below), exactly as the
+  // old JSON shape's `.strict()` schema refused a body-smuggled conversationId.
+  const fromSeqRaw = url.searchParams.get('fromSeq');
+  const prefixHashRaw = url.searchParams.get('prefixHash');
+  if (fromSeqRaw === null || prefixHashRaw === null) {
+    return validationError(
+      'session.append-transcript: missing fromSeq/prefixHash query param',
+    );
+  }
+  const parsed = SessionAppendTranscriptMetaSchema.safeParse({
+    fromSeq: fromSeqRaw,
+    prefixHash: prefixHashRaw,
+  });
   if (!parsed.success) {
     return validationError(`session.append-transcript: ${parsed.error.message}`);
   }
+  // The lines are an UNTRUSTED, adversarial SDK/model artifact — split verbatim
+  // (no re-serialization, no per-line parse) and forwarded to the store as-is.
+  const lines = splitJsonlBytes(body);
+
   let conversationId: string | null;
   try {
     conversationId = await resolveConversationId(ctx, bus);
@@ -96,11 +118,11 @@ export const sessionAppendTranscriptHandler: ActionHandler = async (
       'conversations:append-transcript',
       ctx,
       {
-        // Host-stamped — NOT from the untrusted body.
+        // Host-resolved — NOT from the wire (body or query).
         conversationId,
         fromSeq: parsed.data.fromSeq,
         prefixHash: parsed.data.prefixHash,
-        lines: parsed.data.lines,
+        lines,
       },
     );
   } catch (err) {

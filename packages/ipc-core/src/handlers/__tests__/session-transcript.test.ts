@@ -38,6 +38,18 @@ function busWith(conversationId: string | null, hookResult: unknown) {
   });
 }
 
+// The delta lines are now the raw octet-stream REQUEST body (matching the
+// runner's `lines.join('\n') + '\n'` encoding); `fromSeq`/`prefixHash` ride the
+// query. These helpers build the two so the tests mirror the wire shape.
+function appendBody(lines: string[]): Buffer {
+  return Buffer.from(lines.length > 0 ? lines.join('\n') + '\n' : '', 'utf8');
+}
+function appendUrl(params: Record<string, string>): URL {
+  const u = new URL('http://ipc.local/session.append-transcript');
+  for (const [k, v] of Object.entries(params)) u.searchParams.set(k, v);
+  return u;
+}
+
 describe('session.append-transcript handler', () => {
   it('resolves conversationId host-side and forwards the delta', async () => {
     let forwarded: Record<string, unknown> | undefined;
@@ -48,13 +60,15 @@ describe('session.append-transcript handler', () => {
       return { outcome: 'appended', maxSeq: 2 };
     });
     const result = (await sessionAppendTranscriptHandler(
-      { fromSeq: 0, prefixHash: HASH, lines: ['a', 'b'] },
+      appendBody(['a', 'b']),
       fakeCtx(),
       bus as never,
+      appendUrl({ fromSeq: '0', prefixHash: HASH }),
     )) as HandlerOk;
     expect(result.status).toBe(200);
     expect(result.body).toEqual({ outcome: 'appended', maxSeq: 2 });
-    // Host-stamped conversationId — NOT from the body (body has none).
+    // Host-resolved conversationId — NOT from the wire. fromSeq coerced from
+    // the query string back to a number.
     expect(forwarded).toEqual({
       conversationId: 'cnv_1',
       fromSeq: 0,
@@ -66,29 +80,60 @@ describe('session.append-transcript handler', () => {
   it('passes resync-required through unchanged', async () => {
     const bus = busWith('cnv_1', { outcome: 'resync-required', maxSeq: 5 });
     const result = (await sessionAppendTranscriptHandler(
-      { fromSeq: 1, prefixHash: HASH, lines: ['x'] },
+      appendBody(['x']),
       fakeCtx(),
       bus as never,
+      appendUrl({ fromSeq: '1', prefixHash: HASH }),
     )) as HandlerOk;
     expect(result.body).toEqual({ outcome: 'resync-required', maxSeq: 5 });
   });
 
-  it('rejects a body that smuggles a conversationId (strict schema → 400)', async () => {
-    const bus = busWith('cnv_1', { outcome: 'appended', maxSeq: 1 });
+  it('ignores a conversationId smuggled onto the query (host resolves it)', async () => {
+    let forwarded: Record<string, unknown> | undefined;
+    const bus = fakeBus(async (hook, payload) => {
+      if (hook === 'session:get-config') return { conversationId: 'cnv_real' };
+      forwarded = payload as Record<string, unknown>;
+      return { outcome: 'appended', maxSeq: 1 };
+    });
     const result = (await sessionAppendTranscriptHandler(
-      { conversationId: 'cnv_evil', fromSeq: 0, prefixHash: HASH, lines: [] },
+      appendBody([]),
       fakeCtx(),
       bus as never,
-    )) as HandlerErr;
-    expect(result.status).toBe(400);
+      appendUrl({ fromSeq: '0', prefixHash: HASH, conversationId: 'cnv_evil' }),
+    )) as HandlerOk;
+    expect(result.status).toBe(200);
+    expect(forwarded!.conversationId).toBe('cnv_real');
   });
 
   it('rejects a bad prefixHash shape (not 64-hex → 400)', async () => {
     const bus = busWith('cnv_1', { outcome: 'appended', maxSeq: 1 });
     const result = (await sessionAppendTranscriptHandler(
-      { fromSeq: 0, prefixHash: 'short', lines: [] },
+      appendBody([]),
       fakeCtx(),
       bus as never,
+      appendUrl({ fromSeq: '0', prefixHash: 'short' }),
+    )) as HandlerErr;
+    expect(result.status).toBe(400);
+  });
+
+  it('rejects a non-numeric fromSeq (→ 400)', async () => {
+    const bus = busWith('cnv_1', { outcome: 'appended', maxSeq: 1 });
+    const result = (await sessionAppendTranscriptHandler(
+      appendBody([]),
+      fakeCtx(),
+      bus as never,
+      appendUrl({ fromSeq: 'NaN', prefixHash: HASH }),
+    )) as HandlerErr;
+    expect(result.status).toBe(400);
+  });
+
+  it('rejects a missing fromSeq/prefixHash query param (→ 400)', async () => {
+    const bus = busWith('cnv_1', { outcome: 'appended', maxSeq: 1 });
+    const result = (await sessionAppendTranscriptHandler(
+      appendBody([]),
+      fakeCtx(),
+      bus as never,
+      appendUrl({ prefixHash: HASH }), // no fromSeq
     )) as HandlerErr;
     expect(result.status).toBe(400);
   });
@@ -96,9 +141,10 @@ describe('session.append-transcript handler', () => {
   it('returns 409 when the session is not conversation-scoped', async () => {
     const bus = busWith(null, { outcome: 'appended', maxSeq: 1 });
     const result = (await sessionAppendTranscriptHandler(
-      { fromSeq: 0, prefixHash: HASH, lines: [] },
+      appendBody([]),
       fakeCtx(),
       bus as never,
+      appendUrl({ fromSeq: '0', prefixHash: HASH }),
     )) as HandlerErr;
     expect(result.status).toBe(409);
   });

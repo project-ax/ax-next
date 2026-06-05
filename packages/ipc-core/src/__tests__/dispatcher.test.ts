@@ -1164,4 +1164,147 @@ describe('dispatcher', () => {
     );
     expect(res.status).toBe(415);
   });
+
+  // -------------------------------------------------------------------------
+  // /session.append-transcript — REQUEST-direction binary channel
+  //
+  // Regression (PDF-read crash): a turn that Reads a large attachment inflates
+  // the SDK jsonl past the 4 MiB JSON MAX_FRAME, so the per-turn delta-ship
+  // must ride the raw octet-stream channel (like replace-transcript) instead
+  // of the capped JSON reader. Otherwise the host rejected the append with
+  // `body too large`, the runner re-threw the 4xx as fatal, and the pod died.
+  // `fromSeq`/`prefixHash` travel as query params; the delta lines are the
+  // raw body. conversationId is STILL resolved host-side (never trusted from
+  // the wire).
+  // -------------------------------------------------------------------------
+
+  it('POST /session.append-transcript — admits a delta larger than the 4 MiB JSON cap (binary; fromSeq/prefixHash in query)', async () => {
+    const PREFIX = 'a'.repeat(64);
+    let forwarded: Record<string, unknown> | undefined;
+    const s = await setup({
+      sessionId: 's-append-big',
+      services: {
+        'conversations:append-transcript': async (_ctx, input) => {
+          forwarded = input as Record<string, unknown>;
+          return { outcome: 'appended', maxSeq: 1 };
+        },
+      },
+    });
+    setups.push(s);
+    // Mint a token whose session is bound to a conversation — the handler
+    // resolves conversationId host-side from session:get-config.
+    const { token } = await s.harness.bus.call<
+      SessionCreateInput,
+      SessionCreateOutput
+    >('session:create', s.harness.ctx(), {
+      sessionId: 's-append-big2',
+      workspaceRoot: '/tmp/ws',
+      owner: {
+        userId: 'u-1',
+        agentId: 'a-1',
+        agentConfig: {
+          displayName: 'Test Agent',
+          systemPromptAugment: '',
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'claude-sonnet-4-7',
+        },
+        conversationId: 'cnv_big',
+      },
+    });
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-ipc-append-'));
+    const socketPath = path.join(tempDir, 'ipc.sock');
+    const listener = await createListener({
+      socketPath,
+      sessionId: 's-append-big2',
+      bus: s.harness.bus,
+    });
+    try {
+      // A single jsonl line > 4 MiB — the shape a Read-of-a-PDF tool_result
+      // takes (one `user` line carrying base64 image blocks).
+      const bigLine = JSON.stringify({
+        type: 'user',
+        message: { content: 'x'.repeat(5 * 1024 * 1024) },
+      });
+      const body = Buffer.from(bigLine + '\n', 'utf8');
+      expect(body.length).toBeGreaterThan(4 * 1024 * 1024);
+      const res = await doRawUpload(
+        socketPath,
+        `/session.append-transcript?fromSeq=0&prefixHash=${PREFIX}`,
+        token,
+        body,
+      );
+      expect(res.status).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ outcome: 'appended', maxSeq: 1 });
+      expect(forwarded).toEqual({
+        conversationId: 'cnv_big',
+        fromSeq: 0,
+        prefixHash: PREFIX,
+        lines: [bigLine],
+      });
+    } finally {
+      await listener.close();
+      await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
+
+  it('POST /session.append-transcript — empty-delta prefix probe (zero lines) still round-trips', async () => {
+    const PREFIX = 'b'.repeat(64);
+    let forwarded: Record<string, unknown> | undefined;
+    const s = await setup({
+      sessionId: 's-append-probe',
+      services: {
+        'conversations:append-transcript': async (_ctx, input) => {
+          forwarded = input as Record<string, unknown>;
+          return { outcome: 'appended', maxSeq: 7 };
+        },
+      },
+    });
+    setups.push(s);
+    const { token } = await s.harness.bus.call<
+      SessionCreateInput,
+      SessionCreateOutput
+    >('session:create', s.harness.ctx(), {
+      sessionId: 's-append-probe2',
+      workspaceRoot: '/tmp/ws',
+      owner: {
+        userId: 'u-1',
+        agentId: 'a-1',
+        agentConfig: {
+          displayName: 'Test Agent',
+          systemPromptAugment: '',
+          allowedTools: [],
+          mcpConfigIds: [],
+          model: 'claude-sonnet-4-7',
+        },
+        conversationId: 'cnv_probe',
+      },
+    });
+    const tempDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'ax-ipc-probe-'));
+    const socketPath = path.join(tempDir, 'ipc.sock');
+    const listener = await createListener({
+      socketPath,
+      sessionId: 's-append-probe2',
+      bus: s.harness.bus,
+    });
+    try {
+      const res = await doRawUpload(
+        socketPath,
+        `/session.append-transcript?fromSeq=7&prefixHash=${PREFIX}`,
+        token,
+        Buffer.alloc(0),
+      );
+      expect(res.status).toBe(200);
+      expect(JSON.parse(res.body)).toEqual({ outcome: 'appended', maxSeq: 7 });
+      expect(forwarded).toEqual({
+        conversationId: 'cnv_probe',
+        fromSeq: 7,
+        prefixHash: PREFIX,
+        lines: [],
+      });
+    } finally {
+      await listener.close();
+      await fsp.rm(tempDir, { recursive: true, force: true }).catch(() => {});
+    }
+  });
 });

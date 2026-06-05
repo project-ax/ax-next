@@ -677,24 +677,40 @@ export type AttachmentsListResponse = z.infer<typeof AttachmentsListResponseSche
 // jsonl/sqlite vocabulary. `seq` is a per-conversation monotonic counter, NOT a
 // git oid or commit.
 //
-// `replace-transcript` is the REQUEST-direction binary channel (the whole jsonl
-// can be large): the runner streams the raw bytes as `application/octet-stream`
-// (the host splits on `\n`), so there is NO request schema. `get-transcript` is
-// the response-direction binary channel (same shape as materialize): a small
-// JSON request and a raw octet-stream response body (the joined bytes, drained
-// to a temp file) — so NO response schema (cf. the dispatch table in
-// `ipc-client.ts`).
+// `append-transcript` and `replace-transcript` are BOTH the REQUEST-direction
+// binary channel: the runner streams the jsonl bytes (the per-turn DELTA for
+// append, the WHOLE file for replace's resync path) as `application/octet-stream`
+// and the host splits on `\n`. The per-turn delta moved off the JSON channel
+// because a single turn that Reads a large attachment writes a jsonl line
+// carrying base64 image/document blocks — which overflowed the 4 MiB JSON
+// `MAX_FRAME` and terminated the runner. So neither has a JSON *body* schema;
+// append's `fromSeq`/`prefixHash` integrity metadata ride as QUERY PARAMS,
+// validated by `SessionAppendTranscriptMetaSchema` (query strings → coerced).
+// `get-transcript` is the response-direction binary channel (same shape as
+// materialize): a small JSON request and a raw octet-stream response body (the
+// joined bytes, drained to a temp file) — so NO response schema (cf. the
+// dispatch table in `ipc-client.ts`).
 // ---------------------------------------------------------------------------
 
-export const SessionAppendTranscriptRequestSchema = z
+// Query-carried integrity metadata for `session.append-transcript`. Both values
+// arrive as URL query strings, so `fromSeq` is matched as digits then coerced;
+// `prefixHash` keeps the same 64-lowercase-hex shape it had as a JSON field. The
+// delta lines themselves are the raw octet-stream body, NOT in here. `.strict()`
+// is moot (the handler builds the object from exactly these two getters) but
+// documents that no other field is meaningful — a smuggled `?conversationId=…`
+// is never read (the host resolves it from the session row).
+export const SessionAppendTranscriptMetaSchema = z
   .object({
-    fromSeq: z.number().int().nonnegative(),
+    fromSeq: z
+      .string()
+      .regex(/^\d+$/, 'fromSeq must be a non-negative integer')
+      .transform((s) => Number(s))
+      .refine((n) => Number.isSafeInteger(n), 'fromSeq out of range'),
     prefixHash: z.string().regex(SHA256_RE, 'prefixHash must be 64 lowercase-hex chars'),
-    lines: z.array(z.string()),
   })
   .strict();
-export type SessionAppendTranscriptRequest = z.infer<
-  typeof SessionAppendTranscriptRequestSchema
+export type SessionAppendTranscriptMeta = z.infer<
+  typeof SessionAppendTranscriptMetaSchema
 >;
 
 export const SessionAppendTranscriptResponseSchema = z.object({

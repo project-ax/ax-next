@@ -29,10 +29,17 @@ import type { ActionHandler, HandlerResult } from './types.js';
 // you stored it).
 // ---------------------------------------------------------------------------
 
+// Binary actions receive the raw REQUEST body PLUS the parsed request URL, so
+// a handler can read query params alongside the octet-stream body (the
+// REQUEST-direction binary channel carries no JSON envelope to put them in).
+// Most binary handlers ignore the url; `session.append-transcript` reads its
+// `fromSeq`/`prefixHash` from it. Mirrors `sessionNextMessageHandler`, the
+// other url-aware handler.
 export type BinaryActionHandler = (
   body: Buffer,
   ctx: AgentContext,
   bus: HookBus,
+  url: URL,
 ) => Promise<HandlerResult>;
 
 interface BlobPutInput {
@@ -43,7 +50,12 @@ interface BlobPutOutput {
   size: number;
 }
 
-export const blobPutHandler: BinaryActionHandler = async (body, ctx, bus) => {
+export const blobPutHandler: BinaryActionHandler = async (
+  body,
+  ctx,
+  bus,
+  _url,
+) => {
   let out: BlobPutOutput;
   try {
     out = await bus.call<BlobPutInput, BlobPutOutput>('blob:put', ctx, {
