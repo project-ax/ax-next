@@ -557,7 +557,7 @@ describe('main()', () => {
       };
     };
     expect(queryArg.options.disallowedTools).toEqual(
-      expect.arrayContaining(['WebFetch', 'WebSearch', 'Task']),
+      expect.arrayContaining(['WebFetch', 'WebSearch', 'Task', 'AskUserQuestion']),
     );
     // I-P0-1: positive guard that Skill is NOT denied. If a future refactor
     // re-adds Skill to DISABLED_BUILTINS or otherwise reintroduces a deny,

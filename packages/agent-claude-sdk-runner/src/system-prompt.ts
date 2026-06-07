@@ -139,9 +139,31 @@ export function skillAuthoringNote(): string {
 }
 
 /**
+ * Clarifying-questions note. The SDK's built-in `AskUserQuestion` tool is
+ * disabled in this runner (see DISABLED_BUILTINS in tool-names.ts) because its
+ * interactive picker is answered by the CLI's own UI, and our headless
+ * stream-json runner has no UI / control-protocol path to feed a user-chosen
+ * answer back as the tool_result. Without the tool the model has no structured
+ * way to ask the user to choose — so this note tells it to just ask in the
+ * reply itself and wait, which renders and is answered in the normal turn flow.
+ *
+ * Fixed runner-authored prose for the LLM (no untrusted input). Always present.
+ */
+export function clarifyingQuestionsNote(): string {
+  return [
+    `Asking the user: when you need the user to make a choice, or to give you`,
+    `information only they have, ask them directly in your reply — in plain`,
+    `language, listing the options when there are a few — then stop and wait for`,
+    `their answer before continuing. You have no separate question or menu tool;`,
+    `the chat itself is how you ask. Only ask for what you genuinely need to`,
+    `proceed, and keep going on your own whenever you reasonably can.`,
+  ].join(' ');
+}
+
+/**
  * Assemble the runner-authored operational notes block, in order:
  *   workspace → (ephemeral-scratch?) → (python-venv?) → capability-handoff →
- *   skill-authoring.
+ *   skill-authoring → clarifying-questions.
  *
  * Always includes the workspace note (the root is always known); the
  * ephemeral-scratch and python-venv notes are conditional on the sandbox
@@ -161,11 +183,14 @@ export function operationalNotes(
   const notes: string[] = [workspaceNote(workspaceRoot)];
   if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
   if (pythonVenvActive) notes.push(pythonVenvNote());
-  // Always last two: the JIT capability-handoff note (design §7) so the agent
-  // doesn't narrate a mid-conversation connect/approval handoff, and the
-  // skill-authoring spawn-time-discovery constraint (TASK-74 §D6). Both
-  // harmless when the corresponding tools aren't wired.
+  // Always-present tail: the JIT capability-handoff note (design §7) so the
+  // agent doesn't narrate a mid-conversation connect/approval handoff, the
+  // skill-authoring spawn-time-discovery constraint (TASK-74 §D6), and the
+  // clarifying-questions note (which replaces the disabled AskUserQuestion
+  // tool — see clarifyingQuestionsNote / DISABLED_BUILTINS). All harmless when
+  // the corresponding tools aren't wired.
   notes.push(capabilityHandoffNote());
   notes.push(skillAuthoringNote());
+  notes.push(clarifyingQuestionsNote());
   return notes.join('\n\n');
 }

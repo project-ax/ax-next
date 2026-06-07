@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   capabilityHandoffNote,
+  clarifyingQuestionsNote,
   ephemeralScratchNote,
   operationalNotes,
   pythonVenvNote,
@@ -47,6 +48,19 @@ describe('skill-authoring note (TASK-74 §D6)', () => {
   });
 });
 
+describe('clarifying-questions note', () => {
+  it('steers the model to ask the user directly in chat and wait', () => {
+    const note = clarifyingQuestionsNote().toLowerCase();
+    // The load-bearing behavior now that AskUserQuestion is disabled: ask in
+    // the reply itself, then stop and wait for the user's answer.
+    expect(note).toContain('ask');
+    expect(note).toMatch(/in your reply|in chat|directly/);
+    expect(note).toMatch(/wait for (their|the user'?s) answer|wait for them/);
+    // No separate question/menu tool exists — the model must use plain chat.
+    expect(note).toMatch(/no (separate )?(question|menu).*tool|chat itself/);
+  });
+});
+
 describe('ephemeral scratch note', () => {
   it('interpolates the actual root path into the scratch note (subprocess tempdir)', () => {
     const root = '/var/folders/xx/ax-ipc-abc123/ephemeral';
@@ -58,11 +72,12 @@ describe('ephemeral scratch note', () => {
 });
 
 describe('operationalNotes — the single assembly point', () => {
-  it('always includes the workspace + handoff + skill-authoring notes (workspace root is always known)', () => {
+  it('always includes the workspace + handoff + skill-authoring + clarifying-questions notes (workspace root is always known)', () => {
     const notes = operationalNotes(WS, undefined);
     expect(notes).toContain(workspaceNote(WS));
     expect(notes).toContain(capabilityHandoffNote());
     expect(notes).toContain(skillAuthoringNote());
+    expect(notes).toContain(clarifyingQuestionsNote());
     // No scratch / venv notes when the sandbox provides neither.
     expect(notes).not.toContain(ephemeralScratchNote('/ephemeral'));
     expect(notes).not.toContain(pythonVenvNote());
@@ -92,16 +107,18 @@ describe('operationalNotes — the single assembly point', () => {
     expect(operationalNotes(WS, '/ephemeral')).not.toContain(pythonVenvNote());
   });
 
-  it('orders workspace → scratch → venv → handoff → skill-authoring', () => {
+  it('orders workspace → scratch → venv → handoff → skill-authoring → clarifying-questions', () => {
     const notes = operationalNotes(WS, '/ephemeral', true);
     const iWs = notes.indexOf(workspaceNote(WS));
     const iScratch = notes.indexOf(ephemeralScratchNote('/ephemeral'));
     const iVenv = notes.indexOf(pythonVenvNote());
     const iHandoff = notes.indexOf(capabilityHandoffNote());
     const iSkill = notes.indexOf(skillAuthoringNote());
+    const iClarify = notes.indexOf(clarifyingQuestionsNote());
     expect(iWs).toBeLessThan(iScratch);
     expect(iScratch).toBeLessThan(iVenv);
     expect(iVenv).toBeLessThan(iHandoff);
     expect(iHandoff).toBeLessThan(iSkill);
+    expect(iSkill).toBeLessThan(iClarify);
   });
 });

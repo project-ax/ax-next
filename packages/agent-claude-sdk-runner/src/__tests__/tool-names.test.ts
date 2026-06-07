@@ -23,6 +23,18 @@ describe('classifySdkToolName', () => {
     expect(classifySdkToolName(name)).toEqual({ kind: 'disabled' });
   });
 
+  it('classifies AskUserQuestion as disabled — no headless answer path', () => {
+    // AskUserQuestion is an SDK built-in whose interactive picker is answered
+    // by the CLI's own UI. In our headless stream-json runner there is no such
+    // UI and no control-protocol round-trip wired to feed a user-chosen answer
+    // back as the tool_result, so the model would emit a question the user can
+    // never actually answer. Disabling it forces the model to ask in plain
+    // chat instead (rendered + answerable in the normal turn flow — see the
+    // clarifying-questions system-prompt note). This pins the classification
+    // so a revert that drops it from DISABLED_BUILTINS fails loudly here.
+    expect(classifySdkToolName('AskUserQuestion')).toEqual({ kind: 'disabled' });
+  });
+
   it('classifies Skill as builtin (allowed) — I-P0-1 skill discovery', () => {
     // Skill was previously in DISABLED_BUILTINS on the "nested-agent
     // bypass" rationale. Phase 0 (docs/plans/2026-05-17-skill-install-
