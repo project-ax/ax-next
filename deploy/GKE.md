@@ -24,6 +24,13 @@ We're a nervous crab, so two things up front, honestly:
   [What this does NOT cover](#what-this-does-not-cover). None of them block first
   light; all of them matter before you trust real users to it.
 
+> **Seeing "the agent stopped unexpectedly" on the first chat after an idle
+> spell?** That's Autopilot cold-start, not a bug in your install — there's no
+> warm gVisor node, Autopilot takes longer than the runner's 60 s readiness
+> budget to provision one, and the session gives up. The durable fix is a
+> **Standard cluster with one always-on gVisor node**:
+> [Migrating to a Standard cluster](#migrating-to-a-standard-cluster-with-a-warm-node-pool-fixing-runner-cold-start).
+
 ---
 
 ## Why Autopilot changes things (the short version)
@@ -533,7 +540,11 @@ disabled (the runner→proxy egress + host←proxy ingress rules only render whe
 gVisor-capable node (can take a minute on first session) or a resource-floor
 rejection. `kubectl describe pod -n ax-next-runners <pod>` shows the real reason
 in Events. Runner resources are the plugin's defaults and aren't a helm knob yet;
-Autopilot rounds requests up to its floors.
+Autopilot rounds requests up to its floors. If this provisioning delay regularly
+trips the runner's 60 s readiness budget — the user sees **"the agent stopped
+unexpectedly"** and the host logs `sandbox-open-failed` — the fix isn't to wait
+longer, it's to keep a node warm:
+[migrate to a Standard cluster with an always-on gVisor node](#migrating-to-a-standard-cluster-with-a-warm-node-pool-fixing-runner-cold-start).
 
 **Ingress `ADDRESS` stays empty for 10+ min; cert is `FailedNotVisible`; no LB
 resources exist.** The GKE load-balancer controller (glbc) isn't acting on the
@@ -597,6 +608,324 @@ Deliberately deferred. Each is a real next step, not a gap we missed:
   broker that doesn't exist yet.
 - **Host-pod hardening** (securityContext, restricted SA) and a `PodDisruptionBudget`.
 - **Automated image-publish CI.** Today the build is manual (Step 2).
+
+---
+
+## Migrating to a Standard cluster with a warm node pool (fixing runner cold-start)
+
+Autopilot is lovely until the first chat after an idle stretch. Here's the
+failure, plainly: when a session needs a runner pod and there's no gVisor-capable
+node sitting idle, Autopilot has to *provision one* — and that takes longer than
+the runner's 60 s readiness budget (`@ax/sandbox-k8s` `readinessTimeoutMs`, not a
+helm knob). The session gives up with `sandbox-open-failed`, the user sees **"the
+agent stopped unexpectedly,"** and to add insult, the brand-new node also pays a
+one-time ~900 MB image pull. It's not a bug in the install — it's the cost model.
+Autopilot optimizes for "pay only for pods you run," and a cold gVisor node is the
+bill it sends for that.
+
+The fix is boring and reliable: run a **Standard** cluster with **one always-on
+gVisor node**. Autoscaling with `--min-nodes=1` keeps a sandboxed node warm, the
+agent image stays cached on it, and a new runner pod schedules + goes Ready in a
+handful of seconds — comfortably under the 60 s budget. You trade a little idle
+spend for predictable warm starts. (Rough order of magnitude: an always-on
+`e2-standard-4` is ~$100/month plus the smaller system pool — check the
+[pricing calculator](https://cloud.google.com/products/calculator) for current
+numbers, they drift.)
+
+**The good news: your chart doesn't change.** The overlay
+([`gke-values.yaml`](charts/ax-next/gke-values.yaml)) is cluster-agnostic — the
+TCP credential-proxy, `runtimeClassName: gvisor`, the enforced NetworkPolicies,
+and the GCE ingress all behave identically on Standard. This is a *migration of
+the cluster underneath*, not a re-architecture. And **there's no in-place
+conversion** — you can't flip an Autopilot cluster to Standard, and you can't add
+a Standard node pool to an Autopilot cluster. You stand up a new Standard cluster
+beside the old one and cut over.
+
+### What carries over vs. what you re-create
+
+Most of the expensive, stateful stuff is **project-scoped**, not cluster-scoped —
+it survives the move untouched. Only the cluster-scoped objects get rebuilt.
+
+| Reused as-is (project-scoped) | Re-created on the new cluster (cluster-scoped) |
+|---|---|
+| Artifact Registry image (`$IMAGE:$TAG`) | Namespaces + PodSecurity labels (Step 3) |
+| Global static IP (`ax-next-ip`) | k8s Secrets: `ax-next-db`, the helm-managed `ax-next-secrets`, `ax-next-serve-token` (Step 4) |
+| Cloud SQL instance + DB + user (**your data lives here**) | `ManagedCertificate` CRD (Step 5c) |
+| Secret Manager secrets (keys, DB password) | `BackendConfig` for SSE (new — Step M7) |
+| DNS A record + the domain | The helm release |
+| `gke-values.local.yaml` | — |
+
+Your **conversations, credentials, workspaces** are split between Cloud SQL (DB)
+and the host PVC (git repos + blobs). Cloud SQL is reused, so DB state is safe.
+The **host PVC does not migrate** — it's a new disk on the new cluster. If you
+have workspace/blob state worth keeping, snapshot/restore it per
+[Disaster recovery](#disaster-recovery-do-not-skip) before you decommission the
+old cluster. (For a fresh-ish deployment with nothing precious on the PVC yet,
+you can skip that and let the new cluster start clean.)
+
+### Step M0 — Reuse your env vars
+
+Everything from [Prerequisites](#prerequisites) still applies — same
+`PROJECT_ID`, `REGION`, `VPC`, `DOMAIN`, `TAG`, `IMAGE`. Set them again in your
+shell, then add one for the new cluster's name (pick something that won't collide
+with the old one while both exist):
+
+```bash
+export STD_CLUSTER=ax-next-std       # the new Standard cluster's name
+```
+
+### Step M1 — Create the Standard cluster
+
+We match the two Autopilot behaviours the rest of this guide depends on, but
+spell them out because Standard makes you ask:
+
+- `--enable-dataplane-v2` — Cilium, so NetworkPolicies **actually enforce**
+  (Autopilot has this on always; the overlay leaves policies ON).
+- `--enable-ip-alias` — VPC-native, required for both Cloud SQL private IP and the
+  container-native NEG ingress (Autopilot is always VPC-native).
+
+The default node pool created here is a **normal (non-sandbox)** pool — it runs
+the host pod and GKE's system workloads. The gVisor pool comes next.
+
+```bash
+gcloud container clusters create $STD_CLUSTER \
+  --project=$PROJECT_ID --region=$REGION \
+  --release-channel=regular \
+  --enable-dataplane-v2 \
+  --enable-ip-alias \
+  --network=$VPC --subnetwork=$VPC \
+  --machine-type=e2-standard-2 \
+  --num-nodes=1 \
+  --enable-autoscaling --min-nodes=1 --max-nodes=2
+```
+
+> The default pool only carries the single host pod + system daemons, so
+> `e2-standard-2` (2 vCPU / 8 GiB) is usually plenty — bump to `e2-standard-4` if
+> you later add replicas or heavier host plugins. A **regional** cluster (one node
+> per zone via the region) costs more but survives a zonal outage; pass a
+> `--node-locations=<single-zone>` or use `--zone` instead if you want to keep it
+> to one node for cost. Workload Identity (`--workload-pool`) is still a deferred
+> follow-up here, same as the Autopilot path — we keep parity.
+
+### Step M2 — Add the warm gVisor node pool
+
+This is the whole point of the migration. `--sandbox type=gvisor` installs gVisor
+on the pool and makes GKE label the nodes `sandbox.gke.io/runtime=gvisor` and
+**taint** them `sandbox.gke.io/runtime=gvisor:NoSchedule`. GKE's `gvisor`
+`RuntimeClass` automatically adds the matching node affinity + toleration to any
+pod with `runtimeClassName: gvisor` — which is exactly what `@ax/sandbox-k8s`
+stamps on every runner. So runner pods land here automatically, and **nothing
+else does** (the taint repels the host + system pods). That separation isn't
+optional: GKE requires system workloads to run on a non-sandbox pool, which is
+why Step M1's default pool exists.
+
+```bash
+gcloud container node-pools create gvisor-pool \
+  --cluster=$STD_CLUSTER --project=$PROJECT_ID --region=$REGION \
+  --image-type=cos_containerd \
+  --sandbox type=gvisor \
+  --machine-type=e2-standard-4 \
+  --enable-autoscaling --min-nodes=1 --max-nodes=4
+```
+
+> **`--min-nodes=1` is the warm node — the fix.** It keeps one gVisor node up at
+> all times, so the agent image stays cached on it and the next runner schedules
+> in seconds. Pick **at least 2 vCPUs** (gVisor adds per-Pod overhead and you want
+> room for several concurrent sessions); `e2-standard-4` is a comfortable default.
+> Runners are cheap to pack — each requests only `100m` CPU / `256Mi` memory
+> (`@ax/sandbox-k8s` defaults), so an `e2-standard-4` (4 vCPU / 16 GiB) holds
+> dozens at once; the autoscaler adds nodes (up to `--max-nodes`) under real load
+> and drains back to 1 when idle.
+>
+> **First-runner caveat:** the *very first* runner after the pool scales up a
+> fresh node still pays the one-time ~900 MB image pull. Because `min-nodes=1`
+> keeps that node alive, the image stays cached and every subsequent runner is
+> fast — you pay the pull once per node, not once per session like Autopilot. If
+> even that first pull matters to you, a tiny image-prepull DaemonSet on the pool
+> closes the gap; it's optional and not worth it for most.
+
+### Step M3 — Point kubectl at the new cluster, then namespaces
+
+```bash
+gcloud container clusters get-credentials $STD_CLUSTER --region $REGION --project $PROJECT_ID
+kubectl config current-context   # sanity-check: should name $STD_CLUSTER, NOT the old Autopilot one
+```
+
+Then re-run [Step 3 — Namespaces](#step-3--namespaces) verbatim against this
+cluster (create `ax-next` + `ax-next-runners`, label the runner namespace
+`baseline`). Namespaces are cluster-scoped, so they don't carry over.
+
+### Step M4 — Re-create the Secrets
+
+Cluster-scoped, so they're rebuilt — but every *value* is reused. The DB DSN
+points at the **same** Cloud SQL private IP (`$DB_PRIVATE_IP` from
+[Step 1b](#1b-create-the-instance-database-and-user); re-export it with the
+`gcloud sql instances describe` one-liner there if it's not in your shell), and
+the keys come straight back out of Secret Manager — **do not** `openssl rand` new
+ones, or you'll orphan every stored credential and session:
+
+```bash
+export DB_PRIVATE_IP=$(gcloud sql instances describe ax-next-db --project=$PROJECT_ID \
+  --format='value(ipAddresses[0].ipAddress)')
+DSN="postgresql://ax_next:$(gcloud secrets versions access latest --secret=ax-next-db-password --project=$PROJECT_ID)@${DB_PRIVATE_IP}:5432/ax_next?sslmode=no-verify"
+kubectl create secret generic ax-next-db -n ax-next --from-literal=url="$DSN"
+
+export AX_CREDENTIALS_KEY=$(gcloud secrets versions access latest --secret=ax-next-credentials-key --project=$PROJECT_ID)
+export AX_HTTP_COOKIE_KEY=$(gcloud secrets versions access latest --secret=ax-next-http-cookie-key --project=$PROJECT_ID)
+
+# Reuse the same /chat serve token too (if you set one on Autopilot).
+kubectl create secret generic ax-next-serve-token -n ax-next \
+  --from-literal=token="$(gcloud secrets versions access latest --secret=ax-next-serve-token --project=$PROJECT_ID)"
+```
+
+(The `ax-next-secrets` Secret holding the two keys is created *by helm* in Step M6
+from the `--set` flags above — you don't create it by hand.)
+
+### Step M5 — Re-create the ManagedCertificate
+
+The `ManagedCertificate` CRD is cluster-scoped — re-apply it on the new cluster
+(same spec as [Step 5c](#5c-create-the-managedcertificate)). The static IP and DNS
+A record are project-scoped and untouched.
+
+```bash
+cat <<EOF | kubectl apply -f -
+apiVersion: networking.gke.io/v1
+kind: ManagedCertificate
+metadata:
+  name: ax-next-cert
+  namespace: ax-next
+spec:
+  domains:
+    - $DOMAIN
+EOF
+```
+
+> It won't go **Active** until DNS resolves to whichever LB ultimately holds the
+> static IP — which, if you're reusing the same IP, doesn't happen until the
+> cutover in Step M8. That's expected; don't panic at `Provisioning`.
+
+### Step M6 — Install with the same chart
+
+Identical to [Step 6](#step-6--edit-the-overlay-and-install) — same overlay, same
+gitignored `gke-values.local.yaml`, same keys. The chart is cluster-agnostic, so
+nothing in your values changes for Standard.
+
+```bash
+helm dependency build deploy/charts/ax-next   # subchart must be present to render
+
+helm upgrade --install ax-next deploy/charts/ax-next \
+  --namespace ax-next \
+  -f deploy/charts/ax-next/gke-values.yaml \
+  -f deploy/charts/ax-next/gke-values.local.yaml \
+  --set credentials.key="$AX_CREDENTIALS_KEY" \
+  --set http.cookieKey="$AX_HTTP_COOKIE_KEY" \
+  --set serve.existingSecret=ax-next-serve-token   # drop if you didn't gate /chat
+```
+
+### Step M7 — Raise the SSE backend timeout (BackendConfig)
+
+This one isn't in the chart yet, and you need it on **any** GCE-ingress deploy
+(Autopilot or Standard) — it just tends to bite right when you start a real
+streaming chat. The GCE Application Load Balancer defaults its backend
+`timeoutSec` to **30 s**, and it applies that to the whole response, not idle
+time. Chat replies stream over a long-lived SSE connection, so a turn that takes
+longer than 30 s gets the connection cut out from under it — the UI shows
+**"Connection lost"** mid-answer. A `BackendConfig` with a generous timeout fixes
+it:
+
+```bash
+cat <<'EOF' | kubectl apply -f -
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: ax-next-host-bc
+  namespace: ax-next
+spec:
+  timeoutSec: 3600
+EOF
+
+# Bind it to the host Service so the LB picks it up for that backend.
+kubectl annotate service ax-next-host -n ax-next \
+  cloud.google.com/backend-config='{"default":"ax-next-host-bc"}' --overwrite
+```
+
+> **This is applied via kubectl, so a later `helm upgrade` that re-renders the
+> Service can drop the annotation.** Re-apply it after upgrades until it's baked
+> into the chart (tracked as a follow-up — the chart should template both the
+> `BackendConfig` and the Service annotation). Confirm the LB actually took it:
+> the backend service's `timeoutSec` should read `3600`, not `30`, in
+> `gcloud compute backend-services describe <name> --global` (the name is
+> auto-generated; find it via `kubectl describe ingress ax-next-host -n ax-next`).
+
+### Step M8 — Cut over the static IP
+
+The one genuinely fiddly bit. A **global static IP can attach to only one LB
+forwarding rule at a time** — so while the old Autopilot cluster's Ingress holds
+`ax-next-ip`, the new cluster's Ingress can't claim it and will sit with an empty
+`ADDRESS`. Two ways through:
+
+**Option A — reuse the same IP, short maintenance window (recommended, simplest).**
+
+1. Bring the new cluster fully up first and **verify it before touching DNS** via
+   a port-forward (the new Ingress has no public address yet, and that's fine):
+   ```bash
+   kubectl rollout status deployment/ax-next-host -n ax-next
+   kubectl port-forward -n ax-next svc/ax-next-host 9090:9090
+   # hit http://localhost:9090/health and walk a chat — confirm a runner pod spawns
+   ```
+2. When you're happy, **release the IP from the old cluster.** Switch kubectl to
+   the *old* Autopilot context and delete its Ingress:
+   ```bash
+   kubectl config use-context <old-autopilot-context>
+   kubectl delete ingress ax-next-host -n ax-next
+   ```
+3. Switch back to the new cluster. Within ~a minute glbc claims the freed IP for
+   the new Ingress; the `ManagedCertificate` then provisions (15–60 min the first
+   time). HTTPS is down for that window — that's the maintenance cost of reusing
+   one IP. Watch it land:
+   ```bash
+   kubectl config use-context <new-std-context>
+   kubectl get ingress ax-next-host -n ax-next -w               # ADDRESS should populate
+   kubectl get managedcertificate ax-next-cert -n ax-next -w    # Provisioning → Active
+   ```
+
+**Option B — new IP + DNS flip, smaller gap (more moving parts).** Reserve a
+second global static IP, point the new Ingress at it (override
+`ingress.annotations` / `kubernetes.io/ingress.global-static-ip-name` in your
+local values), lower your DNS A-record TTL a day ahead, then flip the record from
+the old IP to the new one. The old cluster keeps serving until DNS propagates; the
+new managed cert goes Active once Google sees the domain resolve to the new LB.
+More graceful, but you're juggling two IPs and a DNS change — only worth it if a
+maintenance window is genuinely unacceptable.
+
+### Step M9 — Verify the cold-start is actually gone
+
+```bash
+# A gVisor node is always present (this is the warm node doing its job).
+kubectl get nodes -l sandbox.gke.io/runtime=gvisor
+# expect: at least one node, STATUS Ready
+
+# Cold probe: with NO active session (give it a few minutes idle so no runner is
+# warm), send the first chat — `list the files in /workspace` — and confirm the
+# runner pod goes Ready and the answer returns WELL under 60 s. No
+# "agent stopped unexpectedly", no sandbox-open-failed in the host logs.
+kubectl get pods -n ax-next-runners -w
+```
+
+Then re-run the full [Acceptance checks](#acceptance-checks) — gVisor runtime
+class, Cloud SQL reachable, HTTPS serving. They're cluster-agnostic; everything
+that passed on Autopilot should pass here, minus the cold-start failure.
+
+### Step M10 — Decommission the old Autopilot cluster
+
+Once the new cluster has soaked and you've confirmed nothing precious is stranded
+on the old host PVC (see the migration intro), delete the old cluster. The
+project-scoped resources — static IP, Cloud SQL, Artifact Registry, Secret
+Manager — are **not** owned by the cluster and stay put:
+
+```bash
+gcloud container clusters delete <old-autopilot-cluster> --region $REGION --project $PROJECT_ID
+```
 
 ---
 
