@@ -546,6 +546,22 @@ unexpectedly"** and the host logs `sandbox-open-failed` — the fix isn't to wai
 longer, it's to keep a node warm:
 [migrate to a Standard cluster with an always-on gVisor node](#migrating-to-a-standard-cluster-with-a-warm-node-pool-fixing-runner-cold-start).
 
+**Every chat dies after ~110s; runner pods exit code 2; runner logs show
+`session.get-config failed: timeout` (GKE Sandbox / Standard).** The runner can't
+reach the host IPC in time — but it's **DNS**, not connectivity. The runner dials
+`ax-next-host.<ns>.svc.cluster.local` (4 dots); under the pod's default
+`ndots:5` with ~6 `search` domains, that relative name triggers a search-domain
+walk, and on gVisor those UDP search-miss lookups to kube-dns run ~1s each (~6s
+total) — longer than the runner's **5s** `session.get-config` timeout, so it
+never connects even though the name resolves fine. (Tell-tale: from a runner-
+labelled gVisor pod, `curl http://<name>:80/` shows `time_namelookup` ≈ 6s, but
+`curl http://<name>.:80/` *with a trailing dot* is instant; connecting by the
+ClusterIP or pod IP is also instant.) **The chart fixes this** by emitting the
+host/proxy URLs as absolute FQDNs (trailing dot) so resolution skips the search
+walk — make sure you're on a chart build that includes that (the
+`ax-next.hostIpcUrl` helper ends in `svc.cluster.local.`). Autopilot doesn't hit
+this because its DNS path resolves the search-misses fast.
+
 **Ingress `ADDRESS` stays empty for 10+ min; cert is `FailedNotVisible`; no LB
 resources exist.** The GKE load-balancer controller (glbc) isn't acting on the
 Ingress at all. Tell-tale: `kubectl describe ingress ax-next-host -n ax-next`
@@ -687,25 +703,37 @@ spell them out because Standard makes you ask:
 The default node pool created here is a **normal (non-sandbox)** pool — it runs
 the host pod and GKE's system workloads. The gVisor pool comes next.
 
+We use a **zonal** cluster (`--zone`, one zone) on purpose — see the cost note
+below. Cloud SQL is regional, so a zonal cluster in the same region still reaches
+its private IP fine.
+
 ```bash
+export ZONE=us-central1-a            # a zone inside $REGION
+
 gcloud container clusters create $STD_CLUSTER \
-  --project=$PROJECT_ID --region=$REGION \
+  --project=$PROJECT_ID --zone=$ZONE \
   --release-channel=regular \
   --enable-dataplane-v2 \
   --enable-ip-alias \
   --network=$VPC --subnetwork=$VPC \
-  --machine-type=e2-standard-2 \
-  --num-nodes=1 \
-  --enable-autoscaling --min-nodes=1 --max-nodes=2
+  --machine-type=e2-standard-4 \
+  --num-nodes=1
 ```
 
-> The default pool only carries the single host pod + system daemons, so
-> `e2-standard-2` (2 vCPU / 8 GiB) is usually plenty — bump to `e2-standard-4` if
-> you later add replicas or heavier host plugins. A **regional** cluster (one node
-> per zone via the region) costs more but survives a zonal outage; pass a
-> `--node-locations=<single-zone>` or use `--zone` instead if you want to keep it
-> to one node for cost. Workload Identity (`--workload-pool`) is still a deferred
-> follow-up here, same as the Autopilot path — we keep parity.
+> **Zonal vs regional — this is a real cost decision on Standard.** Unlike
+> Autopilot (pay-per-pod), on a Standard **regional** cluster `--num-nodes` /
+> `--min-nodes` are **per-zone**, so `min-nodes=1` becomes one node in *each* of
+> the region's ~3 zones — 3× the always-on bill, for both pools. Since the host is
+> single-replica-locked anyway, zonal HA buys little; we go **zonal** to keep it to
+> one system node + one warm gVisor node. Use `--region` only if you genuinely want
+> multi-zone HA and accept the ~3× node count.
+>
+> The default pool carries the single host pod (requests `1 vCPU / 2 GiB`) + GKE's
+> system daemons; `e2-standard-4` fits them with headroom. `e2-standard-2` *can*
+> work but is tight once kube-system is accounted for — we hit `Pending` risk
+> there, so `e2-standard-4` is the safe default. Workload Identity
+> (`--workload-pool`) is still a deferred follow-up here, same as the Autopilot
+> path — we keep parity.
 
 ### Step M2 — Add the warm gVisor node pool
 
@@ -721,13 +749,21 @@ why Step M1's default pool exists.
 
 ```bash
 gcloud container node-pools create gvisor-pool \
-  --cluster=$STD_CLUSTER --project=$PROJECT_ID --region=$REGION \
+  --cluster=$STD_CLUSTER --project=$PROJECT_ID --zone=$ZONE \
   --image-type=cos_containerd \
   --sandbox type=gvisor \
   --machine-type=e2-standard-4 \
-  --enable-autoscaling --min-nodes=1 --max-nodes=4
+  --num-nodes=1 \
+  --enable-autoscaling --min-nodes=1 --max-nodes=3
 ```
 
+> **`--num-nodes=1` matters here.** With `--enable-autoscaling` but no
+> `--num-nodes`, the pool is created at its **default initial size of 3** and the
+> autoscaler then slowly drains it back to `--min-nodes` — you pay for 3 gVisor
+> nodes for ~10 min and watch them disappear. `--num-nodes=1` starts it at the
+> warm node directly. (If you skip it, `gcloud container clusters resize
+> $STD_CLUSTER --node-pool gvisor-pool --num-nodes 1 --zone $ZONE` fixes it.)
+>
 > **`--min-nodes=1` is the warm node — the fix.** It keeps one gVisor node up at
 > all times, so the agent image stays cached on it and the next runner schedules
 > in seconds. Pick **at least 2 vCPUs** (gVisor adds per-Pod overhead and you want
@@ -743,6 +779,14 @@ gcloud container node-pools create gvisor-pool \
 > fast — you pay the pull once per node, not once per session like Autopilot. If
 > even that first pull matters to you, a tiny image-prepull DaemonSet on the pool
 > closes the gap; it's optional and not worth it for most.
+>
+> **Give the new pool a few minutes to converge before the first chat.** Right
+> after the node pool comes up (and especially right after a resize), the gVisor
+> node's Cilium datapath + DNS are still settling, and the first runner or two can
+> fail to reach the host. It stabilises on its own within a few minutes — it is
+> NOT the cold-start problem and NOT the DNS issue in
+> [Troubleshooting](#troubleshooting); just don't judge the deploy by the first
+> chat in the first five minutes.
 
 ### Step M3 — Point kubectl at the new cluster, then namespaces
 
@@ -778,8 +822,42 @@ kubectl create secret generic ax-next-serve-token -n ax-next \
   --from-literal=token="$(gcloud secrets versions access latest --secret=ax-next-serve-token --project=$PROJECT_ID)"
 ```
 
-(The `ax-next-secrets` Secret holding the two keys is created *by helm* in Step M6
+(The `ax-next-secrets` Secret holding the keys is created *by helm* in Step M6
 from the `--set` flags above — you don't create it by hand.)
+
+> **Carry over `auth-secret`, or every Google/OAuth login breaks.** `ax-next-secrets`
+> holds a **third** key the `--set` flags don't cover: `auth-secret`
+> (`AX_AUTH_SECRET`), which `@ax/auth-better` uses to encrypt stored OAuth tokens
+> at rest. There is **no Helm value** for it — the chart generates a random one at
+> first install and is only "lookup-stable" against an *existing in-cluster*
+> Secret. A fresh cluster therefore mints a **new** `auth-secret`, and every
+> account that linked Google (tokens encrypted with the old cluster's secret)
+> can't be decrypted → broken logins. The `credentials-key` / `http-cookie-key`
+> you pass via `--set` are unaffected; this is `auth-secret` specifically.
+>
+> If you don't already have it in Secret Manager (the original Step 4b didn't back
+> it up — an oversight), grab it from the **old** cluster and store it now:
+>
+> ```bash
+> kubectl --context <old-autopilot-context> get secret ax-next-secrets -n ax-next \
+>   -o jsonpath='{.data.auth-secret}' \
+>   | { read -r v; printf '%s' "$v"; } \
+>   | gcloud secrets create ax-next-auth-secret --data-file=- \
+>       --replication-policy=automatic --project=$PROJECT_ID
+> ```
+>
+> Then, **after** the Helm install in Step M6 has created `ax-next-secrets`, patch
+> the generated value back to the real one and restart the host so it re-reads it:
+>
+> ```bash
+> OLD_AUTH=$(gcloud secrets versions access latest --secret=ax-next-auth-secret --project=$PROJECT_ID)
+> kubectl patch secret ax-next-secrets -n ax-next --type=merge \
+>   -p "{\"data\":{\"auth-secret\":\"${OLD_AUTH}\"}}"
+> kubectl rollout restart deployment/ax-next-host -n ax-next
+> ```
+>
+> Verify it matches the old cluster (compare `sha256` of the decoded value on both
+> contexts). Adding a real `auth.secret` Helm value is a tracked follow-up.
 
 ### Step M5 — Re-create the ManagedCertificate
 
