@@ -106,10 +106,22 @@ Cluster-internal URL the runner pods use to reach the host's IPC listener
 @ax/sandbox-k8s reads this via the preset's hostIpcUrl config and stamps
 it onto every runner pod's AX_RUNNER_ENDPOINT env var so the runner knows
 where to phone home.
+
+NOTE the TRAILING DOT on `svc.cluster.local.` — it makes this an absolute
+(fully-qualified) name so the resolver does NOT walk the pod's `search`
+domains first. Without it, a 4-dot name under the default `ndots:5` is
+treated as relative: every search-domain permutation is queried before the
+real name, and on GKE Sandbox (gVisor) those search-miss lookups go over
+gVisor's UDP netstack to kube-dns and can take ~1s each (~6s total). That
+exceeds the runner's 5s `session.get-config` IPC timeout, so the runner
+dies at boot with `session.get-config failed: timeout` — even though the
+name itself resolves fine. The trailing dot collapses resolution to a
+single fast query. (Harmless everywhere else; absolute names resolve
+identically on Autopilot / kind.)
 */}}
 {{- define "ax-next.hostIpcUrl" -}}
 {{- $port := .Values.host.ipcServicePort | default 80 -}}
-{{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.hostComponentName" .) (include "ax-next.hostNamespace" .) (int $port) -}}
+{{- printf "http://%s.%s.svc.cluster.local.:%d" (include "ax-next.hostComponentName" .) (include "ax-next.hostNamespace" .) (int $port) -}}
 {{- end }}
 
 {{/*
@@ -129,19 +141,23 @@ runner pods in TCP mode. Computed from the proxy Service name + namespace +
 TCP port. The proxy plugin returns this from proxy:open-session so runner
 pods (in another namespace) get a dialable address — the bind address
 0.0.0.0:<port> isn't reachable cross-pod. Analogous to ax-next.hostIpcUrl.
+Trailing dot on `svc.cluster.local.` for the same reason as ax-next.hostIpcUrl
+(absolute name → no ndots search-domain walk; matters on gVisor).
 */}}
 {{- define "ax-next.credentialProxyAdvertisedEndpoint" -}}
 {{- $port := .Values.credentialProxy.tcp.port | default 8888 -}}
-{{- printf "tcp://%s.%s.svc.cluster.local:%d" (include "ax-next.credentialProxyComponentName" .) (include "ax-next.hostNamespace" .) (int $port) -}}
+{{- printf "tcp://%s.%s.svc.cluster.local.:%d" (include "ax-next.credentialProxyComponentName" .) (include "ax-next.hostNamespace" .) (int $port) -}}
 {{- end }}
 
 {{/*
 Same proxy Service URL with an `http://` scheme — what the sandbox plugin
 stamps as K8S_PROXY_ENDPOINT (the orchestrator routes HTTPS_PROXY through it).
+Trailing dot on `svc.cluster.local.` for the same reason as ax-next.hostIpcUrl
+(absolute name → no ndots search-domain walk; matters on gVisor).
 */}}
 {{- define "ax-next.credentialProxyServiceUrl" -}}
 {{- $port := .Values.credentialProxy.tcp.port | default 8888 -}}
-{{- printf "http://%s.%s.svc.cluster.local:%d" (include "ax-next.credentialProxyComponentName" .) (include "ax-next.hostNamespace" .) (int $port) -}}
+{{- printf "http://%s.%s.svc.cluster.local.:%d" (include "ax-next.credentialProxyComponentName" .) (include "ax-next.hostNamespace" .) (int $port) -}}
 {{- end }}
 
 {{/*

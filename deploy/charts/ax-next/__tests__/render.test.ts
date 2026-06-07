@@ -595,14 +595,38 @@ describeIfHelm('ax-next chart: credential-proxy TCP Service (TASK-149)', () => {
       host?.spec?.template?.spec?.containers?.[0]?.env ?? [];
     const byName = Object.fromEntries(env.map((e) => [e.name, e.value]));
     expect(byName.AX_PROXY_TCP_PORT).toBe('8888');
+    // Trailing dot on `svc.cluster.local.` is REQUIRED — see the
+    // ax-next.hostIpcUrl helper. It makes the name absolute so the runner's
+    // resolver skips the ndots:5 search-domain walk that, on gVisor, times out
+    // the 5s session.get-config IPC and kills the runner at boot.
     expect(byName.AX_PROXY_ADVERTISED_ENDPOINT).toMatch(
-      /^tcp:\/\/ax-test-ax-next-proxy\..*\.svc\.cluster\.local:8888$/,
+      /^tcp:\/\/ax-test-ax-next-proxy\..*\.svc\.cluster\.local\.:8888$/,
     );
     expect(byName.K8S_PROXY_ENDPOINT).toMatch(
-      /^http:\/\/ax-test-ax-next-proxy\..*\.svc\.cluster\.local:8888$/,
+      /^http:\/\/ax-test-ax-next-proxy\..*\.svc\.cluster\.local\.:8888$/,
     );
     // The hostPath-only env must NOT appear in TCP mode.
     expect(env.find((e) => e.name === 'K8S_PROXY_SOCKET_HOST_PATH')).toBeUndefined();
+  });
+
+  it('host Deployment stamps AX_K8S_HOST_IPC_URL as an ABSOLUTE FQDN (trailing dot) so the runner skips the ndots search-domain walk', () => {
+    // Regression: without the trailing dot, the 4-dot service name is relative
+    // under the pod's default ndots:5, so the resolver queries every search
+    // domain first. On GKE Sandbox (gVisor) those UDP search-miss lookups to
+    // kube-dns take ~6s — longer than the runner's 5s session.get-config IPC
+    // timeout — so every runner died at boot with `get-config: timeout` while
+    // the name itself resolved fine. The trailing dot collapses it to one fast
+    // query. This URL becomes AX_RUNNER_ENDPOINT on every runner pod.
+    const docs = helmTemplate(tcpArgs);
+    const host = docs.find(
+      (d) => d.kind === 'Deployment' && d.metadata?.name === HOST_DEPLOY,
+    );
+    const env: Array<{ name: string; value?: string }> =
+      host?.spec?.template?.spec?.containers?.[0]?.env ?? [];
+    const byName = Object.fromEntries(env.map((e) => [e.name, e.value]));
+    expect(byName.AX_K8S_HOST_IPC_URL).toMatch(
+      /^http:\/\/ax-test-ax-next-host\..*\.svc\.cluster\.local\.:80$/,
+    );
   });
 
   it('TCP mode: NO proxy-socket hostPath volume on the host pod', () => {
