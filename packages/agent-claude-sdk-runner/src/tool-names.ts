@@ -17,11 +17,20 @@
 //
 //   3. Disabled built-ins — things we don't want the agent reaching at
 //      all: WebFetch / WebSearch (raw network egress that bypasses the
-//      credential-proxy / egress policy), plus `Task` (the nested-agent
-//      surface that would spawn a sub-agent outside our hook bus). The
-//      runner sets these in `disallowedTools` too; the classifier provides
-//      defense in depth so `canUseTool` refuses even if the disallow list
-//      ever slips.
+//      credential-proxy / egress policy), `Task` (the nested-agent surface
+//      that would spawn a sub-agent outside our hook bus), and
+//      `AskUserQuestion` (the SDK's interactive multiple-choice picker,
+//      answered by the CLI's own UI). We run the CLI headless over
+//      stream-json with no such UI and no control-protocol round-trip wired
+//      to feed a user-chosen answer back as the tool_result — so if the
+//      model called AskUserQuestion it would emit a question the user could
+//      never actually answer (the chat UI just renders it as an inert tool
+//      blob). Disabling it forces the model to ask in plain chat instead,
+//      which renders normally and is answerable in the ordinary turn flow
+//      (the runner's clarifying-questions system-prompt note steers this —
+//      see system-prompt.ts). The runner sets these in `disallowedTools`
+//      too; the classifier provides defense in depth so `canUseTool`
+//      refuses even if the disallow list ever slips.
 //
 //      NOTE on `Skill`: previously also denied here on the same
 //      "bypass our hook bus" rationale, but Phase 0 of the skill-install
@@ -51,6 +60,7 @@ export const DISABLED_BUILTINS = [
   'WebFetch',
   'WebSearch',
   'Task',
+  'AskUserQuestion',
 ] as const;
 
 export type SdkToolClass =
