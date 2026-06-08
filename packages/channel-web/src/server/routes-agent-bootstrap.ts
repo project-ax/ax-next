@@ -42,8 +42,9 @@ const DEFAULT_PERSONAL_AGENT_MODEL = 'claude-sonnet-4-6';
 //
 // Boundary review: no new service-hook signature — this is an HTTP route
 // calling the EXISTING `agents:create` + `workspace:apply` hooks. The plugin
-// manifest's `calls` list gains `workspace:apply` (see plugin.ts); `agents:create`
-// LOSES the required `systemPrompt` field (now optional).
+// manifest's `calls` list gains `workspace:apply` (see plugin.ts). `agents:create`
+// has no `systemPrompt` field at all (removed in TASK-142); identity lives in the
+// agent's `.ax/` files, not a column.
 //
 // Security review (see PR body): `displayName` is an untrusted browser string —
 // zod-validated (length-bounded) and passed to `agents:create` as DATA (stored,
@@ -70,7 +71,8 @@ interface AgentsCreateInput {
     displayName: string;
     // BARE agent: no systemPrompt. Identity comes from the seeded
     // `.ax/BOOTSTRAP.md` (then the agent's own `.ax/IDENTITY.md`/`SOUL.md`),
-    // not this column. `agents:create` accepts an absent systemPrompt (→ '').
+    // not a column. `agents:create` has no `systemPrompt` field (removed in
+    // TASK-142), so there is nothing to omit here.
     allowedTools: string[];
     mcpConfigIds: string[];
     model: string;
