@@ -238,10 +238,15 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
   // skill-reflection default routine (TASK-178, skill-crystallization PR-C).
   // Seeded with the GLOBAL master switch OFF (enabled=false): the routine is
   // reachable + tested (the @ax/skills crystallization canary) but does not
-  // materialize/fire for any agent until an operator flips it on once via
-  // routines:upsert-default, after the manual-acceptance walk validates the
-  // loop on the cluster. This is a deliberate rollout gate / kill-switch, NOT
-  // half-wiring (the window closes when the walk flips it on).
+  // materialize/fire for any agent until an operator flips it on once. The
+  // flip is done by calling routines:upsert-default with `enabled: true` (an
+  // operator-only out-of-band flag, not a routine-markdown field) — that hook
+  // is the only one that writes the GLOBAL `enabled` column (TASK-183 wired
+  // `enabled` into upsert-default's INSERT and ON CONFLICT UPDATE; before that
+  // the column was unreachable except via raw SQL). Per-agent opt-out is a
+  // separate concern (routines:set-agent-default-enabled). This OFF seed is a
+  // deliberate rollout gate / kill-switch, NOT half-wiring (the window closes
+  // when the cluster walk flips it on).
   //
   // - conversation 'per-fire': each fire gets its own hidden conversation, so
   //   one reflection turn never leaks state into the next (matches the design's
