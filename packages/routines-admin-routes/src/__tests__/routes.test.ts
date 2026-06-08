@@ -68,6 +68,12 @@ interface MockServices {
   defaults?: Map<string, DefaultRoutineDetailMock>;
   /** When set, routines:upsert-default throws this instead of writing. */
   upsertDefaultThrow?: PluginError;
+  /** Per-agent default-routine override state for the /settings/.../defaults
+   *  tests. Keyed by `${agentId}::${defaultRoutineId}`; absence = enabled
+   *  (default-ON), matching the @ax/routines semantics. */
+  agentDefaultOverrides?: Map<string, boolean>;
+  /** The set of default routines `routines:list-agent-defaults` reports. */
+  agentDefaults?: Array<{ defaultRoutineId: string; name: string }>;
 }
 
 async function makeHarnessWith(opts: MockServices) {
@@ -82,6 +88,8 @@ async function makeHarnessWith(opts: MockServices) {
     opts.authMode ?? { kind: 'authed', user: authedUser };
   const defaults =
     opts.defaults ?? new Map<string, DefaultRoutineDetailMock>();
+  const agentDefaultOverrides =
+    opts.agentDefaultOverrides ?? new Map<string, boolean>();
   const harness = await createTestHarness({
     services: {
       'http:register-route': async (_ctx, input: unknown) => {
@@ -216,10 +224,43 @@ async function makeHarnessWith(opts: MockServices) {
         defaults.delete(i.defaultRoutineId);
         return {};
       },
+      // Per-agent default-routine toggle mocks. The real hooks are
+      // owner-scoped via agents:resolve; the harness's agents:resolve mock
+      // already enforces ownedAgentIds, so here we just track the override
+      // state (absence = enabled).
+      'routines:list-agent-defaults': async (_ctx, input: unknown) => {
+        const i = input as { agentId: string };
+        const catalog = opts.agentDefaults ?? [
+          { defaultRoutineId: 'skill-reflection', name: 'skill-reflection' },
+        ];
+        return {
+          defaults: catalog.map((d) => {
+            const key = `${i.agentId}::${d.defaultRoutineId}`;
+            const override = agentDefaultOverrides.get(key);
+            return {
+              defaultRoutineId: d.defaultRoutineId,
+              name: d.name,
+              enabled: override ?? true,
+            };
+          }),
+        };
+      },
+      'routines:set-agent-default-enabled': async (_ctx, input: unknown) => {
+        const i = input as {
+          agentId: string;
+          defaultRoutineId: string;
+          enabled: boolean;
+        };
+        agentDefaultOverrides.set(
+          `${i.agentId}::${i.defaultRoutineId}`,
+          i.enabled,
+        );
+        return {};
+      },
     },
     plugins: [createRoutinesAdminRoutesPlugin()],
   });
-  return { harness, handlers, handlersByMethod, defaults };
+  return { harness, handlers, handlersByMethod, defaults, agentDefaultOverrides };
 }
 
 function makeReq(over: Partial<RouteRequest> = {}): RouteRequest {
@@ -888,6 +929,162 @@ describe('admin /admin/routines/defaults*', () => {
     const { res, captured } = makeRes();
     await handler(makeReq(), res);
     expect(captured.status).toBe(403);
+    await harness.close({ onError: () => {} });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// /settings/routines/:agentId/defaults* — per-agent default-routine toggle
+// (the "Skill self-improvement" switch). Owner-scoped, default-ON.
+// ---------------------------------------------------------------------------
+describe('per-agent default-routine toggle routes', () => {
+  it('GET /settings/routines/:agentId/defaults reports default-ON for an owned agent', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'u1', isAdmin: false },
+      ownedAgentIds: new Set(['agt_a']),
+    });
+    const handler = handlersByMethod.get(
+      'GET /settings/routines/:agentId/defaults',
+    )!;
+    const { res, captured } = makeRes();
+    await handler(makeReq({ params: { agentId: 'agt_a' } }), res);
+    expect(captured.status).toBe(200);
+    const body = captured.body as {
+      defaults: Array<{ defaultRoutineId: string; enabled: boolean }>;
+    };
+    const reflection = body.defaults.find(
+      (d) => d.defaultRoutineId === 'skill-reflection',
+    );
+    expect(reflection?.enabled).toBe(true);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('POST flips the toggle off, and a subsequent GET reflects it', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'u1', isAdmin: false },
+      ownedAgentIds: new Set(['agt_a']),
+    });
+    const setHandler = handlersByMethod.get(
+      'POST /settings/routines/:agentId/defaults/:defaultRoutineId',
+    )!;
+    const { res: setRes, captured: setCaptured } = makeRes();
+    await setHandler(
+      makeReq({
+        params: { agentId: 'agt_a', defaultRoutineId: 'skill-reflection' },
+        body: Buffer.from(JSON.stringify({ enabled: false })),
+      }),
+      setRes,
+    );
+    expect(setCaptured.status).toBe(200);
+
+    const listHandler = handlersByMethod.get(
+      'GET /settings/routines/:agentId/defaults',
+    )!;
+    const { res: getRes, captured: getCaptured } = makeRes();
+    await listHandler(makeReq({ params: { agentId: 'agt_a' } }), getRes);
+    const body = getCaptured.body as {
+      defaults: Array<{ defaultRoutineId: string; enabled: boolean }>;
+    };
+    expect(
+      body.defaults.find((d) => d.defaultRoutineId === 'skill-reflection')
+        ?.enabled,
+    ).toBe(false);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('POST re-enables (flips back on)', async () => {
+    const overrides = new Map<string, boolean>([
+      ['agt_a::skill-reflection', false],
+    ]);
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'u1', isAdmin: false },
+      ownedAgentIds: new Set(['agt_a']),
+      agentDefaultOverrides: overrides,
+    });
+    const setHandler = handlersByMethod.get(
+      'POST /settings/routines/:agentId/defaults/:defaultRoutineId',
+    )!;
+    const { res, captured } = makeRes();
+    await setHandler(
+      makeReq({
+        params: { agentId: 'agt_a', defaultRoutineId: 'skill-reflection' },
+        body: Buffer.from(JSON.stringify({ enabled: true })),
+      }),
+      res,
+    );
+    expect(captured.status).toBe(200);
+    expect(overrides.get('agt_a::skill-reflection')).toBe(true);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('GET returns 403 for an agent the actor does not own', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'u1', isAdmin: false },
+      ownedAgentIds: new Set(['agt_a']),
+    });
+    const handler = handlersByMethod.get(
+      'GET /settings/routines/:agentId/defaults',
+    )!;
+    const { res, captured } = makeRes();
+    await handler(makeReq({ params: { agentId: 'agt_other' } }), res);
+    expect(captured.status).toBe(403);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('POST returns 403 for an agent the actor does not own (no write)', async () => {
+    const overrides = new Map<string, boolean>();
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'u1', isAdmin: false },
+      ownedAgentIds: new Set(['agt_a']),
+      agentDefaultOverrides: overrides,
+    });
+    const handler = handlersByMethod.get(
+      'POST /settings/routines/:agentId/defaults/:defaultRoutineId',
+    )!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({
+        params: { agentId: 'agt_other', defaultRoutineId: 'skill-reflection' },
+        body: Buffer.from(JSON.stringify({ enabled: false })),
+      }),
+      res,
+    );
+    expect(captured.status).toBe(403);
+    // The forbidden agent's override was never written.
+    expect(overrides.has('agt_other::skill-reflection')).toBe(false);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('POST with a non-boolean enabled returns 400', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'u1', isAdmin: false },
+      ownedAgentIds: new Set(['agt_a']),
+    });
+    const handler = handlersByMethod.get(
+      'POST /settings/routines/:agentId/defaults/:defaultRoutineId',
+    )!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({
+        params: { agentId: 'agt_a', defaultRoutineId: 'skill-reflection' },
+        body: Buffer.from(JSON.stringify({ enabled: 'yes' })),
+      }),
+      res,
+    );
+    expect(captured.status).toBe(400);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('Unauthenticated GET returns 401', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authMode: { kind: 'unauthenticated' },
+    });
+    const handler = handlersByMethod.get(
+      'GET /settings/routines/:agentId/defaults',
+    )!;
+    const { res, captured } = makeRes();
+    await handler(makeReq({ params: { agentId: 'agt_a' } }), res);
+    expect(captured.status).toBe(401);
     await harness.close({ onError: () => {} });
   });
 });

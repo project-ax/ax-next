@@ -314,6 +314,190 @@ export async function registerRoutinesAdminRoutes(
 }
 
 // ---------------------------------------------------------------------------
+// /settings/routines/:agentId/defaults* — owner-scoped per-agent toggles for
+// the system default routines (e.g. `skill-reflection`). This is the HTTP
+// shim behind the channel-web "Skill self-improvement" switch.
+//
+// Two routes:
+//
+//   GET  /settings/routines/:agentId/defaults
+//        → { defaults: { defaultRoutineId, name, enabled }[] } for one agent
+//   POST /settings/routines/:agentId/defaults/:defaultRoutineId  { enabled }
+//        → flips that default on/off for that agent (de/re-materializes)
+//
+// Both gate the same way as the rest of /settings/routines*: an authed user,
+// then an `agents:resolve` owner ACL check. The routines plugin's
+// `routines:list-agent-defaults` / `routines:set-agent-default-enabled` are
+// THEMSELVES owner-scoped (they call agents:resolve internally), so the
+// isOwnedBy check here is a fast 403 before the bus hop, not the sole gate.
+// ---------------------------------------------------------------------------
+
+/** POST body for the per-agent default toggle. Strict — extra fields reject
+ *  so a confused client can't smuggle e.g. a `defaultRoutineId` past the URL
+ *  param it's bound to. */
+const setAgentDefaultBodySchema = z
+  .object({
+    enabled: z.boolean(),
+  })
+  .strict();
+
+interface AgentDefaultStateWire {
+  defaultRoutineId: string;
+  name: string;
+  enabled: boolean;
+}
+interface ListAgentDefaultsOutput {
+  defaults: AgentDefaultStateWire[];
+}
+
+export interface SettingsAgentDefaultsHandlers {
+  list: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  set: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+}
+
+export function createSettingsAgentDefaultsHandlers(
+  deps: AdminDeps,
+): SettingsAgentDefaultsHandlers {
+  const settingsInitCtx = makeAgentContext({
+    sessionId: 'routines-agent-defaults-init',
+    agentId: PLUGIN_NAME,
+    userId: 'system',
+  });
+
+  return {
+    async list(req, res) {
+      const actor = await requireUser(deps.bus, settingsInitCtx, req, res);
+      if (actor === null) return;
+      const agentId = req.params.agentId;
+      if (agentId === undefined || agentId.length === 0) {
+        res.status(400).json({ error: 'agentId required' });
+        return;
+      }
+      const ctx = ctxForActor(actor.id);
+      try {
+        if (!(await isOwnedBy(deps.bus, ctx, agentId, actor.id))) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
+        const out = await deps.bus.call<
+          { agentId: string },
+          ListAgentDefaultsOutput
+        >('routines:list-agent-defaults', ctx, { agentId });
+        res.status(200).json(out);
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
+    async set(req, res) {
+      const actor = await requireUser(deps.bus, settingsInitCtx, req, res);
+      if (actor === null) return;
+      const agentId = req.params.agentId;
+      const defaultRoutineId = req.params.defaultRoutineId;
+      if (
+        agentId === undefined ||
+        agentId.length === 0 ||
+        defaultRoutineId === undefined ||
+        defaultRoutineId.length === 0
+      ) {
+        res
+          .status(400)
+          .json({ error: 'agentId and defaultRoutineId are required' });
+        return;
+      }
+      const parsedBody = parseRequestBody(req.body);
+      if (!parsedBody.ok) {
+        res.status(parsedBody.status).json({ error: parsedBody.message });
+        return;
+      }
+      const result = setAgentDefaultBodySchema.safeParse(parsedBody.value);
+      if (!result.success) {
+        const issue = result.error.issues[0];
+        res
+          .status(400)
+          .json({ error: issue?.message ?? 'invalid body' });
+        return;
+      }
+      const ctx = ctxForActor(actor.id);
+      try {
+        if (!(await isOwnedBy(deps.bus, ctx, agentId, actor.id))) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
+        await deps.bus.call<
+          { agentId: string; defaultRoutineId: string; enabled: boolean },
+          Record<string, never>
+        >('routines:set-agent-default-enabled', ctx, {
+          agentId,
+          defaultRoutineId,
+          enabled: result.data.enabled,
+        });
+        res.status(200).json({ ok: true });
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+  };
+}
+
+/**
+ * Mount the two /settings/routines/:agentId/defaults* routes. Same
+ * unwind-on-partial-failure shape as the other register* helpers — never
+ * leaves a half-mounted route surface behind (Invariant: no half-wired
+ * plugins).
+ */
+export async function registerSettingsAgentDefaultsRoutes(
+  bus: HookBus,
+  initCtx: AgentContext,
+): Promise<Array<() => void>> {
+  const handlers = createSettingsAgentDefaultsHandlers({ bus });
+  const routes: Array<{
+    method: 'GET' | 'POST';
+    path: string;
+    handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  }> = [
+    {
+      method: 'GET',
+      path: '/settings/routines/:agentId/defaults',
+      handler: handlers.list,
+    },
+    {
+      method: 'POST',
+      path: '/settings/routines/:agentId/defaults/:defaultRoutineId',
+      handler: handlers.set,
+    },
+  ];
+  const unregisters: Array<() => void> = [];
+  try {
+    for (const route of routes) {
+      const result = await bus.call<typeof route, { unregister: () => void }>(
+        'http:register-route',
+        initCtx,
+        route,
+      );
+      unregisters.push(result.unregister);
+    }
+  } catch (err) {
+    while (unregisters.length > 0) {
+      const fn = unregisters.pop();
+      try {
+        fn?.();
+      } catch (unwindErr) {
+        console.warn(
+          `[${PLUGIN_NAME}] failed to unregister agent-defaults route during rollback: ${
+            unwindErr instanceof Error ? unwindErr.message : String(unwindErr)
+          }`,
+        );
+      }
+    }
+    throw err;
+  }
+  return unregisters;
+}
+
+// ---------------------------------------------------------------------------
 // /admin/routines/defaults* — admin-only CRUD over the default_routines_v1
 // table (the "library of templates" that materialize per-agent on tick).
 //

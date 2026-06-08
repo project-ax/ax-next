@@ -136,4 +136,42 @@ describe('lib/routines', () => {
     } as unknown as Response);
     await expect(routines.list()).rejects.toThrow('HTTP 500');
   });
+
+  it('listAgentDefaults GETs the owner-scoped path and returns defaults', async () => {
+    mockJson(200, {
+      defaults: [
+        { defaultRoutineId: 'skill-reflection', name: 'skill-reflection', enabled: false },
+      ],
+    });
+    const out = await routines.listAgentDefaults('agt:with/slash');
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toBe('/settings/routines/agt%3Awith%2Fslash/defaults');
+    expect(out[0]!.enabled).toBe(false);
+  });
+
+  it('setAgentDefaultEnabled POSTs { enabled } to the per-default path', async () => {
+    mockJson(200, { ok: true });
+    await routines.setAgentDefaultEnabled({
+      agentId: 'a1',
+      defaultRoutineId: 'skill-reflection',
+      enabled: false,
+    });
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toBe('/settings/routines/a1/defaults/skill-reflection');
+    const body = JSON.parse(
+      fetchMock.mock.calls[0]![1]!.body as string,
+    ) as { enabled: boolean };
+    expect(body.enabled).toBe(false);
+  });
+
+  it('setAgentDefaultEnabled surfaces the server error message', async () => {
+    mockJson(403, { error: { message: 'forbidden' } });
+    await expect(
+      routines.setAgentDefaultEnabled({
+        agentId: 'a1',
+        defaultRoutineId: 'skill-reflection',
+        enabled: true,
+      }),
+    ).rejects.toThrow('forbidden');
+  });
 });

@@ -26,6 +26,7 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { RoutinesList } from './RoutinesList';
+import { AgentSelfImprovementSection } from './AgentSelfImprovementSection';
 import { DefaultRoutinesSection } from '@/components/admin/DefaultRoutinesSection';
 
 export function RoutinesPanel({
@@ -55,6 +56,7 @@ export function RoutinesPanel({
           <DialogTitle id="routines-panel-title">Routines</DialogTitle>
         </DialogHeader>
         <div className="flex flex-col gap-4 mt-2 max-h-[70vh] overflow-y-auto">
+          <AgentSelfImprovementSection />
           {isAdmin && <DefaultRoutinesSection />}
           <RoutinesList
             refreshKey={refreshKey}

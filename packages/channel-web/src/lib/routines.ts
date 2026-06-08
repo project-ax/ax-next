@@ -60,6 +60,17 @@ export interface FireNowOutput {
   conversationId: string | null;
 }
 
+/**
+ * Per-agent state of one system default routine (e.g. `skill-reflection`).
+ * `enabled` is default-ON: absence of an explicit per-agent override reads
+ * as enabled. Drives the "Skill self-improvement" switch.
+ */
+export interface AgentDefaultState {
+  defaultRoutineId: string;
+  name: string;
+  enabled: boolean;
+}
+
 async function get<T>(path: string): Promise<T> {
   const r = await fetch(path, {
     headers: { 'X-Requested-With': 'ax-admin' },
@@ -132,6 +143,24 @@ export const routines = {
     return post<FireNowOutput>(
       `/settings/routines/${encodeURIComponent(input.agentId)}/fire`,
       { path: input.path, ...(input.payload !== undefined ? { payload: input.payload } : {}) },
+    );
+  },
+  /** Per-agent default-routine state (owner-scoped). Drives the toggles. */
+  async listAgentDefaults(agentId: string): Promise<AgentDefaultState[]> {
+    const out = await get<{ defaults: AgentDefaultState[] }>(
+      `/settings/routines/${encodeURIComponent(agentId)}/defaults`,
+    );
+    return out.defaults;
+  },
+  /** Flip a default routine on/off for one agent. */
+  async setAgentDefaultEnabled(input: {
+    agentId: string;
+    defaultRoutineId: string;
+    enabled: boolean;
+  }): Promise<void> {
+    await post<{ ok: true }>(
+      `/settings/routines/${encodeURIComponent(input.agentId)}/defaults/${encodeURIComponent(input.defaultRoutineId)}`,
+      { enabled: input.enabled },
     );
   },
 };
