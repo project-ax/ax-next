@@ -9,12 +9,12 @@ import {
   workspaceNote,
 } from '../system-prompt.js';
 
-const WS = '/permanent';
+const WS = '/agent';
 
 describe('workspaceNote', () => {
   it('names the workspace root and steers attachment paths away from home dirs', () => {
     const note = workspaceNote(WS);
-    expect(note).toContain('`/permanent`');
+    expect(note).toContain('`/agent`');
     expect(note).toContain('.ax/uploads');
     // The load-bearing instruction: resolve workspace-relative paths under the
     // workspace root, NOT a home directory (the bug this note prevents).

@@ -252,9 +252,9 @@ describe('buildPodSpec', () => {
     expect(overLabel).toMatch(/^a{54}-[a-f0-9]{8}$/);
   });
 
-  it('mounts /permanent (workspace) and /ephemeral (scratch) emptyDirs', () => {
+  it('mounts /agent (workspace) and /ephemeral (scratch) emptyDirs', () => {
     // Phase 3: the legacy single /workspace mount is replaced by two
-    // emptyDirs. /permanent holds the git working tree (materialize source,
+    // emptyDirs. /agent holds the git working tree (materialize source,
     // turn-end commit/bundle target). /ephemeral holds caches and scratch
     // (anything not part of the workspace lineage). Splitting them keeps
     // the storage tier bounded by what's actually persisted across turns.
@@ -265,15 +265,15 @@ describe('buildPodSpec', () => {
       }
     ).containers;
     const mounts = containers[0]!.volumeMounts ?? [];
-    expect(mounts.find((m) => m.mountPath === '/permanent')).toBeDefined();
+    expect(mounts.find((m) => m.mountPath === '/agent')).toBeDefined();
     expect(mounts.find((m) => m.mountPath === '/ephemeral')).toBeDefined();
     // No legacy /workspace mount.
     expect(mounts.find((m) => m.mountPath === '/workspace')).toBeUndefined();
 
     const volumes = (spec.spec as { volumes?: Array<{ name: string; emptyDir?: object }> })
       .volumes ?? [];
-    const permanent = volumes.find((v) => v.name === 'permanent');
-    expect(permanent?.emptyDir).toBeDefined();
+    const agent = volumes.find((v) => v.name === 'agent');
+    expect(agent?.emptyDir).toBeDefined();
     const ephemeral = volumes.find((v) => v.name === 'ephemeral');
     expect(ephemeral?.emptyDir).toBeDefined();
     // No legacy `workspace` volume.
@@ -292,7 +292,7 @@ describe('buildPodSpec', () => {
   });
 
   it('carries paranoid git env on the runner container', () => {
-    // Phase 3: the sandbox materializes /permanent from a host-streamed
+    // Phase 3: the sandbox materializes /agent from a host-streamed
     // baseline bundle and ships per-turn diffs as `git bundle`. To do that
     // it spawns the in-image `git` binary. These env vars are the locked-
     // down rails per design doc Phase 3 / SECURITY.md — they prevent
@@ -675,8 +675,8 @@ describe('buildPodSpec', () => {
       // is laid down by the runner AFTER `materializeWorkspace` clones
       // the baseline bundle — see
       // `git-workspace.ts#scaffoldWorkspaceSkillSurface`. Doing it here
-      // would non-empty `/permanent` before the runner's `git clone`
-      // and crash the runner with "destination path '/permanent'
+      // would non-empty `/agent` before the runner's `git clone`
+      // and crash the runner with "destination path '/agent'
       // already exists and is not an empty directory."
       const spec = buildPodSpec('pod-init', baseInput, baseResolved());
       const init = (
@@ -694,15 +694,15 @@ describe('buildPodSpec', () => {
 
       const mounts = (scaffold!.volumeMounts ?? []).map((m) => m.name);
       expect(mounts).toContain('home');
-      // Regression guard: the init container MUST NOT mount /permanent.
+      // Regression guard: the init container MUST NOT mount /agent.
       // Mounting it here lets a future maintainer reintroduce the
       // pre-clone scaffold that broke chat post-Phase-0.
-      expect(mounts).not.toContain('permanent');
+      expect(mounts).not.toContain('agent');
 
       const cmdJoined = (scaffold!.command ?? []).concat(scaffold!.args ?? []).join(' ');
       expect(cmdJoined).toContain('/home/runner/.ax/session/skills');
-      // Regression guard: no writes to /permanent here.
-      expect(cmdJoined).not.toMatch(/\/permanent/);
+      // Regression guard: no writes to /agent here.
+      expect(cmdJoined).not.toMatch(/\/agent/);
     });
 
     it('init container runs as the same non-root user as the main container', () => {

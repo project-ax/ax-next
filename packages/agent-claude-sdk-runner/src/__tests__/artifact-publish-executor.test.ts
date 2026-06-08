@@ -4,21 +4,21 @@ import * as path from 'node:path';
 import * as os from 'node:os';
 import { createArtifactPublishExecutor } from '../artifact-publish-executor.js';
 
-let permanent: string;
+let agent: string;
 
 beforeEach(async () => {
-  permanent = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-artifact-'));
+  agent = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-artifact-'));
 });
 
 async function writeFile(rel: string, bytes: Buffer | string): Promise<string> {
-  const abs = path.join(permanent, rel);
+  const abs = path.join(agent, rel);
   await fs.mkdir(path.dirname(abs), { recursive: true });
   await fs.writeFile(abs, bytes);
   return abs;
 }
 
 function executor() {
-  return createArtifactPublishExecutor({ workspaceRoot: permanent });
+  return createArtifactPublishExecutor({ workspaceRoot: agent });
 }
 
 describe('artifact_publish executor', () => {
@@ -27,7 +27,7 @@ describe('artifact_publish executor', () => {
     const out = await executor()({
       id: 'toolu_1',
       name: 'artifact_publish',
-      input: { path: '/permanent/workspace/reports/Q4.pdf' },
+      input: { path: '/agent/workspace/reports/Q4.pdf' },
     });
     const parsed = typeof out === 'string' ? JSON.parse(out) : out;
     expect(parsed.path).toBe('workspace/reports/Q4.pdf');
@@ -44,7 +44,7 @@ describe('artifact_publish executor', () => {
     const out = await executor()({
       id: 'toolu_2',
       name: 'artifact_publish',
-      input: { path: '/permanent/workspace/data.bin', displayName: 'Friendly Name.bin' },
+      input: { path: '/agent/workspace/data.bin', displayName: 'Friendly Name.bin' },
     });
     const parsed = typeof out === 'string' ? JSON.parse(out) : out;
     expect(parsed.displayName).toBe('Friendly Name.bin');
@@ -55,7 +55,7 @@ describe('artifact_publish executor', () => {
     const out = await executor()({
       id: 'toolu_3',
       name: 'artifact_publish',
-      input: { path: '/permanent/workspace/blob.xyzzy' },
+      input: { path: '/agent/workspace/blob.xyzzy' },
     });
     const parsed = typeof out === 'string' ? JSON.parse(out) : out;
     expect(parsed.mediaType).toBe('application/octet-stream');
@@ -67,31 +67,31 @@ describe('artifact_publish executor', () => {
       executor()({
         id: 'toolu_4',
         name: 'artifact_publish',
-        input: { path: '/permanent/.ax/sessions/sess1.jsonl' },
+        input: { path: '/agent/.ax/sessions/sess1.jsonl' },
       }),
     ).rejects.toThrow(/artifact-path-not-publishable/);
   });
 
   it('rejects symlinks', async () => {
     const real = await writeFile('workspace/real.txt', 'r');
-    const linkAbs = path.join(permanent, 'workspace/link.txt');
+    const linkAbs = path.join(agent, 'workspace/link.txt');
     await fs.symlink(real, linkAbs);
     await expect(
       executor()({
         id: 'toolu_5',
         name: 'artifact_publish',
-        input: { path: '/permanent/workspace/link.txt' },
+        input: { path: '/agent/workspace/link.txt' },
       }),
     ).rejects.toThrow(/symlink/i);
   });
 
   it('rejects directories', async () => {
-    await fs.mkdir(path.join(permanent, 'workspace/dir'), { recursive: true });
+    await fs.mkdir(path.join(agent, 'workspace/dir'), { recursive: true });
     await expect(
       executor()({
         id: 'toolu_6',
         name: 'artifact_publish',
-        input: { path: '/permanent/workspace/dir' },
+        input: { path: '/agent/workspace/dir' },
       }),
     ).rejects.toThrow(/not a regular file/i);
   });
@@ -108,7 +108,7 @@ describe('artifact_publish executor', () => {
       executor()({
         id: 'toolu_7',
         name: 'artifact_publish',
-        input: { path: '/permanent/workspace/big.bin' },
+        input: { path: '/agent/workspace/big.bin' },
       }),
     ).rejects.toThrow(/100 MiB|too large/i);
   });
@@ -118,7 +118,7 @@ describe('artifact_publish executor', () => {
       executor()({
         id: 'toolu_8',
         name: 'artifact_publish',
-        input: { path: '/permanent/workspace/nope.txt' },
+        input: { path: '/agent/workspace/nope.txt' },
       }),
     ).rejects.toThrow(/not found|ENOENT/i);
   });
@@ -170,7 +170,7 @@ describe('artifact_publish executor — durable blob store path (TASK-68)', () =
     await writeEphemeral('artifacts/report.pdf', Buffer.from('durable pdf bytes'));
     const { client, calls } = mockClient();
     const exec = createArtifactPublishExecutor({
-      workspaceRoot: permanent,
+      workspaceRoot: agent,
       ephemeralRoot: ephemeral,
       client,
       conversationId: 'conv-1',
@@ -202,7 +202,7 @@ describe('artifact_publish executor — durable blob store path (TASK-68)', () =
   it('rejects /ephemeral/artifacts when no ephemeral tier is wired', async () => {
     const { client } = mockClient();
     const exec = createArtifactPublishExecutor({
-      workspaceRoot: permanent,
+      workspaceRoot: agent,
       client,
       conversationId: 'conv-1',
     });
@@ -217,7 +217,7 @@ describe('artifact_publish executor — durable blob store path (TASK-68)', () =
     await fs.symlink(real, path.join(ephemeral, 'artifacts/link.txt'));
     const { client, calls } = mockClient();
     const exec = createArtifactPublishExecutor({
-      workspaceRoot: permanent,
+      workspaceRoot: agent,
       ephemeralRoot: ephemeral,
       client,
       conversationId: 'conv-1',

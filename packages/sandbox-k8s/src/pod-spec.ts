@@ -370,7 +370,7 @@ export function buildPodSpec(
     installedSkillsEnv = { name: 'AX_INSTALLED_SKILLS_JSON', value: encoded };
   }
   // Phase 3: the sandbox now spawns the in-image `git` binary to materialize
-  // /permanent at session start and to bundle per-turn diffs at turn end.
+  // /agent at session start and to bundle per-turn diffs at turn end.
   // These env vars are the locked-down rails — they prevent git-init from
   // reading user-global config, refuse interactive prompts, and pin commit
   // author/committer to `ax-runner` so the host bundler can verify
@@ -399,9 +399,9 @@ export function buildPodSpec(
     { name: 'GIT_AUTHOR_EMAIL', value: 'ax-runner@example.com' },
     { name: 'GIT_COMMITTER_NAME', value: 'ax-runner' },
     { name: 'GIT_COMMITTER_EMAIL', value: 'ax-runner@example.com' },
-    // Bypass git's "dubious ownership" guard for /permanent (and /tmp,
+    // Bypass git's "dubious ownership" guard for /agent (and /tmp,
     // where the materialize bundle lands). The runner runs as UID 1000;
-    // /permanent is an emptyDir whose mount point may end up owned by
+    // /agent is an emptyDir whose mount point may end up owned by
     // root (the runner-side bridge can't chown it without privilege),
     // and modern git refuses to operate on a repo whose dir owner !=
     // the running uid. We can't relax the security context to fix
@@ -558,12 +558,12 @@ export function buildPodSpec(
   // `input.workspaceRoot` (e.g. process.cwd() = `/opt/ax-next/host`) is
   // meaningless inside it AND lives under `readOnlyRootFilesystem: true`,
   // so any attempt to write the materialized bundle there fails with
-  // EROFS at session start. The runner has /permanent as its writable
-  // mount; that's where the workspace must live. Hardcode `/permanent`
+  // EROFS at session start. The runner has /agent as its writable
+  // mount; that's where the workspace must live. Hardcode `/agent`
   // here so the runner never sees the host's path. (env.ts already
-  // defaults to /permanent if unset, but stamping it explicitly makes
+  // defaults to /agent if unset, but stamping it explicitly makes
   // the contract observable in `kubectl describe pod`.)
-  const RUNNER_WORKSPACE_ROOT = '/permanent';
+  const RUNNER_WORKSPACE_ROOT = '/agent';
   // Session-scoped scratch tier (the `/ephemeral` emptyDir mounted below).
   // Stamped explicitly so the contract is observable in `kubectl describe
   // pod` AND so the runner can wire it into the SDK's additionalDirectories
@@ -670,13 +670,13 @@ export function buildPodSpec(
           // below — tmpfs keeps it fast + ephemeral and never touches
           // the node's disk.
           { name: 'home', mountPath: '/home/runner' },
-          // Phase 3: split the legacy /workspace mount in two. /permanent
+          // Phase 3: split the legacy /workspace mount in two. /agent
           // is the git working tree (materialized at session start, the
           // source of every per-turn bundle). /ephemeral is caches and
           // scratch the runner doesn't want to round-trip through the
           // host. Splitting them keeps the storage tier bounded and gives
           // the runner an explicit "this won't survive" signal.
-          { name: 'permanent', mountPath: '/permanent' },
+          { name: 'agent', mountPath: '/agent' },
           { name: 'ephemeral', mountPath: '/ephemeral' },
           // Shared credential-proxy directory (Phase 1a, k8s side).
           // Conditionally mounted only when the host advertised a
@@ -702,7 +702,7 @@ export function buildPodSpec(
     // runs before the main runner container and prepares the $HOME
     // skill-discovery shape the Claude Agent SDK's `'user'` source walks
     // ($CLAUDE_CONFIG_DIR/skills). It is restricted to /home/runner
-    // (the tmpfs HOME mount) on purpose: writing into /permanent here
+    // (the tmpfs HOME mount) on purpose: writing into /agent here
     // collides with the runner's `git clone` of the materialized
     // workspace bundle (clone refuses a non-empty target). The
     // `.claude/skills → ../.ax/draft-skills` symlink the SDK's `'project'`
@@ -740,7 +740,7 @@ export function buildPodSpec(
       // SDK's user-scope skill discovery walks $HOME/.claude/skills/
       // here; Phase 0 leaves it empty.
       { name: 'home', emptyDir: { medium: 'Memory' } },
-      { name: 'permanent', emptyDir: {} },
+      { name: 'agent', emptyDir: {} },
       { name: 'ephemeral', emptyDir: {} },
       // TASK-151 — one emptyDir per service writablePaths entry (I5). Named
       // `svc-<service>-<i>` to match the sidecar's volumeMounts.

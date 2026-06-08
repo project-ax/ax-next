@@ -107,12 +107,12 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
     runnerEndpoint: need('AX_RUNNER_ENDPOINT'),
     sessionId: need('AX_SESSION_ID'),
     authToken: need('AX_AUTH_TOKEN'),
-    // Phase 3: the sandbox mounts /permanent as the workspace working tree
+    // Phase 3: the sandbox mounts /agent as the workspace working tree
     // and /ephemeral as scratch. The runner's git-status diff and bundle
-    // creation key off /permanent. Operators / orchestrators that want a
+    // creation key off /agent. Operators / orchestrators that want a
     // different path can still override via AX_WORKSPACE_ROOT, but the
     // default lines up with what `pod-spec.ts` actually mounts.
-    workspaceRoot: opt('AX_WORKSPACE_ROOT') ?? '/permanent',
+    workspaceRoot: opt('AX_WORKSPACE_ROOT') ?? '/agent',
   };
   // No default — see the RunnerEnv.ephemeralRoot doc. Absent means "no
   // scratch tier wired", which the runner treats as "don't widen the

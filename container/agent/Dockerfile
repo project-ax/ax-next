@@ -145,7 +145,7 @@ RUN apt-get update \
       xz-utils=5.4.1-1 \
  && rm -rf /var/lib/apt/lists/*
 # `git` is needed by the host pod's @ax/ipc-core workspace.materialize
-# handler (it runs `git bundle` to seed the runner's /permanent dir at
+# handler (it runs `git bundle` to seed the runner's /agent dir at
 # session start) AND by runner pods themselves (they spawn `git` to
 # materialize and to ship per-turn diffs). The original Dockerfile
 # header noted git would live only in the storage-tier image; that's
@@ -208,7 +208,7 @@ RUN userdel --remove node 2>/dev/null || true \
 # installs there are found in later sessions.
 #
 # IMPORTANT — the load-bearing path is NOT this file. At runtime the agent's
-# `$HOME` is the git-bundled workspace tier (`/permanent`, set on the SDK
+# `$HOME` is the git-bundled workspace tier (`/agent`, set on the SDK
 # subprocess by the runner — see agent-claude-sdk-runner/src/main.ts), and the
 # SDK's Bash tool runs a NON-INTERACTIVE shell that does NOT source `.bashrc`.
 # So `$HOME/bin` actually reaches the agent's PATH via the explicit subprocess

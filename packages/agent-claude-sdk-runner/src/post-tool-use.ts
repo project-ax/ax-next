@@ -9,7 +9,7 @@
 // Phase 3 simplification: this hook USED to also drive workspace-diff
 // observation (record file-mutating SDK tool outputs into a per-turn
 // diff accumulator, drained at turn end). That's gone — the runner now
-// detects workspace changes via `git status` against /permanent at turn
+// detects workspace changes via `git status` against /agent at turn
 // end (`commitTurnAndBundle` in main.ts). git status catches ALL
 // writes regardless of tool, including the Bash deletes and MCP writes
 // the legacy observer missed. PostToolUse only emits the audit event

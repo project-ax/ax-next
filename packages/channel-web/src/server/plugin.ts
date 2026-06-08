@@ -100,7 +100,7 @@ export function createChannelWebServerPlugin(
         // without it.
         'agents:create',
         // TASK-140: the bootstrap route seeds .ax/BOOTSTRAP.md into the new
-        // agent's /permanent via workspace:apply. TASK-142: the admin identity
+        // agent's /agent via workspace:apply. TASK-142: the admin identity
         // editor (PUT /admin/agents/:id/identity) also writes the agent's
         // .ax/IDENTITY|SOUL|AGENTS.md through workspace:apply (→ pre-apply →
         // validator-identity). channel-web only loads in the k8s preset, which

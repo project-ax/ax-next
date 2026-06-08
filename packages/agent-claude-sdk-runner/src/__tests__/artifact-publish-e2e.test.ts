@@ -19,7 +19,7 @@ afterEach(async () => {
 
 describe('artifact_publish end-to-end (sandbox dispatch)', () => {
   it('produces a tool_result with the design-spec JSON shape', async () => {
-    // 1. Fixture: a publishable file lives under /permanent/workspace/.
+    // 1. Fixture: a publishable file lives under /agent/workspace/.
     const rel = 'workspace/reports/Q4.pdf';
     const abs = path.join(workspaceRoot, rel);
     await fs.mkdir(path.dirname(abs), { recursive: true });
@@ -35,7 +35,7 @@ describe('artifact_publish end-to-end (sandbox dispatch)', () => {
 
     // 3. Simulate the SDK invoking the tool with the model's args.
     const result = await entry.handler(
-      { path: `/permanent/${rel}`, displayName: 'Quarter 4 Report' },
+      { path: `/agent/${rel}`, displayName: 'Quarter 4 Report' },
       { signal: undefined } as never,
     );
 
@@ -61,7 +61,7 @@ describe('artifact_publish end-to-end (sandbox dispatch)', () => {
     const [entry] = buildSandboxToolEntries(dispatcher, [ARTIFACT_PUBLISH_DESCRIPTOR]);
 
     const result = await entry.handler(
-      { path: '/permanent/.ax/sessions/leak.jsonl' },
+      { path: '/agent/.ax/sessions/leak.jsonl' },
       { signal: undefined } as never,
     );
 

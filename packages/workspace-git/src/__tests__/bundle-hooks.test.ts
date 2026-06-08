@@ -1,7 +1,7 @@
 // Regression: the local single-replica @ax/workspace-git backend MUST
 // register the Phase 3 bundle hooks (workspace:export-baseline-bundle +
 // workspace:apply-bundle). Without them, the host-side commit-notify
-// handler rejects every multi-turn write — breaking /permanent
+// handler rejects every multi-turn write — breaking /agent
 // persistence in the local CLI / single-pod kind path.
 //
 // The bundle wire is what the runner uses to ship turn-N's commits back
@@ -281,7 +281,7 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
     expect(result.delta.changes[0]?.kind).toBe('added');
 
     // The post-apply state survives a separate `read` — the actual
-    // /permanent persistence guarantee.
+    // /agent persistence guarantee.
     const read = await h.bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
       'workspace:read',
       h.ctx(),
@@ -294,7 +294,7 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
   });
 
   it("apply-bundle: round-trip a multi-turn sequence (the actual broken path)", async () => {
-    // Turn 1: write /permanent/test1.txt.
+    // Turn 1: write /agent/test1.txt.
     const sim1 = await simulateRunnerTurn({
       turnPath: 'permanent/test1.txt',
       turnContent: 'hello-permanent',

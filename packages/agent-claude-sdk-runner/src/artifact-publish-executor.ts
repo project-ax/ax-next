@@ -5,7 +5,7 @@
 // runner's local-dispatcher.
 //
 // The validation order is unchanged (it's the security floor):
-//   1. Allowlist (pure-path) — now /ephemeral/artifacts/** + /permanent/workspace/**.
+//   1. Allowlist (pure-path) — now /ephemeral/artifacts/** + /agent/workspace/**.
 //   2. lstat → catches symlinks before any byte read.
 //   3. Size cap.
 //   4. read + sha256.
@@ -52,12 +52,12 @@ function mediaTypeFromExtension(filename: string): string {
 }
 
 export interface CreateArtifactPublishExecutorOptions {
-  /** Absolute filesystem path the model's `/permanent/...` maps onto. */
+  /** Absolute filesystem path the model's `/agent/...` maps onto. */
   workspaceRoot: string;
   /**
    * Absolute filesystem path the model's `/ephemeral/...` maps onto. When
    * undefined, publishing from `/ephemeral/artifacts/**` is rejected (the
-   * deployment has no ephemeral tier wired) — `/permanent/workspace/**` still
+   * deployment has no ephemeral tier wired) — `/agent/workspace/**` still
    * works.
    */
   ephemeralRoot?: string;

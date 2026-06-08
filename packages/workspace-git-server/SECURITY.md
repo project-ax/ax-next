@@ -183,7 +183,7 @@ The operator picks `gitServer.shards` at install time. Changing it requires manu
 
 ### First-time materialize: empty repos are a deliberate contract
 
-`POST /repos` creates an **empty bare repo** — no initial commit, no `refs/heads/main`. The host's first `git ls-remote` sees no `main` and treats this as the empty-baseline case (skip the clone, start the sandbox with empty `/permanent`). The first push from the host creates `main` atomically.
+`POST /repos` creates an **empty bare repo** — no initial commit, no `refs/heads/main`. The host's first `git ls-remote` sees no `main` and treats this as the empty-baseline case (skip the clone, start the sandbox with empty `/agent`). The first push from the host creates `main` atomically.
 
 This is the resolution to design doc Q#7. We picked it over the "synthesize an initial commit" alternative because:
 

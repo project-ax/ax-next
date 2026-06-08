@@ -1,10 +1,10 @@
 // ---------------------------------------------------------------------------
 // $HOME/bin PATH append.
 //
-// The SDK subprocess runs with HOME=/permanent (the git-tracked workspace root
+// The SDK subprocess runs with HOME=/agent (the git-tracked workspace root
 // that is bundled to the host at turn end and restored at the next session
 // start — see main.ts). Binaries an agent installs into `$HOME/bin`
-// (`/permanent/bin`) therefore PERSIST between sessions — but they're only
+// (`/agent/bin`) therefore PERSIST between sessions — but they're only
 // USEFUL if that dir is on PATH.
 //
 // The SDK's Bash tool runs a NON-INTERACTIVE shell: its PATH comes entirely
@@ -18,11 +18,11 @@
 // discoverable convention.)
 //
 // APPEND, not prepend (capability minimization / I5 — codex review): `$HOME`
-// is `/permanent`, a model-WRITABLE dir that is restored across sessions. A
-// prompt-injection or malicious tool output could drop `/permanent/bin/git`
+// is `/agent`, a model-WRITABLE dir that is restored across sessions. A
+// prompt-injection or malicious tool output could drop `/agent/bin/git`
 // (or `node`, `python`, ...) in one session; PREPENDING it would let that file
 // shadow the trusted image/venv binary for every Bash tool command — and
-// because `/permanent` is bundled+restored, the hijack would PERSIST into
+// because `/agent` is bundled+restored, the hijack would PERSIST into
 // future sessions the user trusts. Appending keeps newly installed agent tools
 // discoverable (the goal) while the trusted base + venv binaries always win on
 // name collisions. Spread this LAST in the main.ts env literal so it lands at
@@ -39,7 +39,7 @@ import * as path from 'node:path';
  *     never double-append).
  *
  * @param homeDir     The SDK subprocess HOME (= `env.workspaceRoot`, default
- *                    `/permanent`). NOT caller/model-supplied — host config.
+ *                    `/agent`). NOT caller/model-supplied — host config.
  * @param currentPath The PATH the SDK subprocess would otherwise get (after the
  *                    proxy-allowlist forward + any venv/cache layers).
  */

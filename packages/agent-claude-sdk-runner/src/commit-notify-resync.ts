@@ -199,7 +199,7 @@ export async function commitNotifyWithResync(input: {
 }
 
 /**
- * Mid-turn workspace flush — commit the live `/permanent` tree and push it to
+ * Mid-turn workspace flush — commit the live `/agent` tree and push it to
  * the host's workspace mirror, NOW, without waiting for the turn boundary.
  *
  * Why this exists: a host tool that declares `flushWorkspaceBeforeCall` reads

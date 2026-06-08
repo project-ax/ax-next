@@ -1,6 +1,6 @@
 // ---------------------------------------------------------------------------
 // @ax/validator-identity — a `workspace:pre-apply` subscriber that gates an
-// agent's writes to its own identity files under /permanent/.ax/.
+// agent's writes to its own identity files under /agent/.ax/.
 //
 // The runner injects these files VERBATIM into the composed systemPrompt every
 // spawn (conversational-agent-identity epic, Phase 1), so a self-edit is a

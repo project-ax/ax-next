@@ -104,7 +104,7 @@ describe('materializeWorkspace', () => {
     // bundle (one commit on refs/heads/baseline, possibly with an
     // empty tree for brand-new workspaces). A zero-byte streamed file
     // means the host is broken or the stream truncated — bootstrap-fatal.
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     const emptyBundle = path.join(scratchRoot, 'empty.bundle');
     await fs.writeFile(emptyBundle, '');
     await expect(
@@ -124,7 +124,7 @@ describe('materializeWorkspace', () => {
     // with one commit whose tree is the empty tree. Runner clones it,
     // ends up with an empty working tree but a valid baseline ref.
     const bundleFile = await makeBundle({});
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
 
     await materializeWorkspace({ root, bundlePath: bundleFile });
 
@@ -141,7 +141,7 @@ describe('materializeWorkspace', () => {
 
   it('clones from a non-empty baseline bundle and pins refs/heads/baseline to HEAD', async () => {
     const bundleFile = await makeBundle({ '.ax/CLAUDE.md': 'hello\n' });
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
 
     await materializeWorkspace({ root, bundlePath: bundleFile });
 
@@ -166,7 +166,7 @@ describe('materializeWorkspace', () => {
       '.ax/draft-skills/foo/SKILL.md': '---\nname: foo\n---\n',
       'src/main.ts': 'export {};\n',
     });
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
 
     await materializeWorkspace({ root, bundlePath: bundleFile });
 
@@ -183,7 +183,7 @@ describe('materializeWorkspace', () => {
 
   it('deletes the host-streamed bundle file after clone (takes ownership)', async () => {
     const bundleFile = await makeBundle({ 'a.txt': 'a' });
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
 
     // The bundle file lives outside the clone target. materializeWorkspace
     // takes ownership and must unlink it on success.
@@ -199,7 +199,7 @@ describe('materializeWorkspace', () => {
   });
 
   it('throws a useful error (and still deletes the file) when the bundle is invalid', async () => {
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     // A non-empty file that isn't a valid git bundle — passes the size guard,
     // then `git clone` rejects it.
     const notABundle = path.join(scratchRoot, 'garbage.bundle');
@@ -218,7 +218,7 @@ describe('materializeWorkspace', () => {
     // suite's git-lfs-binary dependency (the missing-binary failure that
     // reddened ~25 runner tests on any sandbox without git-lfs).
     const bundleFile = await makeBundle({});
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
 
     await materializeWorkspace({ root, bundlePath: bundleFile });
 
@@ -234,7 +234,7 @@ describe('no .claude/skills symlink (Phase 3: project source dropped)', () => {
     // entry should exist. The host-controlled read-only user projection at
     // $CLAUDE_CONFIG_DIR/skills/ (0555) is the sole discovery path.
     const bundleFile = await makeBundle({ 'README.md': 'hello' });
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     await materializeWorkspace({ root, bundlePath: bundleFile });
 
     await expect(
@@ -245,7 +245,7 @@ describe('no .claude/skills symlink (Phase 3: project source dropped)', () => {
 
 describe('scaffoldWorkspaceGitignore', () => {
   it('creates a .gitignore with node_modules + python + cache entries when absent', async () => {
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     await materializeWorkspace({ root, bundlePath: await makeBundle({}) });
 
     await scaffoldWorkspaceGitignore(root);
@@ -270,7 +270,7 @@ describe('scaffoldWorkspaceGitignore', () => {
   });
 
   it('is idempotent — a second call adds no duplicate lines', async () => {
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     await materializeWorkspace({ root, bundlePath: await makeBundle({}) });
 
     await scaffoldWorkspaceGitignore(root);
@@ -295,7 +295,7 @@ describe('scaffoldWorkspaceGitignore', () => {
   });
 
   it('preserves a baseline .gitignore and appends only the missing entries', async () => {
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     // Baseline already ignores node_modules/ and has a user entry.
     await materializeWorkspace({
       root,
@@ -318,12 +318,12 @@ describe('scaffoldSdkProjectsSymlink', () => {
   // Phase 0 sets CLAUDE_CONFIG_DIR=<sandbox-HOME>/.ax/session — OUTSIDE
   // the workspace — so the turn-end `git add -A + bundle` never captures
   // those jsonls. This scaffolder lays down a symlink from the SDK's
-  // projects dir into the workspace so the writes land inside /permanent
+  // projects dir into the workspace so the writes land inside /agent
   // and get bundled. The load-bearing assertion is the last test: a
   // write through the symlink path materializes inside workspaceRoot.
 
   it('creates <claudeConfigDir>/projects as a symlink to <workspaceRoot>/.claude/projects', async () => {
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     const claudeConfigDir = path.join(scratchRoot, 'session');
     await fs.mkdir(root, { recursive: true });
 
@@ -339,7 +339,7 @@ describe('scaffoldSdkProjectsSymlink', () => {
   });
 
   it('creates the claudeConfigDir parent if it does not already exist (defensive)', async () => {
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     // Deliberately a nested path that doesn't exist yet — the init
     // container usually pre-creates this, but the scaffolder must not
     // assume so.
@@ -353,7 +353,7 @@ describe('scaffoldSdkProjectsSymlink', () => {
   });
 
   it('is idempotent — a second call leaves the correct symlink in place', async () => {
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     const claudeConfigDir = path.join(scratchRoot, 'session');
     await fs.mkdir(root, { recursive: true });
 
@@ -365,7 +365,7 @@ describe('scaffoldSdkProjectsSymlink', () => {
   });
 
   it('replaces a stale regular file at <claudeConfigDir>/projects with the canonical symlink', async () => {
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     const claudeConfigDir = path.join(scratchRoot, 'session');
     await fs.mkdir(claudeConfigDir, { recursive: true });
     await fs.writeFile(path.join(claudeConfigDir, 'projects'), 'leftover');
@@ -377,7 +377,7 @@ describe('scaffoldSdkProjectsSymlink', () => {
   });
 
   it('replaces a stale directory at <claudeConfigDir>/projects with the canonical symlink', async () => {
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     const claudeConfigDir = path.join(scratchRoot, 'session');
     await fs.mkdir(path.join(claudeConfigDir, 'projects', 'foo'), { recursive: true });
     await fs.writeFile(path.join(claudeConfigDir, 'projects', 'foo', 'bar.jsonl'), '{}');
@@ -393,13 +393,13 @@ describe('scaffoldSdkProjectsSymlink', () => {
     // `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/<sid>.jsonl` and
     // appends turn transcript lines. We mimic that I/O pattern and check
     // the bytes land where the runner's `git add -A` will see them.
-    const root = path.join(scratchRoot, 'permanent');
+    const root = path.join(scratchRoot, 'agent');
     const claudeConfigDir = path.join(scratchRoot, 'session');
     await fs.mkdir(root, { recursive: true });
 
     await scaffoldSdkProjectsSymlink(root, claudeConfigDir);
 
-    const encodedCwd = '-permanent';
+    const encodedCwd = '-agent';
     const sid = 'abc123';
     const sdkPath = path.join(claudeConfigDir, 'projects', encodedCwd, `${sid}.jsonl`);
     await fs.mkdir(path.dirname(sdkPath), { recursive: true });
@@ -423,14 +423,14 @@ describe('scaffoldSdkProjectsSymlink', () => {
 // ---------------------------------------------------------------------------
 
 /**
- * Set up `/permanent` as a real materialized workspace, ready for
- * turn-end ops. Returns the permanent dir + the baseline OID.
+ * Set up `/agent` as a real materialized workspace, ready for
+ * turn-end ops. Returns the agent dir + the baseline OID.
  */
 async function setupMaterializedWorkspace(args: {
   baselineFiles?: Record<string, string>;
 } = {}): Promise<{ root: string; baselineOid: string }> {
   const baselineFiles = args.baselineFiles ?? {};
-  const root = path.join(scratchRoot, 'permanent');
+  const root = path.join(scratchRoot, 'agent');
   // makeBundle writes a bundle FILE; materializeWorkspace clones from it and
   // takes ownership (deletes it) — mirrors the runner's real boot path.
   const bundleFile = await makeBundle(baselineFiles);
@@ -460,9 +460,9 @@ describe('commitTurnAndBundle', () => {
     // jsonl under `.claude/projects/`, which scaffoldWorkspaceGitignore has
     // gitignored (TASK-67) so it never rides a commit. With transcripts, blobs,
     // and skills all off git, that jsonl is the ONLY thing a chat turn touches
-    // in /permanent — so the per-turn commit must see an EMPTY diff, create no
+    // in /agent — so the per-turn commit must see an EMPTY diff, create no
     // commit, and return null (commit-notify SKIPPED). This is the Phase-5 gate:
-    // the per-turn commit fires only on a non-empty /permanent diff.
+    // the per-turn commit fires only on a non-empty /agent diff.
     const { root } = await setupMaterializedWorkspace();
     // In production scaffoldWorkspaceGitignore runs ONCE at materialize,
     // before any turn — so by turn time the `.gitignore` (with
@@ -479,7 +479,7 @@ describe('commitTurnAndBundle', () => {
     ).stdout.trim();
 
     // Simulate the SDK's per-session jsonl write (gitignored path).
-    const jsonlDir = path.join(root, '.claude', 'projects', '-permanent');
+    const jsonlDir = path.join(root, '.claude', 'projects', '-agent');
     await fs.mkdir(jsonlDir, { recursive: true });
     await fs.writeFile(
       path.join(jsonlDir, 'sess-abc.jsonl'),

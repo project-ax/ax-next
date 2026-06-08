@@ -200,7 +200,7 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
   }
 
   /** Build the owner-routed ctx so `workspace:read`/`workspace:apply` land in
-   * THIS agent's `/permanent` (ctx carries (userId, agentId); userId is the
+   * THIS agent's `/agent` (ctx carries (userId, agentId); userId is the
    * agent's REAL owner — never a synthetic actor). */
   function workspaceCtx(agentId: string, ownerUserId: string): AgentContext {
     return makeAgentContext({
@@ -288,7 +288,7 @@ export function makeAgentIdentityHandlers(deps: AgentIdentityRoutesDeps) {
       try {
         // First attempt with parent:null — correct for a never-committed
         // workspace (the git backend lazy-creates `main`). For an agent whose
-        // `/permanent` already has history (the seeded BOOTSTRAP.md, transcripts,
+        // `/agent` already has history (the seeded BOOTSTRAP.md, transcripts,
         // a prior identity edit) — i.e. essentially every real agent — this is a
         // CAS miss; retry ONCE with the tier's actual head from
         // `cause.actualParent` (the established workspace-CAS rebase contract).

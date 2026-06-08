@@ -53,7 +53,7 @@ function preToolUseInput(overrides: {
 describe('createPreToolUseHook', () => {
   it('forwards built-in tool name verbatim to tool.pre-call and allows on verdict=allow', async () => {
     const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
-    const hook = createPreToolUseHook({ client, workspaceRoot: '/permanent', idGen: () => 'id-1' });
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', idGen: () => 'id-1' });
     const out = await hook(
       preToolUseInput({ tool_name: 'Bash', tool_input: { command: 'ls' } }),
       'tu_abc',
@@ -77,7 +77,7 @@ describe('createPreToolUseHook', () => {
 
   it('strips the mcp__ax-host-tools__ prefix for our MCP host tools', async () => {
     const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
-    const hook = createPreToolUseHook({ client, workspaceRoot: '/permanent', idGen: () => 'id-2' });
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', idGen: () => 'id-2' });
     await hook(
       preToolUseInput({
         tool_name: 'mcp__ax-host-tools__memory.recall',
@@ -101,7 +101,7 @@ describe('createPreToolUseHook', () => {
         input: { command: 'ls -la' },
       },
     }));
-    const hook = createPreToolUseHook({ client, workspaceRoot: '/permanent', idGen: () => 'id-3' });
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', idGen: () => 'id-3' });
     const out = await hook(
       preToolUseInput({ tool_name: 'Bash', tool_input: { command: 'ls' } }),
       'tu_abc',
@@ -121,7 +121,7 @@ describe('createPreToolUseHook', () => {
       verdict: 'reject',
       reason: 'path escapes workspace root',
     }));
-    const hook = createPreToolUseHook({ client, workspaceRoot: '/permanent', idGen: () => 'id-4' });
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', idGen: () => 'id-4' });
     const out = await hook(
       preToolUseInput({ tool_name: 'Bash', tool_input: { command: 'rm -rf /' } }),
       'tu_abc',
@@ -140,7 +140,7 @@ describe('createPreToolUseHook', () => {
     const { client, calls } = mkClient(async () => {
       throw new Error('IPC should not be reached for disabled tools');
     });
-    const hook = createPreToolUseHook({ client, workspaceRoot: '/permanent', idGen: () => 'id-5' });
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', idGen: () => 'id-5' });
     const out = await hook(
       preToolUseInput({ tool_name: 'WebFetch', tool_input: { url: 'https://x' } }),
       'tu_abc',
@@ -160,7 +160,7 @@ describe('createPreToolUseHook', () => {
     const { client } = mkClient(async () => {
       throw new Error('host unavailable');
     });
-    const hook = createPreToolUseHook({ client, workspaceRoot: '/permanent', idGen: () => 'id-6' });
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', idGen: () => 'id-6' });
     const out = await hook(
       preToolUseInput({ tool_name: 'Bash', tool_input: { command: 'ls' } }),
       'tu_abc',
@@ -179,13 +179,13 @@ describe('createPreToolUseHook', () => {
     // The bug: the model resolves the workspace-relative `.ax/uploads/...`
     // attachment path under a home dir (`.ax` reads as a home dotfile), so
     // `Read /home/user/.ax/uploads/...` fails. The hook must rewrite it to
-    // /permanent/.ax/uploads/... via updatedInput so the file actually opens —
+    // /agent/.ax/uploads/... via updatedInput so the file actually opens —
     // and the rewrite happens BEFORE tool:pre-call, so the host policy-checks
     // the real path (not the mis-rooted one).
     const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
     const hook = createPreToolUseHook({
       client,
-      workspaceRoot: '/permanent',
+      workspaceRoot: '/agent',
       idGen: () => 'id-att',
     });
     const out = await hook(
@@ -198,14 +198,14 @@ describe('createPreToolUseHook', () => {
     );
     // The host saw the RESOLVED path, not the model's mis-rooted one.
     expect((calls[0]!.payload as { call: { input: unknown } }).call.input).toEqual({
-      file_path: '/permanent/.ax/uploads/cnv_x/req-y/h__report.pdf',
+      file_path: '/agent/.ax/uploads/cnv_x/req-y/h__report.pdf',
     });
     expect(out).toEqual({
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'allow',
         updatedInput: {
-          file_path: '/permanent/.ax/uploads/cnv_x/req-y/h__report.pdf',
+          file_path: '/agent/.ax/uploads/cnv_x/req-y/h__report.pdf',
         },
       },
     });
@@ -215,7 +215,7 @@ describe('createPreToolUseHook', () => {
     const { client } = mkClient(async () => ({ verdict: 'allow' }));
     const hook = createPreToolUseHook({
       client,
-      workspaceRoot: '/permanent',
+      workspaceRoot: '/agent',
       idGen: () => 'id-noatt',
     });
     const out = await hook(
@@ -236,7 +236,7 @@ describe('createPreToolUseHook', () => {
 
   it('ignores non-PreToolUse events (defensive narrow)', async () => {
     const { client, calls } = mkClient(async () => ({ verdict: 'allow' }));
-    const hook = createPreToolUseHook({ client, workspaceRoot: '/permanent', idGen: () => 'id-7' });
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', idGen: () => 'id-7' });
     // Cast is fine; in practice the SDK matcher never routes a different
     // event here, but the adapter guards the wire shape anyway.
     const out = await hook(
@@ -257,35 +257,35 @@ describe('resolveAttachmentPaths', () => {
     expect(
       resolveAttachmentPaths(
         { file_path: '/home/user/.ax/uploads/c/t/h__f.pdf' },
-        '/permanent',
+        '/agent',
       ),
     ).toEqual({
       changed: true,
-      input: { file_path: '/permanent/.ax/uploads/c/t/h__f.pdf' },
+      input: { file_path: '/agent/.ax/uploads/c/t/h__f.pdf' },
     });
   });
 
   it('makes a bare relative .ax/uploads path absolute under the workspace root', () => {
     expect(
-      resolveAttachmentPaths({ file_path: '.ax/uploads/c/t/h__f.pdf' }, '/permanent'),
+      resolveAttachmentPaths({ file_path: '.ax/uploads/c/t/h__f.pdf' }, '/agent'),
     ).toEqual({
       changed: true,
-      input: { file_path: '/permanent/.ax/uploads/c/t/h__f.pdf' },
+      input: { file_path: '/agent/.ax/uploads/c/t/h__f.pdf' },
     });
   });
 
   it('re-roots the path/notebook_path fields too (Glob/Grep/NotebookEdit)', () => {
     expect(
-      resolveAttachmentPaths({ path: '/home/user/.ax/uploads/c/t' }, '/permanent'),
-    ).toEqual({ changed: true, input: { path: '/permanent/.ax/uploads/c/t' } });
+      resolveAttachmentPaths({ path: '/home/user/.ax/uploads/c/t' }, '/agent'),
+    ).toEqual({ changed: true, input: { path: '/agent/.ax/uploads/c/t' } });
     expect(
       resolveAttachmentPaths(
         { notebook_path: '.ax/uploads/c/t/n.ipynb' },
-        '/permanent',
+        '/agent',
       ),
     ).toEqual({
       changed: true,
-      input: { notebook_path: '/permanent/.ax/uploads/c/t/n.ipynb' },
+      input: { notebook_path: '/agent/.ax/uploads/c/t/n.ipynb' },
     });
   });
 
@@ -300,12 +300,12 @@ describe('resolveAttachmentPaths', () => {
           old_string: 'see .ax/uploads/c/t/f.txt for details',
           command: 'cat /home/user/.ax/uploads/c/t/f.txt',
         },
-        '/permanent',
+        '/agent',
       ),
     ).toEqual({
       changed: true,
       input: {
-        file_path: '/permanent/.ax/uploads/c/t/f.txt',
+        file_path: '/agent/.ax/uploads/c/t/f.txt',
         old_string: 'see .ax/uploads/c/t/f.txt for details',
         command: 'cat /home/user/.ax/uploads/c/t/f.txt',
       },
@@ -315,28 +315,28 @@ describe('resolveAttachmentPaths', () => {
   it('does not match `.ax/uploads/` unless it is a path segment', () => {
     // `foo.ax/uploads/x` is not the attachment namespace — must be left alone.
     expect(
-      resolveAttachmentPaths({ file_path: 'foo.ax/uploads/x' }, '/permanent'),
+      resolveAttachmentPaths({ file_path: 'foo.ax/uploads/x' }, '/agent'),
     ).toEqual({ changed: false, input: { file_path: 'foo.ax/uploads/x' } });
   });
 
   it('is idempotent on an already-correct workspace path (changed=false)', () => {
     expect(
       resolveAttachmentPaths(
-        { file_path: '/permanent/.ax/uploads/c/t/h__f.pdf' },
-        '/permanent',
+        { file_path: '/agent/.ax/uploads/c/t/h__f.pdf' },
+        '/agent',
       ),
     ).toEqual({
       changed: false,
-      input: { file_path: '/permanent/.ax/uploads/c/t/h__f.pdf' },
+      input: { file_path: '/agent/.ax/uploads/c/t/h__f.pdf' },
     });
   });
 
   it('normalizes a workspaceRoot trailing slash to avoid a double slash', () => {
     expect(
-      resolveAttachmentPaths({ file_path: '.ax/uploads/x' }, '/permanent/'),
+      resolveAttachmentPaths({ file_path: '.ax/uploads/x' }, '/agent/'),
     ).toEqual({
       changed: true,
-      input: { file_path: '/permanent/.ax/uploads/x' },
+      input: { file_path: '/agent/.ax/uploads/x' },
     });
   });
 
@@ -346,7 +346,7 @@ describe('resolveAttachmentPaths', () => {
     expect(
       resolveAttachmentPaths(
         { file_path: '/home/user/.ax/uploads/../../../etc/passwd' },
-        '/permanent',
+        '/agent',
       ),
     ).toEqual({
       changed: false,
@@ -356,12 +356,12 @@ describe('resolveAttachmentPaths', () => {
 
   it('leaves inputs outside the .ax/uploads namespace untouched (changed=false)', () => {
     expect(
-      resolveAttachmentPaths({ file_path: 'src/index.ts', n: 3 }, '/permanent'),
+      resolveAttachmentPaths({ file_path: 'src/index.ts', n: 3 }, '/agent'),
     ).toEqual({ changed: false, input: { file_path: 'src/index.ts', n: 3 } });
   });
 
   it('returns an empty object (changed=false) for non-object input', () => {
-    expect(resolveAttachmentPaths(null, '/permanent')).toEqual({
+    expect(resolveAttachmentPaths(null, '/agent')).toEqual({
       changed: false,
       input: {},
     });

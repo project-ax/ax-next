@@ -623,7 +623,7 @@ describe('@ax/preset-k8s — routines Phase B core (half-wired window closes her
 
 // Phase 3 conversational-agent-identity (2026-06-03). @ax/validator-identity is
 // the THIRD workspace:pre-apply subscriber (after validator-skill +
-// validator-routine). It gates the agent's writes to its own /permanent/.ax/
+// validator-routine). It gates the agent's writes to its own /agent/.ax/
 // identity files under the bootstrap-window policy. No half-wired window: it
 // loads in the preset here AND is exercised end-to-end through the Phase-3
 // commit-notify canary (acceptance.test.ts boots the full k8s preset, so every

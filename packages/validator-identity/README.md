@@ -1,7 +1,7 @@
 # @ax/validator-identity
 
 A `workspace:pre-apply` subscriber that gates an agent's writes to its own identity files
-under `/permanent/.ax/`.
+under `/agent/.ax/`.
 
 In the conversational-agent-identity model, an agent discovers who it is through
 conversation and writes its own identity into markdown files: `IDENTITY.md`, `SOUL.md`,

@@ -97,7 +97,7 @@ describe('readRunnerEnv', () => {
     expect(() => readRunnerEnv(env)).toThrow(MissingEnvError);
   });
 
-  // Phase 3: AX_WORKSPACE_ROOT became optional (defaults to /permanent —
+  // Phase 3: AX_WORKSPACE_ROOT became optional (defaults to /agent —
   // the sandbox's canonical mount). The other three remain required.
   for (const name of [
     'AX_RUNNER_ENDPOINT',
@@ -130,21 +130,21 @@ describe('readRunnerEnv', () => {
     });
   }
 
-  it('defaults workspaceRoot to /permanent when AX_WORKSPACE_ROOT is unset', () => {
+  it('defaults workspaceRoot to /agent when AX_WORKSPACE_ROOT is unset', () => {
     // Lines up with the sandbox-k8s pod-spec mount. An operator can still
     // override (e.g., for the subprocess sandbox where the workspace lives
     // on the host filesystem), but the default matches the canonical k8s
     // sandbox shape so misconfigured deploys land in a working spot.
     const env = { ...PROXY_TCP };
     delete (env as Record<string, string | undefined>).AX_WORKSPACE_ROOT;
-    expect(readRunnerEnv(env).workspaceRoot).toBe('/permanent');
+    expect(readRunnerEnv(env).workspaceRoot).toBe('/agent');
   });
 
-  it('defaults workspaceRoot to /permanent when AX_WORKSPACE_ROOT is empty string', () => {
+  it('defaults workspaceRoot to /agent when AX_WORKSPACE_ROOT is empty string', () => {
     // Empty-string env is semantically the same as missing — see the
     // `opt()` helper in env.ts. Confirms the fallback path covers it.
     const env = { ...PROXY_TCP, AX_WORKSPACE_ROOT: '' };
-    expect(readRunnerEnv(env).workspaceRoot).toBe('/permanent');
+    expect(readRunnerEnv(env).workspaceRoot).toBe('/agent');
   });
 
   it('still honors AX_WORKSPACE_ROOT when explicitly set', () => {

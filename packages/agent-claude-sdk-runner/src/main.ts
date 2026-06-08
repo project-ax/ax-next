@@ -226,7 +226,7 @@ export async function main(): Promise<number> {
     return 2;
   }
 
-  // Phase 3: materialize /permanent from a host-streamed baseline bundle
+  // Phase 3: materialize /agent from a host-streamed baseline bundle
   // BEFORE the SDK query opens. Failure here is bootstrap-fatal — the
   // runner has nowhere to write tool output and can't bundle turn-end
   // diffs without a working tree.
@@ -266,7 +266,7 @@ export async function main(): Promise<number> {
     // as the skill-surface scaffold (it appends to any baseline .gitignore).
     await scaffoldWorkspaceGitignore(env.workspaceRoot);
     // Redirect the SDK's turn-transcript jsonl writes into the workspace.
-    // Phase 0 set CLAUDE_CONFIG_DIR OUTSIDE /permanent so the `'user'`
+    // Phase 0 set CLAUDE_CONFIG_DIR OUTSIDE /agent so the `'user'`
     // skill-discovery source could be distinct from the `'project'` source,
     // but the SDK ALSO derives `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
     // <sid>.jsonl` from the same var — the transcript writes moved with it.
@@ -380,7 +380,7 @@ export async function main(): Promise<number> {
   // Per-turn transcript-flush wait (2026-05-22 conversations:get-latency fix).
   // The Anthropic Agent SDK writes the assistant turn's jsonl line AFTER it
   // yields `result`, so the per-turn commit in the `result` handler below
-  // would otherwise stage `/permanent` BEFORE the reply lands and ship a
+  // would otherwise stage `/agent` BEFORE the reply lands and ship a
   // bundle missing it. Under idle-keepalive the warm runner doesn't drain the
   // SDK loop (no final commit) until idle-reap, so the reply stayed unreadable
   // via conversations:get for the whole idle window (minutes). We wait for the
@@ -468,14 +468,14 @@ export async function main(): Promise<number> {
   let transcriptShipState: TranscriptShipState = { sentOffset: 0, sentSeq: 0 };
 
   // Mid-turn flush for host tools that declare `flushWorkspaceBeforeCall`.
-  // The runner commits + pushes its live /permanent tree to the host mirror
+  // The runner commits + pushes its live /agent tree to the host mirror
   // BEFORE the host tool runs, so a host read of a file the agent just wrote
   // this turn sees it instead of the stale committed mirror (BUG-W2). Threads the
   // advanced version back into `parentVersion` so the turn-end commit chains,
   // and returns the flush outcome so the forwarder can gate the call on it.
   //
   // Serialized via `flushChain`: `commitTurnAndBundle` runs git ops on the one
-  // /permanent repo and reads+mutates the shared `parentVersion`. If the SDK
+  // /agent repo and reads+mutates the shared `parentVersion`. If the SDK
   // ever dispatches two flagged host tools concurrently, unserialized flushes
   // would race the git index and the parent token; chaining makes the
   // read-flush-write critical section atomic. The turn-end commit runs at the
@@ -582,7 +582,7 @@ export async function main(): Promise<number> {
   };
 
   // Phase 3: workspace commits are turn-end via git-status against
-  // /permanent (`commitTurnAndBundle` at the SDK `result` boundary).
+  // /agent (`commitTurnAndBundle` at the SDK `result` boundary).
   // The legacy PostToolUse-based diff accumulator is gone — git status
   // catches ALL writes regardless of tool, including the Bash deletes
   // and MCP writes the legacy path missed. (`parentVersion` is declared
@@ -960,7 +960,7 @@ export async function main(): Promise<number> {
         // git-workspace.ts, called from the materialize block above)
         // creates `$CLAUDE_CONFIG_DIR/projects` as a symlink into
         // `<workspaceRoot>/.claude/projects`, so the writes land inside
-        // `/permanent` and the bundler picks them up. The (b) split
+        // `/agent` and the bundler picks them up. The (b) split
         // and the jsonl capture are restored independently; no env
         // change here.
         //
@@ -1013,7 +1013,7 @@ export async function main(): Promise<number> {
           ...buildTelemetryEnv(),
           HOME: env.workspaceRoot,
           // Redirect npx/uvx fetch caches onto the ephemeral tier so they
-          // don't land in HOME=/permanent and get bundled to the host each
+          // don't land in HOME=/agent and get bundled to the host each
           // turn. No-op ({}) when no ephemeral root was wired. See
           // tool-cache-env.ts. Spread AFTER HOME so an ephemeral root always
           // wins for the cache vars (HOME stays the workspace root).
@@ -1031,9 +1031,9 @@ export async function main(): Promise<number> {
           // tier — HOME above) on PATH so binaries the agent installs there
           // PERSIST and are found in later sessions. Spread LAST and fed the
           // post-venv PATH so it lands at the END of PATH. APPEND, not prepend
-          // (I5 / codex review): $HOME=/permanent is model-writable + restored
+          // (I5 / codex review): $HOME=/agent is model-writable + restored
           // across sessions, so prepending would let an injected
-          // `/permanent/bin/git` persistently shadow the trusted image/venv
+          // `/agent/bin/git` persistently shadow the trusted image/venv
           // binary; appending keeps installed tools discoverable while trusted
           // base+venv bins win on name collisions. This is the load-bearing
           // layer: the SDK's Bash tool is a NON-INTERACTIVE shell that never
@@ -1050,7 +1050,7 @@ export async function main(): Promise<number> {
         // ephemeral root (k8s: the `/ephemeral` emptyDir mount; subprocess:
         // a per-session tempdir), grant the SDK's file tools access to it
         // BEYOND cwd. Without this the file tools are bounded to cwd
-        // (`/permanent`), so any "temporary" file the agent writes lands in
+        // (`/agent`), so any "temporary" file the agent writes lands in
         // the workspace tree and gets `git add -A`'d + bundled to the host
         // at turn end. additionalDirectories lets the agent stage throwaway
         // work (scratch clones, build caches) somewhere that never
@@ -1090,7 +1090,7 @@ export async function main(): Promise<number> {
                   // TASK-78: uploads materialize at the advertised
                   // `<workspaceRoot>/.ax/uploads/`, so a mis-rooted
                   // `.ax/uploads/...` reference re-roots THERE (the safety net;
-                  // a path the model already rooted at /permanent is correct).
+                  // a path the model already rooted at /agent is correct).
                   workspaceRoot: env.workspaceRoot,
                 }),
               ],
@@ -1376,7 +1376,7 @@ export async function main(): Promise<number> {
       } else if (msg.type === 'result') {
         // Turn boundary (Phase 3). Replaces the legacy PostToolUse-based
         // diff observer with `git status` + bundle:
-        //   1. Stage everything in /permanent (`git add -A`) — catches
+        //   1. Stage everything in /agent (`git add -A`) — catches
         //      ALL writes, regardless of which tool wrote (Bash, MCP,
         //      SDK Write/Edit/MultiEdit, raw fs, jsonl). Closes the
         //      Bash-delete + MCP-write + jsonl gaps that motivated
@@ -1431,7 +1431,7 @@ export async function main(): Promise<number> {
           // lines append as opaque rows in the host store, O(1) per turn. The
           // bind-after-DURABLE (F2a) moves here — the transcript is durable once
           // the host accepts the append/replace, mirroring today's
-          // bind-after-commit-accepted. Non-transcript /permanent state (identity,
+          // bind-after-commit-accepted. Non-transcript /agent state (identity,
           // Pattern A) still rides commitTurnAndBundle below (the jsonl is
           // gitignored, so that commit is usually empty on a chat turn).
           if (transcriptSessionId !== null && conversationId !== null) {
@@ -1452,14 +1452,14 @@ export async function main(): Promise<number> {
               await bindRunnerSessionIfNeeded();
             }
           }
-          // Commit + bundle any NON-transcript /permanent change (identity,
+          // Commit + bundle any NON-transcript /agent change (identity,
           // Pattern A project code). With transcripts (TASK-67), blobs/
           // attachments (TASK-68), and skills (TASK-69) all off git, this is
           // the WHOLE of what the per-turn commit carries now — and a pure
           // chat turn changes none of it: `.claude/projects/` is gitignored,
           // so nothing stages → `commitTurnAndBundle` returns null →
           // commit-notify is SKIPPED. The commit fires ONLY on a non-empty
-          // /permanent diff (TASK-70 Phase-5 gate; the empty-diff skip is the
+          // /agent diff (TASK-70 Phase-5 gate; the empty-diff skip is the
           // `git diff --cached --quiet` short-circuit inside
           // commitTurnAndBundle).
           const bundleB64 = await commitTurnAndBundle({
@@ -1501,7 +1501,7 @@ export async function main(): Promise<number> {
             throw err;
           }
           // commitTurnAndBundle itself failed (git binary missing,
-          // /permanent in a weird state, etc.). Non-fatal; the next
+          // /agent in a weird state, etc.). Non-fatal; the next
           // turn will retry.
           process.stderr.write(
             `runner: commitTurnAndBundle failed: ${err instanceof Error ? err.message : String(err)}\n`,
@@ -1638,7 +1638,7 @@ export async function main(): Promise<number> {
           await bindRunnerSessionIfNeeded();
         }
       }
-      // Commit + bundle any NON-transcript /permanent change (see per-turn site).
+      // Commit + bundle any NON-transcript /agent change (see per-turn site).
       const finalBundle = await commitTurnAndBundle({
         root: env.workspaceRoot,
         reason: 'turn',
