@@ -252,9 +252,18 @@ and add `sslrootcert=<path>` — a hardening step, not a launch blocker.
 ```bash
 export AX_CREDENTIALS_KEY=$(openssl rand -base64 32)
 export AX_HTTP_COOKIE_KEY=$(openssl rand -hex 32)
+export AX_AUTH_SECRET=$(openssl rand -base64 32)
 ```
 
-**Back them up to Secret Manager right now** — IAM-controlled, versioned, and
+`AX_AUTH_SECRET` is the third key: `@ax/auth-better` uses it to encrypt stored OAuth
+tokens at rest. The chart will happily auto-generate one for you if you leave
+`auth.secret` empty — but generating + backing it up here, alongside the other two,
+means you can always re-supply it later (the exact thing that turns a future cluster
+migration from a `kubectl patch` dance into one `--set` flag — see
+[Step M4](#step-m4--re-create-the-secrets)). A 32-byte base64 value is the same shape
+the chart generates.
+
+**Back all three up to Secret Manager right now** — IAM-controlled, versioned, and
 off-cluster. (The chart does write them into the in-cluster `ax-next-secrets`
 Secret with `resource-policy: keep`, so they survive `helm uninstall` — but that's
 in-cluster state, not a backup. Lose the namespace/cluster and they're gone.) Use
@@ -267,6 +276,8 @@ gcloud services enable secretmanager.googleapis.com --project=$PROJECT_ID
 printf '%s' "$AX_CREDENTIALS_KEY" | gcloud secrets create ax-next-credentials-key \
   --data-file=- --replication-policy=automatic --project=$PROJECT_ID
 printf '%s' "$AX_HTTP_COOKIE_KEY" | gcloud secrets create ax-next-http-cookie-key \
+  --data-file=- --replication-policy=automatic --project=$PROJECT_ID
+printf '%s' "$AX_AUTH_SECRET" | gcloud secrets create ax-next-auth-secret \
   --data-file=- --replication-policy=automatic --project=$PROJECT_ID
 # The DB password from Step 1b belongs here too — same criticality.
 printf '%s' "$DB_PASSWORD" | gcloud secrets create ax-next-db-password \
@@ -281,7 +292,14 @@ export AX_CREDENTIALS_KEY=$(gcloud secrets versions access latest \
   --secret=ax-next-credentials-key --project=$PROJECT_ID)
 export AX_HTTP_COOKIE_KEY=$(gcloud secrets versions access latest \
   --secret=ax-next-http-cookie-key --project=$PROJECT_ID)
+export AX_AUTH_SECRET=$(gcloud secrets versions access latest \
+  --secret=ax-next-auth-secret --project=$PROJECT_ID)
 ```
+
+Then pass `--set auth.secret="$AX_AUTH_SECRET"` on the Step 6 install (and every
+`helm upgrade`), right alongside the other two keys. Leave it off and the chart
+generates one — but then it lives **only** in-cluster, and you're back to the
+`kubectl`-and-pray recovery path the moment you need a fresh cluster.
 
 The rules:
 
@@ -290,6 +308,8 @@ The rules:
   path.
 - `AX_HTTP_COOKIE_KEY` signs session cookies. Change it and every active session
   is invalidated.
+- `AX_AUTH_SECRET` encrypts stored OAuth tokens at rest. Change it and everyone who
+  linked Google/GitHub has to re-link. Same paranoia rules as `AX_CREDENTIALS_KEY`.
 - Pass the **same** values on **every** `helm upgrade`. The chart's Secret is
   lookup-stable, so if you forget, an in-cluster upgrade reuses the existing
   value — **but that safety net does NOT fire under GitOps** (Argo CD / Flux /
@@ -378,7 +398,8 @@ helm upgrade --install ax-next deploy/charts/ax-next \
   -f deploy/charts/ax-next/gke-values.yaml \
   -f deploy/charts/ax-next/gke-values.local.yaml \
   --set credentials.key="$AX_CREDENTIALS_KEY" \
-  --set http.cookieKey="$AX_HTTP_COOKIE_KEY"
+  --set http.cookieKey="$AX_HTTP_COOKIE_KEY" \
+  --set auth.secret="$AX_AUTH_SECRET"
 ```
 
 ### Lock down `/chat` (required with a public ingress)
@@ -816,6 +837,7 @@ kubectl create secret generic ax-next-db -n ax-next --from-literal=url="$DSN"
 
 export AX_CREDENTIALS_KEY=$(gcloud secrets versions access latest --secret=ax-next-credentials-key --project=$PROJECT_ID)
 export AX_HTTP_COOKIE_KEY=$(gcloud secrets versions access latest --secret=ax-next-http-cookie-key --project=$PROJECT_ID)
+export AX_AUTH_SECRET=$(gcloud secrets versions access latest --secret=ax-next-auth-secret --project=$PROJECT_ID)
 
 # Reuse the same /chat serve token too (if you set one on Autopilot).
 kubectl create secret generic ax-next-serve-token -n ax-next \
@@ -826,38 +848,32 @@ kubectl create secret generic ax-next-serve-token -n ax-next \
 from the `--set` flags above — you don't create it by hand.)
 
 > **Carry over `auth-secret`, or every Google/OAuth login breaks.** `ax-next-secrets`
-> holds a **third** key the `--set` flags don't cover: `auth-secret`
-> (`AX_AUTH_SECRET`), which `@ax/auth-better` uses to encrypt stored OAuth tokens
-> at rest. There is **no Helm value** for it — the chart generates a random one at
-> first install and is only "lookup-stable" against an *existing in-cluster*
-> Secret. A fresh cluster therefore mints a **new** `auth-secret`, and every
-> account that linked Google (tokens encrypted with the old cluster's secret)
-> can't be decrypted → broken logins. The `credentials-key` / `http-cookie-key`
-> you pass via `--set` are unaffected; this is `auth-secret` specifically.
+> holds a **third** key — `auth-secret` (`AX_AUTH_SECRET`), which `@ax/auth-better`
+> uses to encrypt stored OAuth tokens at rest. A fresh cluster has no in-cluster
+> Secret to "lookup", so without intervention it'd mint a **new** `auth-secret` and
+> orphan every account that linked Google (their tokens were encrypted with the old
+> cluster's secret) → broken logins. The `credentials-key` / `http-cookie-key` you
+> pass via `--set` are unaffected; this is `auth-secret` specifically.
 >
-> If you don't already have it in Secret Manager (the original Step 4b didn't back
-> it up — an oversight), grab it from the **old** cluster and store it now:
+> The fix is the `AX_AUTH_SECRET` export above — re-fetched from Secret Manager like
+> the other two keys (you backed it up in
+> [Step 4b](#4b-the-encryption--cookie-keys-read-this-twice)). Pass it through to
+> Step M6's `helm upgrade` as `--set auth.secret="$AX_AUTH_SECRET"` and the new
+> cluster reuses the old secret — no post-install `kubectl patch`, no host restart.
+>
+> Older deploy that predates the Step 4b `auth-secret` backup? Grab the value from
+> the **old** cluster's in-cluster Secret (it's stored base64-encoded there, so
+> `base64 -d` it back to the raw value before storing — Secret Manager holds the
+> decoded value, the same form `--set` expects) and back it up before you continue:
 >
 > ```bash
 > kubectl --context <old-autopilot-context> get secret ax-next-secrets -n ax-next \
 >   -o jsonpath='{.data.auth-secret}' \
->   | { read -r v; printf '%s' "$v"; } \
+>   | base64 -d \
 >   | gcloud secrets create ax-next-auth-secret --data-file=- \
 >       --replication-policy=automatic --project=$PROJECT_ID
+> export AX_AUTH_SECRET=$(gcloud secrets versions access latest --secret=ax-next-auth-secret --project=$PROJECT_ID)
 > ```
->
-> Then, **after** the Helm install in Step M6 has created `ax-next-secrets`, patch
-> the generated value back to the real one and restart the host so it re-reads it:
->
-> ```bash
-> OLD_AUTH=$(gcloud secrets versions access latest --secret=ax-next-auth-secret --project=$PROJECT_ID)
-> kubectl patch secret ax-next-secrets -n ax-next --type=merge \
->   -p "{\"data\":{\"auth-secret\":\"${OLD_AUTH}\"}}"
-> kubectl rollout restart deployment/ax-next-host -n ax-next
-> ```
->
-> Verify it matches the old cluster (compare `sha256` of the decoded value on both
-> contexts). Adding a real `auth.secret` Helm value is a tracked follow-up.
 
 ### Step M5 — Re-create the ManagedCertificate
 
@@ -885,8 +901,11 @@ EOF
 ### Step M6 — Install with the same chart
 
 Identical to [Step 6](#step-6--edit-the-overlay-and-install) — same overlay, same
-gitignored `gke-values.local.yaml`, same keys. The chart is cluster-agnostic, so
-nothing in your values changes for Standard.
+gitignored `gke-values.local.yaml`, same keys, plus the **one cluster-migration
+extra**: `--set auth.secret="$AX_AUTH_SECRET"` to carry over the OAuth-token
+encryption secret (Step M4). On a normal fresh install you'd omit it and let the
+chart generate one. The chart is otherwise cluster-agnostic, so nothing else in
+your values changes for Standard.
 
 ```bash
 helm dependency build deploy/charts/ax-next   # subchart must be present to render
@@ -897,6 +916,7 @@ helm upgrade --install ax-next deploy/charts/ax-next \
   -f deploy/charts/ax-next/gke-values.local.yaml \
   --set credentials.key="$AX_CREDENTIALS_KEY" \
   --set http.cookieKey="$AX_HTTP_COOKIE_KEY" \
+  --set auth.secret="$AX_AUTH_SECRET" \
   --set serve.existingSecret=ax-next-serve-token   # drop if you didn't gate /chat
 ```
 
