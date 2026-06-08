@@ -284,6 +284,30 @@ describe('buildSystemPrompt — normal mode', () => {
     expect(out).not.toContain(pythonVenvNote());
     expect(out).toContain(workspaceNote(dir));
   });
+
+  it('Plan 2 regression: .ax/ reads stay anchored to workspaceRoot even when cwd moved', async () => {
+    // TASK-164: cwd=/workspace (ungoverned NFS) but the GOVERNED workspaceRoot
+    // (here the tmpdir) is unchanged. The identity files MUST be read from
+    // workspaceRoot, not cwd — so a fictitious cwd has no effect on which
+    // IDENTITY.md is loaded. And the workspace note uses the dual-root prose.
+    await writeAx('IDENTITY.md', 'I am Ada, read from the governed tier.');
+    const cwd = '/workspace';
+    const out = (await buildSystemPrompt(
+      'Ada',
+      '',
+      dir, // workspaceRoot — where .ax/ actually lives
+      '/ephemeral',
+      false,
+      '/workspace', // userFilesRoot
+      cwd, // effective cwd (= userFilesRoot under Plan 2)
+    )) as string;
+    // The identity file was resolved from workspaceRoot (dir), not cwd.
+    expect(out).toContain('I am Ada, read from the governed tier.');
+    // The note states BOTH the cwd and the governed root (dual-root prose).
+    expect(out).toContain(workspaceNote(dir, cwd));
+    expect(out).toContain(`\`${cwd}\``);
+    expect(out).toContain(`\`${dir}\``);
+  });
 });
 
 describe('buildSystemPrompt — displayName fallback identity (no .ax/ files)', () => {

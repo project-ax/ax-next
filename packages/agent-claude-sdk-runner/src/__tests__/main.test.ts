@@ -3073,6 +3073,104 @@ describe('main()', () => {
     });
   });
 
+  describe('filestore-user-files Phase 2 (TASK-164): cwd=HOME=/workspace + re-root', () => {
+    // When AX_USERFILES_ROOT is wired, the SDK subprocess's cwd + HOME move to
+    // the durable /workspace NFS mount; the governed /agent tier (here
+    // /tmp/workspace) plus /ephemeral are granted via additionalDirectories; and
+    // the PreToolUse re-rooter broadens to the full .ax/**+.claude/** policy. The
+    // UNSET path (today's behavior) is covered by the Phase C tests above.
+    function wirePlan2Client() {
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'claude-sonnet-4-7',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+      queryMock.mockImplementation(
+        ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) => {
+          return (async function* () {
+            const it = prompt[Symbol.asyncIterator]();
+            await it.next();
+            yield assistantText('ok');
+            yield resultSuccess();
+            await it.next();
+          })();
+        },
+      );
+    }
+
+    it('moves cwd + HOME to AX_USERFILES_ROOT and grants /agent + /ephemeral', async () => {
+      setEnv({
+        ...COMPLETE_ENV,
+        AX_EPHEMERAL_ROOT: '/ephemeral',
+        AX_USERFILES_ROOT: '/workspace',
+      });
+      wirePlan2Client();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: {
+          cwd: string;
+          env: { HOME?: string; PATH?: string };
+          additionalDirectories?: string[];
+        };
+      };
+      // cwd + HOME are the durable user-files mount.
+      expect(queryArg.options.cwd).toBe('/workspace');
+      expect(queryArg.options.env.HOME).toBe('/workspace');
+      // The governed tier (/tmp/workspace = AX_WORKSPACE_ROOT) is no longer the
+      // cwd, so it MUST be granted explicitly — it holds .ax/uploads, the
+      // transcript symlink, and every re-rooted .ax/**+.claude/** write.
+      expect(queryArg.options.additionalDirectories).toContain('/tmp/workspace');
+      expect(queryArg.options.additionalDirectories).toContain('/ephemeral');
+      // /workspace is the cwd, so it is NOT duplicated in the list.
+      expect(queryArg.options.additionalDirectories).not.toContain('/workspace');
+      // ~/bin follows HOME → /workspace/bin (durable NFS), appended to PATH.
+      expect(queryArg.options.env.PATH?.endsWith(':/workspace/bin')).toBe(true);
+    });
+
+    it('UNSET (no AX_USERFILES_ROOT): cwd=HOME=/agent and /agent is the cwd (today)', async () => {
+      // Regression guard: the governed root is the cwd, so it dedups OUT of
+      // additionalDirectories — byte-identical to pre-Plan-2 behavior.
+      setEnv({ ...COMPLETE_ENV, AX_EPHEMERAL_ROOT: '/ephemeral' });
+      wirePlan2Client();
+
+      const { main } = await import('../main.js');
+      expect(await main()).toBe(0);
+
+      const queryArg = queryMock.mock.calls[0]?.[0] as {
+        options: {
+          cwd: string;
+          env: { HOME?: string; PATH?: string };
+          additionalDirectories?: string[];
+        };
+      };
+      expect(queryArg.options.cwd).toBe('/tmp/workspace');
+      expect(queryArg.options.env.HOME).toBe('/tmp/workspace');
+      // Only /ephemeral is granted; the governed root is the cwd (not listed).
+      expect(queryArg.options.additionalDirectories).toEqual(['/ephemeral']);
+      expect(queryArg.options.env.PATH?.endsWith(':/tmp/workspace/bin')).toBe(true);
+    });
+  });
+
   describe('Python venv activation', () => {
     // Same scaffolding as the HOME-redirect happy path, but with an ephemeral
     // root + a forwarded proxy CA so buildPythonVenvEnv produces the full set.

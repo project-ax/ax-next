@@ -21,6 +21,23 @@ describe('workspaceNote', () => {
     // workspace root, NOT a home directory (the bug this note prevents).
     expect(note).toMatch(/home directory|\/home|~/);
   });
+
+  it('keeps the single-root prose when cwd equals the workspace root', () => {
+    // Default cwd === workspaceRoot: byte-identical to the no-cwd form (today).
+    expect(workspaceNote(WS, WS)).toBe(workspaceNote(WS));
+  });
+
+  it('states BOTH the cwd and the governed root when they differ (Plan 2)', () => {
+    // TASK-164: cwd moved to /workspace; attachments still live under /agent.
+    const note = workspaceNote('/agent', '/workspace');
+    expect(note).toContain('`/workspace`'); // the working directory
+    expect(note).toContain('`/agent`'); // the governed root attachments live under
+    expect(note).toContain('.ax/uploads');
+    // It must resolve a shared file under the GOVERNED root, not the cwd.
+    expect(note).toContain('`/agent/.ax/uploads/…`');
+    // And still steer away from home dirs.
+    expect(note).toMatch(/home directory|\/home|~/);
+  });
 });
 
 describe('JIT capability-handoff note', () => {
@@ -136,6 +153,15 @@ describe('operationalNotes — the single assembly point', () => {
     // No durable mount: drafts advertised under the ephemeral scratch tier.
     const fallback = operationalNotes(WS, '/ephemeral', false, undefined);
     expect(fallback).toContain(skillAuthoringNote('/ephemeral'));
+  });
+
+  it('threads cwd into the workspace note (Plan 2 — cwd=/workspace)', () => {
+    // TASK-164: when cwd differs from the governed root, the assembled notes use
+    // the dual-root workspace prose (working dir + governed root).
+    const notes = operationalNotes('/agent', '/ephemeral', false, '/workspace', '/workspace');
+    expect(notes).toContain(workspaceNote('/agent', '/workspace'));
+    // The single-root form is NOT present (cwd != workspaceRoot).
+    expect(notes).not.toContain(workspaceNote('/agent', '/agent'));
   });
 
   it('includes the python-venv note only when the venv is active', () => {

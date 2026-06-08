@@ -2,6 +2,63 @@
 
 Architectural / process decisions. Never deleted — strikethrough if reversed.
 
+## 2026-06-08 — TASK-164 Plan 2 (cwd=HOME=/workspace + re-root .ax/**+.claude/** → /agent)
+
+filestore-user-files design §8-9, Phase 2. When `AX_USERFILES_ROOT` is set (durable
+NFS user-files mount wired by the sandbox provider), the claude-sdk runner reshapes the
+agent's frame; unset = today's behavior (cwd=HOME=/agent), no broadening.
+
+Decisions:
+- **Effective HOME/cwd = `userFilesRoot` when set, else `workspaceRoot`.** Compute one
+  `sdkHome`/`sdkCwd` value up front and feed it to BOTH the SDK `HOME:` env and `cwd:`.
+  Everything else (git ops, transcript symlink scaffolding `scaffoldSdkProjectsSymlink`,
+  prompt-engine `.ax` reads, uploads materialization, commit/bundle diff) STAYS on
+  `env.workspaceRoot` (=/agent, the governed git tier). Only the *agent's working frame*
+  moves; the *governed frame* does not. This is the whole point of Plan 2 (design §8).
+- **home-bin PATH derives from the effective HOME, not workspaceRoot.** `buildHomeBinEnv(sdkHome, …)`
+  → `~/bin` = `/workspace/bin` (durable NFS), so installed binaries persist live, NOT via
+  git bundle. `~/bin` is no longer git-bundled (it's on the separate /workspace mount,
+  outside the /agent git root). Container `.bashrc` already uses `$HOME/bin` literally —
+  no Dockerfile change needed (it follows HOME wherever it points).
+- **Re-rooter broadened to ALL `.ax/**` + `.claude/**` (+ root-exact `CLAUDE.md`/`CLAUDE.local.md`),
+  gated on userFilesRoot set.** Imports `POLICY_PREFIXES` + `POLICY_EXACT_PATHS` from
+  `@ax/core` (the kernel — allowed by eslint; runner gains a NEW `@ax/core` dep) so the
+  re-root scope and the validator policy scope share ONE source of truth (invariant 4). If
+  they drifted, agent self-edits could land on ungoverned NFS — the §14 governance linchpin.
+  The existing `.ax/uploads/` re-root is now a subset of `.ax/**`.
+- **Re-root TARGET is `workspaceRoot` (=/agent), unchanged.** A matched governed path
+  (bare `.ax/x`, cwd-prefixed `/workspace/.ax/x`, home-prefixed `/home/u/.ax/x`, already
+  `/agent/.ax/x`) maps to `<workspaceRoot>/<rel>`. Idempotent on already-correct paths;
+  refuses `..` traversal segments (kept from the uploads re-rooter); only rewrites the
+  structured path keys (file_path/path/notebook_path), never free-text fields.
+- **When userFilesRoot UNSET: re-rooter unchanged (uploads-only).** The broadened match is
+  conditional so today's deployments are byte-identical. Avoids re-rooting `.claude/` paths
+  the agent legitimately writes when cwd=HOME=/agent (there's no NFS to drift onto).
+- **workspaceNote prose made cwd-aware.** With cwd=/workspace the old "`/agent` is your
+  current working directory" line is factually wrong and would misdirect `.ax/uploads`
+  resolution. Note now states the working dir (effective cwd) separately from the governed
+  root (/agent) that attachments resolve under. In-scope: the cwd move broke the note.
+- **Regression coverage:** transcript resolution is cwd-independent (symlink + slug-agnostic
+  readdir-walk), prompt-engine `.ax` reads stay on /agent, skill discovery is
+  CLAUDE_CONFIG_DIR-based (HOME/cwd-independent) — assert these don't move.
+- **(security-checklist) Re-rooter must NOT over-capture nested governed dirs.** The
+  validator's `filterToPolicy` governs only GIT-ROOT-RELATIVE top-level `.ax/`+`.claude/`.
+  A naive "match `.claude/` anywhere as a segment" over-captures a user's cloned-repo
+  `/workspace/myrepo/.claude/` and yanks it to /agent — corrupting the user's repo AND
+  diverging from the validator. FIX: the broadened re-rooter (`findGovernedSegment`) matches
+  a governed segment ONLY at the TOP LEVEL of a recognized root: offset 0 (bare relative),
+  or immediately after a `recognizedRoots` entry (cwd=sdkHome + ephemeral, passed from
+  main.ts; workspaceRoot auto-added), or after `~/` / a single-segment `/home/<user>/` home
+  dir (the dotfile illusion — but NOT a deeper `/home/<user>/projects/.ax`). The legacy
+  `.ax/uploads/` re-rooter keeps mid-path matching (its namespace is specific enough to be
+  safe). Unit-tested both ways. The `..`-traversal refusal is kept from the uploads re-rooter.
+- **(security-checklist note for PR):** Sandbox — re-rooter is a NARROWING control (governed
+  paths → /agent before host adjudication), never widens; `..` refused, top-level-only match,
+  additionalDirectories grants only the 4 documented tiers. Injection — untrusted tool-input
+  paths only re-rooted on structured path keys, never shell/SQL/URL/prompt; free-text fields
+  untouched; host tool.pre-call still adjudicates. Supply chain — one new dep `@ax/core`
+  (workspace:* in-repo kernel, already the universal allowed import; no scripts/transitive).
+
 ## 2026-06-07 — TASK-170 harden runner-pod teardown (killPod retry + orphan sweep)
 
 A warm runner pod that exits clean (Succeeded) can be ORPHANED forever if the host's
