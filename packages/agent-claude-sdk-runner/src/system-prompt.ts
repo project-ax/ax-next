@@ -41,18 +41,37 @@ export type SdkSystemPrompt = string;
  * Without this the model treats an attachment path like `.ax/uploads/…` as a
  * home dotfile and reads it under `~`/`/home/<user>/…` instead of the workspace
  * root, so the read fails (the runner's PreToolUse hook re-roots it as a
- * safety net — see `resolveAttachmentPaths` — but stating the root up front
- * makes the model emit the right path directly). `workspaceRoot` is
- * host-controlled (AX_WORKSPACE_ROOT), never model/user/tool input.
+ * safety net — see `resolveGovernedPaths` — but stating the root up front
+ * makes the model emit the right path directly).
+ *
+ * filestore-user-files Phase 2 (TASK-164): `cwd` is the agent's working
+ * directory (`AX_USERFILES_ROOT`=/workspace when a durable mount is wired, else
+ * `workspaceRoot`). When the two DIFFER the note states both — the working dir
+ * the agent operates in, and the governed `workspaceRoot` that shared files
+ * (`.ax/uploads/…`) actually live under — so the model resolves attachments
+ * against the governed root, not the new cwd (where they don't exist). When they
+ * match (today / no durable mount) the prose is the original single-root form.
+ * Both `workspaceRoot` and `cwd` are host-controlled (AX_WORKSPACE_ROOT /
+ * AX_USERFILES_ROOT), never model/user/tool input.
  */
-export function workspaceNote(workspaceRoot: string): string {
+export function workspaceNote(workspaceRoot: string, cwd: string = workspaceRoot): string {
+  if (cwd === workspaceRoot) {
+    return [
+      `Workspace: \`${workspaceRoot}\` is your current working directory and the`,
+      `root of your workspace — everything you create, and every file shared with`,
+      `you, lives under it. Workspace-relative paths shown to you (for example a`,
+      `user-attached file at \`.ax/uploads/…\`) are relative to \`${workspaceRoot}\`:`,
+      `open them as \`${workspaceRoot}/.ax/uploads/…\` (or as a path relative to your`,
+      `working directory) — NEVER under a home directory like \`~\` or \`/home/…\`.`,
+    ].join(' ');
+  }
   return [
-    `Workspace: \`${workspaceRoot}\` is your current working directory and the`,
-    `root of your workspace — everything you create, and every file shared with`,
-    `you, lives under it. Workspace-relative paths shown to you (for example a`,
-    `user-attached file at \`.ax/uploads/…\`) are relative to \`${workspaceRoot}\`:`,
-    `open them as \`${workspaceRoot}/.ax/uploads/…\` (or as a path relative to your`,
-    `working directory) — NEVER under a home directory like \`~\` or \`/home/…\`.`,
+    `Workspace: \`${cwd}\` is your current working directory — relative paths and`,
+    `new files you create land there. Your governed workspace state lives under`,
+    `\`${workspaceRoot}\` instead: files shared with you (for example a user-attached`,
+    `file at \`.ax/uploads/…\`) and your own \`.ax/…\` and \`.claude/…\` files are`,
+    `under \`${workspaceRoot}\` — open a shared file as \`${workspaceRoot}/.ax/uploads/…\`,`,
+    `NEVER relative to \`${cwd}\` and NEVER under a home directory like \`~\` or \`/home/…\`.`,
   ].join(' ');
 }
 
@@ -222,8 +241,13 @@ export function operationalNotes(
   ephemeralRoot: string | undefined,
   pythonVenvActive = false,
   userFilesRoot: string | undefined = undefined,
+  // filestore-user-files Phase 2 (TASK-164): the agent's effective working
+  // directory. Defaults to workspaceRoot (today's behavior); when a durable
+  // user-files mount moved cwd to /workspace, the workspace note states both the
+  // working dir and the governed root so attachments still resolve correctly.
+  cwd: string = workspaceRoot,
 ): string {
-  const notes: string[] = [workspaceNote(workspaceRoot)];
+  const notes: string[] = [workspaceNote(workspaceRoot, cwd)];
   if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
   // filestore-user-files Phase 1: advertise the durable per-agent mount when
   // the sandbox wired one (AX_USERFILES_ROOT). Conditional like the scratch

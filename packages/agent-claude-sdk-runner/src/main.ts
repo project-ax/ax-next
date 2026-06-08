@@ -897,6 +897,24 @@ export async function main(): Promise<number> {
       proxyStartup.anthropicEnv.NODE_EXTRA_CA_CERTS,
   });
 
+  // filestore-user-files Phase 2 (TASK-164) — the agent's WORKING FRAME.
+  //
+  // When the sandbox wired a durable per-agent user-files mount
+  // (AX_USERFILES_ROOT, e.g. `/workspace`), the SDK subprocess's cwd + HOME move
+  // there, so relative-path file work, builds, `git clone .`, `~/bin`, and tool
+  // caches all default to durable NFS instead of the ephemeral `/agent`
+  // emptyDir. When unset, this is `env.workspaceRoot` (=/agent) — today's
+  // behavior, byte-identical.
+  //
+  // This is ONLY the agent's working frame. The GOVERNED frame
+  // (`env.workspaceRoot`=/agent — the validated, git-backed tier) is unchanged
+  // and still drives every other path: git status/bundle, the transcript
+  // `$CLAUDE_CONFIG_DIR/projects → <workspaceRoot>/.claude/projects` symlink, the
+  // prompt-engine's `${workspaceRoot}/.ax` reads, uploads materialization, and —
+  // critically — the PreToolUse re-rooter's TARGET, so `.ax/**`+`.claude/**`
+  // self-edits land back on /agent even though cwd is now ungoverned NFS (§14).
+  const sdkHome = env.userFilesRoot ?? env.workspaceRoot;
+
   // Conversational-agent-identity: the file-based prompt-engine reads
   // `${workspaceRoot}/.ax/` and composes the system prompt for THIS turn —
   // bootstrap mode (BOOTSTRAP.md verbatim) or normal mode (safety floor + the
@@ -917,9 +935,13 @@ export async function main(): Promise<number> {
     env.ephemeralRoot,
     pythonVenvReady,
     // filestore-user-files Phase 1: advertise the durable per-agent mount when
-    // the sandbox wired one. Phase 1 adds it to additionalDirectories (below) +
-    // this note ONLY — cwd/HOME stay /agent (Phase 2 / TASK-164).
+    // the sandbox wired one.
     env.userFilesRoot,
+    // filestore-user-files Phase 2 (TASK-164): the agent's effective working
+    // directory. When it differs from the governed root, the workspace note
+    // states both so the model resolves shared `.ax/uploads/…` files under the
+    // governed root, not the new cwd.
+    sdkHome,
   );
 
   try {
@@ -995,6 +1017,17 @@ export async function main(): Promise<number> {
         //     value wins on conflict. anthropicEnv currently doesn't set
         //     HOME, but defensive ordering matches the intent: we
         //     explicitly redirect HOME for the SDK subprocess.
+        //   - filestore-user-files Phase 2 (TASK-164): HOME is `sdkHome` — the
+        //     durable `/workspace` NFS mount when AX_USERFILES_ROOT is wired,
+        //     else `/agent` (today). So `~/bin`, dotfiles, and tool caches go to
+        //     durable NFS rather than the git-bundled tier. Skill discovery is
+        //     unaffected (CLAUDE_CONFIG_DIR, forwarded separately, drives it —
+        //     not HOME), and the SDK's per-session jsonl still lands on /agent
+        //     because the `$CLAUDE_CONFIG_DIR/projects` symlink targets
+        //     `<workspaceRoot>/.claude/projects` regardless of cwd (only the
+        //     `<encoded-cwd>` subdir name changes; the conversations readdir-walk
+        //     is slug-agnostic). The SDK aux files (`.claude.json`, backups) now
+        //     land on /workspace instead — acceptable (never validated/bundled).
         //   - We DO NOT override CLAUDE_CONFIG_DIR here — the sandbox
         //     plugin's value (carried through proxyStartup.anthropicEnv)
         //     is the source of truth for the (b) split above. If a future
@@ -1020,12 +1053,12 @@ export async function main(): Promise<number> {
           // — unlike the tty-hints above, which are overridable defaults. See
           // telemetry-env.ts for the verified gate chain and ordering contract.
           ...buildTelemetryEnv(),
-          HOME: env.workspaceRoot,
+          HOME: sdkHome,
           // Redirect npx/uvx fetch caches onto the ephemeral tier so they
-          // don't land in HOME=/agent and get bundled to the host each
-          // turn. No-op ({}) when no ephemeral root was wired. See
-          // tool-cache-env.ts. Spread AFTER HOME so an ephemeral root always
-          // wins for the cache vars (HOME stays the workspace root).
+          // don't land in HOME and get bundled/persisted. No-op ({}) when no
+          // ephemeral root was wired. See tool-cache-env.ts. Spread AFTER HOME
+          // so an ephemeral root always wins for the cache vars (HOME stays the
+          // working frame).
           ...buildToolCacheEnv(env.ephemeralRoot),
           // Activate the session Python venv (PATH + VIRTUAL_ENV + pip CA
           // trust) so `pip install` reaches the venv and trusts the proxy
@@ -1036,50 +1069,69 @@ export async function main(): Promise<number> {
           // Computed up front (above the query() literal) so the $HOME/bin
           // layer below can append after the venv bin.
           ...pythonVenvEnv,
-          // Put `$HOME/bin` (= <workspaceRoot>/bin, the git-bundled workspace
-          // tier — HOME above) on PATH so binaries the agent installs there
-          // PERSIST and are found in later sessions. Spread LAST and fed the
-          // post-venv PATH so it lands at the END of PATH. APPEND, not prepend
-          // (I5 / codex review): $HOME=/agent is model-writable + restored
-          // across sessions, so prepending would let an injected
-          // `/agent/bin/git` persistently shadow the trusted image/venv
-          // binary; appending keeps installed tools discoverable while trusted
-          // base+venv bins win on name collisions. This is the load-bearing
-          // layer: the SDK's Bash tool is a NON-INTERACTIVE shell that never
-          // sources a .bashrc, so PATH must arrive via this env. See
+          // Put `$HOME/bin` (= <sdkHome>/bin) on PATH so binaries the agent
+          // installs there PERSIST and are found in later sessions. filestore-
+          // user-files Phase 2 (TASK-164): derives from `sdkHome` (= HOME), so
+          // when AX_USERFILES_ROOT is wired `~/bin` is `/workspace/bin` on
+          // durable NFS — persisted LIVE, NOT via the per-turn git bundle (the
+          // bundle only stages /agent). Spread LAST and fed the post-venv PATH so
+          // it lands at the END of PATH. APPEND, not prepend (I5 / codex review):
+          // $HOME/bin is model-writable + restored across sessions, so prepending
+          // would let an injected `$HOME/bin/git` persistently shadow the trusted
+          // image/venv binary; appending keeps installed tools discoverable while
+          // trusted base+venv bins win on name collisions. This is the load-
+          // bearing layer: the SDK's Bash tool is a NON-INTERACTIVE shell that
+          // never sources a .bashrc, so PATH must arrive via this env. See
           // home-bin-env.ts (and the matching .bashrc in container/agent/
-          // Dockerfile for interactive/BASH_ENV shells + discoverability).
+          // Dockerfile, which uses `$HOME/bin` literally — it follows HOME
+          // wherever it points, so no Dockerfile change is needed here).
           ...buildHomeBinEnv(
-            env.workspaceRoot,
+            sdkHome,
             pythonVenvEnv.PATH ?? proxyStartup.anthropicEnv.PATH,
           ),
         },
-        cwd: env.workspaceRoot,
-        // Session-scoped scratch tier. When the sandbox provided an
-        // ephemeral root (k8s: the `/ephemeral` emptyDir mount; subprocess:
-        // a per-session tempdir), grant the SDK's file tools access to it
-        // BEYOND cwd. Without this the file tools are bounded to cwd
-        // (`/agent`), so any "temporary" file the agent writes lands in
-        // the workspace tree and gets `git add -A`'d + bundled to the host
-        // at turn end. additionalDirectories lets the agent stage throwaway
-        // work (scratch clones, build caches) somewhere that never
-        // round-trips. Omitted when the sandbox didn't wire one — no
-        // phantom directory. (The matching system-prompt note that tells
-        // the agent this directory exists is added by the prompt-engine
-        // (`composedSystemPrompt` above); both are gated on the same
-        // env.ephemeralRoot.)
-        // filestore-user-files Phase 1: the durable per-agent user-files mount
-        // (AX_USERFILES_ROOT, e.g. `/workspace`) is granted to the SDK's file
-        // tools alongside the scratch tier — so the agent can read/write the
-        // durable mount even though cwd/HOME stay `/agent` in Phase 1 (the
-        // cwd/HOME re-root is Phase 2 / TASK-164). Both are gated on their env
-        // var being set by the sandbox; omitted means "no such tier wired", so
-        // we never grant a phantom directory. The matching system-prompt notes
+        // filestore-user-files Phase 2 (TASK-164): cwd is the agent's working
+        // frame — `sdkHome` (= /workspace when a durable mount is wired, else
+        // /agent). Relative-path file work, builds, and `git clone .` default to
+        // durable NFS. The governed tier stays /agent; the PreToolUse re-rooter
+        // pulls `.ax/**`+`.claude/**` back there (see the hook below, §14).
+        cwd: sdkHome,
+        // Directories the SDK's file tools may reach BEYOND `cwd` (cwd is always
+        // granted implicitly). The SDK bounds file tools to cwd + this list, so
+        // any tier the agent legitimately needs and that isn't the cwd must be
+        // listed here — else writes there fail.
+        //
+        // The set, deduped (cwd is excluded; the SDK already grants it):
+        //   - The governed tier `env.workspaceRoot` (=/agent). In Phase 2 cwd is
+        //     /workspace, so /agent is NO LONGER the cwd and MUST be listed — it
+        //     holds `.ax/uploads` (materialized attachments), the transcript
+        //     `.claude/projects` symlink target, and every `.ax/**`+`.claude/**`
+        //     path the PreToolUse re-rooter rewrites BACK to /agent (§14). Without
+        //     it those re-rooted writes would be denied. (When userFilesRoot is
+        //     unset, /agent IS the cwd, so it drops out via the dedup.)
+        //   - The session-scoped scratch tier `env.ephemeralRoot` (k8s: the
+        //     `/ephemeral` emptyDir; subprocess: a per-session tempdir) — for
+        //     throwaway work (scratch clones, build caches) that must NOT
+        //     round-trip to the host. Omitted when no scratch tier was wired.
+        //   - The durable per-agent user-files mount `env.userFilesRoot`
+        //     (`/workspace`) — in Phase 2 this is the cwd, so it dedups out; we
+        //     still list it defensively for the (transitional) case where it's
+        //     wired but not the cwd. Omitted when no durable mount was wired.
+        //
+        // Each entry is host-controlled env (never model/user input); omitted
+        // entries grant no phantom directory. The matching system-prompt notes
         // (composedSystemPrompt above) are gated on the same env values.
         ...((): { additionalDirectories?: string[] } => {
           const extra: string[] = [];
-          if (env.ephemeralRoot !== undefined) extra.push(env.ephemeralRoot);
-          if (env.userFilesRoot !== undefined) extra.push(env.userFilesRoot);
+          for (const dir of [
+            env.workspaceRoot,
+            env.ephemeralRoot,
+            env.userFilesRoot,
+          ]) {
+            if (dir !== undefined && dir !== sdkHome && !extra.includes(dir)) {
+              extra.push(dir);
+            }
+          }
           return extra.length > 0 ? { additionalDirectories: extra } : {};
         })(),
         // `Skill` is added to the allow list so the SDK auto-permits the
@@ -1107,11 +1159,29 @@ export async function main(): Promise<number> {
               hooks: [
                 createPreToolUseHook({
                   client,
-                  // TASK-78: uploads materialize at the advertised
-                  // `<workspaceRoot>/.ax/uploads/`, so a mis-rooted
-                  // `.ax/uploads/...` reference re-roots THERE (the safety net;
-                  // a path the model already rooted at /agent is correct).
+                  // The re-root TARGET is always the governed tier
+                  // (env.workspaceRoot, /agent) — NOT cwd. TASK-78: uploads
+                  // materialize at `<workspaceRoot>/.ax/uploads/`, so a
+                  // mis-rooted `.ax/uploads/...` reference re-roots THERE.
                   workspaceRoot: env.workspaceRoot,
+                  // filestore-user-files Phase 2 (TASK-164) §14 LINCHPIN:
+                  // broaden the re-rooter from the `.ax/uploads/` safety-net to
+                  // the FULL `.ax/**`+`.claude/**` validator policy iff cwd/HOME
+                  // moved to the ungoverned NFS mount (AX_USERFILES_ROOT set).
+                  // Forces every governed self-edit back onto /agent so it stays
+                  // validated + git-backed; when unset, no NFS to drift onto, so
+                  // the legacy uploads-only scope is preserved (today's behavior).
+                  broaden: env.userFilesRoot !== undefined,
+                  // The roots a TOP-LEVEL governed path may be rooted against —
+                  // the cwd (=sdkHome, the NFS mount) and the scratch tier. Bounds
+                  // the broadened re-root to top-level governed dirs so a NESTED
+                  // `.claude/` under a user subtree (e.g. a cloned repo) is left on
+                  // the user tier, matching the validator's git-root-relative scope.
+                  // (workspaceRoot is always added by the re-rooter; /home/+~/ are
+                  // always recognized.) Filtered to the defined runtime roots.
+                  recognizedRoots: [sdkHome, env.ephemeralRoot].filter(
+                    (r): r is string => r !== undefined,
+                  ),
                 }),
               ],
             },

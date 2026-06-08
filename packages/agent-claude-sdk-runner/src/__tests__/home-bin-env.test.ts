@@ -60,4 +60,15 @@ describe('buildHomeBinEnv', () => {
       buildHomeBinEnv('/agent', '/usr/bin:/opt/agent/bin'),
     ).toEqual({ PATH: '/usr/bin:/opt/agent/bin:/agent/bin' });
   });
+
+  it('derives $HOME/bin from HOME=/workspace under Plan 2 (durable NFS, not git-bundled)', () => {
+    // TASK-164 acceptance: when AX_USERFILES_ROOT is wired, main.ts feeds
+    // `sdkHome` (=/workspace, the durable NFS mount) here — so `~/bin` is
+    // `/workspace/bin`, persisted LIVE on NFS rather than via the per-turn git
+    // bundle (which only stages /agent). The helper is path-agnostic; this pins
+    // the wiring contract that home-bin follows HOME, not the workspace root.
+    expect(
+      buildHomeBinEnv('/workspace', '/usr/local/bin:/usr/bin:/bin'),
+    ).toEqual({ PATH: '/usr/local/bin:/usr/bin:/bin:/workspace/bin' });
+  });
 });
