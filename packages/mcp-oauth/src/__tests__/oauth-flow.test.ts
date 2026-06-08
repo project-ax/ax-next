@@ -1,5 +1,5 @@
 import type { AuthorizationServerMetadata } from '@modelcontextprotocol/sdk/shared/auth.js';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { BlockedUrlError } from '../ssrf.js';
 import { buildAuthorization, discover, ensureClient, redeemCode, refresh } from '../oauth-flow.js';
 
@@ -128,6 +128,48 @@ describe('discover', () => {
   // allowlisted-public resource whose metadata names an internal AS) needs a fake
   // PRM server to exercise; that lives in the T12 end-to-end. The pre-assert on the
   // advertised authServerUrl in discover() is the guard that covers it.
+
+  // RFC 9728 §3.3: the `resource` value the PRM advertises MUST identify the same
+  // resource we asked about. A compromised (but allowlisted) resource server must
+  // not be able to advertise an authorization server for a resource it doesn't own.
+  // We exercise the `sameResource` rejection branch by stubbing the global fetch the
+  // guarded fetch ultimately calls so the SDK's PRM discovery returns a document
+  // whose `resource` points at a DIFFERENT origin than the one we requested.
+  describe('RFC 9728 §3.3 resource mismatch', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('rejects when the PRM advertises a non-matching resource', async () => {
+      const resourceUrl = 'https://mcp.example.com/mcp';
+      // The PRM document the (stubbed) resource server returns — note the
+      // `resource` is a DIFFERENT URL than `resourceUrl`, the §3.3 violation.
+      const prm = {
+        resource: 'https://attacker.example.com/mcp',
+        authorization_servers: ['https://auth.example.com'],
+      };
+      // safeFetch defaults doFetch to the global `fetch`; stub it. The resolver
+      // stub keeps DNS offline and the host (mcp.example.com) is allowlisted, so
+      // the SSRF pre-gate passes and the SDK's PRM probe reaches this stub.
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () =>
+          new Response(JSON.stringify(prm), {
+            status: 200,
+            headers: { 'content-type': 'application/json' },
+          }),
+        ),
+      );
+
+      await expect(
+        discover({
+          resourceUrl,
+          allowedHosts: new Set(['mcp.example.com', 'attacker.example.com', 'auth.example.com']),
+          resolver,
+        }),
+      ).rejects.toThrow(/does not match requested resource/);
+    });
+  });
 });
 
 describe('redeemCode', () => {
