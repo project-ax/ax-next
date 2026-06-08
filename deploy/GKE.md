@@ -667,8 +667,8 @@ it survives the move untouched. Only the cluster-scoped objects get rebuilt.
 | Artifact Registry image (`$IMAGE:$TAG`) | Namespaces + PodSecurity labels (Step 3) |
 | Global static IP (`ax-next-ip`) | k8s Secrets: `ax-next-db`, the helm-managed `ax-next-secrets`, `ax-next-serve-token` (Step 4) |
 | Cloud SQL instance + DB + user (**your data lives here**) | `ManagedCertificate` CRD (Step 5c) |
-| Secret Manager secrets (keys, DB password) | `BackendConfig` for SSE (new — Step M7) |
-| DNS A record + the domain | The helm release |
+| Secret Manager secrets (keys, DB password) | The helm release — includes the SSE `BackendConfig` (chart-templated, Step M7) |
+| DNS A record + the domain | — |
 | `gke-values.local.yaml` | — |
 
 Your **conversations, credentials, workspaces** are split between Cloud SQL (DB)
@@ -902,38 +902,36 @@ helm upgrade --install ax-next deploy/charts/ax-next \
 
 ### Step M7 — Raise the SSE backend timeout (BackendConfig)
 
-This one isn't in the chart yet, and you need it on **any** GCE-ingress deploy
-(Autopilot or Standard) — it just tends to bite right when you start a real
-streaming chat. The GCE Application Load Balancer defaults its backend
-`timeoutSec` to **30 s**, and it applies that to the whole response, not idle
-time. Chat replies stream over a long-lived SSE connection, so a turn that takes
-longer than 30 s gets the connection cut out from under it — the UI shows
-**"Connection lost"** mid-answer. A `BackendConfig` with a generous timeout fixes
-it:
+You need this on **any** GCE-ingress deploy (Autopilot or Standard) — it tends to
+bite right when you start a real streaming chat. The GCE Application Load Balancer
+defaults its backend `timeoutSec` to **30 s**, and it applies that to the whole
+response, not idle time. Chat replies stream over a long-lived SSE connection, so a
+turn that takes longer than 30 s gets the connection cut out from under it — the UI
+shows **"Connection lost"** mid-answer.
 
-```bash
-cat <<'EOF' | kubectl apply -f -
-apiVersion: cloud.google.com/v1
-kind: BackendConfig
-metadata:
-  name: ax-next-host-bc
-  namespace: ax-next
-spec:
-  timeoutSec: 3600
-EOF
+Good news: the chart handles it. `gke-values.yaml` already sets
+`ingress.backendConfig.enabled: true`, which renders a `BackendConfig`
+(`cloud.google.com/v1`) with a generous `timeoutSec` **and** stamps the
+`cloud.google.com/backend-config` annotation on the host Service to bind the LB
+backend to it. Both are templated, so they survive `helm upgrade` — no more
+re-applying an annotation by hand that the next re-render quietly drops.
 
-# Bind it to the host Service so the LB picks it up for that backend.
-kubectl annotate service ax-next-host -n ax-next \
-  cloud.google.com/backend-config='{"default":"ax-next-host-bc"}' --overwrite
+Tune the timeout if you expect very long single turns (it's in seconds, 1 h by
+default):
+
+```yaml
+# gke-values.yaml (or gke-values.local.yaml)
+ingress:
+  backendConfig:
+    enabled: true
+    timeoutSec: 3600
 ```
 
-> **This is applied via kubectl, so a later `helm upgrade` that re-renders the
-> Service can drop the annotation.** Re-apply it after upgrades until it's baked
-> into the chart (tracked as a follow-up — the chart should template both the
-> `BackendConfig` and the Service annotation). Confirm the LB actually took it:
-> the backend service's `timeoutSec` should read `3600`, not `30`, in
-> `gcloud compute backend-services describe <name> --global` (the name is
-> auto-generated; find it via `kubectl describe ingress ax-next-host -n ax-next`).
+> Confirm the LB actually took it: the backend service's `timeoutSec` should read
+> `3600`, not `30`, in `gcloud compute backend-services describe <name> --global`
+> (the name is auto-generated; find it via
+> `kubectl describe ingress ax-next-host -n ax-next`). It can take a few minutes
+> after the install/upgrade for glbc to push the new timeout to the LB.
 
 ### Step M8 — Cut over the static IP
 

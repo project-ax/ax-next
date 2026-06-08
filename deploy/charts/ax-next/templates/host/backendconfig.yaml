@@ -1,0 +1,23 @@
+{{- if .Values.ingress.backendConfig.enabled }}
+# GKE BackendConfig (TASK-168) — raises the GCE Application LB backend timeout.
+#
+# The GCE LB defaults backend `timeoutSec` to 30s and applies it to the WHOLE
+# response, not idle time. Chat replies stream over a long-lived SSE connection,
+# so a turn longer than 30s gets cut mid-answer ("Connection lost"). A generous
+# timeout fixes it. The host Service's cloud.google.com/backend-config annotation
+# (service.yaml) binds the LB backend to this object — both names come from the
+# ax-next.backendConfigName helper so they can't drift.
+#
+# GKE-ONLY: cloud.google.com/v1 is a GKE CRD; non-GKE backends (kind) have no
+# such type. Gated behind ingress.backendConfig.enabled (default off) so it only
+# renders on the GKE path. Applies to both Autopilot and Standard GCE-ingress.
+apiVersion: cloud.google.com/v1
+kind: BackendConfig
+metadata:
+  name: {{ include "ax-next.backendConfigName" . }}
+  namespace: {{ include "ax-next.hostNamespace" . }}
+  labels:
+    {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
+spec:
+  timeoutSec: {{ .Values.ingress.backendConfig.timeoutSec }}
+{{- end }}

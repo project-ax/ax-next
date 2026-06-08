@@ -101,6 +101,24 @@ of truth for every host-side resource (Service, Deployment, etc).
 {{- end -}}
 
 {{/*
+BackendConfig name (TASK-168). <host-component-name>-bc, truncation-safe.
+
+The GKE `BackendConfig` (cloud.google.com/v1) that raises the GCE LB backend
+`timeoutSec` so long-lived SSE chat streams don't get cut at the LB's 30s
+default. The host Service's `cloud.google.com/backend-config` annotation binds
+the LB backend to this object by name, so the two MUST agree — both derive from
+this helper.
+
+Reserve the `-bc` suffix BEFORE the 63-char truncation (like
+credentialProxyComponentName) so a long release name can't drop the suffix and
+collide with the host Service name.
+*/}}
+{{- define "ax-next.backendConfigName" -}}
+{{- $base := include "ax-next.hostComponentName" . | trunc 60 | trimSuffix "-" -}}
+{{- printf "%s-bc" $base | trunc 63 | trimSuffix "-" -}}
+{{- end -}}
+
+{{/*
 Cluster-internal URL the runner pods use to reach the host's IPC listener
 (@ax/ipc-http). Computed from the host Service's name + namespace + port.
 @ax/sandbox-k8s reads this via the preset's hostIpcUrl config and stamps
