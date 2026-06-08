@@ -9,7 +9,9 @@
 //   - readNamespacedPodLog   (TASK-160: bounded sidecar log tail for the
 //                             self-diagnosing failure surface)
 //   - deleteNamespacedPod
-//   - listNamespacedPod  (used by isAvailable, today only via tests)
+//   - listNamespacedPod  (TASK-170: the orphan-sweep lists terminal runner
+//                          pods to reclaim ones a transient-failed delete left
+//                          behind)
 //
 // Why narrow:
 //   - Tests pass in a hand-rolled mock with just these methods. No need to
@@ -44,6 +46,14 @@ export interface PodDeleteRequest {
 export interface PodListRequest {
   namespace: string;
   limit?: number;
+  /**
+   * Server-side label filter (`labelSelector` on the real CoreV1Api, verified
+   * against the pinned @kubernetes/client-node@1.4.0 ObjectParamAPI). TASK-170:
+   * the orphan-sweep scopes its list to runner pods only
+   * (`app.kubernetes.io/component=ax-next-runner`) so it can never see — let
+   * alone delete — the host pod or anything else in the namespace.
+   */
+  labelSelector?: string;
 }
 
 export interface PodLogRequest {

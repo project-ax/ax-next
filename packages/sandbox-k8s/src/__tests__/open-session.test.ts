@@ -35,6 +35,9 @@ async function makeHarness(api: MockK8sApi) {
         namespace: 'ax-test',
         image: 'ax-next/agent:test',
         hostIpcUrl: TEST_HOST_IPC_URL,
+        // These tests exercise open-session, not the orphan-sweep — disable the
+        // periodic sweeper so no background timer fires against the mock.
+        orphanSweepIntervalMs: 0,
         ...FAST_POLL,
       }),
     ],
@@ -240,6 +243,7 @@ describe('sandbox:open-session (k8s)', () => {
           namespace: 'ax-test',
           image: 'foo/bar:v2',
           hostIpcUrl: TEST_HOST_IPC_URL,
+          orphanSweepIntervalMs: 0,
           ...FAST_POLL,
         }),
       ],

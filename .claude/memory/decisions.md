@@ -2,6 +2,48 @@
 
 Architectural / process decisions. Never deleted — strikethrough if reversed.
 
+## 2026-06-07 — TASK-170 harden runner-pod teardown (killPod retry + orphan sweep)
+
+A warm runner pod that exits clean (Succeeded) can be ORPHANED forever if the host's
+single `deleteNamespacedPod` hits a transient apiserver 5xx (observed GKE Standard:
+`HTTP 500 rpc error: code = Unavailable ... throttled ... (memory-protection)`), because
+(1) `killPod` did a SINGLE delete with no retry, (2) both call sites in open-session.ts
+wrap it in `.catch(() => undefined)` (swallow the rethrow), and (3) runner pods are bare
+Pods with NO ownerReference, so no controller/GC ever reclaims them.
+
+Decisions:
+- **killPod gains a bounded retry** on TRANSIENT errors only. Transient = 5xx
+  (statusCode/code/response.statusCode in 500–599) OR a message matching
+  `/unavailable|throttl|overloaded|timeout|ServiceUnavailable/i` (the observed shape is a
+  500 carrying `code = Unavailable`). 404/NotFound stays the happy path (no retry —
+  `isPodGoneError`). 4xx (≠404) is PERMANENT (bad-request/forbidden) → do NOT retry,
+  rethrow immediately. Default 3 attempts, backoff 250→500→1000ms, with a testable
+  `sleep` seam (mirrors lifecycle.ts `waitForPodReady`). Total ≪ the 300s service timeout.
+  Rationale: the throttle is brief; a couple of retries clears it. Alternatives rejected:
+  unbounded retry (could hang teardown); retry-everything (would hammer the apiserver on a
+  genuine 403/permanent error).
+- **Periodic orphan-sweep** added to the plugin (init starts it, shutdown clears it) —
+  the established attachments-janitor pattern (setInterval + clearInterval + await
+  in-flight + `makeAgentContext` init logger + `unref()` so it never pins the process).
+  Lists runner-namespace pods scoped by `labelSelector: app.kubernetes.io/component=ax-next-runner`
+  (NEVER touches host/other pods), filters to terminal phase (Succeeded|Failed) whose
+  `metadata.creationTimestamp` is older than N minutes, and deletes them. Defaults:
+  sweep every 5 min, reap terminal pods older than 10 min (safely past the 5s grace +
+  ~2s retry window of a normal teardown). This is the self-heal: a delete that still
+  ultimately fails gets reclaimed on the next sweep. RBAC ALREADY grants
+  `pods: create/delete/get/list/watch` (deploy/charts/ax-next/templates/host/role.yaml) —
+  NO new capability grant needed.
+- **ownerReference / Job-with-ttlSecondsAfterFinished DEFERRED** as a follow-up (bigger
+  change). Tradeoff: an ownerReference to the host pod would let k8s GC reap a runner when
+  the host dies, and a Job with ttlSecondsAfterFinished would auto-reap finished pods — but
+  both are larger reworks of pod-spec + the create path, and the retry+sweep already gives
+  belt-and-suspenders self-healing for the observed failure. Filed as a follow-up card.
+- **No hook-surface change.** The retry is internal to killPod; the sweep is internal to the
+  plugin. `K8sCoreApi.listNamespacedPod` gains optional `labelSelector` in `PodListRequest`
+  (the real ObjectParamAPI CoreV1Api already accepts it; verified against the pinned
+  @kubernetes/client-node@1.4.0 `ObjectParamAPI.d.ts`). No boundary review needed (internal
+  impl only).
+
 ## 2026-06-04 — TASK-160 self-diagnosing dev-service sidecar startup failure
 
 | Date | Decision | Rationale | Alternatives |

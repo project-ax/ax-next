@@ -43,7 +43,12 @@ export interface MockPodStatus {
 }
 
 export interface MockPod {
-  metadata?: { name?: string; namespace?: string };
+  metadata?: {
+    name?: string;
+    namespace?: string;
+    /** Real V1Pod carries this as a Date; the orphan-sweep ages off it. */
+    creationTimestamp?: Date;
+  };
   status?: MockPodStatus;
 }
 
@@ -58,6 +63,12 @@ export interface MockK8sApi extends K8sCoreApi {
   }>;
   /** Captured read requests. */
   readonly reads: Array<{ name: string; namespace: string }>;
+  /** Captured list requests. */
+  readonly lists: Array<{
+    namespace: string;
+    labelSelector?: string;
+    limit?: number;
+  }>;
   /** Captured pod-log read requests. */
   readonly logReads: Array<{
     name: string;
@@ -75,8 +86,18 @@ export interface MockK8sApi extends K8sCoreApi {
   setLogResponse(container: string, text: string): void;
   /** Make createNamespacedPod fail. */
   setCreateError(err: unknown): void;
-  /** Make deleteNamespacedPod fail. */
+  /** Make the NEXT deleteNamespacedPod fail (one-shot — clears after one throw). */
   setDeleteError(err: unknown): void;
+  /**
+   * Queue a SEQUENCE of delete errors; each delete pops the next one and throws
+   * it. When the queue is exhausted, deletes succeed. Pass nothing to clear.
+   * Used by killPod retry tests (fail-then-succeed, persistent-failure).
+   */
+  setDeleteErrors(...errs: unknown[]): void;
+  /** Set or replace the list response (the V1PodList.items returned). */
+  setListResponses(...pods: MockPod[]): void;
+  /** Make the next listNamespacedPod fail (one-shot). */
+  setListError(err: unknown): void;
   /** Pop a one-shot read error if set, then clear. */
   hasOneShotReadError(): boolean;
 }
@@ -85,17 +106,22 @@ export function makeMockK8sApi(): MockK8sApi {
   const creates: MockK8sApi['creates'] = [];
   const deletes: MockK8sApi['deletes'] = [];
   const reads: MockK8sApi['reads'] = [];
+  const lists: MockK8sApi['lists'] = [];
   const logReads: MockK8sApi['logReads'] = [];
   const logResponses = new Map<string, string>();
   let readQueue: MockPod[] = [{ status: { phase: 'Pending' } }];
   let readError: unknown = undefined;
   let createError: unknown = undefined;
   let deleteError: unknown = undefined;
+  let deleteErrorQueue: unknown[] = [];
+  let listPods: MockPod[] = [];
+  let listError: unknown = undefined;
 
   return {
     creates,
     deletes,
     reads,
+    lists,
     logReads,
     setReadResponses(...pods) {
       readQueue = pods.length > 0 ? [...pods] : [{ status: { phase: 'Pending' } }];
@@ -111,6 +137,15 @@ export function makeMockK8sApi(): MockK8sApi {
     },
     setDeleteError(err) {
       deleteError = err;
+    },
+    setDeleteErrors(...errs) {
+      deleteErrorQueue = [...errs];
+    },
+    setListResponses(...pods) {
+      listPods = [...pods];
+    },
+    setListError(err) {
+      listError = err;
     },
     hasOneShotReadError() {
       const had = readError !== undefined;
@@ -158,6 +193,10 @@ export function makeMockK8sApi(): MockK8sApi {
         namespace: req.namespace,
         gracePeriodSeconds: req.gracePeriodSeconds,
       });
+      // Queue of errors takes priority — each delete pops the next one.
+      if (deleteErrorQueue.length > 0) {
+        throw deleteErrorQueue.shift();
+      }
       if (deleteError !== undefined) {
         const err = deleteError;
         deleteError = undefined;
@@ -165,8 +204,18 @@ export function makeMockK8sApi(): MockK8sApi {
       }
       return { metadata: { name: req.name } };
     },
-    async listNamespacedPod(_req) {
-      return { items: [] };
+    async listNamespacedPod(req) {
+      lists.push({
+        namespace: req.namespace,
+        labelSelector: req.labelSelector,
+        limit: req.limit,
+      });
+      if (listError !== undefined) {
+        const err = listError;
+        listError = undefined;
+        throw err;
+      }
+      return { items: listPods };
     },
   };
 }
