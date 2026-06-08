@@ -19,6 +19,13 @@
 // (TASK-142) when the `system_prompt` column was dropped.
 // ---------------------------------------------------------------------------
 
+// `draftPrefix` is the runner's source of truth for the model-facing skill-draft
+// dir prefix (`<root>/.skill-draft/`). Imported (not re-derived) so the prose the
+// model reads and the path the executor enforces never drift — the executor uses
+// the SAME helper from `@ax/tool-skill-propose` (an already-declared runner dep,
+// the pure path-validation helper, not a cross-plugin runtime coupling).
+import { draftPrefix } from '@ax/tool-skill-propose';
+
 /**
  * The shape the SDK's `options.systemPrompt` accepts that we produce. We only
  * ever emit a plain string — the file-based prompt-engine composes one from
@@ -141,18 +148,29 @@ export function capabilityHandoffNote(): string {
 }
 
 /**
- * Skill-authoring note (TASK-74, design §D6) — the spawn-time-discovery
+ * Skill-authoring note (TASK-74, design §D6; filestore-user-files Phase 3 /
+ * TASK-165) — tells the agent WHERE to author drafts and the spawn-time-discovery
  * constraint. A skill the agent proposes via `skill_propose` is discovered only
  * when a session STARTS, so it becomes available on the user's NEXT message, not
  * the current turn. Without this guidance the model may propose a skill and then
  * try to invoke it in the same turn, fail to find it, and get confused.
  *
+ * The draft prefix is DYNAMIC (TASK-165): drafts stage under `<draftRoot>/.skill-draft/`
+ * where `draftRoot` is the durable per-agent mount when one is wired (drafts persist
+ * across sessions) else the ephemeral scratch tier. We interpolate the SAME prefix
+ * the executor enforces (`draftPrefix`) so the model is told the exact accepted path.
+ * `draftRoot` is host-controlled (AX_USERFILES_ROOT / AX_EPHEMERAL_ROOT), never
+ * model/user/tool input. When neither tier is wired, fall back to a generic
+ * `.skill-draft/<id>/` phrasing so the prose stays coherent (the tool will reject
+ * a propose anyway, since there's nowhere to read the draft from).
+ *
  * Fixed runner-authored prose for the LLM (no untrusted input). Always present
  * — harmless when no skill_propose tool is wired (the model just never proposes).
  */
-export function skillAuthoringNote(): string {
+export function skillAuthoringNote(draftRoot?: string): string {
+  const dir = draftRoot !== undefined ? `${draftPrefix(draftRoot)}<id>/` : `.skill-draft/<id>/`;
   return [
-    `Authoring skills: if you write a skill into \`/ephemeral/skill-draft/<id>/\` and`,
+    `Authoring skills: if you write a skill into \`${dir}\` and`,
     `propose it with \`skill_propose\`, it becomes available on the user's NEXT message —`,
     `not this turn. Skills are discovered when your session starts, so a skill you propose`,
     `now is not yet loaded. Do NOT try to invoke a skill you proposed this turn; tell the`,
@@ -219,7 +237,11 @@ export function operationalNotes(
   // tool — see clarifyingQuestionsNote / DISABLED_BUILTINS). All harmless when
   // the corresponding tools aren't wired.
   notes.push(capabilityHandoffNote());
-  notes.push(skillAuthoringNote());
+  // TASK-165: the skill-draft prefix is dynamic — drafts stage under the durable
+  // per-agent mount when wired (userFilesRoot), else the ephemeral scratch tier
+  // (ephemeralRoot), matching `userFilesRoot ?? ephemeralRoot` in the executor.
+  // Pass the resolved root so the model is told the exact path the tool accepts.
+  notes.push(skillAuthoringNote(userFilesRoot ?? ephemeralRoot));
   notes.push(clarifyingQuestionsNote());
   return notes.join('\n\n');
 }

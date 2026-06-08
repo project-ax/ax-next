@@ -3,15 +3,23 @@ import type { ToolDescriptor } from '@ax/core';
 export const SKILL_PROPOSE_TOOL_NAME = 'skill_propose' as const;
 
 /**
- * TASK-74 (out-of-git Part D / §D1). The agent authors a skill bundle into
- * `/ephemeral/skill-draft/<id>/` (throwaway scratch git never sees), then calls
- * this tool with the draft dir path. The runner-side executor reads the dir,
- * validates it structurally, and ships it to the host's `skills:propose` gate.
+ * TASK-74 (out-of-git Part D / §D1; filestore-user-files Phase 3 / TASK-165).
+ * The agent authors a skill bundle into the draft dir `<root>/.skill-draft/<id>/`
+ * — where `<root>` is the durable per-agent mount when one is wired, else the
+ * ephemeral scratch tier — then calls this tool with that dir path. The runner-
+ * side executor reads the dir, validates it structurally, and ships it to the
+ * host's `skills:propose` gate.
+ *
+ * The DESCRIPTOR is host-side and static (catalog advertisement), so it does NOT
+ * hard-code the tier-specific root: the live `<root>/.skill-draft/` path is told
+ * to the model in the per-session skill-authoring operating note (composed in the
+ * runner from the resolved draft root — see `skillAuthoringNote`). The descriptor
+ * just names the `.skill-draft/<id>` directory and points at the operating notes.
  *
  * Sandbox-executed (mirror of `artifact_publish`): the executor runs inside the
- * runner pod because only it can read `/ephemeral/skill-draft/**` at call time.
- * The host-side plugin in this package only registers this descriptor so the
- * catalog advertises the tool to the model.
+ * runner pod because only it can read the draft dir at call time. The host-side
+ * plugin in this package only registers this descriptor so the catalog advertises
+ * the tool to the model.
  *
  * The description ALSO carries the spawn-time-discovery guidance (design §D6):
  * a proposed skill is available NEXT turn, not this one. Without it the agent
@@ -27,9 +35,10 @@ export const SKILL_PROPOSE_DESCRIPTOR: ToolDescriptor = {
     'the CLI/MCP it runs — is a separate first-class thing called a CONNECTOR. A',
     'skill REFERENCES the connectors it uses; it never contains them.',
     '',
-    'First write the bundle into /ephemeral/skill-draft/<id>/ — a SKILL.md with',
-    'YAML frontmatter plus any helper files — then call this tool with that',
-    'directory path. The frontmatter contract (between the --- fences) is:',
+    'First write the bundle into your skill-draft directory .skill-draft/<id>/',
+    '(its full path is given in your operating notes) — a SKILL.md with YAML',
+    'frontmatter plus any helper files — then call this tool with that directory',
+    'path. The frontmatter contract (between the --- fences) is:',
     '  name: <lowercase-slug>   # e.g. "linear"; NOT "id". /^[a-z][a-z0-9-]{0,63}$/',
     '  description: <one line summarising what the skill does>',
     '  version: 1               # a non-negative INTEGER (not a semver string)',
@@ -55,7 +64,8 @@ export const SKILL_PROPOSE_DESCRIPTOR: ToolDescriptor = {
     'AND use a skill in one breath, propose it and offer to continue once they',
     'reply.',
     '',
-    'Only /ephemeral/skill-draft/<id>/ paths are accepted (others rejected).',
+    'Only .skill-draft/<id>/ paths under the draft root from your operating notes',
+    'are accepted (others rejected).',
   ].join('\n'),
   inputSchema: {
     type: 'object',
@@ -63,7 +73,7 @@ export const SKILL_PROPOSE_DESCRIPTOR: ToolDescriptor = {
       path: {
         type: 'string',
         description:
-          'Absolute path to the draft directory under /ephemeral/skill-draft/, e.g. /ephemeral/skill-draft/linear.',
+          'Absolute path to the draft directory .skill-draft/<id> under the draft root given in your operating notes, e.g. <root>/.skill-draft/linear.',
       },
     },
     required: ['path'],

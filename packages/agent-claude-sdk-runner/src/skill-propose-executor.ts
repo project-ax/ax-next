@@ -1,20 +1,34 @@
 // ---------------------------------------------------------------------------
 // Sandbox-side executor for the `skill_propose` tool (TASK-74, out-of-git
-// Part D / §D1). The model writes a skill bundle into /ephemeral/skill-draft/<id>/
-// then calls this tool with that directory path. The sandbox-MCP bridge
-// dispatches here via the runner's local-dispatcher (mirror of artifact_publish).
+// Part D / §D1; filestore-user-files Phase 3 / TASK-165). The model writes a
+// skill bundle into the draft dir `<root>/.skill-draft/<id>/` — where `<root>` is
+// the DURABLE per-agent user-files mount (`AX_USERFILES_ROOT`, e.g. `/workspace`)
+// when one is wired, else the ephemeral scratch tier (graceful fallback) — then
+// calls this tool with that directory path. The sandbox-MCP bridge dispatches
+// here via the runner's local-dispatcher (mirror of artifact_publish).
 //
 // We:
-//   1. validate the draft path (checkDraftPath — /ephemeral/skill-draft/<id>/);
-//   2. read SKILL.md + the extra files from the draft dir;
+//   1. validate the draft path (checkDraftPath, against the ACTIVE draft root —
+//      durable when wired, else ephemeral: `<root>/.skill-draft/<id>/`);
+//   2. read SKILL.md + the extra files from the draft dir — SKILL.md is
+//      lstat-hardened (a SKILL.md-as-symlink is rejected, HR2/§7.2) and the
+//      extra-file walk already rejects symlinks; this matters because the draft
+//      now lives on a DURABLE SHARED NFS mount where a symlink could otherwise
+//      point a read at an arbitrary host file;
 //   3. split SKILL.md into frontmatter (manifestYaml) + body (bodyMd);
 //   4. structurally validate the extra files (path/size — re-implemented at this
-//      trust boundary per I2, the validateMcpEntry pattern);
+//      trust boundary per I2, the validateMcpEntry pattern; the count/byte caps
+//      double as the per-draft size guard on durable storage, HR3/§7.3);
 //   5. post the bundle via the skill.propose IPC action — the HOST is the
 //      authority on the manifest parse + the hybrid gate, so we ship the raw
 //      manifestYaml/bodyMd/files and an EMPTY capability proposal (the host
 //      re-parses the frontmatter as the proposal source of truth and ignores
-//      the wire hint).
+//      the wire hint);
+//   6. on a successful verdict (active/pending), DELETE the draft dir (cleanup-
+//      on-promote, HR3/§7.3) — best-effort, so a failed delete never fails the
+//      propose. On `quarantined` (or a throw) the draft is KEPT so the agent can
+//      fix it and re-propose without re-authoring. A TTL sweeper for abandoned
+//      drafts is a deferred follow-up.
 //
 // Returns the gate verdict ({ skillId, status, reason? }) to the model. The
 // model words its turn from the status (active → "ready next turn"; pending →
@@ -73,8 +87,15 @@ function validateExtraFile(relPath: string, contents: string): string | null {
 }
 
 export interface CreateSkillProposeExecutorOptions {
-  /** Absolute filesystem path the model's `/ephemeral/...` maps onto. When
-   * undefined, skill_propose is rejected (no ephemeral tier wired). */
+  /** Durable per-agent user-files root (`AX_USERFILES_ROOT`, e.g. `/workspace`).
+   * When set it is the PREFERRED draft root (drafts persist across sessions); the
+   * executor reads `<userFilesRoot>/.skill-draft/<id>/`. Absent ⇒ no durable
+   * mount; fall back to `ephemeralRoot`. (filestore-user-files Phase 3 / §7.) */
+  userFilesRoot?: string;
+  /** Ephemeral scratch root the model's draft can also map onto when no durable
+   * mount is wired (`<ephemeralRoot>/.skill-draft/<id>/`). The FALLBACK draft root.
+   * When BOTH userFilesRoot and ephemeralRoot are undefined, skill_propose is
+   * rejected (no draft tier wired). */
   ephemeralRoot?: string;
   /** IPC client to the host. The executor posts skill.propose. When undefined
    * (validation-only tests) the executor returns a synthetic verdict. */
@@ -101,20 +122,39 @@ export function createSkillProposeExecutor(opts: CreateSkillProposeExecutorOptio
       throw new Error('skill_propose: input.path is required (string)');
     }
 
-    const check = checkDraftPath(input.path);
+    // The active draft root: the durable per-agent mount when wired (drafts
+    // persist across sessions), else the ephemeral scratch tier (fallback). When
+    // neither is wired there is no place to read a draft from — reject.
+    const draftRoot = opts.userFilesRoot ?? opts.ephemeralRoot;
+    if (draftRoot === undefined) {
+      throw new Error(
+        'skill_propose: no durable user-files or ephemeral tier is available in this deployment',
+      );
+    }
+
+    // Validate against the SAME root the executor will read from — a path rooted
+    // at a different tier is rejected (the executor never reads off-root).
+    const check = checkDraftPath(input.path, draftRoot);
     if (!check.ok) {
       throw new Error(check.reason);
     }
 
-    if (opts.ephemeralRoot === undefined) {
-      throw new Error('skill_propose: the ephemeral tier is not available in this deployment');
-    }
-    const dirAbs = path.join(opts.ephemeralRoot, check.relativeDir);
+    const dirAbs = path.join(draftRoot, check.relativeDir);
+    const skillMdPath = path.join(dirAbs, 'SKILL.md');
 
-    // Read SKILL.md (required).
-    let skillMdText: string;
+    // HR2 (§7.2): lstat-harden SKILL.md before reading it. On a durable shared NFS
+    // mount the agent could plant `SKILL.md` as a symlink pointing at an arbitrary
+    // host file; a plain readFile would then ship THAT file's bytes to the host
+    // gate as the proposed manifest. Reject a symlinked SKILL.md just like the
+    // extra-file walk rejects symlinks. (lstat does NOT follow the link.)
     try {
-      skillMdText = await fs.readFile(path.join(dirAbs, 'SKILL.md'), 'utf-8');
+      const st = await fs.lstat(skillMdPath);
+      if (st.isSymbolicLink()) {
+        throw new Error('skill_propose: refusing a symlinked SKILL.md in the draft directory');
+      }
+      if (!st.isFile()) {
+        throw new Error('skill_propose: SKILL.md must be a regular file');
+      }
     } catch (err) {
       const e = err as NodeJS.ErrnoException;
       if (e.code === 'ENOENT') {
@@ -124,6 +164,10 @@ export function createSkillProposeExecutor(opts: CreateSkillProposeExecutorOptio
       }
       throw err;
     }
+
+    // Read SKILL.md (required). The lstat above guarantees it is a regular file,
+    // so this read can't be redirected through a symlink.
+    const skillMdText = await fs.readFile(skillMdPath, 'utf-8');
 
     const split = splitSkillMd(skillMdText);
     if (split === null) {
@@ -149,6 +193,20 @@ export function createSkillProposeExecutor(opts: CreateSkillProposeExecutorOptio
       capabilityProposal: EMPTY_CAPS,
       origin: 'authored',
     })) as SkillProposeOutput;
+
+    // HR3 (§7.3): cleanup-on-successful-promote. The bundle is now in the host's
+    // authored store (active) or queued for approval (pending), so the draft dir
+    // has served its purpose — delete it so finished/abandoned drafts don't
+    // accumulate on the durable mount (which has no auto-GC, unlike the old
+    // per-pod emptyDir). KEEP it on `quarantined` so the agent can fix + re-propose
+    // without re-authoring. Best-effort: the verdict already shipped, so a failed
+    // delete must NOT turn a successful propose into an error. (A TTL sweeper for
+    // drafts abandoned before any verdict is a deferred follow-up.)
+    if (verdict.status === 'active' || verdict.status === 'pending') {
+      await fs.rm(dirAbs, { recursive: true, force: true }).catch(() => {
+        // swallow — durable cleanup is best-effort; the propose already succeeded.
+      });
+    }
     return verdict;
   };
 }
