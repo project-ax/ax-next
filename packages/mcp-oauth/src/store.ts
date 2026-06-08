@@ -11,6 +11,14 @@ export interface McpOAuthStore {
    */
   putPending(p: PendingAuthorization, createdAtOverride?: number): Promise<void>;
   /**
+   * Read-only peek — returns the row IFF present, WITHOUT deleting it and
+   * WITHOUT a TTL filter. Used by the callback to check the CSRF user-binding
+   * BEFORE consuming, so a third party who learns a victim's in-flight `state`
+   * can't burn it (DoS-cancel the victim's flow) merely by hitting the callback.
+   * The atomic single-use + TTL gate remains `consumePending`.
+   */
+  getPending(state: string): Promise<PendingAuthorization | null>;
+  /**
    * Atomically delete + return the row IFF present and `now - createdAt <= ttlMs`.
    * Single-use: a second call for the same state returns null.
    */
@@ -19,6 +27,38 @@ export interface McpOAuthStore {
     now: number,
     ttlMs: number,
   ): Promise<PendingAuthorization | null>;
+}
+
+/** Map a DB row to the domain {@link PendingAuthorization}. Shared by
+ *  `getPending` and `consumePending` so the two never drift. */
+function rowToPending(r: {
+  state: string;
+  user_id: string;
+  agent_id: string;
+  connector_id: string;
+  slot: string;
+  code_verifier: string;
+  auth_server_url: string;
+  client_key: string;
+  resource: string;
+  scope: string | null;
+  created_at: Date | string | number;
+}): PendingAuthorization {
+  const createdAt =
+    r.created_at instanceof Date ? r.created_at.getTime() : Number(r.created_at);
+  return {
+    state: r.state,
+    userId: r.user_id,
+    agentId: r.agent_id,
+    connectorId: r.connector_id,
+    slot: r.slot,
+    codeVerifier: r.code_verifier,
+    authServerUrl: r.auth_server_url,
+    clientKey: r.client_key,
+    resource: r.resource,
+    scope: r.scope ?? undefined,
+    createdAt,
+  };
 }
 
 export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore {
@@ -78,6 +118,16 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
         .execute();
     },
 
+    async getPending(state) {
+      const r = await db
+        .selectFrom('mcp_oauth_v1_pending')
+        .selectAll()
+        .where('state', '=', state)
+        .executeTakeFirst();
+      if (!r) return null;
+      return rowToPending(r);
+    },
+
     async consumePending(state, now, ttlMs) {
       const r = await db
         .deleteFrom('mcp_oauth_v1_pending')
@@ -85,22 +135,9 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
         .returningAll()
         .executeTakeFirst();
       if (!r) return null;
-      const createdAt =
-        r.created_at instanceof Date ? r.created_at.getTime() : Number(r.created_at);
-      if (now - createdAt > ttlMs) return null;
-      return {
-        state: r.state,
-        userId: r.user_id,
-        agentId: r.agent_id,
-        connectorId: r.connector_id,
-        slot: r.slot,
-        codeVerifier: r.code_verifier,
-        authServerUrl: r.auth_server_url,
-        clientKey: r.client_key,
-        resource: r.resource,
-        scope: r.scope ?? undefined,
-        createdAt,
-      };
+      const pending = rowToPending(r);
+      if (now - pending.createdAt > ttlMs) return null;
+      return pending;
     },
   };
 }

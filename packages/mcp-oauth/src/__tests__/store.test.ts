@@ -183,4 +183,39 @@ describe('createMcpOAuthStore', () => {
 
     expect(await store.consumePending('no-such-state', Date.now(), 60_000)).toBeNull();
   });
+
+  it('getPending returns the row WITHOUT consuming it — a later consumePending still returns it', async () => {
+    const db = makeKysely();
+    await runMcpOAuthMigration(db);
+    const store = createMcpOAuthStore(db);
+
+    const pending = makePending({ state: 'state-peek' });
+    await store.putPending(pending);
+
+    // Peek twice — both succeed, row is NOT deleted.
+    const first = await store.getPending(pending.state);
+    expect(first).not.toBeNull();
+    expect(first!.state).toBe(pending.state);
+    expect(first!.userId).toBe(pending.userId);
+    expect(first!.codeVerifier).toBe(pending.codeVerifier);
+    const second = await store.getPending(pending.state);
+    expect(second).not.toBeNull();
+
+    // The atomic single-use consume still finds and burns it.
+    const consumed = await store.consumePending(pending.state, Date.now(), 60_000);
+    expect(consumed).not.toBeNull();
+    expect(consumed!.state).toBe(pending.state);
+
+    // Now both peek and consume return null (row gone).
+    expect(await store.getPending(pending.state)).toBeNull();
+    expect(await store.consumePending(pending.state, Date.now(), 60_000)).toBeNull();
+  });
+
+  it('getPending returns null for unknown state', async () => {
+    const db = makeKysely();
+    await runMcpOAuthMigration(db);
+    const store = createMcpOAuthStore(db);
+
+    expect(await store.getPending('no-such-state')).toBeNull();
+  });
 });
