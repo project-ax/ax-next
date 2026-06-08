@@ -71,10 +71,25 @@ export interface DefaultRoutinesRow {
   updated_at: ColumnType<Date, Date | undefined, Date>;
 }
 
+// Per-agent override of a default routine. ABSENCE of a row means the
+// default is ENABLED for that agent (the default-ON invariant — zero
+// heartbeat compat risk). A row with enabled=false is an explicit disable;
+// enabled=true rows are never written (re-enabling DELETEs the row), but the
+// column exists so the table can carry a future "explicit enable" semantic
+// without a migration.
+export interface AgentDefaultRoutineOverridesRow {
+  agent_id: string;
+  default_routine_id: string;
+  owner_user_id: string;
+  enabled: boolean;
+  updated_at: ColumnType<Date, Date | undefined, Date>;
+}
+
 export interface RoutinesDatabase {
   routines_v1_definitions: RoutinesDefinitionsRow;
   routines_v1_fires: RoutinesFiresRow;
   default_routines_v1: DefaultRoutinesRow;
+  agent_default_routine_overrides_v1: AgentDefaultRoutineOverridesRow;
 }
 
 export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promise<void> {
@@ -184,6 +199,23 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
     CREATE INDEX IF NOT EXISTS routines_v1_definitions_default_idx
       ON routines_v1_definitions (definition_id, last_run_at)
      WHERE definition_id IS NOT NULL
+  `.execute(db);
+
+  // Per-agent override of a default routine (TASK-177). Additive + default-ON:
+  // absence of a row = enabled. Only explicit disables are stored. FK
+  // ON DELETE CASCADE so deleting a default cleans up its overrides
+  // (mirrors the routines_v1_definitions.definition_id cascade). owner_user_id
+  // records who owned the agent at toggle time (audit / re-materialize source).
+  await sql`
+    CREATE TABLE IF NOT EXISTS agent_default_routine_overrides_v1 (
+      agent_id            TEXT        NOT NULL,
+      default_routine_id  TEXT        NOT NULL
+        REFERENCES default_routines_v1 (default_routine_id) ON DELETE CASCADE,
+      owner_user_id       TEXT        NOT NULL,
+      enabled             BOOLEAN     NOT NULL,
+      updated_at          TIMESTAMPTZ NOT NULL DEFAULT now(),
+      PRIMARY KEY (agent_id, default_routine_id)
+    )
   `.execute(db);
 
   await sql`

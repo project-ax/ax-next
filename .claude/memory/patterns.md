@@ -399,3 +399,41 @@ The per-agent durable `/workspace` mount is wired through a preset-swapped resol
 - **Canary** (`sandbox-subprocess/.../userfiles-canary.acceptance.test.ts`): real plugin chain (session-inmemory + ipc-server + workspace-localdir + sandbox-subprocess), a file written under `AX_USERFILES_ROOT` by session 1 of agent `a` persists into session 2; agent `b` gets an isolated subtree.
 
 Gotcha: `realizeOne`-style narrowing across a helper loses the `kind` narrow for the loop body — do the `switch (mount.kind)` directly in the loop so `mount.hostPath`/`mount.subPath` narrow.
+
+## @ax/routines — per-agent default-routine override (TASK-177, epic skill-crystallization PR-B)
+
+Generic per-agent on/off for any **default routine** (the rows in `default_routines_v1`
+that materialize one per-agent copy into `routines_v1_definitions`). Default-ENABLED:
+**absence of an override row = enabled**, so zero compat risk to the heartbeat default.
+
+- **Table** `agent_default_routine_overrides_v1` (PK `(agent_id, default_routine_id)`;
+  cols `owner_user_id, enabled, updated_at`; FK `default_routine_id → default_routines_v1
+  ON DELETE CASCADE`). Stores **only explicit disables** (`enabled=false`); re-enabling
+  DELETEs the row rather than writing `enabled=true`.
+- **Store methods**: `setAgentDefaultEnabled` (enabled=true ⇒ DELETE override; false ⇒
+  upsert disable), `isAgentDefaultEnabled` (absent ⇒ true), `disabledDefaultIdsForAgent`,
+  `removeMaterializedDefault` (DELETEs the per-agent `routines_v1_definitions` row by
+  `definition_id` — the materialized row has NO enabled flag, so DELETE is the only
+  option; fire history in `routines_v1_fires` survives, no FK to definitions).
+- **`materializeMissing` gate**: added an `AND NOT EXISTS (… overrides … enabled=false)`
+  to the cross-join so a disabled `(agent,default)` pair is skipped — per-agent isolated
+  (other agents still materialize). Default-ON because absence = no row = not skipped.
+- **Hooks** (both owner-scoped via `agents:resolve {agentId, userId: ctx.userId}` — the
+  J1 ACL gate throws `forbidden`/`not-found` for non-owners; also yields `agent.ownerId`
+  to stamp re-materialized rows):
+  - `routines:set-agent-default-enabled` payload `{agentId, defaultRoutineId, enabled}` →
+    `{}`. Disable ⇒ write override + `removeMaterializedDefault`. Enable ⇒ delete override
+    + `materializeMissing([{agentId, ownerUserId: agent.ownerId}])`. Validates the default
+    exists (clean not-found vs opaque FK violation). Idempotent.
+  - `routines:list-agent-defaults` payload `{agentId}` → `{defaults:{defaultRoutineId,
+    name,enabled}[]}` — one per known default reflecting this agent's state. Owner-scoped
+    too (per-agent config is tenant-private — don't leak it to non-owners).
+- De/re-materialize lives in the **hook**, not the store method, because re-materialize
+  needs an owner identity that only the resolved agent supplies.
+- **FK teardown gotcha** (cost a red full-suite run): a new table FK-referencing
+  `default_routines_v1` breaks any test `afterEach` that does a NON-cascade
+  `TRUNCATE …, default_routines_v1` (Postgres refuses to truncate an FK-referenced table
+  unless the referencer is in the same TRUNCATE). Fix: add the override table to the
+  truncate list (plugin.test.ts) — tests already using `TRUNCATE default_routines_v1
+  CASCADE` (store/tick/canary) auto-cascade and need no change; `DROP … CASCADE` (migrations)
+  is fine too.

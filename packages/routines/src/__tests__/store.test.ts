@@ -450,6 +450,139 @@ describe('RoutinesStore default-routine CRUD', () => {
     expect(claimedAfterRefresh.some((r) => r.definitionId === defaultRoutineId)).toBe(true);
   });
 
+  it('setAgentDefaultEnabled: absent override reads as enabled', async () => {
+    const store = createRoutinesStore(db);
+    const enabled = await store.isAgentDefaultEnabled({
+      agentId: 'agent-x', defaultRoutineId: 'default-heartbeat-2026-05-19',
+    });
+    expect(enabled).toBe(true);
+    expect(await store.disabledDefaultIdsForAgent('agent-x')).toEqual([]);
+  });
+
+  it('setAgentDefaultEnabled: disable persists + de-materializes; re-enable re-materializes', async () => {
+    const store = createRoutinesStore(db);
+    const heartbeatId = 'default-heartbeat-2026-05-19';
+
+    // Materialize the heartbeat default for the agent.
+    await store.materializeMissing({
+      agents: [{ agentId: 'agent-x', ownerUserId: 'u_owner_x' }], now: new Date(),
+    });
+    const materializedBefore = await db.selectFrom('routines_v1_definitions')
+      .selectAll().where('agent_id', '=', 'agent-x')
+      .where('definition_id', '=', heartbeatId).execute();
+    expect(materializedBefore).toHaveLength(1);
+
+    // Disable + de-materialize.
+    await store.setAgentDefaultEnabled({
+      agentId: 'agent-x', defaultRoutineId: heartbeatId,
+      ownerUserId: 'u_owner_x', enabled: false,
+    });
+    await store.removeMaterializedDefault({ agentId: 'agent-x', defaultRoutineId: heartbeatId });
+
+    expect(await store.isAgentDefaultEnabled({ agentId: 'agent-x', defaultRoutineId: heartbeatId })).toBe(false);
+    expect(await store.disabledDefaultIdsForAgent('agent-x')).toEqual([heartbeatId]);
+    const afterDisable = await db.selectFrom('routines_v1_definitions')
+      .selectAll().where('agent_id', '=', 'agent-x')
+      .where('definition_id', '=', heartbeatId).execute();
+    expect(afterDisable).toHaveLength(0);
+
+    // While disabled, materializeMissing must NOT re-create the row.
+    await store.materializeMissing({
+      agents: [{ agentId: 'agent-x', ownerUserId: 'u_owner_x' }], now: new Date(),
+    });
+    const stillGone = await db.selectFrom('routines_v1_definitions')
+      .selectAll().where('agent_id', '=', 'agent-x')
+      .where('definition_id', '=', heartbeatId).execute();
+    expect(stillGone).toHaveLength(0);
+
+    // Re-enable: drops the override row, materializeMissing re-creates it.
+    await store.setAgentDefaultEnabled({
+      agentId: 'agent-x', defaultRoutineId: heartbeatId,
+      ownerUserId: 'u_owner_x', enabled: true,
+    });
+    expect(await store.isAgentDefaultEnabled({ agentId: 'agent-x', defaultRoutineId: heartbeatId })).toBe(true);
+    expect(await store.disabledDefaultIdsForAgent('agent-x')).toEqual([]);
+    await store.materializeMissing({
+      agents: [{ agentId: 'agent-x', ownerUserId: 'u_owner_x' }], now: new Date(),
+    });
+    const afterReEnable = await db.selectFrom('routines_v1_definitions')
+      .selectAll().where('agent_id', '=', 'agent-x')
+      .where('definition_id', '=', heartbeatId).execute();
+    expect(afterReEnable).toHaveLength(1);
+    expect(afterReEnable[0]?.path).toBe(`default:${heartbeatId}`);
+  });
+
+  it('materializeMissing skips a disabled default for one agent only (per-agent isolation)', async () => {
+    const store = createRoutinesStore(db);
+    const heartbeatId = 'default-heartbeat-2026-05-19';
+
+    // agent-x disables; agent-y leaves it on.
+    await store.setAgentDefaultEnabled({
+      agentId: 'agent-x', defaultRoutineId: heartbeatId,
+      ownerUserId: 'u_owner_x', enabled: false,
+    });
+
+    await store.materializeMissing({
+      agents: [
+        { agentId: 'agent-x', ownerUserId: 'u_owner_x' },
+        { agentId: 'agent-y', ownerUserId: 'u_owner_y' },
+      ],
+      now: new Date(),
+    });
+
+    const xRows = await db.selectFrom('routines_v1_definitions')
+      .selectAll().where('agent_id', '=', 'agent-x')
+      .where('definition_id', '=', heartbeatId).execute();
+    const yRows = await db.selectFrom('routines_v1_definitions')
+      .selectAll().where('agent_id', '=', 'agent-y')
+      .where('definition_id', '=', heartbeatId).execute();
+    expect(xRows).toHaveLength(0); // disabled — skipped
+    expect(yRows).toHaveLength(1); // enabled — materialized
+  });
+
+  it('removeMaterializedDefault preserves fire history (no FK from fires)', async () => {
+    const store = createRoutinesStore(db);
+    const heartbeatId = 'default-heartbeat-2026-05-19';
+
+    await store.materializeMissing({
+      agents: [{ agentId: 'agent-x', ownerUserId: 'u_owner_x' }], now: new Date(),
+    });
+    const path = `default:${heartbeatId}`;
+    await store.recordFire({
+      agentId: 'agent-x', path, triggerSource: 'tick',
+      conversationId: 'cnv_1', status: 'ok', error: null, renderedPrompt: 'hi',
+    });
+
+    await store.removeMaterializedDefault({ agentId: 'agent-x', defaultRoutineId: heartbeatId });
+
+    // Definition row gone…
+    const defs = await db.selectFrom('routines_v1_definitions')
+      .selectAll().where('agent_id', '=', 'agent-x')
+      .where('definition_id', '=', heartbeatId).execute();
+    expect(defs).toHaveLength(0);
+    // …but the fire history survives.
+    const fires = await store.recentFires({ agentId: 'agent-x', path });
+    expect(fires).toHaveLength(1);
+    expect(fires[0]?.renderedPrompt).toBe('hi');
+  });
+
+  it('setAgentDefaultEnabled override is removed when its default is deleted (FK cascade)', async () => {
+    const store = createRoutinesStore(db);
+    const { defaultRoutineId } = await store.upsertDefault({
+      name: 'doomed', description: 'd', specHash: 'h',
+      trigger: { kind: 'interval', every: '1h' }, intervalSeconds: 3600,
+      activeHours: null, silenceToken: null, silenceMax: 300,
+      conversation: 'shared', promptBody: 'p', sourceMd: 's',
+    });
+    await store.setAgentDefaultEnabled({
+      agentId: 'agent-x', defaultRoutineId, ownerUserId: 'u_owner_x', enabled: false,
+    });
+    expect(await store.disabledDefaultIdsForAgent('agent-x')).toEqual([defaultRoutineId]);
+
+    await store.deleteDefault(defaultRoutineId);
+    expect(await store.disabledDefaultIdsForAgent('agent-x')).toEqual([]);
+  });
+
   it('deleteDefault cascades to per-agent rows', async () => {
     const store = createRoutinesStore(db);
 

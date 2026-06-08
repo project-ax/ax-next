@@ -7,6 +7,8 @@ import {
   RoutinesGetDefaultOutputSchema,
   RoutinesListDefaultsOutputSchema,
   RoutinesUpsertDefaultOutputSchema,
+  RoutinesSetAgentDefaultEnabledOutputSchema,
+  RoutinesListAgentDefaultsOutputSchema,
   type DefaultRoutineDetail,
   type DefaultRoutineSummary,
   type FireNowOutput,
@@ -17,6 +19,8 @@ import {
   type RoutinesDeleteDefaultOutput,
   type RoutinesListDefaultsOutput,
   type RoutinesUpsertDefaultOutput,
+  type RoutinesSetAgentDefaultEnabledOutput,
+  type RoutinesListAgentDefaultsOutput,
 } from '../types.js';
 
 // ARCH-13 drift guard for the `routines:*` returns schemas. A fully-populated
@@ -119,6 +123,22 @@ describe('routines return schemas', () => {
     const full: RoutinesDeleteDefaultOutput = {};
     expect(RoutinesDeleteDefaultOutputSchema.parse(full)).toEqual(full);
     expect(RoutinesDeleteDefaultOutputSchema.safeParse({ extra: 1 }).success).toBe(false);
+  });
+
+  it('routines:set-agent-default-enabled round-trips the empty output (strict)', () => {
+    const full: RoutinesSetAgentDefaultEnabledOutput = {};
+    expect(RoutinesSetAgentDefaultEnabledOutputSchema.parse(full)).toEqual(full);
+    expect(RoutinesSetAgentDefaultEnabledOutputSchema.safeParse({ extra: 1 }).success).toBe(false);
+  });
+
+  it('routines:list-agent-defaults round-trips per-agent state', () => {
+    const full: RoutinesListAgentDefaultsOutput = {
+      defaults: [
+        { defaultRoutineId: 'dr1', name: 'heartbeat', enabled: true },
+        { defaultRoutineId: 'dr2', name: 'reflection', enabled: false },
+      ],
+    };
+    expect(RoutinesListAgentDefaultsOutputSchema.parse(full)).toEqual(full);
   });
 
   it('rejects a string firedAt (handler returns a Date)', () => {

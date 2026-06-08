@@ -62,12 +62,17 @@ afterEach(async () => {
     // Tests that don't boot a harness (e.g. pure manifest assertions)
     // leave the tables un-created. Guard with to_regclass so the truncate
     // is a no-op in that case instead of throwing "relation does not exist".
+    // agent_default_routine_overrides_v1 FK-references default_routines_v1,
+    // so it must be truncated in the same TRUNCATE statement (Postgres
+    // refuses to truncate a table referenced by an FK unless the referencing
+    // table is truncated together).
     await cleanup.query(`
       DO $$ BEGIN
         IF to_regclass('public.routines_v1_definitions') IS NOT NULL
            AND to_regclass('public.routines_v1_fires') IS NOT NULL
-           AND to_regclass('public.default_routines_v1') IS NOT NULL THEN
-          TRUNCATE routines_v1_definitions, routines_v1_fires, default_routines_v1;
+           AND to_regclass('public.default_routines_v1') IS NOT NULL
+           AND to_regclass('public.agent_default_routine_overrides_v1') IS NOT NULL THEN
+          TRUNCATE routines_v1_definitions, routines_v1_fires, default_routines_v1, agent_default_routine_overrides_v1;
         END IF;
       END $$;
     `);
@@ -132,6 +137,17 @@ describe('routines plugin manifest', () => {
     expect(p.manifest.registers).toContain('routines:get-default');
     expect(p.manifest.registers).toContain('routines:upsert-default');
     expect(p.manifest.registers).toContain('routines:delete-default');
+  });
+
+  it('manifest.registers includes the per-agent default-override hooks (TASK-177)', () => {
+    const p = createRoutinesPlugin();
+    expect(p.manifest.registers).toContain('routines:set-agent-default-enabled');
+    expect(p.manifest.registers).toContain('routines:list-agent-defaults');
+  });
+
+  it('manifest.calls includes agents:resolve (owner ACL for the override hooks)', () => {
+    const p = createRoutinesPlugin();
+    expect(p.manifest.calls).toContain('agents:resolve');
   });
 });
 

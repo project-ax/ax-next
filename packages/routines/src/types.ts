@@ -114,6 +114,26 @@ export interface RoutinesDeleteDefaultInput {
 }
 export type RoutinesDeleteDefaultOutput = Record<string, never>;
 
+// --- TASK-177: per-agent default-routine override -------------------------
+export interface RoutinesSetAgentDefaultEnabledInput {
+  agentId: string;
+  defaultRoutineId: string;
+  enabled: boolean;
+}
+export type RoutinesSetAgentDefaultEnabledOutput = Record<string, never>;
+
+export interface AgentDefaultRoutineState {
+  defaultRoutineId: string;
+  name: string;
+  enabled: boolean;
+}
+export interface RoutinesListAgentDefaultsInput {
+  agentId: string;
+}
+export interface RoutinesListAgentDefaultsOutput {
+  defaults: AgentDefaultRoutineState[];
+}
+
 // ---------------------------------------------------------------------------
 // Runtime `returns` contracts for the `routines:*` service hooks (ARCH-13).
 //
@@ -244,3 +264,17 @@ export const RoutinesUpsertDefaultOutputSchema = z.object({
 export const RoutinesDeleteDefaultOutputSchema = z
   .object({})
   .strict() as unknown as ZodType<RoutinesDeleteDefaultOutput>;
+
+export const RoutinesSetAgentDefaultEnabledOutputSchema = z
+  .object({})
+  .strict() as unknown as ZodType<RoutinesSetAgentDefaultEnabledOutput>;
+
+const AgentDefaultRoutineStateSchema = z.object({
+  defaultRoutineId: z.string(),
+  name: z.string(),
+  enabled: z.boolean(),
+});
+
+export const RoutinesListAgentDefaultsOutputSchema = z.object({
+  defaults: z.array(AgentDefaultRoutineStateSchema),
+}) as unknown as ZodType<RoutinesListAgentDefaultsOutput>;

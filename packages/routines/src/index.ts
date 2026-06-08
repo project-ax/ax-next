@@ -21,4 +21,9 @@ export type {
   RoutinesUpsertDefaultOutput,
   RoutinesDeleteDefaultInput,
   RoutinesDeleteDefaultOutput,
+  RoutinesSetAgentDefaultEnabledInput,
+  RoutinesSetAgentDefaultEnabledOutput,
+  AgentDefaultRoutineState,
+  RoutinesListAgentDefaultsInput,
+  RoutinesListAgentDefaultsOutput,
 } from './types.js';
