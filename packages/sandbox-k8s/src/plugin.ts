@@ -8,6 +8,7 @@ import {
   makePidGenerator,
   type OpenSessionResult,
 } from './open-session.js';
+import { startOrphanSweeper, type OrphanSweeperHandle } from './sweep.js';
 
 const PLUGIN_NAME = '@ax/sandbox-k8s';
 
@@ -32,6 +33,10 @@ export function createSandboxK8sPlugin(
 ): Plugin {
   const { api: apiOverride, ...rawConfig } = opts;
   const config = resolveConfig(rawConfig);
+
+  // TASK-170: held across init → shutdown so the periodic orphan-sweep timer is
+  // cleared cleanly on kernel shutdown (the kernel calls shutdown() on SIGTERM).
+  let sweeper: OrphanSweeperHandle | undefined;
 
   return {
     manifest: {
@@ -88,6 +93,32 @@ export function createSandboxK8sPlugin(
         impl,
         { timeoutMs: 300_000, returns: OPEN_SESSION_RETURNS },
       );
+
+      // TASK-170: start the orphan-sweep. It reclaims terminated runner pods a
+      // transient-failed delete left behind (runner pods have no
+      // ownerReference, so nothing else GCs them). Disabled when the interval
+      // is <= 0 (tests, or a deployment that reaps another way). Uses the
+      // EXISTING pods list/delete grant; the list is label-scoped to runner
+      // pods so it can never touch the host pod.
+      if (config.orphanSweepIntervalMs > 0) {
+        sweeper = startOrphanSweeper({
+          api,
+          namespace: config.namespace,
+          intervalMs: config.orphanSweepIntervalMs,
+          terminalAgeMs: config.orphanSweepTerminalAgeMs,
+        });
+      }
+    },
+
+    async shutdown() {
+      // Stop the periodic sweep so the kernel/test harness can drain. The
+      // bus's service registration needs no explicit unregister — the bus is
+      // single-use per process. Idempotent: handle.stop() no-ops on a second
+      // call, and we drop the reference so a re-init starts fresh.
+      if (sweeper !== undefined) {
+        await sweeper.stop();
+        sweeper = undefined;
+      }
     },
   };
 }

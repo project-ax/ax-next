@@ -125,6 +125,21 @@ export interface SandboxK8sConfig {
    * both. Empty = unset.
    */
   proxyEndpoint?: string;
+  /**
+   * TASK-170 — how often (ms) the orphan-sweep runs. The sweep reclaims
+   * terminated runner pods (Succeeded/Failed) that a transient-failed delete
+   * left behind — runner pods have no ownerReference, so nothing else GCs them.
+   * Default 300_000 (5 min). Set <= 0 to DISABLE the sweeper entirely (tests, or
+   * a deployment that reaps pods some other way).
+   */
+  orphanSweepIntervalMs?: number;
+  /**
+   * TASK-170 — minimum age (ms) a terminal runner pod must reach before the
+   * orphan-sweep deletes it. Generously past a normal teardown (5 s grace +
+   * a couple of killPod retries) so we never race the legitimate
+   * cleanup-on-exit path. Default 600_000 (10 min).
+   */
+  orphanSweepTerminalAgeMs?: number;
 }
 
 export interface ResolvedSandboxK8sConfig {
@@ -149,6 +164,10 @@ export interface ResolvedSandboxK8sConfig {
   proxySocketHostPath: string;
   /** See SandboxK8sConfig.proxyEndpoint. Empty = unset. */
   proxyEndpoint: string;
+  /** See SandboxK8sConfig.orphanSweepIntervalMs. <= 0 disables the sweeper. */
+  orphanSweepIntervalMs: number;
+  /** See SandboxK8sConfig.orphanSweepTerminalAgeMs. */
+  orphanSweepTerminalAgeMs: number;
 }
 
 export function resolveConfig(
@@ -197,6 +216,8 @@ export function resolveConfig(
     perServiceColdStartMs: raw.perServiceColdStartMs ?? 120_000,
     proxySocketHostPath: raw.proxySocketHostPath ?? '',
     proxyEndpoint: raw.proxyEndpoint ?? '',
+    orphanSweepIntervalMs: raw.orphanSweepIntervalMs ?? 300_000,
+    orphanSweepTerminalAgeMs: raw.orphanSweepTerminalAgeMs ?? 600_000,
   };
   if (raw.imagePullSecrets !== undefined) {
     resolved.imagePullSecrets = raw.imagePullSecrets;
