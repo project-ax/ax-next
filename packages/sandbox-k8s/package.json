@@ -19,6 +19,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
+    "@ax/sandbox-mount-protocol": "workspace:*",
     "@ax/sandbox-protocol": "workspace:*",
     "@kubernetes/client-node": "1.4.0",
     "zod": "^3.23.8"

@@ -1048,3 +1048,76 @@ describeIfHelm('ax-next chart: auth.secret value (TASK-169)', () => {
     );
   });
 });
+
+// filestore-user-files (design §4/§9) — Filestore config env stamping + the
+// scoped NetworkPolicy egress widening.
+describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
+  const FILESTORE = [
+    '--set', 'sandbox.filestore.server=10.9.8.7',
+    '--set', 'sandbox.filestore.exportPath=/vol1',
+    '--set', 'sandbox.filestore.mountPath=/workspace',
+  ];
+
+  function hostEnv(docs: K8sDoc[]): Record<string, unknown> {
+    const dep = docs.find(
+      (d) => d.kind === 'Deployment' && /-host$/.test(String(d.metadata?.name ?? '')),
+    );
+    const containers =
+      ((dep?.spec as { template?: { spec?: { containers?: Array<{ env?: Array<{ name: string; value?: string }> }> } } })
+        ?.template?.spec?.containers) ?? [];
+    const env = containers[0]?.env ?? [];
+    return Object.fromEntries(env.map((e) => [e.name, e.value]));
+  }
+
+  function sandboxRestrict(docs: K8sDoc[]) {
+    return docs.find(
+      (d) =>
+        d.kind === 'NetworkPolicy' &&
+        String(d.metadata?.name ?? '').endsWith('-sandbox-restrict'),
+    );
+  }
+
+  it('stamps AX_FILESTORE_* on the host deployment when a Filestore server is set', () => {
+    const env = hostEnv(helmTemplate(FILESTORE));
+    expect(env.AX_FILESTORE_SERVER).toBe('10.9.8.7');
+    expect(env.AX_FILESTORE_EXPORT_PATH).toBe('/vol1');
+    expect(env.AX_FILESTORE_MOUNT_PATH).toBe('/workspace');
+  });
+
+  it('omits AX_FILESTORE_* when no Filestore server is configured (default)', () => {
+    const env = hostEnv(helmTemplate([]));
+    expect(env.AX_FILESTORE_SERVER).toBeUndefined();
+    expect(env.AX_FILESTORE_EXPORT_PATH).toBeUndefined();
+  });
+
+  it('opens runner egress to ONLY the Filestore IP on :2049 + :111 (TCP+UDP)', () => {
+    const np = sandboxRestrict(helmTemplate(FILESTORE));
+    expect(np, 'sandbox-restrict NetworkPolicy renders').toBeDefined();
+    const egress = (np?.spec?.egress as Array<{
+      to?: Array<{ ipBlock?: { cidr?: string } }>;
+      ports?: Array<{ port?: number; protocol?: string }>;
+    }>) ?? [];
+
+    const fsRule = egress.find((r) =>
+      (r.to ?? []).some((t) => t.ipBlock?.cidr === '10.9.8.7/32'),
+    );
+    expect(fsRule, 'an egress rule scoped to the Filestore /32 exists').toBeDefined();
+
+    // Exactly the NFS ports — 2049 + 111, both protocols. Nothing wider.
+    const portKeys = (fsRule?.ports ?? [])
+      .map((p) => `${p.protocol}:${p.port}`)
+      .sort();
+    expect(portKeys).toEqual(['TCP:111', 'TCP:2049', 'UDP:111', 'UDP:2049']);
+    // The Filestore rule targets a /32 ipBlock — never a CIDR/internet wildcard.
+    expect((fsRule?.to ?? []).every((t) => t.ipBlock?.cidr === '10.9.8.7/32')).toBe(true);
+  });
+
+  it('does NOT open any Filestore egress when no server is configured (default)', () => {
+    const np = sandboxRestrict(helmTemplate([]));
+    const egress = (np?.spec?.egress as Array<{
+      to?: Array<{ ipBlock?: { cidr?: string } }>;
+    }>) ?? [];
+    const hasIpBlock = egress.some((r) => (r.to ?? []).some((t) => t.ipBlock !== undefined));
+    expect(hasIpBlock).toBe(false);
+  });
+});

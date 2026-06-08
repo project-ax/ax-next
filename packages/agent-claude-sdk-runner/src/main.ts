@@ -911,6 +911,10 @@ export async function main(): Promise<number> {
     env.workspaceRoot,
     env.ephemeralRoot,
     pythonVenvReady,
+    // filestore-user-files Phase 1: advertise the durable per-agent mount when
+    // the sandbox wired one. Phase 1 adds it to additionalDirectories (below) +
+    // this note ONLY — cwd/HOME stay /agent (Phase 2 / TASK-164).
+    env.userFilesRoot,
   );
 
   try {
@@ -1059,9 +1063,20 @@ export async function main(): Promise<number> {
         // the agent this directory exists is added by the prompt-engine
         // (`composedSystemPrompt` above); both are gated on the same
         // env.ephemeralRoot.)
-        ...(env.ephemeralRoot !== undefined
-          ? { additionalDirectories: [env.ephemeralRoot] }
-          : {}),
+        // filestore-user-files Phase 1: the durable per-agent user-files mount
+        // (AX_USERFILES_ROOT, e.g. `/workspace`) is granted to the SDK's file
+        // tools alongside the scratch tier — so the agent can read/write the
+        // durable mount even though cwd/HOME stay `/agent` in Phase 1 (the
+        // cwd/HOME re-root is Phase 2 / TASK-164). Both are gated on their env
+        // var being set by the sandbox; omitted means "no such tier wired", so
+        // we never grant a phantom directory. The matching system-prompt notes
+        // (composedSystemPrompt above) are gated on the same env values.
+        ...((): { additionalDirectories?: string[] } => {
+          const extra: string[] = [];
+          if (env.ephemeralRoot !== undefined) extra.push(env.ephemeralRoot);
+          if (env.userFilesRoot !== undefined) extra.push(env.userFilesRoot);
+          return extra.length > 0 ? { additionalDirectories: extra } : {};
+        })(),
         // `Skill` is added to the allow list so the SDK auto-permits the
         // built-in Skill tool without prompting — that's the path the SDK
         // uses to invoke a skill it discovered under `settingSources`

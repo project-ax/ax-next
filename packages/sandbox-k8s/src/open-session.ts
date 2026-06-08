@@ -15,6 +15,11 @@ import {
   type OpenSessionInput,
   type OpenSessionParsed,
 } from '@ax/sandbox-protocol';
+import type {
+  ResolveMountsInput,
+  ResolveMountsOutput,
+  MountSpec,
+} from '@ax/sandbox-mount-protocol';
 import { computeReadinessBudgetMs, type ResolvedSandboxK8sConfig } from './config.js';
 import type { K8sCoreApi } from './k8s-api.js';
 import { killPod } from './kill.js';
@@ -173,6 +178,40 @@ export function createOpenSession(deps: OpenSessionDeps) {
       throw err;
     }
 
+    // 2b. filestore-user-files (design §4/§6) — resolve the durable per-agent
+    //     mounts via the optional `sandbox:resolve-mounts` hook. When a resolver
+    //     plugin is loaded (@ax/workspace-filestore in the k8s preset) and the
+    //     session has an owner, call it and pass the returned mounts to
+    //     buildPodSpec, which realizes the `nfs` kind as an inline pod volume +
+    //     subPath mount and stamps AX_USERFILES_ROOT. No resolver / no owner →
+    //     no mounts (graceful degradation; the pod keeps its emptyDir-only
+    //     shape). The session was minted at step 2; on a resolve failure roll it
+    //     back so we don't orphan a live token, mirroring the buildPodSpec
+    //     failure handler below.
+    let mounts: MountSpec[] = [];
+    if (input.owner !== undefined && deps.bus.hasService('sandbox:resolve-mounts')) {
+      try {
+        const resolved = await deps.bus.call<ResolveMountsInput, ResolveMountsOutput>(
+          'sandbox:resolve-mounts',
+          ctx,
+          { owner: input.owner },
+        );
+        mounts = resolved.mounts;
+      } catch (err) {
+        podLog.error('resolve_mounts_failed', {
+          err: err instanceof Error ? err.message : String(err),
+        });
+        await deps.bus
+          .call<SessionTerminateInput, Record<string, never>>(
+            'session:terminate',
+            ctx,
+            { sessionId: created.sessionId },
+          )
+          .catch(() => undefined);
+        throw err;
+      }
+    }
+
     // 3. Build pod spec. runnerEndpoint is fixed at preset-config time
     //    (config.hostIpcUrl) and stamped onto AX_RUNNER_ENDPOINT — the
     //    runner reads it at startup and connects out to the host's
@@ -225,6 +264,11 @@ export function createOpenSession(deps: OpenSessionDeps) {
         ...(input.services !== undefined && input.services.length > 0
           ? { services: input.services }
           : {}),
+        // filestore-user-files: pass the resolved durable per-agent mounts so
+        // pod-spec realizes the inline nfs volume + subPath mount + stamps
+        // AX_USERFILES_ROOT. Spread-when-present mirrors services/installedSkills
+        // — a dropped field here silently disables the durable mount.
+        ...(mounts.length > 0 ? { mounts } : {}),
         // Debug: forward the opt-in per-turn commit/resync trace flag from the
         // host env (set AX_COMMIT_TRACE=1 on the host deployment) into the
         // runner pod, so commit-trace.ts's decision trace is reachable in k8s

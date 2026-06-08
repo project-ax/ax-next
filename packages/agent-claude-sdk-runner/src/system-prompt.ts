@@ -66,6 +66,30 @@ export function ephemeralScratchNote(ephemeralRoot: string): string {
 }
 
 /**
+ * Operational note telling the agent that `userFilesRoot` is durable, shared
+ * storage for the user's working files — fixed runner-authored prose for the
+ * LLM (filestore-user-files Phase 1, design §6). Phase 1 only ADDS this mount to
+ * the agent's reachable directories; the agent's working directory is still the
+ * governed `/agent` tier (cwd/HOME re-root is Phase 2 / TASK-164), so the note
+ * tells the agent to use the durable root EXPLICITLY by path for files that
+ * should persist live across sessions (large/binary data, datasets, cloned
+ * repos) and outlive the per-turn git round-trip. `userFilesRoot` is
+ * host-controlled (AX_USERFILES_ROOT), never model/user/tool input.
+ */
+export function userFilesNote(userFilesRoot: string): string {
+  return [
+    `Durable files: \`${userFilesRoot}\` is a writable directory that persists`,
+    `across sessions and is NOT versioned by the per-turn workspace snapshot.`,
+    `Write files there (by their full \`${userFilesRoot}/…\` path) when you want`,
+    `them to live across sessions without being committed — large or binary data,`,
+    `datasets, downloaded or cloned repositories, build trees. Files you write`,
+    `under \`${userFilesRoot}\` stay exactly as you left them next time; they are`,
+    `the right home for anything big or long-lived that does not belong in your`,
+    `versioned workspace.`,
+  ].join(' ');
+}
+
+/**
  * Operational note telling the agent a session-scoped Python virtualenv is
  * active so `pip install` + `import` work. Fixed runner-authored prose for
  * the LLM — no untrusted input. Paired with the venv created by
@@ -179,9 +203,14 @@ export function operationalNotes(
   workspaceRoot: string,
   ephemeralRoot: string | undefined,
   pythonVenvActive = false,
+  userFilesRoot: string | undefined = undefined,
 ): string {
   const notes: string[] = [workspaceNote(workspaceRoot)];
   if (ephemeralRoot !== undefined) notes.push(ephemeralScratchNote(ephemeralRoot));
+  // filestore-user-files Phase 1: advertise the durable per-agent mount when
+  // the sandbox wired one (AX_USERFILES_ROOT). Conditional like the scratch
+  // note — absent means no durable mount, so we say nothing about it.
+  if (userFilesRoot !== undefined) notes.push(userFilesNote(userFilesRoot));
   if (pythonVenvActive) notes.push(pythonVenvNote());
   // Always-present tail: the JIT capability-handoff note (design §7) so the
   // agent doesn't narrate a mid-conversation connect/approval handoff, the

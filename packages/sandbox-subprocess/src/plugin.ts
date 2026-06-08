@@ -31,6 +31,19 @@ export function createSandboxSubprocessPlugin(): Plugin {
         'ipc:start',
         'ipc:stop',
       ],
+      // filestore-user-files (design §4): when a mount-resolver plugin
+      // (@ax/workspace-localdir) is loaded, open-session calls
+      // `sandbox:resolve-mounts` to learn the per-agent durable mount and
+      // realizes each `localDir` by `mkdir -p`. Optional — without a resolver
+      // the session gets only the default per-session tempdir tiers; no durable
+      // per-agent user-files mount (AX_USERFILES_ROOT stays unset).
+      optionalCalls: [
+        {
+          hook: 'sandbox:resolve-mounts',
+          degradation:
+            'no durable per-agent user-files mount; AX_USERFILES_ROOT unset',
+        },
+      ],
       subscribes: [],
     },
     async init({ bus }) {

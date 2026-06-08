@@ -264,6 +264,7 @@ export async function buildSystemPrompt(
   workspaceRoot: string,
   ephemeralRoot: string | undefined,
   pythonVenvActive = false,
+  userFilesRoot: string | undefined = undefined,
 ): Promise<SdkSystemPrompt> {
   const files = await readAxIdentityFiles(workspaceRoot);
 
@@ -290,7 +291,12 @@ export async function buildSystemPrompt(
   // hardcoded floor + notes. When the agent has no IDENTITY.md, fall back to the
   // displayName identity line so a file-less agent still gets a coherent "who am
   // I". (SOUL.md / AGENTS.md remain inject-if-present.)
-  const notes = operationalNotes(workspaceRoot, ephemeralRoot, pythonVenvActive);
+  const notes = operationalNotes(
+    workspaceRoot,
+    ephemeralRoot,
+    pythonVenvActive,
+    userFilesRoot,
+  );
   const identity = files.identity ?? fallbackIdentityLine(displayName);
   return composeNormalModePrompt({
     prepend: augment,

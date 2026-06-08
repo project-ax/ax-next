@@ -1316,3 +1316,72 @@ describe('@ax/preset-k8s — builtin skills gate (TASK-7)', () => {
     }
   });
 });
+
+// filestore-user-files (design §4) — the k8s preset loads @ax/workspace-filestore
+// (the ONLY `sandbox:resolve-mounts` registrant) iff a Filestore export is
+// configured, and reads it from AX_FILESTORE_*.
+describe('@ax/preset-k8s — filestore mount wiring', () => {
+  const HEX_KEY = '0'.repeat(64);
+  const baseEnv: NodeJS.ProcessEnv = {
+    DATABASE_URL: 'postgres://u:p@db:5432/ax_next',
+    AX_K8S_HOST_IPC_URL: 'http://ax-next-host.ax-next.svc:80',
+    AX_WORKSPACE_BACKEND: 'git-protocol',
+    AX_WORKSPACE_GIT_SERVER_URL: 'http://git-server:7780',
+    AX_WORKSPACE_GIT_SERVER_TOKEN: 't',
+    AX_HTTP_HOST: '0.0.0.0',
+    AX_HTTP_PORT: '9090',
+    AX_HTTP_COOKIE_KEY: HEX_KEY,
+    AX_HTTP_ALLOWED_ORIGINS: '',
+  };
+
+  it('loads @ax/workspace-filestore (exactly one resolve-mounts registrant) when filestore is configured', () => {
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      filestore: { server: '10.0.0.2', exportPath: '/vol1/agents' },
+    });
+    const resolvers = plugins.filter((p) =>
+      p.manifest.registers.includes('sandbox:resolve-mounts'),
+    );
+    expect(resolvers.map((p) => p.manifest.name)).toEqual(['@ax/workspace-filestore']);
+  });
+
+  it('loads NO mount resolver when filestore is omitted (graceful degradation)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const resolvers = plugins.filter((p) =>
+      p.manifest.registers.includes('sandbox:resolve-mounts'),
+    );
+    expect(resolvers).toEqual([]);
+  });
+
+  it('the sandbox-k8s provider lists sandbox:resolve-mounts in optionalCalls', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const k8s = plugins.find((p) => p.manifest.name === '@ax/sandbox-k8s');
+    expect(
+      (k8s!.manifest.optionalCalls ?? []).map((oc) => oc.hook),
+    ).toContain('sandbox:resolve-mounts');
+  });
+
+  it('loadK8sConfigFromEnv reads AX_FILESTORE_SERVER/EXPORT_PATH/MOUNT_PATH', () => {
+    const cfg = loadK8sConfigFromEnv({
+      ...baseEnv,
+      AX_FILESTORE_SERVER: '10.0.0.2',
+      AX_FILESTORE_EXPORT_PATH: '/vol1/agents',
+      AX_FILESTORE_MOUNT_PATH: '/workspace',
+    });
+    expect(cfg.filestore).toEqual({
+      server: '10.0.0.2',
+      exportPath: '/vol1/agents',
+      mountPath: '/workspace',
+    });
+  });
+
+  it('loadK8sConfigFromEnv leaves filestore unset when AX_FILESTORE_SERVER is absent', () => {
+    expect(loadK8sConfigFromEnv(baseEnv).filestore).toBeUndefined();
+  });
+
+  it('loadK8sConfigFromEnv throws when AX_FILESTORE_SERVER is set without AX_FILESTORE_EXPORT_PATH', () => {
+    expect(() =>
+      loadK8sConfigFromEnv({ ...baseEnv, AX_FILESTORE_SERVER: '10.0.0.2' }),
+    ).toThrow(/AX_FILESTORE_EXPORT_PATH/);
+  });
+});
