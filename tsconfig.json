@@ -59,6 +59,7 @@
     { "path": "packages/skills-parser" },
     { "path": "packages/host-grants" },
     { "path": "packages/sandbox-protocol" },
+    { "path": "packages/sandbox-mount-protocol" },
     { "path": "packages/workspace-bundle-protocol" },
     { "path": "packages/blob-store-fs" },
     { "path": "packages/blob-store-s3" }
