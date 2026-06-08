@@ -477,6 +477,63 @@ describe('mcp-oauth begin route', () => {
     expect(state.json).toEqual({ error: 'multiple_oauth_slots_unsupported' });
     expect(flow.discover).not.toHaveBeenCalled();
   });
+
+  // Ref-shape mismatch: the callback always writes the COLLAPSED ref
+  // `account:<connectorId>`, but foldConnectorCaps/deriveCredentialPlan switch
+  // to the PER-SLOT ref `account:<connectorId>:<slot>` once a connector has ≥2
+  // TOTAL credential slots. A connector with one oauth slot + ANY other slot
+  // would therefore store the token where the orchestrator never resolves it →
+  // silent no-credential. begin must reject (before any discovery).
+  it('connector with one oauth slot + another (non-oauth) slot → 400 oauth_with_multiple_slots_unsupported; no discovery', async () => {
+    const flow = fakeFlow();
+    const { deps } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+        'connectors:get': () =>
+          connectorFixture({
+            credentials: [
+              { slot: 'oauth-main', kind: 'oauth', server: 'srv', scopes: ['read'] },
+              { slot: 'API_KEY', kind: 'api-key' },
+            ],
+          }),
+      },
+      { flow },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      res,
+    );
+    expect(state.status).toBe(400);
+    expect(state.json).toEqual({ error: 'oauth_with_multiple_slots_unsupported' });
+    expect(flow.discover).not.toHaveBeenCalled();
+  });
+
+  // The single-oauth-slot happy path is unchanged: when oauth is the connector's
+  // ONLY credential slot, the collapsed ref the callback writes is exactly the
+  // ref the orchestrator resolves, so begin proceeds (200 + discovery runs).
+  it('connector with a SINGLE oauth slot (its only slot) still proceeds → 200; discovery runs', async () => {
+    const flow = fakeFlow();
+    const { deps, store } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+        'connectors:get': () => connectorFixture(),
+      },
+      { flow },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      res,
+    );
+    expect(state.status).toBe(200);
+    expect(store.putPending).toHaveBeenCalledTimes(1);
+    expect(flow.discover).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('mcp-oauth callback route', () => {

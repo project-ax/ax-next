@@ -239,6 +239,18 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       res.status(400).json({ error: 'multiple_oauth_slots_unsupported' });
       return;
     }
+    if (caps.credentials.length > 1) {
+      // ONE SOURCE OF TRUTH (invariant #4): the callback always writes the
+      // COLLAPSED ref `account:<connectorId>`, but `foldConnectorCaps` /
+      // `deriveCredentialPlan` switch to the PER-SLOT ref
+      // `account:<connectorId>:<slot>` the moment a connector carries ≥2 total
+      // credential slots. So a connector with one oauth slot PLUS any other slot
+      // would store the token at a ref the orchestrator never resolves → silent
+      // no-credential. Until the callback learns the per-slot ref shape, reject a
+      // multi-slot connector that includes an oauth slot (no discovery yet).
+      res.status(400).json({ error: 'oauth_with_multiple_slots_unsupported' });
+      return;
+    }
     const slot = oauthSlots[0]!;
     const server = caps.mcpServers.find((s) => s.name === slot.server);
     if (!server || !server.url) {
