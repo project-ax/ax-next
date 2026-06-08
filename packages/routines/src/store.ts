@@ -104,6 +104,31 @@ export interface RoutinesStore {
     now: Date;
   }): Promise<void>;
   refreshStale(input: { now: Date }): Promise<void>;
+  /**
+   * Set whether `defaultRoutineId` is enabled for `agentId`. The override
+   * table stores only explicit DISABLES — `enabled=true` DELETEs any disable
+   * row (restoring the default-ON state), `enabled=false` upserts a disable
+   * row. De/re-materialization is the caller's job (the hook), because it
+   * needs an owner identity for re-materialize; this method only records the
+   * intent.
+   */
+  setAgentDefaultEnabled(input: {
+    agentId: string;
+    defaultRoutineId: string;
+    ownerUserId: string;
+    enabled: boolean;
+  }): Promise<void>;
+  /** True unless an explicit disable override exists (absence = enabled). */
+  isAgentDefaultEnabled(input: { agentId: string; defaultRoutineId: string }): Promise<boolean>;
+  /** The default-routine ids explicitly disabled for `agentId`. */
+  disabledDefaultIdsForAgent(agentId: string): Promise<string[]>;
+  /**
+   * Drop the materialized per-agent row for `(agentId, defaultRoutineId)`.
+   * The materialized row carries no enabled/active flag (schema check: rows
+   * are present-or-absent), so this is a DELETE. Fire history in
+   * routines_v1_fires has no FK to definitions, so it is preserved.
+   */
+  removeMaterializedDefault(input: { agentId: string; defaultRoutineId: string }): Promise<void>;
 }
 
 /**
@@ -491,6 +516,16 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
              WHERE r.agent_id = a.agent_id
                AND r.definition_id = d.default_routine_id
           )
+          -- TASK-177: skip (agent, default) pairs the agent owner has
+          -- explicitly disabled. Absence of an override row = enabled, so
+          -- this NOT EXISTS keeps the default-ON behavior for every pair
+          -- without an override.
+          AND NOT EXISTS (
+            SELECT 1 FROM agent_default_routine_overrides_v1 o
+             WHERE o.agent_id = a.agent_id
+               AND o.default_routine_id = d.default_routine_id
+               AND o.enabled = false
+          )
         ON CONFLICT (agent_id, path) DO NOTHING
       `.execute(db);
     },
@@ -519,6 +554,58 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
            AND (r.definition_updated_at IS NULL
                 OR r.definition_updated_at < d.updated_at)
       `.execute(db);
+    },
+
+    async setAgentDefaultEnabled(input) {
+      if (input.enabled) {
+        // Enabled is the default (absence = on) — drop any disable row.
+        await db.deleteFrom('agent_default_routine_overrides_v1')
+          .where('agent_id', '=', input.agentId)
+          .where('default_routine_id', '=', input.defaultRoutineId)
+          .execute();
+        return;
+      }
+      // Disable: upsert an explicit override row. Atomic INSERT … ON CONFLICT
+      // avoids a TOCTOU race between a SELECT and the write.
+      await sql`
+        INSERT INTO agent_default_routine_overrides_v1
+          (agent_id, default_routine_id, owner_user_id, enabled, updated_at)
+        VALUES
+          (${input.agentId}, ${input.defaultRoutineId}, ${input.ownerUserId}, false, now())
+        ON CONFLICT (agent_id, default_routine_id) DO UPDATE SET
+          owner_user_id = EXCLUDED.owner_user_id,
+          enabled = EXCLUDED.enabled,
+          updated_at = now()
+      `.execute(db);
+    },
+
+    async isAgentDefaultEnabled(input) {
+      const row = await db
+        .selectFrom('agent_default_routine_overrides_v1')
+        .select(['enabled'])
+        .where('agent_id', '=', input.agentId)
+        .where('default_routine_id', '=', input.defaultRoutineId)
+        .executeTakeFirst();
+      // Absence = enabled. A present row reports its own flag (only `false`
+      // is ever written today, but honor the stored value either way).
+      return row === undefined ? true : row.enabled;
+    },
+
+    async disabledDefaultIdsForAgent(agentId) {
+      const rows = await db
+        .selectFrom('agent_default_routine_overrides_v1')
+        .select(['default_routine_id'])
+        .where('agent_id', '=', agentId)
+        .where('enabled', '=', false)
+        .execute();
+      return rows.map((r) => r.default_routine_id);
+    },
+
+    async removeMaterializedDefault(input) {
+      await db.deleteFrom('routines_v1_definitions')
+        .where('agent_id', '=', input.agentId)
+        .where('definition_id', '=', input.defaultRoutineId)
+        .execute();
     },
   };
 }

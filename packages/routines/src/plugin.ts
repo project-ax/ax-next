@@ -18,6 +18,8 @@ import {
   RoutinesGetDefaultOutputSchema,
   RoutinesListDefaultsOutputSchema,
   RoutinesUpsertDefaultOutputSchema,
+  RoutinesSetAgentDefaultEnabledOutputSchema,
+  RoutinesListAgentDefaultsOutputSchema,
 } from './types.js';
 import type {
   RoutinesConfig,
@@ -35,6 +37,10 @@ import type {
   RoutinesUpsertDefaultOutput,
   RoutinesDeleteDefaultInput,
   RoutinesDeleteDefaultOutput,
+  RoutinesSetAgentDefaultEnabledInput,
+  RoutinesSetAgentDefaultEnabledOutput,
+  RoutinesListAgentDefaultsInput,
+  RoutinesListAgentDefaultsOutput,
 } from './types.js';
 
 const PLUGIN_NAME = '@ax/routines';
@@ -69,6 +75,8 @@ export function createRoutinesPlugin(
         'routines:get-default',
         'routines:upsert-default',
         'routines:delete-default',
+        'routines:set-agent-default-enabled',
+        'routines:list-agent-defaults',
       ],
       calls: [
         'database:get-instance',
@@ -377,6 +385,93 @@ export function createRoutinesPlugin(
           return {};
         },
         { returns: RoutinesDeleteDefaultOutputSchema },
+      );
+
+      // TASK-177: per-agent on/off for any default routine. Default-ENABLED
+      // (absence of an override = enabled), so this never disturbs the
+      // heartbeat default unless an owner explicitly opts an agent out.
+      bus.registerService<
+        RoutinesSetAgentDefaultEnabledInput,
+        RoutinesSetAgentDefaultEnabledOutput
+      >(
+        'routines:set-agent-default-enabled', PLUGIN_NAME,
+        async (ctx, input) => {
+          // AUTH: caller must own the agent. agents:resolve is the J1 tenant
+          // ACL gate — it throws 'forbidden'/'not-found' for a non-owner, so
+          // there's no separate authz path to maintain here. It also yields
+          // the owner id we stamp on the re-materialized row.
+          const { agent } = await bus.call<
+            { agentId: string; userId: string },
+            { agent: { id: string; ownerId: string } }
+          >('agents:resolve', ctx, { agentId: input.agentId, userId: ctx.userId });
+
+          // Validate the default exists before mutating — a typo'd id would
+          // otherwise write a dangling disable row the FK still accepts only
+          // for real ids (FK guards us), but resolving gives a clean
+          // not-found instead of an opaque FK violation.
+          const def = await localStore.getDefault(input.defaultRoutineId);
+          if (def === null) {
+            throw new PluginError({
+              code: 'not-found', plugin: PLUGIN_NAME,
+              hookName: 'routines:set-agent-default-enabled',
+              message: `default routine '${input.defaultRoutineId}' not found`,
+            });
+          }
+
+          await localStore.setAgentDefaultEnabled({
+            agentId: input.agentId,
+            defaultRoutineId: input.defaultRoutineId,
+            ownerUserId: agent.ownerId,
+            enabled: input.enabled,
+          });
+
+          if (input.enabled) {
+            // Re-materialize this one (agent, default) so the agent picks it
+            // back up on the next tick — matches first-materialize semantics
+            // (next_run_at NULL ⇒ due on the next interval window).
+            await localStore.materializeMissing({
+              agents: [{ agentId: input.agentId, ownerUserId: agent.ownerId }],
+              now: clock.now(),
+            });
+          } else {
+            // De-materialize: drop the per-agent row so the tick stops
+            // claiming it. Fire history (routines_v1_fires) is preserved —
+            // no FK from fires to definitions.
+            await localStore.removeMaterializedDefault({
+              agentId: input.agentId,
+              defaultRoutineId: input.defaultRoutineId,
+            });
+          }
+          return {};
+        },
+        { returns: RoutinesSetAgentDefaultEnabledOutputSchema },
+      );
+
+      bus.registerService<RoutinesListAgentDefaultsInput, RoutinesListAgentDefaultsOutput>(
+        'routines:list-agent-defaults', PLUGIN_NAME,
+        async (ctx, input) => {
+          // AUTH: owner-scoped — per-agent config is tenant-private, so gate
+          // the read the same way as the write. Non-owner ⇒ forbidden.
+          await bus.call<
+            { agentId: string; userId: string },
+            { agent: { id: string } }
+          >('agents:resolve', ctx, { agentId: input.agentId, userId: ctx.userId });
+
+          const [defaults, disabled] = await Promise.all([
+            localStore.listDefaults(),
+            localStore.disabledDefaultIdsForAgent(input.agentId),
+          ]);
+          const disabledSet = new Set(disabled);
+          return {
+            defaults: defaults.map((d) => ({
+              defaultRoutineId: d.defaultRoutineId,
+              name: d.name,
+              // Absence from the disabled set = enabled (default-ON).
+              enabled: !disabledSet.has(d.defaultRoutineId),
+            })),
+          };
+        },
+        { returns: RoutinesListAgentDefaultsOutputSchema },
       );
 
       // Re-mount webhook routes from DB before opening for traffic. After a

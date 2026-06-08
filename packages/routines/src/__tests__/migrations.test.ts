@@ -28,7 +28,10 @@ afterAll(async () => {
 afterEach(async () => {
   await sql`DROP TABLE IF EXISTS routines_v1_fires`.execute(db);
   await sql`DROP TABLE IF EXISTS routines_v1_definitions`.execute(db);
-  await sql`DROP TABLE IF EXISTS default_routines_v1`.execute(db);
+  // agent_default_routine_overrides_v1 FK-references default_routines_v1, so
+  // drop it (CASCADE) before the parent.
+  await sql`DROP TABLE IF EXISTS agent_default_routine_overrides_v1 CASCADE`.execute(db);
+  await sql`DROP TABLE IF EXISTS default_routines_v1 CASCADE`.execute(db);
 });
 
 describe('runRoutinesMigration', () => {
@@ -174,5 +177,37 @@ describe('runRoutinesMigration', () => {
          AND indexname = 'routines_v1_definitions_default_idx'
     `.execute(db);
     expect(r.rows).toHaveLength(1);
+  });
+
+  it('agent_default_routine_overrides_v1 has PK (agent_id, default_routine_id) and cascades from default_routines_v1', async () => {
+    await runRoutinesMigration(db);
+    // PK enforces one override per (agent, default).
+    await db.insertInto('agent_default_routine_overrides_v1').values({
+      agent_id: 'agt_a', default_routine_id: 'default-heartbeat-2026-05-19',
+      owner_user_id: 'u1', enabled: false,
+    }).execute();
+    await expect(
+      db.insertInto('agent_default_routine_overrides_v1').values({
+        agent_id: 'agt_a', default_routine_id: 'default-heartbeat-2026-05-19',
+        owner_user_id: 'u2', enabled: false,
+      }).execute(),
+    ).rejects.toThrow(/duplicate|unique/i);
+
+    // FK ON DELETE CASCADE: deleting the default drops its overrides.
+    await db.deleteFrom('default_routines_v1')
+      .where('default_routine_id', '=', 'default-heartbeat-2026-05-19').execute();
+    const remaining = await db.selectFrom('agent_default_routine_overrides_v1')
+      .selectAll().where('agent_id', '=', 'agt_a').execute();
+    expect(remaining).toEqual([]);
+  });
+
+  it('agent_default_routine_overrides_v1 rejects an override for a non-existent default (FK)', async () => {
+    await runRoutinesMigration(db);
+    await expect(
+      db.insertInto('agent_default_routine_overrides_v1').values({
+        agent_id: 'agt_a', default_routine_id: 'no-such-default',
+        owner_user_id: 'u1', enabled: false,
+      }).execute(),
+    ).rejects.toThrow(/foreign key|violates/i);
   });
 });
