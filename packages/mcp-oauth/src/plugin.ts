@@ -10,6 +10,7 @@ import {
   type McpOAuthResolveInput,
   type McpOAuthResolveOutput,
   type RefreshedTokens,
+  type ResolverDeps,
 } from './resolver.js';
 import {
   buildAuthorization,
@@ -51,6 +52,16 @@ export interface McpOAuthPluginConfig {
   connectorReturnPath?: string;
   /** Pending-authorization TTL. Default 10 min. */
   pendingTtlMs?: number;
+  /** Test seam — inject fakes for the external OAuth calls so a canary can exercise
+   *  the real plugin wiring (resolver registration, store, credentials integration,
+   *  route registration) without real network/SSRF. Production leaves this undefined. */
+  testOverrides?: {
+    refresh?: ResolverDeps['refresh'];
+    discover?: typeof import('./oauth-flow.js').discover;
+    ensureClient?: typeof import('./oauth-flow.js').ensureClient;
+    buildAuthorization?: typeof import('./oauth-flow.js').buildAuthorization;
+    redeemCode?: typeof import('./oauth-flow.js').redeemCode;
+  };
 }
 
 /**
@@ -153,42 +164,47 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
       // The refresh-on-read resolver. `refresh` is injected so the resolver unit
       // stays offline; here we wire it to oauth-flow.refresh, constructing the
       // minimal AS metadata from the blob's stored token endpoint (no re-discovery).
+      // The test seam (`testOverrides.refresh`) lets a canary swap in a fake so the
+      // real plugin wiring is exercised without a live token endpoint; production
+      // leaves it undefined and falls through to the real refresh below.
+      const realRefresh: ResolverDeps['refresh'] = async ({
+        authServerUrl,
+        tokenEndpoint,
+        resource,
+        refreshToken,
+        client,
+        allowedHosts,
+      }): Promise<RefreshedTokens> => {
+        const metadata = buildMinimalAsMetadata(authServerUrl, tokenEndpoint);
+        const tokens = await refresh({
+          metadata,
+          client,
+          refreshToken,
+          resource,
+          allowedHosts,
+        });
+        // Project the SDK's OAuthTokens onto the resolver's RefreshedTokens,
+        // spreading each optional field only when present so none is set to an
+        // explicit `undefined` (exactOptionalPropertyTypes).
+        return {
+          access_token: tokens.access_token,
+          ...(tokens.refresh_token !== undefined
+            ? { refresh_token: tokens.refresh_token }
+            : {}),
+          ...(tokens.expires_in !== undefined
+            ? { expires_in: tokens.expires_in }
+            : {}),
+          ...(tokens.token_type !== undefined
+            ? { token_type: tokens.token_type }
+            : {}),
+          ...(tokens.scope !== undefined ? { scope: tokens.scope } : {}),
+        };
+      };
+
       const resolver = createMcpOAuthResolver({
         store: { getClient: (k) => store.getClient(k) },
         now: () => Date.now(),
-        refresh: async ({
-          authServerUrl,
-          tokenEndpoint,
-          resource,
-          refreshToken,
-          client,
-          allowedHosts,
-        }): Promise<RefreshedTokens> => {
-          const metadata = buildMinimalAsMetadata(authServerUrl, tokenEndpoint);
-          const tokens = await refresh({
-            metadata,
-            client,
-            refreshToken,
-            resource,
-            allowedHosts,
-          });
-          // Project the SDK's OAuthTokens onto the resolver's RefreshedTokens,
-          // spreading each optional field only when present so none is set to an
-          // explicit `undefined` (exactOptionalPropertyTypes).
-          return {
-            access_token: tokens.access_token,
-            ...(tokens.refresh_token !== undefined
-              ? { refresh_token: tokens.refresh_token }
-              : {}),
-            ...(tokens.expires_in !== undefined
-              ? { expires_in: tokens.expires_in }
-              : {}),
-            ...(tokens.token_type !== undefined
-              ? { token_type: tokens.token_type }
-              : {}),
-            ...(tokens.scope !== undefined ? { scope: tokens.scope } : {}),
-          };
-        },
+        refresh: config.testOverrides?.refresh ?? realRefresh,
       });
 
       bus.registerService<McpOAuthResolveInput, McpOAuthResolveOutput>(
@@ -210,7 +226,15 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
         const unregs = await registerMcpOAuthRoutes(bus, initCtx, {
           bus,
           store,
-          flow: { discover, ensureClient, buildAuthorization, redeemCode },
+          // Test seam: a canary may inject fakes for the SSRF-guarded external
+          // calls so begin/callback run without a live auth server. Each falls
+          // through to the real oauth-flow function when unset (production).
+          flow: {
+            discover: config.testOverrides?.discover ?? discover,
+            ensureClient: config.testOverrides?.ensureClient ?? ensureClient,
+            buildAuthorization: config.testOverrides?.buildAuthorization ?? buildAuthorization,
+            redeemCode: config.testOverrides?.redeemCode ?? redeemCode,
+          },
           config: {
             publicOrigin: config.publicOrigin,
             connectorReturnPath: config.connectorReturnPath ?? '/settings/connectors',
