@@ -297,8 +297,10 @@ describe('@ax/preset-k8s wiring', () => {
     const plugins = createK8sPlugins(stubConfig);
     const mcpOAuth = plugins.find((p) => p.manifest.name === '@ax/mcp-oauth');
     expect(mcpOAuth).toBeDefined();
-    // The OAuth credential kind — the refresh-on-read resolver the
-    // credential-proxy dispatches when a connector's keyMode is `oauth`.
+    // The OAuth credential kind — the refresh-on-read resolver that
+    // `@ax/credentials` dispatches per-kind from `credentials:get` when the
+    // stored envelope's kind is `mcp-oauth` (the credential-proxy only
+    // CLASSIFIES the resulting `mcp-*` traffic; it does not dispatch this).
     expect(mcpOAuth!.manifest.registers).toEqual([
       'credentials:resolve:mcp-oauth',
     ]);

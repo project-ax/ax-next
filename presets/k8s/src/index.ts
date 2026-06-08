@@ -1012,10 +1012,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
 
   // ----- 9b'. mcp-oauth -----------------------------------------------------
   // The OAuth credential kind for MCP connectors. Registers
-  // `credentials:resolve:mcp-oauth` (the refresh-on-read resolver the
-  // credential-proxy dispatches when a connector's keyMode is `oauth`) and —
-  // with `mountRoutes: true` — the `/oauth/mcp/{begin,callback}` HTTP routes
-  // that drive the per-user authorization-code dance. Its `calls`
+  // `credentials:resolve:mcp-oauth` (the refresh-on-read resolver that
+  // `@ax/credentials` dispatches per-kind from `credentials:get` when the
+  // stored envelope's kind is `mcp-oauth`; the credential-proxy only CLASSIFIES
+  // the resulting `mcp-*` traffic, it does not dispatch the resolver) and —
+  // with `mountRoutes: true` — the `/api/connectors/oauth/{begin,callback}` HTTP
+  // routes that drive the per-user authorization-code dance. Its `calls`
   // (`database:get-instance`, `http:register-route`, `auth:require-user`,
   // `connectors:get`, `agents:resolve`, `credentials:get`, `credentials:set`)
   // are all satisfied by plugins loaded above (the postgres trio, http-server,
