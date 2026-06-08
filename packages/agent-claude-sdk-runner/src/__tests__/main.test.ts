@@ -705,14 +705,27 @@ describe('main()', () => {
     expect(await main()).toBe(0);
 
     const queryArg = queryMock.mock.calls[0]?.[0] as {
-      options: { settingSources: string[]; additionalDirectories?: string[]; systemPrompt: string };
+      options: {
+        settingSources: string[];
+        additionalDirectories?: string[];
+        cwd: string;
+        systemPrompt: string;
+      };
     };
     // The sole skill/setting source stays 'user' — /workspace is NOT added.
     expect(queryArg.options.settingSources).toEqual(['user']);
     expect(queryArg.options.settingSources).not.toContain('project');
     expect(queryArg.options.settingSources).not.toContain('/workspace');
-    // It IS reachable by the file tools (durable read/write), via additionalDirectories.
-    expect(queryArg.options.additionalDirectories).toContain('/workspace');
+    // It IS reachable by the file tools (durable read/write). filestore-user-files
+    // Phase 2 (TASK-164) made /workspace the SDK cwd/HOME, so the file tools reach
+    // it implicitly (the SDK always grants cwd) — it's therefore no longer listed
+    // in additionalDirectories (the governed AX_WORKSPACE_ROOT tier is, since it is
+    // no longer the cwd). Either way HR1 holds: reachable by tools, never a source.
+    expect(queryArg.options.cwd).toBe('/workspace');
+    expect(queryArg.options.additionalDirectories).not.toContain('/workspace');
+    expect(queryArg.options.additionalDirectories).toContain(
+      COMPLETE_ENV.AX_WORKSPACE_ROOT,
+    );
     // The skill-draft prefix advertised to the model is rooted at the DURABLE
     // mount (drafts persist), not the ephemeral tier.
     expect(queryArg.options.systemPrompt).toContain('/workspace/.skill-draft/<id>/');
