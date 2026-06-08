@@ -86,8 +86,25 @@ export async function assertSafeUrl(
   if (isPrivateIp(ip)) throw new BlockedUrlError(`host resolves to a private ip: ${host}`);
 }
 
+/** A `fetch`-shaped function. Defaults to the global `fetch`; injectable in tests
+ *  so the redirect loop can be exercised without real DNS/TLS. */
+export type FetchFn = (url: string | URL, init?: RequestInit) => Promise<Response>;
+
+const MAX_REDIRECT_HOPS = 5;
+
 /**
- * `fetch` wrapper that runs `assertSafeUrl` first.
+ * `fetch` wrapper that re-runs `assertSafeUrl` on EVERY hop, including redirects.
+ *
+ * Why manual redirect following: the metadata that names these URLs is untrusted,
+ * and so is any `Location` header an allowlisted server hands back. If we let the
+ * platform `fetch` auto-follow (`redirect: 'follow'`), a server we trust for the
+ * FIRST hop could `302` us to `https://169.254.169.254/...` (or any internal /
+ * non-allowlisted host) and we'd silently connect to it — bypassing the allowlist,
+ * the private-IP check, AND the https-only rule all at once. So we set
+ * `redirect: 'manual'`, validate each hop's URL before fetching it, and resolve
+ * the `Location` relative to the current URL before re-checking. Legit redirects
+ * to allowlisted, public hosts (e.g. discovery canonicalization) still work; a hop
+ * into a blocked target throws `BlockedUrlError`. Bounded at `MAX_REDIRECT_HOPS`.
  *
  * KNOWN, KNOWINGLY-ACCEPTED GAP — DNS rebinding (TOCTOU). `assertSafeUrl`
  * resolves the host once to vet the IP, then `fetch(url)` resolves it AGAIN at
@@ -103,8 +120,26 @@ export async function assertSafeUrl(
  * the check-vs-connect window entirely. Tracked as a follow-up task.
  */
 export async function safeFetch(
-  url: string, allowedHosts: Set<string>, init?: RequestInit, resolver?: HostResolver,
+  url: string,
+  allowedHosts: Set<string>,
+  init?: RequestInit,
+  resolver?: HostResolver,
+  doFetch: FetchFn = fetch,
 ): Promise<Response> {
-  await assertSafeUrl(url, allowedHosts, resolver);
-  return fetch(url, init);
+  let current = url;
+  for (let hop = 0; ; hop++) {
+    await assertSafeUrl(current, allowedHosts, resolver);
+    // `redirect: 'manual'` stops fetch from auto-following so WE control each hop.
+    const res = await doFetch(current, { ...init, redirect: 'manual' });
+    if (res.status >= 300 && res.status < 400) {
+      const loc = res.headers.get('location');
+      if (!loc) return res; // 3xx without a Location — nothing to follow; caller's call.
+      if (hop >= MAX_REDIRECT_HOPS) {
+        throw new BlockedUrlError(`too many redirects starting at ${url}`);
+      }
+      current = new URL(loc, current).toString(); // resolve relative; re-validated next loop
+      continue;
+    }
+    return res;
+  }
 }
