@@ -4,6 +4,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import { Kysely, PostgresDialect, sql } from 'kysely';
 import pg from 'pg';
 import { runRoutinesMigration, type RoutinesDatabase } from '../migrations.js';
+import { SKILL_REFLECTION_PROMPT } from '../reflection-prompt.js';
 
 // pg returns BIGINT (OID 20) as string by default; parse as number for test assertions.
 pg.types.setTypeParser(20, (v) => Number(v));
@@ -166,6 +167,57 @@ describe('runRoutinesMigration', () => {
       SELECT name, trigger_kind FROM default_routines_v1 WHERE name = 'heartbeat'
     `.execute(db);
     expect(rows.rows).toEqual([{ name: 'heartbeat', trigger_kind: 'interval' }]);
+  });
+
+  it('seeds the skill-reflection default OFF and idempotently (TASK-178)', async () => {
+    // Double-migrate: ON CONFLICT (name) DO NOTHING must keep exactly one row.
+    await runRoutinesMigration(db);
+    await runRoutinesMigration(db);
+
+    const rows = await sql<{
+      default_routine_id: string;
+      name: string;
+      enabled: boolean;
+      trigger_kind: string;
+      interval_seconds: number;
+      silence_token: string | null;
+      silence_max: number;
+      conversation: string;
+      prompt_body: string;
+    }>`
+      SELECT default_routine_id, name, enabled, trigger_kind, interval_seconds,
+             silence_token, silence_max, conversation, prompt_body
+        FROM default_routines_v1 WHERE name = 'skill-reflection'
+    `.execute(db);
+
+    expect(rows.rows).toHaveLength(1);
+    const r = rows.rows[0]!;
+    expect(r.default_routine_id).toBe('skill-reflection');
+    // Global master switch OFF until an operator flips it post-walk.
+    expect(r.enabled).toBe(false);
+    expect(r.trigger_kind).toBe('interval');
+    expect(r.interval_seconds).toBe(86400); // 24h
+    // The silence token MUST match the prompt's REFLECTION_DONE contract.
+    expect(r.silence_token).toBe('REFLECTION_DONE');
+    expect(r.silence_max).toBe(4000);
+    // Each fire gets its own hidden conversation (no cross-fire bleed).
+    expect(r.conversation).toBe('per-fire');
+    // The seeded body is the canonical reflection meta-prompt verbatim.
+    expect(r.prompt_body).toBe(SKILL_REFLECTION_PROMPT);
+  });
+
+  it('skill-reflection seed never clobbers a later operator edit (ON CONFLICT DO NOTHING)', async () => {
+    await runRoutinesMigration(db);
+    // Simulate the post-walk flip / a manual prompt tweak.
+    await db.updateTable('default_routines_v1')
+      .set({ enabled: true })
+      .where('name', '=', 'skill-reflection')
+      .execute();
+    // A re-run of the migration (e.g. on the next boot) must NOT reset it.
+    await runRoutinesMigration(db);
+    const r = await db.selectFrom('default_routines_v1')
+      .select('enabled').where('name', '=', 'skill-reflection').executeTakeFirstOrThrow();
+    expect(r.enabled).toBe(true);
   });
 
   it('routines_v1_definitions_default_idx exists', async () => {
