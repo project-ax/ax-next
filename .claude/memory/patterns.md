@@ -350,3 +350,32 @@ whose fixtures all set non-empty values. Run the broad affected set.
   invariant #6's source of truth is the existing channel-web install, not the shadcn-skill v4 docs.
 - **Worktree under `.claude/worktrees/` needs its own `pnpm install`** (node_modules absent on a
   fresh worktree) AND a full `pnpm build` before any cross-package test resolves `@ax/*` dist.
+
+## 2026-06-08 — Runner sandbox governed tier is `/agent` (was `/permanent`) [TASK-161]
+
+The git-backed governed sandbox tier — the emptyDir the runner materializes from
+the host git bundle and `git add -A`s each turn — is now mounted at **`/agent`**
+(renamed from `/permanent` in TASK-161, design §13 Phase 0). Facts for any
+sibling/follow-up work (filestore-user-files epic, TASK-163+):
+
+- **Source of truth for the path:** `packages/sandbox-k8s/src/pod-spec.ts`
+  `RUNNER_WORKSPACE_ROOT = '/agent'` (k8s) + volume/volumeMount name `agent`;
+  `packages/agent-claude-sdk-runner/src/env.ts` default `AX_WORKSPACE_ROOT ?? '/agent'`
+  (runner). The env var **name** `AX_WORKSPACE_ROOT` is unchanged — only its default
+  value moved. The runner reads `env.workspaceRoot` (never hardcodes the path on the
+  live path); the subprocess sandbox passes `input.workspaceRoot` through.
+- **`.ax/` is NOT flattened.** Governed agent state stays under `/agent/.ax/**`
+  (`.claude/**` too). `POLICY_PREFIXES` / `workspace-policy.ts` unchanged.
+- **artifact-publish allowlist** (`@ax/tool-artifact-publish/path-allowlist.ts`):
+  `PublishRoot = 'ephemeral' | 'agent'`; the workspace-tier publish prefix is
+  `/agent/workspace/**`. The `root` value is internal-only (consumed via
+  `root === 'ephemeral'`), never persisted/wire.
+- **DIFFERENT LAYER — do NOT conflate:** `@ax/memory-strata`'s `permanent/memory`
+  + `permanent/.ax` is a host **workspace-TREE subdir** relative to
+  `ctx.workspace.rootPath` (CLI: `cwd`). It was deliberately left as `permanent/`
+  in TASK-161 — it is the bundle-SOURCE subdir name on the host, independent of the
+  runner mount name. The runner reads its own `.ax` at `${workspaceRoot}/.ax`
+  (= `/agent/.ax`), a different `workspaceRoot` than memory-strata's. If you rename
+  one, don't assume the other follows.
+- The deploy chart `workspace.mountPath` (`/var/lib/ax-next/workspaces`) is the host
+  pod PVC git-storage path — also a different concept from the runner mount.
