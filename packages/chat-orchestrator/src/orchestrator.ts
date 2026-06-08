@@ -632,6 +632,17 @@ interface OpenSessionInput {
     agentId: string;
     agentConfig: AgentConfig;
     conversationId?: string;
+    /**
+     * TASK-181 — host-derived session origin: `'routine'` for a scheduled
+     * @ax/routines fire, `'user'`/absent for an interactive turn. Taken from
+     * `ctx.source` (set host-side: routines `fire.ts` stamps `'routine'`; user
+     * turns leave it unset). Forwarded into session:create so the IPC server
+     * can stamp it onto the happy-path runner-completed chat:end ctx, where
+     * @ax/memory-strata reads it to skip memory extraction on internal turns.
+     * SECURITY: never sourced from a runner-supplied frame — only from
+     * ctx.source on the host.
+     */
+    source?: 'routine' | 'user';
   };
   /**
    * Per-session proxy blob. Populated only when @ax/credential-proxy is
@@ -2258,6 +2269,16 @@ export function createOrchestrator(
           ...(ctx.conversationId !== undefined
             ? { conversationId: ctx.conversationId }
             : {}),
+          // TASK-181 — forward the HOST-DERIVED session origin so session:create
+          // persists it on the session record and the IPC server stamps it onto
+          // the happy-path runner-completed chat:end ctx (where @ax/memory-strata
+          // reads ctx.source to skip memory extraction on routine fires). ctx.source
+          // is set host-side ONLY: routines `fire.ts` stamps 'routine'; a user turn
+          // leaves it unset. The runner can't reach this — it travels the
+          // host-internal sandbox:open-session hook, never the IPC wire. Conditional
+          // spread keeps the key ABSENT (not `undefined`) for user turns, matching
+          // the exactOptionalPropertyTypes posture.
+          ...(ctx.source !== undefined ? { source: ctx.source } : {}),
         },
         // Phase 6: credential-proxy is mandatory; proxyConfig is always set
         // by the time we reach this point (the !proxyOpenLoaded gate above

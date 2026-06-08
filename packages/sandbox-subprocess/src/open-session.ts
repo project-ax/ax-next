@@ -194,6 +194,10 @@ interface SessionCreateInput {
       model: string;
     };
     conversationId?: string;
+    // TASK-181 — host-derived session origin ('routine' | 'user'), forwarded
+    // verbatim into session:create. Host-only: it arrives on the
+    // sandbox:open-session hook (orchestrator → here), never from the runner.
+    source?: 'routine' | 'user';
   };
 }
 interface SessionCreateOutput {
@@ -466,6 +470,11 @@ export async function openSessionImpl(
         agentConfig: input.owner.agentConfig,
         ...(input.owner.conversationId !== undefined
           ? { conversationId: input.owner.conversationId }
+          : {}),
+        // TASK-181 — forward the host-derived session origin so session:create
+        // persists it. Conditional-spread keeps the key absent for user turns.
+        ...(input.owner.source !== undefined
+          ? { source: input.owner.source }
           : {}),
       };
     }

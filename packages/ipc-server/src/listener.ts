@@ -141,6 +141,19 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
     // silently no-op and the browser only learns the stream finished via
     // socket-close. AgentContext.conversationId is OPTIONAL — null on the
     // auth result becomes undefined on ctx (canary / admin sessions).
+    //
+    // TASK-181: also stamp the resolved session's HOST-DERIVED origin so the
+    // happy-path runner-completed `chat:end` (fired by /event.chat-end on THIS
+    // ctx) carries `ctx.source`. @ax/memory-strata reads it to skip its memory
+    // observer + consolidator on a scheduled @ax/routines fire — without this,
+    // the guard only fired on the orchestrator-synthesized error/terminated
+    // paths and in unit tests, never on a successful turn. SECURITY: `source`
+    // comes from the session record (set at session:create from the
+    // orchestrator's ctx.source), NOT from any runner-supplied frame field; an
+    // untrusted runner cannot forge `source: 'routine'` to suppress its memory.
+    // It is deliberately absent from @ax/ipc-protocol and never read off the
+    // inbound payload here. AgentContext.source is OPTIONAL — null on the auth
+    // result leaves the field off entirely (treated as a user turn).
     const ctx = makeAgentContext({
       sessionId: auth.sessionId,
       agentId: auth.agentId ?? 'ipc-server',
@@ -152,6 +165,7 @@ export async function createListener(opts: CreateListenerOptions): Promise<Liste
       ...(auth.conversationId !== null
         ? { conversationId: auth.conversationId }
         : {}),
+      ...(auth.source !== null ? { source: auth.source } : {}),
     });
     await dispatch(req, res, ctx, opts.bus);
   };

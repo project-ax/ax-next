@@ -33,10 +33,13 @@ describe('session return schemas', () => {
       userId: 'u1',
       agentId: 'a1',
       conversationId: 'c1',
+      // TASK-181 — a routine-originated session round-trips its origin so the
+      // schema can't silently strip it (which would re-break the happy-path guard).
+      source: 'routine',
     };
     expect(SessionResolveTokenOutputSchema.parse(full)).toEqual(full);
     expect(SessionResolveTokenOutputSchema.parse(null)).toBeNull();
-    // nullable owner fields are allowed (pre-9.5 sessions)
+    // nullable owner fields are allowed (pre-9.5 sessions); source null = user.
     expect(
       SessionResolveTokenOutputSchema.safeParse({
         sessionId: 's1',
@@ -44,6 +47,7 @@ describe('session return schemas', () => {
         userId: null,
         agentId: null,
         conversationId: null,
+        source: null,
       }).success,
     ).toBe(true);
   });

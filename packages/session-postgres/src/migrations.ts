@@ -114,6 +114,26 @@ export async function runSessionMigration<DB>(db: Kysely<DB>): Promise<void> {
     ALTER TABLE session_postgres_v2_session_agent
       ADD COLUMN IF NOT EXISTS conversation_id TEXT
   `.execute(db);
+
+  // ----- TASK-181: source on the v2 row ----------------------------------
+  //
+  // Forward-only additive ALTER (same shape as conversation_id above). The
+  // orchestrator populates this from `ctx.source` when minting a session: a
+  // scheduled @ax/routines fire stamps `'routine'`, an interactive user turn
+  // leaves it NULL. `resolveToken` reads it back so the IPC server can stamp
+  // it onto the happy-path runner-completed `chat:end` ctx, where
+  // @ax/memory-strata's routine-fire guard reads `ctx.source` to skip memory
+  // extraction on internal turns. Existing rows are NULL → treated as user.
+  //
+  // INSERT-once with the rest of the owner triple (no UPDATE path), so a
+  // nullable column doesn't dent I10 (session ↔ agent immutability). Stored as
+  // plain TEXT and constrained in code (the store only ever writes the two
+  // host-derived literals) — no CHECK constraint so a forward deploy can't
+  // wedge on a legacy value.
+  await sql`
+    ALTER TABLE session_postgres_v2_session_agent
+      ADD COLUMN IF NOT EXISTS source TEXT
+  `.execute(db);
 }
 
 export interface SessionRow {
@@ -154,6 +174,13 @@ export interface SessionAgentRow {
    * non-conversation sessions (canary, admin, pre-Task-15 records).
    */
   conversation_id: string | null;
+  /**
+   * TASK-181: host-derived session origin — `'routine'` for a scheduled
+   * @ax/routines fire, NULL for an interactive user turn (and for every
+   * pre-TASK-181 row). Stored as plain TEXT; the store only ever writes the
+   * two host-derived literals.
+   */
+  source: string | null;
   created_at: Date;
 }
 

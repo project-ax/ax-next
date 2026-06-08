@@ -1075,6 +1075,113 @@ describe('chat-orchestrator', () => {
   });
 
   // -------------------------------------------------------------------------
+  // TASK-181 — the orchestrator forwards the HOST-DERIVED ctx.source into
+  // owner.source on sandbox:open-session (→ session:create → the IPC server
+  // stamps it on the happy-path chat:end so @ax/memory-strata's routine-fire
+  // guard fires end-to-end). A routine fire stamps ctx.source='routine'; a
+  // user turn leaves it unset. The value comes ONLY from ctx (host-side),
+  // never from the runner wire.
+  // -------------------------------------------------------------------------
+  it('forwards ctx.source=routine into owner.source on sandbox:open-session', async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({ agent: { ...TEST_AGENT, id: 'a-resolved' } }),
+    });
+    let busRef: HookBus | null = null;
+    mocks.services['sandbox:open-session'] = async (ctx, input: unknown) => {
+      mocks.calls.sandboxOpen += 1;
+      mocks.calls.lastSandboxInput = input;
+      const sessionId = (input as { sessionId: string }).sessionId;
+      const originatingReqId = ctx.reqId;
+      setImmediate(() => {
+        void busRef!.fire(
+          'chat:end',
+          makeAgentContext({
+            sessionId,
+            agentId: 'a-resolved',
+            userId: 'test-user',
+            reqId: originatingReqId,
+            logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+          }),
+          { outcome: { kind: 'complete', messages: [] } },
+        );
+      });
+      return {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+      };
+    };
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef = h.bus;
+
+    // A routine-originated agent:invoke: the routine machinery stamps
+    // source='routine' on its fire ctx (see @ax/routines fire.ts).
+    const routineCtx = makeAgentContext({
+      sessionId: 'routine-session',
+      agentId: 'test-agent',
+      userId: 'test-user',
+      source: 'routine',
+      logger: createLogger({ reqId: 'orch-routine-test', writer: () => undefined }),
+    });
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      routineCtx,
+      { message: { role: 'user', content: 'reflect' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    const last = mocks.calls.lastSandboxInput as { owner: { source?: string } };
+    expect(last.owner.source).toBe('routine');
+  });
+
+  it('omits owner.source for a user turn (ctx.source unset)', async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({ agent: { ...TEST_AGENT, id: 'a-resolved' } }),
+    });
+    let busRef: HookBus | null = null;
+    mocks.services['sandbox:open-session'] = async (ctx, input: unknown) => {
+      mocks.calls.sandboxOpen += 1;
+      mocks.calls.lastSandboxInput = input;
+      const sessionId = (input as { sessionId: string }).sessionId;
+      const originatingReqId = ctx.reqId;
+      setImmediate(() => {
+        void busRef!.fire(
+          'chat:end',
+          makeAgentContext({
+            sessionId,
+            agentId: 'a-resolved',
+            userId: 'test-user',
+            reqId: originatingReqId,
+            logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+          }),
+          { outcome: { kind: 'complete', messages: [] } },
+        );
+      });
+      return {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+      };
+    };
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+    });
+    busRef = h.bus;
+
+    // silentCtx leaves source unset → a user turn.
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('user-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    const last = mocks.calls.lastSandboxInput as { owner: Record<string, unknown> };
+    // Conditional-spread keeps the key ABSENT (not undefined) for user turns.
+    expect('source' in last.owner).toBe(false);
+  });
+
+  // -------------------------------------------------------------------------
   // TASK-51 (JIT §P4) — the always-on broker tools (search_catalog +
   // request_capability) are locked into every MULTI-TENANT (non-wildcard)
   // agent's effective allowedTools at session-open, while the empty-empty

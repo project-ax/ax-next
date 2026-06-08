@@ -95,6 +95,16 @@ export interface SessionCreateInput {
     agentId: string;
     agentConfig: AgentConfig;
     conversationId?: string | null;
+    /**
+     * TASK-181: host-derived session origin — `'routine'` for a scheduled
+     * @ax/routines fire, `'user'`/absent for an interactive turn. Persisted
+     * on the session record and echoed back by `session:resolve-token` so the
+     * IPC server can stamp it onto the happy-path runner-completed `chat:end`
+     * ctx, where @ax/memory-strata reads `ctx.source` to skip memory
+     * extraction on internal turns. Host-only — it never arrives from the
+     * runner wire (absent from @ax/ipc-protocol). Optional; absent ≡ user.
+     */
+    source?: 'routine' | 'user';
   };
 }
 
@@ -126,6 +136,15 @@ export type SessionResolveTokenOutput =
       userId: string | null;
       agentId: string | null;
       conversationId: string | null;
+      /**
+       * TASK-181: host-derived session origin recorded at create time. The
+       * IPC server stamps it onto the per-request AgentContext so the
+       * happy-path runner-completed `chat:end` carries `source: 'routine'`
+       * for scheduled fires (and @ax/memory-strata's guard fires end-to-end,
+       * not just on the error/terminated/unit paths). Null for user / canary
+       * / admin / pre-TASK-181 sessions → memory runs normally.
+       */
+      source: 'routine' | 'user' | null;
     }
   | null;
 
@@ -247,6 +266,8 @@ export const SessionResolveTokenOutputSchema = z
     userId: z.string().nullable(),
     agentId: z.string().nullable(),
     conversationId: z.string().nullable(),
+    // TASK-181 — host-derived session origin echoed onto the resolve result.
+    source: z.enum(['routine', 'user']).nullable(),
   })
   .nullable() as unknown as ZodType<SessionResolveTokenOutput>;
 

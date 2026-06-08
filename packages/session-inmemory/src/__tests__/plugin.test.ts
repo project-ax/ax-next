@@ -102,6 +102,7 @@ describe('@ax/session-inmemory plugin', () => {
       userId: null,
       agentId: null,
       conversationId: null,
+      source: null,
     });
 
     const termResult = await h.bus.call<SessionTerminateInput, SessionTerminateOutput>(
@@ -228,7 +229,57 @@ describe('@ax/session-inmemory plugin', () => {
       userId: 'u-1',
       agentId: 'a-1',
       conversationId: null,
+      source: null,
     });
+  });
+
+  it('resolve-token carries source when owner carries one (TASK-181)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    const { token } = await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      ctx,
+      {
+        sessionId: 's-src-resolve',
+        workspaceRoot: '/tmp/ws',
+        owner: { ...OWNER, source: 'routine' },
+      },
+    );
+    const resolved = await h.bus.call<
+      SessionResolveTokenInput,
+      SessionResolveTokenOutput
+    >('session:resolve-token', ctx, { token });
+    // Bug regression (TASK-181): a missing source here meant the happy-path
+    // runner-completed chat:end carried no origin, so @ax/memory-strata's
+    // routine-fire guard never fired on a successful turn.
+    expect(resolved).toEqual({
+      sessionId: 's-src-resolve',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
+      conversationId: null,
+      source: 'routine',
+    });
+  });
+
+  it('session:create rejects a bogus owner.source value (TASK-181)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-bad-src',
+          workspaceRoot: '/tmp/ws',
+          owner: { ...OWNER, source: 'admin' as unknown as 'routine' | 'user' },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
   });
 
   it('resolve-token carries conversationId when owner carries one (Week 10–12 final review)', async () => {
@@ -256,6 +307,7 @@ describe('@ax/session-inmemory plugin', () => {
       userId: 'u-1',
       agentId: 'a-1',
       conversationId: 'cnv_resolve_1',
+      source: null,
     });
   });
 

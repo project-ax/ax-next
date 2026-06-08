@@ -93,6 +93,7 @@ function validateOwner(
       agentId: string;
       agentConfig: AgentConfig;
       conversationId: string | null;
+      source: 'routine' | 'user' | null;
     }
   | undefined {
   if (raw === undefined) return undefined;
@@ -108,6 +109,7 @@ function validateOwner(
   const agentId = (raw as { agentId?: unknown }).agentId;
   const agentConfig = (raw as { agentConfig?: unknown }).agentConfig;
   const conversationIdRaw = (raw as { conversationId?: unknown }).conversationId;
+  const sourceRaw = (raw as { source?: unknown }).source;
   requireString(userId, 'owner.userId', hookName);
   requireString(agentId, 'owner.agentId', hookName);
   if (typeof agentConfig !== 'object' || agentConfig === null) {
@@ -167,6 +169,24 @@ function validateOwner(
       message: `'owner.conversationId' must be a non-empty string or null/undefined`,
     });
   }
+  // source — TASK-181 — optional, accepts 'routine' | 'user' | null | undefined.
+  // Reject anything else so a wiring bug (or a smuggled value) fails loud rather
+  // than silently storing a record with a bogus origin. This is the HOST-side
+  // owner: the runner never reaches this hook, so the only writers are the
+  // orchestrator (forwarding ctx.source) and test harnesses.
+  let source: 'routine' | 'user' | null;
+  if (sourceRaw === undefined || sourceRaw === null) {
+    source = null;
+  } else if (sourceRaw === 'routine' || sourceRaw === 'user') {
+    source = sourceRaw;
+  } else {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.source' must be 'routine', 'user', or null/undefined`,
+    });
+  }
   return {
     userId,
     agentId,
@@ -178,6 +198,7 @@ function validateOwner(
       model: cfg.model as string,
     },
     conversationId,
+    source,
   };
 }
 
