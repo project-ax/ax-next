@@ -38,6 +38,7 @@ export type {
   ListInput,
   ListOutput,
   McpServerSpec,
+  OAuthCapabilitySlot,
   PackagesSpec,
   ResolveInput,
   ResolveOutput,
