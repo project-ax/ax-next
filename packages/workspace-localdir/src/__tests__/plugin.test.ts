@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { createTestHarness } from '@ax/test-harness';
 import type {
@@ -12,11 +13,20 @@ import { createWorkspaceLocaldirPlugin } from '../plugin.js';
 // @ax/workspace-localdir — the CLI/subprocess `sandbox:resolve-mounts` impl.
 //
 // Emits ONE per-agent `localDir` mount rooted under a real dev-host directory,
-// keyed off `owner.agentId` (validated `^[a-z0-9-]+$`). Returns `[]` when the
-// owner has no agentId (anonymous CLI session → graceful no-mount). This is
-// the canary/dev path — it gives a durable per-agent `/workspace` without a
-// real NFS server.
+// keyed off `owner.agentId` (validated `^[A-Za-z0-9_-]+$` — the base64url
+// alphabet, matching real `agt_<base64url>` ids). Returns `[]` when the owner
+// has no agentId (anonymous CLI session → graceful no-mount). This is the
+// canary/dev path — it gives a durable per-agent `/workspace` without a real
+// NFS server.
 // ---------------------------------------------------------------------------
+
+// Mint a real agentId exactly the way `@ax/agents` does (store.ts:mintAgentId).
+// 16 random bytes → base64url, prefixed `agt_`. Real ids always contain `_`
+// (the prefix separator) and usually uppercase — the shape that the original
+// `^[a-z0-9-]+$` gate rejected, leaving the user-files mount inert (TASK-175).
+function mintRealAgentId(): string {
+  return `agt_${randomBytes(16).toString('base64url')}`;
+}
 
 const OWNER = (
   agentId: string,
@@ -88,8 +98,29 @@ describe('@ax/workspace-localdir — sandbox:resolve-mounts', () => {
     expect(out.mounts).toEqual([]);
   });
 
-  it.each(['../escape', 'Agent-Abc', 'a/b', 'a b', '.', 'a..b', '/abs'])(
-    'returns [] for an agentId that fails ^[a-z0-9-]+$ (%s)',
+  // TASK-175 regression: a REAL minted id (`agt_<base64url>`, with `_` and
+  // usually uppercase) MUST resolve to a confined per-agent subtree under root.
+  // The original `^[a-z0-9-]+$` gate rejected every real agent → no mount, no
+  // `AX_USERFILES_ROOT`, EROFS on `/workspace`. Every prior test missed this by
+  // using hand-crafted lowercase-dash ids. We run a batch to cover the random
+  // alphabet (`_`, `-`, mixed case) across many mints.
+  it('emits a confined per-agent mount for a REAL minted agt_<base64url> id', async () => {
+    for (let i = 0; i < 50; i++) {
+      const realId = mintRealAgentId();
+      const out = await resolve('/var/lib/ax/userfiles', OWNER(realId));
+      expect(out.mounts).toHaveLength(1);
+      const m = out.mounts[0] as LocalDirMountSpec;
+      expect(m.kind).toBe('localDir');
+      // hostPath is exactly `<root>/<agentId>`: the id contributes one confined
+      // segment (no `/`, no `..`), so the join can't escape the root.
+      expect(m.hostPath).toBe(`/var/lib/ax/userfiles/${realId}`);
+      expect(m.hostPath.startsWith('/var/lib/ax/userfiles/')).toBe(true);
+      expect(m.role).toBe('user-files');
+    }
+  });
+
+  it.each(['../escape', 'a/b', 'a b', '.', 'a..b', '/abs', 'a.b', 'a/../b'])(
+    'returns [] for a traversal-unsafe agentId (%s)',
     async (bad) => {
       const out = await resolve('/var/lib/ax/userfiles', OWNER(bad));
       expect(out.mounts).toEqual([]);
