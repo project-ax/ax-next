@@ -33,6 +33,7 @@
     "@ax/chat-orchestrator": "workspace:*",
     "@ax/database-postgres": "workspace:*",
     "@ax/mcp-client": "workspace:*",
+    "@ax/routines": "workspace:*",
     "@ax/skill-broker": "workspace:*",
     "@ax/test-harness": "workspace:*",
     "@testcontainers/postgresql": "11.14.0",

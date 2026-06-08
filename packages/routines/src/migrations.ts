@@ -1,4 +1,5 @@
 import { sql, type Kysely, type Generated, type ColumnType } from 'kysely';
+import { SKILL_REFLECTION_PROMPT } from './reflection-prompt.js';
 
 // Heartbeat default seed content — mirrors heartbeat-template.ts (which is
 // deleted in Task 7; keep both in sync until then).
@@ -231,6 +232,43 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
        'HEARTBEAT_OK', 300, 'shared',
        'If nothing is outstanding, respond with HEARTBEAT_OK and end.',
        ${HEARTBEAT_SEED_MD})
+    ON CONFLICT (name) DO NOTHING
+  `.execute(db);
+
+  // skill-reflection default routine (TASK-178, skill-crystallization PR-C).
+  // Seeded with the GLOBAL master switch OFF (enabled=false): the routine is
+  // reachable + tested (the @ax/skills crystallization canary) but does not
+  // materialize/fire for any agent until an operator flips it on once via
+  // routines:upsert-default, after the manual-acceptance walk validates the
+  // loop on the cluster. This is a deliberate rollout gate / kill-switch, NOT
+  // half-wiring (the window closes when the walk flips it on).
+  //
+  // - conversation 'per-fire': each fire gets its own hidden conversation, so
+  //   one reflection turn never leaks state into the next (matches the design's
+  //   hidden per-fire reflection turn).
+  // - silence_token 'REFLECTION_DONE': a no-op pass ends with exactly this
+  //   token (the prompt's Step 1/Step 4 contract) and is recorded `silenced`,
+  //   never surfaced to the user. Kept in sync with SKILL_REFLECTION_PROMPT.
+  // - interval 24h (86400s): matches the heartbeat precedent and staggers each
+  //   agent's fire by its materialization time (no 3am herd) — refines the
+  //   design's "nightly cron" open-decision to interval, per the plan.
+  // - silence_max 4000: the reflection turn's reasoning is longer than
+  //   heartbeat's terse check-in; a higher silence budget avoids truncating a
+  //   legitimate REFLECTION_DONE pass.
+  // ON CONFLICT (name) DO NOTHING — idempotent re-runs (the UNIQUE name
+  // constraint), and never clobbers an operator's later edits to the row.
+  await sql`
+    INSERT INTO default_routines_v1
+      (default_routine_id, name, description, spec_hash, trigger_kind,
+       trigger_spec, interval_seconds, silence_token, silence_max,
+       conversation, prompt_body, source_md, enabled)
+    VALUES
+      ('skill-reflection', 'skill-reflection',
+       'Autonomously graduate recurring procedures from memory into durable skills.',
+       'seed-2026-06-08',
+       'interval', ${'{"kind":"interval","every":"24h"}'}::jsonb, 86400,
+       'REFLECTION_DONE', 4000, 'per-fire',
+       ${SKILL_REFLECTION_PROMPT}, 'seed', false)
     ON CONFLICT (name) DO NOTHING
   `.execute(db);
 
