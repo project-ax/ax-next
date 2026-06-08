@@ -496,28 +496,42 @@ onboarding:
 #      OIDC providers (Google, GitHub, generic).
 #
 # The legacy `auth.devBootstrap` and `auth.google` blocks were retired
-# in Phase 3 (commit history: deploy/charts/ax-next/values.yaml). There
-# is intentionally no operator-facing `auth:` config key here — providers
-# live in the DB, and the one secret @ax/auth-better needs is generated
-# for you (see below).
+# in Phase 3 (commit history: deploy/charts/ax-next/values.yaml) —
+# providers live in the DB now, not in values. The one operator-facing
+# auth knob is `auth.secret` below.
 #
 # `AX_AUTH_SECRET` (read by @ax/auth-better) is the stable secret used
-# for OAuth state signing and at-rest OAuth-token encryption. You don't
-# supply it — the chart generates 32 bytes of entropy at first install
-# and stashes it in the `<release>-secrets` Secret under the `auth-secret`
-# key. A `lookup` guard keeps it stable across `helm upgrade`, so we never
-# regenerate it out from under you.
+# for OAuth state signing and at-rest OAuth-token encryption. Normally
+# you DON'T supply it — leave `auth.secret` empty and the chart generates
+# 32 bytes of entropy at first install, stashing it in the
+# `<release>-secrets` Secret under the `auth-secret` key. A `lookup` guard
+# keeps it stable across `helm upgrade`, so we never regenerate it out
+# from under you.
 #
 # Keep this one stable. If the secret changes, every OAuth token we
 # already encrypted with the old value becomes undecryptable — users have
 # to re-link their providers. We're paranoid about this for good reason.
 #
-# Need to supply or rename the secret yourself (e.g. your GitOps tooling
-# provisions all secrets out-of-band)? The chart reads it via a
-# `secretKeyRef` in `templates/host/deployment.yaml` — point that at your
-# own Secret/key there. There's no `existingSecret` value for it; we'd
-# rather you edit the one obvious spot than wire up an indirection that
-# silently no-ops if you typo it.
+# `auth.secret` — the escape hatch for when you NEED to pin the value:
+# standing up a brand-new cluster against an EXISTING database (e.g. a
+# cluster migration). A fresh cluster has no in-cluster Secret to look up,
+# so it'd otherwise generate a NEW auth-secret and orphan every OAuth
+# token the old cluster encrypted → broken logins. Set
+# `--set auth.secret=$OLD_AUTH_SECRET` (the DECODED value, same as
+# `credentials.key`) and the new cluster reuses the old secret. Precedence:
+# an existing in-cluster `auth-secret` always wins (so this is a no-op on
+# an upgrade — by design); otherwise this value is used; otherwise one is
+# generated. See deploy/GKE.md Step M4.
+#
+# Prefer your GitOps tooling provision it out-of-band? You can also point
+# the `secretKeyRef` in `templates/host/deployment.yaml` at your own
+# Secret/key. There's no `existingSecret` value for that path; we'd rather
+# you edit the one obvious spot than wire up an indirection that silently
+# no-ops if you typo it.
+auth:
+  # Leave empty to auto-generate (the normal case). Set ONLY to carry an
+  # existing AX_AUTH_SECRET onto a fresh cluster (decoded value).
+  secret: ""
 
 # ─── Network policies ────────────────────────────────────────────
 # `enabled: true` is the safe default. Disabling is supported only for

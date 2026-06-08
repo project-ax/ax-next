@@ -987,3 +987,64 @@ describeIfHelm('ax-next chart: host RBAC Role (TASK-160)', () => {
     expect(allResources).not.toContain('pods/portforward');
   });
 });
+
+// TASK-169: `auth.secret` value lets an operator SUPPLY AX_AUTH_SECRET at install
+// instead of accepting a chart-generated random one. The pain: standing up a fresh
+// cluster against an existing DB (the GKE Autopilot→Standard migration, PR #330)
+// mints a NEW auth-secret, so every Google-linked account can no longer decrypt its
+// stored OAuth tokens → broken logins. The value collapses the old backup+kubectl
+// patch workaround to one `--set`. It mirrors credentials-key/http-cookie-key:
+// existing in-cluster value wins → else `--set auth.secret | b64enc` → else
+// randBytes (today's default, preserved so fresh installs still work without it).
+describeIfHelm('ax-next chart: auth.secret value (TASK-169)', () => {
+  const SECRET_NAME = 'ax-test-ax-next-secrets';
+
+  /** Pull the rendered host Secret's data map. */
+  function secretData(extraArgs: readonly string[]): Record<string, string> {
+    const docs = helmTemplate(extraArgs);
+    const secret = docs.find(
+      (d) => d.kind === 'Secret' && d.metadata?.name === SECRET_NAME,
+    );
+    expect(secret, 'host Secret renders').toBeDefined();
+    return (secret!.data ?? {}) as Record<string, string>;
+  }
+
+  it('default (no --set auth.secret): auth-secret is auto-generated and non-empty', () => {
+    const data = secretData([]);
+    expect(data['auth-secret'], 'auth-secret key present').toBeDefined();
+    // 32 bytes base64 = 44 chars (ending in `=`). Just assert non-trivial length;
+    // we don't pin the exact value (it's random).
+    expect((data['auth-secret'] ?? '').length).toBeGreaterThan(20);
+  });
+
+  it('--set auth.secret=<raw>: data.auth-secret is base64(<raw>)', () => {
+    const raw = 'my-operator-supplied-auth-secret-value';
+    const data = secretData(['--set', `auth.secret=${raw}`]);
+    expect(data['auth-secret']).toBe(Buffer.from(raw, 'utf8').toString('base64'));
+  });
+
+  it('--set auth.secret is deterministic across renders (the value path, not random)', () => {
+    const raw = 'stable-secret-across-renders';
+    const a = secretData(['--set', `auth.secret=${raw}`]);
+    const b = secretData(['--set', `auth.secret=${raw}`]);
+    expect(a['auth-secret']).toBe(b['auth-secret']);
+    expect(a['auth-secret']).toBe(Buffer.from(raw, 'utf8').toString('base64'));
+  });
+
+  it('auto-gen path stays RANDOM: two default renders differ (we did not break generation)', () => {
+    const a = secretData([]);
+    const b = secretData([]);
+    expect(a['auth-secret']).not.toBe(b['auth-secret']);
+  });
+
+  it('credentials-key / http-cookie-key are unaffected (still b64enc of the --set value)', () => {
+    // Guards that adding the auth.secret branch didn't disturb the sibling keys.
+    const raw = 'whatever';
+    const data = secretData(['--set', `auth.secret=${raw}`]);
+    // REQUIRED passes credentials.key=test, http.cookieKey=000...0
+    expect(data['credentials-key']).toBe(Buffer.from('test', 'utf8').toString('base64'));
+    expect(data['http-cookie-key']).toBe(
+      Buffer.from('0'.repeat(64), 'utf8').toString('base64'),
+    );
+  });
+});
