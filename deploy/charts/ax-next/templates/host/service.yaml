@@ -5,6 +5,15 @@ metadata:
   namespace: {{ include "ax-next.hostNamespace" . }}
   labels:
     {{- include "ax-next.componentLabels" (dict "component" "host" "context" $) | nindent 4 }}
+  {{- if .Values.ingress.backendConfig.enabled }}
+  annotations:
+    # GKE-only (TASK-168): binds the GCE LB backend for this Service to the
+    # BackendConfig (backendconfig.yaml) that raises timeoutSec, so long-lived
+    # SSE chat streams aren't cut at the LB's 30s default. Templating it here
+    # (instead of a hand-applied `kubectl annotate`) keeps it surviving
+    # `helm upgrade` — a manual annotation drops on the next Service re-render.
+    cloud.google.com/backend-config: '{"default":{{ include "ax-next.backendConfigName" . | quote }}}'
+  {{- end }}
 spec:
   type: ClusterIP
   selector:

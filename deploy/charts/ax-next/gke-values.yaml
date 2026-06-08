@@ -154,6 +154,13 @@ ingress:
     kubernetes.io/ingress.class: gce                         # selects glbc (see note above)
     kubernetes.io/ingress.global-static-ip-name: ax-next-ip  # >>> EDIT (reserved global IP name)
     networking.gke.io/managed-certificates: ax-next-cert     # >>> EDIT (ManagedCertificate name)
+  # SSE backend timeout: the GCE LB defaults backend timeoutSec to 30s and cuts
+  # long-lived chat streams mid-answer. ON for any GCE-ingress deploy — renders a
+  # BackendConfig (timeoutSec below) + the host Service's backend-config
+  # annotation, both surviving `helm upgrade`. See deploy/GKE.md Step M7.
+  backendConfig:
+    enabled: true
+    timeoutSec: 3600   # 1h headroom; raise if you expect very long single turns
 
 # ─── HTTP server (public surface) ────────────────────────────────
 # cookieKey signs the auth session cookie — provide via `--set http.cookieKey=`

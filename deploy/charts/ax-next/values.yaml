@@ -545,6 +545,23 @@ ingress:
   host: ""
   tls: false
   tlsSecretName: ""
+  # ─── GKE BackendConfig (SSE timeout) ───────────────────────────
+  # On GCE-ingress deploys (GKE Autopilot OR Standard), the Application LB
+  # defaults the backend `timeoutSec` to 30s and applies it to the whole
+  # response — not idle time. Chat replies stream over a long-lived SSE
+  # connection, so a turn that runs past 30s gets cut mid-answer and the UI
+  # shows "Connection lost". Enabling this renders a `BackendConfig`
+  # (cloud.google.com/v1) with a generous `timeoutSec` and stamps the
+  # `cloud.google.com/backend-config` annotation on the host Service to bind
+  # the LB backend to it — both survive `helm upgrade` (a hand-applied
+  # annotation would drop on the next Service re-render).
+  #
+  # OFF by default: `cloud.google.com/v1` is a GKE-only CRD, so non-GKE
+  # backends (kind) have no such type. The GKE overlay (gke-values.yaml)
+  # flips it on. Harmless without an Ingress — it's just an unused object.
+  backendConfig:
+    enabled: false
+    timeoutSec: 3600   # LB backend response timeout (seconds); 1h headroom for long turns
 
 # ─── Skills / capability acquisition ─────────────────────────────
 # JIT open mode (design decision #5 / §10). When true, the agent may

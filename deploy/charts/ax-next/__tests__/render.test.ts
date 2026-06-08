@@ -898,6 +898,67 @@ describeIfHelm('ax-next chart: LB health-check NetworkPolicy ingress (lbHealthCh
   });
 });
 
+describeIfHelm('ax-next chart: GKE BackendConfig + SSE timeout (TASK-168)', () => {
+  // The GCE Application LB defaults backend timeoutSec=30, which cuts long-lived
+  // SSE chat streams mid-answer ("Connection lost"). The fix is a BackendConfig
+  // (cloud.google.com/v1) with a generous timeoutSec + the host Service's
+  // cloud.google.com/backend-config annotation binding the LB backend to it.
+  // Templating both into the chart (gated behind ingress.backendConfig.enabled)
+  // keeps them surviving `helm upgrade` — a hand-applied annotation drops on the
+  // next re-render and the timeout silently reverts to 30s. The CRD is GKE-only
+  // (kind has no cloud.google.com/v1 type), so it must stay off by default.
+  const HOST_SVC = 'ax-test-ax-next-host';
+  const BC_NAME = 'ax-test-ax-next-host-bc';
+  const bcArgs = ['--set', 'ingress.backendConfig.enabled=true'];
+
+  it('default (off): no BackendConfig renders', () => {
+    const docs = helmTemplate([]);
+    const bc = docs.find((d) => d.kind === 'BackendConfig');
+    expect(bc, 'no BackendConfig in the default (non-GKE) posture').toBeUndefined();
+  });
+
+  it('default (off): host Service has NO backend-config annotation', () => {
+    const docs = helmTemplate([]);
+    const svc = docs.find(
+      (d) => d.kind === 'Service' && d.metadata?.name === HOST_SVC,
+    );
+    expect(svc, 'host Service renders').toBeDefined();
+    expect(svc?.metadata?.annotations?.['cloud.google.com/backend-config']).toBeUndefined();
+  });
+
+  it('enabled: a BackendConfig renders with apiVersion cloud.google.com/v1 and the default timeoutSec=3600', () => {
+    const docs = helmTemplate(bcArgs);
+    const bc = docs.find((d) => d.kind === 'BackendConfig');
+    expect(bc, 'BackendConfig renders when enabled').toBeDefined();
+    expect(bc?.apiVersion).toBe('cloud.google.com/v1');
+    expect(bc?.metadata?.name).toBe(BC_NAME);
+    expect(bc?.spec?.timeoutSec).toBe(3600);
+  });
+
+  it('enabled: ingress.backendConfig.timeoutSec overrides the default', () => {
+    const docs = helmTemplate([...bcArgs, '--set', 'ingress.backendConfig.timeoutSec=120']);
+    const bc = docs.find((d) => d.kind === 'BackendConfig');
+    expect(bc?.spec?.timeoutSec).toBe(120);
+  });
+
+  it('enabled: host Service carries the backend-config annotation pointing at the BackendConfig name', () => {
+    const docs = helmTemplate(bcArgs);
+    const svc = docs.find(
+      (d) => d.kind === 'Service' && d.metadata?.name === HOST_SVC,
+    );
+    const annotation = svc?.metadata?.annotations?.['cloud.google.com/backend-config'];
+    expect(annotation, 'backend-config annotation present').toBeDefined();
+    // The value is the JSON GKE expects: {"default":"<bc-name>"}.
+    const parsed = JSON.parse(annotation as string);
+    expect(parsed).toEqual({ default: BC_NAME });
+
+    // Cross-check: the annotation must reference the SAME name the BackendConfig
+    // renders with, or the LB binds to a backend object that doesn't exist.
+    const bc = docs.find((d) => d.kind === 'BackendConfig');
+    expect(parsed.default).toBe(bc?.metadata?.name);
+  });
+});
+
 describeIfHelm('ax-next chart: host RBAC Role (TASK-160)', () => {
   it('grants pods verbs + a narrow pods/log:get for sidecar-failure diagnosis', () => {
     const docs = helmTemplate([]);
