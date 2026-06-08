@@ -63,10 +63,34 @@ export interface ConnectorMcpServerSpec {
   credentials: Array<{ slot: string; kind: string; description?: string; account?: string }>;
 }
 
+// Structural mirror of @ax/connectors' `CapabilitySlotSchema` (I2 — no
+// cross-plugin import). A connector credential slot is a discriminated union on
+// `kind`: the api-key variant (the historical shape) and the OAuth variant added
+// for MCP OAuth connectors. The orchestrator's fold reads `kind` (→ the
+// credential map's classification kind) + `slot`/`account`; the OAuth-only fields
+// (`server`, `scopes`, …) are carried so an oauth slot type-checks through the
+// fold, but the fold itself doesn't consume them (the OAuth callback + the
+// `credentials:resolve:mcp-oauth` resolver own them store-side). Drift surfaces as
+// a runtime shape error at the connectors:resolve bus call site.
+export type ConnectorCredentialSlot =
+  | { slot: string; kind: 'api-key'; description?: string; account?: string }
+  | {
+      slot: string;
+      kind: 'oauth';
+      server: string;
+      scopes?: string[];
+      clientId?: string;
+      clientSecretRef?: string;
+      authServerUrl?: string;
+      tokenUrl?: string;
+      description?: string;
+      account?: string;
+    };
+
 // Structural mirror of @ax/skills-parser's Capabilities (I2).
 export interface ConnectorCapabilities {
   allowedHosts: string[];
-  credentials: Array<{ slot: string; kind: string; description?: string; account?: string }>;
+  credentials: ConnectorCredentialSlot[];
   mcpServers: ConnectorMcpServerSpec[];
   packages?: { npm?: string[]; pypi?: string[] };
   /**
@@ -447,7 +471,15 @@ export function foldConnectorCaps(
           ? slotDef.account
           : c.id;
       const ref = isMulti ? `account:${service}:${slotDef.slot}` : `account:${service}`;
-      baseCreds[envName] = { ref, kind: slotDef.kind };
+      // An `oauth` connector slot folds to the `mcp-oauth` credential kind —
+      // the vault envelope kind the OAuth callback STORES (so resolve/refresh
+      // dispatches to `credentials:resolve:mcp-oauth`) AND the kind the proxy
+      // CLASSIFIES as `'mcp'` traffic + flags for per-turn rotation. The credential
+      // VALUE is resolved later by `credentials:get(ref)`; this `kind` is for
+      // classification/materialization, not resolution. The `api-key` path is
+      // unchanged (identity map).
+      const credKind = slotDef.kind === 'oauth' ? 'mcp-oauth' : slotDef.kind;
+      baseCreds[envName] = { ref, kind: credKind };
       slotOwners.set(envName, `connector:${c.id}`);
       connectorSlotEnvNames.push({ envName, bareSlot: slotDef.slot });
     }
@@ -495,6 +527,13 @@ export function foldConnectorCaps(
       ],
       mcpServers: c.capabilities.mcpServers,
       allowedHosts: c.capabilities.allowedHosts,
+      // The installed-entry `kind` stays `'api-key'` even for an oauth slot — it
+      // is NOT the resolution/classification kind (that's the `baseCreds` entry
+      // above). This field rides the `installedSkills[].credentials[]` wire shape
+      // (@ax/sandbox-protocol `InstalledSkillSchema`), which is `z.literal('api-key')`
+      // and whose ONLY consumer (`buildGitCredentialEnv`) reads `slot`/`placeholder`
+      // and ignores `kind`. So it's a fixed wire placeholder here; mapping it to
+      // `mcp-oauth` would fail the wire schema without any resolution benefit.
       credentials: c.capabilities.credentials.map((cr) => ({
         slot: cr.slot,
         kind: 'api-key' as const,

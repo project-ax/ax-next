@@ -161,6 +161,14 @@ const PLUGINS_TO_DROP = new Set<string>([
   // by @ax/connectors' own testcontainer suite; drop here so these sub-tests
   // don't need a postgres testcontainer.
   '@ax/connectors',
+  // mcp-oauth (T11): postgres-backed (database:get-instance) and, with
+  // mountRoutes:true in the preset, hard-calls http:register-route +
+  // auth:require-user + connectors:get + agents:resolve + credentials:get/set
+  // — http-server / auth-better / connectors / agents are all dropped above,
+  // so its calls would be unsatisfied and bootstrap's verifyCalls would fail.
+  // Not on these chat-path canaries; its static wiring + reachability are
+  // pinned in preset.test.ts and the full boot lane (prod-bootstrap.test.ts).
+  '@ax/mcp-oauth',
   // Agents plugin is postgres-backed and depends on http+auth above; we
   // mount a permissive `agents:resolve` mock plugin further down.
   '@ax/agents',

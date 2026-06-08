@@ -1,7 +1,6 @@
 import { z, type ZodType } from 'zod';
 import type {
   Capabilities,
-  CapabilitySlot,
   McpServerSpec,
   PackagesSpec,
   ServiceDescriptor,
@@ -39,7 +38,35 @@ import type { CredentialPlanEntry } from './credential-plan.js';
 // TYPE-import the interface and re-declare the zod validator LOCALLY below, so
 // no runtime edge to @ax/skills-parser is created.
 // ---------------------------------------------------------------------------
-export type { Capabilities, CapabilitySlot, McpServerSpec, PackagesSpec, ServiceDescriptor };
+export type { Capabilities, McpServerSpec, PackagesSpec, ServiceDescriptor };
+
+/**
+ * An OAuth credential slot — `server` names the mcpServers[] entry whose
+ * resource URL is the OAuth protected resource. Pinned client fields are
+ * optional (DCR is the default path). No backend vocabulary: `.strict()` on
+ * the zod schema rejects smuggled transport/command/url fields.
+ */
+export interface OAuthCapabilitySlot {
+  slot: string;
+  kind: 'oauth';
+  server: string;
+  scopes?: string[];
+  clientId?: string;
+  clientSecretRef?: string;
+  authServerUrl?: string;
+  tokenUrl?: string;
+}
+
+/**
+ * A credential slot declared inside a connector's Capabilities. Either an
+ * API-key slot (back-compat with existing connectors) or an OAuth slot (new
+ * for MCP connectors that use the OAuth authorization flow). Replaces the
+ * @ax/skills-parser CapabilitySlot (which is api-key-only) for all
+ * @ax/connectors consumers.
+ */
+export type CapabilitySlot =
+  | { slot: string; kind: 'api-key'; description?: string; account?: string }
+  | OAuthCapabilitySlot;
 
 /**
  * Local zod validator for the type-imported {@link Capabilities} shape. The
@@ -56,14 +83,37 @@ export type { Capabilities, CapabilitySlot, McpServerSpec, PackagesSpec, Service
  */
 // Each connector owns its own key(s): there is NO share-by-service `account`
 // tag. A slot's vault ref is keyed by the connector id (see credential-plan.ts).
-// `account` is deliberately ABSENT from the schema, so a legacy `account` field
-// on stored JSONB is STRIPPED on read (zod drops unknown keys) — the read path
-// can therefore never resurrect the old shared-key behaviour.
-const CapabilitySlotSchema = z.object({
+// `account` is deliberately ABSENT from the api-key schema, so a legacy `account`
+// field on stored JSONB is STRIPPED on read (zod drops unknown keys on non-strict
+// objects) — the read path can therefore never resurrect the old shared-key
+// behaviour. NOTE: the api-key variant deliberately does NOT use `.strict()` to
+// preserve that silent-strip behaviour for legacy `account` field on stored rows.
+const ApiKeySlotSchema = z.object({
   slot: z.string(),
   kind: z.literal('api-key'),
   description: z.string().optional(),
 });
+
+// OAuth slot: `server` names the mcpServers[] entry whose `url` is the OAuth
+// resource. Pinned client fields are optional (DCR is the default path). No
+// backend vocabulary leaks — `.strict()` rejects smuggled transport/command/url.
+const OAuthSlotSchema = z
+  .object({
+    slot: z.string(),
+    kind: z.literal('oauth'),
+    server: z.string(),
+    scopes: z.array(z.string()).optional(),
+    clientId: z.string().optional(),
+    clientSecretRef: z.string().optional(),
+    authServerUrl: z.string().url().optional(),
+    tokenUrl: z.string().url().optional(),
+  })
+  .strict();
+
+const CapabilitySlotSchema = z.discriminatedUnion('kind', [
+  ApiKeySlotSchema,
+  OAuthSlotSchema,
+]);
 
 const McpServerSpecSchema = z.object({
   name: z.string(),

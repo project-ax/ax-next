@@ -11,7 +11,7 @@ import {
 } from '@ax/core';
 import { createTestHarness } from '@ax/test-harness';
 import { createChatOrchestratorPlugin } from '../index.js';
-import { withBrokerDefaults } from '../orchestrator.js';
+import { withBrokerDefaults, sessionNeedsCredentialRotation } from '../orchestrator.js';
 
 // Default agent stub — every test gets its own copy via spread to avoid
 // accidental mutation. Mirrors @ax/agents' AgentRecord shape (the
@@ -4977,6 +4977,54 @@ describe('withBrokerDefaults', () => {
     const input = ['file.read'];
     withBrokerDefaults(input, []);
     expect(input).toEqual(['file.read']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// sessionNeedsCredentialRotation — the I10 per-turn rotation gate predicate
+// (design §7b). The gate runs over the MERGED `unionedCreds` set (after
+// foldConnectorCaps), not `agent.requiredCredentials` — a connector-sourced
+// `mcp-oauth` credential lands ONLY in the merged set, so gating on the agent
+// row would never arm rotation for a connector-only OAuth session and the
+// proxy would substitute a stale access token after ~1h (warm sessions persist
+// under keepAlive:true). These pin the predicate's contract directly; the
+// orchestrator wiring calls this exact helper at the gate site.
+// ---------------------------------------------------------------------------
+describe('sessionNeedsCredentialRotation', () => {
+  it('arms rotation for a connector-sourced mcp-oauth credential (the §7b bug)', () => {
+    // The exact shape foldConnectorCaps writes into unionedCreds for an oauth
+    // connector slot — present in the merged set, absent from the agent row.
+    expect(
+      sessionNeedsCredentialRotation({
+        'connector:example:MCP_TOKEN': { kind: 'mcp-oauth' },
+      }),
+    ).toBe(true);
+  });
+
+  it('arms rotation for any non-api-key kind (e.g. oauth)', () => {
+    expect(sessionNeedsCredentialRotation({ SLOT: { kind: 'oauth' } })).toBe(true);
+  });
+
+  it('does NOT arm rotation for an all-api-key set', () => {
+    expect(
+      sessionNeedsCredentialRotation({
+        ANTHROPIC_API_KEY: { kind: 'api-key' },
+        'connector:linear:LINEAR_API_KEY': { kind: 'api-key' },
+      }),
+    ).toBe(false);
+  });
+
+  it('does NOT arm rotation for an empty set', () => {
+    expect(sessionNeedsCredentialRotation({})).toBe(false);
+  });
+
+  it('arms rotation when a mix contains one refreshable kind', () => {
+    expect(
+      sessionNeedsCredentialRotation({
+        ANTHROPIC_API_KEY: { kind: 'api-key' },
+        'connector:example:MCP_TOKEN': { kind: 'mcp-oauth' },
+      }),
+    ).toBe(true);
   });
 });
 

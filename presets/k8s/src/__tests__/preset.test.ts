@@ -196,6 +196,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/http-server',
         '@ax/ipc-http',
         '@ax/mcp-client',
+        '@ax/mcp-oauth',
         '@ax/onboarding',
         '@ax/routines',
         '@ax/routines-admin-routes',
@@ -289,6 +290,33 @@ describe('@ax/preset-k8s wiring', () => {
       'http:register-route',
       'auth:require-user',
       'credentials:list',
+    ]);
+  });
+
+  it('loads @ax/mcp-oauth and registers credentials:resolve:mcp-oauth + mounts its OAuth routes (T11)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const mcpOAuth = plugins.find((p) => p.manifest.name === '@ax/mcp-oauth');
+    expect(mcpOAuth).toBeDefined();
+    // The OAuth credential kind — the refresh-on-read resolver that
+    // `@ax/credentials` dispatches per-kind from `credentials:get` when the
+    // stored envelope's kind is `mcp-oauth` (the credential-proxy only
+    // CLASSIFIES the resulting `mcp-*` traffic; it does not dispatch this).
+    expect(mcpOAuth!.manifest.registers).toEqual([
+      'credentials:resolve:mcp-oauth',
+    ]);
+    // mountRoutes:true in the preset expands the manifest `calls` to the OAuth
+    // route + resolver deps. All are registered by plugins loaded above
+    // (postgres trio → database:get-instance, http-server, auth-better,
+    // @ax/connectors, @ax/agents, @ax/credentials); the "every calls entry is
+    // satisfied" test above derives this dynamically — this pins the edge.
+    expect(mcpOAuth!.manifest.calls).toEqual([
+      'database:get-instance',
+      'http:register-route',
+      'auth:require-user',
+      'connectors:get',
+      'agents:resolve',
+      'credentials:get',
+      'credentials:set',
     ]);
   });
 

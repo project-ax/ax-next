@@ -29,6 +29,7 @@
     { "path": "../../packages/blob-store-s3" },
     { "path": "../../packages/llm-anthropic" },
     { "path": "../../packages/mcp-client" },
+    { "path": "../../packages/mcp-oauth" },
     { "path": "../../packages/memory-strata" },
     { "path": "../../packages/memory-strata-index-postgres" },
     { "path": "../../packages/credential-proxy" },

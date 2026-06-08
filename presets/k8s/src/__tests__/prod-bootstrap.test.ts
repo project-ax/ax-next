@@ -215,6 +215,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
     '@ax/teams',
     '@ax/chat-orchestrator',
     '@ax/mcp-client',
+    '@ax/mcp-oauth',
     '@ax/agents',
     '@ax/skills',
     '@ax/admin-settings-routes',

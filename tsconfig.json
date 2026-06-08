@@ -41,6 +41,7 @@
     { "path": "packages/conversation-titles" },
     { "path": "packages/conversations" },
     { "path": "packages/connectors" },
+    { "path": "packages/mcp-oauth" },
     { "path": "packages/attachments" },
     { "path": "packages/credential-proxy" },
     { "path": "packages/credential-proxy-bridge" },

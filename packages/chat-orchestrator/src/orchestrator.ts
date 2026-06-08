@@ -801,6 +801,29 @@ export function withBrokerDefaults(
   return out;
 }
 
+/**
+ * I10 — does this session need per-turn credential rotation?
+ *
+ * A session is armed for rotation iff ANY credential in its FINAL merged set
+ * has a non-`api-key` kind (the kinds whose backing token expires — `oauth`,
+ * `mcp-oauth`, …). `api-key` creds never refresh, so an all-`api-key` (or
+ * empty) session stays put.
+ *
+ * IMPORTANT — this must run over the MERGED session credential set
+ * (`unionedCreds` after `foldConnectorCaps`), NOT `agent.requiredCredentials`.
+ * A connector-sourced `mcp-oauth` credential lands in the merged set via the
+ * connector fold, never on the agent row — so gating on
+ * `agent.requiredCredentials` would silently never arm rotation for a
+ * connector-only OAuth session, and the proxy would substitute a stale access
+ * token after ~1h (warm sessions persist under `keepAlive:true`). Connector
+ * OAuth creds are refreshable too; the gate must consider the merged set.
+ */
+export function sessionNeedsCredentialRotation(
+  creds: Record<string, { kind: string }>,
+): boolean {
+  return Object.values(creds).some((c) => c.kind !== 'api-key');
+}
+
 export function createOrchestrator(
   bus: HookBus,
   config: ChatOrchestratorConfig,
@@ -2120,18 +2143,23 @@ export function createOrchestrator(
         bareEnvMap,
         opened.proxyAuthToken,
       );
-      // I10 — flag the session for per-turn rotation when ANY required
-      // credential has a non-`api-key` kind. The credentials facade's
-      // resolve sub-service handles the actual refresh; rotate-session
+      // I10 — flag the session for per-turn rotation when ANY credential in
+      // the MERGED session set has a non-`api-key` kind. The credentials
+      // facade's resolve sub-service handles the actual refresh; rotate-session
       // re-resolves through the facade and updates the placeholder map.
       // I11 — the placeholder envMap stays stable across rotations; only
       // the registry's placeholder→real-value mapping updates. We don't
       // propagate the new envMap into the running runner.
-      const reqs = agent.requiredCredentials ?? {};
-      const hasRefreshableKind = Object.values(reqs).some(
-        (c) => c.kind !== 'api-key',
-      );
-      if (hasRefreshableKind && bus.hasService('proxy:rotate-session')) {
+      //
+      // Gate over `unionedCreds` (the merged set handed to proxy:open-session),
+      // NOT `agent.requiredCredentials`: connector-sourced `mcp-oauth` creds are
+      // folded into `unionedCreds` by foldConnectorCaps and are refreshable too,
+      // so the gate must consider the merged set or a connector-only OAuth
+      // session never rotates (stale token after ~1h on a warm session).
+      if (
+        sessionNeedsCredentialRotation(unionedCreds) &&
+        bus.hasService('proxy:rotate-session')
+      ) {
         sessionsNeedingRotation.add(ctx.sessionId);
       }
     } catch (err) {

@@ -440,6 +440,50 @@ describe('foldConnectorCaps', () => {
     expect(creds['connector:linear:LINEAR_API_KEY']!.ref).toBe('account:linear');
   });
 
+  // TASK (mcp-oauth) — an OAuth connector slot folds to the `mcp-oauth`
+  // credential kind in baseCreds. That kind drives the proxy's traffic
+  // CLASSIFICATION (`'mcp'` for `mcp-*` kinds); the stored envelope kind (also
+  // `mcp-oauth`, written by the OAuth callback) drives the resolve/refresh.
+  // Per-turn ROTATION is NOT driven by the fold — it's armed by the orchestrator
+  // gate (`sessionNeedsCredentialRotation` over the merged `unionedCreds`), which
+  // sees this folded `mcp-oauth` entry as a non-`api-key` kind. The api-key path
+  // stays byte-identical.
+  it('maps an oauth connector slot to the mcp-oauth credential kind', () => {
+    const baseAllowSet = new Set<string>();
+    const baseCreds: Record<string, { ref: string; kind: string }> = {};
+    const slotOwners = new Map<string, string>();
+    foldConnectorCaps(
+      [
+        {
+          id: 'example',
+          usageNote: '',
+          capabilities: {
+            allowedHosts: ['mcp.example.com'],
+            packages: { npm: [], pypi: [] },
+            services: [],
+            mcpServers: [
+              {
+                name: 'example',
+                transport: 'http',
+                url: 'https://mcp.example.com',
+                allowedHosts: ['mcp.example.com'],
+                credentials: [],
+              },
+            ],
+            credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'example' }],
+          },
+        },
+      ],
+      baseAllowSet,
+      baseCreds,
+      slotOwners,
+    );
+    const entry = Object.values(baseCreds).find((e) => e.kind === 'mcp-oauth');
+    expect(entry).toBeDefined();
+    expect(entry!.ref).toBe('account:example'); // single-slot connector ⇒ collapsed ref
+    expect(entry!.kind).toBe('mcp-oauth');
+  });
+
   it('detects npm/pypi package needs', () => {
     const r = foldConnectorCaps(
       [
