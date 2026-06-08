@@ -373,6 +373,12 @@ export function createRoutinesPlugin(
             conversation: parsed.fields.conversation,
             promptBody: parsed.fields.promptBody,
             sourceMd: input.sourceMd,
+            // Operator-only global kill-switch. Out-of-band from the routine
+            // markdown: when the caller passes `enabled`, flip the default's
+            // global on/off (e.g. flipping the seeded skill-reflection default
+            // ON after the cluster walk validates it). When omitted, a plain
+            // spec re-upsert leaves the existing flag untouched (store.ts).
+            ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
           });
         },
         { returns: RoutinesUpsertDefaultOutputSchema },

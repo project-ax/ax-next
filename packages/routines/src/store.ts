@@ -57,6 +57,17 @@ export interface UpsertDefaultInput {
   conversation: 'per-fire' | 'shared';
   promptBody: string;
   sourceMd: string;
+  /**
+   * Operator-only global kill-switch for the default routine. Out-of-band from
+   * the routine markdown (NOT a frontmatter field) — it gates whether the
+   * default materializes/fires for ANY agent. When provided, it is applied on
+   * both INSERT and the ON CONFLICT UPDATE path, so an operator can flip a
+   * seeded default's global `enabled` true↔false. When omitted, INSERT defaults
+   * to `true` and the UPDATE path leaves the existing flag untouched — a routine
+   * spec re-upsert (which carries no `enabled`) must never silently flip the
+   * kill-switch.
+   */
+  enabled?: boolean;
 }
 
 export interface DefaultRoutineDetailRow {
@@ -417,6 +428,15 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
       // (xmax = 0) is true for freshly INSERTed rows and false for UPDATEd rows —
       // that's how we report `created` without a separate SELECT.
       const id = input.defaultRoutineId ?? `default-${input.name}-${Date.now()}`;
+      // The global `enabled` flag is an operator-only kill-switch, not part of
+      // the routine spec. On INSERT we default to `true` unless the caller is
+      // explicitly setting it. On the ON CONFLICT UPDATE path we ONLY touch
+      // `enabled` when the caller passed it — a plain routine-spec re-upsert
+      // (no `enabled`) must leave a seeded default's kill-switch alone (else
+      // every spec edit would silently re-enable a deliberately-off default).
+      const insertEnabled = input.enabled ?? true;
+      const enabledUpdateFragment =
+        input.enabled === undefined ? sql`` : sql`enabled = EXCLUDED.enabled,`;
       const row = await sql<{ default_routine_id: string; created: boolean }>`
         INSERT INTO default_routines_v1
           (default_routine_id, name, description, spec_hash, trigger_kind, trigger_spec,
@@ -427,7 +447,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
            ${input.trigger.kind}, ${JSON.stringify(input.trigger)}::jsonb,
            ${input.intervalSeconds}, ${input.activeHours === null ? null : JSON.stringify(input.activeHours)}::jsonb,
            ${input.silenceToken}, ${input.silenceMax}, ${input.conversation},
-           ${input.promptBody}, true, ${input.sourceMd})
+           ${input.promptBody}, ${insertEnabled}, ${input.sourceMd})
         ON CONFLICT (name) DO UPDATE SET
           description = EXCLUDED.description,
           spec_hash = EXCLUDED.spec_hash,
@@ -439,6 +459,7 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
           silence_max = EXCLUDED.silence_max,
           conversation = EXCLUDED.conversation,
           prompt_body = EXCLUDED.prompt_body,
+          ${enabledUpdateFragment}
           source_md = EXCLUDED.source_md,
           updated_at = now()
         RETURNING default_routine_id, (xmax = 0) AS created

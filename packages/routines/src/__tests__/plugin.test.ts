@@ -181,6 +181,49 @@ describe('routines:upsert-default', () => {
     expect(defaults.find((d) => d.name === 'demo')).toBeDefined();
   });
 
+  it('flips the seeded skill-reflection global kill-switch on/off via the enabled flag (TASK-183)', async () => {
+    const h = await harness();
+
+    const enabledOf = async (name: string): Promise<boolean> => {
+      const listed = await h.bus.call(
+        'routines:list-defaults', h.ctx({ userId: 'u1' }), {},
+      );
+      const defaults = (listed as { defaults: Array<{ name: string; enabled: boolean }> }).defaults;
+      const row = defaults.find((d) => d.name === name);
+      expect(row).toBeDefined();
+      return row!.enabled;
+    };
+
+    // The migration seeds skill-reflection with the global kill-switch OFF.
+    expect(await enabledOf('skill-reflection')).toBe(false);
+
+    const md = intervalMd('skill-reflection', 'skill-reflection routine', '24h');
+
+    // 1) A plain spec re-upsert (no `enabled`) must NOT touch the global flag —
+    //    otherwise every spec edit would silently re-enable a default that an
+    //    operator deliberately left off.
+    const noFlag = await h.bus.call(
+      'routines:upsert-default', h.ctx({ userId: 'u1' }), { sourceMd: md },
+    );
+    // ON CONFLICT (name) → updates the seeded row, so created is false.
+    expect((noFlag as { created: boolean }).created).toBe(false);
+    expect(await enabledOf('skill-reflection')).toBe(false);
+
+    // 2) upsert-default with enabled:true flips the kill-switch ON.
+    await h.bus.call(
+      'routines:upsert-default', h.ctx({ userId: 'u1' }),
+      { sourceMd: md, enabled: true },
+    );
+    expect(await enabledOf('skill-reflection')).toBe(true);
+
+    // 3) upsert-default with enabled:false flips it back OFF (true↔false).
+    await h.bus.call(
+      'routines:upsert-default', h.ctx({ userId: 'u1' }),
+      { sourceMd: md, enabled: false },
+    );
+    expect(await enabledOf('skill-reflection')).toBe(false);
+  });
+
   it('rejects webhook trigger with code default-trigger-webhook-not-supported', async () => {
     const h = await harness();
     await expect(
