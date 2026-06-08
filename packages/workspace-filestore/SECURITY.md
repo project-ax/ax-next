@@ -20,10 +20,16 @@ so we walk all three threat models.
 - **Path-segment safety (the load-bearing check):** `agentId` becomes the NFS
   `subPath` — a path segment on the server. A `..` or `/` in it would widen the
   mount past the agent's own subtree. We validate `agentId` against
-  `^[a-z0-9-]+$` (`agent-id.ts`) before it ever reaches the spec; anything else
-  yields `[]` (no mount), never a traversal. This is defense in depth — the host
-  upstream already constrains `agentId`, but this resolver re-checks at its own
-  boundary (invariant I2: no trust-by-import).
+  `^[A-Za-z0-9_-]+$` (`agent-id.ts`) before it ever reaches the spec; anything
+  else yields `[]` (no mount), never a traversal. That charset is the base64url
+  alphabet — exactly how real ids are minted (`agt_<base64url>` in `@ax/agents`).
+  It deliberately contains **no `/`, no `.`, and no whitespace**, so a validated
+  id is always a single confined segment: `..`, `/`, absolute paths, and the
+  empty string are still rejected. (The earlier `^[a-z0-9-]+$` was tighter but
+  *wrong* — it rejected every real agent and left the whole user-files mount
+  inert; TASK-175.) This is defense in depth — the host upstream already
+  constrains `agentId`, but this resolver re-checks at its own boundary
+  (invariant I2: no trust-by-import).
 - **No host config reaches the model.** `server` / `exportPath` come from
   preset/operator config, not from the session, the model, or tool output. They
   ride inside the `kind:'nfs'`-discriminated spec and are read only by the
@@ -39,7 +45,8 @@ N/A — this resolver handles no model output, tool output, user-uploaded conten
 or external-API responses. Its only input is the session `owner` (a host-minted
 struct), and its only output is a typed `MountSpec` consumed by the provider, not
 interpolated into a prompt, shell, path, SQL, or URL. The `agentId` it does read
-is validated to `^[a-z0-9-]+$` regardless.
+is validated to `^[A-Za-z0-9_-]+$` (the base64url alphabet — single segment, no
+`/`, no `.`) regardless.
 
 ## Network capability
 
