@@ -743,7 +743,7 @@ describe('workspace.read schemas (Phase 2)', () => {
 
   it.each([
     '/etc/passwd',
-    '/permanent/workspace/x.pdf',
+    '/agent/workspace/x.pdf',
     '\\\\windows\\path',
     'C:/abs/path',
     '../escape',

@@ -71,7 +71,7 @@ describe('hashBytes / prefix-hash convention', () => {
 
 describe('encodeProjectSlug', () => {
   it('mirrors the SDK encoding (realpath cwd → non-alnum to dash)', () => {
-    expect(encodeProjectSlug('/permanent')).toBe('-permanent');
+    expect(encodeProjectSlug('/agent')).toBe('-agent');
     expect(encodeProjectSlug('/var/lib/ax')).toBe('-var-lib-ax');
   });
 

@@ -22,7 +22,7 @@ export interface WorkspaceGitConfig {
  * this for the local CLI / single-pod deployments. Multi-replica
  * deployments use `@ax/workspace-git-http` instead.
  *
- * The bundle hooks are what enables multi-turn /permanent persistence:
+ * The bundle hooks are what enables multi-turn /agent persistence:
  * the host's commit-notify handler probes for them before accepting a
  * runner's thin bundle, and rejects the apply if either is missing.
  */

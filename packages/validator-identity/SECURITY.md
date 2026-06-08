@@ -2,7 +2,7 @@
 
 This is the **third** subscriber on `workspace:pre-apply` (after `@ax/validator-skill`
 and `@ax/validator-routine`). Its job: gate an agent's writes to its own identity files
-under `/permanent/.ax/`. We're a regex scanner with veto power and one read — that's it.
+under `/agent/.ax/`. We're a regex scanner with veto power and one read — that's it.
 
 The blast radius matters more here than for the other two validators, because the runner
 injects these files **verbatim into the composed system prompt every spawn**

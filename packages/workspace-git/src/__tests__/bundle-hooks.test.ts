@@ -1,7 +1,7 @@
 // Regression: the local single-replica @ax/workspace-git backend MUST
 // register the Phase 3 bundle hooks (workspace:export-baseline-bundle +
 // workspace:apply-bundle). Without them, the host-side commit-notify
-// handler rejects every multi-turn write — breaking /permanent
+// handler rejects every multi-turn write — breaking /agent
 // persistence in the local CLI / single-pod kind path.
 //
 // The bundle wire is what the runner uses to ship turn-N's commits back
@@ -230,8 +230,8 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
     // must match bit-for-bit so the runner's first thin bundle's prereq
     // points at the same commit this backend's bundle introduces.
     const sim = await simulateRunnerTurn({
-      turnPath: 'permanent/test1.txt',
-      turnContent: 'hello-permanent',
+      turnPath: 'agent/test1.txt',
+      turnContent: 'hello-agent',
     });
 
     const exported = await h.bus.call<
@@ -259,8 +259,8 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
 
   it("apply-bundle: round-trip a runner thin bundle into an empty workspace", async () => {
     const sim = await simulateRunnerTurn({
-      turnPath: 'permanent/test1.txt',
-      turnContent: 'hello-permanent',
+      turnPath: 'agent/test1.txt',
+      turnContent: 'hello-agent',
     });
 
     const result = await h.bus.call<
@@ -281,7 +281,7 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
     expect(result.delta.changes[0]?.kind).toBe('added');
 
     // The post-apply state survives a separate `read` — the actual
-    // /permanent persistence guarantee.
+    // /agent persistence guarantee.
     const read = await h.bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
       'workspace:read',
       h.ctx(),
@@ -294,10 +294,10 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
   });
 
   it("apply-bundle: round-trip a multi-turn sequence (the actual broken path)", async () => {
-    // Turn 1: write /permanent/test1.txt.
+    // Turn 1: write /agent/test1.txt.
     const sim1 = await simulateRunnerTurn({
-      turnPath: 'permanent/test1.txt',
-      turnContent: 'hello-permanent',
+      turnPath: 'agent/test1.txt',
+      turnContent: 'hello-agent',
     });
     const r1 = await h.bus.call<
       WorkspaceApplyBundleInput,
@@ -339,10 +339,10 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
       await run(['-C', wt, 'config', 'user.name', 'ax-runner']);
       await run(['-C', wt, 'config', 'user.email', 'ax-runner@example.com']);
       // Turn 2 change.
-      await fs.mkdir(path.join(wt, 'permanent'), { recursive: true });
+      await fs.mkdir(path.join(wt, 'agent'), { recursive: true });
       await fs.writeFile(
-        path.join(wt, 'permanent/test2.txt'),
-        'hello-permanent-2',
+        path.join(wt, 'agent/test2.txt'),
+        'hello-agent-2',
       );
       await run(['-C', wt, 'add', '-A']);
       await run(['-C', wt, 'commit', '-m', 'turn 2']);
@@ -391,17 +391,17 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
       {},
     );
     expect([...list.paths].sort()).toEqual([
-      'permanent/test1.txt',
-      'permanent/test2.txt',
+      'agent/test1.txt',
+      'agent/test2.txt',
     ]);
     const r1Read = await h.bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
       'workspace:read',
       h.ctx(),
-      { path: 'permanent/test1.txt' },
+      { path: 'agent/test1.txt' },
     );
     expect(r1Read).toMatchObject({
       found: true,
-      bytes: new TextEncoder().encode('hello-permanent'),
+      bytes: new TextEncoder().encode('hello-agent'),
     });
   });
 
@@ -448,8 +448,8 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
     // parses; then deliberately lie about baselineCommit. The mismatch
     // must throw before any state lands in gitdir.
     const sim = await simulateRunnerTurn({
-      turnPath: 'permanent/test1.txt',
-      turnContent: 'hello-permanent',
+      turnPath: 'agent/test1.txt',
+      turnContent: 'hello-agent',
     });
     await expect(
       h.bus.call<WorkspaceApplyBundleInput, WorkspaceApplyBundleOutput>(
@@ -501,8 +501,8 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
     // is a safe target — git's for-each-ref doesn't validate object
     // presence.
     const sim = await simulateRunnerTurn({
-      turnPath: 'permanent/test1.txt',
-      turnContent: 'hello-permanent',
+      turnPath: 'agent/test1.txt',
+      turnContent: 'hello-agent',
     });
     const bareGitDir = path.join(repoRoot, 'repo.git');
     await run(['init', '--bare', '-b', 'main', bareGitDir]);
@@ -643,7 +643,7 @@ describe('@ax/workspace-git bundle hooks (Phase 3)', () => {
     // runner's thin bundle. The full end-to-end scenario is covered
     // by ax-next-dev acceptance; this unit test pins the contract.
     const sim = await simulateRunnerTurn({
-      turnPath: 'permanent/x.txt',
+      turnPath: 'agent/x.txt',
       turnContent: 'unused',
     });
     const out = await h.bus.call<

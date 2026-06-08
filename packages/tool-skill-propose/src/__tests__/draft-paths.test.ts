@@ -22,7 +22,7 @@ describe('checkDraftPath', () => {
 
   it('rejects a path outside /ephemeral/skill-draft/', () => {
     expect(checkDraftPath('/ephemeral/artifacts/x').ok).toBe(false);
-    expect(checkDraftPath('/permanent/.ax/draft-skills/linear').ok).toBe(false);
+    expect(checkDraftPath('/agent/.ax/draft-skills/linear').ok).toBe(false);
     expect(checkDraftPath('/etc/passwd').ok).toBe(false);
   });
 

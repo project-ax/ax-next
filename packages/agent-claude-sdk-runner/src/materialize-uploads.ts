@@ -7,7 +7,7 @@
 // `.ax/uploads/...` key the system-prompt workspace note tells the agent to
 // open). Previously we wrote under `<ephemeralRoot>/uploads/` (a DIFFERENT root,
 // `.ax/` dropped), so an agent that followed the prompt and Read
-// `/permanent/.ax/uploads/...` — or `cat`'d it via Bash, whose command string is
+// `/agent/.ax/uploads/...` — or `cat`'d it via Bash, whose command string is
 // not re-rooted — found nothing. Anchoring the materialized path to the
 // advertised path removes that mismatch.
 //
@@ -15,7 +15,7 @@
 // sandbox only needs a READABLE working copy. On each (re)materialize the runner:
 //   1. WIPES `<workspaceRoot>/.ax/uploads/` so no stale cross-conversation
 //      residue from a prior session/conversation survives on the persistent
-//      `/permanent` tier or a warm runner,
+//      `/agent` tier or a warm runner,
 //   2. enumerates the bound conversation's uploads (`attachments.list`),
 //   3. pulls each blob (`blob.get` — the response-direction binary channel,
 //      streamed to a temp file), and
@@ -47,7 +47,7 @@ export interface MaterializeUploadsDeps {
   client: Pick<IpcClient, 'call' | 'callBinary'>;
   conversationId: string;
   /**
-   * The workspace root (AX_WORKSPACE_ROOT, e.g. `/permanent`). Uploads land at
+   * The workspace root (AX_WORKSPACE_ROOT, e.g. `/agent`). Uploads land at
    * `<workspaceRoot>/.ax/uploads/` — the absolute form of the `.ax/uploads/...`
    * key the model is told to open (see system-prompt.ts `workspaceNote`).
    */
@@ -126,7 +126,7 @@ export async function materializeUploads(deps: MaterializeUploadsDeps): Promise<
   }
 
   // Wipe any prior residue under `.ax/uploads/` BEFORE writing this
-  // conversation's set. On a warm runner — or a `/permanent` tier that persisted
+  // conversation's set. On a warm runner — or a `/agent` tier that persisted
   // from a prior conversation — stale uploads from another conversation could
   // otherwise linger and be Read by the agent (a cross-conversation leak). We
   // let the per-file mkdir below re-create what's needed. Best-effort: a wipe

@@ -22,7 +22,7 @@ const DEFAULT_PERSONAL_AGENT_MODEL = 'claude-sonnet-4-6';
 // The SPA first-run POSTs ONLY a `displayName` here (no form, no system
 // prompt). The handler creates a BARE agent (no `systemPrompt`) and then seeds
 // the canonical `BOOTSTRAP_TEMPLATE` into the new agent's
-// `/permanent/.ax/BOOTSTRAP.md` via `workspace:apply`. The new agent wakes up
+// `/agent/.ax/BOOTSTRAP.md` via `workspace:apply`. The new agent wakes up
 // in bootstrap mode (the runner injects BOOTSTRAP.md verbatim) and discovers
 // its identity through conversation, writing its own `.ax/IDENTITY.md` +
 // `.ax/SOUL.md`.
@@ -36,7 +36,7 @@ const DEFAULT_PERSONAL_AGENT_MODEL = 'claude-sonnet-4-6';
 // service hook `agents:create` allows it.
 //
 // Seeding owner (design open-question #1): HOST-AT-CREATE. The first
-// `workspace:apply` against a brand-new agent's `/permanent` (parent: null)
+// `workspace:apply` against a brand-new agent's `/agent` (parent: null)
 // lazy-creates `main` (the verified "first apply creates main" git path), so
 // no runner-first-session fallback is needed.
 //
@@ -171,7 +171,7 @@ export function makeAgentBootstrapHandler(deps: AgentBootstrapDeps) {
 
         // 4) Seed `.ax/BOOTSTRAP.md` into the NEW agent's durable workspace.
         //    The ctx carries (userId, agentId) so `workspace:apply` routes to
-        //    THIS agent's `/permanent`; `parent: null` is the first apply,
+        //    THIS agent's `/agent`; `parent: null` is the first apply,
         //    which lazy-creates `main` (the verified "first apply creates main"
         //    git path). BEST-EFFORT: the agent already exists and the SPA will
         //    open a chat regardless — a seed failure is logged, never a 500

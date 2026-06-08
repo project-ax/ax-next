@@ -1058,7 +1058,7 @@ describe('main()', () => {
   it('bootstrap failure: materializeWorkspace throws → exit 2, no query', async () => {
     // Distinct from the IPC-error case: the IPC succeeds (bundle bytes
     // returned), but the runner-side `git clone` blows up. Same fatal
-    // semantics — we can't proceed against a broken /permanent.
+    // semantics — we can't proceed against a broken /agent.
     setEnv(COMPLETE_ENV);
     materializeMock.mockRejectedValueOnce(new Error('git clone failed: bad bundle'));
     fakeClient = buildFakeClient();

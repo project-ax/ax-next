@@ -27,7 +27,7 @@ import type { ActionHandler } from './types.js';
 // loop opens. The handler produces a `git bundle` over the workspace's
 // current state and streams the RAW bundle bytes back as the HTTP response
 // body (`application/octet-stream`, NOT a JSON envelope — BUG-W3). The runner
-// drains the body to a temp file and clones `/permanent` from it, so the agent
+// drains the body to a temp file and clones `/agent` from it, so the agent
 // runs against a real git working tree from turn 1.
 //
 // Why raw bytes, not base64-in-JSON: the bundle grows unbounded with workspace

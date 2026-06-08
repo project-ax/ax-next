@@ -263,8 +263,8 @@ SDK setting-sources wiring is broken. `kubectl exec` into the runner pod
 (catch it before it terminates — bump the agent's `idleShutdownMs` or
 ask a follow-up message to keep the pod alive) and probe:
 
-- `ls -la /permanent/.claude/skills` — should be a symlink to `../.ax/draft-skills`.
-- `cat /permanent/.ax/draft-skills/canary-skill/SKILL.md` — should be readable.
+- `ls -la /agent/.claude/skills` — should be a symlink to `../.ax/draft-skills`.
+- `cat /agent/.ax/draft-skills/canary-skill/SKILL.md` — should be readable.
 - `echo $CLAUDE_CONFIG_DIR` — should be `/home/runner/.ax/session`.
 - `ls -la $CLAUDE_CONFIG_DIR/skills` — should exist. Phase 0 leaves it
   empty; if it's missing entirely, the per-session HOME init isn't running.
@@ -1685,7 +1685,7 @@ runner-agnostic; the claude-sdk runner translates it into the SDK's
 The cluster-only surfaces this proves (the unit tests can't): the emptyDir is
 actually writable by the runner's non-root uid under `readOnlyRootFilesystem`,
 the SDK honors `additionalDirectories` for a path outside cwd, the note
-reaches the live agent, and the turn-end `git add -A` (scoped to `/permanent`)
+reaches the live agent, and the turn-end `git add -A` (scoped to `/agent`)
 genuinely never sees `/ephemeral`.
 
 ### Prerequisites
@@ -1778,7 +1778,7 @@ cookie is a live admin session.
 - [ ] Turn-2 agent quotes the scratch-directory note from its system prompt.
 - [ ] Turn-2 fresh pod: `/ephemeral` is **empty** (the turn-1 files are gone —
       never bundled), while `ROUND_TRIP_CONTROL.txt` **persists** in cwd
-      (`/permanent`, re-materialized from the workspace).
+      (`/agent`, re-materialized from the workspace).
 
 Note: `printenv AX_EPHEMERAL_ROOT` is **unset** in the agent's shell — that's
 correct, not a bug. The SDK subprocess gets a curated env (`{...anthropicEnv,
@@ -1802,7 +1802,7 @@ curl -s -X DELETE http://localhost:9090/api/chat/conversations/cnv_... \
 - **Skill install Phase 1 (PR #96)** — tested 2026-05-18 on
   `kind-ax-next-dev` (image `ax-next/agent:dev`).
   - Two regressions caught and fixed before this PR could merge:
-    - Init container wrote into `/permanent` before the runner cloned
+    - Init container wrote into `/agent` before the runner cloned
       the workspace there, so `git clone` refused the non-empty target.
       Scaffold moved to `git-workspace.ts#scaffoldWorkspaceSkillSurface`,
       which runs after materialize.
@@ -1839,7 +1839,7 @@ curl -s -X DELETE http://localhost:9090/api/chat/conversations/cnv_... \
     (uid 1000) in a `drwxrwxrwx` emptyDir.
   - Turn-2 agent quoted the `/ephemeral` scratch note verbatim from its system
     prompt; fresh-pod `ls` showed `/ephemeral` empty (turn-1 files gone, never
-    bundled) while `ROUND_TRIP_CONTROL.txt` persisted in `/permanent`.
+    bundled) while `ROUND_TRIP_CONTROL.txt` persisted in `/agent`.
   - Also confirmed via the real `buildPodSpec` output applied as a pod:
     uid-1000 writability under `readOnlyRootFilesystem` (`/` rejects writes;
     emptyDir mounts are `drwxrwxrwx`). All acceptance criteria pass.

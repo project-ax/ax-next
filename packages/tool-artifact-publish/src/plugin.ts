@@ -12,7 +12,7 @@ const PLUGIN_NAME = '@ax/tool-artifact-publish';
  * Phase 2 — host-side plugin that adds the `artifact_publish` descriptor
  * to the tool catalog. The executor that runs the tool's actual work
  * lives sandbox-side in `@ax/agent-claude-sdk-runner` (D1): only the
- * sandbox process has filesystem access to /permanent at call time.
+ * sandbox process has filesystem access to /agent at call time.
  *
  * This plugin therefore does NOT register `tool:execute:artifact_publish`.
  * Tool dispatch for sandbox-executed tools happens inside the runner

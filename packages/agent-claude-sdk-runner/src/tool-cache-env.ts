@@ -1,11 +1,11 @@
 // ---------------------------------------------------------------------------
 // Tool-fetch cache redirect.
 //
-// The SDK subprocess runs with HOME=/permanent (the git-tracked workspace
+// The SDK subprocess runs with HOME=/agent (the git-tracked workspace
 // root — see main.ts), and `npx`/`uvx` default their caches to HOME
 // (`~/.npm/_npx`, `~/.cache/uv`). Left alone, the first `npx <tool>` /
 // `uvx <tool>` an agent runs (sub-project D: capabilities.packages) writes
-// its fetch cache into /permanent, where the turn-end `git add -A` stages,
+// its fetch cache into /agent, where the turn-end `git add -A` stages,
 // commits, and bundles it back to the host — bloating every bundle with
 // cache files.
 //

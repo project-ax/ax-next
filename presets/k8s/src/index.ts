@@ -668,7 +668,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   plugins.push(createValidatorSkillPlugin());
   plugins.push(createValidatorRoutinePlugin());
   // Phase 3 (conversational-agent-identity): gates the agent's writes to its
-  // own /permanent/.ax/ identity files. Subscribes workspace:pre-apply; reads
+  // own /agent/.ax/ identity files. Subscribes workspace:pre-apply; reads
   // the committed .ax/BOOTSTRAP.md at the parent version (via the workspace:read
   // registered by the git-server client) to decide the bootstrap window. Same
   // observe-and-veto shape as the two validators above.

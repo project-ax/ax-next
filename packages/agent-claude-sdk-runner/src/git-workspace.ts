@@ -2,9 +2,9 @@
 // claude-sdk runner — git-workspace helpers (Phase 3).
 //
 // Owns three concerns:
-//   1. Materialize /permanent at session start by cloning the
+//   1. Materialize /agent at session start by cloning the
 //      host-streamed baseline bundle.
-//   2. Stage everything in /permanent at turn end, commit if non-empty,
+//   2. Stage everything in /agent at turn end, commit if non-empty,
 //      bundle the new commits as `git bundle baseline..HEAD`.
 //   3. Roll the working tree back to the baseline ref when the host
 //      vetoes a turn, and advance the baseline ref when the host
@@ -75,7 +75,7 @@ async function expectOk(result: SpawnResult, label: string): Promise<void> {
 }
 
 export interface MaterializeInput {
-  /** Filesystem path of the workspace root (typically `/permanent`). */
+  /** Filesystem path of the workspace root (typically `/agent`). */
   root: string;
   /**
    * Path to the host-streamed baseline bundle on local disk. The IPC client's
@@ -88,7 +88,7 @@ export interface MaterializeInput {
 }
 
 /**
- * Initialize `/permanent` as a git working tree by cloning a
+ * Initialize `/agent` as a git working tree by cloning a
  * host-streamed baseline bundle.
  *
  * Phase 3 always-bundle: the host's `workspace.materialize` ALWAYS ships
@@ -108,7 +108,7 @@ export interface MaterializeInput {
  * advance the baseline ref via `advanceBaseline` after the host accepts.
  *
  * Idempotency note: this is called ONCE per session. Re-calling on a
- * non-empty `/permanent` would fail (`git clone` refuses a non-empty
+ * non-empty `/agent` would fail (`git clone` refuses a non-empty
  * target). Bootstrap-fatal — the runner can't proceed without a clean
  * workspace.
  */
@@ -183,7 +183,7 @@ export async function materializeWorkspace(
 const WORKSPACE_GITIGNORE_HEADER = '# ax agent workspace defaults';
 /**
  * Dependency/build artifacts that an agent's `npm install` / python run can
- * drop into `/permanent`, and which would otherwise be `git add -A`'d and
+ * drop into `/agent`, and which would otherwise be `git add -A`'d and
  * bundled to the host. `.npm/`+`.cache/` are the backstop for when the
  * tool-cache redirect (buildToolCacheEnv) has no ephemeral root to point at.
  */
@@ -200,7 +200,7 @@ const WORKSPACE_GITIGNORE_ENTRIES = [
   // shipped per-turn via session.append-transcript and rebuilt on resume — so
   // `git add -A` must NOT stage it (that would leave TWO resume backings; I4
   // one-source-of-truth). The remaining commit/bundle path carries only
-  // non-transcript /permanent state (identity, Pattern A).
+  // non-transcript /agent state (identity, Pattern A).
   '.claude/projects/',
   // TASK-78 (out-of-git Part C): user uploads materialize at the advertised
   // `<workspaceRoot>/.ax/uploads/` so the agent can Read them, but their durable
@@ -270,7 +270,7 @@ export async function scaffoldWorkspaceGitignore(root: string): Promise<void> {
  * The SDK's `projectsDir = join(configDir, "projects")` is hard-coded
  * (no separable env override), so we redirect the I/O at the filesystem
  * layer instead. Must run AFTER materializeWorkspace clones the baseline
- * bundle into `/permanent` (a pre-clone scaffold would leave the target
+ * bundle into `/agent` (a pre-clone scaffold would leave the target
  * non-empty and `git clone` would refuse it).
  *
  * Symlink target style: this link lives OUTSIDE the workspace (in
@@ -314,7 +314,7 @@ export async function scaffoldSdkProjectsSymlink(
 // Turn-end helpers (Phase 3 Slice 7).
 //
 // At each SDK `result` boundary, the runner:
-//   1. Stages everything in /permanent (`git add -A`) — catches whatever
+//   1. Stages everything in /agent (`git add -A`) — catches whatever
 //      the agent wrote, regardless of which tool wrote it. Bash deletes,
 //      MCP writes, the SDK's internal jsonl: ALL of it.
 //   2. Detects empty turn (no staged changes) → returns null bundle so
@@ -332,7 +332,7 @@ export async function scaffoldSdkProjectsSymlink(
 // ---------------------------------------------------------------------------
 
 /**
- * Stage `/permanent`, commit any working-tree changes, and build a thin
+ * Stage `/agent`, commit any working-tree changes, and build a thin
  * bundle of the commits in `baseline..main`.
  *
  * Returns the bundle as base64 bytes, OR null when there is nothing to ship.
@@ -343,7 +343,7 @@ export async function scaffoldSdkProjectsSymlink(
  * A pure chat turn changes none of it — `.claude/projects/` is gitignored, so
  * `git add -A` stages nothing → `git diff --cached --quiet` is clean → no commit
  * → the range below is empty → null → the caller SKIPS the commit-notify IPC
- * call. The per-turn commit fires ONLY on a non-empty /permanent diff.
+ * call. The per-turn commit fires ONLY on a non-empty /agent diff.
  *
  * The authoritative ship signal is the commit RANGE `baseline..main`, NOT the
  * working-tree staged diff: they diverge after `resyncBaselineAndReplay`, which

@@ -12,7 +12,7 @@ describe('resolveMaterializedPath', () => {
   // (`<workspaceRoot>/.ax/uploads/<rest>`) — same path the system prompt tells
   // the model — so the `.ax/` prefix is KEPT (not dropped under an ephemeral
   // root). The base is the workspace's `.ax/uploads` dir.
-  const base = '/permanent/.ax/uploads';
+  const base = '/agent/.ax/uploads';
 
   it('maps a transcript upload key under the uploads base (keeps .ax/)', () => {
     expect(resolveMaterializedPath(base, '.ax/uploads/c/t/file.pdf')).toBe(
@@ -131,7 +131,7 @@ describe('materializeUploads', () => {
     expect(warnings.some((w) => w.includes('attachments.list failed'))).toBe(true);
   });
 
-  // TASK-78: stale cross-conversation residue. A warm runner (or a /permanent
+  // TASK-78: stale cross-conversation residue. A warm runner (or a /agent
   // tier that persisted from a prior conversation) can carry another
   // conversation's uploads under `.ax/uploads/`. Re-materializing must WIPE the
   // uploads dir first so only THIS conversation's set remains — no leak across

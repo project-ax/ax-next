@@ -30,7 +30,7 @@ import { classifySdkToolName } from './tool-names.js';
 export interface CreatePreToolUseHookOptions {
   client: IpcClient;
   /**
-   * Runner workspace root (AX_WORKSPACE_ROOT, e.g. `/permanent`) — the agent's
+   * Runner workspace root (AX_WORKSPACE_ROOT, e.g. `/agent`) — the agent's
    * working directory. Used to re-root mis-rooted attachment paths in tool
    * inputs to the real absolute path before a file tool runs. See
    * `resolveAttachmentPaths`.
@@ -63,7 +63,7 @@ const PATH_INPUT_KEYS = new Set(['file_path', 'path', 'notebook_path']);
  * (system-prompt.ts) and the same key the transcript/download scope use. So we
  * map `.ax/uploads/<rest>` → `<workspaceRoot>/.ax/uploads/<rest>` (KEEP the
  * `.ax/`). This is a safety net: with the materialized path matching the
- * advertised one, the model's own `/permanent/.ax/uploads/...` is already
+ * advertised one, the model's own `/agent/.ax/uploads/...` is already
  * correct (no rewrite needed); we still normalize a home-rooted or bare
  * reference here so a mis-rooted Read/Glob/NotebookEdit still opens the file.
  *
@@ -99,7 +99,7 @@ function rerootUploadsPath(
  * workspace-relative path (`.ax/uploads/...`). Because that path starts with a
  * dot, the model reads it as a home dotfile and resolves it under
  * `~`/`/home/<user>` instead of its working directory — so `Read` fails (the
- * file is under the runner workspace root, e.g. `/permanent/.ax/uploads/...`).
+ * file is under the runner workspace root, e.g. `/agent/.ax/uploads/...`).
  * (We first tried wrapping the path in an `ax-file://` scheme to disambiguate,
  * but the model stripped the scheme itself — then home-rooted the bare path
  * anyway — and even mistook the URI for a web resource. So we resolve by the
@@ -107,7 +107,7 @@ function rerootUploadsPath(
  *
  * Rewrites ONLY the structured path fields (`PATH_INPUT_KEYS`) as a whole-value
  * re-root — handling a home-prefixed (`/home/user/.ax/uploads/x`), bare
- * (`.ax/uploads/x`), or already-correct (`/permanent/.ax/uploads/x`,
+ * (`.ax/uploads/x`), or already-correct (`/agent/.ax/uploads/x`,
  * idempotent) reference. Free-text fields (a Bash command, an Edit's
  * old_string, etc.) are left untouched; the system-prompt workspace note (see
  * system-prompt.ts) steers the model to emit the right path for those.

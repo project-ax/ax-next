@@ -22,7 +22,7 @@
 // stores opaque bytes).
 //
 // Path namespace: `git diff-tree` reports paths relative to the repo
-// root (i.e., relative to /permanent in the runner's view). Workspace
+// root (i.e., relative to /agent in the runner's view). Workspace
 // hooks store relative paths too (per Invariant I1: paths must not leak
 // the runner's local mount point). Same shape; no transform needed.
 // ---------------------------------------------------------------------------

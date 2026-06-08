@@ -2,8 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { checkPublishablePath, MAX_ARTIFACT_BYTES } from '../path-allowlist.js';
 
 // TASK-68: the artifact namespace moved to /ephemeral/artifacts/** (primary) +
-// kept /permanent/workspace/** (Pattern A double-home). The old git artifact
-// namespace /permanent/.ax/artifacts/** is GONE. checkPublishablePath now also
+// kept /agent/workspace/** (Pattern A double-home). The old git artifact
+// namespace /agent/.ax/artifacts/** is GONE. checkPublishablePath now also
 // reports which `root` the path lives under so the executor maps it onto the
 // right filesystem root.
 
@@ -24,16 +24,16 @@ describe('checkPublishablePath', () => {
     });
   });
 
-  it('accepts paths under /permanent/workspace/ (Pattern A double-home)', () => {
-    expect(checkPublishablePath('/permanent/workspace/reports/Q4.pdf')).toEqual({
+  it('accepts paths under /agent/workspace/ (Pattern A double-home)', () => {
+    expect(checkPublishablePath('/agent/workspace/reports/Q4.pdf')).toEqual({
       ok: true,
-      root: 'permanent',
+      root: 'agent',
       relativePath: 'workspace/reports/Q4.pdf',
     });
   });
 
-  it('rejects the retired git artifact namespace /permanent/.ax/artifacts/', () => {
-    const result = checkPublishablePath('/permanent/.ax/artifacts/img.png');
+  it('rejects the retired git artifact namespace /agent/.ax/artifacts/', () => {
+    const result = checkPublishablePath('/agent/.ax/artifacts/img.png');
     expect(result.ok).toBe(false);
   });
 
@@ -43,7 +43,7 @@ describe('checkPublishablePath', () => {
   });
 
   it('rejects paths outside any allowlisted root', () => {
-    const result = checkPublishablePath('/permanent/.ax/sessions/sess1.jsonl');
+    const result = checkPublishablePath('/agent/.ax/sessions/sess1.jsonl');
     expect(result.ok).toBe(false);
     if (!result.ok) {
       expect(result.reason).toMatch(/not-publishable/);
@@ -56,20 +56,20 @@ describe('checkPublishablePath', () => {
   });
 
   it('rejects paths with traversal segments under either root', () => {
-    expect(checkPublishablePath('/permanent/workspace/../../etc/passwd').ok).toBe(false);
-    expect(checkPublishablePath('/permanent/workspace/foo/../bar').ok).toBe(false);
+    expect(checkPublishablePath('/agent/workspace/../../etc/passwd').ok).toBe(false);
+    expect(checkPublishablePath('/agent/workspace/foo/../bar').ok).toBe(false);
     expect(checkPublishablePath('/ephemeral/artifacts/../../etc/passwd').ok).toBe(false);
   });
 
   it('rejects absolute paths outside the roots', () => {
     expect(checkPublishablePath('/etc/passwd').ok).toBe(false);
-    expect(checkPublishablePath('/permanent').ok).toBe(false);
+    expect(checkPublishablePath('/agent').ok).toBe(false);
     expect(checkPublishablePath('/ephemeral').ok).toBe(false);
   });
 
   it('rejects a bare root prefix with no file component', () => {
     expect(checkPublishablePath('/ephemeral/artifacts/').ok).toBe(false);
-    expect(checkPublishablePath('/permanent/workspace/').ok).toBe(false);
+    expect(checkPublishablePath('/agent/workspace/').ok).toBe(false);
   });
 
   it('exposes the size cap', () => {

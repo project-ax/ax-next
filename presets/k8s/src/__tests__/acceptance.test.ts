@@ -2648,7 +2648,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         );
 
         // In production, materializeWorkspace clones the storage tier into
-        // /permanent so the executor sees the file; the canary skips
+        // /agent so the executor sees the file; the canary skips
         // materialize, so we stage the bytes by hand.
         await fs.mkdir(path.dirname(path.join(runnerCheckoutRoot, ARTIFACT_PATH)), {
           recursive: true,
@@ -2673,7 +2673,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
           id: 'toolu_1',
           name: 'artifact_publish',
           input: {
-            path: `/permanent/${ARTIFACT_PATH}`,
+            path: `/agent/${ARTIFACT_PATH}`,
             displayName: 'summary.md',
           },
         });

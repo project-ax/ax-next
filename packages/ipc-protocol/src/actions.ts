@@ -242,7 +242,7 @@ export type WorkspaceCommitNotifyResponse = z.infer<
 // is brand-new) and streams the RAW bundle bytes back as the HTTP response
 // body — `Content-Type: application/octet-stream`, NOT a JSON envelope. The
 // sandbox-side runner drains the body straight to a temp file and clones
-// `/permanent` from it, so the agent runs against a real git working tree
+// `/agent` from it, so the agent runs against a real git working tree
 // from turn 1.
 //
 // Why a raw binary body (BUG-W3): the bundle is the one IPC payload whose
@@ -339,7 +339,7 @@ export type WorkspaceExportBaselineBundleRequest = z.infer<
 // Exposes the host's `workspace:read` service hook to runners over IPC.
 // The runner's attachment-translation pass uses this to fetch attachment
 // bytes that the host committed via `attachments:commit` after session
-// start (the runner's /permanent doesn't auto-sync mid-session).
+// start (the runner's /agent doesn't auto-sync mid-session).
 //
 // Auth: caller's bearer token resolves to a session row; the host-side
 // handler uses the session's workspaceId to scope `workspace:read`.

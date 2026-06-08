@@ -61,7 +61,7 @@ function busWith(opts: {
   applyRejectReason?: string;
   /** When set, the FIRST workspace:apply (parent:null) throws a parent-mismatch
    * echoing this head; the retry (parent=this) succeeds. Models an agent with
-   * existing /permanent history. */
+   * existing /agent history. */
   actualParentOnFirstApply?: string | null;
 }): { bus: HookBus; applies: Applied[] } {
   const applies: Applied[] = [];
@@ -222,7 +222,7 @@ describe('PUT /admin/agents/:id/identity', () => {
     expect(byPath.get('.ax/AGENTS.md')!.kind).toBe('delete');
   });
 
-  it('retries with the tier head on a parent-mismatch (agent with existing /permanent history)', async () => {
+  it('retries with the tier head on a parent-mismatch (agent with existing /agent history)', async () => {
     // The first apply (parent:null) is a CAS miss for an agent that already has
     // a committed workspace (the seeded BOOTSTRAP.md / transcripts). The route
     // must retry ONCE with cause.actualParent — otherwise every real agent's

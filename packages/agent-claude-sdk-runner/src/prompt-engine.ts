@@ -178,7 +178,7 @@ async function readAxFile(axDir: string, name: string): Promise<string | undefin
 
 /**
  * Read the `.ax/` identity files under `workspaceRoot` (defaults to
- * `/permanent`). Absent files, read errors, and over-cap files map to
+ * `/agent`). Absent files, read errors, and over-cap files map to
  * undefined. An absent `.ax/` directory simply yields all-undefined.
  */
 export async function readAxIdentityFiles(workspaceRoot: string): Promise<AxIdentityFiles> {
@@ -255,7 +255,7 @@ export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
  * @param augment the host `system-prompt:augment` contribution (e.g. the
  *   memory-strata injection), prepended on top in normal mode. Empty string =>
  *   no prepend.
- * @param workspaceRoot the durable workspace root (`/permanent` by default);
+ * @param workspaceRoot the durable workspace root (`/agent` by default);
  *   `.ax/` lives directly under it.
  */
 export async function buildSystemPrompt(

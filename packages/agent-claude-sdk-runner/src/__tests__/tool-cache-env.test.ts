@@ -19,7 +19,7 @@ describe('buildToolCacheEnv', () => {
     const cacheEnv = buildToolCacheEnv('/ephemeral');
     for (const value of Object.values(cacheEnv)) {
       expect(value.startsWith('/ephemeral/')).toBe(true);
-      expect(value.startsWith('/permanent')).toBe(false);
+      expect(value.startsWith('/agent')).toBe(false);
     }
   });
 });

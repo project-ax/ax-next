@@ -221,7 +221,7 @@ function slugHash(s: string): string {
 
 /**
  * The SDK derives the project-dir name from `realpath(cwd)` by replacing each
- * non-alphanumeric character with `-` (so `/permanent` → `-permanent`,
+ * non-alphanumeric character with `-` (so `/agent` → `-agent`,
  * `/var/lib/ax` → `-var-lib-ax`), truncating to 200 chars + a hash suffix when
  * longer. We mirror that exact transform so the dir we WRITE on resume is the
  * same one the SDK READS when it opens `query({ resume })`. Verified against the

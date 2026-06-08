@@ -5,27 +5,27 @@
  * plugin's descriptor (for the model-facing `description`) and the runner-side
  * executor (for actual enforcement).
  *
- * The artifact namespace moved OFF git (`/permanent/.ax/artifacts/`) onto the
+ * The artifact namespace moved OFF git (`/agent/.ax/artifacts/`) onto the
  * disposable `/ephemeral` tier — artifacts are published to the content-addressed
  * blob store at `artifact_publish` time, not swept into a git commit. So the
  * allowlist now spans TWO sandbox roots:
  *
  *  - `/ephemeral/artifacts/<sub>`  — the primary artifact namespace (scratch;
  *                                    bytes go to blob:put on publish).
- *  - `/permanent/workspace/<sub>`  — the rare Pattern A case: ax-hosted project
+ *  - `/agent/workspace/<sub>`      — the rare Pattern A case: ax-hosted project
  *                                    code under git may still publish a snapshot
  *                                    as an artifact (an intentional double-home —
  *                                    git holds editable history, the blob holds
  *                                    the immutable shared snapshot).
  *
- * Returns which `root` (`ephemeral` | `permanent`) the path lives under plus the
+ * Returns which `root` (`ephemeral` | `agent`) the path lives under plus the
  * root-relative `relativePath`, so the executor maps it onto the right
  * filesystem root and the host stores a stable display/scope key.
  */
 
 export const MAX_ARTIFACT_BYTES = 100 * 1024 * 1024; // 100 MiB
 
-export type PublishRoot = 'ephemeral' | 'permanent';
+export type PublishRoot = 'ephemeral' | 'agent';
 
 interface RootSpec {
   root: PublishRoot;
@@ -37,14 +37,14 @@ interface RootSpec {
 
 const ROOTS: RootSpec[] = [
   { root: 'ephemeral', prefix: '/ephemeral/', allowed: ['artifacts/'] },
-  { root: 'permanent', prefix: '/permanent/', allowed: ['workspace/'] },
+  { root: 'agent', prefix: '/agent/', allowed: ['workspace/'] },
 ];
 
 export type PathCheckResult =
   | { ok: true; root: PublishRoot; relativePath: string }
   | { ok: false; reason: string };
 
-const ALLOWED_DESC = '/ephemeral/artifacts/**, /permanent/workspace/**';
+const ALLOWED_DESC = '/ephemeral/artifacts/**, /agent/workspace/**';
 
 export function checkPublishablePath(absPath: string): PathCheckResult {
   if (typeof absPath !== 'string' || absPath.length === 0) {

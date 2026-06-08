@@ -124,7 +124,7 @@ const ENV_ALLOWLIST = new Set<string>([
 //   - GIT_* — git ops invoked by the Bash tool. sandbox-k8s/pod-spec
 //             stamps GIT_CONFIG_COUNT / GIT_CONFIG_KEY_<n> /
 //             GIT_CONFIG_VALUE_<n> with safe.directory=* so git on the
-//             kubelet-owned /permanent mount doesn't hit "dubious
+//             kubelet-owned /agent mount doesn't hit "dubious
 //             ownership."
 //   - LC_*  — locale categories (LC_CTYPE, LC_COLLATE, etc.).
 const ENV_ALLOWLIST_PREFIXES = ['GIT_', 'LC_'] as const;
@@ -237,7 +237,7 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     // exactly — keys not present here are NOT inherited from
     // process.env. Without forwarding PATH, the SDK's Bash tool executes
     // `ls` and gets exit code 127 (command not found); without the GIT_*
-    // family, git ops in /permanent fail "dubious ownership."
+    // family, git ops in /agent fail "dubious ownership."
     //
     // Capability minimization (I5): control-plane vars that ARE in the
     // runner's process.env (notably AX_AUTH_TOKEN, the IPC bearer) stay
