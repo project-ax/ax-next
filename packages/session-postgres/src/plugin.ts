@@ -85,6 +85,13 @@ export interface SessionCreateInput {
     agentId: string;
     agentConfig: AgentConfig;
     conversationId?: string | null;
+    /**
+     * TASK-181: host-derived session origin — `'routine'` for a scheduled
+     * @ax/routines fire, `'user'`/absent for a user turn. Persisted on the v2
+     * row; echoed back by `session:resolve-token`. Host-only — never from the
+     * runner wire.
+     */
+    source?: 'routine' | 'user' | null;
   };
 }
 export interface SessionCreateOutput {
@@ -108,6 +115,14 @@ export type SessionResolveTokenOutput =
        * binding (auto-append, clearActiveReqId, SSE done-frame).
        */
       conversationId: string | null;
+      /**
+       * TASK-181: host-derived session origin. The IPC server stamps it onto
+       * the per-request AgentContext so the happy-path runner-completed
+       * `chat:end` carries `source: 'routine'` for scheduled fires and
+       * @ax/memory-strata's guard fires end-to-end. Null ≡ user / canary /
+       * pre-TASK-181.
+       */
+      source: 'routine' | 'user' | null;
     }
   | null;
 export type SessionGetConfigInput = Record<string, never>;
@@ -190,6 +205,8 @@ export const SessionResolveTokenOutputSchema = z
     userId: z.string().nullable(),
     agentId: z.string().nullable(),
     conversationId: z.string().nullable(),
+    // TASK-181 — host-derived session origin echoed onto the resolve result.
+    source: z.enum(['routine', 'user']).nullable(),
   })
   .nullable() as unknown as ZodType<SessionResolveTokenOutput>;
 
@@ -299,6 +316,7 @@ function validateOwner(
       agentId: string;
       agentConfig: AgentConfig;
       conversationId: string | null;
+      source: 'routine' | 'user' | null;
     }
   | undefined {
   if (raw === undefined) return undefined;
@@ -314,6 +332,7 @@ function validateOwner(
   const agentId = (raw as { agentId?: unknown }).agentId;
   const agentConfig = (raw as { agentConfig?: unknown }).agentConfig;
   const conversationIdRaw = (raw as { conversationId?: unknown }).conversationId;
+  const sourceRaw = (raw as { source?: unknown }).source;
   requireString(userId, 'owner.userId', hookName);
   requireString(agentId, 'owner.agentId', hookName);
   if (typeof agentConfig !== 'object' || agentConfig === null) {
@@ -373,6 +392,23 @@ function validateOwner(
       message: `'owner.conversationId' must be a non-empty string or null/undefined`,
     });
   }
+  // source — TASK-181 — optional, accepts 'routine' | 'user' | null | undefined.
+  // Reject anything else so a wiring bug (or a smuggled value) fails loud. The
+  // runner never reaches this hook; the only writers are the orchestrator
+  // (forwarding ctx.source) and test harnesses. Mirrors the inmemory backend.
+  let source: 'routine' | 'user' | null;
+  if (sourceRaw === undefined || sourceRaw === null) {
+    source = null;
+  } else if (sourceRaw === 'routine' || sourceRaw === 'user') {
+    source = sourceRaw;
+  } else {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName,
+      message: `'owner.source' must be 'routine', 'user', or null/undefined`,
+    });
+  }
   return {
     userId,
     agentId,
@@ -384,6 +420,7 @@ function validateOwner(
       model: cfg.model as string,
     },
     conversationId,
+    source,
   };
 }
 

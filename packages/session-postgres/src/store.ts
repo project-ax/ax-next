@@ -63,6 +63,13 @@ export interface SessionOwner {
    * sessions have no conversation.
    */
   conversationId?: string | null;
+  /**
+   * TASK-181: host-derived session origin — `'routine'` for a scheduled
+   * @ax/routines fire, `'user'`/absent for an interactive turn. Persisted on
+   * the v2 row and echoed back by `resolveToken`. Host-only — never sourced
+   * from the runner wire.
+   */
+  source?: 'routine' | 'user' | null;
 }
 
 export interface SessionRecord {
@@ -73,6 +80,8 @@ export interface SessionRecord {
   readonly agentId: string | null;
   readonly agentConfig: AgentConfig | null;
   readonly conversationId: string | null;
+  /** TASK-181: host-derived session origin. Null ≡ user / canary / pre-TASK-181. */
+  readonly source: 'routine' | 'user' | null;
   readonly terminated: boolean;
 }
 
@@ -89,6 +98,14 @@ export interface ResolveTokenResult {
    * (auto-append, clearActiveReqId, SSE done-frame) silently no-op.
    */
   conversationId: string | null;
+  /**
+   * TASK-181: host-derived session origin. Carried on the resolve-token
+   * result so the IPC server stamps it onto the per-request AgentContext —
+   * without it, the happy-path runner-completed `chat:end` carries no
+   * `source` and @ax/memory-strata's routine-fire guard never fires on a
+   * successful turn. Null ≡ user / canary / pre-TASK-181.
+   */
+  source: 'routine' | 'user' | null;
 }
 
 export interface SessionStore {
@@ -117,6 +134,15 @@ export interface SessionStore {
 
 function mintToken(): string {
   return randomBytes(32).toString('base64url');
+}
+
+// TASK-181 — the DB column is plain TEXT (`string | null`); narrow it to the
+// host-derived literal union on read. Anything that isn't one of the two
+// known origins (a legacy / hand-edited value) reads back as `null`, i.e.
+// treated as a user turn — memory runs normally. We never trust an unknown
+// stored value to suppress memory.
+function normalizeSource(raw: string | null | undefined): 'routine' | 'user' | null {
+  return raw === 'routine' || raw === 'user' ? raw : null;
 }
 
 function isUniqueViolation(err: unknown): boolean {
@@ -160,6 +186,8 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
                 // the value rides as opaque JSON.
                 agent_config_json: owner.agentConfig as never,
                 conversation_id: owner.conversationId ?? null,
+                // TASK-181 — host-derived session origin; null for user turns.
+                source: owner.source ?? null,
               } as never)
               .execute();
           }
@@ -171,6 +199,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
             agentId: owner?.agentId ?? null,
             agentConfig: owner?.agentConfig ?? null,
             conversationId: owner?.conversationId ?? null,
+            source: owner?.source ?? null,
             terminated: v1Row.terminated,
           };
         });
@@ -207,6 +236,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
           'a.user_id',
           'a.agent_id',
           'a.conversation_id',
+          'a.source',
         ])
         .where('s.token', '=', token)
         .executeTakeFirst();
@@ -217,6 +247,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
         userId: row.user_id ?? null,
         agentId: row.agent_id ?? null,
         conversationId: row.conversation_id ?? null,
+        source: normalizeSource(row.source),
       };
     },
 
@@ -237,6 +268,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
           'a.agent_id',
           'a.agent_config_json',
           'a.conversation_id',
+          'a.source',
         ])
         .where('s.session_id', '=', sessionId)
         .executeTakeFirst();
@@ -249,6 +281,7 @@ export function createSessionStore(db: Kysely<SessionDatabase>): SessionStore {
         agentId: row.agent_id ?? null,
         agentConfig: (row.agent_config_json as AgentConfig | null) ?? null,
         conversationId: row.conversation_id ?? null,
+        source: normalizeSource(row.source),
         terminated: row.terminated,
       };
     },

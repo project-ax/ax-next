@@ -45,6 +45,7 @@ describe('@ax/session-inmemory store', () => {
       userId: null,
       agentId: null,
       conversationId: null,
+      source: null,
     });
   });
 
@@ -67,6 +68,7 @@ describe('@ax/session-inmemory store', () => {
       userId: 'u-1',
       agentId: 'a-1',
       conversationId: null,
+      source: null,
     });
   });
 
@@ -90,6 +92,34 @@ describe('@ax/session-inmemory store', () => {
       userId: 'u-1',
       agentId: 'a-1',
       conversationId: 'cnv_test_1',
+      source: null,
+    });
+  });
+
+  it('resolveToken() carries source when create() carried one (TASK-181)', () => {
+    const store = createSessionStore();
+    const rec = store.create('s-routine', '/tmp/ws', {
+      userId: 'u-1',
+      agentId: 'a-1',
+      agentConfig: {
+        displayName: 'Test Agent',
+        systemPromptAugment: 'be helpful',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'claude-sonnet-4-7',
+      },
+      source: 'routine',
+    });
+    // The record itself carries the host-derived origin...
+    expect(rec.source).toBe('routine');
+    // ...and resolveToken echoes it so the IPC server can stamp ctx.source.
+    expect(store.resolveToken(rec.token)).toEqual({
+      sessionId: 's-routine',
+      workspaceRoot: '/tmp/ws',
+      userId: 'u-1',
+      agentId: 'a-1',
+      conversationId: null,
+      source: 'routine',
     });
   });
 

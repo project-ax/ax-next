@@ -299,6 +299,18 @@ export const OpenSessionInputSchema = z.object({
       // bind-on-resume path can choose resume vs fresh-spawn from
       // session:get-config alone. Forwarded verbatim into session:create.
       conversationId: z.string().min(1).optional(),
+      // TASK-181 — origin of the session, derived HOST-SIDE from who opened
+      // it: `'routine'` for a scheduled @ax/routines fire, `'user'`/absent for
+      // an interactive turn. Forwarded into session:create so the session
+      // record carries it and the IPC server can stamp it onto the happy-path
+      // runner-completed chat:end ctx (where @ax/memory-strata reads it to skip
+      // memory extraction on internal turns). SECURITY: this rides the
+      // HOST-INTERNAL `sandbox:open-session` hook (orchestrator → sandbox
+      // plugin → session:create), NEVER the runner wire (@ax/ipc-protocol). An
+      // untrusted runner has no way to set it — it is sourced only from
+      // ctx.source on the host. Do NOT move this onto the runner-facing IPC
+      // protocol.
+      source: z.enum(['routine', 'user']).optional(),
     })
     .optional(),
   proxyConfig: ProxyConfigSchema.optional(),

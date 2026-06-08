@@ -37,6 +37,14 @@ export type AuthResult =
       // (auto-append, clearActiveReqId, SSE done-frame). Null for canary
       // / admin / pre-Task-15 sessions.
       conversationId: string | null;
+      // TASK-181: carry the resolved session's HOST-DERIVED origin so the
+      // listener can stamp `ctx.source` on the per-request AgentContext. The
+      // value comes from the session store (set at session:create time from
+      // the orchestrator's ctx.source) — NEVER from the inbound request. The
+      // token is the only thing the runner controls, and it only selects WHICH
+      // session record to read; it cannot influence the stored `source`. Null
+      // for user / canary / pre-TASK-181 sessions.
+      source: 'routine' | 'user' | null;
     }
   | { ok: false; status: number; body: IpcErrorEnvelope };
 
@@ -53,6 +61,10 @@ type SessionResolveTokenOutput =
       userId: string | null;
       agentId: string | null;
       conversationId?: string | null;
+      // TASK-181 — host-derived session origin echoed by session:resolve-token.
+      // Optional here for back-compat with any resolver that predates TASK-181;
+      // the listener treats a missing value as null (user) — see authenticate().
+      source?: 'routine' | 'user' | null;
     }
   | null;
 
@@ -112,5 +124,7 @@ export async function authenticate(
     userId: resolved.userId ?? null,
     agentId: resolved.agentId ?? null,
     conversationId: resolved.conversationId ?? null,
+    // TASK-181 — host-derived; absent/unknown ⇒ null (treated as a user turn).
+    source: resolved.source ?? null,
   };
 }

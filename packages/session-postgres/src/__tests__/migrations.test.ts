@@ -74,6 +74,13 @@ describe('runSessionMigration v2', () => {
       expect(byName.has('agent_id')).toBe(true);
       expect(byName.has('agent_config_json')).toBe(true);
       expect(byName.has('created_at')).toBe(true);
+      // Task 15 + TASK-181 additive columns — both nullable (user/canary
+      // sessions and pre-feature rows carry NULL). source persists the
+      // host-derived session origin so the happy-path chat:end guard fires.
+      expect(byName.has('conversation_id')).toBe(true);
+      expect(byName.get('conversation_id')!.is_nullable).toBe('YES');
+      expect(byName.has('source')).toBe(true);
+      expect(byName.get('source')!.is_nullable).toBe('YES');
       expect(byName.get('user_id')!.is_nullable).toBe('NO');
       expect(byName.get('agent_id')!.is_nullable).toBe('NO');
       expect(byName.get('agent_config_json')!.is_nullable).toBe('NO');

@@ -145,6 +145,15 @@ export async function createHttpListener(
     // matched any real row → 404 not-found → runner threw → resume on
     // turn 2 silently lost the transcript (regression:
     // runner-owned-sessions-k8s-gap.test.ts:156).
+    //
+    // TASK-181: stamp the resolved session's HOST-DERIVED origin too, same as
+    // @ax/ipc-server. This TCP listener is the runner↔host transport for the
+    // k8s backend, so the runner-completed `chat:end` lands here for k8s
+    // sessions; without the stamp @ax/memory-strata's routine-fire guard would
+    // never fire on a successful k8s turn. `source` comes from the session
+    // record (set at session:create from the orchestrator's ctx.source), NEVER
+    // from a runner-supplied frame — it's absent from @ax/ipc-protocol and
+    // never read off the inbound payload. Null ⇒ field off (user turn).
     const ctx = makeAgentContext({
       sessionId: auth.sessionId,
       agentId: auth.agentId ?? 'ipc-http',
@@ -155,6 +164,7 @@ export async function createHttpListener(
       ...(auth.conversationId !== null
         ? { conversationId: auth.conversationId }
         : {}),
+      ...(auth.source !== null ? { source: auth.source } : {}),
     });
     await dispatch(req, res, ctx, opts.bus);
   };

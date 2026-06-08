@@ -43,6 +43,12 @@ export interface SessionOwner {
    * always answer with a typed scalar.
    */
   conversationId?: string | null;
+  /**
+   * TASK-181: host-derived session origin — `'routine'` for a scheduled
+   * @ax/routines fire, `'user'`/absent for an interactive turn. Stored as
+   * `null` when absent so `resolveToken` always answers with a typed scalar.
+   */
+  source?: 'routine' | 'user' | null;
 }
 
 export interface SessionRecord {
@@ -53,6 +59,8 @@ export interface SessionRecord {
   readonly agentId: string | null;
   readonly agentConfig: AgentConfig | null;
   readonly conversationId: string | null;
+  /** TASK-181: host-derived session origin. Null ≡ user / canary / pre-TASK-181. */
+  readonly source: 'routine' | 'user' | null;
   terminated: boolean;
 }
 
@@ -69,6 +77,14 @@ export interface ResolveTokenResult {
    * (auto-append, clearActiveReqId, SSE done-frame) silently no-op.
    */
   conversationId: string | null;
+  /**
+   * TASK-181: host-derived session origin. Carried on the resolve-token
+   * result so the IPC server stamps it onto the per-request AgentContext —
+   * without it, the happy-path runner-completed `chat:end` carries no
+   * `source` and @ax/memory-strata's routine-fire guard never fires on a
+   * successful turn. Null ≡ user / canary / pre-TASK-181.
+   */
+  source: 'routine' | 'user' | null;
 }
 
 export interface SessionStore {
@@ -111,6 +127,8 @@ export function createSessionStore(): SessionStore {
         // Normalize `undefined` → null so the record always carries an
         // explicit nullable. Avoids `?? null` rituals at every read site.
         conversationId: owner?.conversationId ?? null,
+        // TASK-181 — host-derived session origin; normalized to null when absent.
+        source: owner?.source ?? null,
         terminated: false,
       };
       bySessionId.set(sessionId, record);
@@ -129,6 +147,7 @@ export function createSessionStore(): SessionStore {
         userId: record.userId,
         agentId: record.agentId,
         conversationId: record.conversationId,
+        source: record.source,
       };
     },
 

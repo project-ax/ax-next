@@ -249,4 +249,68 @@ describe('@ax/ipc-http: auth-resolved ids propagate onto per-request ctx', () =>
     expect(got?.agentId).toBe('ipc-http');
     expect(got?.conversationId).toBeUndefined();
   });
+
+  it('stamps host-derived source onto ctx for the happy-path chat:end (TASK-181, k8s/TCP transport)', async () => {
+    // The k8s sandbox backend reaches the host over THIS TCP listener, so the
+    // runner-completed chat:end for a k8s session lands here. A routine-opened
+    // session must surface ctx.source='routine' so @ax/memory-strata's guard
+    // fires on a successful k8s turn — same property @ax/ipc-server provides for
+    // the subprocess (unix-socket) transport.
+    let capturedCtx: AgentContext | null = null;
+    let resolveFire: (() => void) | null = null;
+    const fired = new Promise<void>((resolve) => {
+      resolveFire = resolve;
+    });
+    const harness = await createTestHarness({
+      plugins: [createSessionInmemoryPlugin()],
+    });
+    harness.bus.subscribe('chat:end', 'mock-chat-end', async (ctx) => {
+      capturedCtx = ctx;
+      resolveFire?.();
+      return undefined;
+    });
+    const ctx = harness.ctx();
+    const { token } = await harness.bus.call<
+      SessionCreateInput,
+      SessionCreateOutput
+    >('session:create', ctx, {
+      sessionId: 's-http-routine',
+      workspaceRoot: '/tmp/ws',
+      // Host stamps the origin at create-time (orchestrator forwards ctx.source).
+      owner: { ...OWNER, source: 'routine' },
+    });
+    const listener = await createHttpListener({
+      host: '127.0.0.1',
+      port: 0,
+      bus: harness.bus,
+    });
+    harnesses.push({
+      listener,
+      port: listener.port,
+      token,
+      cleanup: async () => {
+        await listener.close();
+        await harness.close({ onError: () => {} });
+      },
+    });
+
+    // A runner that ALSO smuggles a forged source in the body must not flip ctx:
+    // the listener derives source only from the session record, never the frame.
+    const body = {
+      outcome: { kind: 'complete', messages: [{ role: 'assistant', content: 'done' }] },
+      source: 'user',
+    };
+    const res = await postJson(
+      listener.port,
+      '/event.chat-end',
+      token,
+      JSON.stringify(body),
+    );
+    expect(res.status).toBe(202);
+    await fired;
+    expect(capturedCtx).not.toBeNull();
+    const got = capturedCtx as AgentContext | null;
+    expect(got?.source).toBe('routine');
+    expect(got?.sessionId).toBe('s-http-routine');
+  });
 });

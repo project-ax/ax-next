@@ -439,3 +439,43 @@ that materialize one per-agent copy into `routines_v1_definitions`). Default-ENA
   truncate list (plugin.test.ts) — tests already using `TRUNCATE default_routines_v1
   CASCADE` (store/tick/canary) auto-cascade and need no change; `DROP … CASCADE` (migrations)
   is fine too.
+
+## AgentContext.source across the IPC boundary (TASK-181, host-only, unforgeable)
+
+The happy-path runner-COMPLETED `chat:end` is fired by the IPC server from a ctx
+**reconstructed off the session-token resolution** (`ipc-server/listener.ts:144` +
+the TCP twin `ipc-http/listener.ts`). So a per-ctx field consumed there must ride the
+session record, not the inbound frame. The full host-only chain for `source`
+(`'routine'|'user'`, mirrors the earlier `conversationId` chain exactly):
+
+  routines `fire.ts` stamps `ctx.source='routine'`
+   → orchestrator `runAgentInvoke` forwards `ctx.source` into `owner.source` on
+     `sandbox:open-session` (conditional-spread: key ABSENT for user turns,
+     exactOptionalPropertyTypes)
+   → `@ax/sandbox-protocol` `OpenSessionInputSchema.owner.source` (`z.enum(['routine','user']).optional()`)
+   → both backends (`sandbox-subprocess`/`sandbox-k8s` `open-session.ts`) forward
+     `input.owner.source` into their local `SessionCreateInput.owner.source`
+   → both session stores (`session-inmemory`/`session-postgres`) persist it on the
+     record (postgres: additive `ALTER TABLE … ADD COLUMN IF NOT EXISTS source TEXT`,
+     read back narrowed via `normalizeSource`; unknown stored value ⇒ null ⇒ user)
+   → `session:resolve-token` returns `source` (added to `SessionResolveTokenOutput` +
+     its return-schema in BOTH stores; both `validateOwner`s accept `'routine'|'user'|null`
+     and reject anything else)
+   → `@ax/ipc-core` `authenticate()` carries it onto `AuthResult.source`
+   → both listeners stamp `...(auth.source !== null ? { source: auth.source } : {})`
+   → `@ax/memory-strata`'s two `chat:end` subscribers early-return on `ctx.source==='routine'`.
+
+**SECURITY (load-bearing):** `source` is HOST-ONLY — deliberately absent from
+`@ax/ipc-protocol` and never read off the chat-end frame body. The runner controls only
+its bearer token, which merely *selects which session record to read* — it cannot set the
+stored `source`. The runner never calls `session:create`/`sandbox:open-session` (host-side
+only). Tests assert a runner smuggling `source:'routine'` in the `/event.chat-end` body
+does NOT flip `ctx.source` (`ipc-server/__tests__/source-propagation.test.ts` +
+`ipc-http/__tests__/auth-ctx-propagation.test.ts`). The `EventChatEndSchema` is
+`z.object({outcome})` which strips unknown keys anyway.
+
+**Drift-guard gotcha:** adding a required field to `SessionResolveTokenOutput` (in either
+store) forces an update to that store's `return-schemas.test.ts` fixture (the `: Type`
+annotation catches it at compile; the `.toEqual(full)` round-trip catches a schema that
+strips it). Also: every `resolveToken().toEqual({...})` in store/plugin tests (both
+backends) is exact-match and needs the new `source:` key.
