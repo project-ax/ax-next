@@ -98,6 +98,20 @@ afterEach(async () => {
   await fs.rm(scratchRoot, { recursive: true, force: true });
 });
 
+// TASK-136 / TASK-123 / TASK-5 / #146 load class: every `it()` in this file
+// drives a real `git` binary in tempdirs (materialize/commit/advance/rollback/
+// resync), each sequentially spawning many git subprocesses. Under the full
+// `pnpm -r test` fan-out (every package's vitest pool + sibling testcontainer
+// suites all competing for CPU), git process startup latency balloons ~10×,
+// breaching vitest's default 5000 ms per-test budget and flaking the
+// push-to-main backstop — even though the bodies run in well under a second
+// isolated. Give the real-git tests a 30 s budget, matching every other
+// real-git package (workspace-git*, ipc-core) and the runner's own
+// flush-workspace-host e2e tests (#280). Applied per-`it()` (not a package-wide
+// vitest.config override) so the package's ~28 fast unit test files keep the
+// tight 5 s early-hang signal (cf. sandbox-k8s keeping testTimeout: 5_000).
+const REAL_GIT_TIMEOUT_MS = 30_000;
+
 describe('materializeWorkspace', () => {
   it('rejects an empty or missing bundle file (Phase 3 always-bundle contract)', async () => {
     // Wire contract: workspace.materialize ALWAYS ships a non-empty
@@ -117,7 +131,7 @@ describe('materializeWorkspace', () => {
         bundlePath: path.join(scratchRoot, 'does-not-exist.bundle'),
       }),
     ).rejects.toThrow(/empty or missing bundle file/);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('clones from an empty-tree baseline bundle (brand-new workspace)', async () => {
     // The host's empty-workspace materialize ships a baseline bundle
@@ -137,7 +151,7 @@ describe('materializeWorkspace', () => {
     const head = await git(['-C', root, 'rev-parse', 'HEAD']);
     expect(baseline.stdout.trim()).toBe(head.stdout.trim());
     expect(baseline.stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('clones from a non-empty baseline bundle and pins refs/heads/baseline to HEAD', async () => {
     const bundleFile = await makeBundle({ '.ax/CLAUDE.md': 'hello\n' });
@@ -158,7 +172,7 @@ describe('materializeWorkspace', () => {
     expect(headRef.code).toBe(0);
     expect(baselineRef.stdout.trim()).toBe(headRef.stdout.trim());
     expect(baselineRef.stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('clones with nested directory contents intact', async () => {
     const bundleFile = await makeBundle({
@@ -179,7 +193,7 @@ describe('materializeWorkspace', () => {
     expect(await fs.readFile(path.join(root, 'src/main.ts'), 'utf8')).toBe(
       'export {};\n',
     );
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('deletes the host-streamed bundle file after clone (takes ownership)', async () => {
     const bundleFile = await makeBundle({ 'a.txt': 'a' });
@@ -196,7 +210,7 @@ describe('materializeWorkspace', () => {
       exists = false;
     }
     expect(exists).toBe(false);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('throws a useful error (and still deletes the file) when the bundle is invalid', async () => {
     const root = path.join(scratchRoot, 'agent');
@@ -209,7 +223,7 @@ describe('materializeWorkspace', () => {
     ).rejects.toThrow(/git clone failed/);
     // Ownership cleanup runs even on the failure path (finally block).
     await expect(fs.stat(notABundle)).rejects.toMatchObject({ code: 'ENOENT' });
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('does NOT run `git lfs install --local` (LFS layer removed, TASK-70)', async () => {
     // The half-wired LFS layer is gone (out-of-git Part E): no `git lfs
@@ -224,7 +238,7 @@ describe('materializeWorkspace', () => {
 
     const cfg = await fs.readFile(path.join(root, '.git', 'config'), 'utf8');
     expect(cfg).not.toContain('[filter "lfs"]');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 });
 
 describe('no .claude/skills symlink (Phase 3: project source dropped)', () => {
@@ -240,7 +254,7 @@ describe('no .claude/skills symlink (Phase 3: project source dropped)', () => {
     await expect(
       fs.lstat(path.join(root, '.claude', 'skills')),
     ).rejects.toMatchObject({ code: 'ENOENT' });
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 });
 
 describe('scaffoldWorkspaceGitignore', () => {
@@ -267,7 +281,7 @@ describe('scaffoldWorkspaceGitignore', () => {
     ]) {
       expect(gi).toContain(entry);
     }
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('is idempotent — a second call adds no duplicate lines', async () => {
     const root = path.join(scratchRoot, 'agent');
@@ -279,7 +293,7 @@ describe('scaffoldWorkspaceGitignore', () => {
     const gi = await fs.readFile(path.join(root, '.gitignore'), 'utf8');
     const nodeModulesLines = gi.split('\n').filter((l) => l.trim() === 'node_modules/');
     expect(nodeModulesLines).toHaveLength(1);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('creates the workspace root if it does not yet exist (regression: A4 dropped scaffoldWorkspaceSkillSurface, whose recursive mkdir had been incidentally creating the root)', async () => {
     // No materializeWorkspace here — a root that nothing else created. Before
@@ -292,7 +306,7 @@ describe('scaffoldWorkspaceGitignore', () => {
 
     const gi = await fs.readFile(path.join(root, '.gitignore'), 'utf8');
     expect(gi).toContain('node_modules/');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('preserves a baseline .gitignore and appends only the missing entries', async () => {
     const root = path.join(scratchRoot, 'agent');
@@ -309,7 +323,7 @@ describe('scaffoldWorkspaceGitignore', () => {
     expect(gi.split('\n').filter((l) => l.trim() === 'node_modules/')).toHaveLength(1); // not duplicated
     expect(gi).toContain('__pycache__/'); // missing entry appended
     expect(gi).toContain('.venv/');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 });
 
 describe('scaffoldSdkProjectsSymlink', () => {
@@ -336,7 +350,7 @@ describe('scaffoldSdkProjectsSymlink', () => {
     // through the symlink without ENOENT on the parent.
     const targetStat = await fs.stat(path.join(root, '.claude', 'projects'));
     expect(targetStat.isDirectory()).toBe(true);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('creates the claudeConfigDir parent if it does not already exist (defensive)', async () => {
     const root = path.join(scratchRoot, 'agent');
@@ -350,7 +364,7 @@ describe('scaffoldSdkProjectsSymlink', () => {
 
     const linkTarget = await fs.readlink(path.join(claudeConfigDir, 'projects'));
     expect(linkTarget).toBe(path.join(root, '.claude', 'projects'));
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('is idempotent — a second call leaves the correct symlink in place', async () => {
     const root = path.join(scratchRoot, 'agent');
@@ -362,7 +376,7 @@ describe('scaffoldSdkProjectsSymlink', () => {
 
     const linkTarget = await fs.readlink(path.join(claudeConfigDir, 'projects'));
     expect(linkTarget).toBe(path.join(root, '.claude', 'projects'));
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('replaces a stale regular file at <claudeConfigDir>/projects with the canonical symlink', async () => {
     const root = path.join(scratchRoot, 'agent');
@@ -374,7 +388,7 @@ describe('scaffoldSdkProjectsSymlink', () => {
 
     const linkTarget = await fs.readlink(path.join(claudeConfigDir, 'projects'));
     expect(linkTarget).toBe(path.join(root, '.claude', 'projects'));
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('replaces a stale directory at <claudeConfigDir>/projects with the canonical symlink', async () => {
     const root = path.join(scratchRoot, 'agent');
@@ -386,7 +400,7 @@ describe('scaffoldSdkProjectsSymlink', () => {
 
     const linkTarget = await fs.readlink(path.join(claudeConfigDir, 'projects'));
     expect(linkTarget).toBe(path.join(root, '.claude', 'projects'));
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('writes through the symlink land inside workspaceRoot (the load-bearing assertion)', async () => {
     // This is what the SDK actually does: it calls `open(..., 'a')` on
@@ -415,7 +429,7 @@ describe('scaffoldSdkProjectsSymlink', () => {
       `${sid}.jsonl`,
     );
     expect(await fs.readFile(workspacePath, 'utf8')).toBe('{"turn":1}\n');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 });
 
 // ---------------------------------------------------------------------------
@@ -453,7 +467,7 @@ describe('commitTurnAndBundle', () => {
     const { root } = await setupMaterializedWorkspace();
     const r = await commitTurnAndBundle({ root, reason: 'turn' });
     expect(r).toBeNull();
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('returns null + creates NO commit for a pure chat turn (jsonl-only write, gitignored) — TASK-70 Phase-5 gate', async () => {
     // The realistic post-out-of-git chat turn: the SDK appends to its session
@@ -499,7 +513,7 @@ describe('commitTurnAndBundle', () => {
         await git(['-C', root, 'rev-list', '--count', 'refs/heads/baseline..main'])
       ).stdout.trim(),
     ).toBe('0');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('bundles an already-committed turn when the working tree is clean (re-sync replay; baseline..main non-empty) — TASK-11', async () => {
     // After resyncBaselineAndReplay, the turn's commit sits on `main` ahead of
@@ -530,7 +544,7 @@ describe('commitTurnAndBundle', () => {
     expect(
       await fs.readFile(path.join(verifyDir, 'replayed-turn.txt'), 'utf8'),
     ).toBe('rebased\n');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('catches a Bash-style file create (raw fs write, no SDK tool)', async () => {
     // Phase 3 motivation: PostToolUse-based observation missed Bash
@@ -561,7 +575,7 @@ describe('commitTurnAndBundle', () => {
       await git(['-C', root, 'rev-parse', 'refs/heads/baseline'])
     ).stdout.trim();
     expect(baselineNow).toBe(baselineOid);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('catches a Bash-style delete (closes the gap that motivated Phase 3)', async () => {
     // Plain `rm` on the filesystem — no SDK tool involved. Pre-Phase-3
@@ -584,7 +598,7 @@ describe('commitTurnAndBundle', () => {
       exists = false;
     }
     expect(exists).toBe(false);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('aggregates multi-file changes in one bundle', async () => {
     const { root } = await setupMaterializedWorkspace({
@@ -605,7 +619,7 @@ describe('commitTurnAndBundle', () => {
     expect(
       await fs.readFile(path.join(verifyDir, '.ax/CLAUDE.md'), 'utf8'),
     ).toBe('# memory');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('cleans up the .turn.bundle tempfile after success', async () => {
     const { root } = await setupMaterializedWorkspace();
@@ -620,7 +634,7 @@ describe('commitTurnAndBundle', () => {
       exists = false;
     }
     expect(exists).toBe(false);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 });
 
 describe('advanceBaseline', () => {
@@ -638,7 +652,7 @@ describe('advanceBaseline', () => {
       await git(['-C', root, 'rev-parse', 'refs/heads/baseline'])
     ).stdout.trim();
     expect(baselineAfter).toBe(headBefore);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('after advance, the next turn bundles from the new baseline', async () => {
     const { root } = await setupMaterializedWorkspace();
@@ -661,7 +675,7 @@ describe('advanceBaseline', () => {
     await git(['clone', root, verifyDir]);
     expect(await fs.readFile(path.join(verifyDir, 'a.txt'), 'utf8')).toBe('A1');
     expect(await fs.readFile(path.join(verifyDir, 'b.txt'), 'utf8')).toBe('B1');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 });
 
 describe('rollbackToBaseline', () => {
@@ -679,7 +693,7 @@ describe('rollbackToBaseline', () => {
       await git(['-C', root, 'rev-list', '--count', 'refs/heads/baseline..main'])
     ).stdout.trim();
     expect(count).toBe('0');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('B1 regression: a recoverable veto preserves a just-authored SKILL.md', async () => {
     const { root } = await setupMaterializedWorkspace();
@@ -691,7 +705,7 @@ describe('rollbackToBaseline', () => {
     await rollbackToBaseline(root, 'mixed');
 
     expect(await fs.readFile(skillPath, 'utf8')).toContain('name: linear');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('hard (SDK-config veto): wipes the working tree back to baseline', async () => {
     const { root } = await setupMaterializedWorkspace();
@@ -707,7 +721,7 @@ describe('rollbackToBaseline', () => {
       exists = false;
     }
     expect(exists).toBe(false);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('hard restores a deleted baseline file', async () => {
     const { root } = await setupMaterializedWorkspace({
@@ -719,7 +733,7 @@ describe('rollbackToBaseline', () => {
     await rollbackToBaseline(root, 'hard');
 
     expect(await fs.readFile(path.join(root, 'important.txt'), 'utf8')).toBe('do not delete');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('moves HEAD back to baseline after rollback (mixed)', async () => {
     const { root, baselineOid } = await setupMaterializedWorkspace();
@@ -730,7 +744,7 @@ describe('rollbackToBaseline', () => {
 
     const head = (await git(['-C', root, 'rev-parse', 'HEAD'])).stdout.trim();
     expect(head).toBe(baselineOid);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 });
 
 // ---------------------------------------------------------------------------
@@ -866,7 +880,7 @@ describe('resyncBaselineAndReplay', () => {
     ).stdout.trim();
     const logLines = log.split('\n').filter(Boolean);
     expect(logLines).toHaveLength(1);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('survives a dirty working tree (live SDK appends to the turn jsonl after commit)', async () => {
     // Regression: on a live runner the Claude Agent SDK keeps appending to
@@ -929,7 +943,7 @@ describe('resyncBaselineAndReplay', () => {
     // BOTH the committed turn line AND the live append.
     const aJsonl = await fs.readFile(path.join(root, 'a.jsonl'), 'utf8');
     expect(aJsonl).toBe('{"turn":1}\n{"turn":1,"more":true}\n');
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 
   it('conflict path: same-path change throws and leaves repo non-mid-rebase', async () => {
     // Both the concurrent writer AND the turn touch the same file — this
@@ -969,5 +983,5 @@ describe('resyncBaselineAndReplay', () => {
       rebaseHead = false;
     }
     expect(rebaseHead).toBe(false);
-  });
+  }, REAL_GIT_TIMEOUT_MS);
 });
