@@ -18,6 +18,7 @@ import { createValidatorServicePlugin } from '@ax/validator-service';
 import { createRoutinesPlugin } from '@ax/routines';
 import { createRoutinesAdminRoutesPlugin } from '@ax/routines-admin-routes';
 import { createMcpClientPlugin, createToolDispatcherPlugin } from '@ax/mcp-client';
+import { createMcpOAuthPlugin } from '@ax/mcp-oauth';
 import { createCredentialProxyPlugin } from '@ax/credential-proxy';
 import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
@@ -99,6 +100,23 @@ function defaultRunnerBinary(): string {
 }
 
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Fallback public origin used when no `AX_PUBLIC_BASE_URL` is configured (so
+ * `config.auth?.baseURL` is unset). The same `http://<bind-host>:<port>` shape
+ * `@ax/onboarding` falls back to (see the `onboardingCfg.baseUrl` default
+ * below) — it's the host's bind address, usually wrong for external traffic
+ * but ALWAYS defined. We need an always-defined origin because
+ * `@ax/mcp-oauth` with `mountRoutes:true` throws at init when `publicOrigin`
+ * is empty (the OAuth `redirect_uri` is derived from it). Operators set
+ * `AX_PUBLIC_BASE_URL` to pin the canonical origin so the OAuth callback and
+ * the better-auth cookie origin agree.
+ */
+function presetPublicOrigin(config: K8sPresetConfig): string {
+  return (
+    config.auth?.baseURL ?? `http://${config.http.host}:${config.http.port}`
+  );
+}
 
 const COOKIE_KEY_BYTES = 32;
 
@@ -991,6 +1009,36 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // `connectors:*` hooks (adds `http:register-route` + `auth:require-user` to
   // its calls — both already loaded above; topo-sort orders them).
   plugins.push(createConnectorsPlugin({ mountAdminRoutes: true }));
+
+  // ----- 9b'. mcp-oauth -----------------------------------------------------
+  // The OAuth credential kind for MCP connectors. Registers
+  // `credentials:resolve:mcp-oauth` (the refresh-on-read resolver the
+  // credential-proxy dispatches when a connector's keyMode is `oauth`) and —
+  // with `mountRoutes: true` — the `/oauth/mcp/{begin,callback}` HTTP routes
+  // that drive the per-user authorization-code dance. Its `calls`
+  // (`database:get-instance`, `http:register-route`, `auth:require-user`,
+  // `connectors:get`, `agents:resolve`, `credentials:get`, `credentials:set`)
+  // are all satisfied by plugins loaded above (the postgres trio, http-server,
+  // auth-better, connectors just above, agents, credentials); the kernel's
+  // topo-sort orders them.
+  //
+  // Pushed AFTER @ax/connectors so the conceptual ordering reads naturally
+  // (it consumes `connectors:get`); load order isn't load-bearing — the kernel
+  // sequences on declared calls regardless.
+  //
+  // CLOSES the half-wired window: the resolver + OAuth routes were registered
+  // but unreachable until this push. `publicOrigin` MUST be non-empty —
+  // `mountRoutes:true` throws at init otherwise — so we pass the always-defined
+  // `presetPublicOrigin(config)` (the AX_PUBLIC_BASE_URL origin when set, else
+  // the host's bind address). Using the SAME source as `auth.baseURL` keeps the
+  // OAuth `redirect_uri` and the better-auth cookie origin in agreement.
+  plugins.push(
+    createMcpOAuthPlugin({
+      mountRoutes: true,
+      publicOrigin: presetPublicOrigin(config),
+      connectorReturnPath: '/settings/connectors',
+    }),
+  );
 
   // ----- 9a. attachments ----------------------------------------------------
   // The attachments & artifacts subsystem. Service hooks

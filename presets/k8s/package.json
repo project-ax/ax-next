@@ -47,6 +47,7 @@
     "@ax/ipc-http": "workspace:*",
     "@ax/llm-anthropic": "workspace:*",
     "@ax/mcp-client": "workspace:*",
+    "@ax/mcp-oauth": "workspace:*",
     "@ax/memory-strata": "workspace:*",
     "@ax/memory-strata-index-postgres": "workspace:*",
     "@ax/onboarding": "workspace:*",

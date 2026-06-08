@@ -125,6 +125,13 @@ const PLUGINS_TO_DROP = new Set<string>([
   // exercised by the multi-tenant ACL canary. Static wiring pinned in
   // preset.test.ts; drop here so this canary needs no postgres testcontainer.
   '@ax/connectors',
+  // mcp-oauth (T11): postgres-backed (database:get-instance) and, with
+  // mountRoutes:true in the preset, hard-calls http:register-route +
+  // auth:require-user + connectors:get + agents:resolve + credentials:get/set
+  // — all dropped here, so its calls would be unsatisfied and bootstrap's
+  // verifyCalls would fail. Not on the multi-tenant ACL canary's path; static
+  // wiring is pinned in preset.test.ts.
+  '@ax/mcp-oauth',
   '@ax/agents',
   '@ax/workspace-git',
   '@ax/ipc-http',
