@@ -97,6 +97,20 @@ export interface AgentContext {
    * `chat:turn-end` subscriber, which gracefully no-ops when unset.
    */
   readonly conversationId?: string;
+  /**
+   * Origin of this context — who/what initiated the work it represents.
+   * `'routine'` marks a context minted by a scheduled @ax/routines fire (a
+   * hidden, non-user turn); `'user'` marks an interactive user turn. Optional
+   * because most callers don't need to distinguish, and an unset value means
+   * "unspecified" (treated the same as `'user'` by consumers). Subscribers that
+   * must NOT act on internally-generated turns key off this — e.g.
+   * @ax/memory-strata skips its `chat:end` memory extraction when
+   * `source === 'routine'` so routine fires don't pollute the agent's memory.
+   *
+   * Origin label only — no transport/storage vocabulary, so it stays
+   * transport-agnostic per Invariant 1.
+   */
+  readonly source?: 'routine' | 'user';
   readonly logger: Logger;
   readonly state: Map<string, unknown>;
   readonly workspace: WorkspaceContext;
@@ -109,6 +123,8 @@ export interface MakeAgentContextOptions {
   userId: string;
   /** Optional. See `AgentContext.conversationId`. */
   conversationId?: string;
+  /** Optional. See `AgentContext.source`. */
+  source?: 'routine' | 'user';
   logger?: Logger;
   // Optional for dev ergonomics — defaults to process.cwd(). Real callers
   // (CLI boot, runner) should supply an explicit workspace.
@@ -127,6 +143,7 @@ export function makeAgentContext(opts: MakeAgentContextOptions): AgentContext {
     ...(opts.conversationId !== undefined
       ? { conversationId: opts.conversationId }
       : {}),
+    ...(opts.source !== undefined ? { source: opts.source } : {}),
     logger,
     state: new Map(),
     workspace,

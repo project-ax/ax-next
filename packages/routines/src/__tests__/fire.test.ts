@@ -89,6 +89,19 @@ describe('fireRoutine', () => {
     expect(pending.size).toBe(0);
   });
 
+  it('stamps source: "routine" on the fire ctx passed to agent:invoke', async () => {
+    let invokedCtx: AgentContext | undefined;
+    const bus = await makeBus({
+      invoke: async (ctx) => { invokedCtx = ctx; return { kind: 'complete', messages: [] }; },
+    });
+    const fire = createFireRoutine({ bus, pending: new Map() });
+    await fire(row(), 'tick');
+    // agent:invoke is fire-and-forget; let the microtask run.
+    await new Promise((r) => setImmediate(r));
+    expect(invokedCtx).toBeDefined();
+    expect(invokedCtx!.source).toBe('routine');
+  });
+
   it('agent:invoke is fire-and-forget — does not block on completion', async () => {
     let resolveInvoke!: () => void;
     const invokePromise = new Promise<unknown>((res) => { resolveInvoke = () => res({ kind: 'complete', messages: [] }); });

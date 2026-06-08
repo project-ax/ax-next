@@ -104,6 +104,11 @@ export function createFireRoutine(deps: FireDeps) {
       agentId: row.agentId,
       userId: row.authorUserId,
       conversationId,
+      // Mark this as a routine-originated (non-user) turn. Subscribers that
+      // must not act on internally-generated turns key off ctx.source — notably
+      // @ax/memory-strata, which skips its chat:end memory extraction so a
+      // scheduled fire doesn't pollute the agent's memory. See AgentContext.source.
+      source: 'routine',
     });
 
     // Phase D: render whenever payload is provided, regardless of source.

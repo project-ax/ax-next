@@ -117,4 +117,34 @@ describe('makeAgentContext', () => {
     });
     expect(ctx.workspace.rootPath).toBe('/tmp/some/ws');
   });
+
+  it('round-trips an explicit source', () => {
+    const routine = makeAgentContext({
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      userId: 'user-1',
+      source: 'routine',
+    });
+    expect(routine.source).toBe('routine');
+
+    const user = makeAgentContext({
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      userId: 'user-1',
+      source: 'user',
+    });
+    expect(user.source).toBe('user');
+  });
+
+  it('leaves source undefined (and absent) when not supplied', () => {
+    const ctx = makeAgentContext({
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      userId: 'user-1',
+    });
+    expect(ctx.source).toBeUndefined();
+    // Conditional-spread: the key is never set to a literal `undefined`, so
+    // `source` should not even be an own property when omitted.
+    expect(Object.prototype.hasOwnProperty.call(ctx, 'source')).toBe(false);
+  });
 });
