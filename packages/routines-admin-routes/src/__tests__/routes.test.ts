@@ -55,6 +55,10 @@ interface MockServices {
    *  (and throws PluginError 'forbidden' otherwise). Overrides default
    *  "always-succeeds" behaviour. */
   ownedAgentIds?: ReadonlySet<string>;
+  /** When set, agents:resolve reports this as the agent's ownerId (otherwise
+   *  the resolving user). Lets a test assert a write routes to the agent's
+   *  OWNER, not the acting user (team-agent case). */
+  resolveOwnerId?: string;
   routinesList?: () => Promise<{ routines: Array<{ agentId: string }> }>;
   recentFires?: (
     input: { agentId: string; path: string; limit?: number },
@@ -74,6 +78,15 @@ interface MockServices {
   agentDefaultOverrides?: Map<string, boolean>;
   /** The set of default routines `routines:list-agent-defaults` reports. */
   agentDefaults?: Array<{ defaultRoutineId: string; name: string }>;
+  /** Controls the workspace:apply mock used by the write-route tests:
+   *  - 'ok'                  → succeeds, records the call
+   *  - 'reject'              → throws PluginError 'rejected' (validator veto)
+   *  - 'parent-mismatch-once'→ throws parent-mismatch on the FIRST call (with
+   *                            cause.actualParent), succeeds on the retry */
+  applyMode?:
+    | { kind: 'ok' }
+    | { kind: 'reject'; message: string }
+    | { kind: 'parent-mismatch-once'; actualParent: string | null };
 }
 
 async function makeHarnessWith(opts: MockServices) {
@@ -90,6 +103,18 @@ async function makeHarnessWith(opts: MockServices) {
     opts.defaults ?? new Map<string, DefaultRoutineDetailMock>();
   const agentDefaultOverrides =
     opts.agentDefaultOverrides ?? new Map<string, boolean>();
+  // Records every workspace:apply call the write routes make, including the
+  // ctx routing (agentId + userId) so tests can assert the write lands in the
+  // agent OWNER's workspace, not the plugin's.
+  const applyCalls: Array<{
+    agentId: string;
+    userId: string;
+    input: {
+      changes: Array<{ path: string; kind: string; content?: Uint8Array }>;
+      parent: string | null;
+    };
+  }> = [];
+  let applyAttempt = 0;
   const harness = await createTestHarness({
     services: {
       'http:register-route': async (_ctx, input: unknown) => {
@@ -148,9 +173,14 @@ async function makeHarnessWith(opts: MockServices) {
         }
         // Default mock: every agent resolves successfully and is "owned"
         // by the user that asked. Tests pass `resolveFailure` (blanket
-        // deny) or `ownedAgentIds` (allowlist) to override.
+        // deny) or `ownedAgentIds` (allowlist) to override. `resolveOwnerId`
+        // forces a specific owner (team-agent owner ≠ actor).
         return {
-          agent: { id: i.agentId, ownerId: i.userId, workspaceRef: null },
+          agent: {
+            id: i.agentId,
+            ownerId: opts.resolveOwnerId ?? i.userId,
+            workspaceRef: null,
+          },
         };
       },
       'routines:list-defaults': async () => ({
@@ -257,10 +287,44 @@ async function makeHarnessWith(opts: MockServices) {
         );
         return {};
       },
+      'workspace:apply': async (ctx, input: unknown) => {
+        const i = input as {
+          changes: Array<{ path: string; kind: string }>;
+          parent: string | null;
+        };
+        applyCalls.push({ agentId: ctx.agentId, userId: ctx.userId, input: i });
+        const mode = opts.applyMode ?? { kind: 'ok' };
+        if (mode.kind === 'reject') {
+          throw new PluginError({
+            code: 'rejected',
+            plugin: 'test',
+            hookName: 'workspace:apply',
+            message: mode.message,
+          });
+        }
+        if (mode.kind === 'parent-mismatch-once' && applyAttempt === 0) {
+          applyAttempt++;
+          throw new PluginError({
+            code: 'parent-mismatch',
+            plugin: 'test',
+            hookName: 'workspace:apply',
+            message: 'parent mismatch',
+            cause: { actualParent: mode.actualParent },
+          });
+        }
+        return { version: 'v-applied', delta: { changes: [], author: {} } };
+      },
     },
     plugins: [createRoutinesAdminRoutesPlugin()],
   });
-  return { harness, handlers, handlersByMethod, defaults, agentDefaultOverrides };
+  return {
+    harness,
+    handlers,
+    handlersByMethod,
+    defaults,
+    agentDefaultOverrides,
+    applyCalls,
+  };
 }
 
 function makeReq(over: Partial<RouteRequest> = {}): RouteRequest {
@@ -1085,6 +1149,199 @@ describe('per-agent default-routine toggle routes', () => {
     const { res, captured } = makeRes();
     await handler(makeReq({ params: { agentId: 'agt_a' } }), res);
     expect(captured.status).toBe(401);
+    await harness.close({ onError: () => {} });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Per-user write routes: PUT / DELETE /settings/routines/:agentId
+// ---------------------------------------------------------------------------
+
+const VALID_PATH = '.ax/routines/heartbeat.md';
+const VALID_MD = [
+  '---',
+  'name: heartbeat',
+  'description: periodic check',
+  'trigger:',
+  '  kind: interval',
+  '  every: 1h',
+  'conversation: shared',
+  '---',
+  'do the thing',
+  '',
+].join('\n');
+
+function putReq(agentId: string, body: { path?: string; sourceMd?: string }): RouteRequest {
+  return makeReq({
+    params: { agentId },
+    body: Buffer.from(JSON.stringify(body), 'utf8'),
+  });
+}
+
+describe('routines-admin-routes — write routes (PUT/DELETE /settings/routines/:agentId)', () => {
+  it('PUT writes the routine file via workspace:apply and returns 200', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({
+      authedUser: { id: 'u1', isAdmin: false },
+    });
+    const handler = handlersByMethod.get('PUT /settings/routines/:agentId')!;
+    expect(handler).toBeDefined();
+    const { res, captured } = makeRes();
+    await handler(putReq('agt_x', { path: VALID_PATH, sourceMd: VALID_MD }), res);
+    expect(captured.status).toBe(200);
+    expect((captured.body as { path: string }).path).toBe(VALID_PATH);
+    expect(applyCalls).toHaveLength(1);
+    const change = applyCalls[0]!.input.changes[0]!;
+    expect(change).toMatchObject({ path: VALID_PATH, kind: 'put' });
+    expect(new TextDecoder().decode(change.content)).toBe(VALID_MD);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('PUT routes the write to the agent OWNER workspace, not the plugin', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({
+      authedUser: { id: 'member-1', isAdmin: false },
+      resolveOwnerId: 'owner-2', // team agent owned by someone else
+    });
+    const handler = handlersByMethod.get('PUT /settings/routines/:agentId')!;
+    const { res, captured } = makeRes();
+    await handler(putReq('agt_team', { path: VALID_PATH, sourceMd: VALID_MD }), res);
+    expect(captured.status).toBe(200);
+    expect(applyCalls[0]).toMatchObject({ agentId: 'agt_team', userId: 'owner-2' });
+    await harness.close({ onError: () => {} });
+  });
+
+  it('PUT returns 403 when the actor cannot resolve the agent', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({
+      authedUser: { id: 'u1', isAdmin: false },
+      ownedAgentIds: new Set(['agt_owned']),
+    });
+    const handler = handlersByMethod.get('PUT /settings/routines/:agentId')!;
+    const { res, captured } = makeRes();
+    await handler(putReq('agt_other', { path: VALID_PATH, sourceMd: VALID_MD }), res);
+    expect(captured.status).toBe(403);
+    expect(applyCalls).toHaveLength(0);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('PUT returns 400 for a path outside .ax/routines/*.md (no workspace write)', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({});
+    const handler = handlersByMethod.get('PUT /settings/routines/:agentId')!;
+    for (const bad of [
+      '.ax/routines/../secrets.md',
+      '.ax/routines/nested/x.md',
+      '.ax/skills/x.md',
+      'routines/x.md',
+      '.ax/routines/x.txt',
+    ]) {
+      const { res, captured } = makeRes();
+      await handler(putReq('agt_x', { path: bad, sourceMd: VALID_MD }), res);
+      expect(captured.status, `path ${bad}`).toBe(400);
+    }
+    expect(applyCalls).toHaveLength(0);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('PUT returns 400 when validator-routine vetoes the apply (rejected → 400)', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      applyMode: { kind: 'reject', message: '.ax/routines/heartbeat.md: interval.every: minimum is 60s' },
+    });
+    const handler = handlersByMethod.get('PUT /settings/routines/:agentId')!;
+    const { res, captured } = makeRes();
+    await handler(putReq('agt_x', { path: VALID_PATH, sourceMd: VALID_MD }), res);
+    expect(captured.status).toBe(400);
+    expect((captured.body as { error: string }).error).toContain('minimum is 60s');
+    await harness.close({ onError: () => {} });
+  });
+
+  it('PUT retries once with cause.actualParent on a CAS miss, then succeeds', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({
+      applyMode: { kind: 'parent-mismatch-once', actualParent: 'head-abc' },
+    });
+    const handler = handlersByMethod.get('PUT /settings/routines/:agentId')!;
+    const { res, captured } = makeRes();
+    await handler(putReq('agt_x', { path: VALID_PATH, sourceMd: VALID_MD }), res);
+    expect(captured.status).toBe(200);
+    expect(applyCalls).toHaveLength(2);
+    expect(applyCalls[0]!.input.parent).toBeNull();
+    expect(applyCalls[1]!.input.parent).toBe('head-abc');
+    await harness.close({ onError: () => {} });
+  });
+
+  it('PUT returns 400 on missing/empty sourceMd', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({});
+    const handler = handlersByMethod.get('PUT /settings/routines/:agentId')!;
+    const { res, captured } = makeRes();
+    await handler(putReq('agt_x', { path: VALID_PATH, sourceMd: '' }), res);
+    expect(captured.status).toBe(400);
+    expect(applyCalls).toHaveLength(0);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('PUT returns 401 when unauthenticated', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({
+      authMode: { kind: 'unauthenticated' },
+    });
+    const handler = handlersByMethod.get('PUT /settings/routines/:agentId')!;
+    const { res, captured } = makeRes();
+    await handler(putReq('agt_x', { path: VALID_PATH, sourceMd: VALID_MD }), res);
+    expect(captured.status).toBe(401);
+    expect(applyCalls).toHaveLength(0);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('DELETE removes the routine file via workspace:apply and returns 204', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({});
+    const handler = handlersByMethod.get('DELETE /settings/routines/:agentId')!;
+    expect(handler).toBeDefined();
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({ params: { agentId: 'agt_x' }, query: { path: VALID_PATH } }),
+      res,
+    );
+    expect(captured.status).toBe(204);
+    expect(applyCalls).toHaveLength(1);
+    expect(applyCalls[0]!.input.changes[0]).toMatchObject({ path: VALID_PATH, kind: 'delete' });
+    await harness.close({ onError: () => {} });
+  });
+
+  it('DELETE returns 403 when the actor cannot resolve the agent', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({
+      ownedAgentIds: new Set(['agt_owned']),
+    });
+    const handler = handlersByMethod.get('DELETE /settings/routines/:agentId')!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({ params: { agentId: 'agt_other' }, query: { path: VALID_PATH } }),
+      res,
+    );
+    expect(captured.status).toBe(403);
+    expect(applyCalls).toHaveLength(0);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('DELETE returns 400 when ?path is missing or outside .ax/routines/*.md', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({});
+    const handler = handlersByMethod.get('DELETE /settings/routines/:agentId')!;
+    for (const q of [{}, { path: '.ax/routines/../x.md' }, { path: '.ax/skills/x.md' }]) {
+      const { res, captured } = makeRes();
+      await handler(makeReq({ params: { agentId: 'agt_x' }, query: q }), res);
+      expect(captured.status).toBe(400);
+    }
+    expect(applyCalls).toHaveLength(0);
+    await harness.close({ onError: () => {} });
+  });
+
+  it('DELETE returns 401 when unauthenticated', async () => {
+    const { harness, handlersByMethod, applyCalls } = await makeHarnessWith({
+      authMode: { kind: 'unauthenticated' },
+    });
+    const handler = handlersByMethod.get('DELETE /settings/routines/:agentId')!;
+    const { res, captured } = makeRes();
+    await handler(
+      makeReq({ params: { agentId: 'agt_x' }, query: { path: VALID_PATH } }),
+      res,
+    );
+    expect(captured.status).toBe(401);
+    expect(applyCalls).toHaveLength(0);
     await harness.close({ onError: () => {} });
   });
 });

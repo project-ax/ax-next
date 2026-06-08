@@ -54,6 +54,10 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
         'routines:list-agent-defaults',
         'routines:set-agent-default-enabled',
         'agents:resolve',
+        // Per-user routine create/edit/delete writes the .ax/routines/<name>.md
+        // file into the agent workspace; the apply facade fires
+        // workspace:applied → @ax/routines syncs the row.
+        'workspace:apply',
       ],
       subscribes: [],
     },
