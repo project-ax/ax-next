@@ -22,9 +22,38 @@ import { Badge } from '@/components/ui/badge';
 import {
   listDefaultRoutines,
   deleteDefaultRoutine,
+  getDefaultRoutine,
+  upsertDefaultRoutine,
+  updateDefaultRoutine,
 } from '@/lib/default-routines';
-import type { DefaultRoutineSummary } from '@ax/routines';
-import { DefaultRoutineEditor } from './DefaultRoutineEditor';
+import type { DefaultRoutineSummary, DefaultRoutineDetail } from '@ax/routines';
+import type { RoutineFrontmatterFields } from '@ax/validator-routine/frontmatter';
+import { RoutineEditor, type RoutineEditorConstraints } from '@/components/routines/RoutineEditor';
+
+// Default routines are interval-only (cron/webhook have no per-agent owner to
+// anchor to — the upsert hook rejects them), and there's no agent to pick:
+// a default materializes across every agent.
+const DEFAULT_CONSTRAINTS: RoutineEditorConstraints = {
+  allowedTriggers: ['interval'],
+  showAgentPicker: false,
+};
+
+/** Map a fetched default's structured fields into the editor's `initial`
+ *  shape. DefaultRoutineDetail already carries every modeled field (it parsed
+ *  the stored md on write), so no re-parse is needed. */
+function detailToFields(d: DefaultRoutineDetail): RoutineFrontmatterFields {
+  const fields: RoutineFrontmatterFields = {
+    name: d.name,
+    description: d.description,
+    trigger: d.trigger,
+    silenceMaxChars: d.silenceMax,
+    conversation: d.conversation,
+    promptBody: d.promptBody,
+  };
+  if (d.activeHours !== null) fields.activeHours = d.activeHours;
+  if (d.silenceToken !== null) fields.silenceToken = d.silenceToken;
+  return fields;
+}
 
 function triggerLabel(t: DefaultRoutineSummary['trigger']): string {
   switch (t.kind) {
@@ -42,6 +71,10 @@ export function DefaultRoutinesSection() {
   const [error, setError] = useState<string | null>(null);
   const [showNew, setShowNew] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  // The editor is decoupled from fetching, so the section pulls the routine's
+  // full md and hands the parsed fields to RoutineEditor as `initial`.
+  const [editingInitial, setEditingInitial] = useState<RoutineFrontmatterFields | null>(null);
+  const [editLoadError, setEditLoadError] = useState<string | null>(null);
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
 
   async function refresh() {
@@ -60,6 +93,30 @@ export function DefaultRoutinesSection() {
   useEffect(() => {
     void refresh();
   }, []);
+
+  // Load the routine being edited so the editor opens populated.
+  useEffect(() => {
+    if (editingId === null) {
+      setEditingInitial(null);
+      setEditLoadError(null);
+      return;
+    }
+    let cancelled = false;
+    setEditingInitial(null);
+    setEditLoadError(null);
+    getDefaultRoutine(editingId)
+      .then((detail) => {
+        if (!cancelled) setEditingInitial(detailToFields(detail));
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          setEditLoadError(err instanceof Error ? err.message : String(err));
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [editingId]);
 
   async function handleDelete(id: string) {
     try {
@@ -87,7 +144,11 @@ export function DefaultRoutinesSection() {
             <DialogHeader>
               <DialogTitle>Create a default routine</DialogTitle>
             </DialogHeader>
-            <DefaultRoutineEditor
+            <RoutineEditor
+              constraints={DEFAULT_CONSTRAINTS}
+              onSave={async (sourceMd) => {
+                await upsertDefaultRoutine(sourceMd);
+              }}
               onSaved={() => {
                 setShowNew(false);
                 void refresh();
@@ -177,14 +238,26 @@ export function DefaultRoutinesSection() {
               <DialogHeader>
                 <DialogTitle>Edit default routine: {editingId}</DialogTitle>
               </DialogHeader>
-              <DefaultRoutineEditor
-                defaultRoutineId={editingId}
-                onSaved={() => {
-                  setEditingId(null);
-                  void refresh();
-                }}
-                onCancel={() => setEditingId(null)}
-              />
+              {editLoadError !== null ? (
+                <Alert variant="destructive">
+                  <AlertDescription>{editLoadError}</AlertDescription>
+                </Alert>
+              ) : editingInitial === null ? (
+                <p className="text-sm text-muted-foreground">Loading…</p>
+              ) : (
+                <RoutineEditor
+                  initial={editingInitial}
+                  constraints={DEFAULT_CONSTRAINTS}
+                  onSave={async (sourceMd) => {
+                    await updateDefaultRoutine(editingId, sourceMd);
+                  }}
+                  onSaved={() => {
+                    setEditingId(null);
+                    void refresh();
+                  }}
+                  onCancel={() => setEditingId(null)}
+                />
+              )}
             </DialogContent>
           </Dialog>
         )}
