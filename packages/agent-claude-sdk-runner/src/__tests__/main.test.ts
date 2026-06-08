@@ -650,6 +650,74 @@ describe('main()', () => {
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });
 
+  // HR1 (filestore-user-files design §7.1 / TASK-165): a durable user-files mount
+  // (AX_USERFILES_ROOT, e.g. /workspace) must NEVER become an SDK setting/skill-
+  // discovery source. It's granted to the file TOOLS via `additionalDirectories`
+  // (so the agent can read/write it), but `settingSources` stays `['user']` — the
+  // sole skill-discovery path is the host's read-only `$CLAUDE_CONFIG_DIR/skills`
+  // projection. A draft on /workspace/.skill-draft/ stays inert until skill.propose
+  // promotes it. If a regression added /workspace as a skill source, a draft on
+  // durable SHARED NFS would be discovered + executed un-gated — this guards it.
+  it('with AX_USERFILES_ROOT set, /workspace reaches the file tools but is NEVER a skill/setting source (HR1)', async () => {
+    setEnv({ ...COMPLETE_ENV, AX_USERFILES_ROOT: '/workspace' });
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      // Advertise skill_propose so the draft executor is wired this session.
+      if (action === 'tool.list') {
+        return {
+          tools: [{ name: 'skill_propose', executesIn: 'sandbox', inputSchema: {} }],
+        };
+      }
+      if (action === 'workspace.commit-notify') {
+        return { accepted: true, version: 'v1', delta: null };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+    queryMock.mockImplementation(
+      ({ prompt }: { prompt: AsyncIterable<SDKUserMessage> }) =>
+        (async function* () {
+          const it = prompt[Symbol.asyncIterator]();
+          await it.next();
+          yield assistantText('ok');
+          yield resultSuccess();
+          await it.next();
+        })(),
+    );
+
+    const { main } = await import('../main.js');
+    expect(await main()).toBe(0);
+
+    const queryArg = queryMock.mock.calls[0]?.[0] as {
+      options: { settingSources: string[]; additionalDirectories?: string[]; systemPrompt: string };
+    };
+    // The sole skill/setting source stays 'user' — /workspace is NOT added.
+    expect(queryArg.options.settingSources).toEqual(['user']);
+    expect(queryArg.options.settingSources).not.toContain('project');
+    expect(queryArg.options.settingSources).not.toContain('/workspace');
+    // It IS reachable by the file tools (durable read/write), via additionalDirectories.
+    expect(queryArg.options.additionalDirectories).toContain('/workspace');
+    // The skill-draft prefix advertised to the model is rooted at the DURABLE
+    // mount (drafts persist), not the ephemeral tier.
+    expect(queryArg.options.systemPrompt).toContain('/workspace/.skill-draft/<id>/');
+  });
+
   it('per-turn commit waits for the turn FINAL assistant line (not the intermediate tool_use line) before committing (TASK-11 / keepalive durability)', async () => {
     // Regression for TASK-11 + the 1–2.5 min `conversations:get` lag under
     // idle-keepalive. The Anthropic SDK writes the turn's FINAL assistant line

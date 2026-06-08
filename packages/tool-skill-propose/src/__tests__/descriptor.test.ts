@@ -24,6 +24,21 @@ describe('SKILL_PROPOSE_DESCRIPTOR', () => {
     expect(d).toMatch(/approv/i);
   });
 
+  it('is tier-agnostic: names .skill-draft + points at the operating notes, never hard-codes /ephemeral (TASK-165)', () => {
+    const d = SKILL_PROPOSE_DESCRIPTOR.description ?? '';
+    const pathDesc =
+      (SKILL_PROPOSE_DESCRIPTOR.inputSchema.properties as { path?: { description?: string } }).path
+        ?.description ?? '';
+    // The draft root is dynamic (durable mount or ephemeral fallback); the live
+    // path is told to the model in the per-session operating note, so the static
+    // descriptor must NOT bake in a tier-specific root.
+    expect(d).not.toMatch(/\/ephemeral\b/);
+    expect(pathDesc).not.toMatch(/\/ephemeral\b/);
+    expect(d).toMatch(/\.skill-draft/);
+    expect(d).toMatch(/operating notes/i);
+    expect(pathDesc).toMatch(/\.skill-draft/);
+  });
+
   it('documents the cap-free frontmatter contract (name, integer version, connectors[]; NO capabilities block) — TASK-100', () => {
     const d = SKILL_PROPOSE_DESCRIPTOR.description ?? '';
     expect(d).toMatch(/\bname\b/);

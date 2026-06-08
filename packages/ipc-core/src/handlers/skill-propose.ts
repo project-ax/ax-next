@@ -25,7 +25,8 @@ function isStructuralRejectCode(code: string): boolean {
 // skill authoring chokepoint.
 //
 // The runner's skill_propose executor reads + structurally validates a draft
-// dir under /ephemeral/skill-draft/<id>/ and posts this JSON envelope. We hand
+// dir under `<root>/.skill-draft/<id>/` (durable per-agent mount when wired, else
+// the ephemeral scratch tier — TASK-165) and posts this JSON envelope. We hand
 // it to the host's `skills:propose` hook, which re-validates, fires the
 // skills:scan veto, runs the hybrid materialization gate, and writes ONE
 // authored-skill row.

@@ -12,8 +12,8 @@ const PLUGIN_NAME = '@ax/tool-skill-propose';
  * TASK-74 (out-of-git Part D / §D1) — host-side plugin that adds the
  * `skill_propose` descriptor to the tool catalog. The executor that runs the
  * tool's actual work lives sandbox-side in `@ax/agent-claude-sdk-runner` (mirror
- * of `artifact_publish`): only the sandbox process can read
- * `/ephemeral/skill-draft/**` at call time.
+ * of `artifact_publish`): only the sandbox process can read the draft dir
+ * `<root>/.skill-draft/**` at call time (durable mount when wired, else ephemeral).
  *
  * This plugin therefore does NOT register `tool:execute:skill_propose`. Tool
  * dispatch for sandbox-executed tools happens inside the runner through its

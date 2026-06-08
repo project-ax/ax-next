@@ -245,7 +245,8 @@ describe('buildSystemPrompt — normal mode', () => {
     expect(out).toContain(ephemeralScratchNote('/ephemeral'));
     expect(out).toContain(pythonVenvNote());
     expect(out).toContain(capabilityHandoffNote());
-    expect(out).toContain(skillAuthoringNote());
+    // Draft root resolves to `userFilesRoot ?? ephemeralRoot` = '/ephemeral' here.
+    expect(out).toContain(skillAuthoringNote('/ephemeral'));
     // Augment sits above the floor (prepended on top).
     expect(out.indexOf('AUGMENT_BLOCK')).toBeLessThan(out.indexOf(safetyFloorNote()));
   });

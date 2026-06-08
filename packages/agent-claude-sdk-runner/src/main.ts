@@ -527,13 +527,18 @@ export async function main(): Promise<number> {
     );
   }
   // TASK-74 — skill_propose executor (sandbox-executed, like artifact_publish):
-  // reads the agent's draft under /ephemeral/skill-draft/<id>/, validates it, and
-  // ships it to the host gate over the skill.propose IPC action. Needs the
-  // ephemeral root (the draft scratch) + the IPC client; scope is host-derived.
+  // reads the agent's draft under `<root>/.skill-draft/<id>/`, validates it, and
+  // ships it to the host gate over the skill.propose IPC action. The draft root is
+  // the DURABLE per-agent mount when wired (AX_USERFILES_ROOT) so drafts persist
+  // across sessions, else the ephemeral scratch tier (fallback) — TASK-165 / §7.
+  // Needs both roots (the executor picks userFilesRoot ?? ephemeralRoot) + the IPC
+  // client; scope is host-derived. Both spread-when-present so an absent tier is
+  // simply not passed.
   if (tools.some((t) => t.name === SKILL_PROPOSE_TOOL_NAME && t.executesIn === 'sandbox')) {
     localDispatcher.register(
       SKILL_PROPOSE_TOOL_NAME,
       createSkillProposeExecutor({
+        ...(env.userFilesRoot !== undefined ? { userFilesRoot: env.userFilesRoot } : {}),
         ...(env.ephemeralRoot !== undefined ? { ephemeralRoot: env.ephemeralRoot } : {}),
         client,
       }),

@@ -737,8 +737,9 @@ export type SessionGetTranscriptRequest = z.infer<
 // skill.propose — TASK-74 (out-of-git Part D / §D1–D2). The runner-side skill
 // authoring chokepoint.
 //
-// The agent writes a bundle into `/ephemeral/skill-draft/<id>/` (throwaway
-// scratch git never sees) then calls the `skill_propose` sandbox tool. Its
+// The agent writes a bundle into `<root>/.skill-draft/<id>/` (the durable
+// per-agent mount when wired, else the ephemeral scratch tier — TASK-165) then
+// calls the `skill_propose` sandbox tool. Its
 // executor reads + structurally validates the draft dir, then posts THIS
 // envelope so the host's `skills:propose` hook gates + stores it (DB row +
 // blob). This is an ordinary JSON `call()` action — the bundle EXTRA files ride

@@ -40,12 +40,29 @@ describe('JIT capability-handoff note', () => {
   });
 });
 
-describe('skill-authoring note (TASK-74 §D6)', () => {
+describe('skill-authoring note (TASK-74 §D6; TASK-165 dynamic prefix)', () => {
   it('states proposed skills are available next turn and not invokable now', () => {
     const note = skillAuthoringNote().toLowerCase();
     expect(note).toContain('skill_propose');
     expect(note).toMatch(/next message|next turn/);
     expect(note).toContain('do not try to invoke');
+  });
+
+  it('interpolates the durable draft root into the draft-dir path (TASK-165)', () => {
+    const note = skillAuthoringNote('/workspace');
+    expect(note).toContain('/workspace/.skill-draft/<id>/');
+    // Must NOT bake in the ephemeral root when a durable mount is the active root.
+    expect(note).not.toContain('/ephemeral/.skill-draft');
+  });
+
+  it('interpolates the ephemeral root when that is the active draft root', () => {
+    const note = skillAuthoringNote('/ephemeral');
+    expect(note).toContain('/ephemeral/.skill-draft/<id>/');
+  });
+
+  it('falls back to a generic .skill-draft/<id>/ phrasing when no tier is wired', () => {
+    const note = skillAuthoringNote(undefined);
+    expect(note).toContain('.skill-draft/<id>/');
   });
 });
 
@@ -111,6 +128,16 @@ describe('operationalNotes — the single assembly point', () => {
     expect(notes).not.toContain(userFilesNote('/workspace'));
   });
 
+  it('routes the skill-authoring draft prefix to userFilesRoot ?? ephemeralRoot (TASK-165)', () => {
+    // Durable mount wired: drafts advertised under /workspace.
+    const durable = operationalNotes(WS, '/ephemeral', false, '/workspace');
+    expect(durable).toContain(skillAuthoringNote('/workspace'));
+    expect(durable).not.toContain(skillAuthoringNote('/ephemeral'));
+    // No durable mount: drafts advertised under the ephemeral scratch tier.
+    const fallback = operationalNotes(WS, '/ephemeral', false, undefined);
+    expect(fallback).toContain(skillAuthoringNote('/ephemeral'));
+  });
+
   it('includes the python-venv note only when the venv is active', () => {
     expect(operationalNotes(WS, '/ephemeral', false)).not.toContain(pythonVenvNote());
     const withVenv = operationalNotes(WS, '/ephemeral', true);
@@ -135,7 +162,8 @@ describe('operationalNotes — the single assembly point', () => {
     const iScratch = notes.indexOf(ephemeralScratchNote('/ephemeral'));
     const iVenv = notes.indexOf(pythonVenvNote());
     const iHandoff = notes.indexOf(capabilityHandoffNote());
-    const iSkill = notes.indexOf(skillAuthoringNote());
+    // The active draft root here is `undefined ?? '/ephemeral'` = '/ephemeral'.
+    const iSkill = notes.indexOf(skillAuthoringNote('/ephemeral'));
     const iClarify = notes.indexOf(clarifyingQuestionsNote());
     expect(iWs).toBeLessThan(iScratch);
     expect(iScratch).toBeLessThan(iVenv);
