@@ -240,6 +240,171 @@ describe('createMemoryStrataPlugin', () => {
   });
 });
 
+// ─── Routine-fire guard (TASK-176, skill-crystallization PR-A) ───────────────
+//
+// A scheduled @ax/routines fire stamps `source: 'routine'` on its AgentContext.
+// Both chat:end subscribers (Observer + Consolidator) MUST early-return on a
+// routine-sourced chat:end so a hidden routine turn doesn't pollute the agent's
+// memory. A user-sourced (or unset-source) chat:end still runs normally.
+describe('routine-fire guard (ctx.source === "routine")', () => {
+  /**
+   * Like buildBus but records whether the extraction LLM was ever invoked, so
+   * the Observer-skip test can assert the extraction round-trip never started.
+   */
+  function buildBusWithLlmFlag(opts: { llmText: string; agent: AgentRow }): {
+    bus: HookBus;
+    wasLlmCalled: () => boolean;
+  } {
+    const bus = new HookBus();
+    let llmCalled = false;
+    bus.registerService('agents:resolve', 'test-agents', async () => ({ agent: opts.agent }));
+    bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'test-llm', async () => {
+      llmCalled = true;
+      return { text: opts.llmText, stopReason: 'end_turn', usage: { inputTokens: 10, outputTokens: 10 } };
+    });
+    bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
+    return { bus, wasLlmCalled: () => llmCalled };
+  }
+
+  function makeRoutineCtx(workspace: string) {
+    return makeAgentContext({
+      sessionId: 'routine-session',
+      agentId: 'test-agent',
+      userId: 'test-user',
+      workspace: { rootPath: workspace },
+      source: 'routine',
+    });
+  }
+
+  it('Observer: routine-source chat:end skips extraction (LLM uncalled, no inbox write)', async () => {
+    const { bus, wasLlmCalled } = buildBusWithLlmFlag({
+      llmText: JSON.stringify([
+        { fact: 'User prefers React.', subject: 'user', factType: 'preference', confidence: 0.9 },
+      ]),
+      agent: fakeAgent(),
+    });
+    let settleObserver: ((agentId: string) => Promise<void>) | undefined;
+    const plugin = createMemoryStrataPlugin({
+      testHooks: { onObserverSettleReady(s) { settleObserver = s; } },
+    });
+    await plugin.init?.({ bus, config: {} });
+
+    const outcome: AgentOutcome = {
+      kind: 'complete',
+      messages: [
+        { role: 'user', content: 'I prefer React.' },
+        { role: 'assistant', content: 'Noted.' },
+      ],
+    };
+    const ctx = makeRoutineCtx(workspaceRoot);
+    await bus.fire('chat:end', ctx, { outcome });
+    // The guard early-returns BEFORE kicking off the Observer, so no Observer
+    // promise is ever recorded — settle resolves immediately (no detached work).
+    await settleObserver!(ctx.agentId);
+    // Belt-and-suspenders: drain any microtasks the extraction chain would use.
+    await new Promise((r) => setImmediate(r));
+    await new Promise((r) => setImmediate(r));
+
+    // The extraction LLM must never have been called.
+    expect(wasLlmCalled()).toBe(false);
+    // And nothing was written to the inbox (the dir was never created).
+    await expect(readdir(join(workspaceRoot, INBOX_DIR))).rejects.toThrow();
+  });
+
+  it('Observer: user-source chat:end still runs extraction (control)', async () => {
+    const { bus, wasLlmCalled } = buildBusWithLlmFlag({
+      llmText: JSON.stringify([
+        { fact: 'User prefers React.', subject: 'user', factType: 'preference', confidence: 0.9 },
+      ]),
+      agent: fakeAgent(),
+    });
+    let settleObserver: ((agentId: string) => Promise<void>) | undefined;
+    const plugin = createMemoryStrataPlugin({
+      testHooks: { onObserverSettleReady(s) { settleObserver = s; } },
+    });
+    await plugin.init?.({ bus, config: {} });
+
+    const outcome: AgentOutcome = {
+      kind: 'complete',
+      messages: [
+        { role: 'user', content: 'I prefer React.' },
+        { role: 'assistant', content: 'Noted.' },
+      ],
+    };
+    // makeCtx leaves source unset — the observer must still run (unset === user).
+    const ctx = makeCtx(workspaceRoot);
+    await bus.fire('chat:end', ctx, { outcome });
+    await settleObserver!(ctx.agentId);
+
+    expect(wasLlmCalled()).toBe(true);
+    const inbox = await readdir(join(workspaceRoot, INBOX_DIR));
+    expect(inbox).toHaveLength(1);
+  });
+
+  it('Consolidator: routine-source chat:end skips the pass (inbox NOT consumed)', async () => {
+    const bus = buildBus({ llmText: '[]', agent: fakeAgent() });
+    let capturedDebouncer: Debouncer | undefined;
+    const plugin = createMemoryStrataPlugin({
+      consolidatorDebounceMs: 100,
+      testHooks: { onDebouncerCreated(d) { capturedDebouncer = d; } },
+    });
+    await plugin.init?.({ bus, config: {} });
+
+    // Seed a high-confidence inbox observation the Consolidator WOULD promote
+    // (and delete) if it ran.
+    await seedInboxObservation(workspaceRoot, 'obs-routine-guard-1', {
+      subject: 'typescript',
+      fact: 'User prefers TypeScript.',
+    });
+
+    const outcome: AgentOutcome = {
+      kind: 'complete',
+      messages: [{ role: 'user', content: 'hello' }, { role: 'assistant', content: 'hi' }],
+    };
+    const ctx = makeRoutineCtx(workspaceRoot);
+    await bus.fire('chat:end', ctx, { outcome });
+    // flush() runs whatever the debouncer scheduled. The guard early-returned
+    // before `debouncer.schedule`, so there is nothing to flush.
+    await capturedDebouncer!.flush();
+
+    // The inbox observation must still be present (unconsumed) and no doc
+    // promoted — proving the consolidation pass never ran.
+    const inboxEntries = await readdir(join(workspaceRoot, INBOX_DIR));
+    expect(inboxEntries).toHaveLength(1);
+    await expect(
+      readFile(join(workspaceRoot, docFile('preference', 'typescript')), 'utf8'),
+    ).rejects.toThrow();
+  });
+
+  it('Consolidator: user-source chat:end runs the pass (inbox consumed → doc promoted) (control)', async () => {
+    const bus = buildBus({ llmText: '[]', agent: fakeAgent() });
+    let capturedDebouncer: Debouncer | undefined;
+    const plugin = createMemoryStrataPlugin({
+      consolidatorDebounceMs: 100,
+      testHooks: { onDebouncerCreated(d) { capturedDebouncer = d; } },
+    });
+    await plugin.init?.({ bus, config: {} });
+
+    await seedInboxObservation(workspaceRoot, 'obs-routine-guard-control-1', {
+      subject: 'typescript',
+      fact: 'User prefers TypeScript.',
+    });
+
+    const outcome: AgentOutcome = {
+      kind: 'complete',
+      messages: [{ role: 'user', content: 'hello' }, { role: 'assistant', content: 'hi' }],
+    };
+    const ctx = makeCtx(workspaceRoot); // source unset → user path
+    await bus.fire('chat:end', ctx, { outcome });
+    await capturedDebouncer!.flush();
+
+    const raw = await readFile(join(workspaceRoot, docFile('preference', 'typescript')), 'utf8');
+    expect(raw).toContain('typescript');
+    const inboxEntries = await readdir(join(workspaceRoot, INBOX_DIR));
+    expect(inboxEntries).toHaveLength(0);
+  });
+});
+
 // ─── Helpers for Consolidator wiring tests ───────────────────────────────────
 
 /**

@@ -244,6 +244,14 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
 
       // Observer subscriber (Phase 1). Fire-and-forget per I6. Unchanged.
       bus.subscribe<ChatEndPayload>('chat:end', PLUGIN_NAME, async (ctx, payload) => {
+        // Routine-fire guard: a scheduled @ax/routines fire runs a hidden,
+        // non-user turn through the same agent:invoke path. Extracting memory
+        // from those turns pollutes the agent's episodic memory (the existing
+        // heartbeat routine already does this), and is the precondition for the
+        // skill-crystallization design's skill-reflection routine to NOT reflect
+        // on its own reflection turns. Skip extraction entirely when this ctx
+        // originates from a routine fire. See AgentContext.source.
+        if (ctx.source === 'routine') return undefined;
         // Fire-and-forget per I6. We DELIBERATELY don't await the
         // Observer — chat:end's other subscribers shouldn't wait on a
         // 30s LLM call. Errors are swallowed + logged; the Observer's
@@ -286,6 +294,11 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       // times out keeps mutating inbox/ and docs/ in the background; the next
       // chat:end then starts a second pass that races on the same files.
       bus.subscribe<ChatEndPayload>('chat:end', PLUGIN_NAME, async (ctx) => {
+        // Routine-fire guard (twin of the Observer guard above): skip
+        // consolidation triggered by a hidden routine turn so a scheduled fire
+        // doesn't promote/decay the agent's memory off its own internal work.
+        // See AgentContext.source.
+        if (ctx.source === 'routine') return undefined;
         debouncer.schedule(ctx.agentId, async () => {
           // Wait for any prior pass's actual fs work to complete before starting
           // a new one — even if our caller already gave up via raceTimeout.
