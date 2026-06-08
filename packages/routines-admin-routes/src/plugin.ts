@@ -2,6 +2,7 @@ import { type Plugin, makeAgentContext } from '@ax/core';
 import {
   registerAdminDefaultRoutinesRoutes,
   registerRoutinesAdminRoutes,
+  registerSettingsAgentDefaultsRoutes,
 } from './routes.js';
 
 const PLUGIN_NAME = '@ax/routines-admin-routes';
@@ -48,6 +49,10 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
         'routines:get-default',
         'routines:upsert-default',
         'routines:delete-default',
+        // Per-agent default-routine toggle (the "Skill self-improvement"
+        // switch). Both are themselves owner-scoped in @ax/routines.
+        'routines:list-agent-defaults',
+        'routines:set-agent-default-enabled',
         'agents:resolve',
       ],
       subscribes: [],
@@ -67,6 +72,9 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
       try {
         unregisterRoutes.push(
           ...(await registerRoutinesAdminRoutes(bus, initCtx)),
+        );
+        unregisterRoutes.push(
+          ...(await registerSettingsAgentDefaultsRoutes(bus, initCtx)),
         );
         unregisterRoutes.push(
           ...(await registerAdminDefaultRoutinesRoutes(bus, initCtx)),
