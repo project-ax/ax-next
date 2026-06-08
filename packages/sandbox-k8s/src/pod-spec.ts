@@ -14,6 +14,7 @@
 
 import { createHash } from 'node:crypto';
 import { buildGitCredentialEnv, type ServiceDescriptorParsed } from '@ax/sandbox-protocol';
+import type { MountSpec } from '@ax/sandbox-mount-protocol';
 import type { ResolvedSandboxK8sConfig } from './config.js';
 
 const K8S_LABEL_MAX_BYTES = 63;
@@ -159,6 +160,17 @@ export interface BuildPodSpecInput {
    * it reaches here.
    */
   services?: ServiceDescriptorParsed[];
+  /**
+   * filestore-user-files (design §4/§6) — durable per-agent mounts resolved by
+   * the optional `sandbox:resolve-mounts` hook (open-session.ts calls it when a
+   * resolver plugin is loaded). The k8s provider realizes the `nfs` kind as an
+   * inline `nfs:` pod volume + a `volumeMount{ mountPath, subPath, readOnly }`
+   * on the runner container, and stamps the `role:'user-files'` mount's path as
+   * AX_USERFILES_ROOT. An unknown/unrealizable kind is an EXPLICIT error
+   * (design §10), never a silent skip. Absent / empty → the pod keeps its
+   * existing emptyDir-only shape (graceful degradation).
+   */
+  mounts?: MountSpec[];
 }
 
 interface EnvVar {
@@ -340,6 +352,74 @@ function renderServiceSidecars(
   }
 
   return { initContainers, volumes };
+}
+
+interface RealizedMounts {
+  /** Inline pod volumes (one per realized network mount). */
+  volumes: Array<Record<string, unknown>>;
+  /** Runner-container volumeMounts (mountPath + subPath + readOnly). */
+  volumeMounts: Array<{
+    name: string;
+    mountPath: string;
+    subPath: string;
+    readOnly: boolean;
+  }>;
+  /** The realized in-pod path of the `role:'user-files'` mount, if any. */
+  userFilesRoot?: string;
+}
+
+/**
+ * filestore-user-files (design §4) — realize the durable per-agent mounts the
+ * `sandbox:resolve-mounts` resolver yielded into k8s pod-spec fragments.
+ *
+ * The k8s provider supports the `nfs` kind: an inline `nfs:` pod volume
+ * `{ nfs: { server, path: exportPath } }` plus a runner `volumeMount` that pins
+ * the per-agent `subPath` subtree at `mountPath`. No PVC / StorageClass / CSI
+ * driver — the kubelet auto-creates the `subPath` subdir on first use. Other
+ * agents' subtrees are not mounted (cross-tenant isolation is the `subPath`
+ * confinement, design §9). An unknown/unrealizable `kind` throws — never a
+ * silent skip (design §10). The `never` exhaustiveness default forces a compile
+ * error if a future MountSpec member is added without handling here.
+ *
+ * Volume names are derived `ax-mount-<i>` (DNS-1123-safe, ≤63 bytes) so they
+ * never collide with the fixed tier volumes (`tmp`/`home`/`agent`/`ephemeral`)
+ * or the `svc-*` service volumes.
+ */
+function realizeMounts(mounts: MountSpec[]): RealizedMounts {
+  const out: RealizedMounts = { volumes: [], volumeMounts: [] };
+  mounts.forEach((mount, i) => {
+    switch (mount.kind) {
+      case 'nfs': {
+        const name = `ax-mount-${i}`;
+        out.volumes.push({
+          name,
+          nfs: { server: mount.server, path: mount.exportPath },
+        });
+        out.volumeMounts.push({
+          name,
+          mountPath: mount.mountPath,
+          subPath: mount.subPath,
+          readOnly: mount.readOnly,
+        });
+        if (mount.role === 'user-files') {
+          out.userFilesRoot = mount.mountPath;
+        }
+        break;
+      }
+      case 'localDir':
+        throw new Error(
+          `k8s sandbox cannot realize a 'localDir' mount (no host-FS share inside a pod). ` +
+            `Load @ax/workspace-filestore for the k8s preset instead of @ax/workspace-localdir.`,
+        );
+      default: {
+        const _exhaustive: never = mount;
+        throw new Error(
+          `k8s sandbox cannot realize mount kind '${(_exhaustive as MountSpec).kind}'`,
+        );
+      }
+    }
+  });
+  return out;
 }
 
 export function buildPodSpec(
@@ -603,6 +683,18 @@ export function buildPodSpec(
   const services = input.services ?? [];
   const sidecarRender = renderServiceSidecars(services, config);
 
+  // filestore-user-files (design §4) — realize the durable per-agent mounts the
+  // `sandbox:resolve-mounts` resolver contributed (inline nfs volume + subPath
+  // volumeMount). Throws on an unrealizable kind. Empty/absent → no change.
+  const realizedMounts = realizeMounts(input.mounts ?? []);
+  // Stamp the user-files mount path as AX_USERFILES_ROOT so the runner can add
+  // it to additionalDirectories + advertise it. Like AX_EPHEMERAL_ROOT, the
+  // env is the ONLY thing that turns the tier on for the runner — the mount
+  // alone is inert until the runner reads this. Appended to `env` below.
+  if (realizedMounts.userFilesRoot !== undefined) {
+    env.push({ name: 'AX_USERFILES_ROOT', value: realizedMounts.userFilesRoot });
+  }
+
   const spec: Record<string, unknown> = {
     // Userspace kernel (gVisor) — adds a second isolation layer between
     // sandbox code and the host kernel. Operators can opt out by setting
@@ -695,6 +787,11 @@ export function buildPodSpec(
           ...(config.proxySocketHostPath.length > 0
             ? [{ name: 'proxy-socket', mountPath: '/var/run/ax' }]
             : []),
+          // filestore-user-files (design §4) — the durable per-agent mount(s).
+          // Each pins its per-agent `subPath` subtree at the mount path
+          // (`/workspace`). RW for the runner (readOnly:false). Empty when no
+          // resolver contributed a mount.
+          ...realizedMounts.volumeMounts,
         ],
       },
     ],
@@ -745,6 +842,10 @@ export function buildPodSpec(
       // TASK-151 — one emptyDir per service writablePaths entry (I5). Named
       // `svc-<service>-<i>` to match the sidecar's volumeMounts.
       ...sidecarRender.volumes,
+      // filestore-user-files (design §4) — inline `nfs:` volume(s) for the
+      // durable per-agent mount(s). Named `ax-mount-<i>` to match the runner
+      // volumeMounts above. Empty when no resolver contributed a mount.
+      ...realizedMounts.volumes,
       // hostPath bridge between host pod's credential-proxy and the
       // runner pod. The host writes its Unix socket and CA cert PEM
       // into a directory backed by this same node-filesystem path; the

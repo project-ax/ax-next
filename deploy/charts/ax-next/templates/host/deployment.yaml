@@ -317,6 +317,24 @@ spec:
             {{- end }}
             {{- end }}
 
+            {{- if .Values.sandbox.filestore.server }}
+            # filestore-user-files (design §4) — the durable per-agent user-files
+            # mount backed by a Google Cloud Filestore (managed NFS) export. The
+            # preset's loader reads AX_FILESTORE_SERVER/EXPORT_PATH/MOUNT_PATH and
+            # loads @ax/workspace-filestore (the `sandbox:resolve-mounts`
+            # registrant); @ax/sandbox-k8s realizes each session's per-agent
+            # `nfs` mount. Stamped ONLY when an operator set the Filestore server
+            # — otherwise no resolver loads and sessions get the default emptyDir
+            # tiers (AX_USERFILES_ROOT unset). Filestore provisioning is
+            # out-of-band (terraform/gcloud); the chart only consumes the address.
+            - name: AX_FILESTORE_SERVER
+              value: {{ .Values.sandbox.filestore.server | quote }}
+            - name: AX_FILESTORE_EXPORT_PATH
+              value: {{ .Values.sandbox.filestore.exportPath | quote }}
+            - name: AX_FILESTORE_MOUNT_PATH
+              value: {{ .Values.sandbox.filestore.mountPath | quote }}
+            {{- end }}
+
             # Credentials key — encrypts secrets at rest. Required.
             - name: AX_CREDENTIALS_KEY
               valueFrom:

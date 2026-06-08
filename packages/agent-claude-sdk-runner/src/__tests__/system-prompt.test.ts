@@ -6,6 +6,7 @@ import {
   operationalNotes,
   pythonVenvNote,
   skillAuthoringNote,
+  userFilesNote,
   workspaceNote,
 } from '../system-prompt.js';
 
@@ -71,6 +72,16 @@ describe('ephemeral scratch note', () => {
   });
 });
 
+describe('user-files note (filestore-user-files Phase 1)', () => {
+  it('interpolates the durable root and frames it as persistent, unversioned storage', () => {
+    const note = userFilesNote('/workspace');
+    expect(note).toContain('/workspace');
+    expect(note).toMatch(/persist|durable/i);
+    // Phase 1 steers the agent to use it BY PATH (cwd/HOME aren't re-rooted yet).
+    expect(note).toContain('/workspace/…');
+  });
+});
+
 describe('operationalNotes — the single assembly point', () => {
   it('always includes the workspace + handoff + skill-authoring + clarifying-questions notes (workspace root is always known)', () => {
     const notes = operationalNotes(WS, undefined);
@@ -87,6 +98,17 @@ describe('operationalNotes — the single assembly point', () => {
     const notes = operationalNotes(WS, '/ephemeral');
     expect(notes).toContain(ephemeralScratchNote('/ephemeral'));
     expect(notes).toContain(workspaceNote(WS));
+  });
+
+  it('includes the user-files note when a durable mount is provided (filestore Phase 1)', () => {
+    const notes = operationalNotes(WS, undefined, false, '/workspace');
+    expect(notes).toContain(userFilesNote('/workspace'));
+    expect(notes).toContain(workspaceNote(WS));
+  });
+
+  it('omits the user-files note when no durable mount is wired', () => {
+    const notes = operationalNotes(WS, '/ephemeral', false, undefined);
+    expect(notes).not.toContain(userFilesNote('/workspace'));
   });
 
   it('includes the python-venv note only when the venv is active', () => {

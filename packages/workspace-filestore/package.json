@@ -1,5 +1,5 @@
 {
-  "name": "@ax/sandbox-subprocess",
+  "name": "@ax/workspace-filestore",
   "version": "0.0.0",
   "private": true,
   "type": "module",
@@ -11,7 +11,7 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": ["dist", "SECURITY.md"],
   "scripts": {
     "build": "tsc --build",
     "test": "vitest run",
@@ -19,15 +19,11 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "@ax/sandbox-mount-protocol": "workspace:*",
-    "@ax/sandbox-protocol": "workspace:*",
-    "zod": "^3.23.8"
+    "@ax/sandbox-mount-protocol": "workspace:*"
   },
   "devDependencies": {
-    "@ax/ipc-server": "workspace:*",
-    "@ax/session-inmemory": "workspace:*",
+    "@ax/sandbox-protocol": "workspace:*",
     "@ax/test-harness": "workspace:*",
-    "@ax/workspace-localdir": "workspace:*",
     "@types/node": "^25.6.0",
     "typescript": "^6.0.3",
     "vitest": "^4.1.4"

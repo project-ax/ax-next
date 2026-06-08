@@ -379,3 +379,19 @@ sibling/follow-up work (filestore-user-files epic, TASK-163+):
   one, don't assume the other follows.
 - The deploy chart `workspace.mountPath` (`/var/lib/ax-next/workspaces`) is the host
   pod PVC git-storage path — also a different concept from the runner mount.
+
+## sandbox:resolve-mounts — durable per-agent mount wiring (TASK-163, filestore-user-files Phase 1)
+
+The per-agent durable `/workspace` mount is wired through a preset-swapped resolver pair + provider realization:
+
+- **Contract:** `@ax/sandbox-mount-protocol` (TASK-162) owns `MountSpec` (`nfs | localDir` union), `ResolveMountsInput{owner}`, `ResolveMountsOutput{mounts}`, `ResolveMountsHandler`. Pure types, no zod (host-internal hook, never crosses the sandbox edge). Backend fields (`server`/`exportPath`/`subPath`/`hostPath`) are bounded behind the `kind` discriminator — switch on `kind`, error on unknown, never key off a backend field without narrowing.
+- **Two resolver plugins, one hook (preset-swapped, exactly one per deployment):** `@ax/workspace-filestore` (nfs, k8s preset) and `@ax/workspace-localdir` (localDir, CLI preset). Each registers `sandbox:resolve-mounts`, returns `[{ ..., role:'user-files' }]` keyed off `owner.agentId` (validated `^[a-z0-9-]+$` — its OWN copy per I2; the localDir hostPath/the nfs subPath is the per-tenant segment), `[]` when no agentId. Mirrors `@ax/workspace-git` ↔ `@ax/workspace-git-server`.
+- **Providers list it in `optionalCalls`** (degradation: "no durable per-agent user-files mount; AX_USERFILES_ROOT unset"), `bus.hasService(...)`-guard + `bus.call` it during open-session **when `owner` is present**, realize by `kind`:
+  - subprocess: `mkdir -p hostPath`, stamp `AX_USERFILES_ROOT=hostPath` (shares host FS; helper `resolve-user-files-mount.ts`). nfs kind → throw.
+  - k8s: `buildPodSpec` adds inline `{ name:'ax-mount-<i>', nfs:{ server, path: exportPath } }` volume + runner `volumeMount{ mountPath, subPath, readOnly }`, stamps `AX_USERFILES_ROOT=mountPath`. localDir kind → throw. (`realizeMounts` in pod-spec.ts; called after the env array is built so it can `env.push`.)
+  - On resolver throw (k8s), roll back the minted session before re-throwing (mirrors buildPodSpec failure handler).
+- **Runner (Phase 1 ONLY):** `env.ts` reads optional `AX_USERFILES_ROOT` → `RunnerEnv.userFilesRoot`; `main.ts` adds it to `additionalDirectories` (alongside ephemeralRoot) and `system-prompt.ts` `userFilesNote(root)` advertises it. **cwd/HOME stay `/agent`** — the re-root is Phase 2 / TASK-164. The note steers the agent to use the mount BY FULL PATH.
+- **Chart:** `sandbox.filestore.{server,exportPath,mountPath}` → host-deployment env `AX_FILESTORE_*` (stamped only when `server` set) → `loadK8sConfigFromEnv` → `config.filestore` → preset loads `@ax/workspace-filestore`. NetworkPolicy `sandbox-restrict.yaml` opens runner egress to ONLY the Filestore `/32` on TCP+UDP :2049 + :111 (gated on `sandbox.filestore.server`). No mount resolver / no Filestore server = graceful degradation (emptyDir-only).
+- **Canary** (`sandbox-subprocess/.../userfiles-canary.acceptance.test.ts`): real plugin chain (session-inmemory + ipc-server + workspace-localdir + sandbox-subprocess), a file written under `AX_USERFILES_ROOT` by session 1 of agent `a` persists into session 2; agent `b` gets an isolated subtree.
+
+Gotcha: `realizeOne`-style narrowing across a helper loses the `kind` narrow for the loop body — do the `switch (mount.kind)` directly in the loop so `mount.hostPath`/`mount.subPath` narrow.

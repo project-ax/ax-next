@@ -48,6 +48,18 @@ export function createSandboxK8sPlugin(
       // host-side hooks are subprocess-impl-specific. Once the pod-side
       // HTTP server lands, the orchestration sketch may grow.
       calls: ['session:create', 'session:terminate'],
+      // filestore-user-files (design §4): when a mount-resolver plugin
+      // (@ax/workspace-filestore) is loaded, open-session calls
+      // `sandbox:resolve-mounts` and realizes each `nfs` mount as an inline
+      // pod volume + subPath mount. Optional — without a resolver the pod gets
+      // only the default emptyDir tiers; no durable per-agent user-files mount.
+      optionalCalls: [
+        {
+          hook: 'sandbox:resolve-mounts',
+          degradation:
+            'no durable per-agent user-files mount; AX_USERFILES_ROOT unset',
+        },
+      ],
       subscribes: [],
     },
     async init({ bus }) {

@@ -256,6 +256,31 @@ sandbox:
   # proxy transport. The chart fails fast at template time if both are set.
   proxySocketHostPath: ""
 
+  # ─── Durable per-agent user files (Filestore / NFS) ──────────────
+  # filestore-user-files (design §4). Gives each agent a durable, shared,
+  # real filesystem for the user's working files (datasets, build trees,
+  # media, cloned repos) — backed by a Google Cloud Filestore (managed NFS)
+  # export, mounted into the sandbox at `mountPath` (default /workspace),
+  # OUTSIDE the git-tracked agent-state tier. These files are live: written
+  # straight to NFS, durable across sessions, with no git round-trip.
+  #
+  # Set `server` to enable. When `server` is empty (the default), NO durable
+  # mount is wired — the host loads no mount resolver and sessions get only the
+  # default emptyDir tiers (graceful degradation; AX_USERFILES_ROOT stays unset).
+  #
+  # Filestore provisioning is OUT-OF-BAND (terraform/gcloud) — the chart only
+  # consumes the address; it does not create the instance. See the runbook.
+  # Each agent is confined to its own `subPath=<agentId>` subtree of the export
+  # (cross-tenant isolation). The runner pod's egress is opened to JUST this
+  # server IP on the NFS ports (see networkpolicies/sandbox-restrict.yaml).
+  filestore:
+    # Filestore instance IP (or DNS). Empty = feature disabled.
+    server: ""
+    # Export path on the Filestore instance, e.g. /vol1 (the share name).
+    exportPath: "/vol1"
+    # Where the durable mount appears inside the sandbox.
+    mountPath: "/workspace"
+
   # ─── Dev-services in the sandbox (REQUIRES Kubernetes 1.29+) ───
   # Agents can declare "dev-dependency services" (a database, a broker, …)
   # that run alongside the runner so a checked-out repo can talk to them at

@@ -19,6 +19,7 @@ import {
   type OpenSessionParsed,
 } from '@ax/sandbox-protocol';
 import { allowlistFromParent } from './env.js';
+import { resolveUserFilesMount } from './resolve-user-files-mount.js';
 import {
   composeAvailable,
   composeDown,
@@ -414,6 +415,37 @@ export async function openSessionImpl(
     });
   }
 
+  // 3b. Durable per-agent user-files mount (filestore-user-files, design §4/§6).
+  //     `sandbox:resolve-mounts` is in this provider's optionalCalls — when a
+  //     resolver plugin is loaded (@ax/workspace-localdir in the CLI preset) we
+  //     call it with the session owner and realize each `localDir` mount by
+  //     `mkdir -p`ing its hostPath (the subprocess sandbox shares the host FS).
+  //     The realized `role:'user-files'` path is stamped as AX_USERFILES_ROOT
+  //     below; the runner adds it to additionalDirectories + advertises it. No
+  //     resolver / no agentId → no durable mount (graceful degradation). An
+  //     UNREALIZABLE kind (e.g. an `nfs` mount paired with this provider by a
+  //     mis-wired preset) throws — never a silent skip (design §10).
+  let userFilesRoot: string | undefined;
+  try {
+    const resolved =
+      input.owner !== undefined
+        ? await resolveUserFilesMount(ctx, bus, input.owner, PLUGIN_NAME)
+        : {};
+    userFilesRoot = resolved.userFilesRoot;
+  } catch (cause) {
+    await unlockInstalledSkillsDir(installedSkillsDir);
+    await fs.rm(socketDir, { recursive: true, force: true }).catch(() => undefined);
+    throw cause instanceof PluginError
+      ? cause
+      : new PluginError({
+          code: 'mount-resolve-failed',
+          plugin: PLUGIN_NAME,
+          hookName: HOOK_NAME,
+          message: `failed to resolve/realize durable user-files mount`,
+          cause,
+        });
+  }
+
   // 4. Mint session + token. The token flows to the runner as env — it is
   //    never returned from this hook (I9). We do NOT log the token here; if
   //    we need to correlate failures, we log `sessionId` instead.
@@ -494,6 +526,14 @@ export async function openSessionImpl(
     // (which uses the fixed `/ephemeral` mount) the same way HOME does —
     // each provider picks a path that exists and is writable for it.
     AX_EPHEMERAL_ROOT: ephemeralDir,
+    // Durable per-agent user-files root (filestore-user-files Phase 1). Set
+    // only when the optional `sandbox:resolve-mounts` resolver contributed a
+    // `role:'user-files'` mount (realized + mkdir'd at step 3b above). Absent
+    // means "no durable mount wired" — the runner then doesn't widen the
+    // agent's filesystem reach or advertise a user-files location, exactly like
+    // an unset AX_EPHEMERAL_ROOT. Spread conditionally so the env stays clean
+    // when no resolver is loaded.
+    ...(userFilesRoot !== undefined ? { AX_USERFILES_ROOT: userFilesRoot } : {}),
     // I-P0-3: override HOME (which is in the allowlist; sessionEnv merges
     // LAST so this wins) and set CLAUDE_CONFIG_DIR so the SDK's `'user'`
     // skill-discovery walks the host-controlled per-session dir, not the

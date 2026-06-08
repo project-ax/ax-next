@@ -1107,4 +1107,118 @@ describe('buildPodSpec', () => {
       ).not.toThrow();
     });
   });
+
+  // filestore-user-files (design §4) — durable per-agent NFS mount realization.
+  describe('filestore mounts (sandbox:resolve-mounts realization)', () => {
+    const nfsMount = {
+      kind: 'nfs' as const,
+      mountPath: '/workspace',
+      server: '10.0.0.2',
+      exportPath: '/vol1/agents',
+      subPath: 'agent-abc',
+      readOnly: false,
+      role: 'user-files' as const,
+    };
+
+    function vols(spec: ReturnType<typeof buildPodSpec>) {
+      return (
+        (spec.spec as { volumes?: Array<Record<string, unknown>> }).volumes ?? []
+      );
+    }
+    function runnerMounts(spec: ReturnType<typeof buildPodSpec>) {
+      return (
+        (
+          spec.spec as {
+            containers: Array<{
+              volumeMounts?: Array<{
+                name: string;
+                mountPath: string;
+                subPath?: string;
+                readOnly?: boolean;
+              }>;
+            }>;
+          }
+        ).containers[0]!.volumeMounts ?? []
+      );
+    }
+    function runnerEnv(spec: ReturnType<typeof buildPodSpec>) {
+      return (
+        spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
+      ).containers[0]!.env;
+    }
+
+    it('adds an inline nfs volume + subPath volumeMount when a mount is yielded', () => {
+      const spec = buildPodSpec(
+        'm',
+        { ...baseInput, mounts: [nfsMount] },
+        baseResolved(),
+      );
+
+      // Inline `nfs:` volume — { nfs: { server, path: exportPath } }, no PVC/CSI.
+      const vol = vols(spec).find((v) => v.name === 'ax-mount-0');
+      expect(vol).toBeDefined();
+      expect(vol!.nfs).toEqual({ server: '10.0.0.2', path: '/vol1/agents' });
+
+      // Runner volumeMount pins the per-agent subPath at /workspace, RW.
+      const mount = runnerMounts(spec).find((m) => m.name === 'ax-mount-0');
+      expect(mount).toBeDefined();
+      expect(mount!.mountPath).toBe('/workspace');
+      expect(mount!.subPath).toBe('agent-abc');
+      expect(mount!.readOnly).toBe(false);
+    });
+
+    it('stamps AX_USERFILES_ROOT from the role:user-files mount path', () => {
+      const spec = buildPodSpec(
+        'm',
+        { ...baseInput, mounts: [nfsMount] },
+        baseResolved(),
+      );
+      expect(
+        runnerEnv(spec).find((e) => e.name === 'AX_USERFILES_ROOT')?.value,
+      ).toBe('/workspace');
+    });
+
+    it('does NOT stamp AX_USERFILES_ROOT for a non-user-files mount', () => {
+      const spec = buildPodSpec(
+        'm',
+        { ...baseInput, mounts: [{ ...nfsMount, role: undefined }] },
+        baseResolved(),
+      );
+      expect(
+        runnerEnv(spec).find((e) => e.name === 'AX_USERFILES_ROOT'),
+      ).toBeUndefined();
+      // The volume + mount are still realized (role only controls the env stamp).
+      expect(vols(spec).find((v) => v.name === 'ax-mount-0')).toBeDefined();
+    });
+
+    it('leaves the pod unchanged when no mounts are yielded (graceful degradation)', () => {
+      const spec = buildPodSpec('m', baseInput, baseResolved());
+      expect(vols(spec).find((v) => v.name?.toString().startsWith('ax-mount-'))).toBeUndefined();
+      expect(
+        runnerMounts(spec).find((m) => m.name.startsWith('ax-mount-')),
+      ).toBeUndefined();
+      expect(runnerEnv(spec).find((e) => e.name === 'AX_USERFILES_ROOT')).toBeUndefined();
+    });
+
+    it('throws on an unrealizable kind (localDir) — never a silent skip', () => {
+      expect(() =>
+        buildPodSpec(
+          'm',
+          {
+            ...baseInput,
+            mounts: [
+              {
+                kind: 'localDir',
+                mountPath: '/workspace',
+                hostPath: '/tmp/x',
+                readOnly: false,
+                role: 'user-files',
+              },
+            ],
+          },
+          baseResolved(),
+        ),
+      ).toThrow(/localDir/);
+    });
+  });
 });

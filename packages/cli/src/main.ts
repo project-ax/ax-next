@@ -22,6 +22,7 @@ import { createValidatorIdentityPlugin } from '@ax/validator-identity';
 import { createValidatorServicePlugin } from '@ax/validator-service';
 import { createSandboxSubprocessPlugin } from '@ax/sandbox-subprocess';
 import { createWorkspaceGitPlugin } from '@ax/workspace-git';
+import { createWorkspaceLocaldirPlugin } from '@ax/workspace-localdir';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
@@ -132,6 +133,19 @@ const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
 function defaultWorkspaceRepoRoot(sqlitePath: string): string {
   const dir = path.dirname(path.resolve(sqlitePath));
   return path.join(dir, 'ax-next-workspace.git');
+}
+
+/**
+ * filestore-user-files (design §4) — default root for the per-agent durable
+ * user-files mounts in the local CLI profile. Each agent gets its own
+ * `<root>/<agentId>` subtree under here (created on session open by
+ * @ax/sandbox-subprocess). Placed beside the sqlite file like the workspace
+ * repo, so all host-side state lives in one parent dir; override with
+ * AX_USERFILES_ROOT_DIR.
+ */
+function defaultUserFilesRoot(sqlitePath: string): string {
+  const dir = path.dirname(path.resolve(sqlitePath));
+  return path.join(dir, 'ax-next-userfiles');
 }
 
 export async function main(opts: MainOptions): Promise<number> {
@@ -262,6 +276,17 @@ export async function main(opts: MainOptions): Promise<number> {
   const workspaceRepoRoot =
     process.env.AX_WORKSPACE_REPO_ROOT ?? defaultWorkspaceRepoRoot(sqlitePath);
   plugins.push(createWorkspaceGitPlugin({ repoRoot: workspaceRepoRoot }));
+
+  // filestore-user-files (design §4) — the CLI/subprocess mount resolver.
+  // Registers `sandbox:resolve-mounts`, which @ax/sandbox-subprocess calls
+  // (optionalCall) to learn each session's durable per-agent `/workspace` mount
+  // and realizes it by `mkdir -p`ing `<root>/<agentId>`. The local-FS sibling
+  // of @ax/workspace-filestore (NFS, k8s preset) — exactly one loads per
+  // deployment. Root lives beside the sqlite/workspace state; override with
+  // AX_USERFILES_ROOT_DIR.
+  const userFilesRoot =
+    process.env.AX_USERFILES_ROOT_DIR ?? defaultUserFilesRoot(sqlitePath);
+  plugins.push(createWorkspaceLocaldirPlugin({ root: userFilesRoot }));
 
   // Session + IPC + chat orchestration. `agent:invoke` is registered by
   // @ax/chat-orchestrator, which drives the per-chat lifecycle through

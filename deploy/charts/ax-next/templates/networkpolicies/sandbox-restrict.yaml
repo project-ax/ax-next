@@ -71,6 +71,29 @@ spec:
         - port: {{ .Values.credentialProxy.tcp.port | default 8888 }}
           protocol: TCP
     {{- end }}
+    {{- if .Values.sandbox.filestore.server }}
+    # filestore-user-files (design §4/§9) — the durable per-agent user-files
+    # mount is a Google Cloud Filestore (managed NFS) export. The otherwise
+    # internet-fenced runner needs NFS reach to mount it, so we open egress to
+    # JUST the Filestore IP on JUST the NFS ports: 2049 (nfsd) + 111 (rpcbind /
+    # portmapper), both TCP and UDP. This is a DELIBERATE, documented widening
+    # of the runner's egress lock — scoped to the single Filestore IP (a /32
+    # ipBlock), NOT a CIDR, NOT the internet (invariant I5: capabilities
+    # minimized). A server-unreachable mount surfaces as a sandbox-open error,
+    # not a silent hang.
+    - to:
+        - ipBlock:
+            cidr: {{ printf "%s/32" .Values.sandbox.filestore.server | quote }}
+      ports:
+        - port: 2049
+          protocol: TCP
+        - port: 2049
+          protocol: UDP
+        - port: 111
+          protocol: TCP
+        - port: 111
+          protocol: UDP
+    {{- end }}
     # DNS (cluster DNS lives in kube-system).
     - ports:
         - port: 53

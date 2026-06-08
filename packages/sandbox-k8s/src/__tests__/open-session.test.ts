@@ -697,4 +697,117 @@ describe('sandbox:open-session (k8s)', () => {
     expect(err).toMatchObject({ code: 'pod-readiness-timeout' });
     expect((err as { diagnosis?: unknown }).diagnosis).toBeUndefined();
   });
+
+  // filestore-user-files (design §4/§6) — the optionalCall → resolve → realize
+  // chain end-to-end: a registered `sandbox:resolve-mounts` resolver yields an
+  // nfs mount, and the created pod spec carries the inline nfs volume + subPath
+  // mount + AX_USERFILES_ROOT.
+  describe('sandbox:resolve-mounts realization', () => {
+    const OWNER = {
+      userId: 'u1',
+      agentId: 'agent-abc',
+      agentConfig: {
+        displayName: 'A',
+        systemPromptAugment: '',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'claude',
+      },
+    };
+
+    async function harnessWithResolver(api: MockK8sApi, mounts: unknown) {
+      return createTestHarness({
+        services: {
+          'sandbox:resolve-mounts': async () => ({ mounts }),
+        },
+        plugins: [
+          createSessionInmemoryPlugin(),
+          createSandboxK8sPlugin({
+            api,
+            namespace: 'ax-test',
+            image: 'ax-next/agent:test',
+            hostIpcUrl: TEST_HOST_IPC_URL,
+            orphanSweepIntervalMs: 0,
+            ...FAST_POLL,
+          }),
+        ],
+      });
+    }
+
+    it('realizes the resolved nfs mount into the created pod spec', async () => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await harnessWithResolver(api, [
+        {
+          kind: 'nfs',
+          mountPath: '/workspace',
+          server: '10.0.0.2',
+          exportPath: '/vol1/agents',
+          subPath: 'agent-abc',
+          readOnly: false,
+          role: 'user-files',
+        },
+      ]);
+      await h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+        sessionId: 'sess-mount',
+        workspaceRoot: '/tmp/ws',
+        runnerBinary: '/opt/ax/runner.js',
+        owner: OWNER,
+      });
+      const body = api.creates[0]!.body as {
+        spec: {
+          containers: Array<{
+            env: Array<{ name: string; value: string }>;
+            volumeMounts?: Array<{ name: string; mountPath: string; subPath?: string }>;
+          }>;
+          volumes?: Array<Record<string, unknown>>;
+        };
+      };
+      const vol = (body.spec.volumes ?? []).find((v) => v.name === 'ax-mount-0');
+      expect(vol!.nfs).toEqual({ server: '10.0.0.2', path: '/vol1/agents' });
+      const mount = (body.spec.containers[0]!.volumeMounts ?? []).find(
+        (m) => m.name === 'ax-mount-0',
+      );
+      expect(mount).toMatchObject({ mountPath: '/workspace', subPath: 'agent-abc' });
+      const env = Object.fromEntries(
+        body.spec.containers[0]!.env.map((e) => [e.name, e.value]),
+      );
+      expect(env.AX_USERFILES_ROOT).toBe('/workspace');
+      await h.close();
+    });
+
+    it('rolls back the session when the resolver throws (no orphaned token)', async () => {
+      const api = makeMockK8sApi();
+      api.setReadResponses(readyPod());
+      const h = await createTestHarness({
+        services: {
+          'sandbox:resolve-mounts': async () => {
+            throw new Error('resolver boom');
+          },
+        },
+        plugins: [
+          createSessionInmemoryPlugin(),
+          createSandboxK8sPlugin({
+            api,
+            namespace: 'ax-test',
+            image: 'ax-next/agent:test',
+            hostIpcUrl: TEST_HOST_IPC_URL,
+            orphanSweepIntervalMs: 0,
+            ...FAST_POLL,
+          }),
+        ],
+      });
+      await expect(
+        h.bus.call<unknown, OpenSessionResult>('sandbox:open-session', h.ctx(), {
+          sessionId: 'sess-mount-fail',
+          workspaceRoot: '/tmp/ws',
+          runnerBinary: '/opt/ax/runner.js',
+          owner: OWNER,
+        }),
+      ).rejects.toThrow(/resolver boom/);
+      // No pod was created — we threw before createNamespacedPod.
+      expect(api.creates).toHaveLength(0);
+      await h.close();
+    });
+  });
 });

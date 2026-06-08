@@ -46,6 +46,19 @@ describe('readRunnerEnv', () => {
     ).toBe(false);
   });
 
+  it('reads userFilesRoot when AX_USERFILES_ROOT is set, omits it otherwise', () => {
+    // Present → carried through verbatim (the durable per-agent user-files mount).
+    expect(
+      readRunnerEnv({ ...PROXY_TCP, AX_USERFILES_ROOT: '/workspace' }).userFilesRoot,
+    ).toBe('/workspace');
+    // Absent → omitted entirely (no default; "no durable mount wired").
+    expect('userFilesRoot' in readRunnerEnv(PROXY_TCP)).toBe(false);
+    // Empty string is treated as unset (consistent with opt()).
+    expect(
+      'userFilesRoot' in readRunnerEnv({ ...PROXY_TCP, AX_USERFILES_ROOT: '' }),
+    ).toBe(false);
+  });
+
   it('reads proxyUnixSocket when only AX_PROXY_UNIX_SOCKET is set', () => {
     expect(readRunnerEnv(PROXY_UNIX)).toEqual({
       runnerEndpoint: 'unix:///tmp/ax.sock',

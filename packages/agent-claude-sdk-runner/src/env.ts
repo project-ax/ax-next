@@ -35,6 +35,17 @@ export interface RunnerEnv {
    */
   ephemeralRoot?: string;
   /**
+   * Durable, per-agent user-files root (filestore-user-files Phase 1). The
+   * sandbox provider sets `AX_USERFILES_ROOT` from the `role:'user-files'`
+   * mount it resolved (k8s: the `/workspace` NFS subPath mount; subprocess: the
+   * per-agent localDir). Optional with NO default (like `ephemeralRoot`): absent
+   * means "no durable mount wired", and the runner then neither widens the
+   * agent's filesystem reach nor advertises a user-files location. Phase 1 ONLY
+   * adds it to `additionalDirectories` + a system-prompt note — it does NOT
+   * re-root cwd/HOME (that is Phase 2 / TASK-164).
+   */
+  userFilesRoot?: string;
+  /**
    * Per-session credential-proxy TCP endpoint (subprocess sandbox).
    * Mutually exclusive with `proxyUnixSocket`. When present, the SDK calls
    * api.anthropic.com directly through HTTPS_PROXY (set by sandbox-
@@ -119,6 +130,11 @@ export function readRunnerEnv(env: NodeJS.ProcessEnv = process.env): RunnerEnv {
   // agent's filesystem reach".
   const ephemeralRoot = opt('AX_EPHEMERAL_ROOT');
   if (ephemeralRoot !== undefined) result.ephemeralRoot = ephemeralRoot;
+  // No default — see RunnerEnv.userFilesRoot. Absent means "no durable
+  // user-files mount wired", which the runner treats as "don't widen the
+  // agent's filesystem reach or advertise a user-files location".
+  const userFilesRoot = opt('AX_USERFILES_ROOT');
+  if (userFilesRoot !== undefined) result.userFilesRoot = userFilesRoot;
   if (proxyEndpoint !== undefined) result.proxyEndpoint = proxyEndpoint;
   if (proxyUnixSocket !== undefined) result.proxyUnixSocket = proxyUnixSocket;
   // TASK-52: per-session egress-attribution token. Validate the format at the

@@ -7,6 +7,7 @@ import { createEventbusPostgresPlugin } from '@ax/eventbus-postgres';
 import { createSessionPostgresPlugin } from '@ax/session-postgres';
 import { createWorkspaceGitPlugin } from '@ax/workspace-git';
 import { createWorkspaceGitServerPlugin } from '@ax/workspace-git-server';
+import { createWorkspaceFilestorePlugin } from '@ax/workspace-filestore';
 import { createSandboxK8sPlugin } from '@ax/sandbox-k8s';
 import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { auditLogPlugin } from '@ax/audit-log';
@@ -236,6 +237,25 @@ export interface K8sPresetConfig {
    * reads those (via `blobConfigFromEnv`) and constructs this config.
    */
   blob?: K8sBlobConfig;
+  /**
+   * filestore-user-files (design §4) — the durable per-agent user-files mount
+   * backed by a Google Cloud Filestore (managed NFS) export. When set, the
+   * preset loads `@ax/workspace-filestore` (registers `sandbox:resolve-mounts`),
+   * which hands each agent an `nfs` mount at `mountPath` (default `/workspace`)
+   * confined to its own `subPath=<agentId>` subtree. When OMITTED, no resolver
+   * loads — sessions get only the default emptyDir tiers (graceful degradation;
+   * AX_USERFILES_ROOT stays unset). The chart drives this via
+   * `sandbox.filestore.{server,exportPath,mountPath}` → the env vars
+   * `AX_FILESTORE_SERVER` / `AX_FILESTORE_EXPORT_PATH` / `AX_FILESTORE_MOUNT_PATH`.
+   *
+   * Filestore provisioning is out-of-band (terraform/gcloud) — the chart only
+   * consumes `server`/`exportPath`, it does not create the instance.
+   */
+  filestore?: {
+    server: string;
+    exportPath: string;
+    mountPath?: string;
+  };
   /**
    * Pod template + readiness/limits config for sandbox-k8s. All fields
    * optional; defaults live in @ax/sandbox-k8s/src/config.ts.
@@ -610,6 +630,27 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     plugins.push(
       createWorkspaceGitPlugin({
         repoRoot: config.workspace.repoRoot,
+      }),
+    );
+  }
+
+  // filestore-user-files (design §4) — the durable per-agent user-files mount
+  // resolver. When the deployment configured a Filestore export, load
+  // @ax/workspace-filestore: it registers `sandbox:resolve-mounts`, which
+  // @ax/sandbox-k8s calls (optionalCall) to realize each session's per-agent
+  // `nfs` mount. The NFS sibling of the CLI's @ax/workspace-localdir — exactly
+  // one mount resolver loads per deployment. Omitted (no Filestore configured)
+  // → no resolver, sessions degrade to emptyDir-only (AX_USERFILES_ROOT unset).
+  if (config.filestore !== undefined) {
+    plugins.push(
+      createWorkspaceFilestorePlugin({
+        backing: {
+          server: config.filestore.server,
+          exportPath: config.filestore.exportPath,
+        },
+        ...(config.filestore.mountPath !== undefined
+          ? { mountPath: config.filestore.mountPath }
+          : {}),
       }),
     );
   }
@@ -1339,6 +1380,27 @@ export function loadK8sConfigFromEnv(
     sandbox.imagePullSecrets = env.K8S_IMAGE_PULL_SECRETS.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
   }
 
+  // filestore-user-files (design §4) — the durable per-agent user-files mount.
+  // Configured ONLY when a Filestore server is set; `server` + `exportPath` are
+  // both required together (a server with no export, or vice versa, is a wiring
+  // bug we fail loud on). `mountPath` defaults in the plugin (`/workspace`).
+  // Omitted entirely when no server is set → the preset loads no mount resolver
+  // and sessions degrade to emptyDir-only.
+  let filestore: K8sPresetConfig['filestore'];
+  const filestoreServer = env.AX_FILESTORE_SERVER;
+  if (filestoreServer !== undefined && filestoreServer !== '') {
+    const exportPath = env.AX_FILESTORE_EXPORT_PATH;
+    if (exportPath === undefined || exportPath === '') {
+      throw new Error(
+        'AX_FILESTORE_EXPORT_PATH is required when AX_FILESTORE_SERVER is set',
+      );
+    }
+    filestore = { server: filestoreServer, exportPath };
+    if (env.AX_FILESTORE_MOUNT_PATH !== undefined && env.AX_FILESTORE_MOUNT_PATH !== '') {
+      filestore.mountPath = env.AX_FILESTORE_MOUNT_PATH;
+    }
+  }
+
   const ipc: K8sPresetConfig['ipc'] = { hostIpcUrl };
   if (env.BIND_HOST !== undefined && env.BIND_HOST !== '') {
     ipc.host = env.BIND_HOST;
@@ -1498,6 +1560,10 @@ export function loadK8sConfigFromEnv(
     config.auth = auth;
   }
   if (Object.keys(sandbox).length > 0) config.sandbox = sandbox;
+  // filestore-user-files: attach only when a Filestore export was configured
+  // (the loader's "optional unless populated" pattern). Omitted → no mount
+  // resolver loads.
+  if (filestore !== undefined) config.filestore = filestore;
   if (Object.keys(chat).length > 0) config.chat = chat;
   if (env.AX_PROXY_SOCKET_PATH !== undefined && env.AX_PROXY_SOCKET_PATH !== '') {
     config.credentialProxy = { socketPath: env.AX_PROXY_SOCKET_PATH };
