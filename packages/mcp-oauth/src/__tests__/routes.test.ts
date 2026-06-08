@@ -252,7 +252,11 @@ describe('mcp-oauth begin route', () => {
     );
   });
 
-  it('2. non-owner: agents:resolve rejects → 403; putPending NOT called; no discovery', async () => {
+  // Authorization to begin a bind is gated by `agents:resolve` — NOT a bespoke
+  // owner-only check. A REJECT (the caller can't see the agent: a non-member of
+  // a team agent, or a non-owner of a personal agent) is the hard boundary →
+  // 403, nothing written, no discovery fetch leaks. This pins that gate.
+  it('2. agents:resolve rejects (caller not permitted on agent) → 403; putPending NOT called; no discovery', async () => {
     const { deps, store, flow } = makeDeps({
       'auth:require-user': () => OK_USER,
       'agents:resolve': () => rejectThrow('not accessible'),
@@ -270,6 +274,33 @@ describe('mcp-oauth begin route', () => {
     expect(store.putPending).not.toHaveBeenCalled();
     expect(store.putClient).not.toHaveBeenCalled();
     expect(flow.discover).not.toHaveBeenCalled();
+  });
+
+  // The flip side of the gate: ANYONE `agents:resolve` admits may begin a bind —
+  // and `agents:resolve` admits a team agent's MEMBERS, not just an owner (a team
+  // agent has `ownerId = teamId` and no single user-owner; team membership IS
+  // ax-next's sharing mechanism — see @ax/agents `checkAccess`). So a permitted
+  // member, here a user who is NOT the agent's sole owner but whom `agents:resolve`
+  // accepts, is INTENTIONALLY allowed to authorize. Every member then rides on the
+  // bound identity (the shared-key consent moment is surfaced in the Phase-2
+  // connect UI). The hard boundary above (a non-member → 403) is what's enforced.
+  it('2b. agents:resolve accepts a team member (non-owner) → 200; pending written (team-member binding is allowed by design)', async () => {
+    const { deps, store } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      // A team member's resolve SUCCEEDS even though OK_USER is not the agent's
+      // sole owner — the route does not distinguish owner from member, by design.
+      'agents:resolve': () => ({ agent: { id: 'agent-1' } }),
+      'connectors:get': () => connectorFixture(),
+    });
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      res,
+    );
+
+    expect(state.status).toBe(200);
+    expect(store.putPending).toHaveBeenCalledTimes(1);
   });
 
   it('3. connector lacks oauth slot → 400; no discovery', async () => {

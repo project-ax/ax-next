@@ -127,8 +127,14 @@ server.
   and re-stores the (possibly rotated) refresh token. "Authenticate once, works days
   later" is carried entirely by the long-lived refresh token; no background work.
 - **D6 — Agent-scoped connect.** Because the token binds to an agent, the "Connect"
-  action is performed where the owner manages that agent's connectors; connected/not
-  status is per-agent. A sharee cannot initiate the flow.
+  action is performed where that agent's connectors are managed; connected/not status
+  is per-agent. **Who may initiate the flow is gated by `agents:resolve`** (the same ACL
+  every chat turn passes): a **personal** agent admits only its owner; a **team** agent
+  admits any team member (and every member then rides on the bound identity — the
+  shared-key consent moment is surfaced in the Phase-2 connect UI). A non-member /
+  unauthenticated caller is rejected (403/401). "Owner-only" can't apply to a team agent
+  — a team agent has no single user-owner (`ownerId = teamId`), and team membership IS
+  ax-next's sharing mechanism — so binding follows agent access, not sole ownership.
 
 ---
 
@@ -140,7 +146,10 @@ Responsibilities:
 
 1. **Begin-authorization route** — `POST /api/connectors/oauth/begin`
    (`auth:require-user`). Body `{ connectorId, agentId }`. Authorizes the caller
-   against the agent (owner/admin only), resolves the connector's bound MCP server URL
+   against the agent **via `agents:resolve`** (a personal agent admits only its owner;
+   a team agent admits any member — and every member then rides on the bound identity,
+   with the shared-key consent moment surfaced in the Phase-2 connect UI; a non-member /
+   unauthenticated caller is rejected 403/401), resolves the connector's bound MCP server URL
    (the OAuth *resource*), runs discovery, ensures a registered client (DCR or pinned),
    builds the PKCE authorization URL via `startAuthorization`, persists a pending record
    keyed by `state`, returns `{ authorizationUrl }`.
@@ -212,9 +221,10 @@ credentials resolver contract — **not** a new cross-plugin hook shape).
 
 ### 7a. Connect + callback (happy path)
 
-1. **Launch.** Owner (in the agent's connector settings) clicks **Connect with
-   \<Service\>**. If the agent is shared, the shared-key consent line is shown *before*
-   anything leaves the browser.
+1. **Launch.** A user permitted on the agent (its owner for a personal agent, or any
+   member for a team agent — see D6) opens the agent's connector settings and clicks
+   **Connect with \<Service\>**. If the agent is shared, the shared-key consent line is
+   shown *before* anything leaves the browser.
 2. **Begin.** `POST /api/connectors/oauth/begin { connectorId, agentId }` →
    authorize caller against agent → resolve resource URL →
    `discoverOAuthProtectedResourceMetadata` → `discoverAuthorizationServerMetadata` →
@@ -278,7 +288,8 @@ grant surfaces loudly as *Reconnect needed*.
 | Token revoked mid-session | In-flight MCP call 401s → SDK tool error the model reports; next turn re-resolves → refresh → if also dead, *Reconnect needed*. No crash. |
 | Rotation | Every refresh re-stores the rotated refresh token atomically via the `refreshed` seam; SDK preserves the old one when not rotated. |
 | Agent deleted / connector detached | The agent-scoped token is tombstoned with the agent (fold into the existing agent-delete cascade — verify it covers agent-scope creds). |
-| Non-owner hits `begin` | 403 before any flow starts. |
+| Caller not permitted on the agent (`agents:resolve` rejects — e.g. a non-member of a team agent, or a non-owner of a personal agent) | 403 before any flow starts; no pending written. Authorization is gated by `agents:resolve`: a personal agent admits only its owner, a team agent admits any member. |
+| Unauthenticated caller | 401 before any flow starts. |
 
 ---
 
@@ -303,7 +314,10 @@ credentials). Design-time model:
   Scopes come from connector config / PRM (not arbitrary) and are shown at consent.
 - **Authoring trust.** Only an admin or the agent's owner can create/approve an OAuth
   connector; model-authored drafts still hit the existing approval wall. (Today the
-  connector-card excludes `mcp` from auto-approve — reconcile in planning.)
+  connector-card excludes `mcp` from auto-approve — reconcile in planning.) Note this is
+  distinct from **binding** (the `begin` flow): authorizing a token is gated by
+  `agents:resolve` (personal → owner-only, team → any member; see D6), not by
+  connector-authoring rights.
 - **Supply chain.** **No new dependency** — protocol code is `@modelcontextprotocol/sdk`
   (already present); PKCE/state use Node `crypto`. Only new package is first-party
   `@ax/mcp-oauth`.
