@@ -8,6 +8,7 @@ import {
   ShieldCheck,
   Plug,
   Wrench,
+  ListChecks,
 } from 'lucide-react';
 import { BrandMark } from '../BrandMark';
 import { SidebarSectionLabel } from '../SidebarSectionLabel';
@@ -23,6 +24,7 @@ export type AdminTabId =
   | 'skills'
   | 'connectors-user'
   | 'agents'
+  | 'routines'
   // Admin tabs (admins only) — genuinely workspace-level config with no user
   // counterpart. The former catalog / admit-queue / connector-registry surfaces
   // were folded out of the nav (settings-unified epic); their admin curation
@@ -38,6 +40,7 @@ const USER_NAV: NavItem[] = [
   { id: 'skills', label: 'Skills', icon: Wrench },
   { id: 'connectors-user', label: 'Connectors', icon: Plug },
   { id: 'agents', label: 'Agents', icon: User },
+  { id: 'routines', label: 'Routines', icon: ListChecks },
 ];
 
 const ADMIN_NAV: NavItem[] = [

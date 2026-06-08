@@ -1,10 +1,10 @@
 /**
  * UserMenu — popover at the bottom of the sidebar.
  *
- * Click the user row → opens a popover with: Routines, Settings (every
- * user — TASK-42), a theme tri-toggle (Light / Dark / System), and Sign out.
- * (Credentials is no longer a top-level entry — it lives inside admin
- * Settings now.)
+ * Click the user row → opens a popover with: Settings (every user — TASK-42),
+ * a theme tri-toggle (Light / Dark / System), and Sign out. (Neither Routines
+ * nor Credentials is a top-level entry anymore — both live inside Settings:
+ * Routines is a Settings tab, credentials live on each connector.)
  *
  * SECURITY NOTE — UI affordance only. Every user can now open Settings; the
  * admin-only *tabs* inside it are gated in-shell. That in-shell gating is a UX
@@ -14,7 +14,7 @@
  * caller's own id (a user can only ever read/change their own data).
  */
 import { useEffect, useRef, useState } from 'react';
-import { ListChecks, LogOut, Monitor, Moon, Settings, Sun } from 'lucide-react';
+import { LogOut, Monitor, Moon, Settings, Sun } from 'lucide-react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
@@ -35,10 +35,8 @@ const THEME_OPTIONS: ThemeOption[] = [
 
 export function UserMenu({
   onOpenAdminSettings,
-  onOpenRoutines,
 }: {
   onOpenAdminSettings?: (() => void) | undefined;
-  onOpenRoutines?: (() => void) | undefined;
 } = {}) {
   const user = useUser();
   const theme = useTheme();
@@ -141,19 +139,6 @@ export function UserMenu({
               </div>
             </div>
           </div>
-          <button
-            type="button"
-            className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[12.5px] text-foreground hover:bg-muted transition-colors [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
-            role="menuitem"
-            onClick={() => {
-              setOpen(false);
-              onOpenRoutines?.();
-            }}
-            data-action="routines"
-          >
-            <ListChecks aria-hidden="true" strokeWidth={1.4} />
-            <span>Routines</span>
-          </button>
           <button
             type="button"
             className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[12.5px] text-foreground hover:bg-muted transition-colors [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"

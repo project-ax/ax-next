@@ -5,7 +5,7 @@
  *     feedback is rendered inline below the row (no Sonner dependency).
  *   - webhook: clicking the Button reveals an inline JSON textarea + a
  *     Submit. This avoids a nested-Dialog which would create
- *     focus-trap / aria headaches inside the parent RoutinesPanel Dialog.
+ *     focus-trap / aria headaches when a modal is open over the Routines tab.
  *
  * Successful fire bumps the parent's refresh key so the routine's
  * last_status / last_run_at reflect the new row immediately.

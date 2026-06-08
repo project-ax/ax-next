@@ -9,6 +9,7 @@ import { AgentForm } from './AgentForm';
 import { TeamList } from './TeamList';
 import { SkillsTab } from '../settings/SkillsTab';
 import { ConnectorsTab } from '../settings/ConnectorsTab';
+import { RoutinesTab } from '../routines/RoutinesTab';
 
 export interface AdminShellProps {
   /**
@@ -31,6 +32,7 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   skills: { eyebrow: 'Settings', title: 'Skills' },
   'connectors-user': { eyebrow: 'Settings', title: 'Connectors' },
   agents: { eyebrow: 'Settings', title: 'Agents' },
+  routines: { eyebrow: 'Settings', title: 'Routines' },
   providers: { eyebrow: 'Admin', title: 'AI model keys' },
   'model-config': { eyebrow: 'Admin', title: 'Default AI model' },
   'auth-providers': { eyebrow: 'Admin', title: 'Sign-in methods' },
@@ -58,6 +60,7 @@ export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
         {activeTab === 'model-config' && <ModelConfigTab />}
         {activeTab === 'auth-providers' && <AuthProvidersTab />}
         {activeTab === 'agents' && <AgentForm isAdmin={isAdmin} />}
+        {activeTab === 'routines' && <RoutinesTab isAdmin={isAdmin} />}
         {activeTab === 'teams' && <TeamList />}
       </AdminPane>
     </div>
