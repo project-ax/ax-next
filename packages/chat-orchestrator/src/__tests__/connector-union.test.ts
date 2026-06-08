@@ -442,9 +442,12 @@ describe('foldConnectorCaps', () => {
 
   // TASK (mcp-oauth) — an OAuth connector slot folds to the `mcp-oauth`
   // credential kind in baseCreds. That kind drives the proxy's traffic
-  // CLASSIFICATION (`'mcp'` for `mcp-*` kinds) + per-turn rotation; the stored
-  // envelope kind (also `mcp-oauth`, written by the OAuth callback) drives the
-  // resolve/refresh. The api-key path stays byte-identical.
+  // CLASSIFICATION (`'mcp'` for `mcp-*` kinds); the stored envelope kind (also
+  // `mcp-oauth`, written by the OAuth callback) drives the resolve/refresh.
+  // Per-turn ROTATION is NOT driven by the fold — it's armed by the orchestrator
+  // gate (`sessionNeedsCredentialRotation` over the merged `unionedCreds`), which
+  // sees this folded `mcp-oauth` entry as a non-`api-key` kind. The api-key path
+  // stays byte-identical.
   it('maps an oauth connector slot to the mcp-oauth credential kind', () => {
     const baseAllowSet = new Set<string>();
     const baseCreds: Record<string, { ref: string; kind: string }> = {};
