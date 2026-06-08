@@ -13,6 +13,7 @@ export const McpOAuthTokenBlobSchema = z.object({
   scope: z.string().optional(),
   resource: z.string().url(),
   authServerUrl: z.string().url(),
+  tokenEndpoint: z.string().url(),
   clientKey: z.string().min(1),
 });
 export type McpOAuthTokenBlob = z.infer<typeof McpOAuthTokenBlobSchema>;
