@@ -13,7 +13,7 @@
  * matching the existing "subtitle" treatment in CredentialsList for
  * fixed-width strings.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { ChevronRight, Plus, Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
@@ -101,6 +101,13 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
   const [editorMode, setEditorMode] = useState<EditorMode | null>(null);
   const [pendingDelete, setPendingDelete] = useState<Routine | null>(null);
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  // `deleting` drives the disabled/“Deleting…” button state; `deletingRef` is
+  // the synchronous re-entrancy guard. A state flag alone can't stop a
+  // same-tick double-dispatch (both click handlers close over the stale
+  // value before React re-renders the disabled button), so the ref is what
+  // actually prevents the duplicate DELETE seen in the kind walk.
+  const [deleting, setDeleting] = useState(false);
+  const deletingRef = useRef(false);
 
   async function reload(): Promise<void> {
     setError(null);
@@ -112,6 +119,9 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
   }
 
   async function handleDelete(routine: Routine): Promise<void> {
+    if (deletingRef.current) return; // guard against a double-submit
+    deletingRef.current = true;
+    setDeleting(true);
     setDeleteError(null);
     try {
       await routines.remove({ agentId: routine.agentId, path: routine.path });
@@ -120,6 +130,9 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
       onFired();
     } catch (err) {
       setDeleteError(err instanceof Error ? err.message : String(err));
+    } finally {
+      deletingRef.current = false;
+      setDeleting(false);
     }
   }
 
@@ -355,16 +368,21 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
             <p className="text-sm text-destructive">{deleteError}</p>
           )}
           <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setPendingDelete(null)}>
+            <Button
+              variant="outline"
+              disabled={deleting}
+              onClick={() => setPendingDelete(null)}
+            >
               Cancel
             </Button>
             <Button
               variant="destructive"
+              disabled={deleting}
               onClick={() => {
                 if (pendingDelete !== null) void handleDelete(pendingDelete);
               }}
             >
-              Delete
+              {deleting ? 'Deleting…' : 'Delete'}
             </Button>
           </div>
         </DialogContent>
