@@ -191,12 +191,12 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const connectorId = body.connectorId;
     const rawAgentId = body.agentId;
     if (typeof connectorId !== 'string' || !connectorId) {
-      res.status(400).json({ error: 'connectorId and agentId are required' });
+      res.status(400).json({ error: 'connectorId is required' });
       return;
     }
     // agentId is optional: when present it must be a non-empty string.
     if (rawAgentId !== undefined && (typeof rawAgentId !== 'string' || !rawAgentId)) {
-      res.status(400).json({ error: 'connectorId and agentId are required' });
+      res.status(400).json({ error: 'agentId must be a non-empty string' });
       return;
     }
     const agentId = rawAgentId as string | undefined;
@@ -527,10 +527,15 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
 
     // The vault write. A throw is a SERVER/DB fault (NOT "OAuth failed") → log
     // it so the operator can tell a storage outage from a provider rejection.
+    // credScope drives where the token is stored:
+    //   'user'  → personal agent: stored on the user so all their agents share it.
+    //   'agent' → team agent: stored on the agent so sharees each ride on it.
+    const writeScope = pending.credScope; // 'user' | 'agent'
+    const writeOwnerId = writeScope === 'agent' ? pending.agentId : pending.userId;
     try {
       await bus.call<
         {
-          scope: 'agent';
+          scope: 'user' | 'agent';
           ownerId: string;
           ref: string;
           kind: string;
@@ -539,8 +544,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         },
         void
       >('credentials:set', ctxFor(pending.userId), {
-        scope: 'agent',
-        ownerId: pending.agentId,
+        scope: writeScope,
+        ownerId: writeOwnerId,
         ref: `account:${pending.connectorId}`,
         kind: 'mcp-oauth',
         payload: encodeTokenBlob(blob),

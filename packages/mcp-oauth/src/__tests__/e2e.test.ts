@@ -270,8 +270,10 @@ function captureRouteServices(routes: CapturedRoute[]): Record<string, ServiceHa
     // begin authenticates as bob; callback re-authenticates as bob (same user
     // who began — the CSRF binding requires it).
     'auth:require-user': (async () => ({ user: { id: 'bob', isAdmin: false } })) as ServiceHandler,
-    // A successful resolve IS the agent-owner authz — return a stub agent.
-    'agents:resolve': (async () => ({ agent: { id: 'agent-A' } })) as ServiceHandler,
+    // A successful resolve IS the agent-owner authz — return a stub team agent
+    // so the credential is stored agent-bound (scope:'agent', ownerId:'agent-A'),
+    // matching the sharee-resolves design this canary exercises.
+    'agents:resolve': (async () => ({ agent: { id: 'agent-A', visibility: 'team', ownerId: 'team-1' } })) as ServiceHandler,
     // One oauth slot + a matching mcpServer.
     'connectors:get': (async () => ({
       connector: {

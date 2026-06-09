@@ -597,7 +597,7 @@ describe('mcp-oauth begin route', () => {
   it('credScope: no agentId in body → credScope === "user", agentId === "", agents:resolve NOT called', async () => {
     const store = fakeStore();
     const resolveStub = vi.fn(() => ({ agent: { id: 'agent-1' } }));
-    const { deps, calls } = makeDeps(
+    const { deps } = makeDeps(
       {
         'auth:require-user': () => OK_USER,
         'connectors:get': () => connectorFixture(),
@@ -639,6 +639,7 @@ describe('mcp-oauth callback route', () => {
     clientKey: 'conn-1|https://auth.example.com',
     resource: 'https://mcp.example.com/mcp',
     scope: 'read write',
+    credScope: 'agent',
     createdAt: 1_000_000,
   };
 
@@ -690,6 +691,76 @@ describe('mcp-oauth callback route', () => {
     expect(state.redirectUrl).toContain('oauth=success');
     expect(state.redirectUrl).toContain('connector=conn-1');
     expect(state.redirectUrl).toContain('https://app.example.com/settings/connectors');
+  });
+
+  // Phase 2: the callback writes the credential at the pending row's STORED
+  // credScope/ownerId, NOT a hardcoded agent scope. These pin the production
+  // credentials:set fields for both scope variants.
+
+  it('credScope=user: callback writes credentials:set with scope=user, ownerId=userId', async () => {
+    const userScopedPending: PendingAuthorization = {
+      ...pending,
+      state: 'STATE-USER',
+      credScope: 'user',
+      agentId: '',
+      userId: 'alice',
+    };
+    const setArgs: unknown[] = [];
+    const store = storeWithPending(userScopedPending);
+    const { deps } = makeDeps(
+      {
+        'auth:require-user': () => ({ user: { id: 'alice', isAdmin: false } }),
+        'connectors:get': () => connectorFixture(),
+        'credentials:set': (input) => { setArgs.push(input); },
+      },
+      { store },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.callback(
+      fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE-USER' } }),
+      res,
+    );
+    expect(setArgs).toHaveLength(1);
+    const arg = setArgs[0] as { scope: string; ownerId: string; ref: string; kind: string };
+    expect(arg.scope).toBe('user');
+    expect(arg.ownerId).toBe('alice');
+    expect(arg.ref).toBe('account:conn-1');
+    expect(arg.kind).toBe('mcp-oauth');
+    expect(state.redirectUrl).toContain('oauth=success');
+  });
+
+  it('credScope=agent: callback writes credentials:set with scope=agent, ownerId=agentId', async () => {
+    const agentScopedPending: PendingAuthorization = {
+      ...pending,
+      state: 'STATE-AGENT',
+      credScope: 'agent',
+      agentId: 'A',
+      userId: 'alice',
+    };
+    const setArgs: unknown[] = [];
+    const store = storeWithPending(agentScopedPending);
+    const { deps } = makeDeps(
+      {
+        'auth:require-user': () => ({ user: { id: 'alice', isAdmin: false } }),
+        'connectors:get': () => connectorFixture(),
+        'credentials:set': (input) => { setArgs.push(input); },
+      },
+      { store },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.callback(
+      fakeReq({ query: { code: 'auth-code-xyz', state: 'STATE-AGENT' } }),
+      res,
+    );
+    expect(setArgs).toHaveLength(1);
+    const arg = setArgs[0] as { scope: string; ownerId: string; ref: string; kind: string };
+    expect(arg.scope).toBe('agent');
+    expect(arg.ownerId).toBe('A');
+    expect(arg.ref).toBe('account:conn-1');
+    expect(arg.kind).toBe('mcp-oauth');
+    expect(state.redirectUrl).toContain('oauth=success');
   });
 
   it('5. state/user mismatch → 403; consume NOT called (no burn); credentials:set NOT called', async () => {
