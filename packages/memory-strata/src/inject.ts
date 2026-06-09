@@ -19,8 +19,14 @@
 // appended. Both paths are tested.
 
 import { readFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import type { HookBus, AgentContext } from '@ax/core';
+import { join, posix } from 'node:path';
+import type {
+  HookBus,
+  AgentContext,
+  WorkspaceReadInput,
+  WorkspaceReadOutput,
+} from '@ax/core';
+import { agentTierAvailable, AGENT_TIER_MEMORY_ROOT } from './agent-tier-sync.js';
 import { systemFile, recentFile } from './paths.js';
 import { retrieve } from './retriever.js';
 
@@ -72,8 +78,17 @@ export async function buildMemoryBlock(
   const maxTokens = input.maxTokens ?? DEFAULT_MAX_TOKENS;
   const topK = input.topK ?? 3;
 
-  const userProfileBody = await readSystemBody(input.workspaceRoot, 'user');
-  const recentBody = await readSystemBody(input.workspaceRoot, 'recent');
+  // TASK-182: when memory lives in the per-agent `/agent` git tier (k8s), read
+  // the injected system files from THERE (owner-routed by ctx) — the host FS
+  // `workspaceRoot` is the shared host CWD and holds no per-agent memory. The
+  // CLI path keeps reading the agent's own workspace root on the host FS.
+  const useTier = agentTierAvailable(bus);
+  const userProfileBody = useTier
+    ? await readTierSystemBody(bus, ctx, 'user')
+    : await readSystemBody(input.workspaceRoot, 'user');
+  const recentBody = useTier
+    ? await readTierSystemBody(bus, ctx, 'recent')
+    : await readSystemBody(input.workspaceRoot, 'recent');
 
   let docsLines: string[] = [];
   if (input.lastUserMessage !== undefined && input.lastUserMessage.length > 0) {
@@ -111,6 +126,38 @@ async function readSystemBody(
     throw err;
   }
   return stripFrontmatter(raw);
+}
+
+/**
+ * Tier variant of {@link readSystemBody} (TASK-182). Reads `memory/system/<name>.md`
+ * from the per-agent `/agent` git tier via `workspace:read` (owner-routed by
+ * `ctx`). Returns '' on a miss (not-found, or any read error) so injection
+ * degrades to an empty section rather than failing the system-prompt augment.
+ */
+async function readTierSystemBody(
+  bus: HookBus,
+  ctx: AgentContext,
+  name: 'user' | 'recent',
+): Promise<string> {
+  // FS rel paths are `permanent/memory/system/<name>.md` (MEMORY_ROOT =
+  // `permanent/memory`, two segments). The tier drops that whole host-layout
+  // prefix and re-roots the tail under `memory/` → `memory/system/<name>.md`.
+  const fsRel = name === 'recent' ? recentFile() : systemFile(name);
+  const tierPath = posix.join(
+    AGENT_TIER_MEMORY_ROOT,
+    fsRel.split('/').slice(2).join('/'),
+  );
+  try {
+    const out = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+      'workspace:read',
+      ctx,
+      { path: tierPath },
+    );
+    if (!out.found) return '';
+    return stripFrontmatter(new TextDecoder('utf-8').decode(out.bytes));
+  } catch {
+    return '';
+  }
 }
 
 /**
