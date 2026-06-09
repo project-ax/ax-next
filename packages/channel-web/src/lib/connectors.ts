@@ -74,7 +74,7 @@ export interface ConnectorMcpServerSpec {
   credentials: ConnectorCredentialSlot[];
 }
 
-export interface ConnectorCredentialSlot {
+export interface ConnectorApiKeySlot {
   slot: string;
   kind: 'api-key';
   description?: string;
@@ -82,6 +82,25 @@ export interface ConnectorCredentialSlot {
   // the connector id (mirrors @ax/connectors' CapabilitySlot). The server strips
   // any legacy `account` on read, so it never reaches the client.
 }
+
+export interface ConnectorOAuthSlot {
+  slot: string;
+  kind: 'oauth';
+  /** The OAuth server / provider identity (e.g. 'example', 'github'). */
+  server: string;
+  /** Requested OAuth scopes. */
+  scopes?: string[];
+  /** Optional OAuth client id — overrides the server-level default. */
+  clientId?: string;
+  /** Vault ref where the client secret lives (never the raw secret). */
+  clientSecretRef?: string;
+  /** Authorization server URL (if not derived from `server`). */
+  authServerUrl?: string;
+  /** Token endpoint URL (if not derived from `server`). */
+  tokenUrl?: string;
+}
+
+export type ConnectorCredentialSlot = ConnectorApiKeySlot | ConnectorOAuthSlot;
 
 export interface ConnectorCapabilities {
   allowedHosts: string[];

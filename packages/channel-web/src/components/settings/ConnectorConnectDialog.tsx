@@ -44,6 +44,7 @@ import {
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { CredentialSlotForm } from '@/components/credentials/CredentialSlotForm';
+import { ConnectorOAuthConnect } from '@/components/settings/ConnectorOAuthConnect';
 import {
   getConnector,
   deriveCredentialPlan,
@@ -284,12 +285,15 @@ function ConnectBody({
 }
 
 /**
- * One key-entry form per credential slot. Reuses the existing CredentialSlotForm
- * (password field + base64 write). The destination is the service-keyed
- * `account:<service>` vault row; the scope comes from the derived plan
- * ('user' for personal, 'global' for workspace). ownerId is null — the server
- * forces it from the session (user route) / is admin-supplied as the company key
- * (global route).
+ * One key-entry form per credential slot. For `kind: 'oauth'` slots, renders
+ * the OAuth connect widget (no agentId, no requiresConsent — the Connectors tab
+ * is always personal/user-scope). For `kind: 'api-key'` slots, renders the
+ * existing CredentialSlotForm (password field + base64 write).
+ *
+ * The destination is the service-keyed `account:<service>` vault row; the scope
+ * comes from the derived plan ('user' for personal, 'global' for workspace).
+ * ownerId is null — the server forces it from the session (user route) /
+ * is admin-supplied as the company key (global route).
  */
 function ConnectKeyForms({
   connector,
@@ -311,13 +315,31 @@ function ConnectKeyForms({
   return (
     <div className="flex flex-col gap-5">
       {plan.map((entry) => {
+        const slotMeta = slotByName(entry.slot);
+
+        // OAuth slot — render the OAuth connect widget.
+        // No agentId (personal/user-scope) and no requiresConsent (the Connectors
+        // tab is the single home for personal connect; consent is only for
+        // team-agent connects in the agent editor).
+        if (slotMeta?.kind === 'oauth') {
+          return (
+            <div key={entry.slot} className="flex flex-col gap-2">
+              <ConnectorOAuthConnect
+                connectorId={connector.id}
+                serviceName={connector.name}
+                onConnected={onSaved}
+              />
+            </div>
+          );
+        }
+
+        // API-key slot (or unknown — default to key-entry form).
         // TASK-124 — build the destination from the plan's STRUCTURED fields, not
         // by slicing the ref: a multi-slot connector's ref is
         // `account:<service>:<slot>`, which `.slice('account:')` would mangle into
         // an invalid `service`. `entry.service` is the bare tag; `entry.slotTag`
         // (present only for a multi-slot connector) becomes the optional `slot` so
         // the WRITE lands in the SAME row the host resolver READS.
-        const slotMeta = slotByName(entry.slot);
         return (
           <div key={entry.slot} className="flex flex-col gap-2">
             <p className="text-xs font-medium text-foreground">{entry.slot}</p>
@@ -331,7 +353,8 @@ function ConnectKeyForms({
                 label: entry.slot,
                 kind: 'api-key',
                 // exactOptionalPropertyTypes: only include `description` when set.
-                ...(slotMeta?.description !== undefined
+                // Narrow to api-key slots — oauth slots have no `description` field.
+                ...(slotMeta?.kind === 'api-key' && slotMeta.description !== undefined
                   ? { description: slotMeta.description }
                   : {}),
               }}

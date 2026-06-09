@@ -44,8 +44,8 @@ describe('connector-form helpers', () => {
     expect(f.baseCapabilities).toEqual(emptyCapabilities());
   });
 
-  it('emptySlotRow is a blank structured row (slot + description only)', () => {
-    expect(emptySlotRow()).toEqual({ slot: '', description: '' });
+  it('emptySlotRow is a blank structured api-key row', () => {
+    expect(emptySlotRow()).toEqual({ slot: '', description: '', kind: 'api-key' });
   });
 
   it('splitList trims, drops empties', () => {
@@ -91,7 +91,7 @@ describe('connector-form helpers', () => {
     expect(f.args).toBe('--flag x');
     expect(f.allowedHosts).toBe('drive.googleapis.com');
     expect(f.credentialSlots).toEqual([
-      { slot: 'token', description: '' },
+      { slot: 'token', description: '', kind: 'api-key' },
     ]);
   });
 
@@ -143,7 +143,7 @@ describe('connector-form helpers', () => {
     expect(f.mechanism).toBe('direct-api');
     expect(f.allowedHosts).toBe('api.stripe.com');
     expect(f.credentialSlots).toEqual([
-      { slot: 'key', description: 'Secret key' },
+      { slot: 'key', description: 'Secret key', kind: 'api-key' },
     ]);
   });
 
@@ -159,8 +159,8 @@ describe('connector-form helpers', () => {
     });
     const f = formFromConnector(c);
     expect(f.credentialSlots).toEqual([
-      { slot: 'CLIENT_ID', description: 'Client ID' },
-      { slot: 'CLIENT_SECRET', description: '' },
+      { slot: 'CLIENT_ID', description: 'Client ID', kind: 'api-key' },
+      { slot: 'CLIENT_SECRET', description: '', kind: 'api-key' },
     ]);
   });
 
@@ -175,7 +175,7 @@ describe('connector-form helpers', () => {
       command: 'mcp-gdrive',
       args: 'a b',
       allowedHosts: 'drive.googleapis.com, www.googleapis.com',
-      credentialSlots: [{ slot: 'token', description: '' }],
+      credentialSlots: [{ slot: 'token', description: '', kind: 'api-key' }],
     };
     const caps = capabilitiesFromForm(f);
     expect(caps.allowedHosts).toEqual([
@@ -211,7 +211,7 @@ describe('connector-form helpers', () => {
       name: 'Stripe',
       mechanism: 'direct-api',
       allowedHosts: 'api.stripe.com',
-      credentialSlots: [{ slot: 'key', description: 'Secret key' }],
+      credentialSlots: [{ slot: 'key', description: 'Secret key', kind: 'api-key' }],
     };
     const caps = capabilitiesFromForm(f);
     expect(caps.mcpServers).toEqual([]);
@@ -230,7 +230,7 @@ describe('connector-form helpers', () => {
       packageRegistry: 'npm',
       packageName: '@org/cli',
       allowedHosts: 'registry.example.com',
-      credentialSlots: [{ slot: 'TOKEN', description: '' }],
+      credentialSlots: [{ slot: 'TOKEN', description: '', kind: 'api-key' }],
     };
     const caps = capabilitiesFromForm(f);
     expect(caps.packages).toEqual({ npm: ['@org/cli'], pypi: [] });
@@ -257,9 +257,9 @@ describe('connector-form helpers', () => {
       name: 'OAuth',
       mechanism: 'direct-api',
       credentialSlots: [
-        { slot: 'CLIENT_ID', description: 'Client ID' },
-        { slot: '', description: 'orphan' },
-        { slot: 'CLIENT_SECRET', description: '' },
+        { slot: 'CLIENT_ID', description: 'Client ID', kind: 'api-key' as const },
+        { slot: '', description: 'orphan', kind: 'api-key' as const },
+        { slot: 'CLIENT_SECRET', description: '', kind: 'api-key' as const },
       ],
     };
     const caps = capabilitiesFromForm(f);
@@ -534,6 +534,31 @@ services:
     expect(result.ok).toBe(true);
     if (!result.ok) return;
     expect(result.form.services.map((s) => s.name)).toEqual(['db']);
+  });
+
+  // --- oauth credential slots (Task 8) ------------------------------------
+
+  it('round-trips an oauth slot through form <-> capabilities', () => {
+    const caps = {
+      allowedHosts: ['mcp.example.com'], packages: { npm: [], pypi: [] }, mcpServers: [],
+      credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'example', scopes: ['read'] }],
+    };
+    const form = formFromConnector({ id:'x', name:'X', description:'', usageNote:'',
+      keyMode:'personal', visibility:'private', defaultAttached:false,
+      createdAt:'', updatedAt:'', capabilities: caps as never });
+    expect(form.credentialSlots[0]).toMatchObject({ kind: 'oauth', server: 'example' });
+    const back = capabilitiesFromForm(form);
+    expect(back.credentials[0]).toMatchObject({ kind: 'oauth', server: 'example', scopes: ['read'] });
+  });
+
+  it('still round-trips an api-key slot unchanged (back-compat)', () => {
+    const caps = { allowedHosts: [], packages: { npm: [], pypi: [] }, mcpServers: [],
+      credentials: [{ slot: 'X', kind: 'api-key', description: 'tok' }] };
+    const form = formFromConnector({ id:'x', name:'X', description:'', usageNote:'',
+      keyMode:'personal', visibility:'private', defaultAttached:false,
+      createdAt:'', updatedAt:'', capabilities: caps as never });
+    expect(form.credentialSlots[0]).toMatchObject({ kind: 'api-key', description: 'tok' });
+    expect(capabilitiesFromForm(form).credentials[0]).toMatchObject({ slot: 'X', kind: 'api-key', description: 'tok' });
   });
 
   it('summaryToForm carries the metadata subset incl. defaultAttached', () => {

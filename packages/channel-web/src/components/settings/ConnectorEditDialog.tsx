@@ -35,7 +35,7 @@
  * shadcn primitives + semantic tokens only (invariant #6).
  */
 import { useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { X, ChevronDown } from 'lucide-react';
 import type { ComposeDrop, ComposeInvalid } from '@ax/skills-parser';
 import {
   getConnector,
@@ -62,6 +62,10 @@ import {
   type Transport,
   type PackageRegistry,
 } from '@/lib/connector-form';
+import {
+  setDestinationCredential,
+  refForDestination,
+} from '@/lib/credentials';
 import {
   Dialog,
   DialogContent,
@@ -90,6 +94,11 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import {
+  Collapsible,
+  CollapsibleContent,
+  CollapsibleTrigger,
+} from '@/components/ui/collapsible';
 
 export interface ConnectorEditDialogProps {
   /** `'new'` opens a blank create form; a summary opens an edit form prefilled
@@ -463,6 +472,15 @@ export function ConnectorEditDialog({
   const [form, setForm] = useState<ConnectorFormState>(() => emptyConnectorForm());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  /**
+   * Per-row client_secret values (keyed by row index). These are LOCAL state —
+   * they are NEVER stored on CredentialSlotRow, NEVER flow into capabilitiesFromForm,
+   * and NEVER land on the connector record. On save they are written to the vault
+   * and only the resulting ref (`clientSecretRef`) is placed on the slot row.
+   */
+  const [oauthClientSecrets, setOauthClientSecrets] = useState<
+    Record<number, string>
+  >({});
 
   // The route bundle this variant targets (TASK-129): the admin variant curates
   // via `/admin/connectors`; the user variant authors via the locked-down
@@ -480,6 +498,7 @@ export function ConnectorEditDialog({
     let cancelled = false;
     setError(null);
     setBusy(false);
+    setOauthClientSecrets({});
     if (target === 'new') {
       setForm(emptyConnectorForm());
       return;
@@ -501,7 +520,7 @@ export function ConnectorEditDialog({
     e.preventDefault();
     if (busy) return;
     if (!form.name.trim()) {
-      setError('name is required');
+      setError('Give this connector a service name first.');
       return;
     }
     const connectorId = form.connectorId || connectorIdFromName(form.name);
@@ -512,6 +531,70 @@ export function ConnectorEditDialog({
     // (the server also rejects them for a non-admin owner; this is belt + braces).
     const visibility: ConnectorVisibility = isAdmin ? form.visibility : 'private';
     const defaultAttached = isAdmin ? form.defaultAttached : false;
+
+    // --- oauth client_secret persistence ------------------------------------
+    // For each oauth slot that has a newly-entered client_secret: write the
+    // secret to the vault and attach the resulting ref to the slot row.
+    // The raw secret MUST NOT flow into capabilitiesFromForm — only the ref.
+    //
+    // M3 — The vault write happens BEFORE the connector write deliberately:
+    // an orphaned secret on a connector-write failure is harmless and
+    // self-healing on re-save; the reverse order would leave the connector
+    // pointing at a missing ref.
+    //
+    // NOTE: A pinned client_secret stored at user-scope (personal keyMode) is
+    // only resolvable by the connector owner. A team member connecting a team
+    // agent with a pinned client needs the connector at workspace keyMode (global
+    // secret). DCR (blank client) avoids this entirely. This is a documented
+    // follow-up; not handled here.
+    let updatedSlots = form.credentialSlots;
+    try {
+      const slotPatches: Record<number, { clientSecretRef: string }> = {};
+      for (const [idxStr, secret] of Object.entries(oauthClientSecrets)) {
+        const idx = Number(idxStr);
+        const row = form.credentialSlots[idx];
+        if (!row || row.kind !== 'oauth' || !secret.trim()) continue;
+        const destination = {
+          kind: 'account' as const,
+          service: connectorId,
+          slot: 'oauth-client-secret',
+        };
+        const scope =
+          form.keyMode === 'workspace'
+            ? ({ scope: 'global' as const, ownerId: null })
+            : ({ scope: 'user' as const, ownerId: null });
+        await setDestinationCredential({
+          destination,
+          slot: { kind: 'api-key' },
+          scope,
+          payload: secret,
+        });
+        slotPatches[idx] = {
+          clientSecretRef: refForDestination(destination),
+        };
+      }
+      // Apply clientSecretRef patches. Do this outside the loop so we mutate the
+      // slot array once (avoids multiple setForm calls racing with each other).
+      if (Object.keys(slotPatches).length > 0) {
+        updatedSlots = form.credentialSlots.map((row, idx) =>
+          slotPatches[idx] ? { ...row, ...slotPatches[idx] } : row,
+        );
+      }
+    } catch (err) {
+      setError(
+        `Failed to save OAuth client secret: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      setBusy(false);
+      return;
+    }
+    // Build capabilities from the slot list that now carries clientSecretRefs (not raw
+    // secrets). The raw secrets are in oauthClientSecrets (local state only) and never
+    // reach the connector body.
+    const formWithSecretRefs: ConnectorFormState = {
+      ...form,
+      credentialSlots: updatedSlots,
+    };
+
     const body = {
       connectorId,
       name: form.name.trim(),
@@ -520,7 +603,7 @@ export function ConnectorEditDialog({
       keyMode: form.keyMode,
       visibility,
       defaultAttached,
-      capabilities: capabilitiesFromForm(form),
+      capabilities: capabilitiesFromForm(formWithSecretRefs),
     };
     try {
       if (target === 'new') {
@@ -529,8 +612,8 @@ export function ConnectorEditDialog({
         await patchConnector(target.id, body, base);
       }
       onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+    } catch {
+      setError("We couldn't save this connector. Please try again.");
     } finally {
       setBusy(false);
     }
@@ -539,11 +622,24 @@ export function ConnectorEditDialog({
   // --- structured credential-slot row helpers ------------------------------
   const addSlot = () =>
     setForm((f) => ({ ...f, credentialSlots: [...f.credentialSlots, emptySlotRow()] }));
-  const removeSlot = (i: number) =>
+  const removeSlot = (i: number) => {
     setForm((f) => ({
       ...f,
       credentialSlots: f.credentialSlots.filter((_, idx) => idx !== i),
     }));
+    // Re-key oauthClientSecrets after removal: drop the removed index and shift
+    // all higher indexes down by one so they stay in sync with the new row order.
+    setOauthClientSecrets((prev) => {
+      const next: Record<number, string> = {};
+      for (const [k, v] of Object.entries(prev)) {
+        const ki = Number(k);
+        if (ki === i) continue; // dropped
+        if (ki > i) next[ki - 1] = v; // shifted
+        else next[ki] = v;
+      }
+      return next;
+    });
+  };
   const updateSlot = (i: number, patch: Partial<ConnectorFormState['credentialSlots'][number]>) =>
     setForm((f) => ({
       ...f,
@@ -839,52 +935,222 @@ export function ConnectorEditDialog({
                   No keys needed — this connector reaches its service without one.
                 </p>
               ) : (
-                form.credentialSlots.map((row, i) => (
-                  <div
-                    key={i}
-                    className="flex flex-col gap-2 rounded-md border border-border p-3"
-                  >
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs font-medium text-muted-foreground">
-                        Key {i + 1}
-                      </span>
-                      <Button
-                        type="button"
-                        variant="ghost"
-                        size="sm"
-                        aria-label={`Remove key ${i + 1}`}
-                        onClick={() => removeSlot(i)}
-                      >
-                        <X className="h-3.5 w-3.5" />
-                      </Button>
+                form.credentialSlots.map((row, i) => {
+                  // Derive the list of MCP server names available for an oauth
+                  // slot's `server` field. For an MCP connector, the leading
+                  // server name may not yet be in baseCapabilities (it's being
+                  // authored), so we derive it from the form fields.
+                  const existingServerNames = form.baseCapabilities.mcpServers.map(
+                    (s) => s.name,
+                  );
+                  const leadingServerName =
+                    form.mechanism === 'mcp'
+                      ? (form.baseCapabilities.mcpServers[0]?.name ??
+                        (form.connectorId || connectorIdFromName(form.name)))
+                      : undefined;
+                  const serverOptions = leadingServerName
+                    ? [
+                        leadingServerName,
+                        ...existingServerNames.filter((n) => n !== leadingServerName),
+                      ]
+                    : existingServerNames;
+
+                  return (
+                    <div
+                      key={i}
+                      className="flex flex-col gap-2 rounded-md border border-border p-3"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-medium text-muted-foreground">
+                          Key {i + 1}
+                        </span>
+                        <Button
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          aria-label={`Remove key ${i + 1}`}
+                          onClick={() => removeSlot(i)}
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
+
+                      {/* Slot type toggle — api-key (default) or oauth. */}
+                      <div className="flex flex-col gap-1.5">
+                        <Label className="text-xs">Type</Label>
+                        <ToggleGroup
+                          type="single"
+                          variant="outline"
+                          value={row.kind}
+                          onValueChange={(v) => {
+                            if (v) updateSlot(i, { kind: v as 'api-key' | 'oauth' });
+                          }}
+                          className="justify-start"
+                        >
+                          <ToggleGroupItem value="api-key" className="px-3 text-xs">
+                            API key
+                          </ToggleGroupItem>
+                          <ToggleGroupItem value="oauth" className="px-3 text-xs">
+                            OAuth
+                          </ToggleGroupItem>
+                        </ToggleGroup>
+                      </div>
+
+                      {row.kind === 'oauth' ? (
+                        /* ---- OAuth slot fields ---- */
+                        <>
+                          <div className="flex flex-col gap-1.5">
+                            <Label htmlFor={`slot-name-${i}`} className="text-xs">
+                              Machine name
+                            </Label>
+                            <Input
+                              id={`slot-name-${i}`}
+                              type="text"
+                              className="font-mono"
+                              placeholder="e.g. GITHUB_OAUTH"
+                              value={row.slot}
+                              onChange={(e) => updateSlot(i, { slot: e.target.value })}
+                            />
+                          </div>
+
+                          {/* Server select */}
+                          <div className="flex flex-col gap-1.5">
+                            <Label htmlFor={`slot-server-${i}`} className="text-xs">
+                              MCP server
+                            </Label>
+                            {serverOptions.length === 0 ? (
+                              <p className="text-xs text-muted-foreground">
+                                Add an MCP server (http) above first — an OAuth slot
+                                authorizes against its URL.
+                              </p>
+                            ) : (
+                              <Select
+                                value={row.server ?? ''}
+                                onValueChange={(v) => updateSlot(i, { server: v })}
+                              >
+                                <SelectTrigger id={`slot-server-${i}`}>
+                                  <SelectValue placeholder="Pick a server" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                  {serverOptions.map((name) => (
+                                    <SelectItem key={name} value={name}>
+                                      {name}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                            )}
+                          </div>
+
+                          {/* Scopes */}
+                          <div className="flex flex-col gap-1.5">
+                            <Label htmlFor={`slot-scopes-${i}`} className="text-xs">
+                              Scopes (comma-separated)
+                            </Label>
+                            <Input
+                              id={`slot-scopes-${i}`}
+                              type="text"
+                              placeholder="e.g. read, write"
+                              value={row.scopes ?? ''}
+                              onChange={(e) => updateSlot(i, { scopes: e.target.value })}
+                            />
+                          </div>
+
+                          {/* Advanced — pinned client id/secret (optional, DCR preferred). */}
+                          <Collapsible>
+                            <CollapsibleTrigger asChild>
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="flex w-full items-center justify-between px-0 text-xs text-muted-foreground"
+                                aria-label="Advanced — custom OAuth client (optional)"
+                              >
+                                <span>Advanced — custom OAuth client (optional)</span>
+                                <ChevronDown className="h-3.5 w-3.5 shrink-0" />
+                              </Button>
+                            </CollapsibleTrigger>
+                            <CollapsibleContent className="flex flex-col gap-2 pt-2">
+                              <p className="text-xs text-muted-foreground">
+                                Leave blank to register automatically (recommended).
+                                Fill these in only if the service doesn't support
+                                automatic registration.
+                              </p>
+                              <div className="flex flex-col gap-1.5">
+                                <Label
+                                  htmlFor={`slot-clientid-${i}`}
+                                  className="text-xs"
+                                >
+                                  Client ID
+                                </Label>
+                                <Input
+                                  id={`slot-clientid-${i}`}
+                                  type="text"
+                                  placeholder="optional"
+                                  value={row.clientId ?? ''}
+                                  onChange={(e) =>
+                                    updateSlot(i, { clientId: e.target.value })
+                                  }
+                                />
+                              </div>
+                              <div className="flex flex-col gap-1.5">
+                                <Label
+                                  htmlFor={`slot-clientsecret-${i}`}
+                                  className="text-xs"
+                                >
+                                  Client secret
+                                </Label>
+                                <Input
+                                  id={`slot-clientsecret-${i}`}
+                                  type="password"
+                                  placeholder="optional"
+                                  value={oauthClientSecrets[i] ?? ''}
+                                  onChange={(e) =>
+                                    setOauthClientSecrets((prev) => ({
+                                      ...prev,
+                                      [i]: e.target.value,
+                                    }))
+                                  }
+                                />
+                              </div>
+                            </CollapsibleContent>
+                          </Collapsible>
+                        </>
+                      ) : (
+                        /* ---- API key slot fields (unchanged) ---- */
+                        <>
+                          <div className="flex flex-col gap-1.5">
+                            <Label htmlFor={`slot-desc-${i}`} className="text-xs">
+                              Label (what it is)
+                            </Label>
+                            <Input
+                              id={`slot-desc-${i}`}
+                              type="text"
+                              placeholder="e.g. Personal access token"
+                              value={row.description}
+                              onChange={(e) =>
+                                updateSlot(i, { description: e.target.value })
+                              }
+                            />
+                          </div>
+                          <div className="flex flex-col gap-1.5">
+                            <Label htmlFor={`slot-name-${i}`} className="text-xs">
+                              Machine name
+                            </Label>
+                            <Input
+                              id={`slot-name-${i}`}
+                              type="text"
+                              className="font-mono"
+                              placeholder="e.g. GITHUB_TOKEN"
+                              value={row.slot}
+                              onChange={(e) => updateSlot(i, { slot: e.target.value })}
+                            />
+                          </div>
+                        </>
+                      )}
                     </div>
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor={`slot-desc-${i}`} className="text-xs">
-                        Label (what it is)
-                      </Label>
-                      <Input
-                        id={`slot-desc-${i}`}
-                        type="text"
-                        placeholder="e.g. Personal access token"
-                        value={row.description}
-                        onChange={(e) => updateSlot(i, { description: e.target.value })}
-                      />
-                    </div>
-                    <div className="flex flex-col gap-1.5">
-                      <Label htmlFor={`slot-name-${i}`} className="text-xs">
-                        Machine name
-                      </Label>
-                      <Input
-                        id={`slot-name-${i}`}
-                        type="text"
-                        className="font-mono"
-                        placeholder="e.g. GITHUB_TOKEN"
-                        value={row.slot}
-                        onChange={(e) => updateSlot(i, { slot: e.target.value })}
-                      />
-                    </div>
-                  </div>
-                ))
+                  );
+                })
               )}
             </div>
           </div>

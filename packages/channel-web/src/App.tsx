@@ -23,7 +23,7 @@
  * bypass the gate. Only `App.tsx` is gated; downstream tests don't need
  * to mock the bootstrap or auth wire.
  */
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { AssistantRuntimeProvider } from '@assistant-ui/react';
 import { useAxChatRuntime } from './lib/runtime';
 import { getSession, type AuthUser } from './lib/auth';
@@ -51,6 +51,8 @@ import { ToastStack } from './components/Toast';
 import { AdminShell } from './components/admin/AdminShell';
 import { SetupWizard } from './components/setup/SetupWizard';
 import { UserProvider } from './lib/user-context';
+import { consumeOAuthFullPageReturn } from './lib/oauth-full-page-return';
+import { toastActions } from './lib/toast-store';
 
 type AppMode =
   | { kind: 'loading' }
@@ -65,6 +67,33 @@ function isSetupPath(): boolean {
 
 export const App = () => {
   const [mode, setMode] = useState<AppMode>({ kind: 'loading' });
+
+  // Full-page OAuth return fallback (Task 12). Runs once on mount. The popup
+  // case is already handled by the bridge in main.tsx before React mounts, so
+  // this only fires when there is no opener (the provider redirected the main
+  // window directly). Strip the params + push a toast so the user knows what
+  // happened — then they're on the normal chat surface.
+  const handledOAuthReturn = useRef(false);
+  useEffect(() => {
+    if (handledOAuthReturn.current) return;
+    handledOAuthReturn.current = true;
+    const result = consumeOAuthFullPageReturn({
+      pathname: window.location.pathname,
+      search: window.location.search,
+      hasOpener:
+        typeof window !== 'undefined' &&
+        window.opener !== null &&
+        window.opener !== window,
+    });
+    if (result === null) return;
+    // Strip /oauth/connected?... so the back-button and reload land on /.
+    window.history.replaceState({}, '', '/');
+    if (result.toast === 'success') {
+      toastActions.show({ title: "Connected. You're all set.", kind: 'info' });
+    } else {
+      toastActions.error("Couldn't connect. Please try again.");
+    }
+  }, []);
 
   useEffect(() => {
     let cancelled = false;

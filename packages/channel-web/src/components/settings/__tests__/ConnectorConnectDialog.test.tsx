@@ -3,6 +3,7 @@ import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ConnectorConnectDialog } from '../ConnectorConnectDialog';
 import * as connectorsLib from '@/lib/connectors';
 import * as credLib from '@/lib/credentials';
+import * as connectorsOauth from '@/lib/connectors-oauth';
 import type { Connector } from '@/lib/connectors';
 
 function fullConnector(overrides: Partial<Connector>): Connector {
@@ -69,6 +70,27 @@ const MULTI_SLOT = fullConnector({
   },
 });
 
+// Task 12 — a connector whose credential slot uses OAuth (not an API key).
+const OAUTH_PERSONAL = fullConnector({
+  id: 'my-github',
+  name: 'GitHub',
+  keyMode: 'personal',
+  visibility: 'private',
+  capabilities: {
+    ...connectorsLib.emptyCapabilities(),
+    credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'github' }],
+    mcpServers: [
+      {
+        name: 'github-mcp',
+        transport: 'http',
+        url: 'https://mcp.github.com',
+        allowedHosts: ['mcp.github.com'],
+        credentials: [{ slot: 'MCP_TOKEN', kind: 'oauth', server: 'github' }],
+      },
+    ],
+  },
+});
+
 describe('ConnectorConnectDialog', () => {
   beforeEach(() => {
     vi.spyOn(credLib, 'setDestinationCredential').mockResolvedValue();
@@ -76,6 +98,11 @@ describe('ConnectorConnectDialog', () => {
     // slot shows "enter"). Individual tests override to simulate a stored key.
     vi.spyOn(credLib.myCredentials, 'list').mockResolvedValue([]);
     vi.spyOn(credLib.adminCredentials, 'list').mockResolvedValue([]);
+    // Stub the OAuth lib so tests don't hit the network.
+    vi.spyOn(connectorsOauth, 'getOAuthStatus').mockResolvedValue('not-connected');
+    vi.spyOn(connectorsOauth, 'beginOAuth').mockResolvedValue({
+      authorizationUrl: 'https://example.com/auth',
+    });
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -404,5 +431,46 @@ describe('ConnectorConnectDialog', () => {
       />,
     );
     expect(await screen.findByText('get boom')).toBeInTheDocument();
+  });
+
+  // Task 12 — oauth slot branch in ConnectKeyForms.
+
+  it('oauth slot: renders the ConnectorOAuthConnect surface ("Connect with <name>") not a password input', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(OAUTH_PERSONAL);
+    render(
+      <ConnectorConnectDialog
+        connectorId="my-github"
+        connectorName="GitHub"
+        isAdmin={false}
+        open
+        onOpenChange={() => {}}
+        onConnected={() => {}}
+      />,
+    );
+    // The OAuth connect widget renders a "Connect with <serviceName>" button.
+    expect(
+      await screen.findByRole('button', { name: /Connect with GitHub/i }),
+    ).toBeInTheDocument();
+    // No password input — this is not an API-key slot.
+    expect(screen.queryByLabelText(/API key/i)).toBeNull();
+  });
+
+  it('api-key slot still renders the password field (no oauth widget)', async () => {
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(PERSONAL);
+    render(
+      <ConnectorConnectDialog
+        connectorId="my-notion"
+        connectorName="My Notion"
+        isAdmin={false}
+        open
+        onOpenChange={() => {}}
+        onConnected={() => {}}
+      />,
+    );
+    // API-key slot renders the password field, not the OAuth widget.
+    expect(await screen.findByLabelText(/API key/i)).toBeInTheDocument();
+    expect(
+      screen.queryByRole('button', { name: /Connect with/i }),
+    ).toBeNull();
   });
 });
