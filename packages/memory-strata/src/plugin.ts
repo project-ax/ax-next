@@ -435,6 +435,11 @@ async function kickOffObserver(
       now: new Date(),
       timeoutMs: cfg.observerTimeoutMs,
       model: agent.model,
+      // TASK-187: thread the DURABLE per-conversation key onto each inbox
+      // observation. conversationId (not sessionId) is stable across a
+      // conversation's turns/respawns — the Consolidator dedups it to count
+      // distinct conversations for the skill-crystallization recurrence gate.
+      conversationId: ctx.conversationId,
       onLate: (info) => {
         ctx.logger.warn('memory_strata_observer_late', {
           agentId: ctx.agentId,

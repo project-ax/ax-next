@@ -100,6 +100,14 @@ export async function deleteInboxFile(
  * `sourceMessages` is the number of transcript messages the observation was
  * extracted from. Pass `0` for agent-authored notes (honest: no transcript).
  *
+ * `conversationId` is the durable id of the conversation this observation was
+ * extracted from (`AgentContext.conversationId`), used downstream to count
+ * DISTINCT conversations for the skill-crystallization recurrence gate
+ * (TASK-187). Pass `undefined` when there's no conversation (a context minted
+ * without one — canary tests, ephemeral admin probes, agent-authored notes).
+ * An undefined value writes NO `conversation_id` frontmatter field, so the
+ * observation contributes nothing to any doc's distinct-conversation count.
+ *
  * Returns the workspace-relative path of the written file.
  */
 export async function writeInboxObservation(
@@ -108,6 +116,7 @@ export async function writeInboxObservation(
   now: Date,
   index: number,
   sourceMessages: number,
+  conversationId?: string | undefined,
 ): Promise<string> {
   // index disambiguates multiple observations sharing the same now.toISO().
   // randomUUID is cryptographically unique per call but the filename
@@ -128,6 +137,12 @@ export async function writeInboxObservation(
     subject: obs.subject,
     factType: obs.factType,
     source_messages: sourceMessages,
+    // Only stamp conversation_id when we actually have one — a missing field
+    // is the honest signal "no conversation" (the recurrence count treats it
+    // as contributing zero distinct conversations).
+    ...(conversationId !== undefined && conversationId.length > 0
+      ? { conversation_id: conversationId }
+      : {}),
     event_time: nowIso,
     recorded_at: nowIso,
   };

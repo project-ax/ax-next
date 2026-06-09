@@ -21,7 +21,15 @@
  *   - Short-circuit marker: `.ax/skill-reflection/last-run.json` records the
  *     memory state last seen; an unchanged memory → an immediate REFLECTION_DONE.
  *   - Recurrence gate: a procedure must appear in ≥2 DISTINCT past conversations
- *     before it may be crystallized (the structural inversion of Hermes).
+ *     before it may be crystallized (the structural inversion of Hermes). The
+ *     recurrence signal is read STRAIGHT FROM consolidated memory — each
+ *     `memory/docs/<category>/<slug>.md` page's `source_conversations`
+ *     frontmatter is the set of distinct conversation ids merged into it, so
+ *     `source_conversations.length >= 2` means the procedure recurred across ≥2
+ *     conversations. This deliberately does NOT grep `.claude/projects/`
+ *     transcripts: TASK-67 gitignores transcripts out of `/agent`, and TASK-187
+ *     moved the signal to consolidated memory (materialized by @ax/memory-strata's
+ *     consolidator) so no transcript-read surface is needed.
  *   - Hard limits: ≤3 author/patch ops per pass; an explicit anti-pattern list
  *     of what NOT to crystallize.
  *   - Silence token: the turn ends with exactly `REFLECTION_DONE`, which the
@@ -40,7 +48,9 @@ Your job: graduate procedures you have PROVEN repeatedly into durable skills, an
 Read \`.ax/skill-reflection/last-run.json\` if it exists. If your consolidated memory (\`memory/system/recent.md\`) has not changed since the commit/timestamp recorded there, you are done: reply with exactly REFLECTION_DONE and stop. Otherwise continue, and at the end write the current memory state back to that marker.
 
 ## Step 2 — Find recurring procedures
-Your consolidated memory (\`memory/system/recent.md\` and \`memory/docs/\`) already represents reinforced, surviving learnings — start there. For any procedure it implies, CONFIRM it actually recurred: it must appear in at least 2 DISTINCT past conversations. You may grep your own transcripts at \`.claude/projects/*/*.jsonl\` to verify and cite the occurrences. If you cannot cite ≥2 distinct conversations, it is NOT ready to be a skill — leave it.
+Your consolidated memory (\`memory/system/recent.md\` and \`memory/docs/\`) already represents reinforced, surviving learnings — start there. For any procedure it implies, CONFIRM it actually recurred: it must appear in at least 2 DISTINCT past conversations.
+
+Read this directly from the consolidated memory — do NOT grep transcripts. Each \`memory/docs/<category>/<slug>.md\` page carries a \`source_conversations\` field in its YAML frontmatter: the list of DISTINCT conversation ids whose observations were merged into that page. That list IS the recurrence evidence. A procedure is grounded in 2 DISTINCT past conversations only when the doc backing it has \`source_conversations\` with **2 or more entries**. If the relevant doc's \`source_conversations\` has fewer than 2 entries (or the field is absent), the procedure recurred in at most one conversation — it is NOT ready to be a skill, so leave it.
 
 ## Step 3 — Crystallize (prefer patch over create)
 In order of preference:

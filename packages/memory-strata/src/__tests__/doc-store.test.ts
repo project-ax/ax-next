@@ -3,7 +3,7 @@ import { mkdtemp, readFile, mkdir, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  writeNewDoc, appendFact, readDoc, listDocs,
+  writeNewDoc, appendFact, readDoc, listDocs, mergeConversationIntoDoc,
 } from '../doc-store.js';
 
 // ESM note: `vi.spyOn` cannot intercept named bindings in strict ESM
@@ -138,5 +138,94 @@ describe('doc-store', () => {
     await expect(
       readDoc({ workspaceRoot, category: 'preference', slug: 'react' }),
     ).rejects.toThrow(/missing source_observations/);
+  });
+
+  it('source_conversations: writeNewDoc seeds it, appendFact dedups distinct conversations (TASK-187)', async () => {
+    await writeNewDoc({
+      workspaceRoot, category: 'general', slug: 'deploy',
+      summary: 's1', subject: 'deploy', factType: 'general',
+      confidence: 0.8, sourceObservationIds: ['obs-1'],
+      conversationId: 'conv-1',
+      now: new Date('2026-06-08T12:00:00Z'), facts: ['f1'],
+    });
+    // Append from a NEW conversation → distinct set grows.
+    await appendFact({
+      workspaceRoot, category: 'general', slug: 'deploy',
+      newFact: 'f2', observationId: 'obs-2', conversationId: 'conv-2',
+      confidence: 0.85, now: new Date('2026-06-08T13:00:00Z'),
+    });
+    // Append from an ALREADY-SEEN conversation → no growth (dedup).
+    await appendFact({
+      workspaceRoot, category: 'general', slug: 'deploy',
+      newFact: 'f3', observationId: 'obs-3', conversationId: 'conv-1',
+      confidence: 0.9, now: new Date('2026-06-08T14:00:00Z'),
+    });
+    const doc = await readDoc({ workspaceRoot, category: 'general', slug: 'deploy' });
+    expect(doc!.frontmatter.source_observations).toEqual(['obs-1', 'obs-2', 'obs-3']);
+    expect(doc!.frontmatter.source_conversations).toEqual(['conv-1', 'conv-2']);
+  });
+
+  it('writeNewDoc with no conversationId writes an empty source_conversations set', async () => {
+    await writeNewDoc({
+      workspaceRoot, category: 'general', slug: 'deploy',
+      summary: 's', subject: 'deploy', factType: 'general',
+      confidence: 0.8, sourceObservationIds: ['obs-1'],
+      now: new Date('2026-06-08T12:00:00Z'), facts: ['f'],
+    });
+    const doc = await readDoc({ workspaceRoot, category: 'general', slug: 'deploy' });
+    expect(doc!.frontmatter.source_conversations).toEqual([]);
+  });
+
+  it('mergeConversationIntoDoc folds a NEW conversation without appending a fact', async () => {
+    await writeNewDoc({
+      workspaceRoot, category: 'general', slug: 'deploy',
+      summary: 's', subject: 'deploy', factType: 'general',
+      confidence: 0.8, sourceObservationIds: ['obs-1'], conversationId: 'conv-1',
+      now: new Date('2026-06-08T12:00:00Z'), facts: ['the one fact'],
+    });
+    const merged = await mergeConversationIntoDoc({
+      workspaceRoot, category: 'general', slug: 'deploy',
+      conversationId: 'conv-2', now: new Date('2026-06-08T13:00:00Z'),
+    });
+    // Distinct set grew; the body (facts) is untouched — no new fact appended.
+    expect(merged.frontmatter.source_conversations).toEqual(['conv-1', 'conv-2']);
+    expect(merged.frontmatter.source_observations).toEqual(['obs-1']);
+    expect(merged.body).toContain('the one fact');
+    const onDisk = await readDoc({ workspaceRoot, category: 'general', slug: 'deploy' });
+    expect(onDisk!.frontmatter.source_conversations).toEqual(['conv-1', 'conv-2']);
+  });
+
+  it('mergeConversationIntoDoc is a no-op for an already-seen or undefined conversation', async () => {
+    await writeNewDoc({
+      workspaceRoot, category: 'general', slug: 'deploy',
+      summary: 's', subject: 'deploy', factType: 'general',
+      confidence: 0.8, sourceObservationIds: ['obs-1'], conversationId: 'conv-1',
+      now: new Date('2026-06-08T12:00:00Z'), facts: ['f'],
+    });
+    const beforeUpdated = (await readDoc({ workspaceRoot, category: 'general', slug: 'deploy' }))!
+      .frontmatter.updated;
+    // Already-seen conversation → no change.
+    await mergeConversationIntoDoc({
+      workspaceRoot, category: 'general', slug: 'deploy',
+      conversationId: 'conv-1', now: new Date('2026-06-08T15:00:00Z'),
+    });
+    // Undefined conversation → no change.
+    await mergeConversationIntoDoc({
+      workspaceRoot, category: 'general', slug: 'deploy',
+      conversationId: undefined, now: new Date('2026-06-08T16:00:00Z'),
+    });
+    const doc = await readDoc({ workspaceRoot, category: 'general', slug: 'deploy' });
+    expect(doc!.frontmatter.source_conversations).toEqual(['conv-1']);
+    // No write happened, so `updated` is unchanged (we skip the atomic rewrite).
+    expect(doc!.frontmatter.updated).toBe(beforeUpdated);
+  });
+
+  it('mergeConversationIntoDoc throws docNotFound when the doc is absent', async () => {
+    await expect(
+      mergeConversationIntoDoc({
+        workspaceRoot, category: 'general', slug: 'missing',
+        conversationId: 'conv-1', now: new Date('2026-06-08T12:00:00Z'),
+      }),
+    ).rejects.toThrow(/docNotFound/);
   });
 });

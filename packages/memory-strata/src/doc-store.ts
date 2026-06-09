@@ -16,6 +16,7 @@ import { dirname, join } from 'node:path';
 import { load as yamlLoad } from 'js-yaml';
 import { buildMarkdownFile } from './frontmatter.js';
 import { categoryDir, docFile, type DocCategory } from './paths.js';
+import { mergeConversationId } from './recurrence.js';
 import type { DocFile, DocFrontmatter } from './types.js';
 
 export interface WriteNewDocInput {
@@ -27,6 +28,13 @@ export interface WriteNewDocInput {
   factType: string;
   confidence: number;
   sourceObservationIds: string[];
+  /**
+   * Durable conversation id of the observation seeding this doc (TASK-187).
+   * Becomes the doc's initial `source_conversations` set. `undefined` (no
+   * conversation on the seeding observation) writes an empty set — the doc
+   * starts with a recurrence count of 0.
+   */
+  conversationId?: string | undefined;
   now: Date;
   facts: string[];
 }
@@ -37,6 +45,14 @@ export interface AppendFactInput {
   slug: string;
   newFact: string;
   observationId: string;
+  /**
+   * Durable conversation id of the observation being merged (TASK-187). Deduped
+   * into the doc's `source_conversations` set, so merging another observation
+   * from a NEW conversation grows the distinct-conversation count (the
+   * recurrence signal), while a repeat from an already-seen conversation does
+   * not. `undefined` contributes nothing.
+   */
+  conversationId?: string | undefined;
   confidence: number;
   now: Date;
 }
@@ -55,6 +71,7 @@ export async function writeNewDoc(input: WriteNewDocInput): Promise<{ path: stri
     subject: input.subject,
     factType: input.factType,
     source_observations: input.sourceObservationIds,
+    source_conversations: mergeConversationId(undefined, input.conversationId),
   };
   const body = buildBody(input.facts);
   await fs.mkdir(dirname(abs), { recursive: true });
@@ -79,12 +96,68 @@ export async function appendFact(input: AppendFactInput): Promise<DocFile> {
       ...existing.frontmatter.source_observations,
       input.observationId,
     ],
+    // Dedup the merged observation's conversation into the distinct set so a
+    // repeat from an already-seen conversation does NOT inflate recurrence,
+    // but a first observation from a new conversation does (TASK-187).
+    source_conversations: mergeConversationId(
+      existing.frontmatter.source_conversations,
+      input.conversationId,
+    ),
   };
   const body = appendFactToBody(existing.body, input.newFact);
   const rel = docFile(input.category, input.slug);
   const abs = join(input.workspaceRoot, rel);
   await atomicWriteUtf8(abs, buildMarkdownFile(fm, body));
   return { path: rel, frontmatter: fm, body };
+}
+
+/**
+ * Merge a conversation id into an EXISTING doc's distinct-conversation set
+ * WITHOUT adding a fact (TASK-187). Called on the consolidator's dedup path: a
+ * recurring procedure restates a fact that's already in the doc, so it's not
+ * appended — but it DID recur in a (possibly new) conversation, and that's
+ * exactly the signal the recurrence gate needs. Dropping it (the pre-TASK-187
+ * behaviour) would make a procedure that recurs as a near-duplicate summary
+ * never reach the ≥2 gate.
+ *
+ * No-ops (returns the doc unchanged, no write) when the conversation is already
+ * in the set or is undefined — so a within-conversation restatement doesn't
+ * inflate recurrence and we avoid a needless atomic rewrite. Throws
+ * `docNotFound` if the doc doesn't exist (a programming error — the dedup path
+ * only fires after a fact is already in the doc).
+ */
+export async function mergeConversationIntoDoc(input: {
+  workspaceRoot: string;
+  category: DocCategory;
+  slug: string;
+  conversationId?: string | undefined;
+  now: Date;
+}): Promise<DocFile> {
+  const existing = await readDoc({
+    workspaceRoot: input.workspaceRoot,
+    category: input.category,
+    slug: input.slug,
+  });
+  if (existing === null) {
+    throw new Error(`docNotFound: ${input.category}/${input.slug}`);
+  }
+  const merged = mergeConversationId(
+    existing.frontmatter.source_conversations,
+    input.conversationId,
+  );
+  // Nothing new to record (undefined conversation, or already in the set) —
+  // skip the write entirely so we don't churn `updated`/the atomic rename.
+  if (merged.length === (existing.frontmatter.source_conversations ?? []).length) {
+    return existing;
+  }
+  const fm: DocFrontmatter = {
+    ...existing.frontmatter,
+    source_conversations: merged,
+  };
+  const rel = docFile(input.category, input.slug);
+  const abs = join(input.workspaceRoot, rel);
+  await atomicWriteUtf8(abs, buildMarkdownFile(fm, existing.body));
+  return { path: rel, frontmatter: fm, body: existing.body };
 }
 
 export async function readDoc(input: {

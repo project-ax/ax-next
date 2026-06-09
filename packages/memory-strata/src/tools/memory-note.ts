@@ -122,8 +122,18 @@ export async function registerMemoryNote(bus: HookBus): Promise<void> {
       const now = new Date();
       // Agent-authored notes are a single observation, not part of a
       // multi-message Observer batch. Pass index=0, sourceMessages=0 —
-      // honest: no transcript messages to count.
-      const path = await writeInboxObservation(ctx.workspace.rootPath, obs, now, 0, 0);
+      // honest: no transcript messages to count. Carry the conversation id
+      // (TASK-187) so a note recurring across conversations counts toward the
+      // skill-crystallization recurrence gate; undefined when the note was
+      // written outside a conversation.
+      const path = await writeInboxObservation(
+        ctx.workspace.rootPath,
+        obs,
+        now,
+        0,
+        0,
+        ctx.conversationId,
+      );
       return { ok: true, path };
     },
   );
