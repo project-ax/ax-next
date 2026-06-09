@@ -237,4 +237,26 @@ describe('RoutinesList', () => {
       expect(del![0] as string).toBe('/settings/routines/agt_a?path=heartbeat.md');
     });
   });
+
+  it('does not double-submit when the delete confirm is clicked twice', async () => {
+    mockJsonOnce(200, { routines: [sampleRoutine] }); // initial list
+    render(<RoutinesList onFired={() => {}} />);
+    await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete heartbeat' }));
+    await waitFor(() => expect(screen.getByText(/Delete routine\?/i)).toBeTruthy());
+
+    // Hang the DELETE so the second click lands while the first is in flight —
+    // models the double-dispatch observed in the kind walk.
+    fetchMock.mockImplementationOnce(() => new Promise<Response>(() => {}));
+    const confirmBtn = screen.getByRole('button', { name: 'Delete' });
+    fireEvent.click(confirmBtn);
+    fireEvent.click(confirmBtn);
+
+    // The re-entrancy guard must let exactly one DELETE through.
+    const deleteCalls = fetchMock.mock.calls.filter(
+      (c) => (c[1] as RequestInit | undefined)?.method === 'DELETE',
+    );
+    expect(deleteCalls).toHaveLength(1);
+  });
 });
