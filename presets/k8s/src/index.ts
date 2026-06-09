@@ -1038,7 +1038,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     createMcpOAuthPlugin({
       mountRoutes: true,
       publicOrigin: presetPublicOrigin(config),
-      connectorReturnPath: '/settings/connectors',
+      connectorReturnPath: '/oauth/connected',
     }),
   );
 

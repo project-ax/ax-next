@@ -48,7 +48,7 @@ export interface McpOAuthPluginConfig {
   /** Public origin for the OAuth redirect_uri + connector-return redirect.
    *  Required when mountRoutes. */
   publicOrigin?: string;
-  /** Where the callback redirects on success/error. Default '/settings/connectors'. */
+  /** Where the callback redirects on success/error. Default '/oauth/connected'. */
   connectorReturnPath?: string;
   /** Pending-authorization TTL. Default 10 min. */
   pendingTtlMs?: number;
@@ -237,7 +237,7 @@ export function createMcpOAuthPlugin(config: McpOAuthPluginConfig = {}): Plugin 
           },
           config: {
             publicOrigin: config.publicOrigin,
-            connectorReturnPath: config.connectorReturnPath ?? '/settings/connectors',
+            connectorReturnPath: config.connectorReturnPath ?? '/oauth/connected',
           },
           // 256-bit CSPRNG state — server-generated, single-use, TTL'd, CSRF-bound.
           genState: () => randomBytes(32).toString('hex'),

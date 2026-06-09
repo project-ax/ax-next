@@ -270,8 +270,10 @@ function captureRouteServices(routes: CapturedRoute[]): Record<string, ServiceHa
     // begin authenticates as bob; callback re-authenticates as bob (same user
     // who began — the CSRF binding requires it).
     'auth:require-user': (async () => ({ user: { id: 'bob', isAdmin: false } })) as ServiceHandler,
-    // A successful resolve IS the agent-owner authz — return a stub agent.
-    'agents:resolve': (async () => ({ agent: { id: 'agent-A' } })) as ServiceHandler,
+    // A successful resolve IS the agent-owner authz — return a stub team agent
+    // so the credential is stored agent-bound (scope:'agent', ownerId:'agent-A'),
+    // matching the sharee-resolves design this canary exercises.
+    'agents:resolve': (async () => ({ agent: { id: 'agent-A', visibility: 'team', ownerId: 'team-1' } })) as ServiceHandler,
     // One oauth slot + a matching mcpServer.
     'connectors:get': (async () => ({
       connector: {
@@ -322,6 +324,168 @@ function fakeReq(over: Partial<{ body: Buffer; query: Record<string, string> }> 
     signedCookie: () => null,
   };
 }
+
+// ---------------------------------------------------------------------------
+// USER-SCOPE (connect-once) canary.  begin is called WITHOUT an agentId, so
+// the route stores the token at scope:'user', ownerId = the initiating user.
+// Any agent that user later chats resolves the SAME token via the user-scope
+// step of the precedence chain — "connect once, all your agents use it."
+// ---------------------------------------------------------------------------
+
+describe('@ax/mcp-oauth e2e canary — user-scope connect-once reuse across agents', () => {
+  it('callback stores a user-scoped mcp-oauth token; two different agentIds for the same user resolve the same token', async () => {
+    const routes: CapturedRoute[] = [];
+
+    // Same flow fakes as the agent-bound canary below — no real network.
+    const metadata = {
+      issuer: 'https://auth.example.com',
+      authorization_endpoint: 'https://auth.example.com/authorize',
+      token_endpoint: 'https://auth.example.com/token',
+      response_types_supported: ['code'],
+    };
+    const testOverrides = {
+      discover: (async () => ({ authServerUrl: 'https://auth.example.com', metadata })) as never,
+      ensureClient: (async () => ({
+        clientKey: 'conn-1|https://auth.example.com',
+        clientId: 'cid',
+        clientSecret: undefined,
+        dynamic: true,
+      })) as never,
+      buildAuthorization: (async () => ({
+        authorizationUrl: 'https://auth.example.com/authorize?state=STATE0',
+        codeVerifier: 'verifier-0',
+      })) as never,
+      redeemCode: (async () => ({
+        access_token: 'dave-user-AT',
+        refresh_token: 'dave-user-RT',
+        expires_in: 3600,
+        token_type: 'Bearer',
+        scope: 'read',
+      })) as never,
+    };
+
+    // auth:require-user returns dave; agents:resolve is NOT called when agentId
+    // is absent (begin skips the agents:resolve gate).
+    const userScopeServices: Record<string, ServiceHandler> = {
+      'http:register-route': (async (_ctx, input) => {
+        const r = input as CapturedRoute;
+        routes.push(r);
+        return { unregister: () => {} };
+      }) as ServiceHandler,
+      'auth:require-user': (async () => ({ user: { id: 'dave', isAdmin: false } })) as ServiceHandler,
+      // agents:resolve is registered to satisfy the plugin manifest (which
+      // declares it when mountRoutes:true), but the no-agentId begin path MUST
+      // NOT invoke it. If it is called, the test would still pass but the
+      // routing logic would be wrong — the callback stores based on credScope
+      // captured at begin, so a call here would indicate a regression.
+      'agents:resolve': (async () => {
+        throw new Error('agents:resolve must not be called for no-agentId begin');
+      }) as ServiceHandler,
+      'connectors:get': (async () => ({
+        connector: {
+          id: 'conn-1',
+          capabilities: {
+            allowedHosts: ['mcp.example.com', 'auth.example.com'],
+            credentials: [{ slot: 'oauth-main', kind: 'oauth', server: 'srv', scopes: ['read'] }],
+            mcpServers: [{ name: 'srv', url: 'https://mcp.example.com' }],
+          },
+        },
+      })) as ServiceHandler,
+    };
+
+    const h = await createTestHarness({
+      services: userScopeServices,
+      plugins: [
+        createDatabasePostgresPlugin({ connectionString }),
+        createStoragePostgresPlugin(),
+        createCredentialsStoreDbPlugin(),
+        createCredentialsPlugin(),
+        createMcpOAuthPlugin({
+          mountRoutes: true,
+          publicOrigin: 'https://app.example.com',
+          testOverrides,
+        }),
+      ],
+    });
+    harnesses.push(h);
+
+    const begin = routes.find((r) => r.path === '/api/connectors/oauth/begin')!;
+    const callback = routes.find((r) => r.path === '/api/connectors/oauth/callback')!;
+    expect(begin).toBeDefined();
+    expect(callback).toBeDefined();
+
+    // (1) begin WITHOUT agentId — the route must accept it and produce a user-scoped pending row.
+    const { res: beginRes, rec: beginRec } = fakeRes();
+    await begin.handler(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }),
+      beginRes,
+    );
+    expect(beginRec.statusCode).toBe(200);
+    expect((beginRec.jsonBody as { authorizationUrl: string }).authorizationUrl).toContain(
+      'auth.example.com',
+    );
+
+    // Recover the minted state from the pending row.
+    const { db } = await h.bus.call<unknown, { db: Kysely<McpOAuthDatabase> }>(
+      'database:get-instance',
+      h.ctx(),
+      {},
+    );
+    const pendingRow = await db
+      .selectFrom('mcp_oauth_v1_pending')
+      .select(['state', 'cred_scope'])
+      .executeTakeFirst();
+    expect(pendingRow?.state).toBeDefined();
+    // Verify the pending row captured user scope (not agent scope).
+    expect(pendingRow?.cred_scope).toBe('user');
+    const state = pendingRow!.state;
+
+    // (2) callback — provider redirects back; handler redeems (faked) and writes
+    // the user-scoped mcp-oauth blob through REAL credentials:set.
+    const { res: cbRes, rec: cbRec } = fakeRes();
+    await callback.handler(fakeReq({ query: { code: 'auth-code', state } }), cbRes);
+    expect(cbRec.redirectUrl).toContain('oauth=success');
+
+    // (3) Assert the stored credential is scope:'user', ownerId:'dave'.
+    const got = await h.bus.call<
+      { scope: 'user'; ownerId: string; ref: string },
+      { blob: Uint8Array | undefined }
+    >('credentials:store-blob:get', h.ctx(), {
+      scope: 'user',
+      ownerId: 'dave',
+      ref: 'account:conn-1',
+    });
+    expect(got.blob).toBeDefined();
+    // Decrypt and verify it is our mcp-oauth token.
+    const plaintext = await h.bus.call<{ ciphertext: Uint8Array }, { plaintext: string }>(
+      'credentials:envelope-decrypt',
+      h.ctx(),
+      { ciphertext: got.blob! },
+    );
+    const env = JSON.parse(plaintext.plaintext) as { kind: string; payloadB64: string };
+    expect(env.kind).toBe('mcp-oauth');
+    const storedBlob = decodeTokenBlob(new Uint8Array(Buffer.from(env.payloadB64, 'base64')));
+    expect(storedBlob.accessToken).toBe('dave-user-AT');
+    expect(storedBlob.refreshToken).toBe('dave-user-RT');
+
+    // (4) User-scope reuse: two DIFFERENT agentIds resolve the same token.
+    // The precedence chain (user → agent → global) hits the user-scope row first
+    // for both, so both return the same access token — connect once, all agents use it.
+    const r1 = await h.bus.call<{ ref: string; userId: string }, string>(
+      'credentials:get',
+      h.ctx({ userId: 'dave', agentId: 'agent-X' }),
+      { ref: 'account:conn-1', userId: 'dave' },
+    );
+    const r2 = await h.bus.call<{ ref: string; userId: string }, string>(
+      'credentials:get',
+      h.ctx({ userId: 'dave', agentId: 'agent-Y' }),
+      { ref: 'account:conn-1', userId: 'dave' },
+    );
+    expect(r1).toBe('dave-user-AT');
+    expect(r2).toBe('dave-user-AT');
+    expect(r1).toBe(r2); // same user-scope token across agents (connect once, all agents use it)
+  });
+});
 
 describe('@ax/mcp-oauth e2e canary — begin→callback lands an agent-bound blob a sharee resolves', () => {
   it('callback stores an agent-bound mcp-oauth token via real credentials; a different user resolves it', async () => {

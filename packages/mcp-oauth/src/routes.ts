@@ -6,6 +6,7 @@ import {
   PluginError,
 } from '@ax/core';
 import type { discover, ensureClient, buildAuthorization, redeemCode } from './oauth-flow.js';
+import { NeedsReconnectError } from './resolver.js';
 import type { McpOAuthStore } from './store.js';
 import {
   clientKeyOf,
@@ -123,6 +124,7 @@ function neutralMessage(err: unknown): string {
 export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   begin(req: RouteRequest, res: RouteResponse): Promise<void>;
   callback(req: RouteRequest, res: RouteResponse): Promise<void>;
+  status(req: RouteRequest, res: RouteResponse): Promise<void>;
 } {
   const { bus, store, flow, config, genState, now, pendingTtlMs } = deps;
   const redirectUri = `${config.publicOrigin}/api/connectors/oauth/callback`;
@@ -175,7 +177,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const user = await requireUser(req, res);
     if (!user) return;
 
-    // Parse + validate the body (small cap; both fields required strings).
+    // Parse + validate the body (small cap; connectorId required, agentId optional).
     if (req.body.length > OAUTH_BODY_MAX_BYTES) {
       res.status(413).json({ error: 'body-too-large' });
       return;
@@ -189,25 +191,41 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     }
     const body = parsed as { connectorId?: unknown; agentId?: unknown };
     const connectorId = body.connectorId;
-    const agentId = body.agentId;
-    if (typeof connectorId !== 'string' || !connectorId || typeof agentId !== 'string' || !agentId) {
-      res.status(400).json({ error: 'connectorId and agentId are required' });
+    const rawAgentId = body.agentId;
+    if (typeof connectorId !== 'string' || !connectorId) {
+      res.status(400).json({ error: 'connectorId is required' });
       return;
     }
+    // agentId is optional: when present it must be a non-empty string.
+    if (rawAgentId !== undefined && (typeof rawAgentId !== 'string' || !rawAgentId)) {
+      res.status(400).json({ error: 'agentId must be a non-empty string' });
+      return;
+    }
+    const agentId = rawAgentId as string | undefined;
 
-    // Authz gate: a successful resolve IS the owner/member binding check.
-    try {
-      await bus.call<{ agentId: string; userId: string }, { agent: unknown }>(
-        'agents:resolve',
-        ctxFor(user.id),
-        { agentId, userId: user.id },
-      );
-    } catch (err) {
-      if (isReject(err)) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
+    // Authz gate + credScope selection. When agentId is present, a successful
+    // agents:resolve IS the owner/member binding check; the agent's visibility
+    // determines which scope the token is stored under. When absent, the flow is
+    // user-scoped and gated only by connector ownership (connectors:get below).
+    let credScope: 'user' | 'agent' = 'user';
+    let pendingAgentId = '';
+    if (agentId !== undefined) {
+      let agent: { visibility: 'personal' | 'team'; ownerId: string };
+      try {
+        const out = await bus.call<
+          { agentId: string; userId: string },
+          { agent: { visibility: 'personal' | 'team'; ownerId: string } }
+        >('agents:resolve', ctxFor(user.id), { agentId, userId: user.id });
+        agent = out.agent;
+      } catch (err) {
+        if (isReject(err)) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
+        throw err;
       }
-      throw err;
+      credScope = agent.visibility === 'team' ? 'agent' : 'user';
+      pendingAgentId = agentId;
     }
 
     // Resolve the connector (owner-scoped by userId).
@@ -321,7 +339,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       const pending: PendingAuthorization = {
         state,
         userId: user.id,
-        agentId,
+        agentId: pendingAgentId,
         connectorId,
         slot: slot.slot,
         codeVerifier,
@@ -329,6 +347,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         clientKey,
         resource,
         scope,
+        credScope,
         createdAt: now(),
       };
       await store.putPending(pending);
@@ -510,10 +529,15 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
 
     // The vault write. A throw is a SERVER/DB fault (NOT "OAuth failed") → log
     // it so the operator can tell a storage outage from a provider rejection.
+    // credScope drives where the token is stored:
+    //   'user'  → personal agent: stored on the user so all their agents share it.
+    //   'agent' → team agent: stored on the agent so sharees each ride on it.
+    const writeScope = pending.credScope; // 'user' | 'agent'
+    const writeOwnerId = writeScope === 'agent' ? pending.agentId : pending.userId;
     try {
       await bus.call<
         {
-          scope: 'agent';
+          scope: 'user' | 'agent';
           ownerId: string;
           ref: string;
           kind: string;
@@ -522,8 +546,8 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         },
         void
       >('credentials:set', ctxFor(pending.userId), {
-        scope: 'agent',
-        ownerId: pending.agentId,
+        scope: writeScope,
+        ownerId: writeOwnerId,
         ref: `account:${pending.connectorId}`,
         kind: 'mcp-oauth',
         payload: encodeTokenBlob(blob),
@@ -542,7 +566,101 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     res.redirect(returnUrl(pending.connectorId, 'success'));
   }
 
-  return { begin, callback };
+  async function status(req: RouteRequest, res: RouteResponse): Promise<void> {
+    const user = await requireUser(req, res);
+    if (!user) return;
+
+    const connectorId = req.query.connectorId;
+    if (!connectorId) {
+      res.status(400).json({ error: 'connectorId is required' });
+      return;
+    }
+    const agentId = req.query.agentId || undefined;
+
+    // Authz gate mirrors `begin`: when agentId is present, agents:resolve IS the
+    // owner/member binding check; when absent, connector ownership gates (connectors:get).
+    //
+    // NOTE: the agent path deliberately does NOT also run `connectors:get` (unlike
+    // `begin`, which checks both). An agent-scope token belongs to the AGENT, so a
+    // team sharee who can resolve the agent but does NOT own the connector must
+    // still see "connected" — adding a connector-ownership check here would 404
+    // them and regress the shared-credential UX. agents:resolve is the only gate.
+    if (agentId !== undefined) {
+      try {
+        await bus.call<{ agentId: string; userId: string }, unknown>(
+          'agents:resolve',
+          ctxFor(user.id),
+          { agentId, userId: user.id },
+        );
+      } catch (err) {
+        if (isReject(err)) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
+        throw err;
+      }
+    } else {
+      try {
+        await bus.call<{ userId: string; connectorId: string }, unknown>(
+          'connectors:get',
+          ctxFor(user.id),
+          { userId: user.id, connectorId },
+        );
+      } catch (err) {
+        if (isReject(err)) {
+          res.status(404).json({ error: 'not-found' });
+          return;
+        }
+        throw err;
+      }
+    }
+
+    // Probe the credential via the same runtime path a chat turn uses.
+    // probeCtx.agentId MUST be the real agentId (when present) so credentials:get
+    // walks the agent scope correctly (packages/credentials/src/plugin.ts:567).
+    const ref = `account:${connectorId}`;
+    const probeCtx = makeAgentContext({
+      sessionId: 'mcp-oauth',
+      agentId: agentId ?? '@ax/mcp-oauth',
+      userId: user.id,
+    });
+    try {
+      await bus.call<{ ref: string; userId: string }, string>(
+        'credentials:get',
+        probeCtx,
+        { ref, userId: user.id },
+      );
+      // Token value is read host-side and DISCARDED — never returned to the caller.
+      res.status(200).json({ status: 'connected' });
+    } catch (err) {
+      const code = (err as { code?: unknown }).code;
+      const msg = err instanceof Error ? err.message : '';
+      if (code === 'credential-not-found') {
+        res.status(200).json({ status: 'not-connected' });
+        return;
+      }
+      // The resolver throws a bare `NeedsReconnectError` when the refresh token is
+      // dead, but it crosses the hook bus TWICE (resolver → credentials:get → here),
+      // and HookBus.call wraps any non-PluginError into PluginError{ code:'unknown',
+      // cause:<original> } (packages/core/src/hook-bus.ts). So through the real
+      // credentials:get the instanceof check is on the WRAPPER's `.cause`, not the
+      // thrown value; the bare-instanceof and message-substring checks cover the
+      // in-package/direct path and a last-ditch fallback respectively.
+      const cause = (err as { cause?: unknown }).cause;
+      const isReconnect =
+        err instanceof NeedsReconnectError ||
+        cause instanceof NeedsReconnectError ||
+        msg.includes('reconnect'); // last-ditch fallback
+      if (isReconnect) {
+        res.status(200).json({ status: 'needs-reconnect' });
+        return;
+      }
+      logger.error('mcp_oauth_status_probe_failed', { connectorId, ...errFields(err) });
+      res.status(500).json({ error: 'status_check_failed' });
+    }
+  }
+
+  return { begin, callback, status };
 }
 
 /**
@@ -564,6 +682,7 @@ export async function registerMcpOAuthRoutes(
   }> = [
     { method: 'POST', path: '/api/connectors/oauth/begin', handler: handlers.begin },
     { method: 'GET', path: '/api/connectors/oauth/callback', handler: handlers.callback },
+    { method: 'GET', path: '/api/connectors/oauth/status', handler: handlers.status },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {

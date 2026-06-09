@@ -87,6 +87,7 @@ describe('createMcpOAuthStore', () => {
       clientKey: 'my-connector|https://auth.example.com',
       resource: 'https://api.example.com',
       scope: 'read write',
+      credScope: 'agent',
       createdAt: Date.now(),
       ...overrides,
     };
@@ -153,6 +154,9 @@ describe('createMcpOAuthStore', () => {
     expect(first!.clientKey).toBe(pending.clientKey);
     expect(first!.resource).toBe(pending.resource);
     expect(first!.scope).toBe(pending.scope);
+    // credScope round-trips (default-case 'agent' from makePending).
+    expect(first!.credScope).toBe(pending.credScope);
+    expect(first!.credScope).toBe('agent');
 
     // Second call: row is gone, returns null
     const second = await store.consumePending(pending.state, now, ttlMs);
@@ -198,6 +202,8 @@ describe('createMcpOAuthStore', () => {
     expect(first!.state).toBe(pending.state);
     expect(first!.userId).toBe(pending.userId);
     expect(first!.codeVerifier).toBe(pending.codeVerifier);
+    // credScope survives a peek (default-case 'agent' from makePending).
+    expect(first!.credScope).toBe('agent');
     const second = await store.getPending(pending.state);
     expect(second).not.toBeNull();
 
@@ -217,5 +223,19 @@ describe('createMcpOAuthStore', () => {
     const store = createMcpOAuthStore(db);
 
     expect(await store.getPending('no-such-state')).toBeNull();
+  });
+
+  it('round-trips credScope through put/get/consume', async () => {
+    const db = makeKysely();
+    await runMcpOAuthMigration(db);
+    const store = createMcpOAuthStore(db);
+
+    await store.putPending({
+      state: 'st-cs', userId: 'u', agentId: '', connectorId: 'c', slot: 'S',
+      codeVerifier: 'v', authServerUrl: 'https://auth', clientKey: 'c|a',
+      resource: 'https://mcp', scope: 'read', credScope: 'user', createdAt: 1000,
+    }, 1000);
+    expect((await store.getPending('st-cs'))?.credScope).toBe('user');
+    expect((await store.consumePending('st-cs', 2000, 600000))?.credScope).toBe('user');
   });
 });
