@@ -45,6 +45,10 @@ const intervalRoutine: Routine = {
   lastStatus: null,
   lastError: null,
   lastRunAt: null,
+  promptBody: 'body',
+  activeHours: null,
+  silenceToken: null,
+  silenceMaxChars: 300,
 };
 
 const webhookRoutine: Routine = {
@@ -57,6 +61,10 @@ const webhookRoutine: Routine = {
   lastStatus: null,
   lastError: null,
   lastRunAt: null,
+  promptBody: 'body',
+  activeHours: null,
+  silenceToken: null,
+  silenceMaxChars: 300,
 };
 
 describe('FireNowControl — interval/cron', () => {

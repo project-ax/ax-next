@@ -93,6 +93,119 @@ async function isOwnedBy(
   }
 }
 
+// Routine files live flat under .ax/routines/<name>.md — the same path grammar
+// @ax/routines sync and @ax/validator-routine enforce. The route validates the
+// caller-supplied path against this BEFORE any workspace write, so a traversal
+// (`../`) or off-tree path (`.ax/skills/...`) is a 400, never a write.
+const ROUTINE_PATH_RE = /^\.ax\/routines\/[^/]+\.md$/;
+
+/** Body for PUT /settings/routines/:agentId. Strict — the caller sends the
+ *  exact file path (the editor derives it from the routine name) and the full
+ *  routine markdown. Validity of `sourceMd` is enforced server-side by
+ *  @ax/validator-routine's workspace:pre-apply veto (rejected → 400), so the
+ *  route stays a thin write-shim and never imports the validator (Invariant L2). */
+const saveBodySchema = z
+  .object({
+    path: z.string().min(1).max(512),
+    sourceMd: z.string().min(1).max(64 * 1024),
+  })
+  .strict();
+
+// Duck-typed workspace:apply wire shape — inlined per Invariant L2 rather than
+// imported from @ax/core's workspace module (mirrors routes-agent-identity.ts).
+interface WorkspaceApplyChange {
+  path: string;
+  kind: 'put' | 'delete';
+  content?: Uint8Array;
+}
+interface WorkspaceApplyInput {
+  changes: WorkspaceApplyChange[];
+  parent: string | null;
+  reason?: string;
+}
+
+// Pull the storage tier's actual head out of a parent-mismatch PluginError's
+// `cause.actualParent` (the workspace CAS contract). NO_ACTUAL_PARENT means the
+// error isn't a recoverable CAS miss — don't retry, rethrow.
+const NO_ACTUAL_PARENT = Symbol('no-actual-parent');
+function actualParentFromMismatch(
+  err: unknown,
+): string | null | typeof NO_ACTUAL_PARENT {
+  if (!(err instanceof PluginError) || err.code !== 'parent-mismatch') {
+    return NO_ACTUAL_PARENT;
+  }
+  const cause = err.cause as { actualParent?: string | null } | undefined;
+  if (cause === undefined || !('actualParent' in cause)) return NO_ACTUAL_PARENT;
+  return cause.actualParent ?? null;
+}
+
+/** Owner-routed ctx so workspace:apply lands in the AGENT'S workspace. ctx
+ *  carries (userId, agentId); userId is the agent's REAL owner (from
+ *  agents:resolve), never the plugin name or a synthetic actor — passing the
+ *  plugin's own ctx through would write to the wrong workspace. */
+function ctxForWorkspace(ownerUserId: string, agentId: string): AgentContext {
+  return makeAgentContext({
+    sessionId: 'routines-editor',
+    agentId,
+    userId: ownerUserId,
+  });
+}
+
+/** Resolve `agentId` for `userId`, returning the agent's ownerId on success or
+ *  null when the actor can't see it (forbidden/not-found → 403). Rethrows any
+ *  other error (the bus/agents plugin is broken — let the 500 handler see it).
+ *  The ownerId routes the subsequent workspace write. */
+async function resolveOwnedAgent(
+  bus: HookBus,
+  ctx: AgentContext,
+  agentId: string,
+  userId: string,
+): Promise<{ ownerId: string } | null> {
+  try {
+    const out = await bus.call<
+      { agentId: string; userId: string },
+      { agent: { ownerId: string } }
+    >('agents:resolve', ctx, { agentId, userId });
+    return { ownerId: out.agent.ownerId };
+  } catch (err) {
+    if (
+      err instanceof PluginError &&
+      (err.code === 'forbidden' || err.code === 'not-found')
+    ) {
+      return null;
+    }
+    throw err;
+  }
+}
+
+/** workspace:apply with the established parent:null → retry-on-CAS-miss dance.
+ *  Mirrors routes-agent-identity.ts: start at null (correct for a never-written
+ *  workspace), and on a parent-mismatch retry ONCE with the echoed actual head.
+ *  The apply facade fires workspace:applied, so @ax/routines syncs the row and
+ *  (re)binds any webhook route without extra fan-out here. */
+async function applyWithCasRetry(
+  bus: HookBus,
+  ctx: AgentContext,
+  changes: WorkspaceApplyChange[],
+  reason: string,
+): Promise<void> {
+  try {
+    await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', ctx, {
+      changes,
+      parent: null,
+      reason,
+    });
+  } catch (applyErr) {
+    const actual = actualParentFromMismatch(applyErr);
+    if (actual === NO_ACTUAL_PARENT) throw applyErr;
+    await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', ctx, {
+      changes,
+      parent: actual,
+      reason,
+    });
+  }
+}
+
 /** Inline (duck-typed) view of the routines list/recent-fires/fire-now
  *  service hook outputs — declared here rather than imported from @ax/routines
  *  per Invariant L2. Only the fields we relay to the client are typed; any
@@ -116,6 +229,8 @@ export interface RoutinesAdminHandlers {
   list: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   fires: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   fire: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  save: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  destroy: (req: RouteRequest, res: RouteResponse) => Promise<void>;
 }
 
 export function createRoutinesAdminHandlers(
@@ -249,6 +364,112 @@ export function createRoutinesAdminHandlers(
         throw err;
       }
     },
+
+    // PUT /settings/routines/:agentId — create or update a per-user routine by
+    // writing its `.ax/routines/<name>.md` file into the agent workspace. The
+    // workspace:applied notify (fired by the apply facade) drives @ax/routines
+    // to upsert the row and (re)bind any webhook route — this route only writes.
+    async save(req, res) {
+      const actor = await requireUser(deps.bus, initCtx, req, res);
+      if (actor === null) return;
+
+      const parsedBody = parseRequestBody(req.body);
+      if (!parsedBody.ok) {
+        res.status(parsedBody.status).json({ error: parsedBody.message });
+        return;
+      }
+      const result = saveBodySchema.safeParse(parsedBody.value);
+      if (!result.success) {
+        res
+          .status(400)
+          .json({ error: result.error.issues[0]?.message ?? 'invalid body' });
+        return;
+      }
+      const agentId = req.params.agentId;
+      if (agentId === undefined || agentId.length === 0) {
+        res.status(400).json({ error: 'agentId required' });
+        return;
+      }
+      const { path, sourceMd } = result.data;
+      // Path-safety gate BEFORE any resolve/write — traversal / off-tree → 400.
+      if (!ROUTINE_PATH_RE.test(path)) {
+        res
+          .status(400)
+          .json({ error: 'path must be of the form .ax/routines/<name>.md' });
+        return;
+      }
+
+      const ctx = ctxForActor(actor.id);
+      try {
+        const owned = await resolveOwnedAgent(deps.bus, ctx, agentId, actor.id);
+        if (owned === null) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
+        const wctx = ctxForWorkspace(owned.ownerId, agentId);
+        await applyWithCasRetry(
+          deps.bus,
+          wctx,
+          [{ path, kind: 'put', content: new TextEncoder().encode(sourceMd) }],
+          'routine-edit',
+        );
+        res.status(200).json({ path });
+      } catch (err) {
+        // A validator-routine pre-apply veto surfaces as PluginError 'rejected'
+        // whose message is the validator's reason → 400 with that reason.
+        if (err instanceof PluginError && err.code === 'rejected') {
+          res.status(400).json({ error: err.message });
+          return;
+        }
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
+
+    // DELETE /settings/routines/:agentId?path=… — delete a per-user routine
+    // file. The applied notify makes @ax/routines drop the row, unbind the
+    // webhook route, and purge any minted HMAC credential.
+    async destroy(req, res) {
+      const actor = await requireUser(deps.bus, initCtx, req, res);
+      if (actor === null) return;
+
+      const agentId = req.params.agentId;
+      if (agentId === undefined || agentId.length === 0) {
+        res.status(400).json({ error: 'agentId required' });
+        return;
+      }
+      const path = req.query.path;
+      if (path === undefined || !ROUTINE_PATH_RE.test(path)) {
+        res
+          .status(400)
+          .json({ error: '?path must be of the form .ax/routines/<name>.md' });
+        return;
+      }
+
+      const ctx = ctxForActor(actor.id);
+      try {
+        const owned = await resolveOwnedAgent(deps.bus, ctx, agentId, actor.id);
+        if (owned === null) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
+        const wctx = ctxForWorkspace(owned.ownerId, agentId);
+        await applyWithCasRetry(
+          deps.bus,
+          wctx,
+          [{ path, kind: 'delete' }],
+          'routine-delete',
+        );
+        res.status(204).end();
+      } catch (err) {
+        if (err instanceof PluginError && err.code === 'rejected') {
+          res.status(400).json({ error: err.message });
+          return;
+        }
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
   };
 }
 
@@ -265,7 +486,7 @@ export async function registerRoutinesAdminRoutes(
 ): Promise<Array<() => void>> {
   const handlers = createRoutinesAdminHandlers({ bus });
   const routes: Array<{
-    method: 'GET' | 'POST';
+    method: 'GET' | 'POST' | 'PUT' | 'DELETE';
     path: string;
     handler: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   }> = [
@@ -279,6 +500,16 @@ export async function registerRoutinesAdminRoutes(
       method: 'POST',
       path: '/settings/routines/:agentId/fire',
       handler: handlers.fire,
+    },
+    {
+      method: 'PUT',
+      path: '/settings/routines/:agentId',
+      handler: handlers.save,
+    },
+    {
+      method: 'DELETE',
+      path: '/settings/routines/:agentId',
+      handler: handlers.destroy,
     },
   ];
   const unregisters: Array<() => void> = [];

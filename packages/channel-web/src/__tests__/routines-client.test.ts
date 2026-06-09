@@ -174,4 +174,71 @@ describe('lib/routines', () => {
       }),
     ).rejects.toThrow('forbidden');
   });
+
+  it('list exposes the full editable fields (promptBody, activeHours, silenceToken, silenceMaxChars)', async () => {
+    mockJson(200, {
+      routines: [
+        {
+          agentId: 'agt_a',
+          path: '.ax/routines/r.md',
+          name: 'r',
+          description: 'd',
+          trigger: { kind: 'interval', every: '1h' },
+          conversation: 'shared',
+          lastStatus: 'ok',
+          lastError: null,
+          lastRunAt: null,
+          promptBody: 'do the thing',
+          activeHours: { start: '09:00', end: '17:00', tz: 'UTC' },
+          silenceToken: 'NOTHING',
+          silenceMaxChars: 500,
+        },
+      ],
+    });
+    const out = await routines.list();
+    expect(out[0]!.promptBody).toBe('do the thing');
+    expect(out[0]!.activeHours).toEqual({ start: '09:00', end: '17:00', tz: 'UTC' });
+    expect(out[0]!.silenceToken).toBe('NOTHING');
+    expect(out[0]!.silenceMaxChars).toBe(500);
+  });
+
+  it('save PUTs JSON {path, sourceMd} to the agent route and returns {path}', async () => {
+    mockJson(200, { path: '.ax/routines/hb.md' });
+    const out = await routines.save({
+      agentId: 'agt:x/y',
+      path: '.ax/routines/hb.md',
+      sourceMd: '---\nname: hb\n---\nbody',
+    });
+    expect(out.path).toBe('.ax/routines/hb.md');
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/settings/routines/agt%3Ax%2Fy');
+    expect(init.method).toBe('PUT');
+    expect((init.headers as Record<string, string>)['X-Requested-With']).toBe('ax-admin');
+    const body = JSON.parse(init.body as string) as { path: string; sourceMd: string };
+    expect(body).toEqual({ path: '.ax/routines/hb.md', sourceMd: '---\nname: hb\n---\nbody' });
+  });
+
+  it('save surfaces the server error message', async () => {
+    mockJson(400, { error: { message: 'interval.every: minimum is 60s' } });
+    await expect(
+      routines.save({ agentId: 'a', path: '.ax/routines/x.md', sourceMd: 'bad' }),
+    ).rejects.toThrow('minimum is 60s');
+  });
+
+  it('remove DELETEs the agent route with ?path (encoded) and resolves void', async () => {
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 204 } as Response);
+    await expect(
+      routines.remove({ agentId: 'agt_a', path: '.ax/routines/hb.md' }),
+    ).resolves.toBeUndefined();
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(url).toBe('/settings/routines/agt_a?path=.ax%2Froutines%2Fhb.md');
+    expect(init.method).toBe('DELETE');
+  });
+
+  it('remove surfaces the server error message', async () => {
+    mockJson(403, { error: { message: 'forbidden' } });
+    await expect(
+      routines.remove({ agentId: 'a', path: '.ax/routines/x.md' }),
+    ).rejects.toThrow('forbidden');
+  });
 });

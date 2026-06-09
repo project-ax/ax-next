@@ -25,6 +25,12 @@ export type TriggerSpec =
 export type FireStatus = 'ok' | 'silenced' | 'error';
 export type FireSource = 'tick' | 'webhook' | 'manual';
 
+export interface ActiveHours {
+  start: string;
+  end: string;
+  tz: string;
+}
+
 export interface Routine {
   agentId: string;
   path: string;
@@ -35,6 +41,13 @@ export interface Routine {
   lastStatus: FireStatus | null;
   lastRunAt: Date | null;
   lastError: string | null;
+  // The editable fields. All already returned by `routines:list`
+  // (RoutineRow) and relayed whole by the route — the editor seeds its form
+  // from these when editing an existing routine.
+  promptBody: string;
+  activeHours: ActiveHours | null;
+  silenceToken: string | null;
+  silenceMaxChars: number;
 }
 
 export interface Fire {
@@ -87,6 +100,25 @@ async function post<T>(path: string, body: unknown): Promise<T> {
   });
   if (!r.ok) throw new Error(await readError(r));
   return r.json() as Promise<T>;
+}
+
+async function put<T>(path: string, body: unknown): Promise<T> {
+  const r = await fetch(path, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json', 'X-Requested-With': 'ax-admin' },
+    body: JSON.stringify(body),
+  });
+  if (!r.ok) throw new Error(await readError(r));
+  return r.json() as Promise<T>;
+}
+
+async function del(path: string): Promise<void> {
+  const r = await fetch(path, {
+    method: 'DELETE',
+    headers: { 'X-Requested-With': 'ax-admin' },
+  });
+  // 204 No Content — nothing to parse on success.
+  if (!r.ok) throw new Error(await readError(r));
 }
 
 async function readError(r: Response): Promise<string> {
@@ -161,6 +193,24 @@ export const routines = {
     await post<{ ok: true }>(
       `/settings/routines/${encodeURIComponent(input.agentId)}/defaults/${encodeURIComponent(input.defaultRoutineId)}`,
       { enabled: input.enabled },
+    );
+  },
+  /**
+   * Create or update a routine by writing its `.ax/routines/<name>.md` file
+   * into the agent workspace. `path` is the full file path the editor derives
+   * from the routine name; the server writes the bytes and @ax/routines syncs
+   * the row. Returns the path the server wrote.
+   */
+  async save(input: { agentId: string; path: string; sourceMd: string }): Promise<{ path: string }> {
+    return put<{ path: string }>(
+      `/settings/routines/${encodeURIComponent(input.agentId)}`,
+      { path: input.path, sourceMd: input.sourceMd },
+    );
+  },
+  /** Delete a routine by removing its `.ax/routines/<name>.md` file. */
+  async remove(input: { agentId: string; path: string }): Promise<void> {
+    await del(
+      `/settings/routines/${encodeURIComponent(input.agentId)}?path=${encodeURIComponent(input.path)}`,
     );
   },
 };

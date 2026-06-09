@@ -49,7 +49,6 @@ import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
 import { ToastStack } from './components/Toast';
 import { AdminShell } from './components/admin/AdminShell';
-import { RoutinesPanel } from './components/routines/RoutinesPanel';
 import { SetupWizard } from './components/setup/SetupWizard';
 import { UserProvider } from './lib/user-context';
 
@@ -142,10 +141,6 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // `adminSettingsOpen` is set by the user menu's "Settings" entry
   // (admin-gated). AdminSettings renders in the main pane when true.
   const [adminSettingsOpen, setAdminSettingsOpen] = useState(false);
-  // `routinesOpen` is set by the user menu's "Routines" entry. Available
-  // to every signed-in user — server-side scopes routines to caller's
-  // owned/shared agents.
-  const [routinesOpen, setRoutinesOpen] = useState(false);
   // `createAgentOpen` drives the explicit "+ New agent" entry into the
   // bootstrap flow (the first-run gate below uses the empty-list signal).
   const [createAgentOpen, setCreateAgentOpen] = useState(false);
@@ -267,10 +262,7 @@ const AppContent = ({ user }: { user: AuthUser }) => {
             />
           ) : (
             <>
-              <Sidebar
-                onOpenAdminSettings={() => setAdminSettingsOpen(true)}
-                onOpenRoutines={() => setRoutinesOpen(true)}
-              />
+              <Sidebar onOpenAdminSettings={() => setAdminSettingsOpen(true)} />
               {sidebarOpen && (
                 <div
                   className="hidden max-[720px]:block fixed inset-0 bg-black/40 z-40"
@@ -284,11 +276,6 @@ const AppContent = ({ user }: { user: AuthUser }) => {
               </main>
             </>
           )}
-          <RoutinesPanel
-            open={routinesOpen}
-            onClose={() => setRoutinesOpen(false)}
-            isAdmin={user.role === 'admin'}
-          />
           <ToastStack />
         </div>
       </AssistantRuntimeProvider>

@@ -78,36 +78,16 @@ describe('UserMenu', () => {
     expect(screen.queryByText('Admin Settings')).toBeNull();
   });
 
-  it('"Routines" menuitem is visible to regular users', () => {
+  it('no longer shows a "Routines" menuitem (moved into the Settings tab)', () => {
     render(
       <UserProvider value={regularUser}>
         <UserMenu />
       </UserProvider>,
     );
     fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
-    expect(screen.getByRole('menuitem', { name: 'Routines' })).toBeTruthy();
-  });
-
-  it('"Routines" menuitem is visible to admin users', () => {
-    render(
-      <UserProvider value={adminUser}>
-        <UserMenu />
-      </UserProvider>,
-    );
-    fireEvent.click(screen.getByRole('button', { name: /Admin/i }));
-    expect(screen.getByRole('menuitem', { name: 'Routines' })).toBeTruthy();
-  });
-
-  it('"Routines" menuitem calls onOpenRoutines', () => {
-    const onOpenRoutines = vi.fn();
-    render(
-      <UserProvider value={regularUser}>
-        <UserMenu onOpenRoutines={onOpenRoutines} />
-      </UserProvider>,
-    );
-    fireEvent.click(screen.getByRole('button', { name: /Alice/i }));
-    fireEvent.click(screen.getByRole('menuitem', { name: 'Routines' }));
-    expect(onOpenRoutines).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole('menuitem', { name: 'Routines' })).toBeNull();
+    // Settings is still present — Routines lives inside it now.
+    expect(screen.getByRole('menuitem', { name: 'Settings' })).toBeTruthy();
   });
 
   it('theme toggle offers Light, Dark, and System (TASK-119 — tri-toggle matches the auto-capable provider)', () => {

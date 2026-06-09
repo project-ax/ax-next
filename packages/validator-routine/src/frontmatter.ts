@@ -1,4 +1,4 @@
-import { load as yamlLoad, YAMLException } from 'js-yaml';
+import { load as yamlLoad, dump as yamlDump, YAMLException } from 'js-yaml';
 import { Cron } from 'croner';
 
 const FRONTMATTER_FENCE = /^---\n([\s\S]*?)\n---(\n([\s\S]*))?$/;
@@ -10,6 +10,10 @@ const WEBHOOK_PATH_RE = /^\/[A-Za-z0-9._\-/]+$/;
 const EVENT_NAME_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const WEBHOOK_PATH_MAX = 128;
 const WEBHOOK_EVENTS_MAX = 32;
+// Parser default for `silenceMaxChars`. `buildRoutineMd` omits the key when the
+// value equals this, so the build↔parse round-trip stays lossless without
+// littering generated files with the default. One source of truth for both.
+const DEFAULT_SILENCE_MAX_CHARS = 300;
 
 export interface WebhookHmacSpec {
   secretRef: string;
@@ -238,7 +242,7 @@ export function parseRoutineFrontmatter(text: string): RoutineFrontmatterResult 
   }
 
   const silenceMaxRaw = obj['silenceMaxChars'];
-  let silenceMaxChars = 300;
+  let silenceMaxChars = DEFAULT_SILENCE_MAX_CHARS;
   if (silenceMaxRaw !== undefined && silenceMaxRaw !== null) {
     if (typeof silenceMaxRaw !== 'number' || !Number.isInteger(silenceMaxRaw) || silenceMaxRaw < 0) {
       return fail('silenceMaxChars must be a non-negative integer');
@@ -277,6 +281,65 @@ export function parseRoutineFrontmatterBytes(bytes: Uint8Array): RoutineFrontmat
     return fail('routine file is not valid UTF-8');
   }
   return parseRoutineFrontmatter(text);
+}
+
+/**
+ * Serialize structured routine fields back into a `.md` string — the
+ * form→markdown half of the RoutineEditor round-trip. The inverse of
+ * `parseRoutineFrontmatter`: `parseRoutineFrontmatter(buildRoutineMd(f)).fields`
+ * deep-equals `f` for every modeled shape.
+ *
+ * Emits only what's set: optional `activeHours` / `silenceToken` are omitted
+ * when absent, and `silenceMaxChars` is omitted when it equals the parser
+ * default so generated files stay clean. Key order is fixed for readable,
+ * deterministic output (YAML is order-insensitive on the parse side).
+ */
+export function buildRoutineMd(fields: RoutineFrontmatterFields): string {
+  const trigger: Record<string, unknown> = { kind: fields.trigger.kind };
+  switch (fields.trigger.kind) {
+    case 'interval':
+      trigger['every'] = fields.trigger.every;
+      break;
+    case 'cron':
+      trigger['expr'] = fields.trigger.expr;
+      trigger['tz'] = fields.trigger.tz;
+      break;
+    case 'webhook': {
+      trigger['path'] = fields.trigger.path;
+      if (fields.trigger.events !== undefined) {
+        trigger['events'] = fields.trigger.events;
+      }
+      if (fields.trigger.hmac !== undefined) {
+        const h = fields.trigger.hmac;
+        const hmac: Record<string, unknown> = {
+          secretRef: h.secretRef,
+          header: h.header,
+          algorithm: h.algorithm,
+        };
+        if (h.prefix !== undefined) hmac['prefix'] = h.prefix;
+        trigger['hmac'] = hmac;
+      }
+      break;
+    }
+  }
+
+  const doc: Record<string, unknown> = {
+    name: fields.name,
+    description: fields.description,
+    trigger,
+  };
+  if (fields.activeHours !== undefined) doc['activeHours'] = fields.activeHours;
+  if (fields.silenceToken !== undefined) doc['silenceToken'] = fields.silenceToken;
+  if (fields.silenceMaxChars !== DEFAULT_SILENCE_MAX_CHARS) {
+    doc['silenceMaxChars'] = fields.silenceMaxChars;
+  }
+  doc['conversation'] = fields.conversation;
+
+  // `lineWidth: -1` disables js-yaml's line folding so long scalars (cron
+  // exprs, descriptions) stay on one line and re-parse identically.
+  const yaml = yamlDump(doc, { lineWidth: -1 });
+  const body = fields.promptBody.length > 0 ? `${fields.promptBody}\n` : '';
+  return `---\n${yaml}---\n${body}`;
 }
 
 export function durationToSeconds(every: string): number | null {

@@ -13,6 +13,17 @@
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+
+// Mock the shared editor so these tests focus on the list's create/edit/delete
+// wiring, not the editor internals (covered by RoutineEditor.test.tsx).
+vi.mock('@/components/routines/RoutineEditor', () => ({
+  RoutineEditor: ({ onCancel }: { onCancel: () => void }) => (
+    <div data-testid="routine-editor">
+      <button onClick={onCancel}>Cancel editor</button>
+    </div>
+  ),
+}));
+
 import { RoutinesList } from '../components/routines/RoutinesList';
 
 const fetchMock = vi.fn();
@@ -47,6 +58,10 @@ const sampleRoutine = {
   lastStatus: 'ok',
   lastError: null,
   lastRunAt: '2026-05-17T00:00:00.000Z',
+  promptBody: 'do the thing',
+  activeHours: null,
+  silenceToken: null,
+  silenceMaxChars: 300,
 };
 
 describe('RoutinesList', () => {
@@ -179,5 +194,47 @@ describe('RoutinesList', () => {
     await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
     // No HMAC label for an interval routine
     expect(screen.queryByText(/HMAC/i)).toBeNull();
+  });
+
+  // ── create / edit / delete affordances ──────────────────────────────────
+
+  it('clicking "New routine" opens the editor', async () => {
+    mockJsonOnce(200, { routines: [] });
+    render(<RoutinesList onFired={() => {}} />);
+    await waitFor(() => expect(screen.getByText(/No routines yet/i)).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: /new routine/i }));
+    expect(await screen.findByTestId('routine-editor')).toBeTruthy();
+  });
+
+  it('clicking a row\'s Edit opens the editor', async () => {
+    mockJsonOnce(200, { routines: [sampleRoutine] });
+    render(<RoutinesList onFired={() => {}} />);
+    await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Edit heartbeat' }));
+    expect(await screen.findByTestId('routine-editor')).toBeTruthy();
+  });
+
+  it('clicking a row\'s Delete confirms, then DELETEs the routine file', async () => {
+    mockJsonOnce(200, { routines: [sampleRoutine] }); // initial list
+    render(<RoutinesList onFired={() => {}} />);
+    await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
+
+    fireEvent.click(screen.getByRole('button', { name: 'Delete heartbeat' }));
+    await waitFor(() => expect(screen.getByText(/Delete routine\?/i)).toBeTruthy());
+
+    // DELETE 204, then the list reloads (empty).
+    fetchMock.mockResolvedValueOnce({ ok: true, status: 204 } as Response);
+    mockJsonOnce(200, { routines: [] });
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+
+    await waitFor(() => {
+      const del = fetchMock.mock.calls.find(
+        (c) => (c[1] as RequestInit | undefined)?.method === 'DELETE',
+      );
+      expect(del).toBeDefined();
+      expect(del![0] as string).toBe('/settings/routines/agt_a?path=heartbeat.md');
+    });
   });
 });

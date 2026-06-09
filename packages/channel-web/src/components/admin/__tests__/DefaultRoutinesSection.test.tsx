@@ -7,19 +7,16 @@ import type { DefaultRoutineSummary } from '@ax/routines';
 vi.mock('@/lib/default-routines', () => ({
   listDefaultRoutines: vi.fn(),
   deleteDefaultRoutine: vi.fn(),
+  getDefaultRoutine: vi.fn(),
+  upsertDefaultRoutine: vi.fn(),
+  updateDefaultRoutine: vi.fn(),
 }));
 
-// Mock DefaultRoutineEditor so tests don't depend on its internals (and
-// don't have to handle its useEffect-driven getDefaultRoutine fetch).
-vi.mock('../DefaultRoutineEditor', () => ({
-  DefaultRoutineEditor: ({
-    onCancel,
-  }: {
-    defaultRoutineId?: string;
-    onSaved: () => void;
-    onCancel: () => void;
-  }) => (
-    <div data-testid="default-routine-editor">
+// Mock the shared RoutineEditor so these tests stay focused on the section's
+// table / dialog / delete behaviour, not the editor internals.
+vi.mock('@/components/routines/RoutineEditor', () => ({
+  RoutineEditor: ({ onCancel }: { onCancel: () => void }) => (
+    <div data-testid="routine-editor">
       <button onClick={onCancel}>Cancel editor</button>
     </div>
   ),
@@ -28,10 +25,12 @@ vi.mock('../DefaultRoutineEditor', () => ({
 import {
   listDefaultRoutines,
   deleteDefaultRoutine,
+  getDefaultRoutine,
 } from '@/lib/default-routines';
 
 const mockList = vi.mocked(listDefaultRoutines);
 const mockDelete = vi.mocked(deleteDefaultRoutine);
+const mockGet = vi.mocked(getDefaultRoutine);
 
 const HEARTBEAT: DefaultRoutineSummary = {
   defaultRoutineId: 'heartbeat',
@@ -126,11 +125,20 @@ describe('DefaultRoutinesSection', () => {
     await waitFor(() => {
       expect(screen.getByText('Create a default routine')).toBeTruthy();
     });
-    expect(screen.getByTestId('default-routine-editor')).toBeTruthy();
+    expect(screen.getByTestId('routine-editor')).toBeTruthy();
   });
 
-  it('clicking edit button on a row opens the editor with that id', async () => {
+  it('clicking edit fetches the routine and opens the editor populated', async () => {
     mockList.mockResolvedValueOnce([HEARTBEAT]);
+    mockGet.mockResolvedValueOnce({
+      ...HEARTBEAT,
+      sourceMd: '---\nname: heartbeat\n---\nbody',
+      silenceToken: null,
+      silenceMax: 300,
+      conversation: 'shared',
+      activeHours: null,
+      promptBody: 'check in',
+    });
     render(<DefaultRoutinesSection />);
 
     await waitFor(() => {
@@ -144,7 +152,9 @@ describe('DefaultRoutinesSection', () => {
         screen.getByText('Edit default routine: heartbeat'),
       ).toBeTruthy();
     });
-    expect(screen.getByTestId('default-routine-editor')).toBeTruthy();
+    // The editor renders once getDefaultRoutine resolves and fields load.
+    expect(await screen.findByTestId('routine-editor')).toBeTruthy();
+    expect(mockGet).toHaveBeenCalledWith('heartbeat');
   });
 
   it('clicking delete shows confirm; clicking Delete calls deleteDefaultRoutine', async () => {

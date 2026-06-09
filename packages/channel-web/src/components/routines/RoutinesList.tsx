@@ -14,16 +14,61 @@
  * fixed-width strings.
  */
 import { useEffect, useState } from 'react';
-import { ChevronRight } from 'lucide-react';
+import { ChevronRight, Plus, Pencil, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
 import { PaneStatus } from '../PaneStatus';
 import { routines, type Routine, type Fire } from '../../lib/routines';
 import { TriggerChip } from './TriggerChip';
 import { StatusChip } from './StatusChip';
 import { FireRowsTable } from './FireRowsTable';
 import { FireNowControl } from './FireNowControl';
+import {
+  RoutineEditor,
+  type RoutineEditorConstraints,
+} from '@/components/routines/RoutineEditor';
 import { CredentialSlotRow } from '../credentials/CredentialSlotRow';
 import { refForDestination } from '@/lib/credentials';
+import type {
+  RoutineFrontmatterFields,
+  TriggerSpec,
+} from '@ax/validator-routine/frontmatter';
+
+// Per-user routines accept all three trigger kinds and, on create, pick the
+// owning agent.
+const CREATE_CONSTRAINTS: RoutineEditorConstraints = {
+  allowedTriggers: ['interval', 'cron', 'webhook'],
+  showAgentPicker: true,
+};
+// On edit the agent + file path are fixed; the picker is hidden.
+const EDIT_CONSTRAINTS: RoutineEditorConstraints = {
+  allowedTriggers: ['interval', 'cron', 'webhook'],
+  showAgentPicker: false,
+};
+
+/** Project a listed Routine into the editor's `initial` shape. The wire types
+ *  are structurally identical to the validator's; the trigger cast is exact at
+ *  runtime (routines:list returns the validator's TriggerSpec). */
+function routineToFields(r: Routine): RoutineFrontmatterFields {
+  const fields: RoutineFrontmatterFields = {
+    name: r.name,
+    description: r.description,
+    trigger: r.trigger as unknown as TriggerSpec,
+    silenceMaxChars: r.silenceMaxChars,
+    conversation: r.conversation,
+    promptBody: r.promptBody,
+  };
+  if (r.activeHours !== null) fields.activeHours = r.activeHours;
+  if (r.silenceToken !== null) fields.silenceToken = r.silenceToken;
+  return fields;
+}
+
+type EditorMode = { kind: 'create' } | { kind: 'edit'; routine: Routine };
 
 export interface RoutinesListProps {
   refreshKey?: number;
@@ -53,6 +98,9 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
   // cached fires when an operator re-opens the same row.
   const [fires, setFires] = useState<Record<string, Fire[] | undefined>>({});
   const [firesError, setFiresError] = useState<Record<string, string | undefined>>({});
+  const [editorMode, setEditorMode] = useState<EditorMode | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<Routine | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   async function reload(): Promise<void> {
     setError(null);
@@ -60,6 +108,18 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
       setList(await routines.list());
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  async function handleDelete(routine: Routine): Promise<void> {
+    setDeleteError(null);
+    try {
+      await routines.remove({ agentId: routine.agentId, path: routine.path });
+      setPendingDelete(null);
+      await reload();
+      onFired();
+    } catch (err) {
+      setDeleteError(err instanceof Error ? err.message : String(err));
     }
   }
 
@@ -97,6 +157,14 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
 
   return (
     <>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[13px] font-medium text-muted-foreground">Your routines</span>
+        <Button size="sm" onClick={() => setEditorMode({ kind: 'create' })}>
+          <Plus className="h-3.5 w-3.5 mr-1" />
+          New routine
+        </Button>
+      </div>
+
       {error !== null && (
         <div
           role="alert"
@@ -111,8 +179,9 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
 
       {list!.length === 0 ? (
         <PaneStatus variant="empty">
-          No routines yet. Routines live in <code className="font-mono">.ax/routines/*.md</code> in
-          the agent's workspace — create one via chat or git.
+          No routines yet. Click <span className="font-medium">New routine</span> to create one —
+          routines live in <code className="font-mono">.ax/routines/*.md</code> in the agent's
+          workspace, and you can also create them via chat or git.
         </PaneStatus>
       ) : (
         <div className="flex flex-col">
@@ -159,6 +228,25 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
                       if (isOpen) void loadFires(r.agentId, r.path);
                     }}
                   />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Edit ${r.name}`}
+                    onClick={() => setEditorMode({ kind: 'edit', routine: r })}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    aria-label={`Delete ${r.name}`}
+                    onClick={() => {
+                      setDeleteError(null);
+                      setPendingDelete(r);
+                    }}
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </Button>
                 </div>
                 {isOpen && (
                   <div className="pb-4 pl-[2.875rem] pr-2 animate-in fade-in-0 slide-in-from-top-1 duration-150">
@@ -191,6 +279,96 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
           })}
         </div>
       )}
+
+      {/* Create / edit editor dialog. */}
+      <Dialog
+        open={editorMode !== null}
+        onOpenChange={(o) => {
+          if (!o) setEditorMode(null);
+        }}
+      >
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>
+              {editorMode?.kind === 'edit' ? 'Edit routine' : 'New routine'}
+            </DialogTitle>
+          </DialogHeader>
+          {editorMode !== null &&
+            (editorMode.kind === 'create' ? (
+              <RoutineEditor
+                constraints={CREATE_CONSTRAINTS}
+                onSave={async (sourceMd, { agentId, name }) => {
+                  if (agentId === null) throw new Error('Pick an agent first.');
+                  await routines.save({
+                    agentId,
+                    path: `.ax/routines/${name}.md`,
+                    sourceMd,
+                  });
+                }}
+                onSaved={() => {
+                  setEditorMode(null);
+                  void reload();
+                  onFired();
+                }}
+                onCancel={() => setEditorMode(null)}
+              />
+            ) : (
+              <RoutineEditor
+                initial={routineToFields(editorMode.routine)}
+                constraints={EDIT_CONSTRAINTS}
+                onSave={async (sourceMd) => {
+                  // Edit keeps the existing file path — the name field edits
+                  // only the frontmatter, never moves the file.
+                  await routines.save({
+                    agentId: editorMode.routine.agentId,
+                    path: editorMode.routine.path,
+                    sourceMd,
+                  });
+                }}
+                onSaved={() => {
+                  setEditorMode(null);
+                  void reload();
+                  onFired();
+                }}
+                onCancel={() => setEditorMode(null)}
+              />
+            ))}
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete confirmation. */}
+      <Dialog
+        open={pendingDelete !== null}
+        onOpenChange={(o) => {
+          if (!o) setPendingDelete(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete routine?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            Delete <code className="font-mono">{pendingDelete?.name}</code>? This removes its{' '}
+            <code className="font-mono">.ax/routines</code> file and stops it from firing.
+          </p>
+          {deleteError !== null && (
+            <p className="text-sm text-destructive">{deleteError}</p>
+          )}
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setPendingDelete(null)}>
+              Cancel
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => {
+                if (pendingDelete !== null) void handleDelete(pendingDelete);
+              }}
+            >
+              Delete
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
     </>
   );
 }
