@@ -332,14 +332,27 @@ describe('mcp-oauth begin route', () => {
     expect(state.json).toEqual({ error: 'unauthenticated' });
   });
 
-  it('missing connectorId/agentId → 400', async () => {
+  it('missing connectorId → 400 (agentId is optional)', async () => {
     const { deps } = makeDeps({
       'auth:require-user': () => OK_USER,
     });
     const handlers = createMcpOAuthRouteHandlers(deps);
     const { res, state } = fakeRes();
     await handlers.begin(
-      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }),
+      fakeReq({ body: Buffer.from(JSON.stringify({ agentId: 'agent-1' })) }),
+      res,
+    );
+    expect(state.status).toBe(400);
+  });
+
+  it('agentId present but empty string → 400', async () => {
+    const { deps } = makeDeps({
+      'auth:require-user': () => OK_USER,
+    });
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: '' })) }),
       res,
     );
     expect(state.status).toBe(400);
@@ -533,6 +546,84 @@ describe('mcp-oauth begin route', () => {
     expect(state.status).toBe(200);
     expect(store.putPending).toHaveBeenCalledTimes(1);
     expect(flow.discover).toHaveBeenCalledTimes(1);
+  });
+
+  // Phase 2 credScope selection: personal agent → 'user'; team agent → 'agent'
+
+  it('credScope: personal agent (visibility=personal) → pending.credScope === "user"', async () => {
+    const store = fakeStore();
+    const { deps } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'personal', ownerId: 'user-1' } }),
+        'connectors:get': () => connectorFixture(),
+      },
+      { store },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      res,
+    );
+    expect(state.status).toBe(200);
+    expect(store.putPending).toHaveBeenCalledTimes(1);
+    const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
+    expect(pending.credScope).toBe('user');
+  });
+
+  it('credScope: team agent (visibility=team) → pending.credScope === "agent"', async () => {
+    const store = fakeStore();
+    const { deps } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'agents:resolve': () => ({ agent: { id: 'agent-1', visibility: 'team', ownerId: 'team-1' } }),
+        'connectors:get': () => connectorFixture(),
+      },
+      { store },
+    );
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1', agentId: 'agent-1' })) }),
+      res,
+    );
+    expect(state.status).toBe(200);
+    expect(store.putPending).toHaveBeenCalledTimes(1);
+    const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
+    expect(pending.credScope).toBe('agent');
+  });
+
+  it('credScope: no agentId in body → credScope === "user", agentId === "", agents:resolve NOT called', async () => {
+    const store = fakeStore();
+    const resolveStub = vi.fn(() => ({ agent: { id: 'agent-1' } }));
+    const { deps, calls } = makeDeps(
+      {
+        'auth:require-user': () => OK_USER,
+        'connectors:get': () => connectorFixture(),
+      },
+      { store },
+    );
+    // Override bus to track resolve calls independently
+    const { bus, calls: busCalls } = fakeBus({
+      'auth:require-user': () => OK_USER,
+      'agents:resolve': resolveStub,
+      'connectors:get': () => connectorFixture(),
+    });
+    const handlers = createMcpOAuthRouteHandlers({ ...deps, bus });
+    const { res, state } = fakeRes();
+    await handlers.begin(
+      fakeReq({ body: Buffer.from(JSON.stringify({ connectorId: 'conn-1' })) }),
+      res,
+    );
+    expect(state.status).toBe(200);
+    expect(store.putPending).toHaveBeenCalledTimes(1);
+    const pending = store.putPending.mock.calls[0]![0] as PendingAuthorization;
+    expect(pending.credScope).toBe('user');
+    expect(pending.agentId).toBe('');
+    expect(resolveStub).not.toHaveBeenCalled();
+    // agents:resolve must not appear in bus calls
+    expect(busCalls.filter(c => c.hook === 'agents:resolve')).toHaveLength(0);
   });
 });
 

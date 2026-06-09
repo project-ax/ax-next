@@ -175,7 +175,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const user = await requireUser(req, res);
     if (!user) return;
 
-    // Parse + validate the body (small cap; both fields required strings).
+    // Parse + validate the body (small cap; connectorId required, agentId optional).
     if (req.body.length > OAUTH_BODY_MAX_BYTES) {
       res.status(413).json({ error: 'body-too-large' });
       return;
@@ -189,25 +189,41 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     }
     const body = parsed as { connectorId?: unknown; agentId?: unknown };
     const connectorId = body.connectorId;
-    const agentId = body.agentId;
-    if (typeof connectorId !== 'string' || !connectorId || typeof agentId !== 'string' || !agentId) {
+    const rawAgentId = body.agentId;
+    if (typeof connectorId !== 'string' || !connectorId) {
       res.status(400).json({ error: 'connectorId and agentId are required' });
       return;
     }
+    // agentId is optional: when present it must be a non-empty string.
+    if (rawAgentId !== undefined && (typeof rawAgentId !== 'string' || !rawAgentId)) {
+      res.status(400).json({ error: 'connectorId and agentId are required' });
+      return;
+    }
+    const agentId = rawAgentId as string | undefined;
 
-    // Authz gate: a successful resolve IS the owner/member binding check.
-    try {
-      await bus.call<{ agentId: string; userId: string }, { agent: unknown }>(
-        'agents:resolve',
-        ctxFor(user.id),
-        { agentId, userId: user.id },
-      );
-    } catch (err) {
-      if (isReject(err)) {
-        res.status(403).json({ error: 'forbidden' });
-        return;
+    // Authz gate + credScope selection. When agentId is present, a successful
+    // agents:resolve IS the owner/member binding check; the agent's visibility
+    // determines which scope the token is stored under. When absent, the flow is
+    // user-scoped and gated only by connector ownership (connectors:get below).
+    let credScope: 'user' | 'agent' = 'user';
+    let pendingAgentId = '';
+    if (agentId !== undefined) {
+      let agent: { visibility: 'personal' | 'team'; ownerId: string };
+      try {
+        const out = await bus.call<
+          { agentId: string; userId: string },
+          { agent: { visibility: 'personal' | 'team'; ownerId: string } }
+        >('agents:resolve', ctxFor(user.id), { agentId, userId: user.id });
+        agent = out.agent;
+      } catch (err) {
+        if (isReject(err)) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
+        throw err;
       }
-      throw err;
+      credScope = agent.visibility === 'team' ? 'agent' : 'user';
+      pendingAgentId = agentId;
     }
 
     // Resolve the connector (owner-scoped by userId).
@@ -321,7 +337,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
       const pending: PendingAuthorization = {
         state,
         userId: user.id,
-        agentId,
+        agentId: pendingAgentId,
         connectorId,
         slot: slot.slot,
         codeVerifier,
@@ -329,6 +345,7 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         clientKey,
         resource,
         scope,
+        credScope,
         createdAt: now(),
       };
       await store.putPending(pending);
