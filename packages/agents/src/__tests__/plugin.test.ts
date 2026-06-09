@@ -10,6 +10,7 @@ import { createAgentsPlugin } from '../plugin.js';
 import type {
   AgentInput,
   AgentsCreatedEvent,
+  AgentsDeletedEvent,
   CreateInput,
   CreateOutput,
   DeleteInput,
@@ -292,6 +293,64 @@ describe('@ax/agents service hooks (round trip)', () => {
     expect(events).toEqual([
       { agentId: out.agent.id, ownerId: 'u1', ownerType: 'user' },
     ]);
+  });
+
+  // TASK-167 (§11 cleanup): agents:delete fires agents:deleted AFTER the row is
+  // removed so subscribers (the sandbox provider's user-files cleanup) reclaim
+  // per-agent state in other tiers. Payload mirrors agents:created — minimal +
+  // storage-agnostic.
+  it('fires agents:deleted after agents:delete removes the row', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx({ userId: 'u1' });
+    const events: AgentsDeletedEvent[] = [];
+    h.bus.subscribe<AgentsDeletedEvent>(
+      'agents:deleted',
+      'test-spy',
+      async (_ctx, payload) => {
+        events.push(payload);
+        return undefined;
+      },
+    );
+    const created = await h.bus.call<CreateInput, CreateOutput>(
+      'agents:create',
+      ctx,
+      { actor: { userId: 'u1', isAdmin: false }, input: makeInput() },
+    );
+    await h.bus.call<DeleteInput, void>('agents:delete', ctx, {
+      actor: { userId: 'u1', isAdmin: false },
+      agentId: created.agent.id,
+    });
+    expect(events).toEqual([
+      { agentId: created.agent.id, ownerId: 'u1', ownerType: 'user' },
+    ]);
+  });
+
+  it('agents:delete succeeds even when an agents:deleted subscriber throws', async () => {
+    const h = await makeHarness();
+    const ctx = h.ctx({ userId: 'u1' });
+    h.bus.subscribe<AgentsDeletedEvent>(
+      'agents:deleted',
+      'test-thrower',
+      async () => {
+        throw new Error('cleanup subscriber boom — must not block delete');
+      },
+    );
+    const created = await h.bus.call<CreateInput, CreateOutput>(
+      'agents:create',
+      ctx,
+      { actor: { userId: 'u1', isAdmin: false }, input: makeInput() },
+    );
+    // The delete must still complete + remove the row despite the throw.
+    await h.bus.call<DeleteInput, void>('agents:delete', ctx, {
+      actor: { userId: 'u1', isAdmin: false },
+      agentId: created.agent.id,
+    });
+    const empty = await h.bus.call<ListForUserInput, ListForUserOutput>(
+      'agents:list-for-user',
+      ctx,
+      { userId: 'u1' },
+    );
+    expect(empty.agents).toEqual([]);
   });
 
   it('does NOT fire agents:created when caller supplies a tx (caller-owns-commit contract)', async () => {

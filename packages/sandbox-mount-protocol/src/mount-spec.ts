@@ -130,9 +130,24 @@ export type MountSpec = NfsMountSpec | LocalDirMountSpec;
  * input cannot drift from the real session-owner shape (invariant I4 — one
  * source of truth). The resolver keys the per-agent subtree off
  * `owner.agentId`.
+ *
+ * `readOnly` lets a NON-runner caller request a read-only realization of the
+ * same owner-keyed mount (design §11 host-read: the host serves an agent's
+ * user files to the web UI without granting write). The runner's
+ * session-open call omits it (defaults to a writable mount). A resolver MUST
+ * carry this value through onto `MountSpec.readOnly` so a downstream consumer
+ * (a host-read realization) can mount the export read-only. Defaulting to a
+ * writable mount keeps the session-open path byte-for-byte unchanged.
  */
 export interface ResolveMountsInput {
   owner: NonNullable<OpenSessionInput['owner']>;
+  /**
+   * When `true`, the resolver emits each mount with `readOnly: true` so the
+   * caller realizes a read-only view (host-read, design §11). Absent/false →
+   * the writable realization the runner uses. The resolver applies this to
+   * EVERY mount it emits; it never widens write access, only narrows it.
+   */
+  readOnly?: boolean;
 }
 
 /**
@@ -153,3 +168,75 @@ export interface ResolveMountsOutput {
  * Promise<output>` shape stays identical to every other service hook.
  */
 export type ResolveMountsHandler = ServiceHandler<ResolveMountsInput, ResolveMountsOutput>;
+
+// ---------------------------------------------------------------------------
+// `sandbox:read-user-files` (host-internal service hook) — design §11 host-read
+//
+//   sandbox:read-user-files (ctx, { owner, relPath }) → ReadUserFilesOutput
+//
+// The host's READ-ONLY view of an agent's durable user-files mount, so the web
+// UI can serve those files without entering a live sandbox. The provider that
+// owns mount realization registers this; it resolves the owner's mount via
+// `sandbox:resolve-mounts({ owner, readOnly: true })` and realizes a READ-ONLY
+// view of it (the subprocess provider reads its shared-FS `hostPath`; the k8s
+// provider realizes the `nfs` export read-only inside a short-lived job). Write
+// access is NEVER granted on this path — the realization is read-only end to
+// end (design §11: "without granting write").
+//
+// Like `sandbox:resolve-mounts`, this is HOST-INTERNAL: the host calls it
+// directly (e.g. from a web route handler), it never crosses the untrusted
+// sandbox edge, and it is deliberately NOT an IPC action — so there is no wire
+// schema and no new untrusted-input surface here. The path argument IS
+// caller-supplied, so a realization MUST confine every read to the resolved
+// mount subtree and reject traversal (`..`, absolute paths) — that confinement
+// is the realization's job, documented on its impl.
+// ---------------------------------------------------------------------------
+
+/**
+ * Input to `sandbox:read-user-files`. `owner` keys the per-agent mount exactly
+ * like `sandbox:resolve-mounts` (the hook resolves the mount internally with
+ * `readOnly: true`). `relPath` is a path RELATIVE to the user-files mount root
+ * (`mountPath`/`hostPath`): omit it (or pass `''`/`'.'`) to read the mount
+ * root. A realization MUST reject any `relPath` that escapes the mount
+ * (absolute, `..` segment) — the path is caller-supplied.
+ */
+export interface ReadUserFilesInput {
+  owner: NonNullable<OpenSessionInput['owner']>;
+  /** Path relative to the user-files mount root. Default: the root itself. */
+  relPath?: string;
+}
+
+/** One entry in a directory listing returned by `sandbox:read-user-files`. */
+export interface UserFileDirEntry {
+  /** Entry name (a single path segment, never a `/`-joined path). */
+  name: string;
+  /** Whether the entry is a regular file or a subdirectory. Other node
+   *  types (symlink, socket, device) are omitted by the realization — a
+   *  read-only file browser surfaces only files and dirs. */
+  kind: 'file' | 'dir';
+}
+
+/**
+ * Output of `sandbox:read-user-files` — a read-only view of one path.
+ *
+ * - `{ kind: 'file', contents }` — `relPath` resolved to a regular file; its
+ *   bytes are returned.
+ * - `{ kind: 'dir', entries }` — `relPath` resolved to a directory; its
+ *   immediate children are listed (not recursive).
+ * - `{ kind: 'absent' }` — no user-files mount for this owner (no resolver
+ *   loaded, anonymous owner, or the mount/path does not exist). A graceful
+ *   "nothing to serve", never an error — mirrors `sandbox:resolve-mounts`
+ *   returning `[]`.
+ */
+export type ReadUserFilesOutput =
+  | { kind: 'file'; contents: Uint8Array }
+  | { kind: 'dir'; entries: UserFileDirEntry[] }
+  | { kind: 'absent' };
+
+/**
+ * The full `sandbox:read-user-files` handler signature — the in-process
+ * hook-bus contract a sandbox provider satisfies via
+ * `registerService<ReadUserFilesInput, ReadUserFilesOutput>` and the host
+ * invokes via `bus.call<ReadUserFilesInput, ReadUserFilesOutput>`.
+ */
+export type ReadUserFilesHandler = ServiceHandler<ReadUserFilesInput, ReadUserFilesOutput>;

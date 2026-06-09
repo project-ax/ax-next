@@ -28,6 +28,7 @@ import type {
   Agent,
   AgentsConfig,
   AgentsCreatedEvent,
+  AgentsDeletedEvent,
   AgentsListAuthoredSkillsInput,
   AgentsListAuthoredSkillsOutput,
   AgentsResolveAuthoredSkillsInput,
@@ -680,6 +681,21 @@ async function deleteAgent(
   }
 
   await store.deleteById(input.agentId);
+
+  // Fire `agents:deleted` AFTER the row is gone so subscribers reclaim per-agent
+  // state owned in other tiers (filestore-user-files design §11: the sandbox
+  // provider's user-files cleanup `rm -rf`s the agent's durable `/workspace`
+  // subtree). Payload is minimal + storage-agnostic (L4) — `agentId` is the
+  // subtree key; `ownerId`/`ownerType` come from the row we already loaded
+  // (re-resolving would 404 now). Subscriber failures are isolated by
+  // HookBus.fire and never affect the (already-committed) delete (L6). Fired
+  // after the credential purge above so a single delete cascades both reclaims.
+  const deletedEvent: AgentsDeletedEvent = {
+    agentId: input.agentId,
+    ownerId: existing.ownerId,
+    ownerType: existing.ownerType,
+  };
+  await bus.fire('agents:deleted', ctx, deletedEvent);
 }
 
 // ---------------------------------------------------------------------------

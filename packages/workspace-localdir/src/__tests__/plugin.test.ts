@@ -46,6 +46,7 @@ async function resolve(
   pluginRoot: string,
   owner: NonNullable<OpenSessionInput['owner']>,
   mountPath?: string,
+  readOnly?: boolean,
 ): Promise<ResolveMountsOutput> {
   const harness = await createTestHarness({
     plugins: [
@@ -60,7 +61,7 @@ async function resolve(
     return await harness.bus.call<ResolveMountsInput, ResolveMountsOutput>(
       'sandbox:resolve-mounts',
       harness.ctx(),
-      { owner },
+      readOnly !== undefined ? { owner, readOnly } : { owner },
     );
   } finally {
     await harness.close();
@@ -91,6 +92,30 @@ describe('@ax/workspace-localdir — sandbox:resolve-mounts', () => {
     const out = await resolve('/srv/files', OWNER('agent-abc'), '/data');
     const m = out.mounts[0] as LocalDirMountSpec;
     expect(m.mountPath).toBe('/data');
+  });
+
+  // TASK-167 (§11 host-read): the SAME owner-keyed resolver emits a read-only
+  // realization when the caller requests it. The runner omits `readOnly`,
+  // keeping the writable realization byte-for-byte.
+  it('emits a readOnly localDir mount when the caller requests readOnly (host-read)', async () => {
+    const out = await resolve('/var/lib/ax/userfiles', OWNER('agent-abc'), undefined, true);
+    const m = out.mounts[0] as LocalDirMountSpec;
+    expect(m.kind).toBe('localDir');
+    expect(m.hostPath).toBe('/var/lib/ax/userfiles/agent-abc');
+    expect(m.readOnly).toBe(true);
+    expect(m.role).toBe('user-files');
+  });
+
+  it('defaults to a writable mount when readOnly is omitted or false', async () => {
+    const omitted = await resolve('/var/lib/ax/userfiles', OWNER('agent-abc'));
+    expect((omitted.mounts[0] as LocalDirMountSpec).readOnly).toBe(false);
+    const explicitFalse = await resolve(
+      '/var/lib/ax/userfiles',
+      OWNER('agent-abc'),
+      undefined,
+      false,
+    );
+    expect((explicitFalse.mounts[0] as LocalDirMountSpec).readOnly).toBe(false);
   });
 
   it('returns [] when the owner has no agentId (anonymous CLI)', async () => {
