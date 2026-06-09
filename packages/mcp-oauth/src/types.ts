@@ -37,6 +37,13 @@ export interface PendingAuthorization {
   clientKey: string;
   resource: string;
   scope: string | undefined;
+  /**
+   * The credential STORAGE scope the token will be written under once the
+   * callback completes. Distinct from `scope` (the OAuth scopes string).
+   *   'user'  — personal agent: one connection, shared across all the owner's agents.
+   *   'agent' — team agent: each agent holds its own token; sharees ride along.
+   */
+  credScope: 'user' | 'agent';
   createdAt: number;
 }
 

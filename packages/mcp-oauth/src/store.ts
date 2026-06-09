@@ -42,6 +42,7 @@ function rowToPending(r: {
   client_key: string;
   resource: string;
   scope: string | null;
+  cred_scope: string;
   created_at: Date | string | number;
 }): PendingAuthorization {
   const createdAt =
@@ -57,6 +58,7 @@ function rowToPending(r: {
     clientKey: r.client_key,
     resource: r.resource,
     scope: r.scope ?? undefined,
+    credScope: r.cred_scope === 'user' ? 'user' : 'agent',
     createdAt,
   };
 }
@@ -112,6 +114,7 @@ export function createMcpOAuthStore(db: Kysely<McpOAuthDatabase>): McpOAuthStore
           client_key: p.clientKey,
           resource: p.resource,
           scope: p.scope ?? null,
+          cred_scope: p.credScope,
           created_at:
             createdAtOverride !== undefined ? new Date(createdAtOverride) : new Date(),
         })

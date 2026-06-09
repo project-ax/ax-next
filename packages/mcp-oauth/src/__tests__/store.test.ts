@@ -218,4 +218,18 @@ describe('createMcpOAuthStore', () => {
 
     expect(await store.getPending('no-such-state')).toBeNull();
   });
+
+  it('round-trips credScope through put/get/consume', async () => {
+    const db = makeKysely();
+    await runMcpOAuthMigration(db);
+    const store = createMcpOAuthStore(db);
+
+    await store.putPending({
+      state: 'st-cs', userId: 'u', agentId: '', connectorId: 'c', slot: 'S',
+      codeVerifier: 'v', authServerUrl: 'https://auth', clientKey: 'c|a',
+      resource: 'https://mcp', scope: 'read', credScope: 'user', createdAt: 1000,
+    }, 1000);
+    expect((await store.getPending('st-cs'))?.credScope).toBe('user');
+    expect((await store.consumePending('st-cs', 2000, 600000))?.credScope).toBe('user');
+  });
 });

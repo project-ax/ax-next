@@ -37,6 +37,7 @@ export async function runMcpOAuthMigration<DB>(db: Kysely<DB>): Promise<void> {
       scope         TEXT,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )`.execute(db);
+  await sql`ALTER TABLE mcp_oauth_v1_pending ADD COLUMN IF NOT EXISTS cred_scope TEXT NOT NULL DEFAULT 'agent'`.execute(db);
 }
 
 export interface McpOAuthClientRow {
@@ -58,6 +59,7 @@ export interface McpOAuthPendingRow {
   client_key: string;
   resource: string;
   scope: string | null;
+  cred_scope: string;
   created_at: Date;
 }
 
