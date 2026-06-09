@@ -1,6 +1,12 @@
 import type { AgentContext, AgentOutcome, HookBus, Plugin } from '@ax/core';
+import {
+  agentTierAvailable,
+  flushAgentTier,
+  hydrateAgentTier,
+  type HydratedTier,
+} from './agent-tier-sync.js';
 import { bootstrapMemoryTree } from './bootstrap.js';
-import { composeIdentityFromFiles } from './compose-identity.js';
+import { composeIdentityFromFiles, composeIdentityFromTier } from './compose-identity.js';
 import { runConsolidation, type ConsolidationInput, type ConsolidationResult } from './consolidator.js';
 import { createDebouncer, type Debouncer } from './debounce.js';
 import { registerInject } from './inject.js';
@@ -307,15 +313,18 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
             try { await prior; } catch { /* prior pass errors already logged */ }
           }
 
-          const work = consolidate({
-            workspaceRoot: ctx.workspace.rootPath,
-            now: new Date(),
-            logger: {
-              info: (event, fields) => ctx.logger.info(event, fields),
-              warn: (event, fields) => ctx.logger.warn(event, fields),
-            },
+          // TASK-182: route the consolidation pass through the `/agent` git
+          // tier when one is loaded (k8s preset). hydrate → run the existing
+          // fs pass on the scratch → flush the consolidated docs/recent back to
+          // the tier so they materialize into the runner's `/agent` for the
+          // reflection turn. The tracked `work` Promise covers hydrate + pass +
+          // flush so the I10 serialization (inflightWork) still gates the whole
+          // operation. When there's no tier, the pass runs directly on the host
+          // workspace root (CLI path), exactly as before.
+          const work = consolidateRoutedToTier({
             bus,
             ctx,
+            consolidate,
           });
           inflightWork.set(ctx.agentId, work);
           // Test-only settle handle: record the latest underlying work so a
@@ -354,6 +363,35 @@ async function handleChatStart(bus: HookBus, ctx: AgentContext): Promise<void> {
     // Skip silently — the next chat for a real agent will seed.
     return;
   }
+
+  // TASK-182: in a deployment whose memory home is the per-agent `/agent` git
+  // tier (k8s preset), seed the memory tree there — NOT on the shared host CWD
+  // — so it (a) is per-agent isolated and (b) materializes into the runner's
+  // `/agent` for the reflection turn to Read. chat:start fires BEFORE
+  // sandbox:open-session materializes `/agent`, so a flush here is visible to
+  // the runner on the same turn.
+  if (agentTierAvailable(bus)) {
+    const hydrated = await hydrateAgentTier(bus, ctx);
+    try {
+      // Identity lives in the tier at `.ax/IDENTITY.md` + `.ax/SOUL.md`, not on
+      // the host FS — read it through the workspace hook (owner-routed by ctx).
+      const composedIdentity = await composeIdentityFromTier(bus, ctx);
+      await bootstrapMemoryTree({
+        workspaceRoot: hydrated.scratchRoot,
+        composedIdentity,
+      });
+      await flushAgentTier(bus, ctx, hydrated, 'memory-bootstrap');
+    } finally {
+      await hydrated.dispose();
+    }
+    return;
+  }
+
+  // CLI / local-FS deployment: memory lives directly under the agent's own
+  // workspace root (workspace-localdir gives each agent its own subtree, and
+  // the runner IS the host process, so the tree is already where the agent
+  // reads it). Unchanged from before TASK-182.
+  //
   // TASK-142: seed `system/agent.md` from the agent's COMPOSED identity (its
   // own `.ax/IDENTITY.md` + `.ax/SOUL.md`), not the dropped `system_prompt`
   // column. Empty when the agent hasn't authored its identity yet (still
@@ -381,40 +419,109 @@ async function kickOffObserver(
 
   const llmCall: LlmCallFn = (input) => bus.call(cfg.llmCallHook, ctx, input);
 
-  const result = await runObserver({
-    messages: payload.outcome.messages,
-    llmCall,
-    workspaceRoot: ctx.workspace.rootPath,
-    now: new Date(),
-    timeoutMs: cfg.observerTimeoutMs,
-    model: agent.model,
-    onLate: (info) => {
-      ctx.logger.warn('memory_strata_observer_late', {
-        agentId: ctx.agentId,
-        sessionId: ctx.sessionId,
-        ...info,
-      });
-    },
-  });
+  // TASK-182: when memory lives in the `/agent` git tier, hydrate the agent's
+  // current memory tree into a scratch, run the observer there, and flush the
+  // new inbox observation back to the tier. The inbox accumulates across turns
+  // in the tier; the next consolidation pass (or reflection turn) sees it. When
+  // there's no tier, run directly on the host workspace root (CLI path).
+  const hydrated = agentTierAvailable(bus) ? await hydrateAgentTier(bus, ctx) : null;
+  const workspaceRoot = hydrated?.scratchRoot ?? ctx.workspace.rootPath;
 
-  // Audit-style structured logs so an operator can see at a glance how
-  // many observations a chat produced + how many the gate vetoed. No
-  // observation content is logged — only counts and rejection kinds.
-  if (result.kind === 'written') {
-    if (result.written.length > 0 || result.rejected.length > 0) {
-      ctx.logger.info('memory_strata_observer_run', {
+  try {
+    const result = await runObserver({
+      messages: payload.outcome.messages,
+      llmCall,
+      workspaceRoot,
+      now: new Date(),
+      timeoutMs: cfg.observerTimeoutMs,
+      model: agent.model,
+      onLate: (info) => {
+        ctx.logger.warn('memory_strata_observer_late', {
+          agentId: ctx.agentId,
+          sessionId: ctx.sessionId,
+          ...info,
+        });
+      },
+    });
+
+    if (hydrated !== null) {
+      await flushAgentTier(bus, ctx, hydrated, 'memory-observe');
+    }
+
+    // Audit-style structured logs so an operator can see at a glance how
+    // many observations a chat produced + how many the gate vetoed. No
+    // observation content is logged — only counts and rejection kinds.
+    if (result.kind === 'written') {
+      if (result.written.length > 0 || result.rejected.length > 0) {
+        ctx.logger.info('memory_strata_observer_run', {
+          agentId: ctx.agentId,
+          sessionId: ctx.sessionId,
+          written: result.written.length,
+          rejected: result.rejected.length,
+          rejectedKinds: result.rejected.flatMap((r) => r.kinds),
+        });
+      }
+    } else if (result.kind === 'parse-error') {
+      ctx.logger.debug('memory_strata_observer_parse_error', {
         agentId: ctx.agentId,
-        sessionId: ctx.sessionId,
-        written: result.written.length,
-        rejected: result.rejected.length,
-        rejectedKinds: result.rejected.flatMap((r) => r.kinds),
+        rawLength: result.rawLength,
       });
     }
-  } else if (result.kind === 'parse-error') {
-    ctx.logger.debug('memory_strata_observer_parse_error', {
-      agentId: ctx.agentId,
-      rawLength: result.rawLength,
+  } finally {
+    if (hydrated !== null) await hydrated.dispose();
+  }
+}
+
+/**
+ * Run one consolidation pass, routed through the `/agent` git tier when one is
+ * loaded (TASK-182). Returns the consolidator's audit result so the tracked
+ * `work` Promise resolves to the same value as a direct pass.
+ *
+ * Tier path: hydrate the agent's memory tree into a scratch, run the pass on
+ * the scratch, then flush the result (promoted docs, regenerated recent.md,
+ * deleted inbox files) back to the tier via `workspace:apply`. The scratch is
+ * disposed afterwards — `/agent` is the single durable home (Invariant 4).
+ *
+ * No-tier path (CLI): run directly on the host workspace root, unchanged.
+ */
+async function consolidateRoutedToTier(deps: {
+  bus: HookBus;
+  ctx: AgentContext;
+  consolidate: (input: ConsolidationInput) => Promise<ConsolidationResult>;
+}): Promise<ConsolidationResult> {
+  const { bus, ctx, consolidate } = deps;
+  const logger = {
+    info: (event: string, fields: Record<string, unknown>) => ctx.logger.info(event, fields),
+    warn: (event: string, fields: Record<string, unknown>) => ctx.logger.warn(event, fields),
+  };
+
+  if (!agentTierAvailable(bus)) {
+    return consolidate({
+      workspaceRoot: ctx.workspace.rootPath,
+      now: new Date(),
+      logger,
+      bus,
+      ctx,
     });
+  }
+
+  const hydrated: HydratedTier = await hydrateAgentTier(bus, ctx);
+  try {
+    const result = await consolidate({
+      workspaceRoot: hydrated.scratchRoot,
+      now: new Date(),
+      logger,
+      // The consolidator fires `memory:doc:written` via bus+ctx for the
+      // reindexer. The reindexer re-reads the doc from `ctx.workspace.rootPath`
+      // (the host root), NOT the scratch — so passing bus/ctx here would make
+      // it read a path that doesn't hold the doc. Omit them on the tier path;
+      // the index is rebuilt from the materialized `/agent` content on the next
+      // session rather than from a host-local scratch that's about to vanish.
+    });
+    await flushAgentTier(bus, ctx, hydrated, 'memory-consolidate');
+    return result;
+  } finally {
+    await hydrated.dispose();
   }
 }
 
