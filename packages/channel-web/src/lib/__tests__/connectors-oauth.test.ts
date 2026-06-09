@@ -9,7 +9,7 @@ describe('beginOAuth', () => {
     expect(await beginOAuth({ connectorId: 'c', agentId: 'A' })).toEqual({
       authorizationUrl: 'https://p/auth',
     });
-    const [url, init] = (fetch as Mock).mock.calls[0];
+    const [url, init] = (fetch as Mock).mock.calls[0]!;
     expect(url).toBe('/api/connectors/oauth/begin');
     expect(JSON.parse((init as RequestInit).body as string)).toEqual({
       connectorId: 'c',
@@ -23,7 +23,7 @@ describe('beginOAuth', () => {
     );
     await beginOAuth({ connectorId: 'c' });
     expect(
-      JSON.parse(((fetch as Mock).mock.calls[0][1] as RequestInit).body as string),
+      JSON.parse(((fetch as Mock).mock.calls[0]![1] as RequestInit).body as string),
     ).toEqual({ connectorId: 'c' });
   });
 
@@ -41,7 +41,9 @@ describe('getOAuthStatus', () => {
       new Response(JSON.stringify({ status: 'needs-reconnect' }), { status: 200 }),
     );
     expect(await getOAuthStatus({ connectorId: 'c' })).toBe('needs-reconnect');
-    expect((fetch as Mock).mock.calls[0][0]).toContain('/api/connectors/oauth/status?connectorId=c');
+    expect((fetch as Mock).mock.calls[0]![0]).toContain(
+      '/api/connectors/oauth/status?connectorId=c',
+    );
   });
 
   it('includes agentId in the query when given', async () => {
@@ -49,6 +51,6 @@ describe('getOAuthStatus', () => {
       new Response(JSON.stringify({ status: 'connected' }), { status: 200 }),
     );
     await getOAuthStatus({ connectorId: 'c', agentId: 'A' });
-    expect((fetch as Mock).mock.calls[0][0]).toContain('agentId=A');
+    expect((fetch as Mock).mock.calls[0]![0]).toContain('agentId=A');
   });
 });
