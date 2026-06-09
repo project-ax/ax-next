@@ -2,7 +2,8 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { ConnectorEditDialog } from '../ConnectorEditDialog';
 import * as connectorsLib from '@/lib/connectors';
-import type { ConnectorSummary, Connector } from '@/lib/connectors';
+import * as credentialsLib from '@/lib/credentials';
+import type { ConnectorSummary, Connector, ConnectorOAuthSlot } from '@/lib/connectors';
 
 const SUMMARY: ConnectorSummary = {
   id: 'gdrive',
@@ -40,6 +41,18 @@ describe('ConnectorEditDialog', () => {
     vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(FULL);
     vi.spyOn(connectorsLib, 'createConnector').mockResolvedValue(FULL);
     vi.spyOn(connectorsLib, 'patchConnector').mockResolvedValue(FULL);
+    vi.spyOn(credentialsLib, 'setDestinationCredential').mockResolvedValue(undefined);
+    vi.spyOn(credentialsLib, 'refForDestination').mockImplementation(
+      (dest) => {
+        if (dest.kind === 'account' && dest.slot !== undefined) {
+          return `account:${dest.service}:${dest.slot}`;
+        }
+        if (dest.kind === 'account') {
+          return `account:${dest.service}`;
+        }
+        return 'ref';
+      },
+    );
   });
   afterEach(() => vi.restoreAllMocks());
 
@@ -496,5 +509,201 @@ describe('ConnectorEditDialog', () => {
     await waitFor(() =>
       expect(screen.getByText(/connector id taken/i)).toBeInTheDocument(),
     );
+  });
+
+  // --- oauth credential slot rows (Task 14) --------------------------------
+
+  it('switching a slot row to kind "oauth" shows server select + scopes and hides api-key fields; Advanced fields are hidden until opened', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    await screen.findByLabelText(/service name/i);
+
+    // Add a slot row (starts as api-key).
+    fireEvent.click(screen.getByRole('button', { name: /add (key|secret)/i }));
+    // The api-key fields are visible.
+    expect(screen.getByLabelText(/label \(what it is\)/i)).toBeInTheDocument();
+    // The oauth fields are NOT visible yet.
+    expect(screen.queryByLabelText(/scopes/i)).toBeNull();
+
+    // Switch the row to oauth kind.
+    fireEvent.click(screen.getByRole('radio', { name: /^oauth$/i }));
+
+    // Scopes input should now be present.
+    await waitFor(() =>
+      expect(screen.getByLabelText(/scopes/i)).toBeInTheDocument(),
+    );
+    // The api-key description field should no longer be present.
+    expect(screen.queryByLabelText(/label \(what it is\)/i)).toBeNull();
+
+    // The Advanced section (clientId + client secret) is hidden until the trigger is clicked.
+    expect(screen.queryByLabelText(/client id/i)).toBeNull();
+    expect(screen.queryByLabelText(/client secret/i)).toBeNull();
+
+    // Click the Advanced trigger.
+    fireEvent.click(
+      screen.getByRole('button', { name: /advanced — custom oauth client/i }),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText(/client id/i)).toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText(/client secret/i)).toBeInTheDocument();
+  });
+
+  it('authoring an oauth slot (server + scopes) produces the correct capabilities.credentials entry', async () => {
+    // Stub getConnector to return a connector with an http MCP server so the
+    // server select has an option to pick.
+    const OAUTH_FULL: Connector = {
+      ...FULL,
+      capabilities: {
+        ...connectorsLib.emptyCapabilities(),
+        mcpServers: [
+          {
+            name: 'gdrive',
+            transport: 'http',
+            url: 'https://gdrive.example.com/mcp',
+            allowedHosts: [],
+            credentials: [],
+          },
+        ],
+      },
+    };
+    vi.spyOn(connectorsLib, 'getConnector').mockResolvedValue(OAUTH_FULL);
+
+    render(
+      <ConnectorEditDialog
+        target={SUMMARY}
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    const nameInput = await screen.findByLabelText(/service name/i);
+    await waitFor(() => expect(nameInput).toHaveValue('Google Drive'));
+
+    // Add a slot and switch it to oauth.
+    fireEvent.click(screen.getByRole('button', { name: /add (key|secret)/i }));
+    fireEvent.click(screen.getByRole('radio', { name: /^oauth$/i }));
+
+    // Fill the machine name.
+    await waitFor(() => expect(screen.getByLabelText(/scopes/i)).toBeInTheDocument());
+    // machine name input — after switching to oauth kind the first input in
+    // the row is the machine name field.
+    const machineNameInputs = screen.getAllByLabelText(/machine name/i);
+    fireEvent.change(machineNameInputs[machineNameInputs.length - 1]!, {
+      target: { value: 'GDRIVE_OAUTH' },
+    });
+
+    // Pick the server from the select.
+    // The select has a trigger with the placeholder "Pick a server".
+    const serverTrigger = screen.getByRole('combobox', { name: /mcp server/i });
+    fireEvent.click(serverTrigger);
+    await waitFor(() =>
+      expect(screen.getByRole('option', { name: 'gdrive' })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('option', { name: 'gdrive' }));
+
+    // Fill scopes.
+    fireEvent.change(screen.getByLabelText(/scopes/i), {
+      target: { value: 'read' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.patchConnector).toHaveBeenCalled());
+    const body = vi.mocked(connectorsLib.patchConnector).mock.calls[0]![1];
+    const creds = body.capabilities!.credentials;
+    const oauthSlot = creds.find(
+      (s: { kind: string }) => s.kind === 'oauth',
+    );
+    expect(oauthSlot).toBeDefined();
+    expect(oauthSlot).toMatchObject({
+      kind: 'oauth',
+      server: 'gdrive',
+      scopes: ['read'],
+    });
+    // No raw secret on the connector body.
+    expect(JSON.stringify(body)).not.toContain('client_secret');
+  });
+
+  it('entering a client_secret in Advanced calls setDestinationCredential and sets clientSecretRef; raw secret is absent from connector body', async () => {
+    render(
+      <ConnectorEditDialog
+        target="new"
+        open
+        isAdmin
+        onOpenChange={() => {}}
+        onSaved={() => {}}
+      />,
+    );
+    const nameInput = await screen.findByLabelText(/service name/i);
+    fireEvent.change(nameInput, { target: { value: 'My OAuth Svc' } });
+
+    // Add a slot and switch to oauth.
+    fireEvent.click(screen.getByRole('button', { name: /add (key|secret)/i }));
+    fireEvent.click(screen.getByRole('radio', { name: /^oauth$/i }));
+    await waitFor(() => expect(screen.getByLabelText(/scopes/i)).toBeInTheDocument());
+
+    // Fill machine name.
+    const machineNameInputs = screen.getAllByLabelText(/machine name/i);
+    fireEvent.change(machineNameInputs[machineNameInputs.length - 1]!, {
+      target: { value: 'MY_OAUTH' },
+    });
+
+    // Pick a server from the select so the oauth slot is not dropped (rowsToSlots
+    // drops an oauth row where server is empty).
+    const serverTrigger2 = screen.getByRole('combobox', { name: /mcp server/i });
+    fireEvent.click(serverTrigger2);
+    await waitFor(() =>
+      // The derived server name from the connector name "My OAuth Svc".
+      expect(screen.getByRole('option', { name: 'my-oauth-svc' })).toBeInTheDocument(),
+    );
+    fireEvent.click(screen.getByRole('option', { name: 'my-oauth-svc' }));
+
+    // Open Advanced and fill the client_secret.
+    fireEvent.click(
+      screen.getByRole('button', { name: /advanced — custom oauth client/i }),
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText(/client secret/i)).toBeInTheDocument(),
+    );
+    fireEvent.change(screen.getByLabelText(/client secret/i), {
+      target: { value: 'super-secret-value' },
+    });
+
+    fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
+    await waitFor(() => expect(connectorsLib.createConnector).toHaveBeenCalled());
+
+    // setDestinationCredential was called with the right destination + scope.
+    expect(credentialsLib.setDestinationCredential).toHaveBeenCalledWith(
+      expect.objectContaining({
+        destination: {
+          kind: 'account',
+          service: 'my-oauth-svc',
+          slot: 'oauth-client-secret',
+        },
+        scope: { scope: 'user', ownerId: null }, // personal keyMode → user scope
+        payload: 'super-secret-value',
+      }),
+    );
+
+    // The connector body carries the ref, NOT the raw secret.
+    const body = vi.mocked(connectorsLib.createConnector).mock.calls[0]![0];
+    const creds2 = body.capabilities!.credentials;
+    const oauthSlot = creds2.find(
+      (s: { kind: string }) => s.kind === 'oauth',
+    ) as ConnectorOAuthSlot | undefined;
+    expect(oauthSlot).toBeDefined();
+    expect(oauthSlot!.clientSecretRef).toBe(
+      'account:my-oauth-svc:oauth-client-secret',
+    );
+    // The raw secret must NOT appear anywhere in the connector body.
+    expect(JSON.stringify(body)).not.toContain('super-secret-value');
   });
 });
