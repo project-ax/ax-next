@@ -6,6 +6,7 @@ import {
   PluginError,
 } from '@ax/core';
 import type { discover, ensureClient, buildAuthorization, redeemCode } from './oauth-flow.js';
+import { NeedsReconnectError } from './resolver.js';
 import type { McpOAuthStore } from './store.js';
 import {
   clientKeyOf,
@@ -123,6 +124,7 @@ function neutralMessage(err: unknown): string {
 export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
   begin(req: RouteRequest, res: RouteResponse): Promise<void>;
   callback(req: RouteRequest, res: RouteResponse): Promise<void>;
+  status(req: RouteRequest, res: RouteResponse): Promise<void>;
 } {
   const { bus, store, flow, config, genState, now, pendingTtlMs } = deps;
   const redirectUri = `${config.publicOrigin}/api/connectors/oauth/callback`;
@@ -564,7 +566,83 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     res.redirect(returnUrl(pending.connectorId, 'success'));
   }
 
-  return { begin, callback };
+  async function status(req: RouteRequest, res: RouteResponse): Promise<void> {
+    const user = await requireUser(req, res);
+    if (!user) return;
+
+    const connectorId = req.query.connectorId;
+    if (!connectorId) {
+      res.status(400).json({ error: 'connectorId is required' });
+      return;
+    }
+    const agentId = req.query.agentId || undefined;
+
+    // Authz gate mirrors `begin`: when agentId is present, agents:resolve IS the
+    // owner/member binding check; when absent, connector ownership gates (connectors:get).
+    if (agentId !== undefined) {
+      try {
+        await bus.call<{ agentId: string; userId: string }, unknown>(
+          'agents:resolve',
+          ctxFor(user.id),
+          { agentId, userId: user.id },
+        );
+      } catch (err) {
+        if (isReject(err)) {
+          res.status(403).json({ error: 'forbidden' });
+          return;
+        }
+        throw err;
+      }
+    } else {
+      try {
+        await bus.call<{ userId: string; connectorId: string }, unknown>(
+          'connectors:get',
+          ctxFor(user.id),
+          { userId: user.id, connectorId },
+        );
+      } catch (err) {
+        if (isReject(err)) {
+          res.status(404).json({ error: 'not-found' });
+          return;
+        }
+        throw err;
+      }
+    }
+
+    // Probe the credential via the same runtime path a chat turn uses.
+    // probeCtx.agentId MUST be the real agentId (when present) so credentials:get
+    // walks the agent scope correctly (packages/credentials/src/plugin.ts:567).
+    const ref = `account:${connectorId}`;
+    const probeCtx = makeAgentContext({
+      sessionId: 'mcp-oauth',
+      agentId: agentId ?? '@ax/mcp-oauth',
+      userId: user.id,
+    });
+    try {
+      await bus.call<{ ref: string; userId: string }, string>(
+        'credentials:get',
+        probeCtx,
+        { ref, userId: user.id },
+      );
+      // Token value is read host-side and DISCARDED — never returned to the caller.
+      res.status(200).json({ status: 'connected' });
+    } catch (err) {
+      const code = (err as { code?: unknown }).code;
+      const msg = err instanceof Error ? err.message : '';
+      if (code === 'credential-not-found') {
+        res.status(200).json({ status: 'not-connected' });
+        return;
+      }
+      if (err instanceof NeedsReconnectError || msg.includes('reconnect')) {
+        res.status(200).json({ status: 'needs-reconnect' });
+        return;
+      }
+      logger.error('mcp_oauth_status_probe_failed', { connectorId, ...errFields(err) });
+      res.status(500).json({ error: 'status_check_failed' });
+    }
+  }
+
+  return { begin, callback, status };
 }
 
 /**
@@ -586,6 +664,7 @@ export async function registerMcpOAuthRoutes(
   }> = [
     { method: 'POST', path: '/api/connectors/oauth/begin', handler: handlers.begin },
     { method: 'GET', path: '/api/connectors/oauth/callback', handler: handlers.callback },
+    { method: 'GET', path: '/api/connectors/oauth/status', handler: handlers.status },
   ];
   const unregisters: Array<() => void> = [];
   for (const route of routes) {
