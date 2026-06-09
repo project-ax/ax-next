@@ -1,4 +1,4 @@
-import { promises as fs } from 'node:fs';
+import { promises as fs, constants as fsConstants } from 'node:fs';
 import * as path from 'node:path';
 import {
   PluginError,
@@ -122,12 +122,50 @@ function safeJoin(root: string, relPath: string | undefined): string {
 }
 
 /**
+ * Confine `target` to `root` by realpath — resolving EVERY component, so an
+ * INTERMEDIATE symlink the (untrusted) agent planted inside its own subtree
+ * (e.g. `subdir -> /export/<other-agentId>` or `-> /`) cannot point the read at
+ * another tenant's files. Lexical `safeJoin` only catches `..`/absolute in the
+ * caller's relPath — it does NOT resolve symlinks on disk, so it's necessary
+ * but NOT sufficient (the cross-tenant disclosure the security review caught).
+ *
+ * Returns the realpath'd target when it stays under the realpath'd root, else
+ * `undefined` (→ caller serves `absent`). ENOENT / a dangling link → undefined.
+ */
+async function confineByRealpath(
+  root: string,
+  target: string,
+): Promise<string | undefined> {
+  let realRoot: string;
+  let realTarget: string;
+  try {
+    realRoot = await fs.realpath(root);
+    // realpath resolves ALL intermediate + final symlinks on disk.
+    realTarget = await fs.realpath(target);
+  } catch {
+    return undefined;
+  }
+  if (realTarget !== realRoot && !realTarget.startsWith(realRoot + path.sep)) {
+    return undefined;
+  }
+  return realTarget;
+}
+
+/**
  * Realize `sandbox:read-user-files` for the subprocess provider: resolve the
  * agent's `localDir` user-files mount READ-ONLY and read one path under it.
  * Returns `{ kind: 'absent' }` when there's no mount or the path doesn't exist;
  * a regular file's bytes for a file; the immediate children for a directory.
  * Only files + dirs are listed (symlinks/specials are skipped). Never opens a
  * writable handle.
+ *
+ * SECURITY (cross-tenant isolation, the load-bearing property): the read path
+ * is confined to the mount root by REALPATH — resolving every intermediate
+ * component — so an agent-planted symlink ANYWHERE on the path (not just the
+ * final component) cannot escape into a sibling agent's subtree or the host FS.
+ * The final open uses `O_NOFOLLOW` (reject a final-component symlink) and reads
+ * via the fd to shrink the realpath→open TOCTOU window; the realpath confinement
+ * is the primary defense.
  */
 export async function readUserFiles(
   ctx: AgentContext,
@@ -144,19 +182,26 @@ export async function readUserFiles(
   );
   if (root === undefined) return { kind: 'absent' };
 
-  const target = safeJoin(root, input.relPath);
+  // 1. Lexical guard on the caller-supplied relPath (absolute / `..`).
+  const lexicalTarget = safeJoin(root, input.relPath);
+  // 2. On-disk guard: realpath-confine to the mount root so an intermediate
+  //    symlink can't escape. A path that resolves outside → absent.
+  const target = await confineByRealpath(root, lexicalTarget);
+  if (target === undefined) return { kind: 'absent' };
+
+  // `target` is now the realpath'd, confirmed-in-root path. Stat it (no symlink
+  // can remain — realpath resolved them and we re-confined).
   let stat;
   try {
     stat = await fs.lstat(target);
   } catch {
-    // ENOENT (or any stat failure) → nothing to serve.
     return { kind: 'absent' };
   }
-  // Reject symlinks at the target itself — a read-only browser must not follow
-  // a link the (untrusted) agent planted that points outside its subtree.
-  if (stat.isSymbolicLink()) return { kind: 'absent' };
+  if (stat.isSymbolicLink()) return { kind: 'absent' }; // belt: shouldn't happen post-realpath
   if (stat.isDirectory()) {
     const dirents = await fs.readdir(target, { withFileTypes: true });
+    // `withFileTypes` uses lstat semantics, so a symlink dirent reports neither
+    // isFile() nor isDirectory() — symlinks are dropped here, never listed.
     const entries = dirents
       .filter((d) => d.isFile() || d.isDirectory())
       .map((d) => ({
@@ -166,8 +211,19 @@ export async function readUserFiles(
     return { kind: 'dir', entries };
   }
   if (stat.isFile()) {
-    const contents = await fs.readFile(target);
-    return { kind: 'file', contents: new Uint8Array(contents) };
+    // O_NOFOLLOW shrinks the realpath→open TOCTOU window: if the final component
+    // was swapped for a symlink between realpath and open, the open fails (ELOOP)
+    // → absent, rather than following the swapped link.
+    let fh: fs.FileHandle | undefined;
+    try {
+      fh = await fs.open(target, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+      const contents = await fh.readFile();
+      return { kind: 'file', contents: new Uint8Array(contents) };
+    } catch {
+      return { kind: 'absent' };
+    } finally {
+      await fh?.close().catch(() => undefined);
+    }
   }
   // A socket/fifo/device — nothing a file browser should serve.
   return { kind: 'absent' };

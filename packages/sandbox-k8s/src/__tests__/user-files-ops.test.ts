@@ -226,14 +226,16 @@ describe('readUserFiles (k8s one-shot read pod)', () => {
     const pod = api.creates[0]!.body as InspectablePod;
     expect(pod.spec.containers[0].volumeMounts[0].readOnly).toBe(true);
     expect(pod.metadata.labels['ax.io/plane']).toBe('execution');
-    // RELPATH is scoped under the agent's own subPath.
+    // SUBPATH (the agent's own subtree) + RELPATH (relative to it) ride
+    // SEPARATELY via env; the script realpath-confines under $EXPORT/$SUBPATH.
     expect(pod.spec.containers[0].env).toEqual([
-      { name: 'RELPATH', value: 'agent-abc' },
+      { name: 'SUBPATH', value: 'agent-abc' },
+      { name: 'RELPATH', value: '.' },
     ]);
     expect(api.deletes).toHaveLength(1);
   });
 
-  it('scopes a nested relPath under the agent subPath', async () => {
+  it('scopes a nested relPath relative to the agent subPath', async () => {
     const api = makeMockK8sApi();
     primeTerminal(api, 'FILE ' + Buffer.from('hi').toString('base64'));
     const { bus } = busWithNfs();
@@ -243,7 +245,8 @@ describe('readUserFiles (k8s one-shot read pod)', () => {
     });
     const pod = api.creates[0]!.body as InspectablePod;
     expect(pod.spec.containers[0].env).toEqual([
-      { name: 'RELPATH', value: 'agent-abc/docs/note.md' },
+      { name: 'SUBPATH', value: 'agent-abc' },
+      { name: 'RELPATH', value: 'docs/note.md' },
     ]);
     expect(out.kind).toBe('file');
     if (out.kind !== 'file') throw new Error('expected file');
@@ -281,6 +284,34 @@ describe('readUserFiles (k8s one-shot read pod)', () => {
       }),
     ).rejects.toBeInstanceOf(PluginError);
     expect(api.creates).toHaveLength(0);
+  });
+
+  // SECURITY (cross-tenant, the bug the review caught): a lexical relPath guard
+  // is NOT enough — an agent can plant an INTERMEDIATE symlink in its own
+  // subtree pointing at a sibling's subPath or `/`. The reader script must
+  // REALPATH-confine the target under the agent's OWN subtree before reading,
+  // and skip symlink children when listing. We assert the generated script
+  // carries that confinement (a unit test can't run a real NFS pod; the kind
+  // walk exercises it live).
+  it('SECURITY: the read script realpath-confines to the per-agent subPath and skips symlink children', async () => {
+    const api = makeMockK8sApi();
+    primeTerminal(api, 'ABSENT');
+    const { bus } = busWithNfs();
+    await readUserFiles(ctx(), bus, api, CONFIG, log, {
+      owner: ownerFromAgentId('agent-abc', 'u1'),
+    });
+    const pod = api.creates[0]!.body as InspectablePod;
+    const script = pod.spec.containers[0].command.join('\n');
+    // Resolves every component (intermediate symlinks too)…
+    expect(script).toMatch(/realpath -- "\$target"/);
+    // …and confines under the agent's OWN subtree, not just the export.
+    expect(script).toContain('base="/export/$SUBPATH"');
+    expect(script).toMatch(/"\$realbase"\)/);
+    expect(script).toMatch(/"\$realbase"\/\*\)/);
+    // A non-confined resolution → ABSENT (no disclosure).
+    expect(script).toMatch(/\*\) echo ABSENT; exit 0/);
+    // Listing skips any symlink child.
+    expect(script).toContain('if [ -L "$entry" ]; then continue; fi');
   });
 });
 

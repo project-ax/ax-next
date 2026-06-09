@@ -318,33 +318,59 @@ export async function cleanupUserFiles(
 //   ABSENT                                  (path missing / not file-or-dir)
 //
 // base64 keeps binary file bytes intact over the text log channel; the cap
-// bounds what the apiserver must buffer. A symlink at the target is treated as
-// ABSENT (a read-only browser must not follow an agent-planted link).
+// bounds what the apiserver must buffer.
+//
+// SECURITY (cross-tenant isolation): the script REALPATH-CONFINES the target to
+// the agent's OWN subtree (`$EXPORT/$SUBPATH`) before reading — `realpath`
+// resolves EVERY intermediate component, so an agent-planted symlink anywhere on
+// the path (e.g. `subdir -> /export/<other-agentId>` or `-> /`) cannot point the
+// read at a sibling agent's files or the host FS. Confining to the per-agent
+// subPath (not just `$EXPORT`) is load-bearing — a symlink could otherwise still
+// cross into a sibling's subtree on the SAME export. The directory listing skips
+// any symlink child (`[ -L ]`) so a listed name can never disclose a foreign
+// path's contents on a follow-up read.
 // ---------------------------------------------------------------------------
 
-/** Build the read script. `RELPATH` is passed via env (validated host-side as
- *  traversal-safe) so it's never spliced into a shell word. */
+/** Build the read script. `SUBPATH` (the agent's own subtree) and `RELPATH`
+ *  (a host-validated relative path under it) are passed via env (never spliced
+ *  into a shell word). The script confines the realpath'd target under
+ *  `$EXPORT/$SUBPATH` before reading/listing. */
 function buildReadCommand(): string {
-  // POSIX sh. `target="$EXPORT/${RELPATH#/}"` — strip a leading slash defensively
-  // (host already rejects absolute paths). Distinguish dir/file/symlink/missing.
+  // POSIX sh. `base` is this agent's subtree root; `target` the requested path.
+  // realpath resolves all symlinks; we then require the result to be `base` or
+  // strictly under `base/`. A missing path / dangling link → realpath fails →
+  // ABSENT. The listing walk skips symlink children entirely.
   return [
     'set -eu',
-    `target="${EXPORT_MOUNT}/$RELPATH"`,
-    'if [ -L "$target" ]; then echo ABSENT; exit 0; fi',
+    `base="${EXPORT_MOUNT}/$SUBPATH"`,
+    'if [ "$RELPATH" = "." ]; then target="$base"; else target="$base/$RELPATH"; fi',
+    // Resolve ALL symlinks; bail to ABSENT if it can't resolve (missing/dangling).
+    'real=$(realpath -- "$target" 2>/dev/null || true)',
+    'if [ -z "$real" ]; then echo ABSENT; exit 0; fi',
+    'realbase=$(realpath -- "$base" 2>/dev/null || true)',
+    'if [ -z "$realbase" ]; then echo ABSENT; exit 0; fi',
+    // Confine: the resolved target MUST be the agent subtree root or strictly
+    // under it. A symlink that escaped (to a sibling subPath or absolute path)
+    // fails this case and yields ABSENT — never discloses foreign contents.
+    'case "$real" in',
+    '  "$realbase") : ;;',
+    '  "$realbase"/*) : ;;',
+    '  *) echo ABSENT; exit 0 ;;',
+    'esac',
+    'target="$real"',
     'if [ -d "$target" ]; then',
-    // List immediate children with a type marker, JSON-encode, base64 it.
-    // `find -maxdepth 1` includes the dir itself (.) — filter it out. Emit
-    // name<TAB>kind lines; the host builds the JSON (keeps the pod script tiny
-    // and avoids quoting hazards in-shell).
+    // List immediate children with a type marker. Skip ANY symlink child
+    // (`[ -L ]`) so a foreign-pointing link is never even named. Emit
+    // name<TAB>kind lines; the host base64-decodes + builds the JSON.
     '  out=""',
     '  for entry in "$target"/* "$target"/.*; do',
     '    [ -e "$entry" ] || continue',
-    '    base=$(basename "$entry")',
-    '    [ "$base" = "." ] && continue',
-    '    [ "$base" = ".." ] && continue',
+    '    base2=$(basename "$entry")',
+    '    [ "$base2" = "." ] && continue',
+    '    [ "$base2" = ".." ] && continue',
     '    if [ -L "$entry" ]; then continue; fi',
-    '    if [ -d "$entry" ]; then out="$out$base\tdir\n";',
-    '    elif [ -f "$entry" ]; then out="$out$base\tfile\n"; fi',
+    '    if [ -d "$entry" ]; then out="$out$base2\tdir\n";',
+    '    elif [ -f "$entry" ]; then out="$out$base2\tfile\n"; fi',
     '  done',
     '  printf "%b" "$out" | base64 | tr -d "\\n" | (printf "DIR "; cat); echo',
     '  exit 0',
@@ -402,10 +428,6 @@ export async function readUserFiles(
 
   const podName = `ax-userfiles-read-${randomUUID().slice(0, 8)}`;
   const readLog = log.child({ podName });
-  // The per-agent subtree IS the read root: $EXPORT/$SUBPATH, then $RELPATH
-  // under it. We bake SUBPATH into RELPATH so the script's single $EXPORT/$RELPATH
-  // join confines to this agent's subtree.
-  const scopedRel = rel === '.' ? mount.subPath : `${mount.subPath}/${rel}`;
   const pod = buildOneshotPod({
     podName,
     mount,
@@ -413,9 +435,15 @@ export async function readUserFiles(
     command: buildReadCommand(),
     config,
   });
-  // Override the env so RELPATH carries the per-agent-scoped relative path.
+  // The script confines the realpath'd target under `$EXPORT/$SUBPATH` (the
+  // agent's OWN subtree), so SUBPATH and the relative RELPATH are passed
+  // SEPARATELY — both via env, never spliced into a shell word. RELPATH is the
+  // host-validated path relative to the agent subtree (default `.` = the root).
   ((pod.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> })
-    .containers[0]!.env) = [{ name: 'RELPATH', value: scopedRel }];
+    .containers[0]!.env) = [
+    { name: 'SUBPATH', value: mount.subPath },
+    { name: 'RELPATH', value: rel },
+  ];
 
   await api.createNamespacedPod({ namespace: config.namespace, body: pod });
   try {

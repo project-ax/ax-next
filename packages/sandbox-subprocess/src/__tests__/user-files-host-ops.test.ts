@@ -160,6 +160,58 @@ describe('readUserFiles (subprocess host-read)', () => {
     expect(list.entries.map((e) => e.name)).not.toContain('link.txt');
   });
 
+  // SECURITY REGRESSION (cross-tenant disclosure, HIGH): the agent can plant an
+  // INTERMEDIATE symlink inside its OWN subtree pointing at a sibling agent's
+  // subtree, then read THROUGH it. A lexical relPath guard (`..`/absolute) does
+  // NOT catch this — only realpath-confinement does. Reading
+  // `escape/secret.txt` where `escape -> <root>/agent-b` must yield ABSENT, not
+  // agent-b's file.
+  it('SECURITY: an INTERMEDIATE symlink to a sibling agent subtree does NOT disclose its files', async () => {
+    const dirA = await seedAgentFiles('agent-a');
+    const dirB = await seedAgentFiles('agent-b');
+    await fs.writeFile(path.join(dirB, 'secret.txt'), 'AGENT-B-SECRET');
+    // Inside agent-a's OWN subtree, a dir symlink pointing at agent-b's subtree.
+    await fs.symlink(dirB, path.join(dirA, 'escape'));
+    const bus = busWithLocaldir();
+
+    // Read a file THROUGH the intermediate symlink.
+    const file = await readUserFiles(ctx(), bus, PLUGIN, {
+      owner: ownerFromAgentId('agent-a', 'u1'),
+      relPath: 'escape/secret.txt',
+    });
+    expect(file).toEqual({ kind: 'absent' });
+
+    // List THROUGH the intermediate symlink.
+    const list = await readUserFiles(ctx(), bus, PLUGIN, {
+      owner: ownerFromAgentId('agent-a', 'u1'),
+      relPath: 'escape',
+    });
+    expect(list).toEqual({ kind: 'absent' });
+
+    // And the symlink itself is not even listed at the root.
+    const rootList = await readUserFiles(ctx(), bus, PLUGIN, {
+      owner: ownerFromAgentId('agent-a', 'u1'),
+    });
+    if (rootList.kind !== 'dir') throw new Error('expected dir');
+    expect(rootList.entries.map((e) => e.name)).not.toContain('escape');
+    // agent-b's subtree is entirely untouched.
+    expect(
+      Buffer.from(await fs.readFile(path.join(dirB, 'secret.txt'))).toString('utf-8'),
+    ).toBe('AGENT-B-SECRET');
+  });
+
+  it('SECURITY: an INTERMEDIATE symlink to an absolute host path does NOT disclose it', async () => {
+    const dirA = await seedAgentFiles('agent-a');
+    // A symlink to the host filesystem root.
+    await fs.symlink('/', path.join(dirA, 'rootlink'));
+    const bus = busWithLocaldir();
+    const out = await readUserFiles(ctx(), bus, PLUGIN, {
+      owner: ownerFromAgentId('agent-a', 'u1'),
+      relPath: 'rootlink/etc/hostname',
+    });
+    expect(out).toEqual({ kind: 'absent' });
+  });
+
   it('SECURITY: never opens a writable handle — the file is unchanged after a read', async () => {
     const dir = await seedAgentFiles('agent-a');
     const before = await fs.stat(path.join(dir, 'hello.txt'));
