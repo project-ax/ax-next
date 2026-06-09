@@ -25,6 +25,12 @@
 
 import { readFile, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
+import type {
+  AgentContext,
+  HookBus,
+  WorkspaceReadInput,
+  WorkspaceReadOutput,
+} from '@ax/core';
 
 /** Per-file hard cap (mirrors the runner's prompt-engine). A larger file is
  * skipped whole, never truncated. Generous: a real IDENTITY/SOUL file is a few
@@ -71,6 +77,55 @@ export async function composeIdentityFromFiles(
     readAxFile(workspaceRoot, 'IDENTITY.md'),
     readAxFile(workspaceRoot, 'SOUL.md'),
   ]);
+  return composeIdentityParts(identity, soul);
+}
+
+/**
+ * Tier variant of {@link composeIdentityFromFiles} (TASK-182). When memory
+ * lives in the `/agent` git tier (k8s preset), the agent's `.ax/IDENTITY.md` +
+ * `.ax/SOUL.md` are NOT on the host filesystem — they're committed in the git
+ * tier at `<tier>/.ax/…`. Read them through `workspace:read` (owner-routed by
+ * `ctx`, so confined to this agent's repo) instead of a host-FS read.
+ *
+ * Returns '' on any miss — same contract as the FS variant; the caller seeds a
+ * placeholder body.
+ */
+export async function composeIdentityFromTier(
+  bus: HookBus,
+  ctx: AgentContext,
+): Promise<string> {
+  const [identity, soul] = await Promise.all([
+    readTierAxFile(bus, ctx, '.ax/IDENTITY.md'),
+    readTierAxFile(bus, ctx, '.ax/SOUL.md'),
+  ]);
+  return composeIdentityParts(identity, soul);
+}
+
+async function readTierAxFile(
+  bus: HookBus,
+  ctx: AgentContext,
+  path: string,
+): Promise<string | undefined> {
+  try {
+    const out = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
+      'workspace:read',
+      ctx,
+      { path },
+    );
+    if (!out.found) return undefined;
+    if (out.bytes.length > MAX_AX_FILE_BYTES) return undefined;
+    return new TextDecoder('utf-8').decode(out.bytes);
+  } catch {
+    // A read failure (no backend, transient error) degrades to absent — the
+    // bootstrap seeds the placeholder body, same as a never-identified agent.
+    return undefined;
+  }
+}
+
+function composeIdentityParts(
+  identity: string | undefined,
+  soul: string | undefined,
+): string {
   const parts: string[] = [];
   if (identity !== undefined && identity.trim().length > 0) {
     parts.push(`## Identity\n\n${identity.trim()}`);

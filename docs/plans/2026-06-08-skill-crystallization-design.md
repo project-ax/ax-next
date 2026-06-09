@@ -96,9 +96,16 @@ index plugin. It registers:
   (capped ~1500 tokens) at chat start,
 - three agent tools: `memory_search` (BM25 over the index), `memory_read_section`, `memory_note`.
 
-> **Correction vs. early brainstorming notes:** the runtime memory layout is `permanent/memory/`
+> **Correction vs. early brainstorming notes:** the runtime memory layout is `memory/`
 > (`system/`, `docs/`, `inbox/`), **not** `.ax/memory/{patterns,mistakes,decisions}.md`. The
 > "consolidated, reinforced" tier the reflection reads is `system/recent.md` + `docs/`.
+>
+> **TASK-182 update:** the bullets above describe memory-strata's host-side processing
+> layout (a disposable scratch laid out as `permanent/memory/**`). The *durable home* of that
+> output is now the per-agent **`/agent` git tier** at **`memory/…`** (the `permanent/` prefix
+> is host-scratch-only and dropped at the tier boundary) — that's what the runner reads and
+> what the "Inputs the reflection turn has" section below describes. The `system-prompt:augment`
+> injector reads `memory/system/{user,recent}.md` from the tier too (owner-routed per agent).
 
 **Authored-draft projection — SHIPPED & WIRED (PRs #218/#219).** The relevant facts:
 - The orchestrator's spawn-time skill union calls `agents:resolve-authored-skills` →
@@ -119,12 +126,15 @@ is the **exact current behavior**. This feature supplies the *trigger* that exer
 
 ```
   ┌─────────────────────────────────────────────────────────────────────┐
-  │ STAGE 1 — per-turn capture  (UNCHANGED, @ax/memory-strata)           │
-  │   chat:end → observer → permanent/memory/inbox/                       │
-  │            → consolidator (dedup/cluster/promote/decay)               │
-  │            → permanent/memory/{system/recent.md, docs/...}            │
+  │ STAGE 1 — per-turn capture  (@ax/memory-strata; TASK-182 wires the    │
+  │           output into the /agent git tier)                            │
+  │   chat:end → observer → memory/inbox/  (host scratch hydrated from     │
+  │            → consolidator (dedup/cluster/promote/decay)   /agent)      │
+  │            → memory/{system/recent.md, docs/...}                       │
+  │            → FLUSH to the per-agent /agent git tier (workspace:apply)  │
+  │              so it materializes into the runner's /agent/memory/…      │
   └─────────────────────────────────────────────────────────────────────┘
-                                   │  (feeds)
+                                   │  (feeds, via /agent materialize)
                                    ▼
   ┌─────────────────────────────────────────────────────────────────────┐
   │ STAGE 2 — crystallization  (NEW, this design)                        │
@@ -148,18 +158,40 @@ is the **exact current behavior**. This feature supplies the *trigger* that exer
 
 ### Inputs the reflection turn has, for free
 
-> All paths below are relative to the runner's workspace root, which is the runner's `HOME` =
-> `/permanent`. So `.ax/draft-skills/` is `/permanent/.ax/draft-skills/`, `memory/` is
-> `/permanent/memory/`, etc.
+> **CORRECTION (TASK-182 — design-assumption fix).** The early draft of this section
+> assumed the runner's workspace root is its `HOME` = `/permanent`, and that consolidated
+> memory therefore lives at `/permanent/memory/…`. **That is wrong for the k8s preset and
+> was the bug the TASK-180 walk exposed.** In k8s the reflection runner's writable git
+> workspace is **`/agent`** (the per-agent governed git tier — see
+> `@ax/sandbox-k8s`'s pod-spec `AX_WORKSPACE_ROOT=/agent` and the workspace-bundle
+> materialize path); `HOME` is a throwaway tmpfs (`/home/runner`), and there is no
+> `/permanent` mount at all. memory-strata's host-side consolidator runs on the host pod,
+> whose `ctx.workspace.rootPath` was `process.cwd()` (a *single shared* host dir), so the
+> consolidated tree (a) pooled every agent together and (b) never reached any runner pod —
+> the reflection always read an empty `/agent/memory/` and no-op'd.
+>
+> **As-built (TASK-182):** consolidated memory's single durable home is the per-agent
+> **`/agent` governed git tier** at **`memory/…`** (i.e. `/agent/memory/system/recent.md`,
+> `/agent/memory/docs/…`). memory-strata writes it there through the storage-agnostic
+> `workspace:apply` hook (owner-routed by `(userId, agentId)`, so per-agent isolated), and
+> the runner's session-start materialize bundle carries it into the reflection turn's
+> `/agent`. The host's per-turn local processing uses a disposable scratch hydrated from
+> `/agent`; `/agent` is canonical (Invariant 4). See `@ax/memory-strata`'s `agent-tier-sync`.
+>
+> All paths below are therefore relative to the runner's workspace root **`/agent`**.
+> `.ax/draft-skills/` is `/agent/.ax/draft-skills/`, memory is `/agent/memory/…`, etc.
 
-Because the runner's `HOME` is `/permanent`, the reflection turn's own workspace already
-contains both inputs — no new cross-conversation capability is required:
-- **Consolidated memory** at `permanent/memory/system/recent.md` + `permanent/memory/docs/…`
-  (also auto-injected into the reflection turn's system prompt by the existing
-  `system-prompt:augment`), and queryable via the `memory_search` tool.
-- **Its own past transcripts** at `permanent/.claude/projects/*/*.jsonl` (transcripts are
-  runner-owned and git-committed), which the agent may `grep` to cite the ≥2 distinct
-  conversations that ground a recurrence claim.
+Because the reflection turn's own `/agent` workspace already contains both inputs, no new
+cross-conversation capability is required:
+- **Consolidated memory** at `memory/system/recent.md` + `memory/docs/…` (under `/agent`;
+  also auto-injected into the reflection turn's system prompt by the existing
+  `system-prompt:augment`), and queryable via the `memory_search` tool. *(Caveat: the
+  host-side `memory_search` index is not yet per-agent-keyed in the tier deployment — see
+  the TASK-182 follow-up. The reflection's primary, working path is reading these files
+  directly with the `Read` tool.)*
+- **Its own past transcripts** at `.claude/projects/*/*.jsonl` (under `/agent`; transcripts
+  are runner-owned), which the agent may `grep` to cite the ≥2 distinct conversations that
+  ground a recurrence claim.
 
 ### Authoring uses the existing path verbatim
 
