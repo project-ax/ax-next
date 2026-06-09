@@ -198,7 +198,7 @@ describe('RoutinesList', () => {
 
   it('shows the webhook receiver URL with a copy button for a webhook routine', async () => {
     mockWebhookRow('wh-TOKEN');
-    const writeText = vi.fn();
+    const writeText = vi.fn().mockResolvedValue(undefined);
     Object.defineProperty(navigator, 'clipboard', {
       value: { writeText },
       configurable: true,
@@ -206,14 +206,38 @@ describe('RoutinesList', () => {
 
     render(<RoutinesList onFired={() => {}} />);
 
-    // The full receiver URL ends with /webhooks/<token><routine-path>.
-    const code = await screen.findByText(/\/webhooks\/wh-TOKEN\/gh$/);
-    expect(code).toBeTruthy();
+    // The full receiver URL is <origin>/webhooks/<token><routine-path> —
+    // assert the origin prefix too, not just the suffix.
+    const expectedUrl = `${window.location.origin}/webhooks/wh-TOKEN/gh`;
+    expect(await screen.findByText(expectedUrl)).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: /copy webhook url/i }));
-    expect(writeText).toHaveBeenCalledWith(
-      expect.stringContaining('/webhooks/wh-TOKEN/gh'),
-    );
+    expect(writeText).toHaveBeenCalledWith(expectedUrl);
+  });
+
+  it('shows a note (not a blank gap) when the webhook token cannot be loaded', async () => {
+    const ok = (body: unknown): Response =>
+      ({ ok: true, status: 200, json: async () => body }) as Response;
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/settings/routines') return Promise.resolve(ok({ routines: [webhookRoutine] }));
+      // 403: a team agent the actor can see but doesn't own.
+      if (url.includes('/webhook-token')) {
+        return Promise.resolve({
+          ok: false,
+          status: 403,
+          json: async () => ({ error: 'forbidden' }),
+        } as Response);
+      }
+      return Promise.resolve(ok({ credentials: [] }));
+    });
+
+    render(<RoutinesList onFired={() => {}} />);
+
+    expect(
+      await screen.findByText(/only the agent owner can view it/i),
+    ).toBeTruthy();
+    // The URL + copy button are absent.
+    expect(screen.queryByRole('button', { name: /copy webhook url/i })).toBeNull();
   });
 
   it('does NOT show an HMAC CredentialSlotRow for interval-triggered routines', async () => {

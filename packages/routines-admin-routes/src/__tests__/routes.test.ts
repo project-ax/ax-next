@@ -1389,6 +1389,8 @@ describe('routines-admin-routes — GET /settings/routines/:agentId/webhook-toke
     const { res, captured } = makeRes();
     await handler(makeReq({ params: { agentId: 'agt_x' } }), res);
     expect(captured.status).toBe(403);
+    // The token (a bearer capability) must never ride along on an error.
+    expect(captured.body).not.toHaveProperty('token');
     await harness.close({ onError: () => {} });
   });
 
@@ -1404,6 +1406,7 @@ describe('routines-admin-routes — GET /settings/routines/:agentId/webhook-toke
     const { res, captured } = makeRes();
     await handler(makeReq({ params: { agentId: 'agt_missing' } }), res);
     expect(captured.status).toBe(404);
+    expect(captured.body).not.toHaveProperty('token');
     await harness.close({ onError: () => {} });
   });
 

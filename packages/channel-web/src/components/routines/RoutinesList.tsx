@@ -108,10 +108,18 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
   // actually prevents the duplicate DELETE seen in the kind walk.
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
-  // Per-agent webhook receiver tokens (one token serves all of an agent's
+  // Per-agent webhook receiver token state (one token serves all of an agent's
   // webhook routines). Fetched lazily once the list loads so we can show the
-  // full /webhooks/<token><path> URL on each webhook row.
-  const [webhookTokens, setWebhookTokens] = useState<Record<string, string>>({});
+  // full /webhooks/<token><path> URL on each webhook row. `{ failed: true }`
+  // records a load failure so the row can explain the gap instead of silently
+  // omitting the URL (the expected failure is a 403 on a team agent the actor
+  // can see but doesn't own — see WebhookReceiver).
+  const [webhookTokens, setWebhookTokens] = useState<
+    Record<string, { token: string } | { failed: true }>
+  >({});
+  // Agents whose token fetch is in flight — keeps the effect from re-issuing a
+  // pending request when it re-runs on each token commit.
+  const webhookInFlight = useRef<Set<string>>(new Set());
 
   async function reload(): Promise<void> {
     setError(null);
@@ -144,32 +152,36 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
     void reload();
   }, [refreshKey]);
 
-  // Fetch the receiver token for each agent that has a webhook routine (skips
-  // agents already cached). A failure leaves the token undefined → the row
-  // just omits the URL; it's not fatal. Listing `webhookTokens` as a dep is
-  // loop-safe: once an agent is cached it's filtered out, so no refetch.
+  // Fetch the receiver token for each agent that has a webhook routine. An
+  // agent is fetched once: it's skipped if a result is already cached OR a
+  // request is in flight (`webhookInFlight`). That in-flight guard is what
+  // keeps this loop-safe AND amplification-free — without it, re-running on
+  // each `webhookTokens` commit would re-issue the still-pending requests of
+  // the other agents. The result is committed unconditionally (a token stays
+  // valid regardless of later list changes); only setState-after-unmount is
+  // the cost, which React tolerates.
   useEffect(() => {
     if (list === null) return;
     const agentIds = Array.from(
       new Set(
         list.filter((r) => r.trigger.kind === 'webhook').map((r) => r.agentId),
       ),
-    ).filter((id) => webhookTokens[id] === undefined);
-    if (agentIds.length === 0) return;
-    let cancelled = false;
-    void Promise.all(
-      agentIds.map(async (agentId) => {
-        try {
-          const { token } = await routines.webhookToken(agentId);
-          if (!cancelled) setWebhookTokens((m) => ({ ...m, [agentId]: token }));
-        } catch {
-          /* leave undefined — the row omits the URL */
-        }
-      }),
+    ).filter(
+      (id) => webhookTokens[id] === undefined && !webhookInFlight.current.has(id),
     );
-    return () => {
-      cancelled = true;
-    };
+    if (agentIds.length === 0) return;
+    for (const agentId of agentIds) {
+      webhookInFlight.current.add(agentId);
+      void routines
+        .webhookToken(agentId)
+        .then(({ token }) =>
+          setWebhookTokens((m) => ({ ...m, [agentId]: { token } })),
+        )
+        .catch(() =>
+          setWebhookTokens((m) => ({ ...m, [agentId]: { failed: true } })),
+        )
+        .finally(() => webhookInFlight.current.delete(agentId));
+    }
   }, [list, webhookTokens]);
 
   async function loadFires(agentId: string, path: string): Promise<void> {
@@ -308,11 +320,10 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
                 )}
                 {r.trigger.kind === 'webhook' && (
                   <div className="pb-3 pl-[2.875rem] pr-2 flex flex-col gap-2">
-                    {webhookTokens[r.agentId] !== undefined && (
-                      <WebhookUrlRow
-                        url={`${window.location.origin}/webhooks/${webhookTokens[r.agentId]}${r.trigger.path}`}
-                      />
-                    )}
+                    <WebhookReceiver
+                      state={webhookTokens[r.agentId]}
+                      path={r.trigger.path}
+                    />
                     <CredentialSlotRow
                       destination={{ kind: 'routine-hmac', agentId: r.agentId, routinePath: r.path }}
                       slot={{
@@ -429,9 +440,37 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
 }
 
 /**
- * The webhook receiver URL for a webhook routine, with a copy button. The URL
- * (token included) is what an external sender POSTs to, so it's shown only to
- * the agent owner (the list itself is owner-scoped).
+ * The webhook receiver affordance for a webhook routine. Three states:
+ *   - undefined → token still loading: render nothing.
+ *   - { token } → show the full /webhooks/<token><path> URL + copy.
+ *   - { failed } → couldn't load the token: explain the gap rather than render
+ *     nothing. The expected failure is a 403 on a team agent the actor can see
+ *     but doesn't own (the token is owner/admin-scoped in @ax/agents).
+ */
+function WebhookReceiver({
+  state,
+  path,
+}: {
+  state: { token: string } | { failed: true } | undefined;
+  path: string;
+}) {
+  if (state === undefined) return null;
+  if ('failed' in state) {
+    return (
+      <p className="text-[11px] text-muted-foreground">
+        Receiver URL unavailable — only the agent owner can view it.
+      </p>
+    );
+  }
+  return (
+    <WebhookUrlRow url={`${window.location.origin}/webhooks/${state.token}${path}`} />
+  );
+}
+
+/**
+ * The webhook receiver URL (token included) with a copy button. The token is
+ * what authenticates an external sender, so it's shown only to the agent owner
+ * (the list itself is owner-scoped).
  */
 function WebhookUrlRow({ url }: { url: string }) {
   const [copied, setCopied] = useState(false);
@@ -449,9 +488,18 @@ function WebhookUrlRow({ url }: { url: string }) {
         size="sm"
         aria-label="Copy webhook URL"
         onClick={() => {
-          void navigator.clipboard?.writeText(url);
-          setCopied(true);
-          window.setTimeout(() => setCopied(false), 1500);
+          // Only flip to the "copied" check when the write actually resolves —
+          // clipboard.writeText can reject (not focused / permission) or be a
+          // no-op when navigator.clipboard is undefined (non-secure context).
+          void navigator.clipboard
+            ?.writeText(url)
+            .then(() => {
+              setCopied(true);
+              window.setTimeout(() => setCopied(false), 1500);
+            })
+            .catch(() => {
+              /* leave the icon as Copy — the URL is still visible to select */
+            });
         }}
       >
         {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
