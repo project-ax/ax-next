@@ -23,7 +23,11 @@ export function RoutinesTab({ isAdmin }: { isAdmin: boolean }) {
     <div className="flex flex-col gap-4">
       <AgentSelfImprovementSection />
       {isAdmin && <DefaultRoutinesSection />}
-      <RoutinesList refreshKey={refreshKey} onFired={() => setRefreshKey((n) => n + 1)} />
+      <RoutinesList
+        refreshKey={refreshKey}
+        isAdmin={isAdmin}
+        onFired={() => setRefreshKey((n) => n + 1)}
+      />
     </div>
   );
 }

@@ -73,6 +73,14 @@ type EditorMode = { kind: 'create' } | { kind: 'edit'; routine: Routine };
 export interface RoutinesListProps {
   refreshKey?: number;
   onFired: () => void;
+  /**
+   * Admins manage the per-routine webhook HMAC credential. Routine HMAC creds
+   * are agent-scoped, and both reading their status (`/admin/credentials`) and
+   * setting them (`/admin/destinations/...`) are admin-only today — so the HMAC
+   * slot is rendered only for admins. Non-admins still get the (owner-scoped)
+   * Receiver URL.
+   */
+  isAdmin?: boolean;
 }
 
 function relativeTime(d: Date | null): string {
@@ -90,7 +98,7 @@ function relativeTime(d: Date | null): string {
   return `${Math.floor(ms / 86_400_000)}d ago`;
 }
 
-export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
+export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: RoutinesListProps) {
   const [list, setList] = useState<Routine[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -324,15 +332,20 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
                       state={webhookTokens[r.agentId]}
                       path={r.trigger.path}
                     />
-                    <CredentialSlotRow
-                      destination={{ kind: 'routine-hmac', agentId: r.agentId, routinePath: r.path }}
-                      slot={{
-                        label: 'HMAC',
-                        kind: 'api-key',
-                        description: `Routine markdown should declare secretRef: ${refForDestination({ kind: 'routine-hmac', agentId: r.agentId, routinePath: r.path })}`,
-                      }}
-                      scope={{ scope: 'agent', ownerId: r.agentId }}
-                    />
+                    {/* The HMAC credential is agent-scoped and admin-managed
+                        today (both read + set are admin-only routes), so the
+                        slot is admin-only — non-admins would just 403. */}
+                    {isAdmin && (
+                      <CredentialSlotRow
+                        destination={{ kind: 'routine-hmac', agentId: r.agentId, routinePath: r.path }}
+                        slot={{
+                          label: 'HMAC',
+                          kind: 'api-key',
+                          description: `Routine markdown should declare secretRef: ${refForDestination({ kind: 'routine-hmac', agentId: r.agentId, routinePath: r.path })}`,
+                        }}
+                        scope={{ scope: 'agent', ownerId: r.agentId }}
+                      />
+                    )}
                   </div>
                 )}
               </div>

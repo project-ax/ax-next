@@ -186,14 +186,29 @@ describe('RoutinesList', () => {
     });
   }
 
-  it('shows an HMAC CredentialSlotRow for webhook-triggered routines', async () => {
+  it('shows the HMAC CredentialSlotRow for an admin on a webhook routine', async () => {
     mockWebhookRow();
-    render(<RoutinesList onFired={() => {}} />);
+    render(<RoutinesList isAdmin onFired={() => {}} />);
 
     // The HMAC label (slot label from CredentialSlotRow) should appear
     expect(await screen.findByText('HMAC', { selector: 'span' })).toBeInTheDocument();
     // The "Set credential" button from CredentialSlotRow should appear
     expect(await screen.findByRole('button', { name: /set credential/i })).toBeInTheDocument();
+  });
+
+  it('hides the HMAC slot (and its admin-only fetch) for a non-admin', async () => {
+    mockWebhookRow();
+    render(<RoutinesList onFired={() => {}} />); // non-admin (default)
+
+    // The Receiver URL still loads (owner-scoped), so the row has rendered.
+    expect(await screen.findByText(/\/webhooks\/wh-TOKEN\/gh$/)).toBeTruthy();
+    // …but the admin-only HMAC slot is absent — no "Set credential", no HMAC
+    // label, and no /admin/credentials request (which 403s for non-admins).
+    expect(screen.queryByText('HMAC', { selector: 'span' })).toBeNull();
+    expect(screen.queryByRole('button', { name: /set credential/i })).toBeNull();
+    expect(
+      fetchMock.mock.calls.some((c) => String(c[0]).includes('/admin/credentials')),
+    ).toBe(false);
   });
 
   it('shows the webhook receiver URL with a copy button for a webhook routine', async () => {
