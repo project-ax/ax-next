@@ -315,7 +315,6 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     return () => {
       cancelled = true;
     };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.connectorIds, editing]);
 
   const startNew = () => {
