@@ -579,6 +579,12 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
 
     // Authz gate mirrors `begin`: when agentId is present, agents:resolve IS the
     // owner/member binding check; when absent, connector ownership gates (connectors:get).
+    //
+    // NOTE: the agent path deliberately does NOT also run `connectors:get` (unlike
+    // `begin`, which checks both). An agent-scope token belongs to the AGENT, so a
+    // team sharee who can resolve the agent but does NOT own the connector must
+    // still see "connected" — adding a connector-ownership check here would 404
+    // them and regress the shared-credential UX. agents:resolve is the only gate.
     if (agentId !== undefined) {
       try {
         await bus.call<{ agentId: string; userId: string }, unknown>(
@@ -633,7 +639,19 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
         res.status(200).json({ status: 'not-connected' });
         return;
       }
-      if (err instanceof NeedsReconnectError || msg.includes('reconnect')) {
+      // The resolver throws a bare `NeedsReconnectError` when the refresh token is
+      // dead, but it crosses the hook bus TWICE (resolver → credentials:get → here),
+      // and HookBus.call wraps any non-PluginError into PluginError{ code:'unknown',
+      // cause:<original> } (packages/core/src/hook-bus.ts). So through the real
+      // credentials:get the instanceof check is on the WRAPPER's `.cause`, not the
+      // thrown value; the bare-instanceof and message-substring checks cover the
+      // in-package/direct path and a last-ditch fallback respectively.
+      const cause = (err as { cause?: unknown }).cause;
+      const isReconnect =
+        err instanceof NeedsReconnectError ||
+        cause instanceof NeedsReconnectError ||
+        msg.includes('reconnect'); // last-ditch fallback
+      if (isReconnect) {
         res.status(200).json({ status: 'needs-reconnect' });
         return;
       }

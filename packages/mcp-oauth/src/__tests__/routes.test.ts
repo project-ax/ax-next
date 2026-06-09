@@ -1129,7 +1129,35 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
     expect(state.json).toEqual({ status: 'not-connected' });
   });
 
-  it('Task4.3. credentials:get throws NeedsReconnectError → 200 { status: "needs-reconnect" }', async () => {
+  // PRODUCTION shape: the resolver's bare NeedsReconnectError crosses the hook
+  // bus twice and HookBus.call wraps it into PluginError{ code:'unknown',
+  // cause:<NeedsReconnectError> } (packages/core/src/hook-bus.ts). Classification
+  // must discriminate on the structured `.cause`, not the message substring —
+  // this is the regression guard for the formerly-dead instanceof branch.
+  it('Task4.3a. credentials:get throws the bus-WRAPPED NeedsReconnectError (via .cause) → 200 { status: "needs-reconnect" }', async () => {
+    const { deps } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'connectors:get': () => connectorFixture(),
+      'credentials:get': () => {
+        throw new PluginError({
+          code: 'unknown',
+          plugin: 'core',
+          message:
+            "service hook 'credentials:resolve:mcp-oauth' threw: refresh token rejected; reconnect required",
+          cause: new NeedsReconnectError('refresh token rejected; reconnect required'),
+        });
+      },
+    });
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
+    expect(state.status).toBe(200);
+    expect(state.json).toEqual({ status: 'needs-reconnect' });
+  });
+
+  // DIRECT/in-package shape: a bare NeedsReconnectError (no bus wrapping) — pins
+  // the instanceof branch for any caller that doesn't cross the bus.
+  it('Task4.3b. credentials:get throws a bare NeedsReconnectError → 200 { status: "needs-reconnect" }', async () => {
     const { deps } = makeDeps({
       'auth:require-user': () => OK_USER,
       'connectors:get': () => connectorFixture(),
