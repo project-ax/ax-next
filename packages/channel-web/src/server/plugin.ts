@@ -142,6 +142,15 @@ export function createChannelWebServerPlugin(
       ],
       optionalCalls: [
         {
+          // The chat agent picker (GET /api/chat/agents) surfaces team agents
+          // the user belongs to by resolving the user's teamIds here.
+          // teams:list-for-user is k8s-preset-only; a preset without @ax/teams
+          // degrades the picker to personal agents.
+          hook: 'teams:list-for-user',
+          degradation:
+            'team agents are omitted from the chat agent picker (personal agents only)',
+        },
+        {
           // TASK-44 — when the user clicks "Always for this agent" on the
           // reactive-wall card, the allow-host route persists a durable
           // per-(user, agent) grant via host-grants:grant (after the live

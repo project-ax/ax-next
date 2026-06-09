@@ -94,8 +94,17 @@ function agentsMockPlugin(args: {
   allowedFor: Set<string>;
   /** Agents whose resolve raises 'not-found'. */
   notFound?: Set<string>;
-  /** Per-user list of agents the agents:list-for-user mock returns. */
+  /** Per-user list of PERSONAL agents the agents:list-for-user mock returns. */
   listFor?: Record<
+    string,
+    Array<{ id: string; displayName: string; visibility: 'personal' | 'team' }>
+  >;
+  /** Per-user team membership the teams:list-for-user mock returns (userId → teamIds). */
+  teamsFor?: Record<string, string[]>;
+  /** Per-team agents the agents:list-for-user mock returns when the team's id
+   *  is in the request's teamIds (teamId → agents). Models the real store's
+   *  owner_type='team' scope filter. */
+  teamAgentsFor?: Record<
     string,
     Array<{ id: string; displayName: string; visibility: 'personal' | 'team' }>
   >;
@@ -104,7 +113,12 @@ function agentsMockPlugin(args: {
     manifest: {
       name: 'mock-agents',
       version: '0.0.0',
-      registers: ['agents:resolve', 'agents:list-for-user', 'agents:create'],
+      registers: [
+        'agents:resolve',
+        'agents:list-for-user',
+        'agents:create',
+        'teams:list-for-user',
+      ],
       calls: [],
       subscribes: [],
     },
@@ -138,9 +152,31 @@ function agentsMockPlugin(args: {
         'agents:list-for-user',
         'mock-agents',
         async (_ctx, input: unknown) => {
+          const { userId, teamIds } = input as {
+            userId: string;
+            teamIds?: string[];
+          };
+          const personal = args.listFor?.[userId] ?? [];
+          // Team agents only resolve when their team's id is passed — exactly
+          // like the real store's owner_type='team' scope filter.
+          const team = (teamIds ?? []).flatMap(
+            (tid) => args.teamAgentsFor?.[tid] ?? [],
+          );
+          return { agents: [...personal, ...team] };
+        },
+      );
+      bus.registerService(
+        'teams:list-for-user',
+        'mock-agents',
+        async (_ctx, input: unknown) => {
           const { userId } = input as { userId: string };
-          const agents = args.listFor?.[userId] ?? [];
-          return { agents };
+          const teams = (args.teamsFor?.[userId] ?? []).map((id) => ({
+            id,
+            displayName: id,
+            createdBy: userId,
+            createdAt: new Date(),
+          }));
+          return { teams };
         },
       );
       // Channel-web declares agents:create as a hard call (POST
@@ -270,6 +306,13 @@ interface BootArgs {
   notFound?: Set<string>;
   /** Per-user agents:list-for-user mock data. */
   listFor?: Record<
+    string,
+    Array<{ id: string; displayName: string; visibility: 'personal' | 'team' }>
+  >;
+  /** Per-user team membership (userId → teamIds) for the teams:list-for-user mock. */
+  teamsFor?: Record<string, string[]>;
+  /** Per-team agents (teamId → agents) surfaced when the team's id is passed. */
+  teamAgentsFor?: Record<
     string,
     Array<{ id: string; displayName: string; visibility: 'personal' | 'team' }>
   >;
@@ -482,6 +525,10 @@ async function boot(args: BootArgs): Promise<BootResult> {
       allowedFor: args.allowedFor,
       ...(args.notFound !== undefined ? { notFound: args.notFound } : {}),
       ...(args.listFor !== undefined ? { listFor: args.listFor } : {}),
+      ...(args.teamsFor !== undefined ? { teamsFor: args.teamsFor } : {}),
+      ...(args.teamAgentsFor !== undefined
+        ? { teamAgentsFor: args.teamAgentsFor }
+        : {}),
     }),
     // Phase D — @ax/conversations declares `workspace:list` /
     // `workspace:read` calls (used by conversations:get to read
@@ -1940,6 +1987,36 @@ describe('@ax/channel-web GET /api/chat/agents', () => {
         visibility: 'team',
       },
     ]);
+  });
+
+  // Regression (manual-acceptance walk): team agents the user belongs to must
+  // surface in the chat picker. The route MUST resolve the user's teamIds via
+  // teams:list-for-user and pass them to agents:list-for-user — otherwise a
+  // sharee can never select a shared team agent to chat it. The mock only
+  // returns a team agent when its teamId is passed, so this fails if the route
+  // calls agents:list-for-user with userId alone.
+  it('surfaces team agents the user belongs to (teamIds resolved via teams:list-for-user)', async () => {
+    const booted = await boot({
+      user: { id: 'userA', isAdmin: false },
+      allowedFor: new Set(['userA']),
+      listFor: {
+        userA: [
+          { id: 'agt_personal', displayName: 'My Agent', visibility: 'personal' },
+        ],
+      },
+      teamsFor: { userA: ['team-1'] },
+      teamAgentsFor: {
+        'team-1': [
+          { id: 'agt_team', displayName: 'Shared Agent', visibility: 'team' },
+        ],
+      },
+    });
+    harnesses.push(booted.harness);
+
+    const r = await fetch(`http://127.0.0.1:${booted.port}/api/chat/agents`);
+    expect(r.status).toBe(200);
+    const list = (await r.json()) as Array<{ agentId: string; visibility: string }>;
+    expect(list.map((a) => a.agentId)).toEqual(['agt_personal', 'agt_team']);
   });
 });
 
