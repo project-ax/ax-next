@@ -148,41 +148,96 @@ describe('RoutinesList', () => {
     await waitFor(() => expect(screen.getByText(/Error: boom/)).toBeTruthy());
   });
 
-  it('shows an HMAC CredentialSlotRow for webhook-triggered routines', async () => {
-    // First call: routines list
-    mockJsonOnce(200, {
-      routines: [
-        {
-          agentId: 'agt-1',
-          path: '.ax/routines/gh-webhook.md',
-          name: 'gh-webhook',
-          description: 'GitHub push webhook',
-          trigger: {
-            kind: 'webhook',
-            path: '/gh',
-            events: ['push'],
-            hmac: {
-              secretRef: 'routine:agt-1:.ax/routines/gh-webhook.md:hmac',
-              header: 'X-Hub-Signature-256',
-              algorithm: 'sha256',
-            },
-          },
-          conversation: 'shared',
-          lastStatus: 'ok',
-          lastError: null,
-          lastRunAt: '2026-05-17T00:00:00.000Z',
-        },
-      ],
-    });
-    // Second call: adminCredentials.list() from CredentialSlotRow status check
-    mockJsonOnce(200, { credentials: [] });
+  const webhookRoutine = {
+    agentId: 'agt-1',
+    path: '.ax/routines/gh-webhook.md',
+    name: 'gh-webhook',
+    description: 'GitHub push webhook',
+    trigger: {
+      kind: 'webhook',
+      path: '/gh',
+      events: ['push'],
+      hmac: {
+        secretRef: 'routine:agt-1:.ax/routines/gh-webhook.md:hmac',
+        header: 'X-Hub-Signature-256',
+        algorithm: 'sha256',
+      },
+    },
+    conversation: 'shared',
+    lastStatus: 'ok',
+    lastError: null,
+    lastRunAt: '2026-05-17T00:00:00.000Z',
+    promptBody: 'handle it',
+    activeHours: null,
+    silenceToken: null,
+    silenceMaxChars: 300,
+  };
 
+  // Route fetches by URL — a webhook row triggers a routines list, a
+  // webhook-token GET, and the CredentialSlotRow status check, in
+  // non-deterministic order.
+  function mockWebhookRow(token = 'wh-TOKEN'): void {
+    const ok = (body: unknown): Response =>
+      ({ ok: true, status: 200, json: async () => body }) as Response;
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/settings/routines') return Promise.resolve(ok({ routines: [webhookRoutine] }));
+      if (url.includes('/webhook-token')) return Promise.resolve(ok({ token }));
+      return Promise.resolve(ok({ credentials: [] })); // CredentialSlotRow
+    });
+  }
+
+  it('shows an HMAC CredentialSlotRow for webhook-triggered routines', async () => {
+    mockWebhookRow();
     render(<RoutinesList onFired={() => {}} />);
 
     // The HMAC label (slot label from CredentialSlotRow) should appear
     expect(await screen.findByText('HMAC', { selector: 'span' })).toBeInTheDocument();
     // The "Set credential" button from CredentialSlotRow should appear
     expect(await screen.findByRole('button', { name: /set credential/i })).toBeInTheDocument();
+  });
+
+  it('shows the webhook receiver URL with a copy button for a webhook routine', async () => {
+    mockWebhookRow('wh-TOKEN');
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      value: { writeText },
+      configurable: true,
+    });
+
+    render(<RoutinesList onFired={() => {}} />);
+
+    // The full receiver URL is <origin>/webhooks/<token><routine-path> —
+    // assert the origin prefix too, not just the suffix.
+    const expectedUrl = `${window.location.origin}/webhooks/wh-TOKEN/gh`;
+    expect(await screen.findByText(expectedUrl)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: /copy webhook url/i }));
+    expect(writeText).toHaveBeenCalledWith(expectedUrl);
+  });
+
+  it('shows a note (not a blank gap) when the webhook token cannot be loaded', async () => {
+    const ok = (body: unknown): Response =>
+      ({ ok: true, status: 200, json: async () => body }) as Response;
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/settings/routines') return Promise.resolve(ok({ routines: [webhookRoutine] }));
+      // 403: a team agent the actor can see but doesn't own.
+      if (url.includes('/webhook-token')) {
+        return Promise.resolve({
+          ok: false,
+          status: 403,
+          json: async () => ({ error: 'forbidden' }),
+        } as Response);
+      }
+      return Promise.resolve(ok({ credentials: [] }));
+    });
+
+    render(<RoutinesList onFired={() => {}} />);
+
+    expect(
+      await screen.findByText(/only the agent owner can view it/i),
+    ).toBeTruthy();
+    // The URL + copy button are absent.
+    expect(screen.queryByRole('button', { name: /copy webhook url/i })).toBeNull();
   });
 
   it('does NOT show an HMAC CredentialSlotRow for interval-triggered routines', async () => {

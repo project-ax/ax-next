@@ -241,4 +241,12 @@ describe('lib/routines', () => {
       routines.remove({ agentId: 'a', path: '.ax/routines/x.md' }),
     ).rejects.toThrow('forbidden');
   });
+
+  it('webhookToken GETs the agent webhook-token route and returns the token', async () => {
+    mockJson(200, { token: 'wh-abc123' });
+    const out = await routines.webhookToken('agt:x/y');
+    expect(out.token).toBe('wh-abc123');
+    const url = fetchMock.mock.calls[0]![0] as string;
+    expect(url).toBe('/settings/routines/agt%3Ax%2Fy/webhook-token');
+  });
 });

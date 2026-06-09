@@ -87,6 +87,11 @@ interface MockServices {
     | { kind: 'ok' }
     | { kind: 'reject'; message: string }
     | { kind: 'parent-mismatch-once'; actualParent: string | null };
+  /** Token returned by the agents:ensure-webhook-token mock (default derives
+   *  one from the agentId). */
+  webhookToken?: string;
+  /** When set, agents:ensure-webhook-token throws this (403/404 paths). */
+  webhookTokenFailure?: PluginError;
 }
 
 async function makeHarnessWith(opts: MockServices) {
@@ -182,6 +187,11 @@ async function makeHarnessWith(opts: MockServices) {
             workspaceRef: null,
           },
         };
+      },
+      'agents:ensure-webhook-token': async (_ctx, input: unknown) => {
+        if (opts.webhookTokenFailure !== undefined) throw opts.webhookTokenFailure;
+        const i = input as { agentId: string };
+        return { token: opts.webhookToken ?? `tok-${i.agentId}` };
       },
       'routines:list-defaults': async () => ({
         defaults: Array.from(defaults.values()).map((d) => ({
@@ -1342,6 +1352,72 @@ describe('routines-admin-routes — write routes (PUT/DELETE /settings/routines/
     );
     expect(captured.status).toBe(401);
     expect(applyCalls).toHaveLength(0);
+    await harness.close({ onError: () => {} });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// GET /settings/routines/:agentId/webhook-token — the agent's webhook receiver
+// token (so the UI can show /webhooks/<token><path>). Owner/admin-scoped via
+// agents:ensure-webhook-token's own ACL.
+// ---------------------------------------------------------------------------
+
+describe('routines-admin-routes — GET /settings/routines/:agentId/webhook-token', () => {
+  it('returns the agent webhook token for the owner', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authedUser: { id: 'u1', isAdmin: false },
+      webhookToken: 'wh-abc123',
+    });
+    const handler = handlersByMethod.get('GET /settings/routines/:agentId/webhook-token')!;
+    expect(handler).toBeDefined();
+    const { res, captured } = makeRes();
+    await handler(makeReq({ params: { agentId: 'agt_x' } }), res);
+    expect(captured.status).toBe(200);
+    expect((captured.body as { token: string }).token).toBe('wh-abc123');
+    await harness.close({ onError: () => {} });
+  });
+
+  it('maps a forbidden ensure-webhook-token to 403', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      webhookTokenFailure: new PluginError({
+        code: 'forbidden',
+        plugin: 'test',
+        message: 'forbidden',
+      }),
+    });
+    const handler = handlersByMethod.get('GET /settings/routines/:agentId/webhook-token')!;
+    const { res, captured } = makeRes();
+    await handler(makeReq({ params: { agentId: 'agt_x' } }), res);
+    expect(captured.status).toBe(403);
+    // The token (a bearer capability) must never ride along on an error.
+    expect(captured.body).not.toHaveProperty('token');
+    await harness.close({ onError: () => {} });
+  });
+
+  it('maps a not-found agent to 404', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      webhookTokenFailure: new PluginError({
+        code: 'not-found',
+        plugin: 'test',
+        message: 'agent not found',
+      }),
+    });
+    const handler = handlersByMethod.get('GET /settings/routines/:agentId/webhook-token')!;
+    const { res, captured } = makeRes();
+    await handler(makeReq({ params: { agentId: 'agt_missing' } }), res);
+    expect(captured.status).toBe(404);
+    expect(captured.body).not.toHaveProperty('token');
+    await harness.close({ onError: () => {} });
+  });
+
+  it('returns 401 when unauthenticated', async () => {
+    const { harness, handlersByMethod } = await makeHarnessWith({
+      authMode: { kind: 'unauthenticated' },
+    });
+    const handler = handlersByMethod.get('GET /settings/routines/:agentId/webhook-token')!;
+    const { res, captured } = makeRes();
+    await handler(makeReq({ params: { agentId: 'agt_x' } }), res);
+    expect(captured.status).toBe(401);
     await harness.close({ onError: () => {} });
   });
 });

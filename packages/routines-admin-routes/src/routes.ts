@@ -231,6 +231,7 @@ export interface RoutinesAdminHandlers {
   fire: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   save: (req: RouteRequest, res: RouteResponse) => Promise<void>;
   destroy: (req: RouteRequest, res: RouteResponse) => Promise<void>;
+  webhookToken: (req: RouteRequest, res: RouteResponse) => Promise<void>;
 }
 
 export function createRoutinesAdminHandlers(
@@ -470,6 +471,43 @@ export function createRoutinesAdminHandlers(
         throw err;
       }
     },
+
+    // GET /settings/routines/:agentId/webhook-token — the agent's webhook
+    // receiver token, so the UI can show the full /webhooks/<token><path> URL
+    // for a webhook routine. `agents:ensure-webhook-token` owns the ACL
+    // (owner-or-admin → forbidden/not-found) and idempotently returns/mints the
+    // token; we never log it.
+    //
+    // Mint-on-GET is intentional: `ensure-webhook-token` writes only when no
+    // token exists yet, and that's a deliberate, CSRF-safe side effect — the
+    // session cookie is SameSite=Lax so a cross-site GET doesn't carry it, the
+    // mint is idempotent, an existing token is never rotated, and a cross-origin
+    // caller can't read the response body. In practice the token already exists
+    // for any agent with a webhook routine (sync minted it when binding the
+    // receiver route), so the mint path is effectively unreachable here.
+    async webhookToken(req, res) {
+      const actor = await requireUser(deps.bus, initCtx, req, res);
+      if (actor === null) return;
+      const agentId = req.params.agentId;
+      if (agentId === undefined || agentId.length === 0) {
+        res.status(400).json({ error: 'agentId required' });
+        return;
+      }
+      const ctx = ctxForActor(actor.id);
+      try {
+        const out = await deps.bus.call<
+          { actor: { userId: string; isAdmin: boolean }; agentId: string },
+          { token: string }
+        >('agents:ensure-webhook-token', ctx, {
+          actor: { userId: actor.id, isAdmin: actor.isAdmin },
+          agentId,
+        });
+        res.status(200).json({ token: out.token });
+      } catch (err) {
+        if (writeServiceError(res, err)) return;
+        throw err;
+      }
+    },
   };
 }
 
@@ -510,6 +548,11 @@ export async function registerRoutinesAdminRoutes(
       method: 'DELETE',
       path: '/settings/routines/:agentId',
       handler: handlers.destroy,
+    },
+    {
+      method: 'GET',
+      path: '/settings/routines/:agentId/webhook-token',
+      handler: handlers.webhookToken,
     },
   ];
   const unregisters: Array<() => void> = [];
