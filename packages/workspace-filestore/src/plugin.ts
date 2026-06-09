@@ -58,13 +58,18 @@ export function createWorkspaceFilestorePlugin(
         async (_ctx, input) => {
           const agentId = input.owner.agentId;
           if (!isValidAgentId(agentId)) return { mounts: [] };
+          // Honor a host-read (readOnly) realization request (design §11). The
+          // runner's session-open call omits `readOnly`, so the mount stays
+          // writable as before; a host-read caller passes `true` to get a
+          // read-only realization of the SAME owner-keyed subtree. We never
+          // widen write access — only narrow it.
           const mount: MountSpec = {
             kind: 'nfs',
             mountPath,
             server: config.backing.server,
             exportPath: config.backing.exportPath,
             subPath: agentId,
-            readOnly: false,
+            readOnly: input.readOnly === true,
             role: 'user-files',
           };
           return { mounts: [mount] };

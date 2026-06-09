@@ -303,6 +303,32 @@ export interface AgentsCreatedEvent {
   ownerType: 'user' | 'team';
 }
 
+/**
+ * FIRED by `agents:delete` AFTER the agent row is removed, so subscribers can
+ * reclaim per-agent state owned in OTHER tiers. The first subscriber is the
+ * sandbox provider's user-files cleanup (filestore-user-files design §11):
+ * `rm -rf` of the agent's durable `/workspace` subtree (`subPath=<agentId>`)
+ * via a short-lived mount-and-rm job.
+ *
+ * Payload mirrors `AgentsCreatedEvent` — minimal and storage-agnostic (L4 /
+ * invariant I1): `agentId` is the per-agent subtree key a subscriber needs;
+ * `ownerId`/`ownerType` let a subscriber scope its work without re-resolving
+ * (the row is already gone, so `agents:resolve` would 404). NO filesystem /
+ * NFS / k8s vocabulary leaks here — a subscriber that owns per-agent state
+ * realizes the cleanup in its own backend's terms.
+ *
+ * Subscriber failures must not affect the delete — it already committed, and
+ * `HookBus.fire` isolates each subscriber's errors. A subscriber that does
+ * destructive work (the user-files cleanup) MUST scope it to EXACTLY this
+ * `agentId`'s subtree and never touch a sibling agent's (cross-tenant safety,
+ * design §9).
+ */
+export interface AgentsDeletedEvent {
+  agentId: string;
+  ownerId: string;
+  ownerType: 'user' | 'team';
+}
+
 // --- agents:list-authored-skills ---------------------------------------------
 
 /**

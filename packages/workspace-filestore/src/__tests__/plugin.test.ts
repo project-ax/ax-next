@@ -45,6 +45,7 @@ const OWNER = (
 async function resolve(
   owner: NonNullable<OpenSessionInput['owner']>,
   mountPath?: string,
+  readOnly?: boolean,
 ): Promise<ResolveMountsOutput> {
   const harness = await createTestHarness({
     plugins: [
@@ -59,7 +60,7 @@ async function resolve(
     return await harness.bus.call<ResolveMountsInput, ResolveMountsOutput>(
       'sandbox:resolve-mounts',
       harness.ctx(),
-      { owner },
+      readOnly !== undefined ? { owner, readOnly } : { owner },
     );
   } finally {
     await harness.close();
@@ -86,6 +87,30 @@ describe('@ax/workspace-filestore — sandbox:resolve-mounts', () => {
     expect(m.subPath).toBe('agent-abc');
     expect(m.readOnly).toBe(false);
     expect(m.role).toBe('user-files');
+  });
+
+  // TASK-167 (§11 host-read): the SAME owner-keyed resolver emits a read-only
+  // realization when the caller requests it, so the host can serve an agent's
+  // files to the web UI without granting write. The runner's session-open call
+  // omits `readOnly`, keeping the writable realization above byte-for-byte.
+  it('emits a readOnly nfs mount when the caller requests readOnly (host-read)', async () => {
+    const out = await resolve(OWNER('agent-abc'), undefined, true);
+    expect(out.mounts).toHaveLength(1);
+    const m = out.mounts[0] as NfsMountSpec;
+    expect(m.kind).toBe('nfs');
+    expect(m.subPath).toBe('agent-abc');
+    expect(m.readOnly).toBe(true);
+    // Everything else is the SAME owner-keyed mount — only readOnly flips.
+    expect(m.server).toBe('10.0.0.2');
+    expect(m.exportPath).toBe('/vol1/agents');
+    expect(m.role).toBe('user-files');
+  });
+
+  it('defaults to a writable mount when readOnly is omitted or false', async () => {
+    const omitted = await resolve(OWNER('agent-abc'));
+    expect((omitted.mounts[0] as NfsMountSpec).readOnly).toBe(false);
+    const explicitFalse = await resolve(OWNER('agent-abc'), undefined, false);
+    expect((explicitFalse.mounts[0] as NfsMountSpec).readOnly).toBe(false);
   });
 
   it('honors a custom mountPath', async () => {

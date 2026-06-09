@@ -1,5 +1,9 @@
 import type { Plugin } from '@ax/core';
 import { OpenSessionResultSchema } from '@ax/sandbox-protocol';
+import type {
+  ReadUserFilesInput,
+  ReadUserFilesOutput,
+} from '@ax/sandbox-mount-protocol';
 import type { ZodType } from 'zod';
 import { resolveConfig, type SandboxK8sConfig } from './config.js';
 import { createDefaultK8sApi, type K8sCoreApi } from './k8s-api.js';
@@ -9,8 +13,23 @@ import {
   type OpenSessionResult,
 } from './open-session.js';
 import { startOrphanSweeper, type OrphanSweeperHandle } from './sweep.js';
+import {
+  cleanupUserFiles,
+  ownerFromAgentId,
+  readUserFiles,
+} from './user-files-ops.js';
 
 const PLUGIN_NAME = '@ax/sandbox-k8s';
+
+// Structural twin of @ax/agents' AgentsDeletedEvent (I2 — no cross-plugin
+// import; the bus is the API). We read only `agentId` (the per-agent subtree
+// key) + `ownerId` (forwarded as the resolver owner's userId, which the
+// resolvers ignore).
+interface AgentsDeletedEvent {
+  agentId: string;
+  ownerId: string;
+  ownerType: 'user' | 'team';
+}
 
 // See @ax/sandbox-protocol OpenSessionResultSchema: a `.passthrough()` schema
 // that asserts only `runnerEndpoint` and lets the live `handle` ride through
@@ -42,7 +61,11 @@ export function createSandboxK8sPlugin(
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: ['sandbox:open-session'],
+      // `sandbox:read-user-files` (filestore-user-files §11 host-read): the
+      // host's READ-ONLY view of an agent's durable NFS user-files subtree, so
+      // the web UI can serve those files without entering a live sandbox.
+      // Realized by a short-lived pod that mounts the export read-only.
+      registers: ['sandbox:open-session', 'sandbox:read-user-files'],
       // Mirrors sandbox-subprocess. We DON'T list ipc:start / ipc:stop /
       // llm-proxy:start because the k8s pod runs its own listeners — those
       // host-side hooks are subprocess-impl-specific. Once the pod-side
@@ -53,14 +76,25 @@ export function createSandboxK8sPlugin(
       // `sandbox:resolve-mounts` and realizes each `nfs` mount as an inline
       // pod volume + subPath mount. Optional — without a resolver the pod gets
       // only the default emptyDir tiers; no durable per-agent user-files mount.
+      // `sandbox:resolve-mounts` is the durable per-agent mount resolver. It's
+      // optional for open-session (no resolver → no AX_USERFILES_ROOT) AND for
+      // both §11 host-side ops below: `sandbox:read-user-files` and the
+      // `agents:deleted` cleanup both call it to learn an agent's
+      // server/exportPath/subPath, and degrade to a no-op when no resolver is
+      // loaded.
       optionalCalls: [
         {
           hook: 'sandbox:resolve-mounts',
           degradation:
-            'no durable per-agent user-files mount; AX_USERFILES_ROOT unset',
+            'no durable per-agent user-files mount; AX_USERFILES_ROOT unset; ' +
+            'host-read returns absent and agent-delete cleanup is a no-op',
         },
       ],
-      subscribes: [],
+      // filestore-user-files §11 cleanup: when an agent is deleted, reclaim its
+      // durable user-files subtree via a short-lived mount-and-rm pod. Fired by
+      // @ax/agents AFTER the row is gone; isolated by HookBus.fire so a cleanup
+      // failure never affects the delete.
+      subscribes: ['agents:deleted'],
     },
     async init({ bus }) {
       // Verified against the pinned `@kubernetes/client-node@1.4.0` (see
@@ -104,6 +138,39 @@ export function createSandboxK8sPlugin(
         PLUGIN_NAME,
         impl,
         { timeoutMs: 300_000, returns: OPEN_SESSION_RETURNS },
+      );
+
+      // §11 host-read. Read-only end to end (the one-shot reader pod mounts the
+      // export `readOnly: true` and the resolver realization is read-only); a
+      // caller-supplied path is confined to the agent's own subtree. No durable
+      // resolver loaded → `{ kind: 'absent' }`. The reader pod can take seconds
+      // (pull + mount + read), so give the call a generous timeout like
+      // open-session.
+      bus.registerService<ReadUserFilesInput, ReadUserFilesOutput>(
+        'sandbox:read-user-files',
+        PLUGIN_NAME,
+        async (ctx, input) => readUserFiles(ctx, bus, api, config, ctx.logger, input),
+        { timeoutMs: 180_000 },
+      );
+
+      // §11 cleanup-on-agent-delete. A short-lived mount-and-rm pod removes
+      // EXACTLY this agentId's subtree (validated single segment), never a
+      // sibling's (cross-tenant safety, §9). Best-effort — a failure is logged,
+      // never propagated (the delete already committed).
+      bus.subscribe<AgentsDeletedEvent>(
+        'agents:deleted',
+        PLUGIN_NAME,
+        async (ctx, event) => {
+          await cleanupUserFiles(
+            ctx,
+            bus,
+            api,
+            config,
+            ownerFromAgentId(event.agentId, event.ownerId),
+            ctx.logger,
+          );
+          return undefined;
+        },
       );
 
       // TASK-170: start the orphan-sweep. It reclaims terminated runner pods a

@@ -6,6 +6,10 @@ import { createTestHarness } from '@ax/test-harness';
 import { createSessionInmemoryPlugin } from '@ax/session-inmemory';
 import { createIpcServerPlugin } from '@ax/ipc-server';
 import { createWorkspaceLocaldirPlugin } from '@ax/workspace-localdir';
+import type {
+  ReadUserFilesInput,
+  ReadUserFilesOutput,
+} from '@ax/sandbox-mount-protocol';
 import { createSandboxSubprocessPlugin } from '../plugin.js';
 import type { OpenSessionResult } from '../open-session.js';
 
@@ -155,6 +159,84 @@ describe('filestore-user-files canary (subprocess + localDir)', () => {
     const b = await runSession(h, 'agent-b', 'sess-b', ws);
     expect(b.userFilesRoot).toBe(path.join(userFilesRootDir, 'agent-b'));
     expect(b.before).toBeNull();
+
+    await h.close();
+  });
+
+  // TASK-167 (§11 host-read) — canary-reachable: after a session writes a file
+  // to its durable mount, the HOST reads it back READ-ONLY via the real
+  // `sandbox:read-user-files` hook (the web-UI path), without entering a live
+  // sandbox and without granting write.
+  it('the host reads an agent file back via sandbox:read-user-files (read-only)', async () => {
+    const userFilesRootDir = await fs.mkdtemp(
+      path.join(process.env.TMPDIR ?? '/tmp', 'ax-userfiles-'),
+    );
+    const ws = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'ax-ws-'));
+    const h = await makeHarness(userFilesRootDir);
+
+    // The stub writes `canary.txt` under the mount during session 1.
+    await runSession(h, 'reader-agent', 'sess-r', ws);
+
+    // Host-read the directory listing.
+    const list = await h.bus.call<ReadUserFilesInput, ReadUserFilesOutput>(
+      'sandbox:read-user-files',
+      h.ctx(),
+      { owner: owner('reader-agent') },
+    );
+    expect(list.kind).toBe('dir');
+    if (list.kind !== 'dir') throw new Error('expected dir');
+    expect(list.entries.map((e) => e.name)).toContain('canary.txt');
+
+    // Host-read the file bytes.
+    const file = await h.bus.call<ReadUserFilesInput, ReadUserFilesOutput>(
+      'sandbox:read-user-files',
+      h.ctx(),
+      { owner: owner('reader-agent'), relPath: 'canary.txt' },
+    );
+    expect(file.kind).toBe('file');
+    if (file.kind !== 'file') throw new Error('expected file');
+    expect(Buffer.from(file.contents).toString('utf-8')).toBe('sess-r\n');
+
+    // A non-existent agent → absent (the host serves nothing).
+    const none = await h.bus.call<ReadUserFilesInput, ReadUserFilesOutput>(
+      'sandbox:read-user-files',
+      h.ctx(),
+      { owner: owner('no-such-agent') },
+    );
+    expect(none).toEqual({ kind: 'absent' });
+
+    await h.close();
+  });
+
+  // TASK-167 (§11 cleanup) — canary-reachable: firing `agents:deleted` cleans up
+  // ONLY that agent's durable subtree via the real subprocess subscriber; a
+  // sibling agent's files are untouched (cross-tenant safety).
+  it('agents:deleted cleans up only the deleted agent subtree (cross-tenant safe)', async () => {
+    const userFilesRootDir = await fs.mkdtemp(
+      path.join(process.env.TMPDIR ?? '/tmp', 'ax-userfiles-'),
+    );
+    const ws = await fs.mkdtemp(path.join(process.env.TMPDIR ?? '/tmp', 'ax-ws-'));
+    const h = await makeHarness(userFilesRootDir);
+
+    // Seed two agents' subtrees by running a session for each.
+    await runSession(h, 'del-agent-a', 'sess-da', ws);
+    await runSession(h, 'del-agent-b', 'sess-db', ws);
+    const dirA = path.join(userFilesRootDir, 'del-agent-a');
+    const dirB = path.join(userFilesRootDir, 'del-agent-b');
+    await expect(fs.stat(dirA)).resolves.toBeTruthy();
+    await expect(fs.stat(dirB)).resolves.toBeTruthy();
+
+    // Fire agents:deleted for A only (the @ax/agents fire site does this after
+    // the row is removed). The subprocess subscriber rm -rf's A's subtree.
+    const fired = await h.bus.fire('agents:deleted', h.ctx(), {
+      agentId: 'del-agent-a',
+      ownerId: 'user-1',
+      ownerType: 'user',
+    });
+    expect(fired.rejected).toBe(false);
+
+    await expect(fs.stat(dirA)).rejects.toThrow(); // gone
+    await expect(fs.stat(dirB)).resolves.toBeTruthy(); // untouched
 
     await h.close();
   });

@@ -8,6 +8,10 @@ import type {
   ResolveMountsInput,
   ResolveMountsOutput,
   ResolveMountsHandler,
+  ReadUserFilesInput,
+  ReadUserFilesOutput,
+  ReadUserFilesHandler,
+  UserFileDirEntry,
 } from '../index.js';
 
 // This package is pure TS types — the contract IS the type (no zod, no runtime).
@@ -154,6 +158,27 @@ describe('sandbox:resolve-mounts signature', () => {
     expect(input.owner.userId).toBe('user-1');
   });
 
+  // TASK-167 (§11 host-read): a NON-runner caller may request a read-only
+  // realization of the same owner-keyed mount. The field is optional — the
+  // runner's session-open call omits it.
+  it('input carries an optional readOnly flag for a host-read realization', () => {
+    const owner: NonNullable<OpenSessionInput['owner']> = {
+      userId: 'user-1',
+      agentId: 'agent-abc',
+      agentConfig: {
+        displayName: 'A',
+        systemPromptAugment: '',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'claude',
+      },
+    };
+    const ro: ResolveMountsInput = { owner, readOnly: true };
+    expect(ro.readOnly).toBe(true);
+    const runner: ResolveMountsInput = { owner };
+    expect(runner.readOnly).toBeUndefined();
+  });
+
   it('output is { mounts: MountSpec[] } and may be empty (ownerless / no-mount)', () => {
     const out: ResolveMountsOutput = { mounts: [] };
     expect(out.mounts).toEqual([]);
@@ -186,6 +211,67 @@ describe('sandbox:resolve-mounts signature', () => {
     ) => ({ mounts: input.owner.agentId ? [] : [] });
     const handler: ResolveMountsHandler = raw;
     const back: ServiceHandler<ResolveMountsInput, ResolveMountsOutput> = handler;
+    expect(typeof back).toBe('function');
+  });
+});
+
+describe('sandbox:read-user-files signature (TASK-167 §11 host-read)', () => {
+  it('input carries the owner + an optional relPath', () => {
+    const owner: NonNullable<OpenSessionInput['owner']> = {
+      userId: 'user-1',
+      agentId: 'agent-abc',
+      agentConfig: {
+        displayName: 'A',
+        systemPromptAugment: '',
+        allowedTools: [],
+        mcpConfigIds: [],
+        model: 'claude',
+      },
+    };
+    const root: ReadUserFilesInput = { owner };
+    expect(root.relPath).toBeUndefined();
+    const nested: ReadUserFilesInput = { owner, relPath: 'docs/notes.md' };
+    expect(nested.relPath).toBe('docs/notes.md');
+  });
+
+  it('output is a discriminated union: file | dir | absent', () => {
+    const file: ReadUserFilesOutput = {
+      kind: 'file',
+      contents: new Uint8Array([1, 2, 3]),
+    };
+    const entries: UserFileDirEntry[] = [
+      { name: 'a.txt', kind: 'file' },
+      { name: 'sub', kind: 'dir' },
+    ];
+    const dir: ReadUserFilesOutput = { kind: 'dir', entries };
+    const absent: ReadUserFilesOutput = { kind: 'absent' };
+
+    // The union narrows on `kind` exactly like MountSpec.
+    const describe1 = (o: ReadUserFilesOutput): string => {
+      switch (o.kind) {
+        case 'file':
+          return `file:${o.contents.length}`;
+        case 'dir':
+          return `dir:${o.entries.length}`;
+        case 'absent':
+          return 'absent';
+        default: {
+          const _exhaustive: never = o;
+          return _exhaustive;
+        }
+      }
+    };
+    expect(describe1(file)).toBe('file:3');
+    expect(describe1(dir)).toBe('dir:2');
+    expect(describe1(absent)).toBe('absent');
+  });
+
+  it('ReadUserFilesHandler is a @ax/core ServiceHandler over the in/out pair', () => {
+    const raw: ServiceHandler<ReadUserFilesInput, ReadUserFilesOutput> = async () => ({
+      kind: 'absent',
+    });
+    const handler: ReadUserFilesHandler = raw;
+    const back: ServiceHandler<ReadUserFilesInput, ReadUserFilesOutput> = handler;
     expect(typeof back).toBe('function');
   });
 });

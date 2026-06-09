@@ -20,6 +20,7 @@ export type {
   AgentInput,
   AgentsConfig,
   AgentsCreatedEvent,
+  AgentsDeletedEvent,
   AgentsResolvedEvent,
   CreateInput,
   CreateOutput,
