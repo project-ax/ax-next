@@ -2,6 +2,14 @@
 
 Architectural / process decisions. Never deleted — strikethrough if reversed.
 
+## 2026-06-09 — TASK-188 remove residual transcript-grep from SKILL_REFLECTION_PROMPT (skill-crystallization)
+
+| Date | Decision | Rationale | Alternatives |
+|------|----------|-----------|--------------|
+| 2026-06-09 | Removed the residual "Read this directly from the consolidated memory — do NOT grep transcripts" clause from `SKILL_REFLECTION_PROMPT` Step 2 (`packages/routines/src/reflection-prompt.ts`); reworded to reference ONLY `source_conversations` ("That field IS the recurrence signal, and it is the ONLY signal you use"). The word "transcript"/"grep" no longer appears anywhere in the exported prompt string. | TASK-180 walk: in 2 of 3 reflection fires the model STILL grepped the deprecated `.claude/projects/` transcripts then second-guessed itself — naming the deprecated path even to FORBID it cued the action. A purely positive "this is the only signal" framing removes the cue. Prompt-string + test only; no hook-surface change → no boundary review; security N/A. | (a) keep the prohibition but soften it — rejected, any mention re-plants the action. (b) add crystallize-forcing language — explicitly OUT of scope (being decided via a separate procedural-canary walk). |
+| 2026-06-09 | The JSDoc design-rationale comment (lines 29-32) that explains *why* there is no transcript-read surface was KEPT — it's documentation, not prompt text; the canary guards only the exported string, so the comment doesn't leak into the model's prompt. | Removing it would lose the design intent that future editors need. | Strip it too — rejected, no benefit, loses rationale. |
+| 2026-06-09 | Bug-fix-policy test: extended the existing prompt-guard in `packages/skills/src/__tests__/crystallization-canary.test.ts` with `expect(p.toLowerCase()).not.toContain('transcript')` + `not.toContain('grep')`. The pre-existing guards (`.claude/projects`, `.jsonl`, 'grep your own transcripts') did NOT match the actual residual "do NOT grep transcripts" wording, so they would NOT have caught this regression; the new asserts fail on the old body and pass on the new. | A regression guard must actually fail on the bug it guards. The `grep`/`transcript` word-ban is intentionally strict per the card ("never instructs/permits grepping transcripts"). | A regex for the exact old sentence — rejected, too narrow; the word-level ban catches any re-acquisition of transcript vocabulary. |
+
 ## 2026-06-08 — TASK-176 AgentContext.source + memory-strata routine guard (skill-crystallization PR-A)
 
 | Date | Decision | Rationale | Alternatives |

@@ -411,6 +411,16 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     expect(p).not.toMatch(/\.claude\/projects/);
     expect(p).not.toMatch(/\.jsonl/);
     expect(p.toLowerCase()).not.toContain('grep your own transcripts');
+    // TASK-188: the earlier wording carried a *residual* "do NOT grep
+    // transcripts" clause in the recurrence step. Naming the deprecated path —
+    // even to forbid it — still cued the model to go grep `.claude/projects/`
+    // transcripts and then second-guess itself (2 of 3 reflection fires in the
+    // TASK-180 walk). The recurrence step must reference ONLY the consolidated
+    // `source_conversations` signal and must not mention transcripts or grepping
+    // them at all (neither permitting nor prohibiting). Guard the prompt body
+    // against re-acquiring any transcript/grep vocabulary.
+    expect(p.toLowerCase()).not.toContain('transcript');
+    expect(p.toLowerCase()).not.toContain('grep');
     // A no-op is the correct default (do not invent work).
     expect(p).toMatch(/A pass that changes nothing is the correct/);
     // Prefer patch over create.
