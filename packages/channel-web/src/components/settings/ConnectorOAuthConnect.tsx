@@ -47,8 +47,8 @@ export function ConnectorOAuthConnect({
   requiresConsent = false,
   onConnected,
 }: ConnectorOAuthConnectProps) {
-  // 'checking' while the status request is in flight.
-  const [status, setStatus] = useState<OAuthStatus | 'checking'>('checking');
+  // 'checking' while the status request is in flight; 'error' if the fetch threw.
+  const [status, setStatus] = useState<OAuthStatus | 'checking' | 'error'>('checking');
   const [consented, setConsented] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,9 +68,9 @@ export function ConnectorOAuthConnect({
       );
       setStatus(s);
     } catch {
-      // On status fetch failure, fall back to not-connected so the UI is
-      // still usable rather than stuck on "Checking…".
-      setStatus('not-connected');
+      // On status fetch failure, surface a distinct 'error' state (design §8 —
+      // a fetch failure must not be reported as "Not connected").
+      setStatus('error');
     }
   }, [connectorId, agentId]);
 
@@ -100,6 +100,9 @@ export function ConnectorOAuthConnect({
   }, [cleanupPopupFlow]);
 
   const handleConnect = useCallback(async () => {
+    // M5 — double-click guard: a fast second click before the disabled-state
+    // re-render would otherwise register a second listener + interval.
+    if (busy) return;
     setError(null);
     setBusy(true);
 
@@ -121,6 +124,16 @@ export function ConnectorOAuthConnect({
       'ax-oauth-connect',
       'width=600,height=720',
     );
+
+    // C1 — popup-blocked guard: window.open() returns null when a popup blocker
+    // intervenes. Without this guard, the listener + poll are registered against
+    // null, busy stays true forever, and no error is shown.
+    if (!popup) {
+      setError("We couldn't open the sign-in window — check your popup blocker and try again.");
+      setBusy(false);
+      return;
+    }
+
     popupRef.current = popup;
 
     // ── Message listener (origin-locked — load-bearing security control) ──
@@ -130,10 +143,23 @@ export function ConnectorOAuthConnect({
       if (event.origin !== window.location.origin) return;
       const data = event.data as { type?: string; connector?: string; oauth?: string } | null;
       if (!data || data.type !== OAUTH_MESSAGE_TYPE) return;
-      // Optionally filter by connector id — if present it must match.
-      if (data.connector !== undefined && data.connector !== connectorId) return;
+      // M2 — strict connector match: a message that can't prove it's for this
+      // connector is silently ignored. This prevents a connector-less error (e.g.
+      // the 2a provider-denial redirect with no `connector` param) from tearing
+      // down another mounted instance's flow.
+      if (data.connector !== connectorId) return;
 
-      // Valid callback received — tear down the flow and refresh.
+      // I1 — branch on the OAuth outcome. A provider error/denial must surface
+      // "Authorization was cancelled." and must NOT call onConnected.
+      if (data.oauth === 'error') {
+        cleanupPopupFlow();
+        setBusy(false);
+        setError('Authorization was cancelled.');
+        void fetchStatus();      // keep the badge truthful
+        return;                  // do NOT call onConnected on failure
+      }
+
+      // success path:
       cleanupPopupFlow();
       setBusy(false);
       void fetchStatus();
@@ -163,6 +189,13 @@ export function ConnectorOAuthConnect({
     if (status === 'checking') {
       return (
         <span className="text-sm text-muted-foreground">Checking…</span>
+      );
+    }
+    if (status === 'error') {
+      // M4 — a status-fetch failure must read "Couldn't check status", not
+      // "Not connected" (design §8).
+      return (
+        <span className="text-sm text-muted-foreground">Couldn't check status</span>
       );
     }
     if (status === 'connected') {

@@ -42,6 +42,10 @@ import {
 } from '../../lib/admin';
 import { listConnectors, getConnector, type ConnectorSummary, type ConnectorRouteBase } from '../../lib/connectors';
 import { getOAuthStatus, type OAuthStatus } from '../../lib/connectors-oauth';
+
+/** Sentinel for a status-fetch error (distinct from the API 'not-connected' value). */
+const OAUTH_STATUS_ERROR = 'fetch-error' as const;
+type OAuthStatusOrError = OAuthStatus | typeof OAUTH_STATUS_ERROR;
 import { SkillAttachmentsSection } from './SkillAttachmentsSection';
 import { AuthoredSkillsSection } from './AuthoredSkillsSection';
 import { ConnectorOAuthConnect } from '../settings/ConnectorOAuthConnect';
@@ -127,12 +131,21 @@ const splitChips = (s: string): string[] =>
 function ConnectorOAuthStatusHint({
   status,
 }: {
-  status: OAuthStatus | undefined;
+  status: OAuthStatusOrError | undefined;
 }) {
   if (status === undefined) {
     return (
       <span className="text-xs text-muted-foreground">
         Checking connection…
+      </span>
+    );
+  }
+  if (status === OAUTH_STATUS_ERROR) {
+    // M4 — a fetch failure must not be collapsed into "Not connected"
+    // (design §8). Show a distinct muted note instead.
+    return (
+      <span className="text-xs text-muted-foreground">
+        Couldn't check status
       </span>
     );
   }
@@ -179,9 +192,10 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     Map<string, { serviceName: string }>
   >(new Map());
   // Per-connector OAuth status for personal agents (read-only hint). Keyed by
-  // connector id → the fetched OAuthStatus (or undefined while loading).
+  // connector id → the fetched OAuthStatus or the OAUTH_STATUS_ERROR sentinel
+  // (undefined while loading).
   const [personalOauthStatus, setPersonalOauthStatus] = useState<
-    Map<string, OAuthStatus>
+    Map<string, OAuthStatusOrError>
   >(new Map());
 
   const refresh = async () => {
@@ -298,12 +312,14 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
         void Promise.all(
           Array.from(oauthMap.keys()).map((cid) =>
             getOAuthStatus({ connectorId: cid, agentId }).catch(
-              (): OAuthStatus => 'not-connected',
+              // M4 — use a distinct sentinel so fetch failures are not
+              // reported as "Not connected" (design §8).
+              (): OAuthStatusOrError => OAUTH_STATUS_ERROR,
             ),
           ),
         ).then((statuses) => {
           if (cancelled) return;
-          const statusMap = new Map<string, OAuthStatus>();
+          const statusMap = new Map<string, OAuthStatusOrError>();
           Array.from(oauthMap.keys()).forEach((cid, i) => {
             const s = statuses[i];
             if (s !== undefined) statusMap.set(cid, s);

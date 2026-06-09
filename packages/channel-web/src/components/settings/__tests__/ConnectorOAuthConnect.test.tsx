@@ -235,11 +235,10 @@ describe('OAuth message handling', () => {
     expect(await screen.findByText('Connected')).toBeInTheDocument();
   });
 
-  it('handles a success message where connector field is undefined', async () => {
-    vi.mocked(oauthLib.getOAuthStatus)
-      .mockResolvedValueOnce('not-connected')
-      .mockResolvedValue('connected');
-
+  // I1 — provider error/denial must surface "Authorization was cancelled."
+  // and must NOT call onConnected.
+  it('(I1) shows "Authorization was cancelled." on oauth=error and does NOT call onConnected', async () => {
+    vi.mocked(oauthLib.getOAuthStatus).mockResolvedValue('not-connected');
     const onConnected = vi.fn();
     render(
       <ConnectorOAuthConnect
@@ -252,7 +251,39 @@ describe('OAuth message handling', () => {
     fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
     await waitFor(() => expect(window.open).toHaveBeenCalled());
 
-    // Message without connector field should still be processed.
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        origin: window.location.origin,
+        data: { type: OAUTH_MESSAGE_TYPE, connector: 'svc-1', oauth: 'error' },
+      }),
+    );
+
+    expect(await screen.findByText('Authorization was cancelled.')).toBeInTheDocument();
+    // onConnected must NOT be called on failure.
+    expect(onConnected).not.toHaveBeenCalled();
+    // busy must clear (Connect button re-enabled).
+    expect(
+      await screen.findByRole('button', { name: /Connect with MyService/i }),
+    ).not.toBeDisabled();
+  });
+
+  // M2 — a message with connector: undefined must NOT match any mounted instance
+  // (strict connector match; the old "!== undefined" escape hatch is gone).
+  it('(M2) ignores a message with connector: undefined (strict match)', async () => {
+    vi.mocked(oauthLib.getOAuthStatus).mockResolvedValue('not-connected');
+    const onConnected = vi.fn();
+    render(
+      <ConnectorOAuthConnect
+        connectorId="svc-1"
+        serviceName="MyService"
+        onConnected={onConnected}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+
+    // Connector field absent (undefined) — must be silently ignored.
     window.dispatchEvent(
       new MessageEvent('message', {
         origin: window.location.origin,
@@ -260,7 +291,81 @@ describe('OAuth message handling', () => {
       }),
     );
 
-    await waitFor(() => expect(onConnected).toHaveBeenCalled());
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onConnected).not.toHaveBeenCalled();
+  });
+
+  // M2 — a message for a different connector must not affect this instance.
+  it('(M2) ignores a message with a different connector id', async () => {
+    vi.mocked(oauthLib.getOAuthStatus).mockResolvedValue('not-connected');
+    const onConnected = vi.fn();
+    render(
+      <ConnectorOAuthConnect
+        connectorId="svc-1"
+        serviceName="MyService"
+        onConnected={onConnected}
+      />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+    await waitFor(() => expect(window.open).toHaveBeenCalled());
+
+    window.dispatchEvent(
+      new MessageEvent('message', {
+        origin: window.location.origin,
+        data: { type: OAUTH_MESSAGE_TYPE, connector: 'svc-OTHER', oauth: 'success' },
+      }),
+    );
+
+    await new Promise((r) => setTimeout(r, 50));
+    expect(onConnected).not.toHaveBeenCalled();
+  });
+});
+
+// ── (C1) Popup-blocked guard ──────────────────────────────────────────────────
+
+describe('popup-blocked guard (C1)', () => {
+  it('shows an error and re-enables the button when window.open returns null', async () => {
+    // beginOAuth resolves normally; it's window.open that is blocked.
+    vi.spyOn(window, 'open').mockReturnValue(null);
+
+    render(
+      <ConnectorOAuthConnect connectorId="svc-1" serviceName="MyService" />,
+    );
+
+    fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
+
+    // Error message must appear.
+    expect(
+      await screen.findByText(
+        /couldn't open the sign-in window/i,
+      ),
+    ).toBeInTheDocument();
+
+    // busy must have cleared — the Connect button is re-enabled.
+    expect(
+      await screen.findByRole('button', { name: /Connect with MyService/i }),
+    ).not.toBeDisabled();
+
+    // beginOAuth was still called (we got as far as opening the popup).
+    expect(oauthLib.beginOAuth).toHaveBeenCalled();
+
+    // No listener registered (no error happens if we dispatch a spurious
+    // message — the handler was never added, so the flow stays clean).
+  });
+});
+
+// ── (M4) Status-fetch error renders "Couldn't check status" ──────────────────
+
+describe('status fetch error (M4)', () => {
+  it('renders "Couldn\'t check status" when getOAuthStatus rejects', async () => {
+    vi.mocked(oauthLib.getOAuthStatus).mockRejectedValue(new Error('network error'));
+    render(
+      <ConnectorOAuthConnect connectorId="svc-1" serviceName="MyService" />,
+    );
+    expect(await screen.findByText("Couldn't check status")).toBeInTheDocument();
+    // Must NOT show "Not connected".
+    expect(screen.queryByText('Not connected')).toBeNull();
   });
 });
 

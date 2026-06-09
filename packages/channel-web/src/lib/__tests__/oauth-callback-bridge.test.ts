@@ -55,4 +55,24 @@ describe('handleOAuthReturn', () => {
       }),
     ).toBe(false);
   });
+
+  // N6 — oauth=error is passed through just like oauth=success: posts to
+  // opener and closes the popup.
+  it('(N6) popup: posts oauth=error outcome to opener and closes', () => {
+    const post = vi.fn();
+    const close = vi.fn();
+    const handled = handleOAuthReturn({
+      pathname: '/oauth/connected',
+      search: '?oauth=error&connector=c',
+      origin: 'https://app',
+      opener: { postMessage: post } as unknown as Window,
+      closeSelf: close,
+    });
+    expect(handled).toBe(true);
+    expect(post).toHaveBeenCalledWith(
+      { type: OAUTH_MESSAGE_TYPE, connector: 'c', oauth: 'error' },
+      'https://app',
+    );
+    expect(close).toHaveBeenCalled();
+  });
 });

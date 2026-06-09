@@ -537,6 +537,11 @@ export function ConnectorEditDialog({
     // secret to the vault and attach the resulting ref to the slot row.
     // The raw secret MUST NOT flow into capabilitiesFromForm — only the ref.
     //
+    // M3 — The vault write happens BEFORE the connector write deliberately:
+    // an orphaned secret on a connector-write failure is harmless and
+    // self-healing on re-save; the reverse order would leave the connector
+    // pointing at a missing ref.
+    //
     // NOTE: A pinned client_secret stored at user-scope (personal keyMode) is
     // only resolvable by the connector owner. A team member connecting a team
     // agent with a pinned client needs the connector at workspace keyMode (global
