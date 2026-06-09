@@ -96,9 +96,16 @@ index plugin. It registers:
   (capped ~1500 tokens) at chat start,
 - three agent tools: `memory_search` (BM25 over the index), `memory_read_section`, `memory_note`.
 
-> **Correction vs. early brainstorming notes:** the runtime memory layout is `permanent/memory/`
+> **Correction vs. early brainstorming notes:** the runtime memory layout is `memory/`
 > (`system/`, `docs/`, `inbox/`), **not** `.ax/memory/{patterns,mistakes,decisions}.md`. The
 > "consolidated, reinforced" tier the reflection reads is `system/recent.md` + `docs/`.
+>
+> **TASK-182 update:** the bullets above describe memory-strata's host-side processing
+> layout (a disposable scratch laid out as `permanent/memory/**`). The *durable home* of that
+> output is now the per-agent **`/agent` git tier** at **`memory/…`** (the `permanent/` prefix
+> is host-scratch-only and dropped at the tier boundary) — that's what the runner reads and
+> what the "Inputs the reflection turn has" section below describes. The `system-prompt:augment`
+> injector reads `memory/system/{user,recent}.md` from the tier too (owner-routed per agent).
 
 **Authored-draft projection — SHIPPED & WIRED (PRs #218/#219).** The relevant facts:
 - The orchestrator's spawn-time skill union calls `agents:resolve-authored-skills` →
