@@ -100,6 +100,60 @@ describe('runObserver', () => {
     expect(facts).toContain('Friday');
   });
 
+  it('stamps conversation_id onto every written observation (TASK-187 recurrence threading)', async () => {
+    const llm = llmReturning(
+      JSON.stringify([
+        { fact: 'User prefers React over Vue.', subject: 'user', factType: 'preference', confidence: 0.92 },
+        { fact: 'Project ships next Friday.', subject: 'project', factType: 'decision', confidence: 0.85 },
+      ]),
+    );
+
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llm,
+      workspaceRoot,
+      now: new Date('2026-05-10T12:00:00Z'),
+      timeoutMs: 30_000,
+      model: 'claude-haiku-4-5-20251001',
+      conversationId: 'conv-abc',
+    });
+
+    expect(result.kind).toBe('written');
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files).toHaveLength(2);
+    // The durable per-conversation key lands on every observation so the
+    // consolidator can later count distinct conversations for the gate.
+    for (const f of files) {
+      expect(f.fm['conversation_id']).toBe('conv-abc');
+    }
+  });
+
+  it('writes NO conversation_id field when the turn had no conversation (ephemeral context)', async () => {
+    const llm = llmReturning(
+      JSON.stringify([
+        { fact: 'User prefers React over Vue.', subject: 'user', factType: 'preference', confidence: 0.92 },
+      ]),
+    );
+
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llm,
+      workspaceRoot,
+      now: new Date('2026-05-10T12:00:00Z'),
+      timeoutMs: 30_000,
+      model: 'claude-haiku-4-5-20251001',
+      // conversationId omitted — canary/ephemeral contexts have none.
+    });
+
+    expect(result.kind).toBe('written');
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files).toHaveLength(1);
+    // A missing conversation must NOT serialize a `conversation_id` key — that
+    // honest absence is what keeps an unkeyed observation out of any recurrence
+    // count.
+    expect('conversation_id' in files[0]!.fm).toBe(false);
+  });
+
   it('drops observations that the sensitive-content gate rejects', async () => {
     const llm = llmReturning(
       JSON.stringify([

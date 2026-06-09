@@ -51,6 +51,27 @@ export interface MemoryFrontmatter {
   factType?: string;
   /** Conversation messages this fact was extracted from. */
   source_messages?: number;
+  /**
+   * Durable id of the conversation this observation was extracted from
+   * (`AgentContext.conversationId`). Carries the recurrence signal: the
+   * Consolidator dedups these across an inbox cluster to count DISTINCT
+   * conversations (skill-crystallization recurrence gate, TASK-187).
+   *
+   * Why conversationId and NOT sessionId: a conversation re-binds its
+   * session across turns/respawns (`Conversation.activeSessionId` is
+   * nullable + re-set), and the J6 routed path lets two concurrent
+   * agent:invokes for the same conversation SHARE a sessionId — so
+   * sessionId is neither stable-per-conversation nor one-per-conversation.
+   * conversationId is the durable per-conversation key.
+   *
+   * Optional + back-compat: pre-TASK-187 inbox files have no value, and a
+   * context without a conversation (canary tests, ephemeral admin probes)
+   * carries no conversationId. A missing value contributes NO distinct
+   * conversation to the recurrence count (it can't prove a second distinct
+   * conversation), so an unkeyed observation can never satisfy the gate on
+   * its own — the safe default.
+   */
+  conversation_id?: string;
   /** When the underlying event happened (may equal `created`). */
   event_time?: string;
   /** When this row was captured (always equals `created` for now). */
@@ -93,6 +114,24 @@ export interface DocFrontmatter {
   factType: string;
   /** Inbox observation ids merged into this doc, in order. */
   source_observations: string[];
+  /**
+   * DISTINCT conversation ids (`AgentContext.conversationId`) the merged
+   * observations came from, in first-seen order, deduped (TASK-187). This is
+   * the materialized recurrence signal the skill-reflection routine reads
+   * straight from `/agent/memory/docs/…` — `source_conversations.length >= 2`
+   * means the doc's procedure recurred across ≥2 distinct conversations and is
+   * eligible to crystallize. Materialized HERE (not resolved at reflection
+   * time) because the inbox observation that carried each `conversation_id` is
+   * DELETED once promoted (Invariant I12) — the doc is the only surviving home
+   * for the signal.
+   *
+   * Observations with no `conversation_id` (pre-TASK-187 rows, or ephemeral
+   * contexts with no conversation) contribute nothing here, so they can never
+   * push a doc over the ≥2 gate on their own. Optional for back-compat: docs
+   * written before TASK-187 have no field; readers treat a missing value as an
+   * empty set (recurrence count 0).
+   */
+  source_conversations?: string[];
   supersedes?: string[];
   superseded_by?: string;
 }

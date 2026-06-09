@@ -2,10 +2,10 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { mkdtemp, mkdir, writeFile, stat } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { listInbox, deleteInboxFile } from '../inbox-store.js';
+import { listInbox, deleteInboxFile, writeInboxObservation } from '../inbox-store.js';
 import { buildMarkdownFile } from '../frontmatter.js';
 import { INBOX_DIR } from '../paths.js';
-import type { MemoryFrontmatter } from '../types.js';
+import type { MemoryFrontmatter, Observation } from '../types.js';
 
 let workspaceRoot: string;
 beforeEach(async () => {
@@ -109,6 +109,46 @@ describe('inbox-store', () => {
     // Only the valid file is returned; the malformed one is silently skipped.
     expect(files).toHaveLength(1);
     expect(files[0]!.frontmatter.id).toBe(BASE_FM.id);
+  });
+
+  it('writeInboxObservation stamps conversation_id when provided (TASK-187)', async () => {
+    const obs: Observation = {
+      fact: 'User deploys on Fridays',
+      subject: 'deploy',
+      factType: 'preference',
+      confidence: 0.8,
+    };
+    await writeInboxObservation(
+      workspaceRoot,
+      obs,
+      new Date('2026-06-08T12:00:00.000Z'),
+      0,
+      3,
+      'conv-xyz',
+    );
+    const files = await listInbox(workspaceRoot);
+    expect(files).toHaveLength(1);
+    expect(files[0]!.frontmatter.conversation_id).toBe('conv-xyz');
+  });
+
+  it('writeInboxObservation omits conversation_id entirely when none is provided', async () => {
+    const obs: Observation = {
+      fact: 'User deploys on Fridays',
+      subject: 'deploy',
+      factType: 'preference',
+      confidence: 0.8,
+    };
+    // No conversationId arg (e.g. ephemeral/canary context or agent note).
+    await writeInboxObservation(
+      workspaceRoot,
+      obs,
+      new Date('2026-06-08T12:00:00.000Z'),
+      0,
+      0,
+    );
+    const files = await listInbox(workspaceRoot);
+    expect(files).toHaveLength(1);
+    expect(files[0]!.frontmatter.conversation_id).toBeUndefined();
   });
 
   it('skips files missing id or created (guards Consolidator decay logic)', async () => {

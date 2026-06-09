@@ -25,7 +25,7 @@ import type { AgentContext, HookBus } from '@ax/core';
 import { clusterBySubject } from './cluster.js';
 import { isDupe } from './dedup.js';
 import {
-  appendFact, readDoc, writeNewDoc,
+  appendFact, mergeConversationIntoDoc, readDoc, writeNewDoc,
 } from './doc-store.js';
 import { deleteInboxFile, listInbox } from './inbox-store.js';
 import { decidePromotion } from './promotion.js';
@@ -145,6 +145,28 @@ export async function runConsolidation(
         // I12: dedup against facts already in the doc (or accumulated this pass).
         if (isDupe(obs.frontmatter.summary ?? '', factsInDoc)) {
           dupesMerged += 1;
+          // TASK-187: a recurring procedure restates a fact already in the doc,
+          // so we don't append it — but it recurred, possibly in a NEW
+          // conversation. Fold its conversation id into the doc's distinct set
+          // BEFORE deleting the inbox file, or a procedure whose recurrence
+          // shows up as a near-duplicate summary would never reach the ≥2 gate.
+          // (A doc always exists here: dedup only matches once a fact is in it.)
+          try {
+            await mergeConversationIntoDoc({
+              workspaceRoot: input.workspaceRoot,
+              category: cluster.category,
+              slug: cluster.slug,
+              conversationId: obs.frontmatter.conversation_id,
+              now: input.now,
+            });
+          } catch (err) {
+            // Non-fatal: a missing doc here is a programming-error signal, but
+            // we'd rather log + continue the pass than abort all promotions.
+            log.warn('memory_strata_dedup_conversation_merge_failed', {
+              err: err instanceof Error ? err : new Error(String(err)),
+              docId: `${cluster.category}/${cluster.slug}`,
+            });
+          }
           await deleteInboxFile(input.workspaceRoot, obs.path);
           continue;
         }
@@ -160,6 +182,9 @@ export async function runConsolidation(
             factType: obs.frontmatter.factType ?? 'general',
             confidence: obs.frontmatter.confidence ?? 0,
             sourceObservationIds: [obs.frontmatter.id],
+            // TASK-187: seed the doc's distinct-conversation set so the
+            // skill-reflection recurrence gate can read it straight from the doc.
+            conversationId: obs.frontmatter.conversation_id,
             now: input.now,
             facts: [obs.frontmatter.summary ?? ''],
           });
@@ -188,6 +213,10 @@ export async function runConsolidation(
             slug: cluster.slug,
             newFact: obs.frontmatter.summary ?? '',
             observationId: obs.frontmatter.id,
+            // TASK-187: dedup this observation's conversation into the doc's
+            // distinct set — a new conversation grows recurrence; a repeat
+            // from a seen conversation does not.
+            conversationId: obs.frontmatter.conversation_id,
             confidence: obs.frontmatter.confidence ?? 0,
             now: input.now,
           });

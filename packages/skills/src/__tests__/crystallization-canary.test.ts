@@ -401,6 +401,16 @@ describe('skill-crystallization wiring canary (TASK-178)', () => {
     // Recurrence ≥2 distinct conversations (the structural inversion of Hermes).
     expect(p).toMatch(/2 DISTINCT past conversations/);
     expect(p).toMatch(/at least 2 DISTINCT past conversations/);
+    // TASK-187 (option b′): the recurrence signal comes from consolidated
+    // memory's `source_conversations` frontmatter, NOT from grepping transcripts
+    // (TASK-67 gitignores `.claude/projects/` out of /agent, so a transcript
+    // grep always saw only the current session and always no-op'd). Lock in:
+    //   - the prompt names the materialized signal it reads, and
+    //   - it no longer instructs the agent to grep `.claude/projects/` transcripts.
+    expect(p).toMatch(/source_conversations/);
+    expect(p).not.toMatch(/\.claude\/projects/);
+    expect(p).not.toMatch(/\.jsonl/);
+    expect(p.toLowerCase()).not.toContain('grep your own transcripts');
     // A no-op is the correct default (do not invent work).
     expect(p).toMatch(/A pass that changes nothing is the correct/);
     // Prefer patch over create.

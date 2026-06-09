@@ -27,6 +27,15 @@ export interface RunObserverInput {
   /** Model id passed verbatim to `llm:call:*`'s `model` field. */
   model: string;
   /**
+   * Durable id of the conversation these messages belong to
+   * (`AgentContext.conversationId`). Stamped onto every written inbox
+   * observation so the Consolidator can later count DISTINCT conversations
+   * for the skill-crystallization recurrence gate (TASK-187). Undefined when
+   * the turn had no conversation (canary/ephemeral contexts) — those
+   * observations carry no conversation id and contribute nothing to recurrence.
+   */
+  conversationId?: string | undefined;
+  /**
    * Optional logger sink for `late` audit lines. Defaults to a no-op.
    * The plugin wires this to `ctx.logger.warn`.
    */
@@ -120,7 +129,14 @@ export async function runObserver(input: RunObserverInput): Promise<RunObserverR
       rejected.push({ observation: obs, kinds: gate.rejections.map((r) => r.kind) });
       continue;
     }
-    const path = await writeInboxObservation(input.workspaceRoot, obs, input.now, i, input.messages.length);
+    const path = await writeInboxObservation(
+      input.workspaceRoot,
+      obs,
+      input.now,
+      i,
+      input.messages.length,
+      input.conversationId,
+    );
     written.push({ path, observation: obs });
   }
 
