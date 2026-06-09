@@ -520,7 +520,7 @@ export function ConnectorEditDialog({
     e.preventDefault();
     if (busy) return;
     if (!form.name.trim()) {
-      setError('name is required');
+      setError('Give this connector a service name first.');
       return;
     }
     const connectorId = form.connectorId || connectorIdFromName(form.name);
@@ -612,8 +612,8 @@ export function ConnectorEditDialog({
         await patchConnector(target.id, body, base);
       }
       onSaved();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+    } catch {
+      setError("We couldn't save this connector. Please try again.");
     } finally {
       setBusy(false);
     }

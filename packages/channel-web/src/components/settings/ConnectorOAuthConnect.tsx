@@ -112,8 +112,8 @@ export function ConnectorOAuthConnect({
         agentId !== undefined ? { connectorId, agentId } : { connectorId },
       );
       authorizationUrl = result.authorizationUrl;
-    } catch (e: unknown) {
-      setError(e instanceof Error ? e.message : String(e));
+    } catch {
+      setError("We couldn't start the sign-in. Please try again — if it keeps happening, let us know.");
       setBusy(false);
       return;
     }
@@ -150,11 +150,11 @@ export function ConnectorOAuthConnect({
       if (data.connector !== connectorId) return;
 
       // I1 — branch on the OAuth outcome. A provider error/denial must surface
-      // "Authorization was cancelled." and must NOT call onConnected.
+      // a friendly message and must NOT call onConnected.
       if (data.oauth === 'error') {
         cleanupPopupFlow();
         setBusy(false);
-        setError('Authorization was cancelled.');
+        setError(`Sign-in didn't finish, so ${serviceName} isn't connected. You can try again whenever you're ready.`);
         void fetchStatus();      // keep the badge truthful
         return;                  // do NOT call onConnected on failure
       }
@@ -192,17 +192,22 @@ export function ConnectorOAuthConnect({
       );
     }
     if (status === 'error') {
-      // M4 — a status-fetch failure must read "Couldn't check status", not
+      // M4 — a status-fetch failure must read a distinct message, not
       // "Not connected" (design §8).
       return (
-        <span className="text-sm text-muted-foreground">Couldn't check status</span>
+        <span className="text-sm text-muted-foreground">Couldn't check the connection — refresh to try again.</span>
       );
     }
     if (status === 'connected') {
       return <Badge variant="secondary">Connected</Badge>;
     }
     if (status === 'needs-reconnect') {
-      return <Badge variant="destructive">Reconnect needed</Badge>;
+      return (
+        <>
+          <Badge variant="destructive">Reconnect needed</Badge>
+          <span className="text-xs text-muted-foreground">Your sign-in to {serviceName} needs a refresh. Reconnect to keep this working.</span>
+        </>
+      );
     }
     // not-connected
     return <Badge variant="outline">Not connected</Badge>;
@@ -236,11 +241,11 @@ export function ConnectorOAuthConnect({
         <div className="flex flex-col gap-4">
           <Alert>
             <AlertDescription>
-              {`Authorizing lets anyone using this agent act as you on ${serviceName}.`}
+              {`Authorizing lets anyone who uses this shared agent act as you on ${serviceName}. Only people already on this agent are affected.`}
             </AlertDescription>
           </Alert>
           <div className="flex justify-end">
-            <Button onClick={() => setConsented(true)}>I understand</Button>
+            <Button onClick={() => setConsented(true)}>Continue</Button>
           </div>
         </div>
       ) : (

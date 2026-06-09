@@ -145,7 +145,7 @@ function ConnectorOAuthStatusHint({
     // (design §8). Show a distinct muted note instead.
     return (
       <span className="text-xs text-muted-foreground">
-        Couldn't check status
+        Couldn't check the connection.
       </span>
     );
   }
@@ -155,14 +155,14 @@ function ConnectorOAuthStatusHint({
   if (status === 'needs-reconnect') {
     return (
       <span className="text-xs text-muted-foreground">
-        Reconnect in Connectors
+        Sign-in expired — reconnect in the Connectors tab.
       </span>
     );
   }
   // not-connected
   return (
     <span className="text-xs text-muted-foreground">
-      Not connected — connect in Connectors
+      Not connected yet — connect it in the Connectors tab.
     </span>
   );
 }
@@ -834,7 +834,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
                           (no agent id yet, so we can't connect). */}
                       {isOauth && !isExistingAgent && (
                         <p className="ml-7 text-xs text-muted-foreground">
-                          Save the agent first, then connect.
+                          Save this agent first — then you can connect right here.
                         </p>
                       )}
                     </div>

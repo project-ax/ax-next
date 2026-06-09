@@ -490,7 +490,7 @@ describe('ConnectorEditDialog', () => {
     );
   });
 
-  it('surfaces a save error from the server', async () => {
+  it('surfaces a friendly save error when the server rejects', async () => {
     vi.spyOn(connectorsLib, 'createConnector').mockRejectedValue(
       new Error('connector id taken'),
     );
@@ -507,7 +507,7 @@ describe('ConnectorEditDialog', () => {
     fireEvent.change(name, { target: { value: 'Dup' } });
     fireEvent.click(screen.getByRole('button', { name: /^save$/i }));
     await waitFor(() =>
-      expect(screen.getByText(/connector id taken/i)).toBeInTheDocument(),
+      expect(screen.getByText(/couldn't save this connector/i)).toBeInTheDocument(),
     );
   });
 

@@ -80,7 +80,7 @@ describe('status badge', () => {
 // ── (b) Consent gate (requiresConsent=true) ───────────────────────────────────
 
 describe('consent gate', () => {
-  it('shows the consent copy and blocks the Connect button until "I understand" is clicked', async () => {
+  it('shows the consent copy and blocks the Connect button until "Continue" is clicked', async () => {
     render(
       <ConnectorOAuthConnect
         connectorId="svc-1"
@@ -91,7 +91,7 @@ describe('consent gate', () => {
     // Consent copy must be present with exact wording.
     expect(
       await screen.findByText(
-        'Authorizing lets anyone using this agent act as you on MyService.',
+        'Authorizing lets anyone who uses this shared agent act as you on MyService. Only people already on this agent are affected.',
       ),
     ).toBeInTheDocument();
     // Connect button is NOT reachable before consent.
@@ -99,13 +99,13 @@ describe('consent gate', () => {
       screen.queryByRole('button', { name: /Connect with MyService/i }),
     ).toBeNull();
     // Accept consent → Connect button appears.
-    fireEvent.click(screen.getByRole('button', { name: /I understand/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
     expect(
       await screen.findByRole('button', { name: /Connect with MyService/i }),
     ).toBeInTheDocument();
   });
 
-  it('consent Alert disappears after "I understand" is clicked', async () => {
+  it('consent Alert disappears after "Continue" is clicked', async () => {
     render(
       <ConnectorOAuthConnect
         connectorId="svc-1"
@@ -114,13 +114,13 @@ describe('consent gate', () => {
       />,
     );
     await screen.findByText(
-      'Authorizing lets anyone using this agent act as you on MyService.',
+      'Authorizing lets anyone who uses this shared agent act as you on MyService. Only people already on this agent are affected.',
     );
-    fireEvent.click(screen.getByRole('button', { name: /I understand/i }));
+    fireEvent.click(screen.getByRole('button', { name: /^Continue$/i }));
     await waitFor(() =>
       expect(
         screen.queryByText(
-          'Authorizing lets anyone using this agent act as you on MyService.',
+          'Authorizing lets anyone who uses this shared agent act as you on MyService. Only people already on this agent are affected.',
         ),
       ).toBeNull(),
     );
@@ -141,7 +141,7 @@ describe('no consent step', () => {
     expect(
       await screen.findByRole('button', { name: /Connect with MyService/i }),
     ).toBeInTheDocument();
-    expect(screen.queryByText(/Authorizing lets anyone/i)).toBeNull();
+    expect(screen.queryByText(/Authorizing lets anyone who uses/i)).toBeNull();
   });
 
   it('shows Connect button immediately when requiresConsent is omitted', async () => {
@@ -235,9 +235,8 @@ describe('OAuth message handling', () => {
     expect(await screen.findByText('Connected')).toBeInTheDocument();
   });
 
-  // I1 — provider error/denial must surface "Authorization was cancelled."
-  // and must NOT call onConnected.
-  it('(I1) shows "Authorization was cancelled." on oauth=error and does NOT call onConnected', async () => {
+  // I1 — provider error/denial must surface a friendly message and must NOT call onConnected.
+  it('(I1) shows friendly sign-in-not-finished message on oauth=error and does NOT call onConnected', async () => {
     vi.mocked(oauthLib.getOAuthStatus).mockResolvedValue('not-connected');
     const onConnected = vi.fn();
     render(
@@ -258,7 +257,7 @@ describe('OAuth message handling', () => {
       }),
     );
 
-    expect(await screen.findByText('Authorization was cancelled.')).toBeInTheDocument();
+    expect(await screen.findByText(/Sign-in didn't finish, so MyService isn't connected/)).toBeInTheDocument();
     // onConnected must NOT be called on failure.
     expect(onConnected).not.toHaveBeenCalled();
     // busy must clear (Connect button re-enabled).
@@ -355,15 +354,15 @@ describe('popup-blocked guard (C1)', () => {
   });
 });
 
-// ── (M4) Status-fetch error renders "Couldn't check status" ──────────────────
+// ── (M4) Status-fetch error renders actionable message ───────────────────────
 
 describe('status fetch error (M4)', () => {
-  it('renders "Couldn\'t check status" when getOAuthStatus rejects', async () => {
+  it('renders "Couldn\'t check the connection" when getOAuthStatus rejects', async () => {
     vi.mocked(oauthLib.getOAuthStatus).mockRejectedValue(new Error('network error'));
     render(
       <ConnectorOAuthConnect connectorId="svc-1" serviceName="MyService" />,
     );
-    expect(await screen.findByText("Couldn't check status")).toBeInTheDocument();
+    expect(await screen.findByText("Couldn't check the connection — refresh to try again.")).toBeInTheDocument();
     // Must NOT show "Not connected".
     expect(screen.queryByText('Not connected')).toBeNull();
   });
@@ -429,7 +428,7 @@ describe('origin filter (security)', () => {
 // ── (g) beginOAuth error handling ────────────────────────────────────────────
 
 describe('beginOAuth error', () => {
-  it('renders the error message and does NOT open a popup', async () => {
+  it('renders the friendly error message and does NOT open a popup', async () => {
     vi.mocked(oauthLib.beginOAuth).mockRejectedValue(
       new Error('Provider unavailable'),
     );
@@ -437,7 +436,7 @@ describe('beginOAuth error', () => {
       <ConnectorOAuthConnect connectorId="svc-1" serviceName="MyService" />,
     );
     fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
-    expect(await screen.findByText('Provider unavailable')).toBeInTheDocument();
+    expect(await screen.findByText(/couldn't start the sign-in/i)).toBeInTheDocument();
     expect(window.open).not.toHaveBeenCalled();
   });
 
@@ -447,7 +446,7 @@ describe('beginOAuth error', () => {
       <ConnectorOAuthConnect connectorId="svc-1" serviceName="MyService" />,
     );
     fireEvent.click(await screen.findByRole('button', { name: /Connect with MyService/i }));
-    await screen.findByText('boom');
+    await screen.findByText(/couldn't start the sign-in/i);
     // Must not show a "Connected" badge.
     expect(screen.queryByText('Connected')).toBeNull();
   });

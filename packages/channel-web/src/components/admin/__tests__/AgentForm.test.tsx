@@ -43,7 +43,7 @@ vi.mock('../../settings/ConnectorOAuthConnect', () => ({
   }) => (
     <div data-testid="oauth-connect">
       {requiresConsent && (
-        <span>Authorizing lets anyone using this agent act as you on {serviceName}.</span>
+        <span>Authorizing lets anyone who uses this shared agent act as you on {serviceName}. Only people already on this agent are affected.</span>
       )}
       <button>Connect with {serviceName}</button>
     </div>
@@ -501,7 +501,7 @@ describe('AgentForm — agent-editor OAuth affordances', () => {
     );
     // requiresConsent=true means the consent copy renders (team agent).
     expect(
-      screen.getByText(/Authorizing lets anyone using this agent act as you on GitHub/),
+      screen.getByText(/Authorizing lets anyone who uses this shared agent act as you on GitHub/),
     ).toBeTruthy();
     // The connect button should be present.
     expect(screen.getByRole('button', { name: /Connect with GitHub/i })).toBeTruthy();
@@ -523,7 +523,7 @@ describe('AgentForm — agent-editor OAuth affordances', () => {
     // The read-only hint should appear.
     await waitFor(() =>
       expect(
-        screen.getByText(/Not connected — connect in Connectors/i),
+        screen.getByText(/Not connected yet — connect it in the Connectors tab/i),
       ).toBeTruthy(),
     );
     // No connect button for a personal agent.
@@ -532,7 +532,7 @@ describe('AgentForm — agent-editor OAuth affordances', () => {
     expect(screen.queryByTestId('oauth-connect')).toBeNull();
   });
 
-  it('(2b) personal agent with needs-reconnect status shows "Reconnect in Connectors" hint', async () => {
+  it('(2b) personal agent with needs-reconnect status shows "Sign-in expired" hint', async () => {
     mockList.mockResolvedValue([PERSONAL_AGENT_WITH_OAUTH]);
     vi.mocked(listConnectors).mockResolvedValue([OAUTH_CONNECTOR_SUMMARY]);
     vi.mocked(getConnector).mockResolvedValue(OAUTH_CONNECTOR);
@@ -544,7 +544,7 @@ describe('AgentForm — agent-editor OAuth affordances', () => {
     fireEvent.click(screen.getByRole('button', { name: 'edit' }));
 
     await waitFor(() =>
-      expect(screen.getByText(/Reconnect in Connectors/i)).toBeTruthy(),
+      expect(screen.getByText(/Sign-in expired — reconnect in the Connectors tab/i)).toBeTruthy(),
     );
     expect(screen.queryByRole('button', { name: /Connect with/i })).toBeNull();
   });
@@ -566,7 +566,7 @@ describe('AgentForm — agent-editor OAuth affordances', () => {
     // No oauth affordance for an api-key connector.
     expect(screen.queryByTestId('oauth-connect')).toBeNull();
     expect(screen.queryByText(/connect in Connectors/i)).toBeNull();
-    expect(screen.queryByText(/Save the agent first/i)).toBeNull();
+    expect(screen.queryByText(/Save this agent first/i)).toBeNull();
   });
 
   it('(4) for a NEW agent with an oauth connector checked, shows "Save the agent first" note', async () => {

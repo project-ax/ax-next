@@ -89,7 +89,7 @@ export const App = () => {
     // Strip /oauth/connected?... so the back-button and reload land on /.
     window.history.replaceState({}, '', '/');
     if (result.toast === 'success') {
-      toastActions.show({ title: 'Connected.', kind: 'info' });
+      toastActions.show({ title: "Connected. You're all set.", kind: 'info' });
     } else {
       toastActions.error("Couldn't connect. Please try again.");
     }
