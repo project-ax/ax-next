@@ -331,7 +331,8 @@ function ConnectKeyForms({
                 label: entry.slot,
                 kind: 'api-key',
                 // exactOptionalPropertyTypes: only include `description` when set.
-                ...(slotMeta?.description !== undefined
+                // Narrow to api-key slots — oauth slots have no `description` field.
+                ...(slotMeta?.kind === 'api-key' && slotMeta.description !== undefined
                   ? { description: slotMeta.description }
                   : {}),
               }}

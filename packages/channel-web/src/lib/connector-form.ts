@@ -45,6 +45,8 @@ import {
   type ConnectorVisibility,
   type ConnectorMcpServerSpec,
   type ConnectorCredentialSlot,
+  type ConnectorApiKeySlot,
+  type ConnectorOAuthSlot,
   type ServiceDescriptor,
 } from './connectors';
 
@@ -62,15 +64,27 @@ export type PackageRegistry = 'npm' | 'pypi';
  * label ("Personal access token"). There is NO share-by-service `account` field:
  * each connector owns its own key, keyed by the connector id. Maps to one
  * {@link ConnectorCredentialSlot}; an empty `slot` drops the row.
+ *
+ * Task 8 — widened to support `kind: 'oauth'` slots alongside `kind: 'api-key'`.
  */
 export interface CredentialSlotRow {
   slot: string;
   description: string;
+  kind: 'api-key' | 'oauth';
+  /** oauth only — the OAuth provider/server identity. */
+  server?: string;
+  /** oauth only — comma-separated requested scopes (form representation). */
+  scopes?: string;
+  /** oauth only — optional OAuth client id override. */
+  clientId?: string;
+  /** oauth only — vault ref for the client secret. */
+  clientSecretRef?: string;
 }
 
 export const emptySlotRow = (): CredentialSlotRow => ({
   slot: '',
   description: '',
+  kind: 'api-key',
 });
 
 export interface ConnectorFormState {
@@ -168,12 +182,27 @@ function leadingPackage(c: ConnectorCapabilities): {
   return { registry: 'npm', name: '' };
 }
 
-/** Map a capability slot into a structured form row (description → ''). */
+/** Map a capability slot into a structured form row. Branches on `s.kind`. */
 function slotToRow(s: ConnectorCredentialSlot): CredentialSlotRow {
-  return {
+  if (s.kind === 'oauth') {
+    const row: CredentialSlotRow = {
+      slot: s.slot,
+      description: '',
+      kind: 'oauth',
+      server: s.server,
+      scopes: (s.scopes ?? []).join(', '),
+    };
+    if (s.clientId !== undefined) row.clientId = s.clientId;
+    if (s.clientSecretRef !== undefined) row.clientSecretRef = s.clientSecretRef;
+    return row;
+  }
+  // api-key (the original shape + kind discriminant)
+  const row: CredentialSlotRow = {
     slot: s.slot,
     description: s.description ?? '',
+    kind: 'api-key',
   };
+  return row;
 }
 
 /** Derive form state from a fetched connector (edit mode). Infers the mechanism
@@ -207,16 +236,35 @@ export function formFromConnector(c: Connector): ConnectorFormState {
   };
 }
 
-/** Map structured rows → capability slots: drop empty-slot rows; include
- *  description only when non-empty (exactOptionalPropertyTypes). */
+/** Map structured rows → capability slots. Branches on `r.kind`.
+ *  - api-key: drop empty-slot rows; include description only when non-empty.
+ *  - oauth: drop rows where slot OR server is empty; include optional fields
+ *    only when non-empty (exactOptionalPropertyTypes — never set to undefined). */
 function rowsToSlots(rows: CredentialSlotRow[]): ConnectorCredentialSlot[] {
-  return rows
-    .filter((r) => r.slot.trim().length > 0)
-    .map((r) => {
-      const slot: ConnectorCredentialSlot = { slot: r.slot.trim(), kind: 'api-key' };
-      if (r.description.trim().length > 0) slot.description = r.description.trim();
-      return slot;
-    });
+  const result: ConnectorCredentialSlot[] = [];
+  for (const r of rows) {
+    const slot = r.slot.trim();
+    if (slot.length === 0) continue;
+
+    if (r.kind === 'oauth') {
+      const server = r.server?.trim() ?? '';
+      if (server.length === 0) continue;
+      const oauthSlot: ConnectorOAuthSlot = { slot, kind: 'oauth', server };
+      const scopeList = splitList(r.scopes ?? '');
+      if (scopeList.length > 0) oauthSlot.scopes = scopeList;
+      const clientId = r.clientId?.trim();
+      if (clientId) oauthSlot.clientId = clientId;
+      const clientSecretRef = r.clientSecretRef?.trim();
+      if (clientSecretRef) oauthSlot.clientSecretRef = clientSecretRef;
+      result.push(oauthSlot);
+    } else {
+      // api-key
+      const apiKeySlot: ConnectorApiKeySlot = { slot, kind: 'api-key' };
+      if (r.description.trim().length > 0) apiKeySlot.description = r.description.trim();
+      result.push(apiKeySlot);
+    }
+  }
+  return result;
 }
 
 /** Build the leading MCP server, overlaying transport/command/args/url onto any
