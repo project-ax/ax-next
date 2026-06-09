@@ -196,19 +196,40 @@ describe('RoutinesList', () => {
     expect(await screen.findByRole('button', { name: /set credential/i })).toBeInTheDocument();
   });
 
-  it('hides the HMAC slot (and its admin-only fetch) for a non-admin', async () => {
-    mockWebhookRow();
+  it('shows a read-only "ask an admin" note (no Set button, no admin fetch) for a non-admin when HMAC is configured', async () => {
+    mockWebhookRow(); // webhookRoutine HAS hmac configured
     render(<RoutinesList onFired={() => {}} />); // non-admin (default)
 
     // The Receiver URL still loads (owner-scoped), so the row has rendered.
     expect(await screen.findByText(/\/webhooks\/wh-TOKEN\/gh$/)).toBeTruthy();
-    // …but the admin-only HMAC slot is absent — no "Set credential", no HMAC
-    // label, and no /admin/credentials request (which 403s for non-admins).
+    // A non-admin sees an explanatory note (so a dead HMAC webhook is
+    // diagnosable) — but NOT the admin slot: no "Set credential", no HMAC
+    // CredentialSlotRow label, and no /admin/credentials request (it 403s).
+    expect(await screen.findByText(/workspace admin/i)).toBeTruthy();
     expect(screen.queryByText('HMAC', { selector: 'span' })).toBeNull();
     expect(screen.queryByRole('button', { name: /set credential/i })).toBeNull();
     expect(
       fetchMock.mock.calls.some((c) => String(c[0]).includes('/admin/credentials')),
     ).toBe(false);
+  });
+
+  it('shows neither the HMAC slot nor a note for a non-admin webhook WITHOUT HMAC', async () => {
+    const ok = (body: unknown): Response =>
+      ({ ok: true, status: 200, json: async () => body }) as Response;
+    // Same webhook routine but with no hmac block (the form's default).
+    const { hmac: _hmac, ...triggerNoHmac } = webhookRoutine.trigger;
+    const noHmac = { ...webhookRoutine, trigger: triggerNoHmac };
+    fetchMock.mockImplementation((url: string) => {
+      if (url === '/settings/routines') return Promise.resolve(ok({ routines: [noHmac] }));
+      if (url.includes('/webhook-token')) return Promise.resolve(ok({ token: 'wh-TOKEN' }));
+      return Promise.resolve(ok({ credentials: [] }));
+    });
+
+    render(<RoutinesList onFired={() => {}} />); // non-admin
+
+    expect(await screen.findByText(/\/webhooks\/wh-TOKEN\/gh$/)).toBeTruthy();
+    expect(screen.queryByText(/workspace admin/i)).toBeNull();
+    expect(screen.queryByText('HMAC', { selector: 'span' })).toBeNull();
   });
 
   it('shows the webhook receiver URL with a copy button for a webhook routine', async () => {

@@ -333,9 +333,11 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
                       path={r.trigger.path}
                     />
                     {/* The HMAC credential is agent-scoped and admin-managed
-                        today (both read + set are admin-only routes), so the
-                        slot is admin-only — non-admins would just 403. */}
-                    {isAdmin && (
+                        today (both read + set are admin-only routes). Admins get
+                        the slot; a non-admin gets a read-only note ONLY when the
+                        routine declares hmac (so a webhook that 401s on a missing
+                        secret is diagnosable) — never a 403-on-load admin slot. */}
+                    {isAdmin ? (
                       <CredentialSlotRow
                         destination={{ kind: 'routine-hmac', agentId: r.agentId, routinePath: r.path }}
                         slot={{
@@ -345,6 +347,14 @@ export function RoutinesList({ refreshKey = 0, onFired, isAdmin = false }: Routi
                         }}
                         scope={{ scope: 'agent', ownerId: r.agentId }}
                       />
+                    ) : (
+                      r.trigger.hmac != null && (
+                        <p className="text-[11px] text-muted-foreground">
+                          HMAC is configured — a workspace admin must set the
+                          signing secret, or this webhook rejects inbound
+                          requests.
+                        </p>
+                      )
                     )}
                   </div>
                 )}
