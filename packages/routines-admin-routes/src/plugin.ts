@@ -54,6 +54,9 @@ export function createRoutinesAdminRoutesPlugin(): Plugin {
         'routines:list-agent-defaults',
         'routines:set-agent-default-enabled',
         'agents:resolve',
+        // Surfaces the agent's webhook receiver token so the UI can show the
+        // full /webhooks/<token><path> URL (owner-scoped ACL lives in the hook).
+        'agents:ensure-webhook-token',
         // Per-user routine create/edit/delete writes the .ax/routines/<name>.md
         // file into the agent workspace; the apply facade fires
         // workspace:applied → @ax/routines syncs the row.

@@ -213,4 +213,14 @@ export const routines = {
       `/settings/routines/${encodeURIComponent(input.agentId)}?path=${encodeURIComponent(input.path)}`,
     );
   },
+  /**
+   * The agent's webhook receiver token — one token serves every webhook
+   * routine on the agent. The full receiver URL is
+   * `<origin>/webhooks/<token><routine-webhook-path>`.
+   */
+  async webhookToken(agentId: string): Promise<{ token: string }> {
+    return get<{ token: string }>(
+      `/settings/routines/${encodeURIComponent(agentId)}/webhook-token`,
+    );
+  },
 };

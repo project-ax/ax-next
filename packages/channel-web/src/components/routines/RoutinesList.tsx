@@ -14,7 +14,7 @@
  * fixed-width strings.
  */
 import { useEffect, useRef, useState } from 'react';
-import { ChevronRight, Plus, Pencil, Trash2 } from 'lucide-react';
+import { ChevronRight, Plus, Pencil, Trash2, Copy, Check } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import {
   Dialog,
@@ -108,6 +108,10 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
   // actually prevents the duplicate DELETE seen in the kind walk.
   const [deleting, setDeleting] = useState(false);
   const deletingRef = useRef(false);
+  // Per-agent webhook receiver tokens (one token serves all of an agent's
+  // webhook routines). Fetched lazily once the list loads so we can show the
+  // full /webhooks/<token><path> URL on each webhook row.
+  const [webhookTokens, setWebhookTokens] = useState<Record<string, string>>({});
 
   async function reload(): Promise<void> {
     setError(null);
@@ -139,6 +143,34 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
   useEffect(() => {
     void reload();
   }, [refreshKey]);
+
+  // Fetch the receiver token for each agent that has a webhook routine (skips
+  // agents already cached). A failure leaves the token undefined → the row
+  // just omits the URL; it's not fatal. Listing `webhookTokens` as a dep is
+  // loop-safe: once an agent is cached it's filtered out, so no refetch.
+  useEffect(() => {
+    if (list === null) return;
+    const agentIds = Array.from(
+      new Set(
+        list.filter((r) => r.trigger.kind === 'webhook').map((r) => r.agentId),
+      ),
+    ).filter((id) => webhookTokens[id] === undefined);
+    if (agentIds.length === 0) return;
+    let cancelled = false;
+    void Promise.all(
+      agentIds.map(async (agentId) => {
+        try {
+          const { token } = await routines.webhookToken(agentId);
+          if (!cancelled) setWebhookTokens((m) => ({ ...m, [agentId]: token }));
+        } catch {
+          /* leave undefined — the row omits the URL */
+        }
+      }),
+    );
+    return () => {
+      cancelled = true;
+    };
+  }, [list, webhookTokens]);
 
   async function loadFires(agentId: string, path: string): Promise<void> {
     const key = `${agentId}::${path}`;
@@ -275,7 +307,12 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
                   </div>
                 )}
                 {r.trigger.kind === 'webhook' && (
-                  <div className="pb-3 pl-[2.875rem] pr-2">
+                  <div className="pb-3 pl-[2.875rem] pr-2 flex flex-col gap-2">
+                    {webhookTokens[r.agentId] !== undefined && (
+                      <WebhookUrlRow
+                        url={`${window.location.origin}/webhooks/${webhookTokens[r.agentId]}${r.trigger.path}`}
+                      />
+                    )}
                     <CredentialSlotRow
                       destination={{ kind: 'routine-hmac', agentId: r.agentId, routinePath: r.path }}
                       slot={{
@@ -388,5 +425,37 @@ export function RoutinesList({ refreshKey = 0, onFired }: RoutinesListProps) {
         </DialogContent>
       </Dialog>
     </>
+  );
+}
+
+/**
+ * The webhook receiver URL for a webhook routine, with a copy button. The URL
+ * (token included) is what an external sender POSTs to, so it's shown only to
+ * the agent owner (the list itself is owner-scoped).
+ */
+function WebhookUrlRow({ url }: { url: string }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="flex items-center gap-2 rounded-md border border-border bg-muted/30 px-2.5 py-1.5">
+      <span className="text-[11px] font-medium text-muted-foreground shrink-0">
+        Receiver URL
+      </span>
+      <code className="text-[11px] font-mono truncate flex-1" title={url}>
+        {url}
+      </code>
+      <Button
+        type="button"
+        variant="ghost"
+        size="sm"
+        aria-label="Copy webhook URL"
+        onClick={() => {
+          void navigator.clipboard?.writeText(url);
+          setCopied(true);
+          window.setTimeout(() => setCopied(false), 1500);
+        }}
+      >
+        {copied ? <Check className="h-3.5 w-3.5" /> : <Copy className="h-3.5 w-3.5" />}
+      </Button>
+    </div>
   );
 }
