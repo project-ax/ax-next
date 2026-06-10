@@ -9,6 +9,7 @@ import {
 import { BOOTSTRAP_TEMPLATE } from '@ax/agent-identity-templates';
 import { z } from 'zod';
 import type { RouteRequest, RouteResponse } from './routes-chat.js';
+import { actualParentFromMismatch, NO_ACTUAL_PARENT } from './workspace-cas.js';
 
 const PLUGIN_NAME = '@ax/channel-web';
 
@@ -35,10 +36,12 @@ const DEFAULT_PERSONAL_AGENT_MODEL = 'claude-sonnet-4-6';
 // because that route deliberately rejects the wildcard (admin-routes.ts); the
 // service hook `agents:create` allows it.
 //
-// Seeding owner (design open-question #1): HOST-AT-CREATE. The first
-// `workspace:apply` against a brand-new agent's `/agent` (parent: null)
-// lazy-creates `main` (the verified "first apply creates main" git path), so
-// no runner-first-session fallback is needed.
+// Seeding owner (design open-question #1): HOST-AT-CREATE. The seed
+// `workspace:apply` starts with parent:null (lazy-creates `main` on a
+// never-committed workspace) and retries once against the tier's actual head on
+// a CAS miss — the local backend is a single shared repo whose `main` already
+// exists on any live deployment, so the first attempt nearly always misses (see
+// the seed below). No runner-first-session fallback is needed.
 //
 // Boundary review: no new service-hook signature — this is an HTTP route
 // calling the EXISTING `agents:create` + `workspace:apply` hooks. The plugin
@@ -84,7 +87,9 @@ interface AgentsCreateInput {
 // contract; this route names only the shape it needs to seed one file).
 interface WorkspaceApplyInput {
   changes: Array<{ path: string; kind: 'put'; content: Uint8Array }>;
-  parent: null;
+  // `null` for the first write to a never-committed workspace; a version token
+  // on the CAS-retry against an existing shared `main` head (see the seed below).
+  parent: string | null;
   reason?: string;
 }
 interface AgentsCreateAgent {
@@ -173,12 +178,12 @@ export function makeAgentBootstrapHandler(deps: AgentBootstrapDeps) {
 
         // 4) Seed `.ax/BOOTSTRAP.md` into the NEW agent's durable workspace.
         //    The ctx carries (userId, agentId) so `workspace:apply` routes to
-        //    THIS agent's `/agent`; `parent: null` is the first apply,
-        //    which lazy-creates `main` (the verified "first apply creates main"
-        //    git path). BEST-EFFORT: the agent already exists and the SPA will
-        //    open a chat regardless — a seed failure is logged, never a 500
-        //    (the runner string-fallback covers the gap until a later apply
-        //    lands). The template is a trusted compile-time constant.
+        //    THIS agent's `/agent`. BEST-EFFORT: the agent already exists and the
+        //    SPA will open a chat regardless — a seed failure is logged, never a
+        //    500. But the seed landing is what puts the agent in bootstrap mode
+        //    (the runner injects BOOTSTRAP.md verbatim); if it never lands, the
+        //    runner falls into NORMAL mode and the identity interview never runs.
+        //    The template is a trusted compile-time constant.
         const newAgentId = out.agent.id;
         try {
           const seedCtx = makeAgentContext({
@@ -187,17 +192,36 @@ export function makeAgentBootstrapHandler(deps: AgentBootstrapDeps) {
             agentId: newAgentId,
             userId: actor.id,
           });
-          await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', seedCtx, {
-            changes: [
-              {
-                path: '.ax/BOOTSTRAP.md',
-                kind: 'put',
-                content: new TextEncoder().encode(BOOTSTRAP_TEMPLATE),
-              },
-            ],
-            parent: null,
-            reason: 'agent-bootstrap-seed',
-          });
+          const seedChanges: WorkspaceApplyInput['changes'] = [
+            {
+              path: '.ax/BOOTSTRAP.md',
+              kind: 'put',
+              content: new TextEncoder().encode(BOOTSTRAP_TEMPLATE),
+            },
+          ];
+          // First attempt with parent:null — correct for a never-committed
+          // workspace (the git backend lazy-creates `main`). The local backend
+          // is a SINGLE shared repo with one global `main` ref, so on any live
+          // deployment `main` already exists and this CAS-misses; retry ONCE
+          // with the tier's actual head from `cause.actualParent` (the
+          // established workspace-CAS rebase contract — mirrors
+          // routes-agent-identity). Without this retry the seed fails for every
+          // agent created after the very first ever, silently breaking bootstrap.
+          try {
+            await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', seedCtx, {
+              changes: seedChanges,
+              parent: null,
+              reason: 'agent-bootstrap-seed',
+            });
+          } catch (applyErr) {
+            const actual = actualParentFromMismatch(applyErr);
+            if (actual === NO_ACTUAL_PARENT) throw applyErr; // not a CAS miss → real failure
+            await bus.call<WorkspaceApplyInput, unknown>('workspace:apply', seedCtx, {
+              changes: seedChanges,
+              parent: actual,
+              reason: 'agent-bootstrap-seed',
+            });
+          }
         } catch (seedErr) {
           initCtx.logger.warn('agent_bootstrap_seed_failed', {
             plugin: PLUGIN_NAME,

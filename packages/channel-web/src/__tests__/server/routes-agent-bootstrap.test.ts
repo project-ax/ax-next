@@ -26,6 +26,10 @@ function busWith(opts: {
   user?: { id: string; isAdmin: boolean } | 'reject';
   onCreate?: (input: unknown) => unknown;
   seedThrows?: boolean;
+  // Simulate the live shared-repo CAS: the first parent:null apply misses
+  // (a global `main` already exists), throwing parent-mismatch carrying the
+  // tier's real head; a retry with that head succeeds.
+  seedCas?: { actualParent: string | null };
 }): {
   bus: HookBus;
   created: Array<{ ctx: AgentContext; input: unknown }>;
@@ -47,6 +51,15 @@ function busWith(opts: {
   bus.registerService('workspace:apply', 'workspace', async (ctx, input) => {
     if (opts.seedThrows) throw new Error('seed boom');
     applies.push({ ctx, input: input as Applied['input'] });
+    if (opts.seedCas && applies.length === 1) {
+      throw new PluginError({
+        code: 'parent-mismatch',
+        plugin: 'workspace',
+        hookName: 'workspace:apply-internal',
+        message: `expected parent ${opts.seedCas.actualParent ?? 'null'}, got null`,
+        cause: { actualParent: opts.seedCas.actualParent },
+      });
+    }
     return { version: 'v1', delta: { before: null, after: 'v1', changes: [] } };
   });
   return { bus, created, applies };
@@ -82,6 +95,48 @@ describe('POST /api/agents/bootstrap', () => {
     expect(change.path).toBe('.ax/BOOTSTRAP.md');
     expect(change.kind).toBe('put');
     expect(new TextDecoder().decode(change.content!)).toBe(BOOTSTRAP_TEMPLATE);
+  });
+
+  it('retries the seed with the tier head when parent:null CAS-misses (live shared repo)', async () => {
+    // The local workspace backend is ONE shared repo with a global `main` ref.
+    // A brand-new agent still seeds with parent:null, but on any live deployment
+    // `main` already exists, so the first apply CAS-misses with parent-mismatch
+    // carrying the real head. The handler must retry ONCE with that head so
+    // `.ax/BOOTSTRAP.md` actually lands (otherwise the runner falls into NORMAL
+    // mode and the bootstrap interview never runs). Mirrors routes-agent-identity.
+    const { bus, applies } = busWith({
+      user: { id: 'u1', isAdmin: false },
+      seedCas: { actualParent: 'head-oid-abc' },
+    });
+    const h = makeAgentBootstrapHandler({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await h.bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
+
+    // Still 201 — the seed succeeded on retry.
+    expect(captured.statusCode).toBe(201);
+
+    // Two attempts: parent:null (CAS-miss) then parent:<actualParent>.
+    expect(applies).toHaveLength(2);
+    expect(applies[0]!.input.parent).toBeNull();
+    expect(applies[1]!.input.parent).toBe('head-oid-abc');
+    // The retry carries the BOOTSTRAP.md content, so the file actually lands.
+    const change = applies[1]!.input.changes[0]!;
+    expect(change.path).toBe('.ax/BOOTSTRAP.md');
+    expect(change.kind).toBe('put');
+    expect(new TextDecoder().decode(change.content!)).toBe(BOOTSTRAP_TEMPLATE);
+  });
+
+  it('does NOT retry the seed on a non-CAS apply failure (still 201, best-effort)', async () => {
+    // A generic apply failure (not parent-mismatch) is logged and swallowed —
+    // the agent already exists, so the route 201s. Crucially it must NOT retry
+    // a non-CAS error in a loop.
+    const { bus, applies } = busWith({ user: { id: 'u1', isAdmin: false }, seedThrows: true });
+    const h = makeAgentBootstrapHandler({ bus, initCtx });
+    const { res, captured } = fakeRes();
+    await h.bootstrap(fakeReq({ body: { displayName: 'Ada' } }), res);
+    expect(captured.statusCode).toBe(201);
+    // seedThrows throws before recording, so no successful attempt — and no retry.
+    expect(applies).toHaveLength(0);
   });
 
   it('ignores client-supplied tools/model/visibility/systemPrompt (cannot over-grant)', async () => {
