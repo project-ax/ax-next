@@ -294,3 +294,148 @@ describe('@ax/llm-anthropic llm:call dispatch', () => {
     expect(create).toHaveBeenCalledTimes(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// credentialResolution mode (TASK: GKE auto-naming fix). When `true`, the API
+// key is resolved PER-CALL from the credential store (`credentials:get` ref
+// `provider:anthropic`, by ctx.userId precedence) with cfg.apiKey /
+// ANTHROPIC_API_KEY as fallbacks — so host-side auto-titling works off the
+// wizard-stored global credential without a boot-time env key.
+// ---------------------------------------------------------------------------
+describe('@ax/llm-anthropic credentialResolution mode', () => {
+  const ORIGINAL = process.env.ANTHROPIC_API_KEY;
+  beforeEach(() => {
+    delete process.env.ANTHROPIC_API_KEY;
+  });
+  afterEach(() => {
+    if (ORIGINAL === undefined) delete process.env.ANTHROPIC_API_KEY;
+    else process.env.ANTHROPIC_API_KEY = ORIGINAL;
+  });
+
+  function busWithCredential(
+    get: (input: { ref: string; userId: string }) => Promise<string>,
+    captured?: { calls: Array<{ ref: string; userId: string }> },
+  ): HookBus {
+    const bus = new HookBus();
+    bus.registerService<{ ref: string; userId: string }, string>(
+      'credentials:get',
+      '@ax/credentials',
+      async (_ctx, input) => {
+        captured?.calls.push(input);
+        return get(input);
+      },
+    );
+    return bus;
+  }
+
+  it('declares credentials:get as an optionalCall when credentialResolution is on', () => {
+    const plugin = createLlmAnthropicPlugin({ credentialResolution: true });
+    expect(plugin.manifest.optionalCalls).toEqual([
+      expect.objectContaining({ hook: 'credentials:get' }),
+    ]);
+    // Static-mode plugin keeps the lean manifest (no optionalCalls).
+    const staticPlugin = createLlmAnthropicPlugin({ apiKey: 'k' });
+    expect(staticPlugin.manifest.optionalCalls).toBeUndefined();
+  });
+
+  it('init does NOT throw without a static key (key is resolved per-call)', async () => {
+    const plugin = createLlmAnthropicPlugin({
+      credentialResolution: true,
+      clientFactory: () => makeStubClient(async () => makeMessage('hi')),
+    });
+    const bus = busWithCredential(async () => 'sk-db-key');
+    await expect(plugin.init({ bus, config: {} })).resolves.toBeUndefined();
+    expect(bus.hasService('llm:call:anthropic')).toBe(true);
+  });
+
+  it('resolves the API key per-call from credentials:get (ref provider:anthropic, by ctx.userId)', async () => {
+    const captured = { calls: [] as Array<{ ref: string; userId: string }> };
+    let usedKey: string | undefined;
+    const plugin = createLlmAnthropicPlugin({
+      credentialResolution: true,
+      clientFactory: (apiKey: string) => {
+        usedKey = apiKey;
+        return makeStubClient(async () => makeMessage('hi'));
+      },
+    });
+    const bus = busWithCredential(async () => 'sk-db-key', captured);
+    await plugin.init({ bus, config: {} });
+
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u1' });
+    const out = await bus.call<LlmCallInput, LlmCallOutput>('llm:call:anthropic', ctx, {
+      messages: [{ role: 'user', content: 'Hi' }],
+      maxTokens: 32,
+    });
+
+    expect(out.text).toBe('hi');
+    expect(usedKey).toBe('sk-db-key');
+    expect(captured.calls).toEqual([{ ref: 'provider:anthropic', userId: 'u1' }]);
+  });
+
+  it('falls back to ANTHROPIC_API_KEY env when credentials:get has no credential', async () => {
+    process.env.ANTHROPIC_API_KEY = 'env-key';
+    let usedKey: string | undefined;
+    const plugin = createLlmAnthropicPlugin({
+      credentialResolution: true,
+      clientFactory: (apiKey: string) => {
+        usedKey = apiKey;
+        return makeStubClient(async () => makeMessage('hi'));
+      },
+    });
+    const bus = busWithCredential(async () => {
+      throw new PluginError({ code: 'not-found', plugin: '@ax/credentials', message: 'no credential' });
+    });
+    await plugin.init({ bus, config: {} });
+
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u1' });
+    const out = await bus.call<LlmCallInput, LlmCallOutput>('llm:call:anthropic', ctx, {
+      messages: [{ role: 'user', content: 'Hi' }],
+      maxTokens: 32,
+    });
+    expect(out.text).toBe('hi');
+    expect(usedKey).toBe('env-key');
+  });
+
+  it('rejects per-call (not at init) with no-anthropic-credential when nothing resolves', async () => {
+    const plugin = createLlmAnthropicPlugin({
+      credentialResolution: true,
+      clientFactory: () => makeStubClient(async () => makeMessage('hi')),
+    });
+    const bus = busWithCredential(async () => {
+      throw new PluginError({ code: 'not-found', plugin: '@ax/credentials', message: 'no credential' });
+    });
+    // init succeeds — the absence of a key is a per-call concern now.
+    await plugin.init({ bus, config: {} });
+
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u1' });
+    await expect(
+      bus.call<LlmCallInput, LlmCallOutput>('llm:call:anthropic', ctx, {
+        messages: [{ role: 'user', content: 'Hi' }],
+        maxTokens: 32,
+      }),
+    ).rejects.toMatchObject({ code: 'no-anthropic-credential', plugin: '@ax/llm-anthropic' });
+  });
+
+  it('uses cfg.apiKey as an explicit override and never queries credentials:get', async () => {
+    const captured = { calls: [] as Array<{ ref: string; userId: string }> };
+    let usedKey: string | undefined;
+    const plugin = createLlmAnthropicPlugin({
+      credentialResolution: true,
+      apiKey: 'override-key',
+      clientFactory: (apiKey: string) => {
+        usedKey = apiKey;
+        return makeStubClient(async () => makeMessage('hi'));
+      },
+    });
+    const bus = busWithCredential(async () => 'sk-db-key', captured);
+    await plugin.init({ bus, config: {} });
+
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u1' });
+    await bus.call<LlmCallInput, LlmCallOutput>('llm:call:anthropic', ctx, {
+      messages: [{ role: 'user', content: 'Hi' }],
+      maxTokens: 32,
+    });
+    expect(usedKey).toBe('override-key');
+    expect(captured.calls).toEqual([]);
+  });
+});

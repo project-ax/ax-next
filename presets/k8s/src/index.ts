@@ -338,22 +338,32 @@ export interface K8sPresetConfig {
     oneShot?: boolean;
   };
   /**
-   * Auto-titling config. When present, the preset loads @ax/llm-anthropic
-   * and @ax/conversation-titles; conversations get a one-line title written
-   * after the first assistant turn (`ifNull: true`, never clobbers a user
-   * rename). When absent, titles stay null — same as today's behavior.
+   * Auto-titling model override. @ax/llm-anthropic + @ax/conversation-titles
+   * load UNCONDITIONALLY (llm-anthropic resolves the Anthropic key from the
+   * credential store at call time, so titles don't need a boot-time host key);
+   * conversations get a one-line title after the first assistant turn
+   * (`ifNull: true`, never clobbers a user rename). When no credential resolves
+   * at all the title call errors and the best-effort subscriber skips, leaving
+   * the title null.
    *
    * `model` uses the `<provider>/<model-id>` convention; the titles plugin
    * splits on the first `/` and dispatches `llm:call:${provider}`. Default:
-   * `'anthropic/claude-haiku-4-5-20251001'`.
-   *
-   * `loadK8sConfigFromEnv` populates this field iff `ANTHROPIC_API_KEY` is
-   * present in the env; otherwise it leaves the field undefined (multi-
-   * tenant deploys without a shared host key opt out cleanly).
+   * `'anthropic/claude-haiku-4-5-20251001'`. `loadK8sConfigFromEnv` always sets
+   * this (default or `AX_TITLE_MODEL`); when the whole field is omitted the
+   * preset falls back to the default model.
    */
   titles?: {
     model?: string;
   };
+  /**
+   * Load the host-side LLM TOOLS bundle (@ax/web-tools + @ax/memory-strata +
+   * its postgres indexer). UNLIKE auto-titling, these construct their own
+   * Anthropic client from `ANTHROPIC_API_KEY` at init, so they require a shared
+   * host key in the boot env. `loadK8sConfigFromEnv` sets this iff
+   * `ANTHROPIC_API_KEY` is present; a deploy without it gets titles (off the DB
+   * credential) but not these host tools.
+   */
+  hostLlmTools?: boolean;
   /**
    * @ax/http-server config. The host listener that serves /admin/*, /auth/*,
    * /admin/me, /admin/sign-out, and (Week 10-12) the admin UI. Distinct from
@@ -977,11 +987,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // — all already loaded above; topo-sort handles the ordering.
   //
   // Defaults `defaultRunnerType: 'claude-sdk'` (the only runner shipped
-  // today). Auto-titling (@ax/conversation-titles) loads conditionally
-  // on `cfg.titles` being defined — `loadK8sConfigFromEnv` populates it
-  // iff ANTHROPIC_API_KEY is in env. Multi-tenant deploys without a
-  // shared host key opt out cleanly (cfg.titles undefined → both
-  // plugins skipped → conversations stay `title: null`, same as today).
+  // today). Auto-titling (@ax/llm-anthropic + @ax/conversation-titles)
+  // now loads UNCONDITIONALLY and resolves the Anthropic key from the
+  // credential store at call time — so multi-tenant deploys whose key lives
+  // in the DB (set by the first-run wizard) still get titles. When no
+  // credential resolves, the title call errors and the best-effort
+  // subscriber skips, leaving `title: null` (same end state as before).
   plugins.push(createConversationsPlugin());
 
   // ----- 9b. connectors -----------------------------------------------------
@@ -1084,41 +1095,44 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     plugins.push(createToolConnectorProposePlugin());
   }
 
-  // Auto-titling: @ax/llm-anthropic registers `llm:call:anthropic`,
-  // @ax/conversation-titles subscribes to `chat:turn-end` and dispatches
-  // `llm:call:${provider}` after the first assistant turn lands.
-  // Conditional on cfg.titles (driven by ANTHROPIC_API_KEY presence in
-  // loadK8sConfigFromEnv) so multi-tenant deploys opt out cleanly.
-  if (config.titles !== undefined) {
-    // This preset only ships @ax/llm-anthropic. A non-anthropic provider
-    // would leave `llm:call:<provider>` unregistered, which the kernel's
-    // topo-sort would catch at bootstrap with a less-readable error than
-    // this one. Future providers slot in by adding sibling plugins here
-    // and lifting this guard.
-    const titleModel = config.titles.model ?? DEFAULT_TITLE_MODEL;
-    if (!titleModel.startsWith('anthropic/')) {
-      throw new PluginError({
-        code: 'invalid-config',
-        plugin: '@ax/preset-k8s',
-        message: `titles.model='${titleModel}' — this preset only supports 'anthropic/<model-id>' (no other provider plugins are loaded)`,
-      });
-    }
-    plugins.push(createLlmAnthropicPlugin());
-    // @ax/web-tools — host-executed web_search + web_extract backed by
-    // Anthropic's server-side web tools. Piggybacks on the same env gate
-    // (config.titles is set iff ANTHROPIC_API_KEY is present) because it
-    // constructs its own Anthropic client from that key. Available to all
-    // agents; the plugin's own `enabled` flag is the operator kill-switch.
+  // Auto-titling — ALWAYS loaded. @ax/llm-anthropic registers
+  // `llm:call:anthropic`, resolving the Anthropic key PER-CALL from the
+  // credential store (the first-run wizard's global `provider:anthropic`,
+  // with ANTHROPIC_API_KEY env as fallback) via `credentialResolution: true`.
+  // @ax/conversation-titles subscribes to `chat:turn-end` and dispatches the
+  // title call after the first assistant turn. This is the key change: titles
+  // work on a multi-tenant deploy whose Anthropic key lives in the DB (set by
+  // the wizard), NOT a boot-time host env var. When NO credential resolves at
+  // all, `llm:call:anthropic` errors per-call and the best-effort title
+  // subscriber skips quietly — same end state as before (title stays null).
+  //
+  // This preset only ships @ax/llm-anthropic. A non-anthropic title model
+  // would leave `llm:call:<provider>` unregistered; we catch that at
+  // construction with a readable message rather than an opaque topo-sort error.
+  const titleModel = config.titles?.model ?? DEFAULT_TITLE_MODEL;
+  if (!titleModel.startsWith('anthropic/')) {
+    throw new PluginError({
+      code: 'invalid-config',
+      plugin: '@ax/preset-k8s',
+      message: `titles.model='${titleModel}' — this preset only supports 'anthropic/<model-id>' (no other provider plugins are loaded)`,
+    });
+  }
+  plugins.push(createLlmAnthropicPlugin({ credentialResolution: true }));
+  plugins.push(createConversationTitlesPlugin({ model: titleModel }));
+
+  // Host-side LLM TOOLS bundle (@ax/web-tools + @ax/memory-strata + its
+  // postgres indexer). UNLIKE titles, these construct their OWN Anthropic
+  // client from `ANTHROPIC_API_KEY` at init, so they stay gated on a shared
+  // host key being present in the boot env (config.hostLlmTools, set by
+  // loadK8sConfigFromEnv iff ANTHROPIC_API_KEY is non-empty). They're separate
+  // features with their own behavior/security surface — NOT part of the
+  // auto-titling fix — so this preserves their current behavior exactly (off on
+  // deploys without a shared host key). They depend on `llm:call:anthropic`,
+  // registered unconditionally above. (Migrating them to credentialResolution
+  // is a follow-up if host tools should also work off the DB credential.)
+  if (config.hostLlmTools === true) {
     plugins.push(createWebToolsPlugin());
-    plugins.push(createConversationTitlesPlugin({ model: titleModel }));
-    // @ax/memory-strata Phase 1: hot-tier markdown + Observer extracting
-    // facts to permanent/memory/inbox/. Piggybacks on the same env gate
-    // because the Observer needs `llm:call:anthropic` (registered above).
-    // Splitting the gate into separate config knobs is a Phase 2 concern.
     plugins.push(createMemoryStrataPlugin());
-    // I24 — indexer loads as a pair with memory-strata (same gate). The
-    // postgres indexer resolves the shared Kysely pool via database:get-instance
-    // (registered above by createDatabasePostgresPlugin). No separate DSN needed.
     plugins.push(createMemoryStrataIndexPostgresPlugin());
   }
 
@@ -1709,10 +1723,11 @@ export function loadK8sConfigFromEnv(
   // TASK-68's attachments/artifacts work rides on.)
 
   // ---- titles (auto-titling subscriber) -----------------------------------
-  // Gated on ANTHROPIC_API_KEY presence: multi-tenant deploys without a
-  // shared host key get no auto-titling, same as today. When the key IS
-  // set, the preset loads @ax/llm-anthropic + @ax/conversation-titles and
-  // titles get a one-line summary after the first assistant turn.
+  // ALWAYS configured now — @ax/llm-anthropic + @ax/conversation-titles load
+  // unconditionally and resolve the Anthropic key from the credential store at
+  // call time, so titles no longer depend on a boot-time host env key (the
+  // multi-tenant deploy stores its key in the DB via the first-run wizard).
+  // `titles.model` is just the model override; AX_TITLE_MODEL sets it.
   //
   // The default falls through to DEFAULT_TITLE_MODEL exported from
   // @ax/conversation-titles — one source of truth (CLAUDE.md invariant I4).
@@ -1720,13 +1735,23 @@ export function loadK8sConfigFromEnv(
   // plugins together by definition); the chart's `values.yaml` literal is
   // the only remaining duplicate, and it must stay in lockstep with this
   // export by hand (helm can't import TS).
-  if (env.ANTHROPIC_API_KEY !== undefined && env.ANTHROPIC_API_KEY !== '') {
+  {
     const titleModelRaw = env.AX_TITLE_MODEL;
     const titleModel =
       titleModelRaw === undefined || titleModelRaw === ''
         ? DEFAULT_TITLE_MODEL
         : titleModelRaw;
     config.titles = { model: titleModel };
+  }
+
+  // ---- host-side LLM tools bundle (web-tools + memory-strata) --------------
+  // These construct their own Anthropic client from ANTHROPIC_API_KEY at init,
+  // so they DO still require a shared host key in the boot env — gate on its
+  // presence (the same condition that used to gate titles). A multi-tenant
+  // deploy without a shared host key gets titles (via the DB credential) but
+  // not the host tools, unchanged from today's behavior for these two.
+  if (env.ANTHROPIC_API_KEY !== undefined && env.ANTHROPIC_API_KEY !== '') {
+    config.hostLlmTools = true;
   }
 
   // ---- onboarding (first-run wizard) ------------------------------------

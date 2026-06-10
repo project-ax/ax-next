@@ -183,6 +183,10 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         caDir: path.join(tmp, 'proxy-ca'),
       },
       titles: { model: 'anthropic/claude-haiku-4-5-20251001' },
+      // hostLlmTools mirrors the ANTHROPIC_API_KEY env this test sets — it's
+      // what now gates the web-tools + memory-strata bundle (titles load
+      // unconditionally; only the host-tools bundle still needs a boot key).
+      hostLlmTools: true,
       onboarding: { publicBaseUrl: 'http://127.0.0.1:0' },
     };
   }
