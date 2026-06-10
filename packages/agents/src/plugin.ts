@@ -126,6 +126,15 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // skills (the safe default).
       optionalCalls: [
         {
+          // GET /admin/agents surfaces team agents the user belongs to by
+          // resolving the user's teamIds here. teams:list-for-user is
+          // k8s-preset-only; a preset without @ax/teams degrades the list to
+          // the user's personal agents (owner_type='user' rows only).
+          hook: 'teams:list-for-user',
+          degradation:
+            'team agents the user belongs to are omitted from GET /admin/agents (personal agents only)',
+        },
+        {
           hook: 'skills:list-authored',
           degradation: 'authored-skill discovery is skipped (no skills store)',
         },

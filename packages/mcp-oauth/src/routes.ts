@@ -570,12 +570,15 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const user = await requireUser(req, res);
     if (!user) return;
 
-    const connectorId = req.query.connectorId;
+    // @ax/http-server lowercases all query keys (RouteRequest.query contract),
+    // so a browser's ?connectorId=…&agentId=… arrives as connectorid/agentid.
+    // Read the lowercased keys — a camelCase read silently 400s every request.
+    const connectorId = req.query.connectorid;
     if (!connectorId) {
       res.status(400).json({ error: 'connectorId is required' });
       return;
     }
-    const agentId = req.query.agentId || undefined;
+    const agentId = req.query.agentid || undefined;
 
     // Authz gate mirrors `begin`: when agentId is present, agents:resolve IS the
     // owner/member binding check; when absent, connector ownership gates (connectors:get).
@@ -618,10 +621,15 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     // Probe the credential via the same runtime path a chat turn uses.
     // probeCtx.agentId MUST be the real agentId (when present) so credentials:get
     // walks the agent scope correctly (packages/credentials/src/plugin.ts:567).
+    // When ABSENT (user-scope / Connectors-tab probe), it MUST be '' — credentials:get
+    // only walks the agent scope when ctx.agentId is a non-empty string, so '' makes
+    // it walk user→global only. A non-empty placeholder (e.g. a plugin name) would be
+    // fed to the agent-scope lookup as an ownerId and rejected by the ownerId pattern
+    // (`^[A-Za-z0-9][A-Za-z0-9_.@-]{0,127}$`), 500-ing every user-scope status check.
     const ref = `account:${connectorId}`;
     const probeCtx = makeAgentContext({
       sessionId: 'mcp-oauth',
-      agentId: agentId ?? '@ax/mcp-oauth',
+      agentId: agentId ?? '',
       userId: user.id,
     });
     try {

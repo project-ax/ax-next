@@ -413,6 +413,50 @@ describe('@ax/agents admin routes', () => {
     expect((r.body as { agents: SerializedAgent[] }).agents).toEqual([]);
   });
 
+  // Regression (manual-acceptance walk): GET /admin/agents must surface team
+  // agents the user belongs to, by resolving the user's teamIds via the
+  // optional teams:list-for-user hook. Without it the agents editor never
+  // lists a team agent, so its OAuth-connect surface is unreachable. The teams
+  // hooks are registered post-boot (this suite doesn't load @ax/teams): one
+  // lets agents:create accept a team agent, the other returns the membership.
+  it('GET /admin/agents includes team agents the user belongs to', async () => {
+    const TEAM = 'team-walk';
+    stack.harness.bus.registerService(
+      'teams:is-member',
+      'mock-teams',
+      async (_ctx, input: unknown) => {
+        const { teamId } = input as { teamId: string; userId: string };
+        return { member: teamId === TEAM, role: 'member' as const };
+      },
+    );
+    stack.harness.bus.registerService(
+      'teams:list-for-user',
+      'mock-teams',
+      async (_ctx, input: unknown) => {
+        const { userId } = input as { userId: string };
+        return {
+          teams: [
+            { id: TEAM, displayName: 'Walk Team', createdBy: userId, createdAt: new Date() },
+          ],
+        };
+      },
+    );
+
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody({ displayName: 'Shared Agent', visibility: 'team', teamId: TEAM }),
+    });
+    expect(created.status).toBe(201);
+
+    const r = await http(stack.port, 'GET', '/admin/agents', { cookie });
+    expect(r.status).toBe(200);
+    const list = (r.body as { agents: SerializedAgent[] }).agents;
+    const teamAgent = list.find((a) => a.displayName === 'Shared Agent');
+    expect(teamAgent).toBeDefined();
+    expect(teamAgent!.visibility).toBe('team');
+  });
+
   // -------------------------------------------------------------------------
   // GET /admin/agents/:id
   // -------------------------------------------------------------------------

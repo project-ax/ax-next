@@ -452,6 +452,41 @@ async function workspaceConnectorGrantViolation(
 
 // --- handler factory -------------------------------------------------------
 
+/** Minimal local shape of @ax/teams' `teams:list-for-user` output (Invariant
+ *  I2 — no cross-plugin import). We read only each team's id. */
+interface TeamsListForUserOutput {
+  teams: Array<{ id: string }>;
+}
+
+/**
+ * Resolve the team ids a user belongs to via the optional `teams:list-for-user`
+ * hook so team agents the user is a member of surface in GET /admin/agents.
+ * teams:list-for-user is k8s-preset-only (declared as an optionalCall); a
+ * preset without @ax/teams — or a lookup failure — degrades to personal-only
+ * rather than 500-ing the list.
+ */
+async function listTeamIdsForUser(
+  bus: HookBus,
+  ctx: AgentContext,
+  userId: string,
+): Promise<string[]> {
+  if (!bus.hasService('teams:list-for-user')) return [];
+  try {
+    const out = await bus.call<{ userId: string }, TeamsListForUserOutput>(
+      'teams:list-for-user',
+      ctx,
+      { userId },
+    );
+    return out.teams.map((t) => t.id);
+  } catch (err) {
+    ctx.logger.warn('agents_admin_list_team_ids_failed', {
+      userId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
+}
+
 export interface AdminRouteDeps {
   bus: HookBus;
 }
@@ -507,15 +542,15 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
     async list(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
-      // TODO Task 14: pass teamIds: await listTeamsForUser(actor.id) so
-      // team agents the user belongs to surface here. Until @ax/teams
-      // ships, this list returns personal agents only (the store's
-      // scope filter accepts an empty teamIds list and only matches
-      // owner_type='user' rows).
+      // Team agents the user belongs to surface only when we pass the user's
+      // teamIds (the store's scope filter matches owner_type='team' rows whose
+      // owner_id ∈ teamIds). Resolved via the optional teams:list-for-user hook
+      // (degrades to personal-only without @ax/teams).
+      const teamIds = await listTeamIdsForUser(deps.bus, ctx, actor.id);
       const out = await deps.bus.call<ListForUserInput, ListForUserOutput>(
         'agents:list-for-user',
         ctx,
-        { userId: actor.id },
+        { userId: actor.id, teamIds },
       );
       res.status(200).json({ agents: out.agents.map(serializeAgent) });
     },

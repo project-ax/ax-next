@@ -25,10 +25,10 @@ interface BusStubs {
 /** A bus whose `call` dispatches by hook name to a per-test stub. A stub that
  *  throws (PluginError-shaped or a Rejection) models the reject path. */
 function fakeBus(stubs: BusStubs) {
-  const calls: Array<{ hook: string; input: unknown }> = [];
+  const calls: Array<{ hook: string; ctx: unknown; input: unknown }> = [];
   const bus = {
     async call<I, O>(hook: string, _ctx: unknown, input: I): Promise<O> {
-      calls.push({ hook, input });
+      calls.push({ hook, ctx: _ctx, input });
       const stub = (stubs as Record<string, ((i: unknown) => unknown) | undefined>)[hook];
       if (!stub) throw new Error(`unexpected hook ${hook}`);
       return (await stub(input)) as O;
@@ -158,11 +158,19 @@ function makeDeps(stubs: BusStubs, opts: { store?: ReturnType<typeof fakeStore>;
 // --- fake request/response ------------------------------------------------
 
 function fakeReq(over: Partial<{ body: Buffer; query: Record<string, string> }> = {}) {
+  // The real @ax/http-server LOWERCASES every query key (see http-server
+  // types.ts: "lowercased keys, repeated keys collapsed"). Replicate that here
+  // so a handler reading req.query is tested against the actual wire contract —
+  // a camelCase read (e.g. req.query.connectorId) would silently miss the value
+  // a browser sent as ?connectorId=… (which arrives as `connectorid`).
+  const rawQuery = over.query ?? {};
+  const query: Record<string, string> = {};
+  for (const [k, v] of Object.entries(rawQuery)) query[k.toLowerCase()] = v;
   return {
     headers: {},
     body: over.body ?? Buffer.from(''),
     cookies: {},
-    query: over.query ?? {},
+    query,
     params: {},
     signedCookie: () => null,
   };
@@ -1226,5 +1234,30 @@ describe('mcp-oauth status route (GET /api/connectors/oauth/status)', () => {
     expect(state.json).toEqual({ status: 'connected' });
     // The token value is discarded — not returned to the caller.
     expect(JSON.stringify(state.json)).not.toContain('token-value');
+    const credGet = credGetArgs.length; // referenced to keep the capture meaningful
+    expect(credGet).toBe(1);
+  });
+
+  // Regression (manual-acceptance walk): a NO-agentId (user-scope / Connectors-tab)
+  // probe MUST pass probeCtx.agentId='' so the real credentials:get walks user→global
+  // only. A non-empty placeholder ('@ax/mcp-oauth') was fed to the agent-scope lookup
+  // as an ownerId and rejected by the ownerId pattern → 500 on every user-scope status
+  // check (the mock credentials:get here doesn't validate ownerId, so the bug only
+  // shows as the wrong ctx.agentId — that's what this pins).
+  it('Task4.8. NO agentId → probeCtx.agentId is "" (agent-scope walk skipped)', async () => {
+    const { deps, calls } = makeDeps({
+      'auth:require-user': () => OK_USER,
+      'connectors:get': () => connectorFixture(),
+      'credentials:get': () => {
+        throw new PluginError({ code: 'credential-not-found', plugin: 'credentials', message: '' });
+      },
+    });
+    const handlers = createMcpOAuthRouteHandlers(deps);
+    const { res, state } = fakeRes();
+    await handlers.status(fakeReq({ query: { connectorId: 'conn-1' } }), res);
+    expect(state.status).toBe(200);
+    expect(state.json).toEqual({ status: 'not-connected' });
+    const credGet = calls.find((c) => c.hook === 'credentials:get');
+    expect((credGet?.ctx as { agentId?: string } | undefined)?.agentId).toBe('');
   });
 });

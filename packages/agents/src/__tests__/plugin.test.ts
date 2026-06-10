@@ -137,6 +137,11 @@ describe('@ax/agents plugin manifest + lifecycle', () => {
       // workspace scan is retired, so workspace:list/read are no longer deps.
       optionalCalls: [
         {
+          hook: 'teams:list-for-user',
+          degradation:
+            'team agents the user belongs to are omitted from GET /admin/agents (personal agents only)',
+        },
+        {
           hook: 'skills:list-authored',
           degradation: 'authored-skill discovery is skipped (no skills store)',
         },

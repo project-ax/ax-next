@@ -174,6 +174,13 @@ interface ConversationsDeleteInput {
 
 interface AgentsListForUserInput {
   userId: string;
+  /** Team ids the user belongs to, so team agents surface in the picker. */
+  teamIds?: string[];
+}
+/** Minimal local re-declaration of @ax/teams' `teams:list-for-user` output
+ *  (Invariant #2 — no cross-plugin import). We read only each team's id. */
+interface TeamsListForUserOutput {
+  teams: Array<{ id: string }>;
 }
 interface AgentsListForUserAgent {
   id: string;
@@ -349,6 +356,34 @@ export interface ChatRouteDeps {
   onCardResolved?: (conversationId: string, skillId: string) => void;
   /** TASK-82 — drop all pending cards for a deleted conversation. */
   onConversationDeleted?: (conversationId: string) => void;
+}
+
+/**
+ * Resolve the team ids a user belongs to via the optional `teams:list-for-user`
+ * hook so team agents surface in the agent picker. The hook is k8s-preset-only
+ * (declared as an optionalCall); a preset without @ax/teams — or a lookup
+ * failure — degrades to personal-only rather than 500-ing the whole picker.
+ */
+async function listTeamIdsForUser(
+  bus: HookBus,
+  ctx: AgentContext,
+  userId: string,
+): Promise<string[]> {
+  if (!bus.hasService('teams:list-for-user')) return [];
+  try {
+    const out = await bus.call<{ userId: string }, TeamsListForUserOutput>(
+      'teams:list-for-user',
+      ctx,
+      { userId },
+    );
+    return out.teams.map((t) => t.id);
+  } catch (err) {
+    ctx.logger.warn('chat_list_team_ids_failed', {
+      userId,
+      error: err instanceof Error ? err.message : String(err),
+    });
+    return [];
+  }
 }
 
 export function createChatRouteHandlers(deps: ChatRouteDeps) {
@@ -1097,10 +1132,15 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
       const userId = await authOr401(bus, initCtx, req, res);
       if (userId === null) return;
 
+      // Team agents the user belongs to surface only when we pass the user's
+      // teamIds (the store's scope filter matches owner_type='team' rows whose
+      // owner_id ∈ teamIds). Resolved via the optional teams:list-for-user hook.
+      const teamIds = await listTeamIdsForUser(bus, initCtx, userId);
+
       const out = await bus.call<
         AgentsListForUserInput,
         AgentsListForUserOutput
-      >('agents:list-for-user', initCtx, { userId });
+      >('agents:list-for-user', initCtx, { userId, teamIds });
 
       // Filter to display-relevant fields (I5 — capabilities minimized).
       // We deliberately drop systemPrompt / allowedTools / mcpConfigIds /

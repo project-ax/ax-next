@@ -480,6 +480,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
       ],
       optionalCalls: [
         {
+          hook: 'teams:list-for-user',
+          degradation:
+            'team agents are omitted from the chat agent picker (personal agents only)',
+        },
+        {
           hook: 'host-grants:grant',
           degradation:
             'the reactive-wall "Always for this agent" button persists nothing across sessions (the live proxy:add-host grant still applies for the current session); the Settings "Add a site" control returns 503',

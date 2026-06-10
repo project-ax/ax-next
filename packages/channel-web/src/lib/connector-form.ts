@@ -240,14 +240,21 @@ export function formFromConnector(c: Connector): ConnectorFormState {
  *  - api-key: drop empty-slot rows; include description only when non-empty.
  *  - oauth: drop rows where slot OR server is empty; include optional fields
  *    only when non-empty (exactOptionalPropertyTypes — never set to undefined). */
-function rowsToSlots(rows: CredentialSlotRow[]): ConnectorCredentialSlot[] {
+function rowsToSlots(
+  rows: CredentialSlotRow[],
+  /** The leading MCP server's name — used as the oauth slot's `server` when the
+   *  author didn't explicitly pick one (the picker pre-selects the sole server,
+   *  but its value isn't written to form state until changed, so an untouched
+   *  single-server pick would otherwise drop the whole slot). */
+  defaultServer?: string,
+): ConnectorCredentialSlot[] {
   const result: ConnectorCredentialSlot[] = [];
   for (const r of rows) {
     const slot = r.slot.trim();
     if (slot.length === 0) continue;
 
     if (r.kind === 'oauth') {
-      const server = r.server?.trim() ?? '';
+      const server = (r.server?.trim() || defaultServer || '').trim();
       if (server.length === 0) continue;
       const oauthSlot: ConnectorOAuthSlot = { slot, kind: 'oauth', server };
       const scopeList = splitList(r.scopes ?? '');
@@ -275,7 +282,11 @@ function buildLeadingMcpServer(
   existing: ConnectorMcpServerSpec | undefined,
 ): ConnectorMcpServerSpec {
   return {
-    name: existing?.name ?? form.connectorId ?? form.name.trim().toLowerCase(),
+    // `||` (not `??`): a NEW connector has `form.connectorId === ''` (empty, not
+    // nullish), which would defeat `??` and leave the server name empty — breaking
+    // the oauth slot's `server` reference. Mirror the ConnectorEditDialog server
+    // picker's derivation so the name the author saw selected is what we persist.
+    name: existing?.name || form.connectorId || connectorIdFromName(form.name),
     allowedHosts: existing?.allowedHosts ?? [],
     credentials: existing?.credentials ?? [],
     ...(existing?.env !== undefined ? { env: existing.env } : {}),
@@ -302,7 +313,14 @@ export function capabilitiesFromForm(
 ): ConnectorCapabilities {
   const base = form.baseCapabilities;
   const allowedHosts = splitList(form.allowedHosts);
-  const credentials = rowsToSlots(form.credentialSlots);
+  // The leading MCP server's name (same derivation as buildLeadingMcpServer +
+  // the ConnectorEditDialog server picker) so an oauth slot binds to it even when
+  // the author left the pre-selected sole server untouched.
+  const leadingServerName =
+    form.mechanism === 'mcp'
+      ? base.mcpServers[0]?.name || form.connectorId || connectorIdFromName(form.name)
+      : undefined;
+  const credentials = rowsToSlots(form.credentialSlots, leadingServerName);
 
   // mcpServers — only an MCP connector keeps a LEADING server. Beyond-first
   // servers (index ≥ 1) are always preserved; the leading slot is the edited /
@@ -314,6 +332,22 @@ export function capabilitiesFromForm(
       (form.transport === 'stdio' && form.command.trim().length > 0);
     if (hasMcp) {
       mcpServers = [buildLeadingMcpServer(form, base.mcpServers[0]), ...mcpServers];
+    }
+  }
+
+  // Derive egress hosts from http MCP server URLs. The MCP form has no explicit
+  // allowedHosts field, but the connector's top-level `allowedHosts` is the ONLY
+  // source the credential-proxy egress lock AND the mcp-oauth SSRF guard read — so
+  // without this an http MCP connector (and any OAuth on it) can never reach its
+  // own server. Union, preserving any explicitly-entered hosts.
+  for (const s of mcpServers) {
+    if (s.transport === 'http' && typeof s.url === 'string' && s.url.trim().length > 0) {
+      try {
+        const host = new URL(s.url).hostname;
+        if (host.length > 0 && !allowedHosts.includes(host)) allowedHosts.push(host);
+      } catch {
+        // unparseable URL — the server-side validation will reject it; nothing to add.
+      }
     }
   }
 
