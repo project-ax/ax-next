@@ -58,6 +58,56 @@ describe('connector-form helpers', () => {
     expect(connectorIdFromName('My_Notion.v2')).toBe('my_notion.v2');
   });
 
+  // Regression (manual-acceptance walk): authoring a NEW http-MCP connector with an
+  // oauth slot produced a BROKEN connector — empty allowedHosts (SSRF guard blocks
+  // everything), an empty mcpServer name (the oauth slot's `server` dangled), and a
+  // DROPPED oauth slot (the picker pre-selects the sole server but never wrote it to
+  // form state, so rowsToSlots saw server='' and skipped it). capabilitiesFromForm
+  // must now: derive allowedHosts from the http URL, give the server a non-empty name,
+  // and bind the oauth slot to that server even when the picker was left untouched.
+  it('new http-MCP oauth connector serializes a usable connector (empty server picker)', () => {
+    const form: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'Linear (OAuth)',
+      mechanism: 'mcp',
+      transport: 'http',
+      url: 'https://mcp.linear.app/mcp',
+      visibility: 'shared',
+      // The author toggled the slot to oauth + named it + scoped it, but never
+      // re-picked the (sole, pre-displayed) server — so `server` is empty.
+      credentialSlots: [
+        { slot: 'LINEAR_OAUTH', description: '', kind: 'oauth', server: '', scopes: 'read' },
+      ],
+    };
+    const caps = capabilitiesFromForm(form);
+    expect(caps.allowedHosts).toEqual(['mcp.linear.app']);
+    expect(caps.mcpServers).toHaveLength(1);
+    expect(caps.mcpServers[0]!.name).toBe('linear--oauth-');
+    expect(caps.mcpServers[0]!.url).toBe('https://mcp.linear.app/mcp');
+    expect(caps.credentials).toHaveLength(1);
+    expect(caps.credentials[0]).toMatchObject({
+      slot: 'LINEAR_OAUTH',
+      kind: 'oauth',
+      server: 'linear--oauth-',
+      scopes: ['read'],
+    });
+  });
+
+  it('an explicitly-picked oauth server is preserved (not overridden by the default)', () => {
+    const form: ConnectorFormState = {
+      ...emptyConnectorForm(),
+      name: 'Multi',
+      mechanism: 'mcp',
+      transport: 'http',
+      url: 'https://a.example.com/mcp',
+      credentialSlots: [
+        { slot: 'TOK', description: '', kind: 'oauth', server: 'explicit-srv', scopes: '' },
+      ],
+    };
+    const caps = capabilitiesFromForm(form);
+    expect(caps.credentials[0]).toMatchObject({ kind: 'oauth', server: 'explicit-srv' });
+  });
+
   // --- mechanism inference on load ----------------------------------------
 
   it('formFromConnector infers MCP from a leading mcp server + reads its fields', () => {
