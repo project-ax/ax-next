@@ -8,6 +8,7 @@ import {
 } from '@ax/core';
 import { z } from 'zod';
 import type { RouteRequest, RouteResponse } from './routes-chat.js';
+import { actualParentFromMismatch, NO_ACTUAL_PARENT } from './workspace-cas.js';
 
 const PLUGIN_NAME = '@ax/channel-web';
 
@@ -111,23 +112,6 @@ const IdentityBody = z
 
 const enc = (s: string): Uint8Array => new TextEncoder().encode(s);
 const dec = (b: Uint8Array): string => new TextDecoder('utf-8').decode(b);
-
-// Extract the storage tier's actual head from a `parent-mismatch` PluginError's
-// `cause.actualParent` (the established workspace CAS contract — see the backfill
-// + git-engine `parentMismatch`). Returns the value (a version token or null)
-// when the error is a parent-mismatch carrying it, or the sentinel
-// NO_ACTUAL_PARENT so the caller knows NOT to retry.
-const NO_ACTUAL_PARENT = Symbol('no-actual-parent');
-function actualParentFromMismatch(
-  err: unknown,
-): string | null | typeof NO_ACTUAL_PARENT {
-  if (!(err instanceof PluginError) || err.code !== 'parent-mismatch') {
-    return NO_ACTUAL_PARENT;
-  }
-  const cause = err.cause as { actualParent?: string | null } | undefined;
-  if (cause === undefined || !('actualParent' in cause)) return NO_ACTUAL_PARENT;
-  return cause.actualParent ?? null;
-}
 
 export interface AgentIdentityRoutesDeps {
   bus: HookBus;
