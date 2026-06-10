@@ -158,11 +158,19 @@ function makeDeps(stubs: BusStubs, opts: { store?: ReturnType<typeof fakeStore>;
 // --- fake request/response ------------------------------------------------
 
 function fakeReq(over: Partial<{ body: Buffer; query: Record<string, string> }> = {}) {
+  // The real @ax/http-server LOWERCASES every query key (see http-server
+  // types.ts: "lowercased keys, repeated keys collapsed"). Replicate that here
+  // so a handler reading req.query is tested against the actual wire contract —
+  // a camelCase read (e.g. req.query.connectorId) would silently miss the value
+  // a browser sent as ?connectorId=… (which arrives as `connectorid`).
+  const rawQuery = over.query ?? {};
+  const query: Record<string, string> = {};
+  for (const [k, v] of Object.entries(rawQuery)) query[k.toLowerCase()] = v;
   return {
     headers: {},
     body: over.body ?? Buffer.from(''),
     cookies: {},
-    query: over.query ?? {},
+    query,
     params: {},
     signedCookie: () => null,
   };

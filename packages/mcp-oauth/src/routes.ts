@@ -570,12 +570,15 @@ export function createMcpOAuthRouteHandlers(deps: McpOAuthRouteDeps): {
     const user = await requireUser(req, res);
     if (!user) return;
 
-    const connectorId = req.query.connectorId;
+    // @ax/http-server lowercases all query keys (RouteRequest.query contract),
+    // so a browser's ?connectorId=…&agentId=… arrives as connectorid/agentid.
+    // Read the lowercased keys — a camelCase read silently 400s every request.
+    const connectorId = req.query.connectorid;
     if (!connectorId) {
       res.status(400).json({ error: 'connectorId is required' });
       return;
     }
-    const agentId = req.query.agentId || undefined;
+    const agentId = req.query.agentid || undefined;
 
     // Authz gate mirrors `begin`: when agentId is present, agents:resolve IS the
     // owner/member binding check; when absent, connector ownership gates (connectors:get).
