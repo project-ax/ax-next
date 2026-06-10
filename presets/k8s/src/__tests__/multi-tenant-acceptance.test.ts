@@ -176,6 +176,13 @@ const PLUGINS_TO_DROP = new Set<string>([
   // (exactly like the dropped @ax/skills). Not on this ACL canary's path;
   // static wiring is pinned in preset.test.ts.
   '@ax/host-grants',
+  // Auto-titling pair — now loaded UNCONDITIONALLY by the preset. @ax/conversation-
+  // titles hard-`calls` conversations:get / conversations:set-title, satisfied
+  // only by the @ax/conversations we dropped above, so it would fail verifyCalls.
+  // The multi-tenant ACL canary doesn't exercise titling; drop both (llm-anthropic
+  // comes off as its now-orphaned pair). Static wiring is pinned in preset.test.ts.
+  '@ax/llm-anthropic',
+  '@ax/conversation-titles',
 ]);
 
 // Stub producer for the dispatcher's REQUIRED dep this canary drops.

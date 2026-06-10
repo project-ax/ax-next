@@ -185,8 +185,11 @@ credentials:
     enabled: true
 
 # anthropic.apiKey stays empty — the first-run wizard collects one and stores
-# it encrypted in the credentials table. Set it only if you want a host-wide
-# shared key in env (which also enables auto-titling on the host pod).
+# it encrypted in the credentials table. Auto-titling works off that stored key
+# automatically (the host resolves it at call time), so titles do NOT need this
+# env key. Set it only if you ALSO want the host-side LLM tools bundle
+# (web search / extract + the memory observer), which constructs its own client
+# from the env key at boot.
 anthropic:
   apiKey: ""
 

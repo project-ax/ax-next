@@ -186,6 +186,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/channel-web',
         '@ax/chat-orchestrator',
         '@ax/connectors',
+        '@ax/conversation-titles',
         '@ax/conversations',
         '@ax/credential-proxy',
         '@ax/credentials',
@@ -195,6 +196,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/host-grants',
         '@ax/http-server',
         '@ax/ipc-http',
+        '@ax/llm-anthropic',
         '@ax/mcp-client',
         '@ax/mcp-oauth',
         '@ax/onboarding',
@@ -1192,22 +1194,26 @@ describe('loadK8sConfigFromEnv', () => {
     ).toThrowError(/AX_AUTH_SESSION_LIFETIME_SECONDS/);
   });
 
-  describe('loadK8sConfigFromEnv — titles', () => {
-    it('omits cfg.titles when ANTHROPIC_API_KEY is unset', () => {
+  describe('loadK8sConfigFromEnv — titles + host LLM tools', () => {
+    it('always sets cfg.titles with the default model (titles no longer gated on ANTHROPIC_API_KEY)', () => {
       const cfg = loadK8sConfigFromEnv(minRequired());
-      expect(cfg.titles).toBeUndefined();
+      expect(cfg.titles).toEqual({ model: 'anthropic/claude-haiku-4-5-20251001' });
     });
 
-    it('sets cfg.titles with the default model when ANTHROPIC_API_KEY is set and AX_TITLE_MODEL is unset', () => {
-      const cfg = loadK8sConfigFromEnv(minRequired({
-        ANTHROPIC_API_KEY: 'sk-ant-stub',
-      }));
+    it('leaves cfg.hostLlmTools unset when ANTHROPIC_API_KEY is unset', () => {
+      const cfg = loadK8sConfigFromEnv(minRequired());
+      expect(cfg.hostLlmTools).toBeUndefined();
+    });
+
+    it('sets cfg.hostLlmTools when ANTHROPIC_API_KEY is set', () => {
+      const cfg = loadK8sConfigFromEnv(minRequired({ ANTHROPIC_API_KEY: 'sk-ant-stub' }));
+      expect(cfg.hostLlmTools).toBe(true);
+      // titles still configured (it always is now).
       expect(cfg.titles).toEqual({ model: 'anthropic/claude-haiku-4-5-20251001' });
     });
 
     it('respects AX_TITLE_MODEL when set', () => {
       const cfg = loadK8sConfigFromEnv(minRequired({
-        ANTHROPIC_API_KEY: 'sk-ant-stub',
         AX_TITLE_MODEL: 'anthropic/claude-sonnet-4-7',
       }));
       expect(cfg.titles).toEqual({ model: 'anthropic/claude-sonnet-4-7' });
@@ -1215,7 +1221,6 @@ describe('loadK8sConfigFromEnv', () => {
 
     it('treats empty AX_TITLE_MODEL as unset (defaults applied)', () => {
       const cfg = loadK8sConfigFromEnv(minRequired({
-        ANTHROPIC_API_KEY: 'sk-ant-stub',
         AX_TITLE_MODEL: '',
       }));
       expect(cfg.titles).toEqual({ model: 'anthropic/claude-haiku-4-5-20251001' });
@@ -1223,24 +1228,36 @@ describe('loadK8sConfigFromEnv', () => {
   });
 });
 
-describe('createK8sPlugins — conditional title plugins', () => {
-  it('omits @ax/llm-anthropic and @ax/conversation-titles when cfg.titles is undefined', () => {
+describe('createK8sPlugins — title + host-LLM-tools plugins', () => {
+  it('ALWAYS loads @ax/llm-anthropic + @ax/conversation-titles (even with no titles/hostLlmTools config)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const names = plugins.map((p) => p.manifest.name);
-    expect(names).not.toContain('@ax/llm-anthropic');
-    expect(names).not.toContain('@ax/conversation-titles');
+    expect(names).toContain('@ax/llm-anthropic');
+    expect(names).toContain('@ax/conversation-titles');
+    // The host-LLM-tools bundle stays OFF without cfg.hostLlmTools.
     expect(names).not.toContain('@ax/web-tools');
+    expect(names).not.toContain('@ax/memory-strata');
   });
 
-  it('includes both plugins when cfg.titles is set', () => {
+  it('loads @ax/llm-anthropic in credentialResolution mode (declares credentials:get as an optionalCall)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const llm = plugins.find((p) => p.manifest.name === '@ax/llm-anthropic');
+    expect(llm).toBeDefined();
+    expect(llm!.manifest.optionalCalls).toEqual([
+      expect.objectContaining({ hook: 'credentials:get' }),
+    ]);
+  });
+
+  it('loads the host-LLM-tools bundle (web-tools + memory-strata) when cfg.hostLlmTools is set', () => {
     const plugins = createK8sPlugins({
       ...stubConfig,
-      titles: { model: 'anthropic/claude-haiku-4-5-20251001' },
+      hostLlmTools: true,
     });
     const names = plugins.map((p) => p.manifest.name);
     expect(names).toContain('@ax/llm-anthropic');
     expect(names).toContain('@ax/conversation-titles');
     expect(names).toContain('@ax/web-tools');
+    expect(names).toContain('@ax/memory-strata');
   });
 
   it('passes cfg.titles.model into the conversation-titles plugin manifest', () => {

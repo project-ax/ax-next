@@ -232,6 +232,17 @@ const PLUGINS_TO_DROP = new Set<string>([
   // grant→list→revoke reachability are pinned in preset.test.ts + the
   // @ax/host-grants package canary.
   '@ax/host-grants',
+  // Auto-titling pair — now loaded UNCONDITIONALLY by the preset (llm-anthropic
+  // resolves its key from the credential store at call time). @ax/conversation-
+  // titles hard-`calls` conversations:get / conversations:set-title, satisfied
+  // only by @ax/conversations, which we dropped above — so leaving it in would
+  // fail the kernel's verifyCalls. The chat-path canaries don't exercise
+  // titling; the Phase F canary further down re-adds its OWN stub llm-anthropic
+  // + conversation-titles, so the real ones MUST come off here (else a
+  // duplicate `llm:call:anthropic` registrant). Static wiring is pinned in
+  // preset.test.ts; runtime behavior in @ax/conversation-titles' own suite.
+  '@ax/llm-anthropic',
+  '@ax/conversation-titles',
 ]);
 
 // Stub `agents:resolve` — production presets register `@ax/agents` (postgres-
