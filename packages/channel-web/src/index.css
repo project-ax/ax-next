@@ -22,6 +22,9 @@
     --destructive: 0 60% 55%;
     --destructive-foreground: 0 0% 100%;
     --destructive-soft: 0 60% 96%;
+    --warning: 36 92% 45%;
+    --warning-foreground: 0 0% 100%;
+    --warning-soft: 40 100% 94%;
     --border: 240 6% 91%;
     --input: 240 6% 91%;
     --ring: 211 100% 44%;
@@ -52,6 +55,9 @@
       --destructive: 4 86% 62%;
       --destructive-foreground: 0 0% 100%;
       --destructive-soft: 4 60% 16%;
+      --warning: 36 96% 56%;
+      --warning-foreground: 36 100% 8%;
+      --warning-soft: 36 60% 14%;
       --border: 240 4% 17%;
       --input: 240 4% 17%;
       --ring: 211 100% 52%;
@@ -79,6 +85,9 @@
     --destructive: 4 86% 62%;
     --destructive-foreground: 0 0% 100%;
     --destructive-soft: 4 60% 16%;
+    --warning: 36 96% 56%;
+    --warning-foreground: 36 100% 8%;
+    --warning-soft: 36 60% 14%;
     --border: 240 4% 17%;
     --input: 240 4% 17%;
     --ring: 211 100% 52%;

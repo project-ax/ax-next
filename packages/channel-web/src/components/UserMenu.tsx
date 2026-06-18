@@ -14,7 +14,7 @@
  * caller's own id (a user can only ever read/change their own data).
  */
 import { useEffect, useRef, useState } from 'react';
-import { LogOut, Monitor, Moon, Settings, Sun } from 'lucide-react';
+import { LayoutGrid, LogOut, Monitor, Moon, Settings, Sun } from 'lucide-react';
 import { useUser } from '../lib/user-context';
 import { signOut } from '../lib/auth';
 import { useTheme, setTheme, type Theme } from '../lib/theme';
@@ -35,8 +35,10 @@ const THEME_OPTIONS: ThemeOption[] = [
 
 export function UserMenu({
   onOpenAdminSettings,
+  onOpenFleet,
 }: {
   onOpenAdminSettings?: (() => void) | undefined;
+  onOpenFleet?: (() => void) | undefined;
 } = {}) {
   const user = useUser();
   const theme = useTheme();
@@ -139,6 +141,19 @@ export function UserMenu({
               </div>
             </div>
           </div>
+          <button
+            type="button"
+            className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[12.5px] text-foreground hover:bg-muted transition-colors [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"
+            role="menuitem"
+            onClick={() => {
+              setOpen(false);
+              onOpenFleet?.();
+            }}
+            data-action="fleet"
+          >
+            <LayoutGrid aria-hidden="true" strokeWidth={1.4} />
+            <span>Fleet</span>
+          </button>
           <button
             type="button"
             className="flex items-center gap-2.5 w-full px-2.5 py-2 rounded-md text-[12.5px] text-foreground hover:bg-muted transition-colors [&_svg]:h-3.5 [&_svg]:w-3.5 [&_svg]:shrink-0 [&_svg]:text-muted-foreground"

@@ -35,7 +35,7 @@ import {
   useSidebarOpen,
 } from './lib/sidebar-collapse';
 import { hydrateTheme } from './lib/theme';
-import { useAgentStore } from './lib/agent-store';
+import { useAgentStore, agentStoreActions } from './lib/agent-store';
 import { shouldShowAgentBootstrap } from './lib/agent-bootstrap-gate';
 import { sessionStoreActions } from './lib/session-store';
 import { bootstrapKickoff } from './lib/bootstrap-kickoff';
@@ -49,6 +49,7 @@ import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
 import { ToastStack } from './components/Toast';
 import { AdminShell } from './components/admin/AdminShell';
+import { FleetView } from './components/fleet/FleetView';
 import { SetupWizard } from './components/setup/SetupWizard';
 import { UserProvider } from './lib/user-context';
 import { consumeOAuthFullPageReturn } from './lib/oauth-full-page-return';
@@ -170,6 +171,9 @@ const AppContent = ({ user }: { user: AuthUser }) => {
   // `adminSettingsOpen` is set by the user menu's "Settings" entry
   // (admin-gated). AdminSettings renders in the main pane when true.
   const [adminSettingsOpen, setAdminSettingsOpen] = useState(false);
+  // `fleetOpen` drives the Fleet overview surface (peer of Settings), opened
+  // from the user menu and rendered as a full-pane overlay below.
+  const [fleetOpen, setFleetOpen] = useState(false);
   // `createAgentOpen` drives the explicit "+ New agent" entry into the
   // bootstrap flow (the first-run gate below uses the empty-list signal).
   const [createAgentOpen, setCreateAgentOpen] = useState(false);
@@ -280,6 +284,21 @@ const AppContent = ({ user }: { user: AuthUser }) => {
     );
   }
 
+  // Enter chat from the Fleet wall: close the overlay and switch the chat
+  // surface to that agent on a fresh thread. We only commit the pick when the
+  // agent exists in the user's list (a worker card never calls this).
+  const handleFleetEnterChat = (agentId: string): void => {
+    setFleetOpen(false);
+    if (!agents.some((a) => a.id === agentId)) return;
+    try {
+      runtime.threads.switchToNewThread();
+    } catch (err) {
+      console.warn('[app] fleet enter-chat switchToNewThread failed', err);
+    }
+    sessionStoreActions.newLocalConversation();
+    void agentStoreActions.pickAgent(agentId, { activeSessionId: null, hasMessages: false });
+  };
+
   return (
     <UserProvider value={user}>
       <AssistantRuntimeProvider runtime={runtime}>
@@ -289,9 +308,14 @@ const AppContent = ({ user }: { user: AuthUser }) => {
               isAdmin={user.role === 'admin'}
               onClose={() => setAdminSettingsOpen(false)}
             />
+          ) : fleetOpen ? (
+            <FleetView onClose={() => setFleetOpen(false)} onEnterChat={handleFleetEnterChat} />
           ) : (
             <>
-              <Sidebar onOpenAdminSettings={() => setAdminSettingsOpen(true)} />
+              <Sidebar
+                onOpenAdminSettings={() => setAdminSettingsOpen(true)}
+                onOpenFleet={() => setFleetOpen(true)}
+              />
               {sidebarOpen && (
                 <div
                   className="hidden max-[720px]:block fixed inset-0 bg-black/40 z-40"
