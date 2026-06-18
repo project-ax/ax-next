@@ -11,6 +11,7 @@ import { ArrowRight, ExternalLink } from 'lucide-react';
 import type { FleetAgent } from '../../lib/fleet-data';
 import { STATUS_META } from './status-meta';
 import { AvatarTile } from '../AvatarTile';
+import { Badge } from '../ui/badge';
 import { Button } from '../ui/button';
 import { cn } from '@/lib/utils';
 
@@ -66,13 +67,18 @@ export function FleetCard({
         </p>
       )}
 
-      {/* Footer: time + actions */}
+      {/* Footer: time + PR badge + actions. The PR badge is shrink-0 so the
+          decision-relevant state (draft/open/merged) never truncates — the
+          time label gives way first. The taskId already shows in the activity
+          line for workers, so it's not repeated here. */}
       <div className="mt-3 flex items-center gap-2 border-t border-border pt-3">
-        <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground">
-          {agent.taskId ? `${agent.taskId} · ` : ''}
-          {timeLabel}
-          {agent.prNumber ? ` · PR #${agent.prNumber}${agent.prState ? ` (${agent.prState})` : ''}` : ''}
-        </span>
+        <span className="min-w-0 flex-1 truncate text-[11.5px] text-muted-foreground">{timeLabel}</span>
+        {agent.prNumber && (
+          <Badge variant="secondary" className="shrink-0 font-normal">
+            PR #{agent.prNumber}
+            {agent.prState ? ` · ${agent.prState}` : ''}
+          </Badge>
+        )}
         <Button variant="ghost" size="sm" className="h-8 px-2.5" onClick={() => onDetails(agent.id)}>
           Details
         </Button>

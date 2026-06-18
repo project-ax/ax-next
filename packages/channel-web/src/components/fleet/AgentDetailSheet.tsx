@@ -14,7 +14,7 @@ import type { FleetActivityItem, FleetAgent } from '../../lib/fleet-data';
 import { STATUS_META } from './status-meta';
 import { AvatarTile } from '../AvatarTile';
 import { Button } from '../ui/button';
-import { Sheet, SheetContent } from '../ui/sheet';
+import { Sheet, SheetContent, SheetDescription, SheetTitle } from '../ui/sheet';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '../ui/collapsible';
 import { cn } from '@/lib/utils';
 
@@ -54,12 +54,12 @@ function DetailBody({ agent, onEnterChat }: { agent: FleetAgent; onEnterChat: (i
             />
           </AvatarTile>
           <div className="min-w-0 flex-1">
-            <div className="truncate text-[17px] font-medium tracking-[-0.01em] text-foreground">
+            <SheetTitle className="truncate text-[17px] font-medium tracking-[-0.01em] text-foreground">
               {agent.name}
-            </div>
-            <div className="text-[12px] text-muted-foreground">
+            </SheetTitle>
+            <SheetDescription className="text-[12px] text-muted-foreground">
               {agent.model} · {agent.toolCount} tools · {agent.connectorCount} connectors
-            </div>
+            </SheetDescription>
           </div>
           <span
             className={cn(
@@ -87,11 +87,11 @@ function DetailBody({ agent, onEnterChat }: { agent: FleetAgent; onEnterChat: (i
             </Button>
           )}
           {agent.status === 'working' && (
-            <Button variant="outline" size="sm" className="gap-1.5">
+            <Button variant="outline" size="sm" className="gap-1.5" disabled title="Not wired up in this prototype">
               <Pause className="h-3.5 w-3.5" /> Pause
             </Button>
           )}
-          <Button variant="ghost" size="sm" className="gap-1.5">
+          <Button variant="ghost" size="sm" className="gap-1.5" disabled title="Not wired up in this prototype">
             <Settings2 className="h-3.5 w-3.5" /> Configure
           </Button>
         </div>
@@ -128,7 +128,7 @@ function DetailBody({ agent, onEnterChat }: { agent: FleetAgent; onEnterChat: (i
           </div>
         )}
         {agent.status === 'working' && (
-          <Button variant="outline" size="sm" className="mt-3 gap-1.5">
+          <Button variant="outline" size="sm" className="mt-3 gap-1.5" disabled title="Not wired up in this prototype">
             <Square className="h-3 w-3" /> Stop this turn
           </Button>
         )}
@@ -158,8 +158,8 @@ function DetailBody({ agent, onEnterChat }: { agent: FleetAgent; onEnterChat: (i
           <ConfigRow label="Connectors" value={`${agent.connectorCount} attached`} />
           <ConfigRow label="Kind" value={isWorker ? 'Autonomous board worker' : 'Interactive agent'} />
           <p className="pt-1 text-[12px] text-muted-foreground">
-            Open <span className="text-foreground">Configure</span> to change the model, tools, or
-            connectors. We keep those off this view so monitoring stays calm.
+            Changing the model, tools, or connectors will live in the agent's settings — we keep those
+            off this view so monitoring stays calm. (Not wired up in this prototype.)
           </p>
         </CollapsibleContent>
       </Collapsible>

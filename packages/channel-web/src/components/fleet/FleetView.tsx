@@ -54,6 +54,12 @@ export function FleetView({
     onEnterChat(id);
   };
 
+  const jumpToNeedsYou = (): void => {
+    document
+      .getElementById('fleet-needs-you')
+      ?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
   return (
     <div className="flex h-full flex-1 flex-col overflow-hidden bg-background">
       {/* Header */}
@@ -63,7 +69,16 @@ export function FleetView({
           <span className="text-[13px] text-muted-foreground">
             {state.agents.length} agents · {workingCount} working now
             {needsYou > 0 && (
-              <> · <span className="font-medium text-warning">{needsYou} needs you</span></>
+              <>
+                {' · '}
+                <button
+                  type="button"
+                  onClick={jumpToNeedsYou}
+                  className="font-medium text-warning hover:underline"
+                >
+                  {needsYou} needs you
+                </button>
+              </>
             )}
           </span>
           <Button variant="ghost" size="icon" className="ml-auto h-8 w-8" onClick={onClose} aria-label="Close fleet">
@@ -108,7 +123,7 @@ export function FleetView({
         ) : (
           <div className="space-y-7">
             {groups.map(([status, list]) => (
-              <section key={status}>
+              <section key={status} id={status === 'waiting' ? 'fleet-needs-you' : undefined}>
                 <div className="mb-3 flex items-center gap-2">
                   <span className={cn('h-2 w-2 rounded-full', STATUS_META[status].dot)} aria-hidden="true" />
                   <h2 className="text-[13px] font-medium text-foreground">

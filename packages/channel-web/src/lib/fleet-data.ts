@@ -110,7 +110,7 @@ export function seedFleet(): FleetAgent[] {
       status: 'waiting',
       owner: 'mine',
       activity: 'Paused — waiting for your go-ahead',
-      request: 'wants to run `npm publish` before continuing',
+      request: 'wants to publish a package (npm publish) before continuing',
       startedLabel: 'waiting for 2m',
       model: 'claude-opus-4-8',
       toolCount: 5,
