@@ -366,6 +366,68 @@ interface RealizedMounts {
   }>;
   /** The realized in-pod path of the `role:'user-files'` mount, if any. */
   userFilesRoot?: string;
+  /**
+   * Root chown init containers — one per WRITABLE `role:'user-files'` mount —
+   * that align the kubelet-created per-agent `subPath` dir to the runner
+   * uid/gid so the non-root runner can write it. Empty when no writable
+   * user-files mount was yielded. See `buildUserFilesChownInit`.
+   */
+  chownInits: Array<Record<string, unknown>>;
+}
+
+// The non-root uid/gid the runner (and every sandbox container) runs as — see
+// CONTAINER_SECURITY. The durable user-files chown init aligns the per-agent
+// NFS subPath dir to this owner so the runner can write its own `/workspace`.
+const RUNNER_UID = 1000;
+const RUNNER_GID = 1000;
+
+/**
+ * filestore-user-files (design §4 + §14) — root chown init container for ONE
+ * writable durable user-files mount.
+ *
+ * Why it's needed: the kubelet auto-creates the per-agent NFS `subPath` subdir
+ * the FIRST time the volume is mounted, owned by `root:root`. The runner is
+ * non-root (uid 1000) and a pod `fsGroup` does NOT take on an NFS volume, so
+ * without this the runner cannot write its own mount — this is the design's
+ * §14 open risk ("confirm the kubelet creates the subPath with writable
+ * ownership … else an init step is required") resolved: the init step.
+ *
+ * This init runs BEFORE the runner, mounts the SAME volume with the SAME
+ * per-agent `subPath` — so it sees ONLY this agent's subtree (no cross-tenant
+ * exposure) — and `chown`s the mount point to the runner uid/gid. It runs root
+ * with CAP_CHOWN ONLY (every other capability dropped, rootfs read-only); the
+ * managed-NFS export is `no_root_squash`, so the chown lands. `target` (the
+ * mount path, host-controlled config) and `owner` are passed via env, NEVER
+ * spliced into the shell word — same discipline as the user-files one-shot
+ * pods (user-files-ops.ts).
+ */
+function buildUserFilesChownInit(
+  volumeName: string,
+  mountPath: string,
+  subPath: string,
+  image: string,
+): Record<string, unknown> {
+  return {
+    name: `${volumeName}-chown`,
+    image,
+    command: ['/bin/sh', '-c'],
+    args: ['set -eu; chown "$AX_CHOWN_OWNER" "$AX_CHOWN_TARGET"'],
+    env: [
+      { name: 'AX_CHOWN_OWNER', value: `${RUNNER_UID}:${RUNNER_GID}` },
+      { name: 'AX_CHOWN_TARGET', value: mountPath },
+    ],
+    securityContext: {
+      runAsNonRoot: false,
+      runAsUser: 0,
+      runAsGroup: 0,
+      allowPrivilegeEscalation: false,
+      readOnlyRootFilesystem: true,
+      // chown(2) to a different owner needs CAP_CHOWN; the runner runs
+      // non-root so it can't self-chown. Everything else dropped.
+      capabilities: { drop: ['ALL'], add: ['CHOWN'] },
+    },
+    volumeMounts: [{ name: volumeName, mountPath, subPath, readOnly: false }],
+  };
 }
 
 /**
@@ -385,8 +447,8 @@ interface RealizedMounts {
  * never collide with the fixed tier volumes (`tmp`/`home`/`agent`/`ephemeral`)
  * or the `svc-*` service volumes.
  */
-function realizeMounts(mounts: MountSpec[]): RealizedMounts {
-  const out: RealizedMounts = { volumes: [], volumeMounts: [] };
+function realizeMounts(mounts: MountSpec[], image: string): RealizedMounts {
+  const out: RealizedMounts = { volumes: [], volumeMounts: [], chownInits: [] };
   mounts.forEach((mount, i) => {
     switch (mount.kind) {
       case 'nfs': {
@@ -403,6 +465,15 @@ function realizeMounts(mounts: MountSpec[]): RealizedMounts {
         });
         if (mount.role === 'user-files') {
           out.userFilesRoot = mount.mountPath;
+          // The kubelet creates the per-agent subPath dir root-owned; chown it
+          // to the runner uid/gid in an init step so the non-root runner can
+          // write it (§14 open risk). A read-only host-read realization has
+          // nothing to write, so it needs no chown.
+          if (!mount.readOnly) {
+            out.chownInits.push(
+              buildUserFilesChownInit(name, mount.mountPath, mount.subPath, image),
+            );
+          }
         }
         break;
       }
@@ -686,7 +757,7 @@ export function buildPodSpec(
   // filestore-user-files (design §4) — realize the durable per-agent mounts the
   // `sandbox:resolve-mounts` resolver contributed (inline nfs volume + subPath
   // volumeMount). Throws on an unrealizable kind. Empty/absent → no change.
-  const realizedMounts = realizeMounts(input.mounts ?? []);
+  const realizedMounts = realizeMounts(input.mounts ?? [], config.image);
   // Stamp the user-files mount path as AX_USERFILES_ROOT so the runner can add
   // it to additionalDirectories + advertise it. Like AX_EPHEMERAL_ROOT, the
   // env is the ONLY thing that turns the tier on for the runner — the mount
@@ -824,6 +895,13 @@ export function buildPodSpec(
         volumeMounts: [{ name: 'home', mountPath: '/home/runner' }],
         securityContext: containerSecurity,
       },
+      // filestore-user-files (design §4 + §14) — align each WRITABLE durable
+      // user-files mount's per-agent subPath dir to the runner uid/gid before
+      // the runner starts (the kubelet creates it root-owned, and fsGroup does
+      // not take on NFS). Placed AFTER sdk-scaffold so sdk-scaffold stays the
+      // first init (the service-sidecar tests assert that). Empty when no
+      // writable user-files mount was yielded — the no-mount path is unchanged.
+      ...realizedMounts.chownInits,
       // TASK-151 — service sidecars go AFTER sdk-scaffold (ordering: scaffold →
       // service sidecars → runner). `restartPolicy: 'Always'` makes each a
       // native sidecar (I1).

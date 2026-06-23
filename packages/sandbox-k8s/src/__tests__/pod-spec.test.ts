@@ -1146,6 +1146,26 @@ describe('buildPodSpec', () => {
         spec.spec as { containers: Array<{ env: Array<{ name: string; value: string }> }> }
       ).containers[0]!.env;
     }
+    function initCs(spec: ReturnType<typeof buildPodSpec>) {
+      return (
+        spec.spec as {
+          initContainers: Array<{
+            name: string;
+            image: string;
+            args?: string[];
+            env?: Array<{ name: string; value: string }>;
+            securityContext?: {
+              runAsUser?: number;
+              runAsNonRoot?: boolean;
+              capabilities?: { drop?: string[]; add?: string[] };
+              readOnlyRootFilesystem?: boolean;
+              allowPrivilegeEscalation?: boolean;
+            };
+            volumeMounts?: Array<{ name: string; mountPath: string; subPath?: string }>;
+          }>;
+        }
+      ).initContainers;
+    }
 
     it('adds an inline nfs volume + subPath volumeMount when a mount is yielded', () => {
       const spec = buildPodSpec(
@@ -1198,6 +1218,71 @@ describe('buildPodSpec', () => {
         runnerMounts(spec).find((m) => m.name.startsWith('ax-mount-')),
       ).toBeUndefined();
       expect(runnerEnv(spec).find((e) => e.name === 'AX_USERFILES_ROOT')).toBeUndefined();
+    });
+
+    // §14 open-risk regression: the kubelet creates the per-agent NFS subPath
+    // dir root-owned, and fsGroup does NOT take on NFS, so the non-root (uid
+    // 1000) runner can't write its own /workspace without a chown init step.
+    // Before this fix the mount was realized but left unwritable.
+    it('adds a root CAP_CHOWN init that aligns the per-agent subPath to the runner uid/gid', () => {
+      const spec = buildPodSpec(
+        'm',
+        { ...baseInput, mounts: [nfsMount] },
+        baseResolved(),
+      );
+      const chown = initCs(spec).find((c) => c.name === 'ax-mount-0-chown');
+      expect(chown).toBeDefined();
+      // Confined to THIS agent's subtree (same volume + subPath) — no
+      // cross-tenant exposure.
+      const vm = (chown!.volumeMounts ?? []).find((m) => m.name === 'ax-mount-0');
+      expect(vm).toBeDefined();
+      expect(vm!.mountPath).toBe('/workspace');
+      expect(vm!.subPath).toBe('agent-abc');
+      // Root + CAP_CHOWN ONLY; every other capability dropped, rootfs read-only.
+      expect(chown!.securityContext?.runAsUser).toBe(0);
+      expect(chown!.securityContext?.runAsNonRoot).toBe(false);
+      expect(chown!.securityContext?.allowPrivilegeEscalation).toBe(false);
+      expect(chown!.securityContext?.readOnlyRootFilesystem).toBe(true);
+      expect(chown!.securityContext?.capabilities?.drop).toEqual(['ALL']);
+      expect(chown!.securityContext?.capabilities?.add).toEqual(['CHOWN']);
+      // Target + owner come via env, never spliced into the shell word.
+      expect(chown!.args).toEqual(['set -eu; chown "$AX_CHOWN_OWNER" "$AX_CHOWN_TARGET"']);
+      const env = chown!.env ?? [];
+      expect(env.find((e) => e.name === 'AX_CHOWN_OWNER')?.value).toBe('1000:1000');
+      expect(env.find((e) => e.name === 'AX_CHOWN_TARGET')?.value).toBe('/workspace');
+    });
+
+    it('keeps sdk-scaffold as the FIRST init container (chown goes after it)', () => {
+      const spec = buildPodSpec(
+        'm',
+        { ...baseInput, mounts: [nfsMount] },
+        baseResolved(),
+      );
+      expect(initCs(spec)[0]!.name).toBe('sdk-scaffold');
+      expect(initCs(spec).some((c) => c.name === 'ax-mount-0-chown')).toBe(true);
+    });
+
+    it('does NOT add a chown init for a READ-ONLY user-files mount (nothing to write)', () => {
+      const spec = buildPodSpec(
+        'm',
+        { ...baseInput, mounts: [{ ...nfsMount, readOnly: true }] },
+        baseResolved(),
+      );
+      expect(initCs(spec).find((c) => c.name === 'ax-mount-0-chown')).toBeUndefined();
+    });
+
+    it('does NOT add a chown init for a non-user-files mount', () => {
+      const spec = buildPodSpec(
+        'm',
+        { ...baseInput, mounts: [{ ...nfsMount, role: undefined }] },
+        baseResolved(),
+      );
+      expect(initCs(spec).find((c) => c.name === 'ax-mount-0-chown')).toBeUndefined();
+    });
+
+    it('adds no chown init when no mounts are yielded (no-mount path unchanged)', () => {
+      const spec = buildPodSpec('m', baseInput, baseResolved());
+      expect(initCs(spec).some((c) => c.name.endsWith('-chown'))).toBe(false);
     });
 
     it('throws on an unrealizable kind (localDir) — never a silent skip', () => {
