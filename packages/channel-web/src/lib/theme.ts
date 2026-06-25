@@ -42,6 +42,44 @@ export function useTheme(): Theme {
   return useSyncExternalStore(subscribe, getSnapshot, () => 'auto');
 }
 
+// --- resolved (light|dark) theme ---------------------------------------------
+// `useTheme()` is tri-state; the header needs the CONCRETE palette to pick the
+// matching logo variant (and to decide whether to invert a light-only logo).
+// For `auto` we resolve against `prefers-color-scheme`, subscribing to OS-level
+// flips. Guarded for jsdom, which ships no `matchMedia`.
+
+const DARK_QUERY = '(prefers-color-scheme: dark)';
+
+const systemPrefersDark = (): boolean =>
+  typeof window !== 'undefined' &&
+  typeof window.matchMedia === 'function' &&
+  window.matchMedia(DARK_QUERY).matches;
+
+const subscribeSystemTheme = (cb: () => void): (() => void) => {
+  if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') {
+    return () => {};
+  }
+  const mql = window.matchMedia(DARK_QUERY);
+  mql.addEventListener('change', cb);
+  return () => mql.removeEventListener('change', cb);
+};
+
+/**
+ * The concrete palette in effect: tri-state `useTheme()` collapsed against the
+ * OS preference for `auto`. Re-renders on theme toggle AND on OS-level flips.
+ */
+export function useResolvedTheme(): 'light' | 'dark' {
+  const theme = useTheme();
+  const systemDark = useSyncExternalStore(
+    subscribeSystemTheme,
+    systemPrefersDark,
+    () => false,
+  );
+  if (theme === 'light') return 'light';
+  if (theme === 'dark') return 'dark';
+  return systemDark ? 'dark' : 'light';
+}
+
 export function setTheme(value: Theme): void {
   if (value === 'auto') {
     document.documentElement.removeAttribute('data-theme');

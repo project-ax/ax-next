@@ -96,7 +96,7 @@ export function AdminSidebar({
   return (
     <aside className="w-[240px] shrink-0 border-r border-border bg-background flex flex-col font-sans">
       <div className="px-3 pt-3.5 pb-2 min-h-[48px] flex items-center justify-between gap-2">
-        <BrandMark word="ax" />
+        <BrandMark />
         <button
           type="button"
           onClick={onBackToChat}

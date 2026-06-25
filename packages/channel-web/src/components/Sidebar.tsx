@@ -38,7 +38,7 @@ export function Sidebar({
           [body.sidebar-collapsed_&]:justify-center [body.sidebar-collapsed_&]:px-2
         "
       >
-        <BrandMark word="ax" className="[body.sidebar-collapsed_&]:hidden" />
+        <BrandMark className="[body.sidebar-collapsed_&]:hidden" />
         <SidebarCollapseToggle />
       </div>
       <NewSessionButton />
