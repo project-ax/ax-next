@@ -22,6 +22,7 @@
     { "path": "./packages/credentials" },
     { "path": "packages/credentials-store-db" },
     { "path": "packages/credentials-admin-routes" },
+    { "path": "packages/branding" },
     { "path": "packages/mcp-client" },
     { "path": "packages/workspace-git" },
     { "path": "packages/workspace-git-core" },
