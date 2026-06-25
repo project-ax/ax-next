@@ -7,6 +7,7 @@ import { ModelConfigTab } from './ModelConfigTab';
 import { AuthProvidersTab } from './AuthProvidersTab';
 import { AgentForm } from './AgentForm';
 import { TeamList } from './TeamList';
+import { BrandingTab } from './BrandingTab';
 import { SkillsTab } from '../settings/SkillsTab';
 import { ConnectorsTab } from '../settings/ConnectorsTab';
 import { RoutinesTab } from '../routines/RoutinesTab';
@@ -37,6 +38,7 @@ const TAB_META: Record<AdminTabId, TabMeta> = {
   'model-config': { eyebrow: 'Admin', title: 'Default AI model' },
   'auth-providers': { eyebrow: 'Admin', title: 'Sign-in methods' },
   teams: { eyebrow: 'Admin', title: 'Teams' },
+  branding: { eyebrow: 'Admin', title: 'Branding' },
 };
 
 export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
@@ -62,6 +64,7 @@ export function AdminShell({ isAdmin, onClose }: AdminShellProps) {
         {activeTab === 'agents' && <AgentForm isAdmin={isAdmin} />}
         {activeTab === 'routines' && <RoutinesTab isAdmin={isAdmin} />}
         {activeTab === 'teams' && <TeamList />}
+        {activeTab === 'branding' && <BrandingTab />}
       </AdminPane>
     </div>
   );

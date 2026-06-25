@@ -13,6 +13,14 @@ const writeHeaders = {
   'x-requested-with': 'ax-admin',
 } as const;
 
+/** Mirrors the server allowlist in @ax/branding. Used for a friendly client-side pre-check. */
+export const ALLOWED_LOGO_TYPES = [
+  'image/png',
+  'image/webp',
+  'image/jpeg',
+  'image/svg+xml',
+] as const;
+
 export interface Branding {
   /** "" → the SPA falls back to the default "ax". */
   name: string;

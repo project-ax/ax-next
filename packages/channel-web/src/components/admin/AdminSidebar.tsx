@@ -9,6 +9,7 @@ import {
   Plug,
   Wrench,
   ListChecks,
+  Palette,
 } from 'lucide-react';
 import { BrandMark } from '../BrandMark';
 import { SidebarSectionLabel } from '../SidebarSectionLabel';
@@ -32,7 +33,8 @@ export type AdminTabId =
   | 'providers'
   | 'model-config'
   | 'auth-providers'
-  | 'teams';
+  | 'teams'
+  | 'branding';
 
 type NavItem = { id: AdminTabId; label: string; icon: typeof KeyRound };
 
@@ -48,6 +50,7 @@ const ADMIN_NAV: NavItem[] = [
   { id: 'model-config', label: 'Default AI model', icon: Cpu },
   { id: 'auth-providers', label: 'Sign-in methods', icon: ShieldCheck },
   { id: 'teams', label: 'Teams', icon: UsersRound },
+  { id: 'branding', label: 'Branding', icon: Palette },
 ];
 
 export interface AdminSidebarProps {
