@@ -15,7 +15,14 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import { DEFAULT_BRANDING, fetchBranding, type Branding } from './branding';
+import {
+  DEFAULT_BRANDING,
+  fetchBranding,
+  logoUrl,
+  type Branding,
+} from './branding';
+import { applyFaviconFromImage, resetFaviconToDefault } from './favicon';
+import { useResolvedTheme } from './theme';
 
 export interface BrandingContextValue {
   branding: Branding;
@@ -35,6 +42,31 @@ export function BrandingProvider({ children }: { children: ReactNode }) {
   const [branding, setBranding] = useState<Branding>(DEFAULT_BRANDING);
   const [loaded, setLoaded] = useState(false);
   const [reloadKey, setReloadKey] = useState(0);
+  const resolved = useResolvedTheme();
+
+  // Tab title + favicon track the branding (and the resolved theme, so the
+  // favicon reflects the dark/inverted logo). Title is always set; the favicon
+  // is generated from the current-variant logo when one exists, else reset to
+  // the browser default.
+  useEffect(() => {
+    document.title = branding.name.length > 0 ? branding.name : 'ax';
+    if (!loaded || !branding.light) {
+      resetFaviconToDefault();
+      return;
+    }
+    const dark = resolved === 'dark';
+    const variant: 'light' | 'dark' = dark && branding.dark ? 'dark' : 'light';
+    const invert = dark && !branding.dark;
+    const image = new Image();
+    let cancelled = false;
+    image.onload = () => {
+      if (!cancelled) applyFaviconFromImage(image, { invert });
+    };
+    image.src = logoUrl(variant, branding.version);
+    return () => {
+      cancelled = true;
+    };
+  }, [branding, loaded, resolved]);
 
   useEffect(() => {
     let cancelled = false;

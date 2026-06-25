@@ -28,6 +28,7 @@ describe('BrandingProvider', () => {
     await waitFor(() =>
       expect(screen.getByText('loaded:Canopy AI:true')).toBeTruthy(),
     );
+    expect(document.title).toBe('Canopy AI');
   });
 
   it('falls back to the default branding when the fetch fails', async () => {
@@ -40,5 +41,6 @@ describe('BrandingProvider', () => {
       </BrandingProvider>,
     );
     await waitFor(() => expect(screen.getByText('loaded:ax:false')).toBeTruthy());
+    expect(document.title).toBe('ax');
   });
 });
