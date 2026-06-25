@@ -24,6 +24,7 @@ import { createCredentialsPlugin } from '@ax/credentials';
 import { createCredentialsStoreDbPlugin } from '@ax/credentials-store-db';
 import { createCredentialsAdminRoutesPlugin } from '@ax/credentials-admin-routes';
 import { createAdminSettingsRoutesPlugin } from '@ax/admin-settings-routes';
+import { createBrandingPlugin } from '@ax/branding';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
 import { createAgentsPlugin } from '@ax/agents';
 import { createSkillsPlugin } from '@ax/skills';
@@ -758,6 +759,14 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // observability surface for routine fires, and the routines plugin itself
   // is already unconditional in this preset.
   plugins.push(createRoutinesAdminRoutesPlugin());
+
+  // @ax/branding owns the operator-configurable product name + logo. It mounts
+  // a PUBLIC read/serve surface (GET /api/branding[/logo/:variant] — read by
+  // the login page + setup wizard pre-auth) and an ADMIN write surface (PUT
+  // /admin/branding). It persists a pointer record via storage:* (key
+  // settings:branding) and the logo bytes via blob:*; both, plus http-server +
+  // auth, are wired by the kernel's topo-sort before this plugin's init runs.
+  plugins.push(createBrandingPlugin());
 
   // ----- 5. control-plane access (Week 9.5) -----------------------------
   // http-server provides the public-facing listener. auth registers the

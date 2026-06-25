@@ -153,6 +153,9 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Admin settings routes: declares http:register-route + auth:require-user
   // as calls (both dropped above). Static wiring is pinned in preset.test.ts.
   '@ax/admin-settings-routes',
+  // Branding: declares http:register-route + auth:require-user (both dropped
+  // above) plus storage:* + blob:*. Static wiring pinned in preset.test.ts.
+  '@ax/branding',
   // Attachments: postgres-backed (database:get-instance); not exercised here.
   // Static wiring pinned in preset.test.ts.
   '@ax/attachments',

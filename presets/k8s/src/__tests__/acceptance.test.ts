@@ -202,6 +202,11 @@ const PLUGINS_TO_DROP = new Set<string>([
   // Admin settings routes: declares http:register-route + auth:require-user
   // as calls (both dropped above). Static wiring is pinned in preset.test.ts.
   '@ax/admin-settings-routes',
+  // Branding: declares http:register-route + auth:require-user (both dropped
+  // above) plus storage:* + blob:*. Its static wiring + reachability are
+  // pinned in preset.test.ts; drop here so the chat-path canaries don't need
+  // the control plane.
+  '@ax/branding',
   // Attachments: postgres-backed (database:get-instance) and not exercised
   // by any of these canaries. The static hook wiring is pinned in
   // preset.test.ts; drop here so these sub-tests don't need a postgres

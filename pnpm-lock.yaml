@@ -2386,6 +2386,9 @@ importers:
       '@ax/blob-store-s3':
         specifier: workspace:*
         version: link:../../packages/blob-store-s3
+      '@ax/branding':
+        specifier: workspace:*
+        version: link:../../packages/branding
       '@ax/channel-web':
         specifier: workspace:*
         version: link:../../packages/channel-web
