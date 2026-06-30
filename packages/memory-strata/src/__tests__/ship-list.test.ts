@@ -31,6 +31,12 @@ import { fileURLToPath } from 'node:url';
 //
 // Phase 3+ tokens (dense/vector/embeddings/rerank) stay forbidden as a
 // belt-and-braces guard against premature wiring.
+//
+// Matching is WHOLE-WORD (case-insensitive `\b<token>\b`), not raw substring:
+// TASK-190 legitimately ships LLM-"densified" map summaries (a fact-rewrite, NOT
+// dense-vector retrieval), and "densify"/"densified" must not trip the `dense`
+// (Phase-3 dense retrieval) guard. A standalone "dense retrieval" reference
+// would still match `\bdense\b`, so the guard's real intent is preserved.
 
 const FORBIDDEN: ReadonlyArray<{ token: string; reason: string }> = [
   {
@@ -44,6 +50,12 @@ const FORBIDDEN: ReadonlyArray<{ token: string; reason: string }> = [
   { token: 'dense', reason: 'Phase 3 — vector / dense retrieval not yet shipped' },
   { token: 'rerank', reason: 'Phase 3 / Phase 4 — LLM reranker not yet shipped' },
 ];
+
+/** Whole-word, case-insensitive match (so "densify" ≠ "dense"). */
+function referencesToken(content: string, token: string): boolean {
+  const re = new RegExp(`\\b${token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+  return re.test(content);
+}
 
 // fileURLToPath, not URL.pathname: the latter prefixes a leading `/`
 // to drive letters on Windows (`/C:/...`), which breaks fs ops. The
@@ -70,7 +82,7 @@ describe('Phase 2B ship-list (I23)', () => {
     for await (const file of walkSource(SRC_DIR)) {
       const content = await readFile(file, 'utf8');
       for (const { token, reason } of FORBIDDEN) {
-        if (content.includes(token)) {
+        if (referencesToken(content, token)) {
           offenses.push(
             `${file.replace(SRC_DIR, '')} references "${token}" — ${reason}`,
           );

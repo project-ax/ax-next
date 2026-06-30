@@ -230,6 +230,57 @@ describe('consolidator', () => {
     await expect(stat(recentPath)).resolves.toBeTruthy();
   });
 
+  it('TASK-190: regenerates system/map.md after promotions, densified when a densifier is wired', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    await writeInboxFixture(
+      'obs-map-1.md',
+      {
+        id: 'obs-map-1',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'User prefers Tesla over BMW',
+        subject: 'cars',
+        factType: 'preference',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nUser prefers Tesla over BMW\n',
+    );
+
+    // Stub densifier: returns a one-liner that's recognizably the DENSIFIED
+    // product (not the raw frontmatter summary), and records which docs it saw.
+    const calls: string[] = [];
+    const densifyMap = async (input: { docId: string; facts: string[] }) => {
+      calls.push(input.docId);
+      return `DENSIFIED[${input.facts.length}]: ${input.facts.join('; ')}`;
+    };
+
+    const result = await runConsolidation({ workspaceRoot, now, densifyMap });
+    expect(result.promoted).toBe(1);
+
+    const mapPath = join(workspaceRoot, 'permanent/memory/system/map.md');
+    const map = await readFile(mapPath, 'utf8');
+    // The map exists, is grouped by category, and carries the DENSIFIER's
+    // output — proving regenerateMap ran the densifier rather than copying the
+    // doc's raw frontmatter summary verbatim.
+    expect(map).toContain('## preference/');
+    expect(map).toContain('DENSIFIED[1]: User prefers Tesla over BMW');
+    expect(calls).toEqual(['preference/cars']);
+  });
+
+  it('TASK-190: regenerates a (non-densified) map.md even with no densifier', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+    const result = await runConsolidation({ workspaceRoot, now });
+    expect(result.promoted).toBe(0);
+    // map.md is regenerated on an empty pass too (always-injected placeholder).
+    const mapPath = join(workspaceRoot, 'permanent/memory/system/map.md');
+    const map = await readFile(mapPath, 'utf8');
+    expect(map).toContain('# Memory Map');
+  });
+
   it('dedup: second identical-summary observation from same subject merges, not promotes again', async () => {
     const now = new Date('2026-05-10T12:00:00.000Z');
 

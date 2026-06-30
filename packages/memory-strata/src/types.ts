@@ -12,6 +12,7 @@ export type MemoryFileType =
   | 'system/user'
   | 'system/session'
   | 'system/recent'
+  | 'system/map'
   | 'inbox/observation'
   | 'docs/entity'
   | 'docs/preference'

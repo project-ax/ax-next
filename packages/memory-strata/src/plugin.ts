@@ -18,6 +18,7 @@ import { composeIdentityFromFiles, composeIdentityFromTier } from './compose-ide
 import { runConsolidation, type ConsolidationInput, type ConsolidationResult } from './consolidator.js';
 import { createDebouncer, type Debouncer } from './debounce.js';
 import { registerInject } from './inject.js';
+import { makeLlmDensifier, type MapDensifier } from './map.js';
 import { runObserver, type LlmCallFn } from './observer.js';
 import { registerReindexer } from './reindex.js';
 import { raceTimeout } from './timeout.js';
@@ -32,6 +33,7 @@ const DEFAULT_OBSERVER_TIMEOUT_MS = 30_000;
 const DEFAULT_LLM_HOOK = 'llm:call:anthropic';
 const DEFAULT_CONSOLIDATOR_DEBOUNCE_MS = 5_000;
 const DEFAULT_CONSOLIDATOR_TIMEOUT_MS = 60_000;
+const DEFAULT_MAP_DENSIFY_TIMEOUT_MS = 30_000;
 
 export interface MemoryStrataConfig {
   /**
@@ -58,6 +60,22 @@ export interface MemoryStrataConfig {
    * is atomic (write-to-temp + rename). Default 60 000 ms (I10).
    */
   consolidatorTimeoutMs?: number;
+  /**
+   * Whether to LLM-densify `system/map.md` entries during consolidation
+   * (TASK-190). Default `true`. When the densifier can't be built (no agent
+   * model resolvable) or a call fails, the map degrades to raw doc summaries —
+   * so this flag only controls whether we ATTEMPT densification, never whether
+   * the map is generated. Set `false` to force the cheap raw-summary map (e.g.
+   * a latency-sensitive deployment that doesn't want per-consolidation LLM
+   * round-trips).
+   */
+  mapDensifyEnabled?: boolean;
+  /**
+   * Hard deadline for a single map-densify LLM round-trip (ms). Mirrors the
+   * Observer's I6 timeout posture: a slow call is abandoned and that one doc
+   * degrades to its raw summary. Default 30 000 ms.
+   */
+  mapDensifyTimeoutMs?: number;
   /**
    * Test-only seam — captures the per-plugin Debouncer so tests can
    * call `flush()` deterministically. NOT for production use.
@@ -131,6 +149,8 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   const observerTimeoutMs = cfg.observerTimeoutMs ?? DEFAULT_OBSERVER_TIMEOUT_MS;
   const consolidatorDebounceMs = cfg.consolidatorDebounceMs ?? DEFAULT_CONSOLIDATOR_DEBOUNCE_MS;
   const consolidatorTimeoutMs = cfg.consolidatorTimeoutMs ?? DEFAULT_CONSOLIDATOR_TIMEOUT_MS;
+  const mapDensifyEnabled = cfg.mapDensifyEnabled ?? true;
+  const mapDensifyTimeoutMs = cfg.mapDensifyTimeoutMs ?? DEFAULT_MAP_DENSIFY_TIMEOUT_MS;
 
   // Per-agent debouncer for the Consolidator (I10). Created at plugin
   // construction so it is shared across all chat:end firings for this
@@ -333,6 +353,9 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
             bus,
             ctx,
             consolidate,
+            llmCallHook,
+            mapDensifyEnabled,
+            mapDensifyTimeoutMs,
           });
           inflightWork.set(ctx.agentId, work);
           // Test-only settle handle: record the latest underlying work so a
@@ -501,12 +524,28 @@ async function consolidateRoutedToTier(deps: {
   bus: HookBus;
   ctx: AgentContext;
   consolidate: (input: ConsolidationInput) => Promise<ConsolidationResult>;
+  llmCallHook: string;
+  mapDensifyEnabled: boolean;
+  mapDensifyTimeoutMs: number;
 }): Promise<ConsolidationResult> {
-  const { bus, ctx, consolidate } = deps;
+  const { bus, ctx, consolidate, llmCallHook, mapDensifyEnabled, mapDensifyTimeoutMs } = deps;
   const logger = {
     info: (event: string, fields: Record<string, unknown>) => ctx.logger.info(event, fields),
     warn: (event: string, fields: Record<string, unknown>) => ctx.logger.warn(event, fields),
   };
+
+  // TASK-190: build the host-LLM map densifier (same `llm:call:*` gating as the
+  // Observer). When densify is disabled, or the agent model can't be resolved,
+  // `densifyMap` is undefined and `regenerateMap` falls back to raw doc
+  // summaries — the map is still generated, just not densified. Resolving the
+  // model here keeps map.ts bus-agnostic.
+  const densifyMap = await buildMapDensifier({
+    bus,
+    ctx,
+    llmCallHook,
+    enabled: mapDensifyEnabled,
+    timeoutMs: mapDensifyTimeoutMs,
+  });
 
   if (!agentTierAvailable(bus)) {
     return consolidate({
@@ -515,6 +554,7 @@ async function consolidateRoutedToTier(deps: {
       logger,
       bus,
       ctx,
+      densifyMap,
     });
   }
 
@@ -529,6 +569,7 @@ async function consolidateRoutedToTier(deps: {
       workspaceRoot: hydrated.scratchRoot,
       now: new Date(),
       logger,
+      densifyMap,
     });
     await flushAgentTier(bus, ctx, hydrated, 'memory-consolidate');
     // TASK-186: now that the consolidated docs are durably in `/agent`, fire
@@ -589,6 +630,28 @@ async function reindexTierDocs(bus: HookBus, ctx: AgentContext): Promise<void> {
       summary: '',
     });
   }
+}
+
+/**
+ * Build the host-LLM map densifier for a consolidation pass (TASK-190), or
+ * return `undefined` when densification is disabled or the agent's model can't
+ * be resolved (`regenerateMap` then falls back to raw doc summaries). Resolving
+ * the model HERE — not inside map.ts — keeps the map module bus-agnostic and
+ * test-driveable with a stub densifier.
+ */
+async function buildMapDensifier(deps: {
+  bus: HookBus;
+  ctx: AgentContext;
+  llmCallHook: string;
+  enabled: boolean;
+  timeoutMs: number;
+}): Promise<MapDensifier | undefined> {
+  const { bus, ctx, llmCallHook, enabled, timeoutMs } = deps;
+  if (!enabled) return undefined;
+  const agent = await resolveAgent(bus, ctx);
+  if (agent === null) return undefined;
+  const llmCall: LlmCallFn = (input) => bus.call(llmCallHook, ctx, input);
+  return makeLlmDensifier({ llmCall, model: agent.model, timeoutMs });
 }
 
 async function resolveAgent(

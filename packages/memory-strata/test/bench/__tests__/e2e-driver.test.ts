@@ -71,8 +71,12 @@ describe('runE2EQuestion (TASK-189 integration, stubbed LLMs)', () => {
     // consolidated sqlite index — the load-bearing per-turn retrieval path.
     expect(capturedSearchRows.length).toBeGreaterThan(0);
     expect(JSON.stringify(capturedSearchRows).toLowerCase()).toContain('cortado');
-    // Extraction tokens accrued for both sessions' Observer calls.
-    expect(result.extractionTokens.in).toBe(100);
+    // Extraction tokens accrued for both sessions' Observer calls (50 each =
+    // 100) PLUS the TASK-190 map densifier, which runs through the SAME
+    // `llm:call:anthropic` hook during consolidation: one promoted doc
+    // (`preference/coffee`) ⇒ one densify call (+50). The map densifier shares
+    // the Observer's host-LLM gating, so its tokens land in the same meter.
+    expect(result.extractionTokens.in).toBe(150);
   });
 
   it('flags the _abs split as unanswerable and tolerates no extracted facts', async () => {

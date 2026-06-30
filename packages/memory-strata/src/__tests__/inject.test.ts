@@ -10,8 +10,10 @@ import {
   buildMemoryBlock,
   registerInject,
   DEFAULT_MAX_TOKENS,
+  DEFAULT_MAP_MAX_TOKENS,
   approxTokenCount,
 } from '../inject.js';
+import { mapFile } from '../paths.js';
 import type { RetrievalResult } from '../retriever.js';
 
 // ---------------------------------------------------------------------------
@@ -61,6 +63,25 @@ async function writeSystemFile(
   const content = buildMarkdownFile(fm, body);
   const { writeFile } = await import('node:fs/promises');
   await writeFile(abs, content, 'utf8');
+}
+
+/** Write `system/map.md` with canonical frontmatter (TASK-190). */
+async function writeMapFile(root: string, body: string): Promise<void> {
+  const rel = mapFile();
+  const abs = join(root, rel);
+  await mkdir(dirname(abs), { recursive: true });
+  const fm: MemoryFrontmatter = {
+    id: 'map',
+    type: 'system/map',
+    created: '2026-05-11T00:00:00.000Z',
+    confidence: 1.0,
+    pinned: true,
+    summary: 'map system file',
+    event_time: '2026-05-11T00:00:00.000Z',
+    recorded_at: '2026-05-11T00:00:00.000Z',
+  };
+  const { writeFile } = await import('node:fs/promises');
+  await writeFile(abs, buildMarkdownFile(fm, body), 'utf8');
 }
 
 /** Build a stub bus with an optional memory:index:search service. */
@@ -390,5 +411,104 @@ describe('registerInject — error degradation', () => {
     const { contributions } = result as { contributions: unknown[] };
     expect(contributions).toEqual([]);
     expect(warnings).toContain('memory_strata_inject_failed');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Case 9: TASK-190 — system/map.md is injected into the hot tier
+// ---------------------------------------------------------------------------
+
+describe('TASK-190: Memory Map injection', () => {
+  it('includes the ## Memory Map section when map.md exists', async () => {
+    await writeSystemFile(workspaceRoot, 'user', '# User\n\nVinay.\n');
+    await writeSystemFile(workspaceRoot, 'recent', '# Recent\n\nRecent.\n');
+    await writeMapFile(
+      workspaceRoot,
+      '# Memory Map\n\n## preference/\n- cars: User prefers Tesla over BMW; commutes 45min to Boston\n',
+    );
+
+    const bus = makeStubBus();
+    const ctx = makeCtx();
+    const block = await buildMemoryBlock(bus, ctx, { workspaceRoot });
+
+    expect(block).toContain('## Memory Map');
+    expect(block).toContain('## preference/');
+    expect(block).toContain('User prefers Tesla over BMW');
+  });
+
+  it('omits the Memory Map section when map.md is absent', async () => {
+    await writeSystemFile(workspaceRoot, 'user', '# User\n\nVinay.\n');
+    await writeSystemFile(workspaceRoot, 'recent', '# Recent\n\nRecent.\n');
+
+    const bus = makeStubBus();
+    const ctx = makeCtx();
+    const block = await buildMemoryBlock(bus, ctx, { workspaceRoot });
+
+    expect(block).not.toContain('## Memory Map');
+    // Other sections still present.
+    expect(block).toContain('## User Profile');
+  });
+
+  it('soft-caps an oversized map to ~DEFAULT_MAP_MAX_TOKENS, dropping tail entries', async () => {
+    await writeSystemFile(workspaceRoot, 'user', '# User\n\nVinay.\n');
+    await writeSystemFile(workspaceRoot, 'recent', '# Recent\n\nRecent.\n');
+
+    // Build a map far larger than the map soft-cap (~2k tokens ≈ 8000 chars):
+    // 400 entries × ~60 chars = ~24000 chars. The first entry must survive,
+    // a late entry must be dropped.
+    const lines = ['# Memory Map', '', '## general/'];
+    for (let i = 0; i < 400; i++) {
+      lines.push(`- item-${String(i).padStart(3, '0')}: a densified one-line fact about topic ${i} here`);
+    }
+    await writeMapFile(workspaceRoot, lines.join('\n') + '\n');
+
+    const bus = makeStubBus();
+    const ctx = makeCtx();
+    // Generous total cap so the map's OWN soft-cap is what bounds it, not I21.
+    const block = await buildMemoryBlock(bus, ctx, { workspaceRoot, maxTokens: 10_000 });
+
+    // The map section, in isolation, is bounded by the map soft-cap.
+    const mapStart = block.indexOf('## Memory Map');
+    expect(mapStart).toBeGreaterThanOrEqual(0);
+    const mapSection = block.slice(mapStart);
+    expect(approxTokenCount(mapSection)).toBeLessThanOrEqual(DEFAULT_MAP_MAX_TOKENS + 50);
+    // Early entry kept, a late entry dropped.
+    expect(block).toContain('item-000');
+    expect(block).not.toContain('item-399');
+  });
+
+  it('I21: whole block (incl. map) stays under the total token cap; map dropped before profile', async () => {
+    const profileBody = '# User\n\nShort but important profile.\n';
+    await writeSystemFile(workspaceRoot, 'user', profileBody);
+    await writeSystemFile(workspaceRoot, 'recent', '# Recent\n\nRecent.\n');
+    // A large map that cannot coexist with profile+recent under a tiny cap.
+    const lines = ['# Memory Map', '', '## general/'];
+    for (let i = 0; i < 200; i++) {
+      lines.push(`- item-${i}: fact ${i} blah blah blah blah blah`);
+    }
+    await writeMapFile(workspaceRoot, lines.join('\n') + '\n');
+
+    const bus = makeStubBus();
+    const ctx = makeCtx();
+    const maxTokens = 100;
+    const block = await buildMemoryBlock(bus, ctx, { workspaceRoot, maxTokens });
+
+    expect(approxTokenCount(block)).toBeLessThanOrEqual(maxTokens);
+    // The map yields before the (small, higher-value) user profile.
+    expect(block).toContain('Short but important profile.');
+  });
+
+  it('never throws and stays under cap even when map alone exceeds the total cap', async () => {
+    const lines = ['# Memory Map', '', '## general/'];
+    for (let i = 0; i < 1000; i++) {
+      lines.push(`- item-${i}: a fact about topic number ${i} that is reasonably long`);
+    }
+    await writeMapFile(workspaceRoot, lines.join('\n') + '\n');
+
+    const bus = makeStubBus();
+    const ctx = makeCtx();
+    const block = await buildMemoryBlock(bus, ctx, { workspaceRoot, maxTokens: 50 });
+    expect(typeof block).toBe('string');
+    expect(approxTokenCount(block)).toBeLessThanOrEqual(50);
   });
 });

@@ -13,6 +13,7 @@
 //     system/user.md
 //     system/session.md
 //     system/recent.md          ← Phase 2A: cached consolidation view
+//     system/map.md             ← TASK-190: always-injected hierarchical index
 //     inbox/<ISO-8601>.md
 //     docs/<category>/<slug>.md ← Phase 2A: promoted fact pages
 //
@@ -68,4 +69,25 @@ export function categoryDir(category: DocCategory): string {
 /** Cached view; regenerated end-to-end on every consolidation pass. */
 export function recentFile(): string {
   return `${SYSTEM_DIR}/recent.md`;
+}
+
+/**
+ * The hierarchical memory index (TASK-190). A derived, always-injected file —
+ * one densified one-liner per doc, grouped by category. Regenerated each
+ * consolidation pass alongside `recent.md`; deleting it loses nothing.
+ */
+export function mapFile(): string {
+  return `${SYSTEM_DIR}/map.md`;
+}
+
+/**
+ * Sidecar cache for LLM-densified map summaries (TASK-190). Keyed by doc id,
+ * each entry stores a hash of the doc's source facts + the densified one-liner,
+ * so an unchanged doc is never re-densified (the bench rewrite was
+ * ~$0.0002/session). Lives under `system/` next to the map it feeds. The
+ * leading dot keeps it out of casual `docs/` listings; it is NOT a doc and is
+ * never injected.
+ */
+export function mapCacheFile(): string {
+  return `${SYSTEM_DIR}/.map-cache.json`;
 }
