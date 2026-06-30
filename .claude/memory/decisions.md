@@ -2,6 +2,13 @@
 
 Architectural / process decisions. Never deleted — strikethrough if reversed.
 
+## 2026-06-29 — TASK-193 undici drift: pin exact 7.28.0 + cap the override at <8.0.0
+
+| Date | Decision | Rationale | Alternatives |
+|------|----------|-----------|--------------|
+| 2026-06-29 | Pin `undici` to **exact `7.28.0`** (drop the caret) in `packages/credential-proxy` and `packages/credential-proxy-bridge`, AND cap the root override `undici@>=7.0.0 <7.28.0` replacement from `">=7.28.0"` to `">=7.28.0 <8.0.0"`. | 7.28.0 is the only version that satisfies BOTH constraints: it's the CVE-patched 7.x floor (the override's original intent) AND it's in the 7.x line that's handler-compatible with Node 24's bundled undici 7.18.2 (the global `fetch` the credential-proxy listener + test harness drive with a standalone dispatcher). undici 8.x removed the old handler interface → `invalid onRequestStart method`. Exact pin = the per-package guard (security-critical pkg convention); the override cap = the workspace-wide guard so no `^7.x` consumer can float into 8.x again. An exact `7.28.0` spec doesn't match the override KEY (`<7.28.0`) so it resolves directly regardless of the override. | (a) Update the credential-proxy code to undici 8.x's new handler API — REJECTED: the break is in the TEST harness mixing the global (bundled-7.x) `fetch` with a standalone-8.x dispatcher; you can't change Node's bundled undici, so the only fix is keeping the standalone copy on the same major. (b) Pin only the two packages, leave the override unbounded — REJECTED: leaves the landmine for testcontainers (`^7.24.5`, ~20 pkgs) and any future `^7.x` dep. (c) Cap at `<8.0.0` only, keep carets — REJECTED: the task + security convention require exact pins on this package. |
+| 2026-06-29 | Add a behavioural+structural regression guard `undici-handler-compat.test.ts` in credential-proxy rather than relying on the existing 28 tests. | The existing tests DID catch it — but only in the push-to-main full suite (PR CI runs affected-package only), so it stayed red 12 days. A dedicated, minimal guard IN credential-proxy's own suite (asserts standalone-undici major == `process.versions.undici` major, and that a standalone dispatcher drives the global `fetch` without `UND_ERR_INVALID_ARG`) fails loudly in PR CI on the next float, isolating the version contract from the listener machinery. | Rely on existing tests — REJECTED: they only run on main; the gap was CI scope, so a focused canary that's cheap and self-documenting is the durable guard the Bug Fix Policy wants. |
+
 ## 2026-06-29 — TASK-189 e2e LongMemEval-S harness against the SHIPPED Strata runtime
 
 | Date | Decision | Rationale | Alternatives |
