@@ -1,5 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { transformLongMemEvalSample } from '../corpora/longmemeval-s.js';
+import {
+  transformLongMemEvalSample,
+  isUnanswerable,
+  loadLongMemEvalSSamples,
+  type LongMemEvalSample,
+} from '../corpora/longmemeval-s.js';
+import { BenchCache } from '../cache.js';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 describe('LongMemEval-S transform', () => {
   it('emits one doc per haystack session with parallel session ids', () => {
@@ -77,6 +86,56 @@ describe('LongMemEval-S transform', () => {
     };
     const { question } = transformLongMemEvalSample(sample);
     expect(question.metadata?.unanswerable).toBeUndefined();
+  });
+});
+
+describe('LongMemEval-S e2e raw-sample loader (TASK-189)', () => {
+  it('isUnanswerable flags the _abs split', () => {
+    expect(isUnanswerable('abc123_abs')).toBe(true);
+    expect(isUnanswerable('abc123')).toBe(false);
+    expect(isUnanswerable('')).toBe(false);
+  });
+
+  it('loads RAW samples with haystack sessions intact from the cache (no network)', async () => {
+    // Seed a cache hit so the loader never hits the network.
+    const root = mkdtempSync(join(tmpdir(), 'lme-e2e-cache-'));
+    try {
+      const cache = new BenchCache(root);
+      const samples: LongMemEvalSample[] = [
+        {
+          question_id: 'q1_abs',
+          question_type: 'single-session-user',
+          question: 'What is my hamster named?',
+          answer: 'You did not mention this information.',
+          haystack_session_ids: ['s0', 's1'],
+          haystack_sessions: [
+            [
+              { role: 'user', content: 'I love my cat Luna.' },
+              { role: 'assistant', content: 'Lovely!' },
+            ],
+            [{ role: 'user', content: 'Unrelated chatter.' }],
+          ],
+        },
+      ];
+      await cache.write(
+        'longmemeval-s',
+        'longmemeval_s_cleaned.json',
+        Buffer.from(JSON.stringify(samples)),
+      );
+      const loaded = await loadLongMemEvalSSamples(cache);
+      expect(loaded).toHaveLength(1);
+      const s = loaded[0]!;
+      // Raw multi-turn sessions survive — NOT collapsed into a single doc body.
+      expect(s.haystack_sessions).toHaveLength(2);
+      expect(s.haystack_sessions[0]).toHaveLength(2);
+      expect(s.haystack_sessions[0]![0]).toEqual({
+        role: 'user',
+        content: 'I love my cat Luna.',
+      });
+      expect(isUnanswerable(s.question_id)).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 

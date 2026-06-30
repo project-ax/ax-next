@@ -56,9 +56,36 @@ export function transformLongMemEvalSample(s: LongMemEvalSample): {
       text: s.question,
       goldAnswer: s.answer,
       goldDocIds: (s.answer_session_ids ?? []).map((id) => `episodes/${id}`),
-      metadata: Object.keys(metaParts).length > 0 ? metaParts : undefined,
+      // exactOptionalPropertyTypes: omit the key entirely when empty rather than
+      // setting it to `undefined` (BenchQuestion.metadata is `Record | undefined`,
+      // but the assignment form `metadata: undefined` is disallowed under
+      // exactOptionalPropertyTypes — the project's standard conditional-spread fix).
+      ...(Object.keys(metaParts).length > 0 ? { metadata: metaParts } : {}),
     },
   };
+}
+
+/**
+ * True when a LongMemEval-S `question_id` marks an unanswerable ("abstention")
+ * question — the `_abs` split whose gold answer is an "I don't know"-style
+ * refusal. The e2e harness uses this to score correct-refusal vs. hallucination.
+ */
+export function isUnanswerable(questionId: string): boolean {
+  return questionId.endsWith('_abs');
+}
+
+/**
+ * Load the RAW LongMemEval-S samples — haystack sessions intact — for the
+ * end-to-end harness (TASK-189). Unlike {@link loadLongMemEvalS}, which collapses
+ * each session into a pre-digested `episodes/<id>` markdown doc (the bench A–E
+ * retrieval-config path), the e2e harness must feed the raw multi-turn sessions
+ * through the REAL Observer + consolidator. Reuses the same download/cache.
+ */
+export async function loadLongMemEvalSSamples(
+  cache: BenchCache,
+): Promise<LongMemEvalSample[]> {
+  const raw = await fetchOrReadCached(cache);
+  return JSON.parse(raw.toString()) as LongMemEvalSample[];
 }
 
 function firstSentence(s: string): string {
@@ -71,22 +98,28 @@ const HF_DOWNLOAD_URL =
   'https://huggingface.co/datasets/xiaowu0162/longmemeval-cleaned/resolve/main/longmemeval_s_cleaned.json';
 const CACHE_FILE = 'longmemeval_s_cleaned.json';
 
-export async function loadLongMemEvalS(cache: BenchCache): Promise<BenchCorpus> {
+/**
+ * Read the cached LongMemEval-S JSON, downloading it from HuggingFace on a cache
+ * miss. Shared by {@link loadLongMemEvalS} (bench A–E) and
+ * {@link loadLongMemEvalSSamples} (e2e, TASK-189) so both hit the same cache file.
+ */
+async function fetchOrReadCached(cache: BenchCache): Promise<Buffer> {
   const hit = await cache.readIfHit(DATASET_NAME, CACHE_FILE);
-  let raw: Buffer;
-  if (hit) {
-    raw = hit;
-  } else {
-    const res = await fetch(HF_DOWNLOAD_URL);
-    if (!res.ok) {
-      throw new Error(
-        `Failed to fetch LongMemEval-S from ${HF_DOWNLOAD_URL}: ${res.status}. ` +
-          `Cache miss with no network. Manually download into ~/.cache/ax-memory-bench/${DATASET_NAME}/${CACHE_FILE}.`,
-      );
-    }
-    raw = Buffer.from(await res.arrayBuffer());
-    await cache.write(DATASET_NAME, CACHE_FILE, raw);
+  if (hit) return hit;
+  const res = await fetch(HF_DOWNLOAD_URL);
+  if (!res.ok) {
+    throw new Error(
+      `Failed to fetch LongMemEval-S from ${HF_DOWNLOAD_URL}: ${res.status}. ` +
+        `Cache miss with no network. Manually download into ~/.cache/ax-memory-bench/${DATASET_NAME}/${CACHE_FILE}.`,
+    );
   }
+  const raw = Buffer.from(await res.arrayBuffer());
+  await cache.write(DATASET_NAME, CACHE_FILE, raw);
+  return raw;
+}
+
+export async function loadLongMemEvalS(cache: BenchCache): Promise<BenchCorpus> {
+  const raw = await fetchOrReadCached(cache);
   const samples = JSON.parse(raw.toString()) as LongMemEvalSample[];
   const corpus: BenchCorpus = { name: 'longmemeval-s', memoryTree: new Map(), questions: [] };
   for (const sample of samples) {

@@ -55,7 +55,9 @@ export function transformLoCoMoSample(s: LoCoMoSample): {
       text: q.question,
       goldAnswer: String(q.answer),
       goldDocIds: [...goldPaths],
-      metadata: q.category !== undefined ? { category: q.category } : undefined,
+      // exactOptionalPropertyTypes: omit the key when absent rather than assign
+      // `undefined` (the project's standard conditional-spread fix).
+      ...(q.category !== undefined ? { metadata: { category: q.category } } : {}),
     };
   });
   return { docs, questions };

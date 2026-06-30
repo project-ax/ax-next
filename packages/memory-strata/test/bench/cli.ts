@@ -1,7 +1,7 @@
 #!/usr/bin/env tsx
 import { writeFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { homedir, tmpdir } from 'node:os';
 import { parseArgs } from 'node:util';
 
@@ -25,6 +25,7 @@ import { makeAnthropicOrchestratorClient, makeOpenRouterOrchestratorClient } fro
 import { runAgent, makeAnthropicAgentClient, type AgentClient } from './agent.js';
 import { judgeAnswer, makeOpenRouterJudgeClient, type JudgeClient } from './judge.js';
 import { renderReport } from './report.js';
+import { runE2EMode } from './e2e-cli.js';
 import {
   rewriteMapSummaries,
   loadMapRewriteCache,
@@ -47,7 +48,8 @@ const PRICING: Pricing = {
   'zerank-2': { in: 0.1 / 1_000_000, out: 0 },
 };
 
-interface CliArgs {
+export interface CliArgs {
+  mode: 'bench' | 'e2e';
   corpus: 'longmemeval-s' | 'locomo' | 'internal' | 'all';
   config: ConfigName | 'all';
   sample?: number;
@@ -57,12 +59,21 @@ interface CliArgs {
   rewriteMap: boolean;
   topK: number;
   orchestratorModel: 'haiku' | 'grok';
+  /** e2e mode: opt in to the full n=500 run (default is the n=100 sample). */
+  full: boolean;
+  /** e2e mode: cost cap in dollars (default 25). */
+  cap?: number;
+  /** e2e mode: resume JSONL run id (defaults to a date-stamped id). */
+  resume?: string;
+  /** e2e mode: produce a representative report from the fixture (no keys, no spend). */
+  fixture: boolean;
 }
 
-function parseCliArgs(argv: string[]): CliArgs {
+export function parseCliArgs(argv: string[]): CliArgs {
   const { values } = parseArgs({
     args: argv,
     options: {
+      mode: { type: 'string', default: 'bench' },
       corpus: { type: 'string', default: 'all' },
       config: { type: 'string', default: 'all' },
       sample: { type: 'string' },
@@ -72,9 +83,14 @@ function parseCliArgs(argv: string[]): CliArgs {
       'rewrite-map': { type: 'boolean', default: false },
       'top-k': { type: 'string', default: '10' },
       'orchestrator-model': { type: 'string', default: 'haiku' },
+      full: { type: 'boolean', default: false },
+      cap: { type: 'string' },
+      resume: { type: 'string' },
+      fixture: { type: 'boolean', default: false },
     },
   });
-  const base = {
+  const base: CliArgs = {
+    mode: values.mode === 'e2e' ? 'e2e' : 'bench',
     corpus: values.corpus as CliArgs['corpus'],
     config: values.config as CliArgs['config'],
     smoke: values.smoke === true,
@@ -83,14 +99,30 @@ function parseCliArgs(argv: string[]): CliArgs {
     rewriteMap: values['rewrite-map'] === true,
     topK: Number(values['top-k']),
     orchestratorModel: (values['orchestrator-model'] === 'grok' ? 'grok' : 'haiku') as 'haiku' | 'grok',
+    full: values.full === true,
+    fixture: values.fixture === true,
   };
-  return values.sample
-    ? { ...base, sample: Number(values.sample) }
-    : base;
+  if (values.sample) base.sample = Number(values.sample);
+  if (values.cap) base.cap = Number(values.cap);
+  if (values.resume) base.resume = values.resume;
+  return base;
 }
 
 async function main(): Promise<number> {
   const args = parseCliArgs(process.argv.slice(2));
+
+  if (args.mode === 'e2e') {
+    // E2E mode (TASK-189): run LongMemEval-S through the REAL shipped plugin.
+    // Needs only ANTHROPIC (answer + extraction) + OPENROUTER (judge) — no
+    // zeroentropy. The default is the n=100 sample; --full opts into n=500.
+    return runE2EMode({
+      repoRoot: REPO_ROOT,
+      sample: args.sample ?? (args.full ? 500 : 100),
+      cap: args.cap ?? 25,
+      fixture: args.fixture,
+      ...(args.resume !== undefined ? { resumeId: args.resume } : {}),
+    });
+  }
 
   if (args.smoke) {
     console.log('Run "pnpm --filter @ax/memory-strata test -- test/bench/__tests__/smoke.test.ts" for the smoke suite.');
@@ -329,7 +361,14 @@ async function main(): Promise<number> {
   return capExceeded || abortError ? 1 : 0;
 }
 
-main().then((code) => process.exit(code)).catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+// Only run main() when invoked as the entry script (`tsx cli.ts …`), not when
+// imported by a test that wants to exercise parseCliArgs in isolation.
+const invokedDirectly =
+  process.argv[1] !== undefined &&
+  import.meta.url === pathToFileURL(process.argv[1]).href;
+if (invokedDirectly) {
+  main().then((code) => process.exit(code)).catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
