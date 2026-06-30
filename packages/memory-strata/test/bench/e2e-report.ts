@@ -122,7 +122,7 @@ export function renderE2EReport(input: E2EReportInput): string {
   L.push(`| **end-to-end accuracy** (correct + correct-refusal) | **${pct(acc.correct, acc.total)}** |`);
   L.push(`| uncertain (judge couldn't tell) | ${pct(acc.uncertain, acc.total)} |`);
   L.push(`| avg haystack sessions ingested / question | ${avgSessions.toFixed(1)} |`);
-  L.push(`| avg memory_search calls / question | ${avgTools.toFixed(1)} |`);
+  L.push(`| avg memory tool calls / question | ${avgTools.toFixed(1)} |`);
   L.push('');
 
   // ── Abstention split (the _abs unanswerable questions) ─────────────────

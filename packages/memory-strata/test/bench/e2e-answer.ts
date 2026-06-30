@@ -1,13 +1,18 @@
 // E2E answer client (TASK-189). Runs ONE question turn against the real
 // shipped runtime's answer path: the system prompt carries memory-strata's
 // `system-prompt:augment` block (User Profile + Recent), and the agent is given
-// the real `memory_search` tool so it can retrieve from the consolidated index
-// per turn — exactly the two memory surfaces the shipped CLI exposes.
+// the real retrieval tools so it can pull from the consolidated index per turn.
+//
+// The shipped runtime registers a TWO-STEP retrieval surface: `memory_search`
+// returns ~50-token doc SUMMARIES (topic + id), and `memory_read_section` drills
+// into a doc by id to read the fact BODY. The first live run surfaced that
+// wiring only `memory_search` makes the agent abstain on answerable questions —
+// a summary alone rarely contains the specific value — so we expose BOTH tools,
+// each dispatched back through the plugin's `tool:execute:*` hooks.
 //
 // Distinct from `agent.ts` (the bench A–E generic agent, which is handed a
 // pre-retrieved doc list and never calls a tool): this client drives a bounded
-// Anthropic tool-use loop, dispatching each `memory_search` call back through a
-// caller-supplied executor (wired to the plugin's `tool:execute:memory_search`).
+// Anthropic tool-use loop against the real plugin executors.
 
 import Anthropic from '@anthropic-ai/sdk';
 import { withRetry } from './retry.js';
@@ -28,10 +33,21 @@ export type MemorySearchFn = (args: {
   categoryFilter?: string;
 }) => Promise<MemorySearchResult[]>;
 
+/**
+ * Executes one memory_read_section call (wired to the plugin's
+ * `tool:execute:memory_read_section` hook). Mirrors the hook's return shape:
+ * the doc/section `body`, or an `error` code (`invalid-docId` / `doc-not-found`
+ * / `header-not-found`).
+ */
+export type ReadSectionFn = (args: {
+  docId: string;
+  header?: string;
+}) => Promise<{ body: string } | { error: string }>;
+
 export interface E2EAnswer {
   text: string;
   usage: { in: number; out: number };
-  /** Number of memory_search tool calls the agent made this turn. */
+  /** Total memory tool calls (memory_search + memory_read_section) this turn. */
   toolCalls: number;
 }
 
@@ -43,20 +59,25 @@ export interface E2EAnswerClient {
     question: string;
     /** Executor for the agent's memory_search calls. */
     search: MemorySearchFn;
+    /** Executor for the agent's memory_read_section calls (drill into a fact). */
+    readSection: ReadSectionFn;
   }): Promise<E2EAnswer>;
 }
 
 const SYSTEM_PREAMBLE = `You are a helpful personal assistant answering a question from your long-term memory of past conversations with this user.
 
-Your injected memory below contains your User Profile and a Recent summary. You ALSO have a \`memory_search\` tool that searches your full long-term memory for relevant past conversations — use it BEFORE asserting any durable fact (a preference, decision, date, or known entity) that isn't already in the injected memory.
+Your injected memory below contains your User Profile and a Recent summary. You ALSO have two tools over your full long-term memory:
+- \`memory_search\` — finds relevant docs and returns a short SUMMARY plus an id for each. The summary names the topic but usually does NOT contain the specific value you need.
+- \`memory_read_section\` — reads the full BODY of a doc by its id. Use it AFTER memory_search to drill into the doc that looks relevant and read the actual fact (a preference, decision, date, name, or known entity).
 
-If, after searching, your memory does not contain the answer, say "I don't know." — do NOT guess or fabricate. Be concise.`;
+Before asserting any durable fact that isn't already in the injected memory: search first, then read the most relevant doc to confirm the value. If, after searching AND reading, your memory still does not contain the answer, say "I don't know." — do NOT guess or fabricate. Be concise.`;
 
 const MEMORY_SEARCH_TOOL: Anthropic.Tool = {
   name: 'memory_search',
   description:
-    'Search long-term memory. Returns document summaries (~50 tokens each). ' +
-    'Use this BEFORE asserting facts about durable preferences, decisions, or known entities.',
+    'Search long-term memory. Returns document summaries (~50 tokens each) + ids. ' +
+    'Use this BEFORE asserting facts about durable preferences, decisions, or known entities, ' +
+    'then memory_read_section to read the body of the most relevant result.',
   input_schema: {
     type: 'object',
     properties: {
@@ -68,6 +89,27 @@ const MEMORY_SEARCH_TOOL: Anthropic.Tool = {
       },
     },
     required: ['query'],
+  },
+};
+
+const MEMORY_READ_SECTION_TOOL: Anthropic.Tool = {
+  name: 'memory_read_section',
+  description:
+    'Read the full body (or one ## section) of a memory doc by id. Use AFTER memory_search to ' +
+    'drill into a fact — the search summary alone often omits the specific value.',
+  input_schema: {
+    type: 'object',
+    properties: {
+      docId: {
+        type: 'string',
+        description: 'Document id in <category>/<slug> form, taken from a memory_search result (e.g. "preference/coffee").',
+      },
+      header: {
+        type: 'string',
+        description: 'Optional ## section header. Omitted returns the whole body.',
+      },
+    },
+    required: ['docId'],
   },
 };
 
@@ -112,11 +154,11 @@ export function makeAnthropicAnswerClient(
     },
   };
   return {
-    async answer({ injectedMemory, question, search }) {
+    async answer({ injectedMemory, question, search, readSection }) {
       const system = injectedMemory.trim().length > 0
         ? `${SYSTEM_PREAMBLE}\n\n# Injected memory\n${injectedMemory}`
         : SYSTEM_PREAMBLE;
-      return runAnswerLoop({ client, model, maxToolTurns, system, question, search });
+      return runAnswerLoop({ client, model, maxToolTurns, system, question, search, readSection });
     },
   };
 }
@@ -138,8 +180,9 @@ export async function runAnswerLoop(deps: {
   system: string;
   question: string;
   search: MemorySearchFn;
+  readSection: ReadSectionFn;
 }): Promise<E2EAnswer> {
-  const { client, model, maxToolTurns, system, question, search } = deps;
+  const { client, model, maxToolTurns, system, question, search, readSection } = deps;
   const messages: AnswerMessage[] = [{ role: 'user', content: question }];
   let totalIn = 0;
   let totalOut = 0;
@@ -156,7 +199,7 @@ export async function runAnswerLoop(deps: {
           max_tokens: MAX_ANSWER_TOKENS,
           system,
           messages,
-          ...(allowTools ? { tools: [MEMORY_SEARCH_TOOL] } : {}),
+          ...(allowTools ? { tools: [MEMORY_SEARCH_TOOL, MEMORY_READ_SECTION_TOOL] } : {}),
         }),
       { attempts: 4, baseDelayMs: 1000, label: 'anthropic-e2e-answer' },
     );
@@ -171,28 +214,17 @@ export async function runAnswerLoop(deps: {
       return { text, usage: { in: totalIn, out: totalOut }, toolCalls };
     }
 
-    // Echo the assistant turn, then answer every tool_use in one user turn.
+    // Echo the assistant turn, then answer every tool_use in one user turn,
+    // routing each to its executor by tool name (search → summaries,
+    // read_section → fact body).
     messages.push({ role: 'assistant', content: resp.content });
     const results: ToolResultBlock[] = [];
     for (const use of toolUses) {
       toolCalls += 1;
-      const input = (use.input ?? {}) as {
-        query?: unknown;
-        topK?: unknown;
-        categoryFilter?: unknown;
-      };
-      const query = typeof input.query === 'string' ? input.query : '';
-      const rows = await search({
-        query,
-        ...(typeof input.topK === 'number' ? { topK: input.topK } : {}),
-        ...(typeof input.categoryFilter === 'string'
-          ? { categoryFilter: input.categoryFilter }
-          : {}),
-      });
       results.push({
         type: 'tool_result',
         tool_use_id: use.id,
-        content: formatSearchResults(rows),
+        content: await dispatchTool(use, search, readSection),
       });
     }
     messages.push({ role: 'user', content: results });
@@ -203,11 +235,53 @@ export async function runAnswerLoop(deps: {
   return { text: '', usage: { in: totalIn, out: totalOut }, toolCalls };
 }
 
+/**
+ * Route one tool_use to the matching executor and format its result for the
+ * model. Unknown tool names return an error string rather than throwing — a
+ * stray tool name shouldn't abort the whole answer turn.
+ */
+async function dispatchTool(
+  use: ToolUseBlock,
+  search: MemorySearchFn,
+  readSection: ReadSectionFn,
+): Promise<string> {
+  const input = (use.input ?? {}) as {
+    query?: unknown;
+    topK?: unknown;
+    categoryFilter?: unknown;
+    docId?: unknown;
+    header?: unknown;
+  };
+  if (use.name === 'memory_read_section') {
+    const docId = typeof input.docId === 'string' ? input.docId : '';
+    const res = await readSection({
+      docId,
+      ...(typeof input.header === 'string' ? { header: input.header } : {}),
+    });
+    return formatReadSection(res);
+  }
+  if (use.name === 'memory_search') {
+    const query = typeof input.query === 'string' ? input.query : '';
+    const rows = await search({
+      query,
+      ...(typeof input.topK === 'number' ? { topK: input.topK } : {}),
+      ...(typeof input.categoryFilter === 'string' ? { categoryFilter: input.categoryFilter } : {}),
+    });
+    return formatSearchResults(rows);
+  }
+  return `Error: unknown tool "${use.name}".`;
+}
+
 function formatSearchResults(rows: MemorySearchResult[]): string {
   if (rows.length === 0) return 'No matching memory documents found.';
   return rows
     .map((r, i) => `[${i + 1}] (${r.docId}) ${r.summary}`)
     .join('\n');
+}
+
+function formatReadSection(res: { body: string } | { error: string }): string {
+  if ('error' in res) return `Error: ${res.error}.`;
+  return res.body.trim().length > 0 ? res.body : '(empty document)';
 }
 
 function textOf(content: AnswerBlock[]): string {
