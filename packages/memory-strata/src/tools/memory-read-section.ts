@@ -1,7 +1,15 @@
 import { makeAgentContext } from '@ax/core';
-import type { HookBus, ToolDescriptor } from '@ax/core';
+import { posix } from 'node:path';
+import type {
+  AgentContext,
+  HookBus,
+  ToolDescriptor,
+  WorkspaceReadInput,
+  WorkspaceReadOutput,
+} from '@ax/core';
+import { AGENT_TIER_MEMORY_ROOT, agentTierAvailable } from '../agent-tier-sync.js';
 import { readDoc } from '../doc-store.js';
-import type { DocCategory } from '../paths.js';
+import { docFile, type DocCategory } from '../paths.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
 
@@ -58,23 +66,67 @@ export async function registerMemoryReadSection(bus: HookBus): Promise<void> {
       const docId = typeof input?.docId === 'string' ? input.docId : '';
       const header = typeof input?.header === 'string' ? input.header.trim() : '';
 
+      // Traversal guard runs FIRST, before any I/O (tier or host), so a
+      // malformed/escaping docId can never reach the workspace read.
       const parsed = parseDocId(docId);
       if (parsed === null) return { error: 'invalid-docId' };
 
-      const doc = await readDoc({
-        workspaceRoot: ctx.workspace.rootPath,
-        category: parsed.category,
-        slug: parsed.slug,
-      });
-      if (doc === null) return { error: 'doc-not-found' };
+      // TASK-186: when memory lives in the per-agent `/agent` git tier (k8s),
+      // read the doc from THERE (owner-routed by ctx — the git tier confines
+      // the read to this agent's repo) instead of the shared host CWD. CLI
+      // path is unchanged.
+      const body = await readDocBody(bus, ctx, parsed.category, parsed.slug);
+      if (body === null) return { error: 'doc-not-found' };
 
-      if (header.length === 0) return { body: doc.body };
+      if (header.length === 0) return { body };
 
-      const section = extractSection(doc.body, header);
+      const section = extractSection(body, header);
       if (section === null) return { error: 'header-not-found' };
       return { body: section };
     },
   );
+}
+
+/**
+ * Read a doc's body, routed through the `/agent` git tier when one is loaded
+ * (TASK-186 — mirrors `readTierSystemBody` in inject.ts). Returns null when the
+ * doc doesn't exist. The returned body is byte-identical to what `readDoc`
+ * yields on the host path: everything after the canonical `---\n...\n---\n`
+ * frontmatter fence.
+ */
+async function readDocBody(
+  bus: HookBus,
+  ctx: AgentContext,
+  category: DocCategory,
+  slug: string,
+): Promise<string | null> {
+  if (!agentTierAvailable(bus)) {
+    const doc = await readDoc({ workspaceRoot: ctx.workspace.rootPath, category, slug });
+    return doc === null ? null : doc.body;
+  }
+
+  // FS rel path is `permanent/memory/docs/<category>/<slug>.md` (MEMORY_ROOT =
+  // `permanent/memory`, two segments). The tier drops that whole host-layout
+  // prefix and re-roots the tail under `memory/`.
+  const fsRel = docFile(category, slug);
+  const tierPath = posix.join(AGENT_TIER_MEMORY_ROOT, fsRel.split('/').slice(2).join('/'));
+  const out = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>('workspace:read', ctx, {
+    path: tierPath,
+  });
+  if (!out.found) return null;
+  const raw = new TextDecoder('utf-8').decode(out.bytes);
+  return extractDocBody(raw);
+}
+
+/**
+ * Extract the body that follows the canonical frontmatter fence, matching
+ * doc-store's `parseDoc` exactly (`---\n...\n---\n<body>`). A doc that somehow
+ * lacks the fence yields the raw text as-is rather than throwing — the tool
+ * degrades to returning content instead of failing the read.
+ */
+function extractDocBody(raw: string): string {
+  const m = /^---\n[\s\S]*?\n---\n([\s\S]*)$/.exec(raw);
+  return m === null ? raw : m[1]!;
 }
 
 function parseDocId(docId: string): { category: DocCategory; slug: string } | null {

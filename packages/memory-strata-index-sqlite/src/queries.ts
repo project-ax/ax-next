@@ -39,17 +39,19 @@ export function escapeFts5Query(q: string): string {
 // since better-sqlite3 is inherently synchronous and Kysely wraps it with
 // promises.
 
-export function upsert(rawDriver: BetterSqliteDb, doc: UpsertInput): void {
+export function upsert(rawDriver: BetterSqliteDb, agentKey: string, doc: UpsertInput): void {
   const txn = rawDriver.transaction(() => {
+    // Scope the delete+insert by (agent_key, doc_id) so an upsert from agent A
+    // never touches agent B's identically-keyed row (TASK-186).
     rawDriver
-      .prepare(`DELETE FROM ${TABLE} WHERE doc_id = ?`)
-      .run(doc.docId);
+      .prepare(`DELETE FROM ${TABLE} WHERE agent_key = ? AND doc_id = ?`)
+      .run(agentKey, doc.docId);
     rawDriver
       .prepare(
-        `INSERT INTO ${TABLE} (doc_id, category, slug, summary, fact_type, body, headers)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO ${TABLE} (agent_key, doc_id, category, slug, summary, fact_type, body, headers)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(doc.docId, doc.category, doc.slug, doc.summary, doc.factType, doc.body, doc.headers);
+      .run(agentKey, doc.docId, doc.category, doc.slug, doc.summary, doc.factType, doc.body, doc.headers);
   });
   txn();
 }
@@ -68,6 +70,7 @@ export interface SearchResultRow {
 
 export async function search(
   db: Kysely<Database>,
+  agentKey: string,
   query: string,
   topK: number,
   categoryFilter?: string,
@@ -75,7 +78,8 @@ export async function search(
   const escaped = escapeFts5Query(query);
   if (escaped === '') return [];
 
-  // Build query with optional category filter.
+  // Build query with optional category filter. Every variant filters by
+  // `agent_key` so an agent only searches its OWN docs (TASK-186).
   // bm25() returns negative values (more-negative = better match).
   // We negate at the row-mapping step so the surfaced score has the same
   // contract orientation as the postgres backend (higher = better).
@@ -98,6 +102,7 @@ export async function search(
       SELECT doc_id, category, slug, summary, bm25(${sql.raw(TABLE)}) AS raw_score
       FROM ${sql.raw(TABLE)}
       WHERE ${sql.raw(TABLE)} MATCH ${escaped}
+        AND agent_key = ${agentKey}
         AND category = ${categoryFilter}
       ORDER BY bm25(${sql.raw(TABLE)}) ASC
       LIMIT ${topK}
@@ -114,6 +119,7 @@ export async function search(
       SELECT doc_id, category, slug, summary, bm25(${sql.raw(TABLE)}) AS raw_score
       FROM ${sql.raw(TABLE)}
       WHERE ${sql.raw(TABLE)} MATCH ${escaped}
+        AND agent_key = ${agentKey}
       ORDER BY bm25(${sql.raw(TABLE)}) ASC
       LIMIT ${topK}
     `.execute(db);
@@ -135,14 +141,21 @@ export async function search(
 // deleteOne
 // ---------------------------------------------------------------------------
 
-export async function deleteOne(db: Kysely<Database>, docId: string): Promise<void> {
-  await sql`DELETE FROM ${sql.raw(TABLE)} WHERE doc_id = ${docId}`.execute(db);
+export async function deleteOne(
+  db: Kysely<Database>,
+  agentKey: string,
+  docId: string,
+): Promise<void> {
+  // Scoped to the caller's agent_key so deleting docId for A can't remove B's
+  // identically-keyed row (TASK-186).
+  await sql`DELETE FROM ${sql.raw(TABLE)} WHERE agent_key = ${agentKey} AND doc_id = ${docId}`.execute(db);
 }
 
 // ---------------------------------------------------------------------------
-// clearAll
+// clearAll — clears only the calling agent's docs (TASK-186), not the whole
+// shared table.
 // ---------------------------------------------------------------------------
 
-export async function clearAll(db: Kysely<Database>): Promise<void> {
-  await sql`DELETE FROM ${sql.raw(TABLE)}`.execute(db);
+export async function clearAll(db: Kysely<Database>, agentKey: string): Promise<void> {
+  await sql`DELETE FROM ${sql.raw(TABLE)} WHERE agent_key = ${agentKey}`.execute(db);
 }

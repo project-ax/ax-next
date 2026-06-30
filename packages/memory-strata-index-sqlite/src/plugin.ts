@@ -4,6 +4,7 @@ import { type Kysely } from 'kysely';
 import { z, type ZodType } from 'zod';
 import { openDatabase, type Database } from './schema.js';
 import { upsert, search, deleteOne, clearAll } from './queries.js';
+import { agentScopeKey } from './agent-scope-key.js';
 import type {
   UpsertInput,
   SearchInput,
@@ -106,20 +107,24 @@ export function createMemoryStrataIndexSqlitePlugin(
       db = opened.db;
       rawDriver = opened.rawDriver;
 
+      // Every handler derives the per-agent scope key from the calling ctx
+      // (TASK-186) so the single shared sqlite db is partitioned per
+      // (userId, agentId). The hook I/O payloads stay unchanged — the key is
+      // ambient (from ctx), never a wire field.
       bus.registerService<UpsertInput, void>(
         'memory:index:upsert',
         PLUGIN_NAME,
-        async (_ctx, input) => {
-          upsert(rawDriver!, input);
+        async (ctx, input) => {
+          upsert(rawDriver!, agentScopeKey(ctx), input);
         },
       );
 
       bus.registerService<SearchInput, SearchOutput>(
         'memory:index:search',
         PLUGIN_NAME,
-        async (_ctx, input) => {
+        async (ctx, input) => {
           const { topK } = validateSearchInput(input);
-          const results = await search(db!, input.query, topK, input.categoryFilter);
+          const results = await search(db!, agentScopeKey(ctx), input.query, topK, input.categoryFilter);
           return { results };
         },
         { returns: SearchOutputSchema },
@@ -128,16 +133,16 @@ export function createMemoryStrataIndexSqlitePlugin(
       bus.registerService<DeleteInput, void>(
         'memory:index:delete',
         PLUGIN_NAME,
-        async (_ctx, input) => {
-          await deleteOne(db!, input.docId);
+        async (ctx, input) => {
+          await deleteOne(db!, agentScopeKey(ctx), input.docId);
         },
       );
 
       bus.registerService<Record<string, never>, void>(
         'memory:index:clear',
         PLUGIN_NAME,
-        async (_ctx, _input) => {
-          await clearAll(db!);
+        async (ctx, _input) => {
+          await clearAll(db!, agentScopeKey(ctx));
         },
       );
     },

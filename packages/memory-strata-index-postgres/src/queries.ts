@@ -15,19 +15,24 @@ export interface SearchResultRow {
 }
 
 // ---------------------------------------------------------------------------
-// upsert — INSERT … ON CONFLICT (doc_id) DO UPDATE SET … (I22)
+// upsert — INSERT … ON CONFLICT (agent_key, doc_id) DO UPDATE SET … (I22)
 // ---------------------------------------------------------------------------
 // Postgres supports native UPSERT semantics, so no delete-then-insert
 // transaction is needed. The generated `search_tsv` column is maintained
 // automatically on every row write.
+//
+// The conflict target is the composite PRIMARY KEY (agent_key, doc_id), so two
+// agents can hold the same docId without clobbering each other (TASK-186).
 
 export async function upsert(
   db: Kysely<MemoryStrataIndexDatabase>,
+  agentKey: string,
   doc: UpsertInput,
 ): Promise<void> {
   await db
-    .insertInto('memory_strata_index_v1_docs')
+    .insertInto('memory_strata_index_v2_docs')
     .values({
+      agent_key: agentKey,
       doc_id: doc.docId,
       category: doc.category,
       slug: doc.slug,
@@ -37,7 +42,7 @@ export async function upsert(
       headers: doc.headers,
     })
     .onConflict((oc) =>
-      oc.column('doc_id').doUpdateSet({
+      oc.columns(['agent_key', 'doc_id']).doUpdateSet({
         category: doc.category,
         slug: doc.slug,
         summary: doc.summary,
@@ -64,6 +69,7 @@ export async function upsert(
 
 export async function search(
   db: Kysely<MemoryStrataIndexDatabase>,
+  agentKey: string,
   query: string,
   topK: number,
   categoryFilter?: string,
@@ -77,12 +83,15 @@ export async function search(
 
   let rows: RawRow[];
 
+  // Every variant filters by `agent_key` so an agent only searches its own
+  // docs (TASK-186).
   if (categoryFilter !== undefined) {
     const result = await sql<RawRow>`
       SELECT doc_id, category, slug, summary,
              ts_rank(search_tsv, plainto_tsquery('english', ${trimmed})) AS score
-      FROM memory_strata_index_v1_docs
+      FROM memory_strata_index_v2_docs
       WHERE search_tsv @@ plainto_tsquery('english', ${trimmed})
+        AND agent_key = ${agentKey}
         AND category = ${categoryFilter}
       ORDER BY score DESC
       LIMIT ${topK}
@@ -92,8 +101,9 @@ export async function search(
     const result = await sql<RawRow>`
       SELECT doc_id, category, slug, summary,
              ts_rank(search_tsv, plainto_tsquery('english', ${trimmed})) AS score
-      FROM memory_strata_index_v1_docs
+      FROM memory_strata_index_v2_docs
       WHERE search_tsv @@ plainto_tsquery('english', ${trimmed})
+        AND agent_key = ${agentKey}
       ORDER BY score DESC
       LIMIT ${topK}
     `.execute(db);
@@ -115,18 +125,29 @@ export async function search(
 
 export async function deleteOne(
   db: Kysely<MemoryStrataIndexDatabase>,
+  agentKey: string,
   docId: string,
 ): Promise<void> {
+  // Scoped to (agent_key, doc_id) so deleting docId for A can't remove B's
+  // identically-keyed row (TASK-186).
   await db
-    .deleteFrom('memory_strata_index_v1_docs')
+    .deleteFrom('memory_strata_index_v2_docs')
+    .where('agent_key', '=', agentKey)
     .where('doc_id', '=', docId)
     .execute();
 }
 
 // ---------------------------------------------------------------------------
-// clearAll
+// clearAll — clears only the calling agent's docs (TASK-186), not the whole
+// shared table.
 // ---------------------------------------------------------------------------
 
-export async function clearAll(db: Kysely<MemoryStrataIndexDatabase>): Promise<void> {
-  await db.deleteFrom('memory_strata_index_v1_docs').execute();
+export async function clearAll(
+  db: Kysely<MemoryStrataIndexDatabase>,
+  agentKey: string,
+): Promise<void> {
+  await db
+    .deleteFrom('memory_strata_index_v2_docs')
+    .where('agent_key', '=', agentKey)
+    .execute();
 }

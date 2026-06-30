@@ -53,11 +53,14 @@ const factory: IndexBackendFactory = async (bus) => {
   const dbPlugin = createDatabasePostgresPlugin({ connectionString });
   await dbPlugin.init!({ bus, config: {} });
 
-  // Run the indexer's migration on the shared connection so the table exists
-  // for this factory's teardown truncate.
+  // Pre-create the v2 table (TASK-186 — agent-keyed schema, composite PK) on
+  // the shared connection so this factory's teardown truncate has a table to
+  // target even before the plugin's own migration runs. Must match the
+  // plugin's runIndexMigration exactly.
   await sql`
-    CREATE TABLE IF NOT EXISTS memory_strata_index_v1_docs (
-      doc_id    TEXT PRIMARY KEY,
+    CREATE TABLE IF NOT EXISTS memory_strata_index_v2_docs (
+      agent_key TEXT NOT NULL,
+      doc_id    TEXT NOT NULL,
       category  TEXT NOT NULL,
       slug      TEXT NOT NULL,
       summary   TEXT NOT NULL,
@@ -68,7 +71,8 @@ const factory: IndexBackendFactory = async (bus) => {
         setweight(to_tsvector('english', coalesce(summary, '')), 'A') ||
         setweight(to_tsvector('english', coalesce(headers, '')), 'B') ||
         setweight(to_tsvector('english', coalesce(body,    '')), 'C')
-      ) STORED
+      ) STORED,
+      PRIMARY KEY (agent_key, doc_id)
     )
   `.execute(adminDb);
 
@@ -78,7 +82,7 @@ const factory: IndexBackendFactory = async (bus) => {
     plugin,
     teardown: async () => {
       // Truncate the table rather than drop + recreate — faster between runs.
-      await sql`TRUNCATE memory_strata_index_v1_docs`.execute(adminDb);
+      await sql`TRUNCATE memory_strata_index_v2_docs`.execute(adminDb);
       // Drain THIS iteration's db-plugin pool gracefully (kysely.destroy()),
       // so it isn't still open when the container stops in afterAll. Without
       // this the plugin's pool.on('error') logs a benign 57P01 per pool at

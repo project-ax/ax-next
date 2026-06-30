@@ -1,5 +1,13 @@
-import type { AgentContext, AgentOutcome, HookBus, Plugin } from '@ax/core';
+import type {
+  AgentContext,
+  AgentOutcome,
+  HookBus,
+  Plugin,
+  WorkspaceListInput,
+  WorkspaceListOutput,
+} from '@ax/core';
 import {
+  AGENT_TIER_MEMORY_ROOT,
   agentTierAvailable,
   flushAgentTier,
   hydrateAgentTier,
@@ -512,21 +520,74 @@ async function consolidateRoutedToTier(deps: {
 
   const hydrated: HydratedTier = await hydrateAgentTier(bus, ctx);
   try {
+    // Run the pass on the scratch WITHOUT bus/ctx, so the consolidator's
+    // inline `memory:doc:written` events don't fire mid-pass — at that point
+    // the doc lives only in the about-to-be-flushed scratch, not in `/agent`,
+    // and the tier-aware reindexer reads `/agent`. We re-emit those events
+    // AFTER the flush (below) from the durable `/agent` content instead.
     const result = await consolidate({
       workspaceRoot: hydrated.scratchRoot,
       now: new Date(),
       logger,
-      // The consolidator fires `memory:doc:written` via bus+ctx for the
-      // reindexer. The reindexer re-reads the doc from `ctx.workspace.rootPath`
-      // (the host root), NOT the scratch — so passing bus/ctx here would make
-      // it read a path that doesn't hold the doc. Omit them on the tier path;
-      // the index is rebuilt from the materialized `/agent` content on the next
-      // session rather than from a host-local scratch that's about to vanish.
     });
     await flushAgentTier(bus, ctx, hydrated, 'memory-consolidate');
+    // TASK-186: now that the consolidated docs are durably in `/agent`, fire
+    // `memory:doc:written` for each so the (tier-aware) reindexer populates the
+    // per-agent-keyed search index from the tier. Pre-TASK-186 this never
+    // happened (events were omitted), so `memory_search` returned nothing in
+    // tier deployments. Best-effort: a reindex failure must not fail the pass.
+    await reindexTierDocs(bus, ctx);
     return result;
   } finally {
     await hydrated.dispose();
+  }
+}
+
+/**
+ * After a tier consolidation flush, fire `memory:doc:written` for every doc now
+ * in the agent's `/agent` `memory/docs/**`, so the reindexer upserts them into
+ * the search index (TASK-186). Reads are owner-routed by ctx. Each doc's event
+ * is independent — one malformed doc doesn't block the rest — and the whole
+ * thing is best-effort (a missing indexer just logs a warn in the reindexer).
+ */
+async function reindexTierDocs(bus: HookBus, ctx: AgentContext): Promise<void> {
+  const docsPrefix = `${AGENT_TIER_MEMORY_ROOT}/docs/`;
+  let paths: string[];
+  try {
+    const listed = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
+      'workspace:list',
+      ctx,
+      { pathGlob: `${docsPrefix}**` },
+    );
+    // pathGlob is advisory; filter defensively to `memory/docs/<cat>/<slug>.md`.
+    paths = listed.paths.filter((p) => p.startsWith(docsPrefix) && p.endsWith('.md'));
+  } catch (err) {
+    ctx.logger.warn('memory_strata_reindex_tier_list_failed', {
+      err: err instanceof Error ? err : new Error(String(err)),
+      agentId: ctx.agentId,
+    });
+    return;
+  }
+
+  for (const tierPath of paths) {
+    // tierPath: memory/docs/<category>/<slug>.md → derive docId fields.
+    const rel = tierPath.slice(docsPrefix.length); // <category>/<slug>.md
+    const slash = rel.indexOf('/');
+    if (slash <= 0) continue;
+    const category = rel.slice(0, slash);
+    const slug = rel.slice(slash + 1, -'.md'.length);
+    if (slug.length === 0) continue;
+
+    // `summary` is informational only — the reindexer re-reads the canonical
+    // doc from `/agent` and indexes ITS frontmatter.summary, ignoring the
+    // event's. So we don't pay a second `workspace:read` here just to fill it.
+    await bus.fire('memory:doc:written', ctx, {
+      docId: `${category}/${slug}`,
+      category,
+      slug,
+      kind: 'updated' as const,
+      summary: '',
+    });
   }
 }
 

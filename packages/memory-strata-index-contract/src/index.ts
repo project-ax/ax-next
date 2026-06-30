@@ -74,29 +74,32 @@ export function runIndexContract(label: string, factory: IndexBackendFactory): v
       await teardown();
     });
 
-    function makeCtx() {
+    // Default ctx — a single (userId, agentId) tenant. All the single-tenant
+    // cases below run as this agent. The per-agent isolation case (Test 10)
+    // mints DISTINCT ctxs to prove cross-tenant separation.
+    function makeCtx(agentId = 'a', userId = 'u') {
       return makeAgentContext({
         sessionId: 's',
-        agentId: 'a',
-        userId: 'u',
+        agentId,
+        userId,
         workspace: { rootPath: '/tmp' },
       });
     }
 
-    async function upsert(input: UpsertInput): Promise<void> {
-      await bus.call<UpsertInput, void>('memory:index:upsert', makeCtx(), input);
+    async function upsert(input: UpsertInput, ctx = makeCtx()): Promise<void> {
+      await bus.call<UpsertInput, void>('memory:index:upsert', ctx, input);
     }
 
-    async function search(input: SearchInput): Promise<SearchOutput> {
-      return bus.call<SearchInput, SearchOutput>('memory:index:search', makeCtx(), input);
+    async function search(input: SearchInput, ctx = makeCtx()): Promise<SearchOutput> {
+      return bus.call<SearchInput, SearchOutput>('memory:index:search', ctx, input);
     }
 
-    async function del(docId: string): Promise<void> {
-      await bus.call<DeleteInput, void>('memory:index:delete', makeCtx(), { docId });
+    async function del(docId: string, ctx = makeCtx()): Promise<void> {
+      await bus.call<DeleteInput, void>('memory:index:delete', ctx, { docId });
     }
 
-    async function clear(): Promise<void> {
-      await bus.call<Record<string, never>, void>('memory:index:clear', makeCtx(), {});
+    async function clear(ctx = makeCtx()): Promise<void> {
+      await bus.call<Record<string, never>, void>('memory:index:clear', ctx, {});
     }
 
     // -----------------------------------------------------------------------
@@ -388,6 +391,134 @@ export function runIndexContract(label: string, factory: IndexBackendFactory): v
       const out = await search({ query: 'clamping', topK: 1_000_000 });
       // Result count itself can be 1 (one doc); the assertion is "no throw".
       expect(out.results.length).toBeGreaterThanOrEqual(0);
+    });
+
+    // -----------------------------------------------------------------------
+    // Test 10: PER-AGENT ISOLATION (TASK-186 — multi-tenant boundary)
+    // -----------------------------------------------------------------------
+    // The index is a SINGLE shared store (one sqlite db / one postgres table)
+    // across every agent in a deployment. Before TASK-186 it keyed rows only
+    // by docId, so agent A's `memory_search` could return agent B's facts —
+    // a cross-tenant leak. Every write/read/delete/clear must be scoped to the
+    // calling agent (derived from ctx). This case FAILS on the pre-fix pooled
+    // behavior: A's search would surface B's doc, and a same-docId write from B
+    // would clobber A's row.
+    describe('per-agent isolation (TASK-186)', () => {
+      const ctxA = makeCtx('agent-a', 'user-a');
+      const ctxB = makeCtx('agent-b', 'user-b');
+
+      it("search under agent A never returns agent B's docs", async () => {
+        await upsert(
+          {
+            docId: 'preference/db',
+            category: 'preference',
+            slug: 'db',
+            summary: 'Agent A prefers postgres',
+            factType: 'preference',
+            body: 'Agent A loves postgres for everything.',
+            headers: '',
+          },
+          ctxA,
+        );
+        await upsert(
+          {
+            docId: 'preference/db',
+            category: 'preference',
+            slug: 'db',
+            summary: 'Agent B prefers sqlite',
+            factType: 'preference',
+            body: 'Agent B loves sqlite for everything.',
+            headers: '',
+          },
+          ctxB,
+        );
+
+        // Same docId, different content, different agents. Neither write
+        // clobbers the other (no pooled collision), and each agent sees only
+        // its own row. Query on the term BOTH docs share ("prefers") so the
+        // assertion is purely about agent scoping, independent of each
+        // backend's full-text AND/OR query semantics.
+        const outA = await search({ query: 'prefers', topK: 10 }, ctxA);
+        expect(outA.results).toHaveLength(1);
+        expect(outA.results[0]!.summary).toBe('Agent A prefers postgres');
+
+        const outB = await search({ query: 'prefers', topK: 10 }, ctxB);
+        expect(outB.results).toHaveLength(1);
+        expect(outB.results[0]!.summary).toBe('Agent B prefers sqlite');
+      });
+
+      it("delete under agent A does not remove agent B's same-docId doc", async () => {
+        await upsert(
+          {
+            docId: 'entity/shared-id',
+            category: 'entity',
+            slug: 'shared-id',
+            summary: 'A entity record',
+            factType: 'entity',
+            body: 'Agent A entity body content.',
+            headers: '',
+          },
+          ctxA,
+        );
+        await upsert(
+          {
+            docId: 'entity/shared-id',
+            category: 'entity',
+            slug: 'shared-id',
+            summary: 'B entity record',
+            factType: 'entity',
+            body: 'Agent B entity body content.',
+            headers: '',
+          },
+          ctxB,
+        );
+
+        await del('entity/shared-id', ctxA);
+
+        // A's row is gone; B's identically-keyed row is untouched.
+        const outA = await search({ query: 'entity record body', topK: 10 }, ctxA);
+        expect(outA.results.map((r) => r.docId)).not.toContain('entity/shared-id');
+
+        const outB = await search({ query: 'entity record body', topK: 10 }, ctxB);
+        expect(outB.results).toHaveLength(1);
+        expect(outB.results[0]!.summary).toBe('B entity record');
+      });
+
+      it("clear under agent A leaves agent B's index intact", async () => {
+        await upsert(
+          {
+            docId: 'general/note',
+            category: 'general',
+            slug: 'note',
+            summary: 'A note',
+            factType: 'general',
+            body: 'Agent A general note.',
+            headers: '',
+          },
+          ctxA,
+        );
+        await upsert(
+          {
+            docId: 'general/note',
+            category: 'general',
+            slug: 'note',
+            summary: 'B note',
+            factType: 'general',
+            body: 'Agent B general note.',
+            headers: '',
+          },
+          ctxB,
+        );
+
+        await clear(ctxA);
+
+        const outA = await search({ query: 'general note', topK: 10 }, ctxA);
+        expect(outA.results).toHaveLength(0);
+
+        const outB = await search({ query: 'general note', topK: 10 }, ctxB);
+        expect(outB.results).toHaveLength(1);
+        expect(outB.results[0]!.summary).toBe('B note');
+      });
     });
   });
 }
