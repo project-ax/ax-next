@@ -86,6 +86,7 @@ const CONFIG_LABELS: Record<ConfigName, string> = {
   'c-rrf': 'C: BM25 + zembed-1 + RRF',
   'd-map': 'D: Retrieval Orchestrator (c137-style)',
   'e-map-fts': 'E: Orchestrator + BM25 fallback',
+  'f-fair-rerank': 'F: BM25 + local cross-encoder (fair)',
 };
 
 export function renderReport(input: ReportInput): string {

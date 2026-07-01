@@ -25,7 +25,13 @@ export interface BenchCorpus {
   questions: BenchQuestion[];
 }
 
-export type ConfigName = 'a-bm25' | 'b-rerank' | 'c-rrf' | 'd-map' | 'e-map-fts';
+export type ConfigName =
+  | 'a-bm25'
+  | 'b-rerank'
+  | 'c-rrf'
+  | 'd-map'
+  | 'e-map-fts'
+  | 'f-fair-rerank';
 
 export interface RetrievedDoc {
   path: string;
@@ -40,6 +46,12 @@ export interface RetrievalResult {
   rerankTokens: number;
   orchestratorTokens?: { in: number; out: number };
   followupNeeded?: boolean;
+  /**
+   * Wall-clock ms spent inside the reranker (cross-encoder inference) alone,
+   * isolated from the BM25 retrieval cost. Set by config F so the report can
+   * surface the candidate runtime cost of the local cross-encoder per query.
+   */
+  rerankMs?: number;
 }
 
 export interface ConfigDriver {

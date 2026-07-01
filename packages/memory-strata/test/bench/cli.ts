@@ -21,10 +21,17 @@ import { createConfigB, makeZeroEntropyRerankClient } from './configs/b-rerank.j
 import { createConfigC, makeZeroEntropyEmbedClient } from './configs/c-rrf.js';
 import { createConfigD } from './configs/d-map.js';
 import { createConfigE } from './configs/e-map-fts.js';
+import { createConfigF } from './configs/f-fair-rerank.js';
+import {
+  makeLocalCrossEncoderRerankClient,
+  DEFAULT_RERANK_MODEL,
+  type ClosableRerankClient,
+} from './rerank-local.js';
 import { makeAnthropicOrchestratorClient, makeOpenRouterOrchestratorClient } from './orchestrator.js';
 import { runAgent, makeAnthropicAgentClient, type AgentClient } from './agent.js';
 import { judgeAnswer, makeOpenRouterJudgeClient, type JudgeClient } from './judge.js';
 import { renderReport } from './report.js';
+import { renderFairRerankReport } from './fair-reranker-report.js';
 import { runE2EMode } from './e2e-cli.js';
 import {
   rewriteMapSummaries,
@@ -214,6 +221,15 @@ async function main(): Promise<number> {
   const rerankClient = makeZeroEntropyRerankClient(env.ZEROENTROPY_API_KEY);
   const embedClient = makeZeroEntropyEmbedClient(env.ZEROENTROPY_API_KEY);
 
+  // Config F (the FAIR reranker, TASK-192) uses a LOCAL cross-encoder via a Python
+  // subprocess. It is opt-in via AX_BENCH_RERANK_PYTHON (path to a venv python with
+  // sentence-transformers installed); AX_BENCH_RERANK_MODEL overrides the model id.
+  // When unset, config F is skipped with a clear build failure (the run loop catches
+  // build failures per-config), so `--config all` without the local model still runs A–E.
+  const rerankPythonBin = process.env.AX_BENCH_RERANK_PYTHON;
+  const localRerankModel = process.env.AX_BENCH_RERANK_MODEL ?? DEFAULT_RERANK_MODEL;
+  const localRerankClients: ClosableRerankClient[] = [];
+
   const corpora: BenchCorpus[] = [];
   const want = (name: BenchCorpus['name']) => args.corpus === 'all' || args.corpus === name;
   if (want('longmemeval-s')) corpora.push(await loadLongMemEvalS(cache));
@@ -267,6 +283,35 @@ async function main(): Promise<number> {
         mapCacheDir,
         ...(overrides ? { mapSummaryOverrides: overrides } : {}),
       });
+    });
+  }
+  if (wantCfg('f-fair-rerank')) {
+    driverFactories.push(() => {
+      if (!rerankPythonBin) {
+        // No local cross-encoder configured → return a driver whose build() throws a
+        // clear, actionable message. The run loop catches it and skips config F,
+        // recording the reason in the report's "Config build failures" section.
+        return {
+          name: 'f-fair-rerank' as const,
+          async build() {
+            throw new Error(
+              'Config F (fair reranker) requires a local cross-encoder. Set ' +
+                'AX_BENCH_RERANK_PYTHON to a venv python with sentence-transformers ' +
+                '(see docs/plans/2026-06-29-memory-strata-fair-reranker-report.md).',
+            );
+          },
+          async teardown() {},
+          async retrieve() {
+            throw new Error('Config F: build() failed (no AX_BENCH_RERANK_PYTHON).');
+          },
+        };
+      }
+      const localClient = makeLocalCrossEncoderRerankClient({
+        pythonBin: rerankPythonBin,
+        model: localRerankModel,
+      });
+      localRerankClients.push(localClient);
+      return createConfigF({ tempDir, rerankClient: localClient });
     });
   }
 
@@ -357,6 +402,36 @@ async function main(): Promise<number> {
   const outPath = join(REPO_ROOT, 'docs/plans', `${date.toISOString().slice(0, 10)}-memory-strata-vector-spike-report.md`);
   writeFileSync(outPath, md);
   console.log(`Report written to ${outPath}. Total spend: $${meter.totalDollars().toFixed(2)}.`);
+
+  // TASK-192: when config F (fair reranker) ran, also emit the standalone fair-reranker
+  // head-to-head report (A vs E vs F: accuracy + recall@5 + abstention + latency + the
+  // isolated cross-encoder per-query latency + the >=5pp verdict).
+  const ranFairReranker = results.some((r) => r.config === 'f-fair-rerank');
+  if (ranFairReranker) {
+    const fairMd = renderFairRerankReport({
+      results,
+      verdictMode: 'measured',
+      runDate: date,
+      answerModel: 'claude-sonnet-4-6',
+      judgeModel: 'x-ai/grok-4.3',
+      rerankModel: localRerankModel,
+      command: 'AX_BENCH_RERANK_PYTHON=<venv>/bin/python pnpm --filter @ax/memory-strata bench --corpus longmemeval-s --config all',
+      bm25CandidateCount: 50,
+      abortError: abortError ? ((abortError as Error)?.message ?? String(abortError)) : null,
+    });
+    const fairOut = join(REPO_ROOT, 'docs/plans', `${date.toISOString().slice(0, 10)}-memory-strata-fair-reranker-report.md`);
+    writeFileSync(fairOut, fairMd);
+    console.log(`Fair-reranker report written to ${fairOut}.`);
+  }
+
+  // Close any local cross-encoder subprocesses spawned for config F.
+  for (const c of localRerankClients) {
+    try {
+      await c.close();
+    } catch {
+      /* best-effort */
+    }
+  }
   rmSync(tempDir, { recursive: true, force: true });
   return capExceeded || abortError ? 1 : 0;
 }
