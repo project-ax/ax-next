@@ -62,8 +62,7 @@ answering.
 
 You output ONLY XML, using these tags:
 
-  <load doc="<docId>"/>                  — load a whole document into context
-  <load doc="<docId>" section="..."/>    — load just one section of a document
+  <load doc="<docId>"/>                  — load a document into context
   <fts query="..."/>                     — when you genuinely cannot decide
                                             from the map alone, run a keyword
                                             search (max 1-2 of these per query)
@@ -248,6 +247,10 @@ export async function runOrchestratedRetrieve(
   }
 
   const plan = parseOrchestratorPlan(text);
+  // Single-hop by design (config E): we execute the plan's ops once and never
+  // re-plan. `plan.followupNeeded` is parsed but deliberately NOT consumed here —
+  // it's a forward-looking signal reserved for a future multi-hop retrieval
+  // phase; wiring a second hop is out of scope for this card.
   const out = await runOps(plan.ops, table, deps.topK, deps.ftsSearch);
 
   if (out.length === 0) return null;
@@ -265,6 +268,10 @@ async function runOps(
 
   for (const op of ops) {
     if (op.kind === 'load') {
+      // NOTE: `op.section`, if the planner emitted it, is intentionally NOT
+      // honored — memory_search returns doc SUMMARIES (its tool contract) and
+      // the agent drills into a specific section afterwards via the
+      // memory_read_section tool. The prompt no longer advertises `section`.
       if (parseDocId(op.docId) === null) continue; // traversal guard
       const entry = table.get(op.docId);
       if (entry === undefined || seen.has(entry.docId)) continue;

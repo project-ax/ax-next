@@ -96,19 +96,36 @@ export async function registerMemorySearch(
         query.length > 0 &&
         categoryFilter === undefined
       ) {
-        const mapBody = await readInjectedMapBody(bus, ctx, ctx.workspace.rootPath);
-        const orchestrated = await runOrchestratedRetrieve({
-          client: opts.orchestrator.client,
-          mapBody,
-          query,
-          topK,
-          timeoutMs: opts.orchestrator.timeoutMs ?? DEFAULT_ORCHESTRATOR_TIMEOUT_MS,
-          ftsSearch: (q, k) => retrieve(bus, ctx, { query: q, topK: k }),
-          logger: ctx.logger,
-        });
-        if (orchestrated !== null) return { results: orchestrated };
-        // else: fall through to plain BM25 below (empty map, timeout, or every
-        // emitted op resolved to nothing).
+        // The BM25 fallback is the WHOLE contract of this path, so the orchestrator
+        // attempt must NEVER throw out of the executor — a throw would surface a
+        // failed tool call to the agent instead of degrading to BM25. Two escape
+        // hatches motivate the outer try/catch: (1) `readInjectedMapBody` re-throws
+        // a non-ENOENT fs error (map.md exists but is unreadable) — a net-new read
+        // this path introduced; (2) `runOrchestratedRetrieve` catches its own LLM
+        // call but runs the `<fts>` op's `ftsSearch` OUTSIDE that guard, so a
+        // rejecting indexer would propagate. On any throw we log and fall through
+        // to plain BM25 below (mirroring registerInject's system-prompt:augment
+        // handler, which guards `buildMemoryBlock` the same way). A null return
+        // (empty map / timeout / every emitted op resolved to nothing) also falls
+        // through.
+        try {
+          const mapBody = await readInjectedMapBody(bus, ctx, ctx.workspace.rootPath);
+          const orchestrated = await runOrchestratedRetrieve({
+            client: opts.orchestrator.client,
+            mapBody,
+            query,
+            topK,
+            timeoutMs: opts.orchestrator.timeoutMs ?? DEFAULT_ORCHESTRATOR_TIMEOUT_MS,
+            ftsSearch: (q, k) => retrieve(bus, ctx, { query: q, topK: k }),
+            logger: ctx.logger,
+          });
+          if (orchestrated !== null) return { results: orchestrated };
+        } catch (err) {
+          ctx.logger.warn('memory_strata_orchestrator_failed', {
+            err: err instanceof Error ? err : new Error(String(err)),
+            agentId: ctx.agentId,
+          });
+        }
       }
 
       const results = await retrieve(bus, ctx, {

@@ -1147,10 +1147,13 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
     // same capability class as the Observer's llm:call:anthropic; absent ⇒ the
     // plugin degrades to pure BM25. OpenRouter is intentionally NOT auto-wired
     // (its default routing was ~11s in the spike; direct xAI is ~400ms p50).
+    // `timeoutMs: 5000` caps each fetch attempt's socket (AbortSignal) so a slow
+    // xAI response is actually torn down — the plugin's own raceTimeout(5s) only
+    // stops the caller WAITING, it doesn't abort the underlying request.
     const xaiKey = process.env.XAI_API_KEY;
     const orchestrator =
       xaiKey !== undefined && xaiKey.length > 0
-        ? { orchestrator: { client: makeXaiOrchestratorClient(xaiKey) } }
+        ? { orchestrator: { client: makeXaiOrchestratorClient(xaiKey, undefined, { timeoutMs: 5000 }) } }
         : {};
     plugins.push(createMemoryStrataPlugin(orchestrator));
     plugins.push(createMemoryStrataIndexPostgresPlugin());

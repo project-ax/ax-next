@@ -374,4 +374,36 @@ describe('orchestrator path', () => {
     expect(capturedSearchInputs).toHaveLength(1);
     expect((capturedSearchInputs[0] as Record<string, unknown>).categoryFilter).toBe('preference');
   });
+
+  it('orchestrator read throws (unreadable map.md) → degrades to BM25, does NOT fail the tool call (review #1)', async () => {
+    // Regression for the review's Important finding: the BM25 fallback is the
+    // whole contract, so the orchestrator attempt must never throw OUT of the
+    // executor. Make `system/map.md` a DIRECTORY so readFile() throws EISDIR — a
+    // non-ENOENT fs error that `readInjectedMapBody` re-throws (ENOENT / no map
+    // yet already returns '' and is covered by the "miss → BM25" test above;
+    // this is the harder escape path). Before the executor's outer try/catch
+    // this surfaced as a FAILED tool call to the agent; now it must degrade to
+    // BM25 — a case where BM25 would have worked.
+    const mapAbs = join(workspaceRoot, mapFile());
+    await mkdir(mapAbs, { recursive: true }); // create map.md AS A DIRECTORY → readFile → EISDIR
+    const { bus, capturedSearchInputs } = makeOrchestratorBus();
+    const client: OrchestratorClient = {
+      complete: vi.fn(async () => ({
+        text: '<load doc="preference/coffee"/>',
+        usage: { in: 1, out: 1 },
+      })),
+    };
+    await registerMemorySearch(bus, { orchestrator: { client } });
+
+    const ctx = makeOrchestratorCtx();
+    const out = await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'what coffee do I like?' }),
+    );
+
+    // Degraded cleanly to BM25 — did NOT throw/return an error out of the tool.
+    expect(out).toEqual({ results: BM25_FIXTURE });
+    expect(capturedSearchInputs).toHaveLength(1);
+  });
 });

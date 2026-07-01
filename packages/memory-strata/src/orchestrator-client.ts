@@ -126,6 +126,16 @@ export function makeXaiOrchestratorClient(
   };
 }
 
+/**
+ * OpenRouter-backed fallback client. Exported and unit-tested but INTENTIONALLY
+ * NOT auto-wired by any preset — the CLI + k8s presets default to the direct-xAI
+ * client because the n=500 spike found OpenRouter's default routing pathological
+ * (~11s p50 vs xAI-direct's ~400ms). This stays available for operator opt-in
+ * (an eval run, or a deployment without xAI access) via
+ * `MemoryStrataConfig.orchestrator.client`, and for the bench's provider-forcing
+ * work. It is a library export, not half-wired infrastructure: the wiring seam
+ * (the config field) is live and exercised by the xAI default.
+ */
 export function makeOpenRouterOrchestratorClient(
   apiKey: string,
   model = 'x-ai/grok-4-fast',
