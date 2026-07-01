@@ -21,7 +21,7 @@ import {
   type LlmCallInput,
   type LlmCallOutput,
 } from '@ax/core';
-import { createMemoryStrataPlugin } from '@ax/memory-strata';
+import { createMemoryStrataPlugin, type OrchestratorClient } from '@ax/memory-strata';
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
 import type { LongMemEvalSample } from './corpora/longmemeval-s.js';
 import { isUnanswerable } from './corpora/longmemeval-s.js';
@@ -57,6 +57,8 @@ export interface E2EQuestionResult {
   sessionsIngested: number;
   /** memory tool calls (memory_search + memory_read_section) the agent made while answering. */
   toolCalls: number;
+  /** Which retrieval path memory_search ran under this question (TASK-191). */
+  retrievalMode: 'orchestrator' | 'bm25';
 }
 
 export interface RunE2EQuestionDeps {
@@ -76,6 +78,12 @@ export interface RunE2EQuestionDeps {
   shouldStopIngest?: () => boolean;
   /** Record extraction token usage as it accrues (for the CostMeter). */
   onExtractionUsage?: (usage: { in: number; out: number }) => void;
+  /**
+   * Optional retrieval orchestrator client (TASK-191). When set, the shipped
+   * memory_search runs the orchestrator over system/map.md with BM25
+   * fallback; when absent, pure BM25 (the TASK-190 baseline).
+   */
+  orchestratorClient?: OrchestratorClient;
 }
 
 /**
@@ -129,6 +137,7 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
     // Consolidate immediately after each chat:end so docs/recent are fresh before
     // the next session and before we answer — no debounce-window race in a batch run.
     consolidatorDebounceMs: 0,
+    ...(deps.orchestratorClient ? { orchestrator: { client: deps.orchestratorClient } } : {}),
     testHooks: {
       onDebouncerCreated(d) {
         debouncer = d;
@@ -208,6 +217,7 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
       extractionTokens: { in: extractionIn, out: extractionOut },
       sessionsIngested,
       toolCalls: answer.toolCalls,
+      retrievalMode: deps.orchestratorClient ? 'orchestrator' : 'bm25',
     };
   } finally {
     // sqlite indexer holds an open DB handle; close it before removing the dir.

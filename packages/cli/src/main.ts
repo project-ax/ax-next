@@ -29,7 +29,7 @@ import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin, createMcpClientPlugin } from '@ax/mcp-client';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
-import { createMemoryStrataPlugin } from '@ax/memory-strata';
+import { createMemoryStrataPlugin, makeXaiOrchestratorClient } from '@ax/memory-strata';
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createDevAgentsStubPlugin } from './dev-agents-stub.js';
@@ -351,7 +351,21 @@ export async function main(opts: MainOptions): Promise<number> {
     // the other host-side LLM capabilities (it constructs its own
     // Anthropic client from ANTHROPIC_API_KEY). Available to all agents.
     plugins.push(createWebToolsPlugin());
-    plugins.push(createMemoryStrataPlugin());
+    // TASK-191: default the memory_search retrieval path to the direct-xAI
+    // retrieval orchestrator (config E from the n=500 spike — orchestrator over
+    // system/map.md + BM25 fallback). Host-side egress gated by XAI_API_KEY, the
+    // same capability class as the Observer's llm:call:anthropic; absent ⇒ the
+    // plugin degrades to pure BM25. OpenRouter is intentionally NOT auto-wired
+    // (its default routing was ~11s in the spike; direct xAI is ~400ms p50).
+    // `timeoutMs: 5000` caps each fetch attempt's socket (AbortSignal) so a slow
+    // xAI response is actually torn down — the plugin's own raceTimeout(5s) only
+    // stops the caller WAITING, it doesn't abort the underlying request.
+    const xaiKey = process.env.XAI_API_KEY;
+    const orchestrator =
+      xaiKey !== undefined && xaiKey.length > 0
+        ? { orchestrator: { client: makeXaiOrchestratorClient(xaiKey, undefined, { timeoutMs: 5000 }) } }
+        : {};
+    plugins.push(createMemoryStrataPlugin(orchestrator));
     // I24 — indexer loads as a pair with memory-strata (same gate). The sqlite
     // indexer shares the same DB file as storage-sqlite; each plugin owns its
     // own table (kv vs memory_strata_index_v1_docs) — no collision.

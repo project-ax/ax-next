@@ -20,6 +20,7 @@ import { createDebouncer, type Debouncer } from './debounce.js';
 import { registerInject } from './inject.js';
 import { makeLlmDensifier, type MapDensifier } from './map.js';
 import { runObserver, type LlmCallFn } from './observer.js';
+import type { OrchestratorClient } from './orchestrator.js';
 import { registerReindexer } from './reindex.js';
 import { raceTimeout } from './timeout.js';
 import { registerMemorySearch } from './tools/memory-search.js';
@@ -76,6 +77,22 @@ export interface MemoryStrataConfig {
    * degrades to its raw summary. Default 30 000 ms.
    */
   mapDensifyTimeoutMs?: number;
+  /**
+   * Retrieval mode for the memory_search tool. 'orchestrator' (default) uses
+   * the cheap-LLM retrieval planner over system/map.md with a BM25 fallback
+   * when an orchestrator client is configured; 'bm25' forces pure BM25 even
+   * if a client is present (latency-sensitive surfaces). With no client
+   * configured, both modes behave as BM25.
+   */
+  retrievalMode?: 'orchestrator' | 'bm25';
+  /**
+   * Optional orchestrator wiring. When a `client` is present AND
+   * retrievalMode !== 'bm25', memory_search runs the retrieval orchestrator
+   * (reads system/map.md + query → load/fts ops) and falls back to BM25 on
+   * miss/timeout. Absent ⇒ pure BM25 (degrades cleanly when the host has no
+   * orchestrator API key).
+   */
+  orchestrator?: { client: OrchestratorClient; timeoutMs?: number };
   /**
    * Test-only seam — captures the per-plugin Debouncer so tests can
    * call `flush()` deterministically. NOT for production use.
@@ -151,6 +168,9 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   const consolidatorTimeoutMs = cfg.consolidatorTimeoutMs ?? DEFAULT_CONSOLIDATOR_TIMEOUT_MS;
   const mapDensifyEnabled = cfg.mapDensifyEnabled ?? true;
   const mapDensifyTimeoutMs = cfg.mapDensifyTimeoutMs ?? DEFAULT_MAP_DENSIFY_TIMEOUT_MS;
+  // TASK-191 Task 3: resolve once here (not inside registerMemorySearch) so
+  // the default lives alongside every other cfg-default in this constructor.
+  const retrievalMode = cfg.retrievalMode ?? 'orchestrator';
 
   // Per-agent debouncer for the Consolidator (I10). Created at plugin
   // construction so it is shared across all chat:end firings for this
@@ -252,7 +272,10 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       // tool:register is a service hook provided by @ax/tool-dispatcher;
       // we await it here so the tool is visible in the catalog before
       // any tool:list call arrives.
-      await registerMemorySearch(bus);
+      await registerMemorySearch(bus, {
+        retrievalMode,
+        ...(cfg.orchestrator ? { orchestrator: cfg.orchestrator } : {}),
+      });
       await registerMemoryReadSection(bus);
       await registerMemoryNote(bus);
       registerInject(bus);

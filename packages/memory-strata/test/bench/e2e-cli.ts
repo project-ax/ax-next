@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import Anthropic from '@anthropic-ai/sdk';
 import type { LlmCallInput, LlmCallOutput } from '@ax/core';
+import { makeXaiOrchestratorClient } from '@ax/memory-strata';
 import { requireKeys } from './env.js';
 import { CostMeter, type Pricing } from './meter.js';
 import { BenchCache } from './cache.js';
@@ -71,6 +72,22 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
     return 2;
   }
 
+  // XAI_API_KEY stays OPTIONAL — the run works BM25-only without it (TASK-190
+  // baseline); when present it enables the shipped retrieval orchestrator
+  // (TASK-191, direct-xAI client) so the e2e acceptance run can reproduce the
+  // spike's directional lift on the shipped pipeline.
+  const xaiKey = process.env.XAI_API_KEY;
+  const orchestratorClient = xaiKey && xaiKey.length > 0 ? makeXaiOrchestratorClient(xaiKey) : undefined;
+  if (orchestratorClient) {
+    console.log(
+      'Retrieval: orchestrator (direct xAI). ~400ms p50 per the n=500 spike (NOT OpenRouter ' +
+        'default routing, which was the ~11s artifact).',
+    );
+  } else {
+    console.log('Retrieval: BM25-only (set XAI_API_KEY to enable the direct-xAI orchestrator path).');
+  }
+  const retrievalMode: 'orchestrator' | 'bm25' = orchestratorClient ? 'orchestrator' : 'bm25';
+
   const resumeId = opts.resumeId ?? new Date().toISOString().slice(0, 10);
   const resumePath = join(E2E_CACHE_ROOT, `${resumeId}.jsonl`);
   const done = new Map<string, E2EResumeRow>();
@@ -118,6 +135,7 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
           shouldStopIngest: () =>
             meter.projectWouldExceedCap('claude-haiku-4-5-20251001', { in: 2000, out: 256 }),
           onExtractionUsage: (u) => meter.record('claude-haiku-4-5-20251001', u),
+          ...(orchestratorClient ? { orchestratorClient } : {}),
         });
         meter.record('claude-sonnet-4-6', result.answerTokens);
 
@@ -173,6 +191,7 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
     command: `pnpm --filter @ax/memory-strata bench --mode e2e --sample ${opts.sample}`,
     abortError,
     skipped,
+    retrievalMode,
   });
   const outPath = join(
     opts.repoRoot,
@@ -321,6 +340,7 @@ async function runFixtureReport(opts: RunE2EOptions): Promise<number> {
     judgeModel: JUDGE_MODEL,
     command: 'pnpm --filter @ax/memory-strata bench --mode e2e --fixture',
     fixtureMode: true,
+    retrievalMode: 'bm25',
   });
   const outPath = join(
     opts.repoRoot,
