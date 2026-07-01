@@ -90,13 +90,25 @@ function parseAttrs(s: string): Record<string, string> {
   return out;
 }
 
+const XML_ENTITIES: Record<string, string> = {
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&apos;': "'",
+};
+
+/**
+ * Decode the five predefined XML entities in a SINGLE left-to-right pass. A
+ * chained `.replace()` sequence (unescape `&amp;`→`&` first, then `&lt;`→`<`,
+ * …) double-unescapes — e.g. the escaped literal `&amp;lt;` would become `&lt;`
+ * and then `<`. One global regex + a lookup map replaces each entity exactly
+ * once over the ORIGINAL string, so a `&` produced by decoding `&amp;` is never
+ * re-scanned. Mirrors src/orchestrator.ts (TASK-191 CodeQL js/double-escaping
+ * fix) so the two decoders don't drift.
+ */
 function decodeEntities(s: string): string {
-  return s
-    .replace(/&amp;/g, '&')
-    .replace(/&lt;/g, '<')
-    .replace(/&gt;/g, '>')
-    .replace(/&quot;/g, '"')
-    .replace(/&apos;/g, "'");
+  return s.replace(/&(?:amp|lt|gt|quot|apos);/g, (m) => XML_ENTITIES[m] ?? m);
 }
 
 export interface RunOpsContext {
