@@ -55,7 +55,7 @@ export interface E2EQuestionResult {
   extractionTokens: { in: number; out: number };
   /** How many haystack sessions were ingested before the answer. */
   sessionsIngested: number;
-  /** memory_search calls the agent made while answering. */
+  /** memory tool calls (memory_search + memory_read_section) the agent made while answering. */
   toolCalls: number;
 }
 
@@ -63,7 +63,7 @@ export interface RunE2EQuestionDeps {
   sample: LongMemEvalSample;
   /** Real Anthropic extraction round-trip for the Observer. */
   extractionLlm: ExtractionLlmFn;
-  /** Real Anthropic answer client (Sonnet + memory_search tool). */
+  /** Real Anthropic answer client (Sonnet + memory_search/memory_read_section tools). */
   answerClient: E2EAnswerClient;
   /** Extraction model id passed to the Observer (and to `agents:resolve`). */
   extractionModel?: string;
@@ -180,7 +180,8 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
     }
 
     // Answer: get the REAL injected block via system-prompt:augment, and give the
-    // agent the REAL memory_search over the consolidated sqlite index.
+    // agent the REAL retrieval surface over the consolidated sqlite index —
+    // memory_search (summaries) AND memory_read_section (drill into the fact body).
     const augment = await bus.call<
       Record<string, never>,
       { contributions: Array<{ source: string; body: string }> }
@@ -188,10 +189,12 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
     const injectedMemory = augment.contributions.map((c) => c.body).join('\n\n');
 
     const search = makeSearchFn(bus, ctx);
+    const readSection = makeReadSectionFn(bus, ctx);
     const answer = await answerClient.answer({
       injectedMemory,
       question: sample.question,
       search,
+      readSection,
     });
 
     return {
@@ -221,6 +224,16 @@ function makeSearchFn(bus: HookBus, ctx: AgentContext) {
       { results: MemorySearchResult[] }
     >('tool:execute:memory_search', ctx, { input: args });
     return out.results;
+  };
+}
+
+/** Wire a memory_read_section executor to the plugin's tool:execute:memory_read_section hook. */
+function makeReadSectionFn(bus: HookBus, ctx: AgentContext) {
+  return async (args: { docId: string; header?: string }) => {
+    return bus.call<
+      { input: { docId: string; header?: string } },
+      { body: string } | { error: string }
+    >('tool:execute:memory_read_section', ctx, { input: args });
   };
 }
 
