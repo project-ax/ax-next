@@ -52,6 +52,15 @@ describe('parseOrchestratorXml', () => {
     const { ops } = parseOrchestratorXml(`<fts query="cats &amp; dogs"/>`);
     expect(ops).toEqual([{ kind: 'fts', query: 'cats & dogs' }]);
   });
+
+  it('decodes XML entities in a SINGLE pass — no double-unescape (mirrors src CodeQL js/double-escaping fix)', () => {
+    // The escaped literal text `&lt;` is written `&amp;lt;` in XML. A naive
+    // chained decode (unescape &amp;→& first, then &lt;→<) would double-unescape
+    // this to `<`. Single-pass decoding must yield the literal `&lt;`. Kept in
+    // lockstep with src/orchestrator.ts so the two decoders don't drift.
+    const { ops } = parseOrchestratorXml(`<fts query="&amp;lt; &amp;amp; &amp;gt;"/>`);
+    expect(ops).toEqual([{ kind: 'fts', query: '&lt; &amp; &gt;' }]);
+  });
 });
 
 describe('runOrchestrator', () => {
