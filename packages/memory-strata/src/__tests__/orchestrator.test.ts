@@ -59,6 +59,14 @@ describe('parseOrchestratorPlan', () => {
     expect(plan.ops).toEqual([{ kind: 'fts', query: 'cats & dogs <3>' }]);
   });
 
+  it('decodes XML entities in a SINGLE pass — no double-unescape (CodeQL js/double-escaping)', () => {
+    // The escaped literal text `&lt;` is written `&amp;lt;` in XML. A naive
+    // chained decode (unescape &amp;→& first, then &lt;→<) would double-unescape
+    // this to `<`. Single-pass decoding must yield the literal `&lt;`.
+    const plan = parseOrchestratorPlan('<fts query="&amp;lt; &amp;amp; &amp;gt;"/>');
+    expect(plan.ops).toEqual([{ kind: 'fts', query: '&lt; &amp; &gt;' }]);
+  });
+
   it('ignores unknown tags and stray prose', () => {
     const plan = parseOrchestratorPlan(
       'Sure, here is the plan:\n<thinking>let me consider</thinking>\n<load doc="entity/luna"/>\nDone.',
