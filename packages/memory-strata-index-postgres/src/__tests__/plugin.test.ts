@@ -75,7 +75,7 @@ async function makeHarness() {
 beforeEach(async () => {
   // Truncate between tests so each starts with an empty index.
   try {
-    await sql`TRUNCATE memory_strata_index_v1_docs`.execute(adminDb);
+    await sql`TRUNCATE memory_strata_index_v2_docs`.execute(adminDb);
   } catch {
     // Table doesn't exist yet on the very first test — migration will create it.
   }
@@ -173,7 +173,7 @@ describe('@ax/memory-strata-index-postgres — postgres-specific', () => {
 
     // Also verify at the SQL level: exactly 1 row with this doc_id
     const countResult = await sql<{ cnt: string }>`
-      SELECT count(*) AS cnt FROM memory_strata_index_v1_docs
+      SELECT count(*) AS cnt FROM memory_strata_index_v2_docs
       WHERE doc_id = 'preference/iterative'
     `.execute(adminDb);
     expect(Number(countResult.rows[0]!.cnt)).toBe(1);

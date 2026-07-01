@@ -1,5 +1,6 @@
 import { makeAgentContext } from '@ax/core';
-import type { HookBus, ToolDescriptor } from '@ax/core';
+import type { AgentContext, HookBus, ToolDescriptor } from '@ax/core';
+import { agentTierAvailable, flushAgentTier, hydrateAgentTier } from '../agent-tier-sync.js';
 import { writeInboxObservation } from '../inbox-store.js';
 import { filterSensitive } from '../sensitive-gate.js';
 import type { Observation } from '../types.js';
@@ -126,15 +127,54 @@ export async function registerMemoryNote(bus: HookBus): Promise<void> {
       // (TASK-187) so a note recurring across conversations counts toward the
       // skill-crystallization recurrence gate; undefined when the note was
       // written outside a conversation.
-      const path = await writeInboxObservation(
-        ctx.workspace.rootPath,
-        obs,
-        now,
-        0,
-        0,
-        ctx.conversationId,
-      );
+      //
+      // TASK-186: when memory lives in the per-agent `/agent` git tier (k8s),
+      // write the inbox observation THERE — not the shared host CWD — so it is
+      // per-agent isolated and visible to the same agent's later consolidation
+      // / reflection turn. The sensitive gate above already ran, so no
+      // credential is ever hydrated/flushed. CLI path is unchanged.
+      const path = await writeNote(bus, ctx, obs, now);
       return { ok: true, path };
     },
   );
+}
+
+/**
+ * Write one inbox observation, routed through the `/agent` git tier when one is
+ * loaded (TASK-186 — mirrors the observer's hydrate→run→flush in plugin.ts).
+ *
+ * Tier path: hydrate the agent's `memory/**` into a scratch, write the inbox
+ * file to the scratch, flush the delta back to `/agent` via `workspace:apply`
+ * (owner-routed by ctx — the git tier confines the read+write to this agent's
+ * repo). The returned path is the scratch-relative inbox path, which equals the
+ * host-relative path the CLI returns (`permanent/memory/inbox/<ts>.md`), so the
+ * tool's return shape is identical on both paths.
+ *
+ * No-tier path (CLI): write directly to the agent's own workspace root.
+ */
+async function writeNote(
+  bus: HookBus,
+  ctx: AgentContext,
+  obs: Observation,
+  now: Date,
+): Promise<string> {
+  if (!agentTierAvailable(bus)) {
+    return writeInboxObservation(ctx.workspace.rootPath, obs, now, 0, 0, ctx.conversationId);
+  }
+
+  const hydrated = await hydrateAgentTier(bus, ctx);
+  try {
+    const path = await writeInboxObservation(
+      hydrated.scratchRoot,
+      obs,
+      now,
+      0,
+      0,
+      ctx.conversationId,
+    );
+    await flushAgentTier(bus, ctx, hydrated, 'memory-note');
+    return path;
+  } finally {
+    await hydrated.dispose();
+  }
 }
