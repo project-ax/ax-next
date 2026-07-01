@@ -373,6 +373,47 @@ export function runIndexContract(label: string, factory: IndexBackendFactory): v
     });
 
     // -----------------------------------------------------------------------
+    // Test 8c: full-text operators in query tokens are neutralized
+    // -----------------------------------------------------------------------
+    // memory_search queries are plain terms, never a boolean mini-language.
+    // Both engines' query parsers honour operators in raw input (FTS5:
+    // AND/OR/NEAR/-; websearch_to_tsquery: -/OR/"), so each backend must
+    // quote tokens to neutralize them. A leaked `-` is the nastiest case: it
+    // becomes NOT, which INVERTS matching — the query matches every doc
+    // LACKING the term (arbitrary topK noise) and misses the doc that
+    // contains it.
+    it('treats a "-"-prefixed token as a literal term, not NOT', async () => {
+      // Doc A: contains "graduated".
+      await upsert({
+        docId: 'decision/study',
+        category: 'decision',
+        slug: 'study',
+        summary: 'Academic milestones',
+        factType: 'decision',
+        body: 'The user graduated with honors.',
+        headers: '',
+      });
+      // Doc B: does NOT contain "graduated" (nor any query term).
+      await upsert({
+        docId: 'general/cooking',
+        category: 'general',
+        slug: 'cooking',
+        summary: 'Cooking notes',
+        factType: 'general',
+        body: 'A completely unrelated note about pasta.',
+        headers: '',
+      });
+
+      // Under leaked NOT semantics this returns Doc B (everything lacking
+      // "graduated") and misses Doc A. Neutralized, "-graduated" is just the
+      // term "graduated": Doc A matches, Doc B does not.
+      const out = await search({ query: 'zzq_absent_term -graduated', topK: 10 });
+      const docIds = out.results.map((r) => r.docId);
+      expect(docIds).toContain('decision/study');
+      expect(docIds).not.toContain('general/cooking');
+    });
+
+    // -----------------------------------------------------------------------
     // Test 9: invalid-payload rejection at the boundary
     // -----------------------------------------------------------------------
     // SQLite's FTS5 `LIMIT -1` means unbounded — the postgres backend would

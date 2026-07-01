@@ -56,7 +56,8 @@ export async function upsert(
 }
 
 // ---------------------------------------------------------------------------
-// buildOrTsQuery — OR-join query terms (mirrors sqlite's escapeFts5Query)
+// buildOrTsQuery — quote + OR-join query terms (mirrors sqlite's
+// escapeFts5Query)
 // ---------------------------------------------------------------------------
 // plainto_tsquery ANDs every term together. A multi-word memory_search query
 // (e.g. "degree graduated") is meant as "find docs about ANY of these terms",
@@ -68,12 +69,23 @@ export async function upsert(
 // hardened function for parsing raw user input (like plainto_tsquery, it
 // never throws on malformed syntax) and additionally understands an explicit
 // `OR` keyword, so joining tokens with a literal ' OR ' gives OR semantics
-// without hand-rolling tsquery escaping. This mirrors sqlite's per-token OR
-// join so the two backends stay genuinely interchangeable under the shared
-// conformance kit (see Test 8b: a query term absent from a doc must not
-// suppress a match on a different term present only in the body).
+// without hand-rolling tsquery escaping.
+//
+// Each token is double-quoted so websearch_to_tsquery's OTHER operators are
+// neutralized too — exactly as escapeFts5Query quotes tokens to neutralize
+// FTS5's. Unquoted, a `-`-prefixed token becomes NOT and INVERTS matching
+// ("foo -bar" → 'foo' | !'bar' matches every doc LACKING bar — arbitrary
+// topK noise; contract Test 8c). Inside quotes, `-` and `OR` are literal
+// text. Embedded double quotes are replaced with a space (they would close
+// the quote early); the residue parses as an adjacent-phrase, still
+// operator-free. This keeps the two backends genuinely interchangeable under
+// the shared conformance kit.
 function buildOrTsQuery(trimmed: string): string {
-  return trimmed.split(/\s+/).filter((t) => t.length > 0).join(' OR ');
+  return trimmed
+    .split(/\s+/)
+    .filter((t) => t.length > 0)
+    .map((t) => `"${t.replace(/"/g, ' ')}"`)
+    .join(' OR ');
 }
 
 // ---------------------------------------------------------------------------
