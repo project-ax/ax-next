@@ -40,6 +40,7 @@ export interface SearchResult {
   category: string;
   slug: string;
   summary: string;
+  snippet: string;
   score: number;
 }
 
@@ -346,6 +347,29 @@ export function runIndexContract(label: string, factory: IndexBackendFactory): v
       expect(docIds).toContain('general/summary-hit');
       expect(docIds).toContain('general/body-hit');
       expect(docIds).toContain('general/headers-hit');
+    });
+
+    // -----------------------------------------------------------------------
+    // Test 8b: search returns a snippet carrying a body-only value
+    // -----------------------------------------------------------------------
+    // The value the agent needs often lives ONLY in the body, not the summary
+    // (coarse per-category docs). The search result must surface a
+    // match-centered body excerpt so the agent sees the value without a
+    // second read. Regression guard for the e2e false-refusal fix.
+    it('returns a snippet containing a body-only value', async () => {
+      await upsert({
+        docId: 'decision/user',
+        category: 'decision',
+        slug: 'user',
+        summary: "User's academic and career decisions",
+        factType: 'decision',
+        body: 'After a lot of thought the user graduated with a B.A. in Business Administration.',
+        headers: '',
+      });
+
+      const out = await search({ query: 'degree graduated', topK: 5 });
+      expect(out.results).toHaveLength(1);
+      expect(out.results[0]!.snippet).toContain('Business Administration');
     });
 
     // -----------------------------------------------------------------------
