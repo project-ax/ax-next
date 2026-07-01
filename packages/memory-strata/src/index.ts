@@ -25,6 +25,13 @@ export type { SystemFileName } from './paths.js';
 export { filterSensitive } from './sensitive-gate.js';
 export type { FilterResult, RejectedFact, RejectionKind } from './sensitive-gate.js';
 
+export {
+  makeXaiOrchestratorClient,
+  makeOpenRouterOrchestratorClient,
+} from './orchestrator-client.js';
+export type { OrchestratorClientOptions } from './orchestrator-client.js';
+export type { OrchestratorClient } from './orchestrator.js';
+
 export type { MemoryFrontmatter, MemoryFileType, Observation } from './types.js';
 
 export const PLUGIN_NAME = '@ax/memory-strata';

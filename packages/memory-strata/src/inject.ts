@@ -157,6 +157,25 @@ export function capMapBody(mapBody: string, maxTokens: number): string {
   return lines.join('\n').trim();
 }
 
+/**
+ * Read `system/map.md`'s BODY (frontmatter stripped), tier-aware — the
+ * retrieval orchestrator's one piece of filesystem I/O (TASK-191 Task 3).
+ * Reuses the SAME tier-vs-host branching {@link buildMemoryBlock} already
+ * does for the auto-injected map section, so the orchestrator sees exactly
+ * the map the agent's system prompt was built from. Returns '' on a miss
+ * (no map yet) — the caller (`runOrchestratedRetrieve`) treats an empty map
+ * as "nothing to orchestrate over" and falls back to BM25.
+ */
+export async function readInjectedMapBody(
+  bus: HookBus,
+  ctx: AgentContext,
+  workspaceRoot: string,
+): Promise<string> {
+  return agentTierAvailable(bus)
+    ? await readTierSystemBody(bus, ctx, 'map')
+    : await readSystemBody(workspaceRoot, 'map');
+}
+
 type InjectedSystemName = 'user' | 'recent' | 'map';
 
 /** Map an injected-section name to its workspace-relative FS path. */

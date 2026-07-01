@@ -45,7 +45,7 @@ import {
   createConversationTitlesPlugin,
   DEFAULT_TITLE_MODEL,
 } from '@ax/conversation-titles';
-import { createMemoryStrataPlugin } from '@ax/memory-strata';
+import { createMemoryStrataPlugin, makeXaiOrchestratorClient } from '@ax/memory-strata';
 import { createMemoryStrataIndexPostgresPlugin } from '@ax/memory-strata-index-postgres';
 import { createWebToolsPlugin } from '@ax/web-tools';
 import { createChannelWebServerPlugin } from '@ax/channel-web/server';
@@ -1141,7 +1141,18 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // is a follow-up if host tools should also work off the DB credential.)
   if (config.hostLlmTools === true) {
     plugins.push(createWebToolsPlugin());
-    plugins.push(createMemoryStrataPlugin());
+    // TASK-191: default the memory_search retrieval path to the direct-xAI
+    // retrieval orchestrator (config E from the n=500 spike — orchestrator over
+    // system/map.md + BM25 fallback). Host-side egress gated by XAI_API_KEY, the
+    // same capability class as the Observer's llm:call:anthropic; absent ⇒ the
+    // plugin degrades to pure BM25. OpenRouter is intentionally NOT auto-wired
+    // (its default routing was ~11s in the spike; direct xAI is ~400ms p50).
+    const xaiKey = process.env.XAI_API_KEY;
+    const orchestrator =
+      xaiKey !== undefined && xaiKey.length > 0
+        ? { orchestrator: { client: makeXaiOrchestratorClient(xaiKey) } }
+        : {};
+    plugins.push(createMemoryStrataPlugin(orchestrator));
     plugins.push(createMemoryStrataIndexPostgresPlugin());
   }
 

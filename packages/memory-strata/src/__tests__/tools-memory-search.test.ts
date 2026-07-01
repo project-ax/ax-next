@@ -1,8 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { HookBus, makeAgentContext } from '@ax/core';
 import type { ToolDescriptor } from '@ax/core';
+import { buildMarkdownFile } from '../frontmatter.js';
+import { mapFile } from '../paths.js';
+import type { OrchestratorClient } from '../orchestrator.js';
 import { registerMemorySearch, MEMORY_SEARCH_DESCRIPTOR } from '../tools/memory-search.js';
 import type { RetrievalResult } from '../retriever.js';
+import type { MemoryFrontmatter } from '../types.js';
 
 /** Minimal fixture result for happy-path tests. */
 const FIXTURE_RESULTS: RetrievalResult[] = [
@@ -181,5 +188,190 @@ describe('tools/memory-search', () => {
         'categoryFilter' in (capturedSearchInputs[0] as Record<string, unknown>),
       ).toBe(false);
     });
+  });
+});
+
+// ─── Orchestrator path (TASK-191 Task 3) ─────────────────────────────────────
+//
+// registerMemorySearch's optional second arg wires the retrieval orchestrator
+// in front of the existing BM25 executor. These tests use a REAL temp
+// workspace (not a stub) so `readInjectedMapBody` reads an actual
+// `system/map.md` off disk — the same file the auto-injected system prompt
+// block is built from (inject.ts).
+describe('orchestrator path', () => {
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'memory-search-orchestrator-'));
+  });
+
+  afterEach(async () => {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  /** Write `permanent/memory/system/map.md` with canonical frontmatter. */
+  async function writeMapFile(root: string, body: string): Promise<void> {
+    const abs = join(root, mapFile());
+    await mkdir(dirname(abs), { recursive: true });
+    const fm: MemoryFrontmatter = {
+      id: 'map',
+      type: 'system/map',
+      created: '2026-05-11T00:00:00.000Z',
+      confidence: 1.0,
+      pinned: true,
+      summary: 'map system file',
+      event_time: '2026-05-11T00:00:00.000Z',
+      recorded_at: '2026-05-11T00:00:00.000Z',
+    };
+    await writeFile(abs, buildMarkdownFile(fm, body), 'utf8');
+  }
+
+  const MAP_BODY = [
+    '# Memory Map',
+    '',
+    '## preference/',
+    '- coffee: User prefers cortados over drip',
+  ].join('\n');
+
+  /** Distinct from the orchestrator's `<load>` row so the two paths are unambiguous in assertions. */
+  const BM25_FIXTURE: RetrievalResult[] = [
+    {
+      docId: 'general/bm25-fallback',
+      category: 'general',
+      slug: 'bm25-fallback',
+      summary: 'BM25 fallback fixture',
+      score: 0.5,
+    },
+  ];
+
+  function makeOrchestratorCtx() {
+    return makeAgentContext({
+      sessionId: 'orch-session',
+      agentId: 'orch-agent',
+      userId: 'orch-user',
+      workspace: { rootPath: workspaceRoot },
+    });
+  }
+
+  /** Wires tool:register + a memory:index:search stub that records calls. */
+  function makeOrchestratorBus(opts: { searchResults?: RetrievalResult[] } = {}) {
+    const bus = new HookBus();
+    const searchResults = opts.searchResults ?? BM25_FIXTURE;
+    const capturedSearchInputs: unknown[] = [];
+
+    bus.registerService<ToolDescriptor, { ok: true }>(
+      'tool:register',
+      'test-tool-dispatcher',
+      async () => ({ ok: true }),
+    );
+    bus.registerService(
+      'memory:index:search',
+      'test-indexer',
+      async (_ctx, input) => {
+        capturedSearchInputs.push(input);
+        return { results: searchResults };
+      },
+    );
+
+    return { bus, capturedSearchInputs };
+  }
+
+  it('orchestrator resolves a <load> op → returns the mapped map row; BM25 index never called', async () => {
+    await writeMapFile(workspaceRoot, MAP_BODY);
+    const { bus, capturedSearchInputs } = makeOrchestratorBus();
+    const client: OrchestratorClient = {
+      complete: vi.fn(async () => ({
+        text: '<load doc="preference/coffee"/>',
+        usage: { in: 1, out: 1 },
+      })),
+    };
+    await registerMemorySearch(bus, { orchestrator: { client } });
+
+    const ctx = makeOrchestratorCtx();
+    const out = await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'what coffee do I like?' }),
+    );
+
+    expect(out).toEqual({
+      results: [
+        {
+          docId: 'preference/coffee',
+          category: 'preference',
+          slug: 'coffee',
+          summary: 'User prefers cortados over drip',
+          score: 1,
+        },
+      ],
+    });
+    expect(client.complete).toHaveBeenCalledTimes(1);
+    expect(capturedSearchInputs).toHaveLength(0);
+  });
+
+  it('orchestrator miss (junk/empty response) → falls back to BM25', async () => {
+    await writeMapFile(workspaceRoot, MAP_BODY);
+    const { bus, capturedSearchInputs } = makeOrchestratorBus();
+    const client: OrchestratorClient = {
+      complete: vi.fn(async () => ({ text: 'not a recognized op, just prose', usage: { in: 1, out: 1 } })),
+    };
+    await registerMemorySearch(bus, { orchestrator: { client } });
+
+    const ctx = makeOrchestratorCtx();
+    const out = await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'what coffee do I like?' }),
+    );
+
+    expect(out).toEqual({ results: BM25_FIXTURE });
+    expect(capturedSearchInputs).toHaveLength(1);
+  });
+
+  it("retrievalMode: 'bm25' forces BM25 even with an orchestrator client configured", async () => {
+    await writeMapFile(workspaceRoot, MAP_BODY);
+    const { bus, capturedSearchInputs } = makeOrchestratorBus();
+    const client: OrchestratorClient = {
+      complete: vi.fn(async () => ({
+        text: '<load doc="preference/coffee"/>',
+        usage: { in: 1, out: 1 },
+      })),
+    };
+    await registerMemorySearch(bus, { retrievalMode: 'bm25', orchestrator: { client } });
+
+    const ctx = makeOrchestratorCtx();
+    const out = await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'what coffee do I like?' }),
+    );
+
+    expect(client.complete).not.toHaveBeenCalled();
+    expect(out).toEqual({ results: BM25_FIXTURE });
+    expect(capturedSearchInputs).toHaveLength(1);
+  });
+
+  it('categoryFilter set → orchestrator skipped; BM25 used with categoryFilter passthrough', async () => {
+    await writeMapFile(workspaceRoot, MAP_BODY);
+    const { bus, capturedSearchInputs } = makeOrchestratorBus();
+    const client: OrchestratorClient = {
+      complete: vi.fn(async () => ({
+        text: '<load doc="preference/coffee"/>',
+        usage: { in: 1, out: 1 },
+      })),
+    };
+    await registerMemorySearch(bus, { orchestrator: { client } });
+
+    const ctx = makeOrchestratorCtx();
+    const out = await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'what coffee do I like?', categoryFilter: 'preference' }),
+    );
+
+    expect(client.complete).not.toHaveBeenCalled();
+    expect(out).toEqual({ results: BM25_FIXTURE });
+    expect(capturedSearchInputs).toHaveLength(1);
+    expect((capturedSearchInputs[0] as Record<string, unknown>).categoryFilter).toBe('preference');
   });
 });

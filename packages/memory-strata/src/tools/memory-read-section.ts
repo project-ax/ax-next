@@ -8,19 +8,11 @@ import type {
   WorkspaceReadOutput,
 } from '@ax/core';
 import { AGENT_TIER_MEMORY_ROOT, agentTierAvailable } from '../agent-tier-sync.js';
+import { parseDocId } from '../doc-id.js';
 import { readDoc } from '../doc-store.js';
 import { docFile, type DocCategory } from '../paths.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
-
-const VALID_CATEGORIES = new Set<DocCategory>([
-  'entity',
-  'preference',
-  'decision',
-  'episode',
-  'general',
-]);
-const SLUG_RE = /^[a-z0-9-]+$/;
 
 export const MEMORY_READ_SECTION_DESCRIPTOR: ToolDescriptor = {
   name: 'memory_read_section',
@@ -127,20 +119,6 @@ async function readDocBody(
 function extractDocBody(raw: string): string {
   const m = /^---\n[\s\S]*?\n---\n([\s\S]*)$/.exec(raw);
   return m === null ? raw : m[1]!;
-}
-
-function parseDocId(docId: string): { category: DocCategory; slug: string } | null {
-  // Reject empty, no slash, multiple slashes, leading/trailing slash, '..'
-  if (docId.length === 0) return null;
-  if (docId.includes('..')) return null;
-  const idx = docId.indexOf('/');
-  if (idx <= 0 || idx === docId.length - 1) return null;
-  if (docId.indexOf('/', idx + 1) !== -1) return null; // second slash → reject
-  const category = docId.slice(0, idx);
-  const slug = docId.slice(idx + 1);
-  if (!VALID_CATEGORIES.has(category as DocCategory)) return null;
-  if (!SLUG_RE.test(slug)) return null;
-  return { category: category as DocCategory, slug };
 }
 
 function extractSection(body: string, header: string): string | null {

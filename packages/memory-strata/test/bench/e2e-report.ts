@@ -37,6 +37,12 @@ export interface E2EReportInput {
   skipped?: Array<{ questionId: string; reason: string }>;
   /** When true, the report was produced from the deterministic test fixture, not a live paid run. */
   fixtureMode?: boolean;
+  /**
+   * Which memory_search retrieval path this run exercised (TASK-191).
+   * 'orchestrator' = direct-xAI orchestrator over system/map.md + BM25
+   * fallback (config E); 'bm25' (or undefined) = pure BM25 (TASK-190 baseline).
+   */
+  retrievalMode?: 'orchestrator' | 'bm25';
 }
 
 interface Accuracy {
@@ -75,6 +81,19 @@ export function renderE2EReport(input: E2EReportInput): string {
   L.push(`**Answer LLM (under test):** \`${input.answerModel}\` (Anthropic)`);
   L.push(`**Observer / consolidator extraction LLM:** \`${input.extractionModel}\` (Anthropic)`);
   L.push(`**Judge:** \`${input.judgeModel}\` (via OpenRouter)`);
+  if (input.retrievalMode === 'orchestrator') {
+    L.push(
+      '- **Retrieval:** orchestrator (direct xAI, config E — orchestrator over ' +
+        'system/map.md + BM25 fallback; ~400ms p50)',
+    );
+    L.push(
+      '  (The spike\'s ~7s latency was an OpenRouter default-routing artifact, not the ' +
+        'orchestrator itself — direct-xAI is ~400ms p50, only ~5× BM25\'s ~89ms. See ' +
+        '`docs/plans/2026-05-13-memory-strata-phase-3c-config-d-report.md`.)',
+    );
+  } else {
+    L.push('- **Retrieval:** BM25-only (TASK-190 baseline)');
+  }
   L.push(`**Requested sample:** n=${input.requestedSample}`);
   L.push(`**Cost cap:** $${input.cap}`);
   L.push(`**Total spent:** $${input.totalSpent.toFixed(4)}`);

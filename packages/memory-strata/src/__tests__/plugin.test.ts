@@ -116,6 +116,21 @@ describe('createMemoryStrataPlugin', () => {
     expect(plugin.manifest.calls).toContain('tool:register');
   });
 
+  // TASK-191 Task 3: the orchestrator is a host-side fetch client configured
+  // via MemoryStrataConfig.orchestrator, NOT a bus hook — wiring it into
+  // memory_search must not grow the manifest's `calls` list. Pin the exact
+  // set so an accidental new hook (e.g. someone routing the orchestrator
+  // through the bus later) fails this test instead of silently landing.
+  it('manifest.calls is unchanged by orchestrator config (no new hook)', () => {
+    const withoutOrchestrator = createMemoryStrataPlugin();
+    const withOrchestrator = createMemoryStrataPlugin({
+      orchestrator: { client: { complete: async () => ({ text: '', usage: { in: 0, out: 0 } }) } },
+    });
+    const expectedCalls = ['agents:resolve', 'llm:call:anthropic', 'memory:index:upsert', 'tool:register'];
+    expect(withoutOrchestrator.manifest.calls.slice().sort()).toEqual(expectedCalls.slice().sort());
+    expect(withOrchestrator.manifest.calls.slice().sort()).toEqual(expectedCalls.slice().sort());
+  });
+
   it('bootstraps the memory tree on chat:start, seeding agent.md from the composed .ax/ identity', async () => {
     // TASK-142: agent.md is seeded from the agent's COMPOSED identity (its
     // `.ax/IDENTITY.md` + `.ax/SOUL.md`), not the dropped system_prompt column.
