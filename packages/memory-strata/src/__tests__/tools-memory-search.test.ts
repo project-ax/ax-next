@@ -18,6 +18,7 @@ const FIXTURE_RESULTS: RetrievalResult[] = [
     category: 'preference',
     slug: 'react',
     summary: 'User prefers React',
+    snippet: 'the user said they prefer React over Vue',
     score: 0.9,
   },
 ];
@@ -188,6 +189,30 @@ describe('tools/memory-search', () => {
         'categoryFilter' in (capturedSearchInputs[0] as Record<string, unknown>),
       ).toBe(false);
     });
+
+    it('includes the body snippet in each result (memory-search-snippet design)', async () => {
+      const snippetFixture: RetrievalResult[] = [
+        {
+          docId: 'decision/user',
+          category: 'decision',
+          slug: 'user',
+          summary: "User's decisions",
+          snippet: 'graduated with a B.A. in Business Administration',
+          score: 1,
+        },
+      ];
+      const { bus } = makeWiredBus({ searchResults: snippetFixture });
+      await registerMemorySearch(bus);
+
+      const ctx = makeCtx();
+      const out = (await bus.call(
+        'tool:execute:memory_search',
+        ctx,
+        asToolCall({ query: 'degree', topK: 5 }),
+      )) as { results: Array<{ docId: string; snippet: string }> };
+
+      expect(out.results[0]!.snippet).toContain('Business Administration');
+    });
   });
 });
 
@@ -240,6 +265,7 @@ describe('orchestrator path', () => {
       category: 'general',
       slug: 'bm25-fallback',
       summary: 'BM25 fallback fixture',
+      snippet: 'bm25 fallback excerpt',
       score: 0.5,
     },
   ];
@@ -301,6 +327,7 @@ describe('orchestrator path', () => {
           category: 'preference',
           slug: 'coffee',
           summary: 'User prefers cortados over drip',
+          snippet: '',
           score: 1,
         },
       ],

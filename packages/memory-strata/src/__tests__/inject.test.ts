@@ -143,9 +143,9 @@ describe('buildMemoryBlock — with lastUserMessage', () => {
     await writeSystemFile(workspaceRoot, 'recent', '# Recent\n\nRecent body.\n');
 
     const fixtureResults: RetrievalResult[] = [
-      { docId: 'preference/react', category: 'preference', slug: 'react', summary: 'User prefers React over Vue', score: 0.9 },
-      { docId: 'preference/ts', category: 'preference', slug: 'ts', summary: 'User prefers TypeScript', score: 0.8 },
-      { docId: 'entity/company', category: 'entity', slug: 'company', summary: 'Works at Canopy', score: 0.7 },
+      { docId: 'preference/react', category: 'preference', slug: 'react', summary: 'User prefers React over Vue', snippet: '', score: 0.9 },
+      { docId: 'preference/ts', category: 'preference', slug: 'ts', summary: 'User prefers TypeScript', snippet: '', score: 0.8 },
+      { docId: 'entity/company', category: 'entity', slug: 'company', summary: 'Works at Canopy', snippet: '', score: 0.7 },
     ];
 
     const bus = makeStubBus({ searchResults: fixtureResults });
@@ -167,9 +167,9 @@ describe('buildMemoryBlock — with lastUserMessage', () => {
 
     // Provide results in reverse (low→high) score order — builder must sort
     const fixtureResults: RetrievalResult[] = [
-      { docId: 'doc-c', category: 'general', slug: 'c', summary: 'C summary', score: 0.3 },
-      { docId: 'doc-a', category: 'general', slug: 'a', summary: 'A summary', score: 0.9 },
-      { docId: 'doc-b', category: 'general', slug: 'b', summary: 'B summary', score: 0.6 },
+      { docId: 'doc-c', category: 'general', slug: 'c', summary: 'C summary', snippet: '', score: 0.3 },
+      { docId: 'doc-a', category: 'general', slug: 'a', summary: 'A summary', snippet: '', score: 0.9 },
+      { docId: 'doc-b', category: 'general', slug: 'b', summary: 'B summary', snippet: '', score: 0.6 },
     ];
 
     const bus = makeStubBus({ searchResults: fixtureResults });
@@ -208,6 +208,7 @@ describe('I21: token cap — drops docs first', () => {
       category: 'general',
       slug: `slug-${i}`,
       summary: `This is a long summary for document number ${i} and it has many words to take up space in the token budget.`,
+      snippet: '',
       score: 1.0 - i * 0.05, // doc-0 highest rank, doc-9 lowest
     }));
 
@@ -246,6 +247,7 @@ describe('I21: token cap — drops docs first', () => {
       category: 'general',
       slug: `slug-${i}`,
       summary: `Summary for doc ${i}: this document contains information about topic ${i} and provides relevant context.`,
+      snippet: '',
       score: 1.0 - i * 0.009,
     }));
 

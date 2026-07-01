@@ -190,6 +190,7 @@ describe('runOrchestratedRetrieve', () => {
         category: 'preference',
         slug: 'coffee',
         summary: 'User prefers cortados over drip',
+        snippet: '',
         score: 1,
       },
     ]);
@@ -226,6 +227,7 @@ describe('runOrchestratedRetrieve', () => {
       category: 'preference',
       slug: 'coffee',
       summary: 'duplicate — should be deduped',
+      snippet: 'duplicate excerpt',
       score: 0.5,
     };
     const ftsHit2: RetrievalResult = {
@@ -233,6 +235,7 @@ describe('runOrchestratedRetrieve', () => {
       category: 'preference',
       slug: 'tea',
       summary: 'User dislikes green tea',
+      snippet: 'the user dislikes green tea',
       score: 0.4,
     };
     const ftsSearch = vi.fn(async (): Promise<RetrievalResult[]> => [ftsHit, ftsHit2]);
@@ -252,6 +255,7 @@ describe('runOrchestratedRetrieve', () => {
         category: 'preference',
         slug: 'coffee',
         summary: 'User prefers cortados over drip',
+        snippet: '',
         score: 1,
       },
       ftsHit2,

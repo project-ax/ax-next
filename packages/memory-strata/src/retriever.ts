@@ -19,12 +19,16 @@ export interface RetrieveInput {
 
 /**
  * Single search result returned by the indexer. `score` is the search rank.
+ * `snippet` is a bounded, query-matched excerpt of the doc body (2026-07-01
+ * memory-search-snippet design) — surfaced alongside `summary` so the agent
+ * sees the actual value without a second `memory_read_section` call.
  */
 export interface RetrievalResult {
   docId: string;
   category: string;
   slug: string;
   summary: string;
+  snippet: string;
   score: number;
 }
 

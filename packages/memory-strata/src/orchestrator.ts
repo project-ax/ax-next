@@ -293,6 +293,12 @@ async function runOps(
         category: entry.category,
         slug: entry.slug,
         summary: entry.summary,
+        // A `<load>` op resolves straight from `system/map.md`'s summary line —
+        // there's no query-matched body excerpt to surface (that's the
+        // memory-search-snippet design's explicit non-goal: map densification
+        // is a separate follow-up). Empty string, not the summary again, so
+        // callers can tell "no excerpt available" from "excerpt == summary".
+        snippet: '',
         score: 1,
       });
       if (out.length >= topK) return out;

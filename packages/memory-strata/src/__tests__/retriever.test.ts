@@ -17,6 +17,7 @@ describe('retriever', () => {
         category: 'preference',
         slug: 'react',
         summary: 'User prefers React',
+        snippet: 'the user said they prefer React',
         score: 0.95,
       },
     ];
