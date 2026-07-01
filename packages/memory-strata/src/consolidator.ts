@@ -2,7 +2,7 @@
 // deduplicates against existing doc facts, promotes high-confidence
 // observations to `docs/<category>/<slug>.md`, quarantines sensitive
 // observations (I11 extension), decays aged-out observations (I14), and
-// regenerates `system/recent.md` (I13).
+// regenerates `system/recent.md` (I13) + `system/map.md` (TASK-190).
 //
 // WHY this is one function rather than spread across callers: the entire
 // pipeline is a read-then-write pass over the inbox, and its correctness
@@ -30,6 +30,7 @@ import {
 import { deleteInboxFile, listInbox } from './inbox-store.js';
 import { decidePromotion } from './promotion.js';
 import { regenerateRecent } from './recent.js';
+import { regenerateMap, type MapDensifier } from './map.js';
 import { MEMORY_ROOT } from './paths.js';
 
 /**
@@ -55,6 +56,15 @@ export interface ConsolidationInput {
    */
   bus?: HookBus;
   ctx?: AgentContext;
+  /**
+   * Optional host-LLM densifier for `system/map.md` (TASK-190). When provided,
+   * each doc's map one-liner is densified via the host LLM (same gating as the
+   * Observer) and cached incrementally. When absent — CI without keys, or the
+   * provider is unavailable — `regenerateMap` falls back to each doc's raw
+   * frontmatter summary, so the map is ALWAYS regenerated, just without the
+   * LLM-densified one-liners.
+   */
+  densifyMap?: MapDensifier | undefined;
 }
 
 export interface ConsolidationResult {
@@ -245,8 +255,26 @@ export async function runConsolidation(
       }
     }
 
-    // I13: regenerate the cached view last, after all promotions are committed.
+    // I13: regenerate the cached views last, after all promotions are
+    // committed. recent.md first, then map.md (TASK-190) — both are derived
+    // from the now-final docs/ + inbox/ state. The map densifies each doc's
+    // one-liner via the host LLM when a densifier is wired (incremental, cached
+    // per-doc); without one it falls back to raw summaries. Map generation is
+    // best-effort: a failure regenerating the map must NOT roll back committed
+    // promotions or fail the whole pass, so it's caught + logged separately.
     await regenerateRecent({ workspaceRoot: input.workspaceRoot, now: input.now });
+    try {
+      await regenerateMap({
+        workspaceRoot: input.workspaceRoot,
+        now: input.now,
+        densify: input.densifyMap,
+        logger: log,
+      });
+    } catch (mapErr) {
+      log.warn('memory_strata_map_regenerate_failed', {
+        err: mapErr instanceof Error ? mapErr : new Error(String(mapErr)),
+      });
+    }
   } catch (err) {
     // C2 fix: emit the audit event with partial counters so operators can
     // see how far the pass progressed before the failure.

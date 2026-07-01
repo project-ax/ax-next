@@ -1,7 +1,7 @@
 import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { buildMarkdownFile } from './frontmatter.js';
-import { systemFile, type SystemFileName } from './paths.js';
+import { systemFile, mapFile, type SystemFileName } from './paths.js';
 import type { MemoryFrontmatter } from './types.js';
 
 export interface BootstrapInput {
@@ -59,6 +59,36 @@ export async function bootstrapMemoryTree(
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
       // Another caller (or a previous chat) seeded this file. That's
       // the idempotent path — leave their content alone.
+    }
+  }
+
+  // TASK-190: seed an empty `system/map.md` so the always-injected hierarchical
+  // index file exists from the very first chat (inject reads it before any
+  // consolidation pass has run). Same idempotent `wx` create-if-not-exists — a
+  // later consolidation regenerates it with densified entries and won't be
+  // clobbered by a re-bootstrap. mapFile() uses its own path (not a
+  // SystemFileName), so it's seeded outside the loop above.
+  {
+    const rel = mapFile();
+    const abs = join(input.workspaceRoot, rel);
+    await mkdir(dirname(abs), { recursive: true });
+    const fm: MemoryFrontmatter = {
+      id: 'map',
+      type: 'system/map',
+      created: nowIso,
+      confidence: 1.0,
+      pinned: true,
+      summary:
+        'Hierarchical index of the agent\'s memory — one densified line per doc, regenerated each consolidation pass.',
+      event_time: nowIso,
+      recorded_at: nowIso,
+    };
+    const body = ['# Memory Map', '', '_No memory yet._', ''].join('\n');
+    try {
+      await writeFile(abs, buildMarkdownFile(fm, body), { encoding: 'utf8', flag: 'wx' });
+      created.push(rel);
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
     }
   }
 

@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { load as yamlLoad } from 'js-yaml';
 import { bootstrapMemoryTree } from '../bootstrap.js';
-import { workspaceMemoryRoot, systemFile, MEMORY_ROOT } from '../paths.js';
+import { workspaceMemoryRoot, systemFile, mapFile, MEMORY_ROOT } from '../paths.js';
 
 let workspaceRoot: string;
 
@@ -66,6 +66,35 @@ describe('bootstrapMemoryTree', () => {
     const after = await readFile(path, 'utf8');
 
     expect(after).toBe(before);
+  });
+
+  it('TASK-190: seeds an empty system/map.md so inject always has a map to read', async () => {
+    const { created } = await bootstrapMemoryTree({
+      workspaceRoot,
+      composedIdentity: 'identity',
+    });
+    expect(created).toContain(mapFile());
+
+    const raw = await readFile(join(workspaceRoot, mapFile()), 'utf8');
+    const { fm, body } = splitFrontmatter(raw);
+    expect(fm['id']).toBe('map');
+    expect(fm['type']).toBe('system/map');
+    expect(fm['pinned']).toBe(true);
+    expect(body).toContain('# Memory Map');
+    expect(body).toContain('_No memory yet._');
+  });
+
+  it('TASK-190: map seed is idempotent — a later consolidated map is not clobbered', async () => {
+    await bootstrapMemoryTree({ workspaceRoot, composedIdentity: 'identity' });
+    // Simulate a consolidation having rewritten the map with real content.
+    const { writeFile } = await import('node:fs/promises');
+    const populated = '---\nid: map\ntype: system/map\n---\n# Memory Map\n\n## entity/\n- x: real content\n';
+    await writeFile(join(workspaceRoot, mapFile()), populated, 'utf8');
+
+    // A re-bootstrap (fires on every chat:start) must NOT overwrite it.
+    await bootstrapMemoryTree({ workspaceRoot, composedIdentity: 'identity' });
+    const after = await readFile(join(workspaceRoot, mapFile()), 'utf8');
+    expect(after).toBe(populated);
   });
 
   it('serializes concurrent bootstraps without corrupting agent.md', async () => {
