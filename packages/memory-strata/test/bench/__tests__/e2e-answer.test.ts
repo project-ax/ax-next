@@ -127,6 +127,34 @@ describe('e2e answer loop (TASK-189)', () => {
     expect(toolResult.content).toContain('Business Administration');
   });
 
+  it('omits the match: line when a result snippet is empty', async () => {
+    // Orchestrator mode returns map-<load> rows with snippet: '' (orchestrator.ts).
+    // Rendering `match: ""` verbatim would tell the model those docs — the ones
+    // the orchestrator judged most relevant — matched nothing.
+    const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
+      { docId: 'decision/user', category: 'decision', slug: 'user',
+        summary: "User's decisions", snippet: '', score: 1 },
+    ]);
+    const create = vi.fn()
+      .mockResolvedValueOnce({
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'memory_search', input: { query: 'degree' } }],
+        usage: { input_tokens: 100, output_tokens: 20 },
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'You graduated in Business Administration.' }],
+        usage: { input_tokens: 150, output_tokens: 10 },
+      });
+
+    await runAnswerLoop({
+      client: { messages: { create } }, model: 'm', maxToolTurns: 4,
+      system: 'sys', question: 'What degree?', search, readSection: noReadSection,
+    });
+
+    const toolResult = create.mock.calls[1]![0].messages.at(-1).content[0];
+    expect(toolResult.content).toBe("[1] (decision/user) User's decisions");
+    expect(toolResult.content).not.toContain('match:');
+  });
+
   it('answers directly without searching when the model emits text immediately', async () => {
     const search = vi.fn(async (): Promise<MemorySearchResult[]> => []);
     const create = vi.fn().mockResolvedValueOnce({
