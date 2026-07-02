@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { reject, type SubscriberHandler } from '@ax/core';
 import { createTestHarness, type TestHarness } from '@ax/test-harness';
 import { createHttpServerPlugin, type HttpServerPlugin } from '../plugin.js';
@@ -307,9 +307,9 @@ describe('@ax/http-server', () => {
       return undefined;
     });
     await fetch(`http://127.0.0.1:${port}/observed`);
-    // Give the bus.fire (after writeHead.end) a tick to settle.
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(observed.length).toBe(1);
+    // Poll until the async bus.fire (after writeHead.end) has settled,
+    // rather than racing a fixed sleep under CPU contention.
+    await vi.waitFor(() => expect(observed.length).toBe(1));
     expect(observed[0]!.status).toBe(204);
     expect(typeof observed[0]!.durationMs).toBe('number');
     expect(observed[0]!.durationMs).toBeGreaterThanOrEqual(0);
@@ -322,8 +322,9 @@ describe('@ax/http-server', () => {
       return undefined;
     });
     await fetch(`http://127.0.0.1:${port}/missing`);
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    expect(observed).toEqual([404]);
+    // Poll until the async http:response-sent event has been observed,
+    // rather than racing a fixed sleep under CPU contention.
+    await vi.waitFor(() => expect(observed).toEqual([404]));
   });
 
   it('handles concurrent requests without crashing', async () => {
@@ -634,9 +635,10 @@ describe('@ax/http-server', () => {
     } catch {
       // already aborted
     }
-    // Give the runner time to run its post-handler logic.
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    expect(observed.length).toBe(1);
+    // The runner fires http:response-sent as a fire-and-forget async task
+    // after the handler returns. Poll until it lands instead of racing a
+    // fixed sleep — under CPU contention the event can miss a 100ms window.
+    await vi.waitFor(() => expect(observed.length).toBe(1));
     expect(observed[0]!.status).toBe(200);
   });
 });
