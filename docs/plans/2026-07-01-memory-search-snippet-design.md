@@ -92,10 +92,13 @@ Add to the search SELECT in `queries.ts`, reusing the existing tsquery:
 
 ```sql
 ts_headline('english', body, <existing tsquery>,
-            'MaxWords=48, MinWords=16, StartSel=, StopSel=') AS snippet
+            'MaxWords=48, MinWords=16, StartSel="", StopSel=""') AS snippet
 ```
 
-Map `snippet` onto the result row.
+Map `snippet` onto the result row. The empty highlight markers must be
+double-QUOTED (`StartSel="", StopSel=""`): the unquoted/empty-value form
+`StartSel=, StopSel=` raises `ERROR: invalid parameter list format` on
+postgres 16 (a bare `StartSel=` also swallows the following comma).
 
 ### 4. Threading (consumer side)
 
