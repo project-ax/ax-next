@@ -142,7 +142,8 @@ describe('@ax/memory-strata-index-postgres — postgres-specific', () => {
       headers: '',
     });
 
-    // Should not throw on upsert — parameterized plainto_tsquery is safe.
+    // Should not throw on upsert — the parameterized websearch_to_tsquery
+    // (via buildOrTsQuery) handles special characters safely.
     const out = await search({ query: 'hello', topK: 5 });
     expect(out.results.length).toBeGreaterThanOrEqual(1);
     expect(out.results[0]!.docId).toBe('general/special-chars');
@@ -323,6 +324,71 @@ describe('@ax/memory-strata-index-postgres — postgres-specific', () => {
     const out = await search({ query: '"', topK: 5 });
     expect(Array.isArray(out.results)).toBe(true);
     expect(out.results).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 5e: results are capped at topK and returned in descending score order
+  // -------------------------------------------------------------------------
+  // Guards the outer-select refactor's contract ("same rows, same order"):
+  // the inner subquery's `ORDER BY score DESC LIMIT topK` must cap the page,
+  // and the outer `ORDER BY score DESC` must preserve the ranking. Without both,
+  // a regression (dropped LIMIT → too many rows; dropped outer ORDER BY →
+  // shuffled page) would slip past the order-independent assertions elsewhere.
+  it('caps results at topK and returns them in descending score order', async () => {
+    const { upsert, search } = await makeHarness();
+    const TERM = 'quasar_ordering_term';
+
+    // Four matching docs with DISTINCT scores via tsvector weight placement:
+    // summary (A) > headers (B) > body×2 (C, higher freq) > body×1 (C).
+    await upsert({
+      docId: 'rank/a-summary',
+      category: 'rank',
+      slug: 'a-summary',
+      summary: `${TERM} ${TERM} in the summary`,
+      factType: 'general',
+      body: 'no term in body',
+      headers: '',
+    });
+    await upsert({
+      docId: 'rank/b-headers',
+      category: 'rank',
+      slug: 'b-headers',
+      summary: 'plain summary',
+      factType: 'general',
+      body: 'no term in body',
+      headers: `## ${TERM}`,
+    });
+    await upsert({
+      docId: 'rank/c-body2',
+      category: 'rank',
+      slug: 'c-body2',
+      summary: 'plain summary',
+      factType: 'general',
+      body: `${TERM} then later again ${TERM}`,
+      headers: '',
+    });
+    await upsert({
+      docId: 'rank/d-body1',
+      category: 'rank',
+      slug: 'd-body1',
+      summary: 'plain summary',
+      factType: 'general',
+      body: `only one ${TERM} here`,
+      headers: '',
+    });
+
+    const out = await search({ query: TERM, topK: 2 });
+    const docIds = out.results.map((r) => r.docId);
+    // Inner LIMIT caps the page at topK (four docs match, only two return).
+    expect(out.results).toHaveLength(2);
+    // Outer ORDER BY keeps the page strictly score-descending.
+    expect(out.results[0]!.score).toBeGreaterThan(out.results[1]!.score);
+    // The summary/A doc is the unambiguous top; the weakest (single body hit)
+    // is dropped by the LIMIT rather than an arbitrary row surviving.
+    // (b-headers vs c-body2 for the 2nd slot is a ts_rank freq subtlety we
+    // don't pin — the guard is: capped at topK, descending, right endpoints.)
+    expect(out.results[0]!.docId).toBe('rank/a-summary');
+    expect(docIds).not.toContain('rank/d-body1');
   });
 
   // -------------------------------------------------------------------------

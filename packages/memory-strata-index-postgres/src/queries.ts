@@ -116,11 +116,16 @@ export function buildOrTsQuery(trimmed: string): string {
 //   MaxWords=48, MinWords=16  — ~48-token window, compact for coarse per-
 //     category mega-docs while still capturing the query-adjacent value.
 //
-// NOTE: a literal `<b>` occurring in the body does NOT survive into a postgres
-// snippet — the default text-search parser classifies `<...>` as a `tag` token
-// and ts_headline drops it from windowed output (only HighlightAll=true, which
-// returns the whole body, preserves tags). This is a documented backend
-// divergence from sqlite, which returns the raw body text verbatim.
+// NOTE: this drops MORE than a literal `<b>` — the default text-search parser
+// classifies any `<word>` / `</word>` / `<word/>` token as a `tag` and
+// ts_headline omits it from windowed output. So `<Button>`, `<div>`, and even
+// TS/Java generics like `List<String>` vanish from a postgres snippet (a bare
+// `a < b` or `Map<Integer, Value>` survives, since those aren't tag-shaped).
+// Only HighlightAll=true preserves tags, and it returns the whole body —
+// defeating a bounded snippet. This is pre-existing ts_headline behaviour (not
+// introduced here) and a documented divergence from the sqlite backend, which
+// returns the raw body text verbatim. The snippet is an explicitly lossy hint;
+// `memory_read_section` is the full-fidelity fallback.
 const SNIPPET_OPTIONS =
   'MaxWords=48, MinWords=16, MaxFragments=2, FragmentDelimiter=…, StartSel="", StopSel=""';
 
