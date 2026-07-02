@@ -236,6 +236,96 @@ describe('@ax/memory-strata-index-postgres — postgres-specific', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Test 5b: a literal <b> in the body does not leak highlight markers
+  // -------------------------------------------------------------------------
+  // With empty StartSel/StopSel, ts_headline emits no <b>…</b> around matches,
+  // so the mapper needs no strip-regex. A literal <b> in the body is itself
+  // dropped by ts_headline (the default parser classifies <...> as a `tag`
+  // token and windowed output omits it) — the opposite of the sqlite backend,
+  // which returns it verbatim. Either way, the snippet must carry the
+  // surrounding body words and NO `<b>`/`</b>` (neither a highlight artifact
+  // nor a re-introduced literal). Regression guard for the strip-regex removal.
+  it('snippet carries no <b>/</b> markers even when the body contains a literal <b>', async () => {
+    const { upsert, search } = await makeHarness();
+
+    await upsert({
+      docId: 'general/literal-tag',
+      category: 'general',
+      slug: 'literal-tag',
+      summary: 'No special value in summary',
+      factType: 'general',
+      body: 'The user graduated and here is a literal <b> tag inside the body text.',
+      headers: '',
+    });
+
+    const out = await search({ query: 'graduated', topK: 5 });
+    expect(out.results).toHaveLength(1);
+    const snippet = out.results[0]!.snippet;
+    // Surrounding words are preserved.
+    expect(snippet).toContain('graduated');
+    expect(snippet).toContain('tag');
+    // No highlight markers leak (empty selectors) and the literal <b> is not
+    // present as a raw substring.
+    expect(snippet).not.toContain('<b>');
+    expect(snippet).not.toContain('</b>');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 5c: scattered matches in a long body are joined by the '…' delimiter
+  // -------------------------------------------------------------------------
+  // Truncation-marker parity with the sqlite backend (whose snippet() carries
+  // '…'). ts_headline emits FragmentDelimiter only BETWEEN fragments, so a doc
+  // with two disjoint match regions returns two windows joined by '…'.
+  it("snippet joins disjoint match windows with '…' (FragmentDelimiter parity)", async () => {
+    const { upsert, search } = await makeHarness();
+
+    await upsert({
+      docId: 'decision/scattered',
+      category: 'decision',
+      slug: 'scattered',
+      summary: 'Scattered matches',
+      factType: 'decision',
+      body:
+        'The user graduated early on then a very long stretch of filler words ' +
+        'aa bb cc dd ee ff gg hh ii jj kk ll mm nn oo pp qq rr ss tt uu vv ww xx yy zz ' +
+        'aa2 bb2 cc2 dd2 ee2 ff2 gg2 hh2 ii2 jj2 finally the closing remarks appear at the end.',
+      headers: '',
+    });
+
+    const out = await search({ query: 'graduated closing', topK: 5 });
+    expect(out.results).toHaveLength(1);
+    const snippet = out.results[0]!.snippet;
+    expect(snippet).toContain('…');
+    // Both match regions surface across the two joined fragments.
+    expect(snippet).toContain('graduated');
+    expect(snippet).toContain('closing');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 5d: a quote-only query token is safe (never throws)
+  // -------------------------------------------------------------------------
+  // buildOrTsQuery turns `"` into `" "` (a quoted space). websearch_to_tsquery
+  // treats that as an empty/stop-word query (a NOTICE, never an error) that
+  // matches nothing — so search returns [] rather than throwing.
+  it('a quote-only query token returns [] without throwing', async () => {
+    const { upsert, search } = await makeHarness();
+
+    await upsert({
+      docId: 'general/quote-token',
+      category: 'general',
+      slug: 'quote-token',
+      summary: 'Some note',
+      factType: 'general',
+      body: 'A body with the word graduated in it.',
+      headers: '',
+    });
+
+    const out = await search({ query: '"', topK: 5 });
+    expect(Array.isArray(out.results)).toBe(true);
+    expect(out.results).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
   // Test 6: Manifest registers all four hooks and calls database:get-instance
   // -------------------------------------------------------------------------
   it('manifest declares correct registers and calls', () => {

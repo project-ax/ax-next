@@ -183,6 +183,35 @@ describe('@ax/memory-strata-index-sqlite — sqlite-specific', () => {
   });
 
   // -------------------------------------------------------------------------
+  // Test 4b: a literal <b> in the body survives verbatim into the snippet
+  // -------------------------------------------------------------------------
+  // sqlite's snippet() uses empty start/end markers (no highlighting) and
+  // returns the raw original body text, so a literal <b> in the body is
+  // preserved. This is the parity SOURCE the postgres backend targets — and
+  // the backend divergence worth pinning: postgres's ts_headline drops <...>
+  // as a tag token, so it can't preserve a literal <b> the way sqlite does.
+  it('preserves a literal <b> occurring in the body text into the snippet', async () => {
+    const { upsert, search } = await makeHarness(databasePath);
+
+    await upsert({
+      docId: 'general/literal-tag',
+      category: 'general',
+      slug: 'literal-tag',
+      summary: 'No special value in summary',
+      factType: 'general',
+      body: 'The user graduated and here is a literal <b> tag inside the body text.',
+      headers: '',
+    });
+
+    const out = await search({ query: 'graduated', topK: 5 });
+    expect(out.results).toHaveLength(1);
+    const snippet = out.results[0]!.snippet;
+    expect(snippet).toContain('graduated');
+    // The literal <b> from the body survives verbatim (no strip, no markers).
+    expect(snippet).toContain('<b>');
+  });
+
+  // -------------------------------------------------------------------------
   // Test 5: Manifest registers all four hooks
   // -------------------------------------------------------------------------
   it('manifest registers all four memory:index:* hooks', () => {
