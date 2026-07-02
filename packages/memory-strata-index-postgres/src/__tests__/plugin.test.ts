@@ -142,7 +142,8 @@ describe('@ax/memory-strata-index-postgres — postgres-specific', () => {
       headers: '',
     });
 
-    // Should not throw on upsert — parameterized plainto_tsquery is safe.
+    // Should not throw on upsert — the parameterized websearch_to_tsquery
+    // (via buildOrTsQuery) handles special characters safely.
     const out = await search({ query: 'hello', topK: 5 });
     expect(out.results.length).toBeGreaterThanOrEqual(1);
     expect(out.results[0]!.docId).toBe('general/special-chars');
@@ -233,6 +234,161 @@ describe('@ax/memory-strata-index-postgres — postgres-specific', () => {
     const docIds = out.results.map((r) => r.docId);
     expect(docIds).toContain('preference/database');
     expect(docIds).not.toContain('decision/database');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 5b: a literal <b> in the body does not leak highlight markers
+  // -------------------------------------------------------------------------
+  // With empty StartSel/StopSel, ts_headline emits no <b>…</b> around matches,
+  // so the mapper needs no strip-regex. A literal <b> in the body is itself
+  // dropped by ts_headline (the default parser classifies <...> as a `tag`
+  // token and windowed output omits it) — the opposite of the sqlite backend,
+  // which returns it verbatim. Either way, the snippet must carry the
+  // surrounding body words and NO `<b>`/`</b>` (neither a highlight artifact
+  // nor a re-introduced literal). Regression guard for the strip-regex removal.
+  it('snippet carries no <b>/</b> markers even when the body contains a literal <b>', async () => {
+    const { upsert, search } = await makeHarness();
+
+    await upsert({
+      docId: 'general/literal-tag',
+      category: 'general',
+      slug: 'literal-tag',
+      summary: 'No special value in summary',
+      factType: 'general',
+      body: 'The user graduated and here is a literal <b> tag inside the body text.',
+      headers: '',
+    });
+
+    const out = await search({ query: 'graduated', topK: 5 });
+    expect(out.results).toHaveLength(1);
+    const snippet = out.results[0]!.snippet;
+    // Surrounding words are preserved.
+    expect(snippet).toContain('graduated');
+    expect(snippet).toContain('tag');
+    // No highlight markers leak (empty selectors) and the literal <b> is not
+    // present as a raw substring.
+    expect(snippet).not.toContain('<b>');
+    expect(snippet).not.toContain('</b>');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 5c: scattered matches in a long body are joined by the '…' delimiter
+  // -------------------------------------------------------------------------
+  // Truncation-marker parity with the sqlite backend (whose snippet() carries
+  // '…'). ts_headline emits FragmentDelimiter only BETWEEN fragments, so a doc
+  // with two disjoint match regions returns two windows joined by '…'.
+  it("snippet joins disjoint match windows with '…' (FragmentDelimiter parity)", async () => {
+    const { upsert, search } = await makeHarness();
+
+    await upsert({
+      docId: 'decision/scattered',
+      category: 'decision',
+      slug: 'scattered',
+      summary: 'Scattered matches',
+      factType: 'decision',
+      body:
+        'The user graduated early on then a very long stretch of filler words ' +
+        'aa bb cc dd ee ff gg hh ii jj kk ll mm nn oo pp qq rr ss tt uu vv ww xx yy zz ' +
+        'aa2 bb2 cc2 dd2 ee2 ff2 gg2 hh2 ii2 jj2 finally the closing remarks appear at the end.',
+      headers: '',
+    });
+
+    const out = await search({ query: 'graduated closing', topK: 5 });
+    expect(out.results).toHaveLength(1);
+    const snippet = out.results[0]!.snippet;
+    expect(snippet).toContain('…');
+    // Both match regions surface across the two joined fragments.
+    expect(snippet).toContain('graduated');
+    expect(snippet).toContain('closing');
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 5d: a quote-only query token is safe (never throws)
+  // -------------------------------------------------------------------------
+  // buildOrTsQuery turns `"` into `" "` (a quoted space). websearch_to_tsquery
+  // treats that as an empty/stop-word query (a NOTICE, never an error) that
+  // matches nothing — so search returns [] rather than throwing.
+  it('a quote-only query token returns [] without throwing', async () => {
+    const { upsert, search } = await makeHarness();
+
+    await upsert({
+      docId: 'general/quote-token',
+      category: 'general',
+      slug: 'quote-token',
+      summary: 'Some note',
+      factType: 'general',
+      body: 'A body with the word graduated in it.',
+      headers: '',
+    });
+
+    const out = await search({ query: '"', topK: 5 });
+    expect(Array.isArray(out.results)).toBe(true);
+    expect(out.results).toHaveLength(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // Test 5e: results are capped at topK and returned in descending score order
+  // -------------------------------------------------------------------------
+  // Guards the outer-select refactor's contract ("same rows, same order"):
+  // the inner subquery's `ORDER BY score DESC LIMIT topK` must cap the page,
+  // and the outer `ORDER BY score DESC` must preserve the ranking. Without both,
+  // a regression (dropped LIMIT → too many rows; dropped outer ORDER BY →
+  // shuffled page) would slip past the order-independent assertions elsewhere.
+  it('caps results at topK and returns them in descending score order', async () => {
+    const { upsert, search } = await makeHarness();
+    const TERM = 'quasar_ordering_term';
+
+    // Four matching docs with DISTINCT scores via tsvector weight placement:
+    // summary (A) > headers (B) > body×2 (C, higher freq) > body×1 (C).
+    await upsert({
+      docId: 'rank/a-summary',
+      category: 'rank',
+      slug: 'a-summary',
+      summary: `${TERM} ${TERM} in the summary`,
+      factType: 'general',
+      body: 'no term in body',
+      headers: '',
+    });
+    await upsert({
+      docId: 'rank/b-headers',
+      category: 'rank',
+      slug: 'b-headers',
+      summary: 'plain summary',
+      factType: 'general',
+      body: 'no term in body',
+      headers: `## ${TERM}`,
+    });
+    await upsert({
+      docId: 'rank/c-body2',
+      category: 'rank',
+      slug: 'c-body2',
+      summary: 'plain summary',
+      factType: 'general',
+      body: `${TERM} then later again ${TERM}`,
+      headers: '',
+    });
+    await upsert({
+      docId: 'rank/d-body1',
+      category: 'rank',
+      slug: 'd-body1',
+      summary: 'plain summary',
+      factType: 'general',
+      body: `only one ${TERM} here`,
+      headers: '',
+    });
+
+    const out = await search({ query: TERM, topK: 2 });
+    const docIds = out.results.map((r) => r.docId);
+    // Inner LIMIT caps the page at topK (four docs match, only two return).
+    expect(out.results).toHaveLength(2);
+    // Outer ORDER BY keeps the page strictly score-descending.
+    expect(out.results[0]!.score).toBeGreaterThan(out.results[1]!.score);
+    // The summary/A doc is the unambiguous top; the weakest (single body hit)
+    // is dropped by the LIMIT rather than an arbitrary row surviving.
+    // (b-headers vs c-body2 for the 2nd slot is a ts_rank freq subtlety we
+    // don't pin — the guard is: capped at topK, descending, right endpoints.)
+    expect(out.results[0]!.docId).toBe('rank/a-summary');
+    expect(docIds).not.toContain('rank/d-body1');
   });
 
   // -------------------------------------------------------------------------

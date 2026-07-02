@@ -80,13 +80,54 @@ export async function upsert(
 // the quote early); the residue parses as an adjacent-phrase, still
 // operator-free. This keeps the two backends genuinely interchangeable under
 // the shared conformance kit.
-function buildOrTsQuery(trimmed: string): string {
+export function buildOrTsQuery(trimmed: string): string {
   return trimmed
     .split(/\s+/)
     .filter((t) => t.length > 0)
     .map((t) => `"${t.replace(/"/g, ' ')}"`)
     .join(' OR ');
 }
+
+// ---------------------------------------------------------------------------
+// ts_headline snippet options
+// ---------------------------------------------------------------------------
+// The snippet is a bounded, match-centered excerpt of the body so the agent
+// sees the answer value in the search result itself (design
+// docs/plans/2026-07-01-memory-search-snippet-design.md). Options, and why:
+//
+//   StartSel="", StopSel=""  — empty highlight markers, so no <b>…</b> wraps
+//     the matched terms and the text is clean for the model. The markers MUST
+//     be double-QUOTED: the design doc's literal `StartSel=, StopSel=` (empty
+//     value, no quotes, trailing the list) raises `ERROR: invalid parameter
+//     list format` on postgres 16, and a bare `StartSel=` swallows the next
+//     comma as its value (a `,term,` artifact). Verified against the real
+//     testcontainer. Because the markers are empty, NO mapper-side regex strip
+//     is needed (that's why the old `.replace(/<\/?b>/g, '')` is gone).
+//
+//   FragmentDelimiter=…, MaxFragments=2  — truncation-marker parity with the
+//     sqlite backend, whose snippet() carries '…'. ts_headline only emits the
+//     delimiter BETWEEN fragments, so we allow up to 2 fragments: a single
+//     match region stays one ~48-word window (no '…', identical to before),
+//     while scattered matches in a long mega-doc are joined by '…' signalling
+//     elided content. (Residual divergence from sqlite: ts_headline emits no
+//     leading/trailing boundary '…' — it can't mark a single window as cut
+//     from a larger body the way sqlite does.)
+//
+//   MaxWords=48, MinWords=16  — ~48-token window, compact for coarse per-
+//     category mega-docs while still capturing the query-adjacent value.
+//
+// NOTE: this drops MORE than a literal `<b>` — the default text-search parser
+// classifies any `<word>` / `</word>` / `<word/>` token as a `tag` and
+// ts_headline omits it from windowed output. So `<Button>`, `<div>`, and even
+// TS/Java generics like `List<String>` vanish from a postgres snippet (a bare
+// `a < b` or `Map<Integer, Value>` survives, since those aren't tag-shaped).
+// Only HighlightAll=true preserves tags, and it returns the whole body —
+// defeating a bounded snippet. This is pre-existing ts_headline behaviour (not
+// introduced here) and a documented divergence from the sqlite backend, which
+// returns the raw body text verbatim. The snippet is an explicitly lossy hint;
+// `memory_read_section` is the full-fidelity fallback.
+const SNIPPET_OPTIONS =
+  'MaxWords=48, MinWords=16, MaxFragments=2, FragmentDelimiter=…, StartSel="", StopSel=""';
 
 // ---------------------------------------------------------------------------
 // search — websearch_to_tsquery (OR-joined) + ts_rank, optional category filter
@@ -116,20 +157,28 @@ export async function search(
   let rows: RawRow[];
 
   // Every variant filters by `agent_key` so an agent only searches its own
-  // docs (TASK-186).
+  // docs (TASK-186). ts_headline is computed in the OUTER select over the
+  // ORDER BY / LIMIT'd subquery, so the whole-body headline parse runs only on
+  // the returned topK rows — not on every WHERE match (ts_rank + the predicate
+  // stay in the inner query where they belong).
   if (categoryFilter !== undefined) {
     const result = await sql<RawRow>`
       SELECT doc_id, category, slug, summary,
              ts_headline('english', body,
                websearch_to_tsquery('english', ${orQuery}),
-               'MaxWords=48, MinWords=16, MaxFragments=1') AS snippet,
-             ts_rank(search_tsv, websearch_to_tsquery('english', ${orQuery})) AS score
-      FROM memory_strata_index_v2_docs
-      WHERE search_tsv @@ websearch_to_tsquery('english', ${orQuery})
-        AND agent_key = ${agentKey}
-        AND category = ${categoryFilter}
+               ${SNIPPET_OPTIONS}) AS snippet,
+             score
+      FROM (
+        SELECT doc_id, category, slug, summary, body,
+               ts_rank(search_tsv, websearch_to_tsquery('english', ${orQuery})) AS score
+        FROM memory_strata_index_v2_docs
+        WHERE search_tsv @@ websearch_to_tsquery('english', ${orQuery})
+          AND agent_key = ${agentKey}
+          AND category = ${categoryFilter}
+        ORDER BY score DESC
+        LIMIT ${topK}
+      ) AS top
       ORDER BY score DESC
-      LIMIT ${topK}
     `.execute(db);
     rows = result.rows;
   } else {
@@ -137,13 +186,18 @@ export async function search(
       SELECT doc_id, category, slug, summary,
              ts_headline('english', body,
                websearch_to_tsquery('english', ${orQuery}),
-               'MaxWords=48, MinWords=16, MaxFragments=1') AS snippet,
-             ts_rank(search_tsv, websearch_to_tsquery('english', ${orQuery})) AS score
-      FROM memory_strata_index_v2_docs
-      WHERE search_tsv @@ websearch_to_tsquery('english', ${orQuery})
-        AND agent_key = ${agentKey}
+               ${SNIPPET_OPTIONS}) AS snippet,
+             score
+      FROM (
+        SELECT doc_id, category, slug, summary, body,
+               ts_rank(search_tsv, websearch_to_tsquery('english', ${orQuery})) AS score
+        FROM memory_strata_index_v2_docs
+        WHERE search_tsv @@ websearch_to_tsquery('english', ${orQuery})
+          AND agent_key = ${agentKey}
+        ORDER BY score DESC
+        LIMIT ${topK}
+      ) AS top
       ORDER BY score DESC
-      LIMIT ${topK}
     `.execute(db);
     rows = result.rows;
   }
@@ -153,9 +207,9 @@ export async function search(
     category: r.category,
     slug: r.slug,
     summary: r.summary,
-    // ts_headline emits <b>…</b> around matches by default; strip for clean
-    // model-facing text (mirrors sqlite's empty-marker snippet()).
-    snippet: String(r.snippet).replace(/<\/?b>/g, ''),
+    // Empty StartSel/StopSel mean ts_headline emits no highlight markers, so
+    // the snippet is already clean model-facing text — no strip needed.
+    snippet: r.snippet,
     score: Number(r.score),
   }));
 }

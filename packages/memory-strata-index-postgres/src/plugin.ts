@@ -80,7 +80,9 @@ function validateSearchInput(input: SearchInput): { topK: number } {
  *
  * Search is powered by Postgres tsvector + GIN index with ts_rank scoring:
  *   summary (weight A) > headers (weight B) > body (weight C)
- * plainto_tsquery handles safe parameterization natively.
+ * Queries go through `websearch_to_tsquery` with each token OR-joined and
+ * double-quoted (`buildOrTsQuery`), which both parameterizes safely and
+ * neutralizes the `-`/`OR`/`"` operators (I17).
  */
 
 const PLUGIN_NAME = '@ax/memory-strata-index-postgres';
