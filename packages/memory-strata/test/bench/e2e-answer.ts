@@ -23,6 +23,7 @@ export interface MemorySearchResult {
   category: string;
   slug: string;
   summary: string;
+  snippet: string;
   score: number;
 }
 
@@ -275,7 +276,12 @@ async function dispatchTool(
 function formatSearchResults(rows: MemorySearchResult[]): string {
   if (rows.length === 0) return 'No matching memory documents found.';
   return rows
-    .map((r, i) => `[${i + 1}] (${r.docId}) ${r.summary}`)
+    .map((r, i) => {
+      const head = `[${i + 1}] (${r.docId}) ${r.summary}`;
+      // Orchestrator-mode map-<load> rows carry snippet: '' — rendering
+      // `match: ""` would read as "this doc matched nothing", so omit the line.
+      return r.snippet.trim() === '' ? head : `${head}\n    match: "${r.snippet}"`;
+    })
     .join('\n');
 }
 

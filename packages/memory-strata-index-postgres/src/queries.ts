@@ -11,6 +11,7 @@ export interface SearchResultRow {
   category: string;
   slug: string;
   summary: string;
+  snippet: string;
   score: number;
 }
 
@@ -55,14 +56,43 @@ export async function upsert(
 }
 
 // ---------------------------------------------------------------------------
-// search — plainto_tsquery + ts_rank, optional category filter
+// buildOrTsQuery — quote + OR-join query terms (mirrors sqlite's
+// escapeFts5Query)
 // ---------------------------------------------------------------------------
-// plainto_tsquery is already safe: Postgres strips FTS operators internally,
-// so no manual escaping is needed (unlike FTS5 in SQLite).
+// plainto_tsquery ANDs every term together. A multi-word memory_search query
+// (e.g. "degree graduated") is meant as "find docs about ANY of these terms",
+// not a strict boolean AND — the consolidator's coarse per-category mega-docs
+// mean a query term is often present in the body while a different query term
+// is absent everywhere in that doc, and a strict AND then returns zero rows
+// even though the doc plainly answers the question (the false-refusal bug
+// this feature exists to fix). websearch_to_tsquery is Postgres's own
+// hardened function for parsing raw user input (like plainto_tsquery, it
+// never throws on malformed syntax) and additionally understands an explicit
+// `OR` keyword, so joining tokens with a literal ' OR ' gives OR semantics
+// without hand-rolling tsquery escaping.
 //
-// Empty query short-circuits to [] BEFORE calling postgres — plainto_tsquery('')
-// returns an empty tsquery that matches nothing, but skipping the call avoids
-// an unnecessary roundtrip.
+// Each token is double-quoted so websearch_to_tsquery's OTHER operators are
+// neutralized too — exactly as escapeFts5Query quotes tokens to neutralize
+// FTS5's. Unquoted, a `-`-prefixed token becomes NOT and INVERTS matching
+// ("foo -bar" → 'foo' | !'bar' matches every doc LACKING bar — arbitrary
+// topK noise; contract Test 8c). Inside quotes, `-` and `OR` are literal
+// text. Embedded double quotes are replaced with a space (they would close
+// the quote early); the residue parses as an adjacent-phrase, still
+// operator-free. This keeps the two backends genuinely interchangeable under
+// the shared conformance kit.
+function buildOrTsQuery(trimmed: string): string {
+  return trimmed
+    .split(/\s+/)
+    .filter((t) => t.length > 0)
+    .map((t) => `"${t.replace(/"/g, ' ')}"`)
+    .join(' OR ');
+}
+
+// ---------------------------------------------------------------------------
+// search — websearch_to_tsquery (OR-joined) + ts_rank, optional category filter
+// ---------------------------------------------------------------------------
+// Empty query short-circuits to [] BEFORE calling postgres — an empty tsquery
+// matches nothing, but skipping the call avoids an unnecessary roundtrip.
 //
 // Score: ts_rank returns float >= 0 where higher = better match. Contract
 // orientation matches (higher = more relevant) so returned as-is.
@@ -76,8 +106,10 @@ export async function search(
 ): Promise<SearchResultRow[]> {
   const trimmed = query.trim();
   if (trimmed === '') return [];
+  const orQuery = buildOrTsQuery(trimmed);
 
   type RawRow = Pick<MemoryStrataIndexDocRow, 'doc_id' | 'category' | 'slug' | 'summary'> & {
+    snippet: string;
     score: number;
   };
 
@@ -88,9 +120,12 @@ export async function search(
   if (categoryFilter !== undefined) {
     const result = await sql<RawRow>`
       SELECT doc_id, category, slug, summary,
-             ts_rank(search_tsv, plainto_tsquery('english', ${trimmed})) AS score
+             ts_headline('english', body,
+               websearch_to_tsquery('english', ${orQuery}),
+               'MaxWords=48, MinWords=16, MaxFragments=1') AS snippet,
+             ts_rank(search_tsv, websearch_to_tsquery('english', ${orQuery})) AS score
       FROM memory_strata_index_v2_docs
-      WHERE search_tsv @@ plainto_tsquery('english', ${trimmed})
+      WHERE search_tsv @@ websearch_to_tsquery('english', ${orQuery})
         AND agent_key = ${agentKey}
         AND category = ${categoryFilter}
       ORDER BY score DESC
@@ -100,9 +135,12 @@ export async function search(
   } else {
     const result = await sql<RawRow>`
       SELECT doc_id, category, slug, summary,
-             ts_rank(search_tsv, plainto_tsquery('english', ${trimmed})) AS score
+             ts_headline('english', body,
+               websearch_to_tsquery('english', ${orQuery}),
+               'MaxWords=48, MinWords=16, MaxFragments=1') AS snippet,
+             ts_rank(search_tsv, websearch_to_tsquery('english', ${orQuery})) AS score
       FROM memory_strata_index_v2_docs
-      WHERE search_tsv @@ plainto_tsquery('english', ${trimmed})
+      WHERE search_tsv @@ websearch_to_tsquery('english', ${orQuery})
         AND agent_key = ${agentKey}
       ORDER BY score DESC
       LIMIT ${topK}
@@ -115,6 +153,9 @@ export async function search(
     category: r.category,
     slug: r.slug,
     summary: r.summary,
+    // ts_headline emits <b>…</b> around matches by default; strip for clean
+    // model-facing text (mirrors sqlite's empty-marker snippet()).
+    snippet: String(r.snippet).replace(/<\/?b>/g, ''),
     score: Number(r.score),
   }));
 }

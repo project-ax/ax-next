@@ -10,7 +10,7 @@ describe('e2e answer loop (TASK-189)', () => {
     // memory_search (summaries) the agent abstains; it needs memory_read_section
     // to read the fact BODY. This asserts the two-step shipped retrieval flow.
     const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
-      { docId: 'entity/degree', category: 'entity', slug: 'degree', summary: 'User education background.', score: 1 },
+      { docId: 'entity/degree', category: 'entity', slug: 'degree', summary: 'User education background.', snippet: 'education background', score: 1 },
     ]);
     const readSection = vi.fn(
       async (): Promise<{ body: string } | { error: string }> => ({
@@ -62,7 +62,7 @@ describe('e2e answer loop (TASK-189)', () => {
 
   it('drives a memory_search round-trip then returns the final text answer', async () => {
     const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
-      { docId: 'preference/cortados', category: 'preference', slug: 'cortados', summary: 'User loves cortados.', score: 1 },
+      { docId: 'preference/cortados', category: 'preference', slug: 'cortados', summary: 'User loves cortados.', snippet: 'loves cortados', score: 1 },
     ]);
 
     // Turn 1: model asks to search. Turn 2: model answers from the result.
@@ -103,6 +103,58 @@ describe('e2e answer loop (TASK-189)', () => {
     });
   });
 
+  it('includes the result snippet in the tool_result shown to the model', async () => {
+    const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
+      { docId: 'decision/user', category: 'decision', slug: 'user',
+        summary: "User's decisions", snippet: 'graduated with a B.A. in Business Administration', score: 1 },
+    ]);
+    const create = vi.fn()
+      .mockResolvedValueOnce({
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'memory_search', input: { query: 'degree' } }],
+        usage: { input_tokens: 100, output_tokens: 20 },
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'You graduated in Business Administration.' }],
+        usage: { input_tokens: 150, output_tokens: 10 },
+      });
+
+    await runAnswerLoop({
+      client: { messages: { create } }, model: 'm', maxToolTurns: 4,
+      system: 'sys', question: 'What degree?', search, readSection: noReadSection,
+    });
+
+    const toolResult = create.mock.calls[1]![0].messages.at(-1).content[0];
+    expect(toolResult.content).toContain('Business Administration');
+  });
+
+  it('omits the match: line when a result snippet is empty', async () => {
+    // Orchestrator mode returns map-<load> rows with snippet: '' (orchestrator.ts).
+    // Rendering `match: ""` verbatim would tell the model those docs — the ones
+    // the orchestrator judged most relevant — matched nothing.
+    const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
+      { docId: 'decision/user', category: 'decision', slug: 'user',
+        summary: "User's decisions", snippet: '', score: 1 },
+    ]);
+    const create = vi.fn()
+      .mockResolvedValueOnce({
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'memory_search', input: { query: 'degree' } }],
+        usage: { input_tokens: 100, output_tokens: 20 },
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'You graduated in Business Administration.' }],
+        usage: { input_tokens: 150, output_tokens: 10 },
+      });
+
+    await runAnswerLoop({
+      client: { messages: { create } }, model: 'm', maxToolTurns: 4,
+      system: 'sys', question: 'What degree?', search, readSection: noReadSection,
+    });
+
+    const toolResult = create.mock.calls[1]![0].messages.at(-1).content[0];
+    expect(toolResult.content).toBe("[1] (decision/user) User's decisions");
+    expect(toolResult.content).not.toContain('match:');
+  });
+
   it('answers directly without searching when the model emits text immediately', async () => {
     const search = vi.fn(async (): Promise<MemorySearchResult[]> => []);
     const create = vi.fn().mockResolvedValueOnce({
@@ -128,7 +180,7 @@ describe('e2e answer loop (TASK-189)', () => {
 
   it('disables tools on the final turn so a runaway searcher still answers', async () => {
     const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
-      { docId: 'episodes/x', category: 'episode', slug: 'x', summary: 's', score: 1 },
+      { docId: 'episodes/x', category: 'episode', slug: 'x', summary: 's', snippet: 's', score: 1 },
     ]);
     // Always tries to search; with maxToolTurns=2 the loop forces a tools-off
     // final turn where we make the model answer.

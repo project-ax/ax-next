@@ -25,8 +25,10 @@ export interface RegisterMemorySearchOptions {
 export const MEMORY_SEARCH_DESCRIPTOR: ToolDescriptor = {
   name: 'memory_search',
   description:
-    'Search long-term memory. Returns document summaries (~50 tokens each). ' +
-    'Use this BEFORE asserting facts about durable preferences, decisions, or known entities.',
+    'Search long-term memory. Returns, per hit, a one-line summary AND a `snippet` — ' +
+    'a short excerpt of the matching document body. READ the snippet before deciding you ' +
+    "don't know: the specific value (a name, date, number, place) is usually in the snippet, " +
+    'not the summary. Use memory_read_section only to read more of a doc the snippet teased.',
   executesIn: 'host',
   inputSchema: {
     type: 'object',
@@ -61,7 +63,16 @@ export async function registerMemorySearch(
   // routes to.
   bus.registerService<
     { input?: unknown },
-    { results: Array<{ docId: string; category: string; slug: string; summary: string; score: number }> }
+    {
+      results: Array<{
+        docId: string;
+        category: string;
+        slug: string;
+        summary: string;
+        snippet: string;
+        score: number;
+      }>;
+    }
   >(
     'tool:execute:memory_search',
     PLUGIN_NAME,

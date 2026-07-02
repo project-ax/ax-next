@@ -10,13 +10,16 @@ const result: SearchResult = {
   category: 'preference',
   slug: 'react',
   summary: 'User prefers React',
+  snippet: 'some excerpt',
   score: 0.87,
 };
 
 describe('memory-strata-index-postgres return schemas', () => {
   it('memory:index:search round-trips a fully-populated SearchOutput', () => {
     const full: SearchOutput = { results: [result] };
-    expect(SearchOutputSchema.parse(full)).toEqual(full);
+    const parsed = SearchOutputSchema.parse(full);
+    expect(parsed).toEqual(full);
+    expect(parsed.results[0]!.snippet).toBe('some excerpt');
   });
 
   it('accepts an empty results array', () => {

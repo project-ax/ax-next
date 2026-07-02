@@ -40,6 +40,7 @@ export interface SearchResult {
   category: string;
   slug: string;
   summary: string;
+  snippet: string;
   score: number;
 }
 
@@ -346,6 +347,70 @@ export function runIndexContract(label: string, factory: IndexBackendFactory): v
       expect(docIds).toContain('general/summary-hit');
       expect(docIds).toContain('general/body-hit');
       expect(docIds).toContain('general/headers-hit');
+    });
+
+    // -----------------------------------------------------------------------
+    // Test 8b: search returns a snippet carrying a body-only value
+    // -----------------------------------------------------------------------
+    // The value the agent needs often lives ONLY in the body, not the summary
+    // (coarse per-category docs). The search result must surface a
+    // match-centered body excerpt so the agent sees the value without a
+    // second read. Regression guard for the e2e false-refusal fix.
+    it('returns a snippet containing a body-only value', async () => {
+      await upsert({
+        docId: 'decision/user',
+        category: 'decision',
+        slug: 'user',
+        summary: "User's academic and career decisions",
+        factType: 'decision',
+        body: 'After a lot of thought the user graduated with a B.A. in Business Administration.',
+        headers: '',
+      });
+
+      const out = await search({ query: 'degree graduated', topK: 5 });
+      expect(out.results).toHaveLength(1);
+      expect(out.results[0]!.snippet).toContain('Business Administration');
+    });
+
+    // -----------------------------------------------------------------------
+    // Test 8c: full-text operators in query tokens are neutralized
+    // -----------------------------------------------------------------------
+    // memory_search queries are plain terms, never a boolean mini-language.
+    // Both engines' query parsers honour operators in raw input (FTS5:
+    // AND/OR/NEAR/-; websearch_to_tsquery: -/OR/"), so each backend must
+    // quote tokens to neutralize them. A leaked `-` is the nastiest case: it
+    // becomes NOT, which INVERTS matching — the query matches every doc
+    // LACKING the term (arbitrary topK noise) and misses the doc that
+    // contains it.
+    it('treats a "-"-prefixed token as a literal term, not NOT', async () => {
+      // Doc A: contains "graduated".
+      await upsert({
+        docId: 'decision/study',
+        category: 'decision',
+        slug: 'study',
+        summary: 'Academic milestones',
+        factType: 'decision',
+        body: 'The user graduated with honors.',
+        headers: '',
+      });
+      // Doc B: does NOT contain "graduated" (nor any query term).
+      await upsert({
+        docId: 'general/cooking',
+        category: 'general',
+        slug: 'cooking',
+        summary: 'Cooking notes',
+        factType: 'general',
+        body: 'A completely unrelated note about pasta.',
+        headers: '',
+      });
+
+      // Under leaked NOT semantics this returns Doc B (everything lacking
+      // "graduated") and misses Doc A. Neutralized, "-graduated" is just the
+      // term "graduated": Doc A matches, Doc B does not.
+      const out = await search({ query: 'zzq_absent_term -graduated', topK: 10 });
+      const docIds = out.results.map((r) => r.docId);
+      expect(docIds).toContain('decision/study');
+      expect(docIds).not.toContain('general/cooking');
     });
 
     // -----------------------------------------------------------------------

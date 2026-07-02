@@ -22,6 +22,7 @@ export const SearchOutputSchema = z.object({
       category: z.string(),
       slug: z.string(),
       summary: z.string(),
+      snippet: z.string(),
       score: z.number(),
     }),
   ),

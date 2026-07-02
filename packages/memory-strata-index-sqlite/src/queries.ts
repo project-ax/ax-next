@@ -65,6 +65,7 @@ export interface SearchResultRow {
   category: string;
   slug: string;
   summary: string;
+  snippet: string;
   score: number;
 }
 
@@ -88,6 +89,7 @@ export async function search(
     category: string;
     slug: string;
     summary: string;
+    snippet: string;
     raw_score: number;
   }>;
 
@@ -97,9 +99,12 @@ export async function search(
       category: string;
       slug: string;
       summary: string;
+      snippet: string;
       raw_score: number;
     }>`
-      SELECT doc_id, category, slug, summary, bm25(${sql.raw(TABLE)}) AS raw_score
+      SELECT doc_id, category, slug, summary,
+             snippet(${sql.raw(TABLE)}, 6, '', '', '…', 48) AS snippet,
+             bm25(${sql.raw(TABLE)}) AS raw_score
       FROM ${sql.raw(TABLE)}
       WHERE ${sql.raw(TABLE)} MATCH ${escaped}
         AND agent_key = ${agentKey}
@@ -114,9 +119,12 @@ export async function search(
       category: string;
       slug: string;
       summary: string;
+      snippet: string;
       raw_score: number;
     }>`
-      SELECT doc_id, category, slug, summary, bm25(${sql.raw(TABLE)}) AS raw_score
+      SELECT doc_id, category, slug, summary,
+             snippet(${sql.raw(TABLE)}, 6, '', '', '…', 48) AS snippet,
+             bm25(${sql.raw(TABLE)}) AS raw_score
       FROM ${sql.raw(TABLE)}
       WHERE ${sql.raw(TABLE)} MATCH ${escaped}
         AND agent_key = ${agentKey}
@@ -131,6 +139,7 @@ export async function search(
     category: r.category,
     slug: r.slug,
     summary: r.summary,
+    snippet: r.snippet,
     // bm25() returns negative values; more negative = better match.
     // Negate to get a positive score where higher = better match.
     score: -r.raw_score,
