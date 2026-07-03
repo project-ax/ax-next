@@ -232,6 +232,25 @@ function appendFactToBody(body: string, fact: string): string {
   return next.join('\n');
 }
 
+const FACT_DATE_RE = /^\((\d{4}-\d{2}-\d{2})\)\s*/;
+
+/**
+ * Prefix a fact with its event date — `(YYYY-MM-DD) <fact>` — so counting /
+ * time-scoped questions ("in February", "this year") are decidable from the
+ * doc body. Undated / malformed timestamps render the bare fact (back-compat:
+ * existing undated lines stay valid; no migration).
+ */
+export function formatFactLine(fact: string, isoTimestamp?: string | undefined): string {
+  const day = isoTimestamp?.slice(0, 10);
+  return day !== undefined && /^\d{4}-\d{2}-\d{2}$/.test(day) ? `(${day}) ${fact}` : fact;
+}
+
+/** Inverse of formatFactLine's prefix — used by dedup so a dated fact still
+ * Jaccard-matches its undated restatement. */
+export function stripFactDate(line: string): string {
+  return line.replace(FACT_DATE_RE, '');
+}
+
 function parseDoc(relPath: string, raw: string): DocFile {
   // Hand-parse the canonical frontmatter (`---\n...\n---\n<body>`). gray-matter
   // would do this but we already have js-yaml in scope and gray-matter is an

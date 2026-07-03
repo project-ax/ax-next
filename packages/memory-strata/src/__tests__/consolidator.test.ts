@@ -159,8 +159,9 @@ describe('consolidator', () => {
       'permanent/memory/docs/preference/react.md',
     );
     const reactDoc = await readFile(reactDocPath, 'utf8');
-    expect(reactDoc).toContain('- User prefers React');
-    expect(reactDoc).toContain('- User has used React for 5+ years');
+    // Fixtures carry event_time === now, so promoted facts render dated.
+    expect(reactDoc).toContain('- (2026-05-10) User prefers React');
+    expect(reactDoc).toContain('- (2026-05-10) User has used React for 5+ years');
     // source_observations must contain both inbox IDs (length 2).
     expect(reactDoc).toContain('obs-react-1');
     expect(reactDoc).toContain('obs-react-2');
@@ -267,7 +268,9 @@ describe('consolidator', () => {
     // output — proving regenerateMap ran the densifier rather than copying the
     // doc's raw frontmatter summary verbatim.
     expect(map).toContain('## preference/');
-    expect(map).toContain('DENSIFIED[1]: User prefers Tesla over BMW');
+    // Fixture carries event_time === now, so the doc's fact (fed to the
+    // densifier) is dated.
+    expect(map).toContain('DENSIFIED[1]: (2026-05-10) User prefers Tesla over BMW');
     expect(calls).toEqual(['preference/cars']);
   });
 
@@ -546,6 +549,60 @@ describe('consolidator', () => {
     // Doc should exist on disk.
     const docPath = join(workspaceRoot, 'permanent/memory/docs/preference/neovim.md');
     await expect(stat(docPath)).resolves.toBeTruthy();
+  });
+
+  it('promotes facts with a date tag from the observation event_time, and dedups a dated fact against its undated restatement', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // First observation: has event_time, so the promoted fact line is dated.
+    await writeInboxFixture(
+      'obs-dated-1.md',
+      {
+        id: 'obs-dated-1',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.85,
+        pinned: false,
+        summary: 'User visited The Art Cube',
+        subject: 'art-cube',
+        factType: 'episode',
+        event_time: '2026-02-15T18:30:00.000Z',
+      },
+      '# Observation\n\nUser visited The Art Cube\n',
+    );
+
+    const result1 = await runConsolidation({ workspaceRoot, now });
+    expect(result1.promoted).toBe(1);
+
+    const docPath = join(workspaceRoot, 'permanent/memory/docs/episode/art-cube.md');
+    const docAfterFirst = await readFile(docPath, 'utf8');
+    expect(docAfterFirst).toContain('- (2026-02-15) User visited The Art Cube');
+
+    // Second observation: same summary restated WITHOUT event_time — must
+    // dedup against the dated fact already in the doc (date-stripped compare).
+    await writeInboxFixture(
+      'obs-dated-2.md',
+      {
+        id: 'obs-dated-2',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.85,
+        pinned: false,
+        summary: 'User visited The Art Cube',
+        subject: 'art-cube',
+        factType: 'episode',
+      },
+      '# Observation\n\nUser visited The Art Cube\n',
+    );
+
+    const result2 = await runConsolidation({ workspaceRoot, now });
+    expect(result2.dupesMerged).toBe(1);
+    expect(result2.promoted).toBe(0);
+
+    const docAfterSecond = await readFile(docPath, 'utf8');
+    const factLines = docAfterSecond.split('\n').filter((l) => l.startsWith('- '));
+    expect(factLines).toHaveLength(1);
+    expect(factLines[0]).toBe('- (2026-02-15) User visited The Art Cube');
   });
 
   it('warns on invalid created timestamp during decay (C3)', async () => {

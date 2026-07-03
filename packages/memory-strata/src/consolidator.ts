@@ -25,7 +25,7 @@ import type { AgentContext, HookBus } from '@ax/core';
 import { clusterBySubject } from './cluster.js';
 import { isDupe } from './dedup.js';
 import {
-  appendFact, mergeConversationIntoDoc, readDoc, writeNewDoc,
+  appendFact, formatFactLine, mergeConversationIntoDoc, readDoc, stripFactDate, writeNewDoc,
 } from './doc-store.js';
 import { deleteInboxFile, listInbox } from './inbox-store.js';
 import { decidePromotion } from './promotion.js';
@@ -123,7 +123,9 @@ export async function runConsolidation(
         category: cluster.category,
         slug: cluster.slug,
       });
-      const existingFacts = existing ? extractFactsFromBody(existing.body) : [];
+      const existingFacts = existing
+        ? extractFactsFromBody(existing.body).map(stripFactDate)
+        : [];
 
       // Track whether we've created the doc during this cluster pass so we
       // know whether to call writeNewDoc (first observation) or appendFact
@@ -196,7 +198,12 @@ export async function runConsolidation(
             // skill-reflection recurrence gate can read it straight from the doc.
             conversationId: obs.frontmatter.conversation_id,
             now: input.now,
-            facts: [obs.frontmatter.summary ?? ''],
+            facts: [
+              formatFactLine(
+                obs.frontmatter.summary ?? '',
+                obs.frontmatter.event_time ?? obs.frontmatter.recorded_at,
+              ),
+            ],
           });
           docCreated = true;
           if (input.bus !== undefined && input.ctx !== undefined) {
@@ -221,7 +228,10 @@ export async function runConsolidation(
             workspaceRoot: input.workspaceRoot,
             category: cluster.category,
             slug: cluster.slug,
-            newFact: obs.frontmatter.summary ?? '',
+            newFact: formatFactLine(
+              obs.frontmatter.summary ?? '',
+              obs.frontmatter.event_time ?? obs.frontmatter.recorded_at,
+            ),
             observationId: obs.frontmatter.id,
             // TASK-187: dedup this observation's conversation into the doc's
             // distinct set — a new conversation grows recurrence; a repeat
