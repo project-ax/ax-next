@@ -723,4 +723,65 @@ describe('consolidator', () => {
       mergedInto: 'b-29-bomber-model-kit',
     });
   });
+
+  it('near-dup slug guard: does NOT log a merge when the redirected cluster never promotes (low-confidence)', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // --- First pass: seed decision/b-29-bomber-model-kit.md ---
+    await writeInboxFixture(
+      'obs-b29-kit.md',
+      {
+        id: 'obs-b29-kit',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'Bought a B-29 bomber model kit to build over the weekend',
+        subject: 'B-29 Bomber Model Kit',
+        factType: 'decision',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nBought a B-29 bomber model kit to build over the weekend\n',
+    );
+
+    const firstResult = await runConsolidation({ workspaceRoot, now });
+    expect(firstResult.promoted).toBe(1);
+
+    // --- Second pass: a near-dup-slug observation BELOW the promotion
+    // threshold (CONFIDENCE_THRESHOLD ~0.7). It slugifies to the token-subset
+    // near-dup 'b-29-bomber-model' in the SAME category, but it never
+    // promotes — so no write/merge into the existing doc happens and the
+    // near-dup merge warn must NOT fire (it would be a phantom-merge metric).
+    await writeInboxFixture(
+      'obs-b29-lowconf.md',
+      {
+        id: 'obs-b29-lowconf',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.3,
+        pinned: false,
+        summary: 'Maybe get a display stand for the finished model someday',
+        subject: 'B-29 Bomber Model',
+        factType: 'decision',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nMaybe get a display stand for the finished model someday\n',
+    );
+
+    const logger = makeLoggerSpy();
+    const secondResult = await runConsolidation({ workspaceRoot, now, logger });
+
+    // Low-confidence observation left in the inbox, nothing promoted/merged.
+    expect(secondResult.promoted).toBe(0);
+    expect(secondResult.dupesMerged).toBe(0);
+    expect(secondResult.leftInInbox).toBe(1);
+
+    // No phantom near-dup merge log.
+    const mergedWarnings = logger.warnCalls.filter(
+      (c) => c.event === 'memory_strata_near_dup_slug_merged',
+    );
+    expect(mergedWarnings).toHaveLength(0);
+  });
 });

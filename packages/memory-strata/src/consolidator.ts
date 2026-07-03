@@ -122,17 +122,23 @@ export async function runConsolidation(
       // D4 (enumeration design): if a same-category doc already exists whose
       // slug is a token-subset near-dup of this cluster's (b-29-bomber-model
       // vs b-29-bomber-model-kit), append there instead of minting a sibling —
-      // duplicate docs inflate enumeration counts.
+      // duplicate docs inflate enumeration counts. The slug is redirected
+      // eagerly (readDoc below must target the near-dup doc), but the merge is
+      // only LOGGED after a real write/merge occurs for this cluster this pass:
+      // a cluster whose observations never promote (low-confidence, quarantined)
+      // must not emit a phantom-merge line that corrupts the very metric this
+      // feature exists to expose.
+      const originalSlug = cluster.slug;
       const slugsInCategory = await listCategorySlugs(input.workspaceRoot, cluster.category);
       const nearDup = findNearDupSlug(cluster.slug, slugsInCategory);
       if (nearDup !== null) {
-        log.warn('memory_strata_near_dup_slug_merged', {
-          category: cluster.category,
-          newSlug: cluster.slug,
-          mergedInto: nearDup,
-        });
         cluster.slug = nearDup;
       }
+      // Snapshot the pass-global write counters so we can tell, after this
+      // cluster's observation loop, whether the redirect actually led to a
+      // write/merge into the existing doc.
+      const promotedBefore = promoted;
+      const dupesMergedBefore = dupesMerged;
 
       const existing = await readDoc({
         workspaceRoot: input.workspaceRoot,
@@ -278,6 +284,18 @@ export async function runConsolidation(
         factsInDoc.push(obs.frontmatter.summary ?? '');
         await deleteInboxFile(input.workspaceRoot, obs.path);
         promoted += 1;
+      }
+
+      // D4: emit the near-dup merge line iff the redirect actually led to a
+      // real write/merge into the existing doc this pass (a promote or a
+      // dedup-merge advanced a counter). `newSlug` reports the pre-redirect
+      // slug so the metric shows what folded into what.
+      if (nearDup !== null && (promoted > promotedBefore || dupesMerged > dupesMergedBefore)) {
+        log.warn('memory_strata_near_dup_slug_merged', {
+          category: cluster.category,
+          newSlug: originalSlug,
+          mergedInto: nearDup,
+        });
       }
     }
 
