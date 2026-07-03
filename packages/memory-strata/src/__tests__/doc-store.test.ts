@@ -245,6 +245,12 @@ describe('formatFactLine', () => {
   it('renders bare on a malformed timestamp', () => {
     expect(formatFactLine('fact', 'not-a-date')).toBe('fact');
   });
+  it('renders bare on a non-string timestamp (never throws)', () => {
+    // @ts-expect-error — exercising the runtime guard against loosely-typed YAML
+    expect(formatFactLine('fact', new Date('2026-02-15T18:30:00.000Z'))).toBe('fact');
+    // @ts-expect-error — exercising the runtime guard against loosely-typed YAML
+    expect(formatFactLine('fact', 1234567890123)).toBe('fact');
+  });
 });
 
 describe('stripFactDate', () => {
