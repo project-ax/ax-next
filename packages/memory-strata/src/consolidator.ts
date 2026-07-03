@@ -19,7 +19,7 @@
 // bypassed the Phase 1 gate. A `memory_strata_promotion_quarantined` log line
 // is emitted for each quarantine move.
 
-import { mkdir, rename } from 'node:fs/promises';
+import { mkdir, readdir, rename } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import type { AgentContext, HookBus } from '@ax/core';
 import { clusterBySubject } from './cluster.js';
@@ -31,7 +31,8 @@ import { deleteInboxFile, listInbox } from './inbox-store.js';
 import { decidePromotion } from './promotion.js';
 import { regenerateRecent } from './recent.js';
 import { regenerateMap, type MapDensifier } from './map.js';
-import { MEMORY_ROOT } from './paths.js';
+import { categoryDir, MEMORY_ROOT, type DocCategory } from './paths.js';
+import { findNearDupSlug } from './slug-guard.js';
 
 /**
  * Minimal structured-logger interface the consolidator uses. The caller
@@ -118,6 +119,21 @@ export async function runConsolidation(
     const clusters = clusterBySubject(inbox);
 
     for (const cluster of clusters) {
+      // D4 (enumeration design): if a same-category doc already exists whose
+      // slug is a token-subset near-dup of this cluster's (b-29-bomber-model
+      // vs b-29-bomber-model-kit), append there instead of minting a sibling —
+      // duplicate docs inflate enumeration counts.
+      const slugsInCategory = await listCategorySlugs(input.workspaceRoot, cluster.category);
+      const nearDup = findNearDupSlug(cluster.slug, slugsInCategory);
+      if (nearDup !== null) {
+        log.warn('memory_strata_near_dup_slug_merged', {
+          category: cluster.category,
+          newSlug: cluster.slug,
+          mergedInto: nearDup,
+        });
+        cluster.slug = nearDup;
+      }
+
       const existing = await readDoc({
         workspaceRoot: input.workspaceRoot,
         category: cluster.category,
@@ -383,4 +399,20 @@ function extractFactsFromBody(body: string): string[] {
 
 function noopLogger(): ConsolidationLogger {
   return { info: () => {}, warn: () => {} };
+}
+
+/**
+ * List the doc slugs already on disk in a category directory (D4 near-dup
+ * guard). A missing category directory (no docs promoted there yet) is not
+ * an error — it just means there are no near-dup candidates.
+ */
+async function listCategorySlugs(workspaceRoot: string, category: DocCategory): Promise<string[]> {
+  const dirAbs = join(workspaceRoot, categoryDir(category));
+  try {
+    const names = await readdir(dirAbs);
+    return names.filter((n) => n.endsWith('.md')).map((n) => n.slice(0, -'.md'.length));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return [];
+    throw err;
+  }
 }

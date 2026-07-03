@@ -641,4 +641,86 @@ describe('consolidator', () => {
       inboxPath: expect.stringContaining('obs-bad-date.md'),
     });
   });
+
+  it('near-dup slug guard: a same-category token-subset slug folds into the existing doc instead of minting a sibling', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // --- First pass: seed decision/b-29-bomber-model-kit.md ---
+    await writeInboxFixture(
+      'obs-b29-kit.md',
+      {
+        id: 'obs-b29-kit',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'Bought a B-29 bomber model kit to build over the weekend',
+        subject: 'B-29 Bomber Model Kit',
+        factType: 'decision',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nBought a B-29 bomber model kit to build over the weekend\n',
+    );
+
+    const firstResult = await runConsolidation({ workspaceRoot, now });
+    expect(firstResult.promoted).toBe(1);
+
+    const kitDocPath = join(
+      workspaceRoot,
+      'permanent/memory/docs/decision/b-29-bomber-model-kit.md',
+    );
+    await expect(stat(kitDocPath)).resolves.toBeTruthy();
+
+    // --- Second pass: a NEW observation whose subject slugifies to the
+    // token-subset near-dup 'b-29-bomber-model' (same category) ---
+    await writeInboxFixture(
+      'obs-b29-standalone.md',
+      {
+        id: 'obs-b29-standalone',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'Decided to add a display stand for the finished model',
+        subject: 'B-29 Bomber Model',
+        factType: 'decision',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nDecided to add a display stand for the finished model\n',
+    );
+
+    const logger = makeLoggerSpy();
+    const secondResult = await runConsolidation({ workspaceRoot, now, logger });
+
+    // The new observation promoted (distinct summary) — but into the EXISTING
+    // near-dup doc, not a fresh sibling.
+    expect(secondResult.promoted).toBe(1);
+    expect(secondResult.dupesMerged).toBe(0);
+
+    // --- Assert no sibling doc was minted ---
+    const standaloneDocPath = join(
+      workspaceRoot,
+      'permanent/memory/docs/decision/b-29-bomber-model.md',
+    );
+    await expect(stat(standaloneDocPath)).rejects.toThrow(/ENOENT/);
+
+    // --- Assert the existing doc gained the new fact ---
+    const kitDoc = await readFile(kitDocPath, 'utf8');
+    expect(kitDoc).toContain('- (2026-05-10) Bought a B-29 bomber model kit to build over the weekend');
+    expect(kitDoc).toContain('- (2026-05-10) Decided to add a display stand for the finished model');
+    expect(kitDoc).toContain('obs-b29-standalone');
+
+    // --- Assert the near-dup merge was logged ---
+    const mergedWarnings = logger.warnCalls.filter(
+      (c) => c.event === 'memory_strata_near_dup_slug_merged',
+    );
+    expect(mergedWarnings).toHaveLength(1);
+    expect(mergedWarnings[0]!.fields).toMatchObject({
+      category: 'decision',
+      newSlug: 'b-29-bomber-model',
+      mergedInto: 'b-29-bomber-model-kit',
+    });
+  });
 });
