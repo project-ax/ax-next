@@ -166,15 +166,30 @@ export function makeAnthropicAnswerClient(
   };
   return {
     async answer({ injectedMemory, question, questionDate, search, readSection }) {
-      let system = injectedMemory.trim().length > 0
-        ? `${SYSTEM_PREAMBLE}\n\n# Injected memory\n${injectedMemory}`
-        : SYSTEM_PREAMBLE;
-      if (questionDate !== undefined && questionDate.trim().length > 0) {
-        system += `\n\nToday's date: ${questionDate.trim()}`;
-      }
+      const system = buildAnswerSystem(injectedMemory, questionDate);
       return runAnswerLoop({ client, model, maxToolTurns, system, question, search, readSection });
     },
   };
+}
+
+/**
+ * Assemble the answer turn's system prompt: the shared preamble, the injected
+ * memory block (only when non-empty), and — for bench temporal fidelity (Task
+ * 5) — a `Today's date:` anchor when the corpus question carried a date.
+ *
+ * Exported + pure so the format is unit-testable directly: the driver test's
+ * hand-rolled answerClient stub can't cover it (it reconstructs the string
+ * itself), so a dropped `.trim()`, a single-newline separator, or a misspelled
+ * label would otherwise slip through green.
+ */
+export function buildAnswerSystem(injectedMemory: string, questionDate?: string): string {
+  let system = injectedMemory.trim().length > 0
+    ? `${SYSTEM_PREAMBLE}\n\n# Injected memory\n${injectedMemory}`
+    : SYSTEM_PREAMBLE;
+  if (questionDate !== undefined && questionDate.trim().length > 0) {
+    system += `\n\nToday's date: ${questionDate.trim()}`;
+  }
+  return system;
 }
 
 /** The narrow client shape runAnswerLoop drives (also satisfied by test stubs). */

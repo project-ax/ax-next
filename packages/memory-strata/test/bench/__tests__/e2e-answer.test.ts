@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { runAnswerLoop, type MemorySearchResult, type ReadSectionFn } from '../e2e-answer.js';
+import { runAnswerLoop, buildAnswerSystem, type MemorySearchResult, type ReadSectionFn } from '../e2e-answer.js';
 
 /** A no-op read_section stub for tests that don't exercise the drill-in path. */
 const noReadSection = (): ReturnType<ReadSectionFn> => Promise.resolve({ body: '' });
@@ -302,5 +302,43 @@ describe('e2e answer loop (TASK-189)', () => {
     expect(out.toolCalls).toBe(2);
     // The last request must NOT carry tools.
     expect(create.mock.calls.at(-1)![0].tools).toBeUndefined();
+  });
+});
+
+// Bench temporal fidelity (Task 5): the questionDate→system-prompt append lives
+// in makeAnthropicAnswerClient.answer, which the driver test can't cover (its
+// stub reconstructs the string itself). buildAnswerSystem is the extracted pure
+// fn so the exact format is pinned here — a dropped .trim(), a single-newline
+// separator, or a misspelled label fails LOUDLY instead of slipping through.
+describe('buildAnswerSystem (answer system-prompt assembly)', () => {
+  it('appends "Today\'s date: <date>" as the exact suffix when a questionDate is given', () => {
+    const system = buildAnswerSystem('', '2023-06-01');
+    // Pin the exact suffix, including BOTH newline separators.
+    expect(system.endsWith("\n\nToday's date: 2023-06-01")).toBe(true);
+  });
+
+  it('trims surrounding whitespace off the questionDate before appending', () => {
+    const system = buildAnswerSystem('', '  2023-06-01  ');
+    expect(system.endsWith("\n\nToday's date: 2023-06-01")).toBe(true);
+  });
+
+  it('omits the date line entirely when questionDate is undefined', () => {
+    const system = buildAnswerSystem('some memory', undefined);
+    expect(system).not.toContain("Today's date:");
+  });
+
+  it('omits the date line when questionDate is whitespace-only', () => {
+    const system = buildAnswerSystem('some memory', '   ');
+    expect(system).not.toContain("Today's date:");
+  });
+
+  it('wraps non-empty injected memory in a "# Injected memory" block', () => {
+    const system = buildAnswerSystem('User loves cortados.', undefined);
+    expect(system).toContain('\n\n# Injected memory\nUser loves cortados.');
+  });
+
+  it('uses the bare preamble (no injected-memory block) when memory is empty/whitespace', () => {
+    const system = buildAnswerSystem('   ', undefined);
+    expect(system).not.toContain('# Injected memory');
   });
 });

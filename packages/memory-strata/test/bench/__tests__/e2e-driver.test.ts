@@ -265,4 +265,10 @@ describe('parseCorpusDate', () => {
   it('returns null for malformed input', () => {
     expect(parseCorpusDate('not a date')).toBeNull();
   });
+
+  it('returns null (does not throw) for a non-string JSON null', () => {
+    // haystack_dates is an unchecked JSON.parse cast — a literal `null` entry
+    // must not reach `raw.trim()` and throw a TypeError.
+    expect(parseCorpusDate(null as unknown as string | undefined)).toBeNull();
+  });
 });

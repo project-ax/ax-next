@@ -45,7 +45,11 @@ export type ExtractionLlmFn = (input: LlmCallInput) => Promise<LlmCallOutput>;
 /** Parse a LongMemEval haystack/question date ("2023/05/20 (Sat) 02:21") to a
  * Date, or null when absent/malformed — null falls back to wall-clock. */
 export function parseCorpusDate(raw: string | undefined): Date | null {
-  if (raw === undefined) return null;
+  // `haystack_dates` comes from an unchecked `JSON.parse(...) as ...` cast, so a
+  // literal JSON `null` (or number) can slip past the declared type — guard on
+  // the runtime type, not just `undefined`, so a non-string returns null instead
+  // of throwing at `raw.trim()`.
+  if (typeof raw !== 'string') return null;
   const m = /^(\d{4})[/-](\d{2})[/-](\d{2})/.exec(raw.trim());
   if (m === null) return null;
   const d = new Date(`${m[1]}-${m[2]}-${m[3]}T12:00:00.000Z`);
