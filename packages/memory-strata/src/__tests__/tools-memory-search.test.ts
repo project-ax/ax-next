@@ -2,11 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { HookBus, makeAgentContext } from '@ax/core';
+import { HookBus, createLogger, makeAgentContext } from '@ax/core';
 import type { ToolDescriptor } from '@ax/core';
 import { writeNewDoc } from '../doc-store.js';
 import { buildMarkdownFile } from '../frontmatter.js';
-import { mapFile } from '../paths.js';
+import { docFile, mapFile } from '../paths.js';
 import type { OrchestratorClient } from '../orchestrator.js';
 import { registerMemorySearch, MEMORY_SEARCH_DESCRIPTOR } from '../tools/memory-search.js';
 import type { RetrievalResult } from '../retriever.js';
@@ -556,5 +556,61 @@ describe('matchedFacts enrichment', () => {
 
     expect(out.results).toHaveLength(1);
     expect(out.results[0]!.matchedFacts).toEqual([]);
+  });
+
+  it('doc read THROWS (EISDIR) → catch logs memory_strata_matched_facts_failed, matchedFacts: [], call still succeeds', async () => {
+    // Regression for the best-effort catch in withMatchedFacts. The two tests
+    // above only exercise the graceful readDoc→null path (ENOENT / missing
+    // file), where readDocBody returns null WITHOUT throwing — so the catch
+    // never fires. Here we make readDoc's `fs.readFile` throw a NON-ENOENT
+    // error (EISDIR) by creating the doc's `.md` path AS A DIRECTORY (same
+    // technique as the "orchestrator read throws" test above). readDoc rethrows
+    // any non-ENOENT error, so readDocBody throws, and the enrichment MUST
+    // catch it: log + matchedFacts:[] , never a failed tool call.
+    const docAbs = join(workspaceRoot, docFile('episode', 'eisdir'));
+    await mkdir(docAbs, { recursive: true }); // create the .md path AS A DIRECTORY → readFile → EISDIR
+
+    const searchResults: RetrievalResult[] = [
+      {
+        docId: 'episode/eisdir',
+        category: 'episode',
+        slug: 'eisdir',
+        summary: 'Doc whose .md path is a directory',
+        snippet: '',
+        score: 0.5,
+      },
+    ];
+    const { bus } = makeWiredBus({ searchResults });
+    await registerMemorySearch(bus);
+
+    // Real logger (writer suppressed so the EISDIR warn doesn't spam the run),
+    // with `warn` spied so we can assert the catch fired.
+    const logger = createLogger({ reqId: 'mf-eisdir', writer: () => {} });
+    const warnSpy = vi.spyOn(logger, 'warn');
+    const ctx = makeAgentContext({
+      sessionId: 'mf-session',
+      agentId: 'mf-agent',
+      userId: 'mf-user',
+      workspace: { rootPath: workspaceRoot },
+      logger,
+    });
+
+    const out = (await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'weddings attended' }),
+    )) as { results: Array<{ docId: string; matchedFacts: string[] }> };
+
+    // (a) call succeeded (did not reject), (b) row degraded to matchedFacts: [].
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0]!.matchedFacts).toEqual([]);
+    // (c) the catch logged the failure with docId + err.
+    expect(warnSpy).toHaveBeenCalledWith(
+      'memory_strata_matched_facts_failed',
+      expect.objectContaining({
+        docId: 'episode/eisdir',
+        err: expect.any(Error),
+      }),
+    );
   });
 });
