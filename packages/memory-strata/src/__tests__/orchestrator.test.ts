@@ -88,6 +88,13 @@ describe('parseOrchestratorPlan', () => {
     const plan = parseOrchestratorPlan('I cannot help with that.');
     expect(plan).toEqual({ ops: [], followupNeeded: false });
   });
+
+  it('caps a runaway plan at 8 ops', () => {
+    const text = Array.from({ length: 12 }, (_, i) => `<fts query="probe ${i}"/>`).join('\n');
+    const plan = parseOrchestratorPlan(text);
+    expect(plan.ops).toHaveLength(8);
+    expect(plan.ops[0]).toEqual({ kind: 'fts', query: 'probe 0' });
+  });
 });
 
 // ─── parseMapEntries ──────────────────────────────────────────────────────

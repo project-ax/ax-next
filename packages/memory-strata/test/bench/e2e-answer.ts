@@ -24,6 +24,7 @@ export interface MemorySearchResult {
   slug: string;
   summary: string;
   snippet: string;
+  matchedFacts: string[];
   score: number;
 }
 
@@ -78,7 +79,9 @@ const MEMORY_SEARCH_TOOL: Anthropic.Tool = {
   description:
     'Search long-term memory. Returns document summaries (~50 tokens each) + ids. ' +
     'Use this BEFORE asserting facts about durable preferences, decisions, or known entities, ' +
-    'then memory_read_section to read the body of the most relevant result.',
+    'then memory_read_section to read the body of the most relevant result. ' +
+    'For counting questions, read the facts lists across ALL hits and run follow-up searches ' +
+    'with instance-specific terms before concluding.',
   input_schema: {
     type: 'object',
     properties: {
@@ -115,7 +118,7 @@ const MEMORY_READ_SECTION_TOOL: Anthropic.Tool = {
 };
 
 /** Default ceiling on memory_search round-trips per question (cost + loop bound). */
-const DEFAULT_MAX_TOOL_TURNS = 4;
+const DEFAULT_MAX_TOOL_TURNS = 6;
 const MAX_ANSWER_TOKENS = 512;
 
 /**
@@ -277,10 +280,14 @@ function formatSearchResults(rows: MemorySearchResult[]): string {
   if (rows.length === 0) return 'No matching memory documents found.';
   return rows
     .map((r, i) => {
-      const head = `[${i + 1}] (${r.docId}) ${r.summary}`;
+      let entry = `[${i + 1}] (${r.docId}) ${r.summary}`;
       // Orchestrator-mode map-<load> rows carry snippet: '' — rendering
       // `match: ""` would read as "this doc matched nothing", so omit the line.
-      return r.snippet.trim() === '' ? head : `${head}\n    match: "${r.snippet}"`;
+      if (r.snippet.trim() !== '') entry += `\n    match: "${r.snippet}"`;
+      if (r.matchedFacts.length > 0) {
+        entry += `\n    facts:\n${r.matchedFacts.map((f) => `      - ${f}`).join('\n')}`;
+      }
+      return entry;
     })
     .join('\n');
 }

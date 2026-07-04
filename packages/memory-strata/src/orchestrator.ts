@@ -65,14 +65,19 @@ You output ONLY XML, using these tags:
   <load doc="<docId>"/>                  — load a document into context
   <fts query="..."/>                     — when you genuinely cannot decide
                                             from the map alone, run a keyword
-                                            search (max 1-2 of these per query)
+                                            search
   <followup needed="true"/>              — emit when you suspect one hop
                                             won't be enough (e.g., cross-doc
                                             aggregation, "what was X before we
                                             changed it")
 
 Rules:
-- Emit between 1 and 5 ops total. Prefer the smallest precise set.
+- Emit between 1 and 8 ops total. Prefer the smallest precise set.
+- For counting or aggregation queries ("how many X", "sum of Y", "list all Z"),
+  instances are usually SCATTERED across several docs: load EVERY plausibly
+  relevant doc and add 1-3 <fts> probes with instance-level terms (for
+  "citrus fruits" also probe "lime", "lemon", "orange"; for "doctors" probe
+  "appointment", "specialist").
 - doc ids must exactly match entries in the map (e.g. "preference/coffee").
 - Do not output prose, code fences, or explanations. Only the XML ops.`;
 
@@ -87,6 +92,9 @@ const LOAD_RE = /<load\s+([^>]*?)\/?>/gi;
 const FTS_RE = /<fts\s+([^>]*?)\/?>/gi;
 const FOLLOWUP_RE = /<followup\s+[^>]*needed=["']?true["']?[^>]*\/?>/i;
 const ATTR_RE = /(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
+
+/** Defensive cap on ops per plan — a runaway model can't force unbounded work. */
+export const MAX_OPS = 8;
 
 export function parseOrchestratorPlan(text: string): OrchestratorPlan {
   const stripped = text.replace(FENCE_RE, '').trim();
@@ -106,7 +114,7 @@ export function parseOrchestratorPlan(text: string): OrchestratorPlan {
     const attrs = parseAttrs(m[1] ?? '');
     if (attrs.query) ops.push({ kind: 'fts', query: attrs.query.trim() });
   }
-  return { ops, followupNeeded: FOLLOWUP_RE.test(stripped) };
+  return { ops: ops.slice(0, MAX_OPS), followupNeeded: FOLLOWUP_RE.test(stripped) };
 }
 
 function parseAttrs(s: string): Record<string, string> {
