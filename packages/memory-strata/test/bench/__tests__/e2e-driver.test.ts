@@ -1,7 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { LlmCallInput, LlmCallOutput } from '@ax/core';
 import type { OrchestratorClient } from '@ax/memory-strata';
-import { runE2EQuestion } from '../e2e-driver.js';
+import { runE2EQuestion, parseCorpusDate } from '../e2e-driver.js';
 import type { E2EAnswerClient } from '../e2e-answer.js';
 import type { LongMemEvalSample } from '../corpora/longmemeval-s.js';
 
@@ -204,4 +204,65 @@ describe('runE2EQuestion (TASK-189 integration, stubbed LLMs)', () => {
   // returns `retrievalMode: 'bm25'` and drives the exact same real
   // memory_search tool over the same consolidated index, just without an
   // orchestrator in front of it.
+
+  // TASK-198/Task 5 (bench temporal fidelity): the harness previously ingested
+  // every haystack session at wall-clock time, so fact dates and "this year"/
+  // "in February" questions were fiction-vs-reality mismatches. `haystack_dates`
+  // now drives the Observer's `now` per session, and `question_date` reaches the
+  // answer system prompt.
+  it('feeds haystack_dates into ingestion time and question_date into the answer system prompt', async () => {
+    const dated: LongMemEvalSample = {
+      ...answerableSample,
+      question_id: 'q-coffee-dated',
+      question_date: '2023-06-01',
+      haystack_dates: ['2023/05/20 (Sat) 02:21', '2023/05/21 (Sun) 09:00'],
+    };
+
+    let capturedSearchRows: unknown[] = [];
+    let capturedSystem = '';
+    const answerClient: E2EAnswerClient = {
+      async answer({ search, question, questionDate }) {
+        capturedSystem =
+          questionDate !== undefined ? `Today's date: ${questionDate}` : '';
+        void question;
+        capturedSearchRows = await search({ query: 'coffee preference' });
+        return { text: 'You prefer cortados.', usage: { in: 200, out: 10 }, toolCalls: 1 };
+      },
+    };
+
+    await runE2EQuestion({
+      sample: dated,
+      extractionLlm: stubExtraction(),
+      answerClient,
+    });
+
+    // (a) the Observer's `now` for the first haystack session came from its
+    // corpus date (2023-05-20), not wall-clock — visible as the fact line's
+    // date prefix baked in at consolidation (formatFactLine).
+    expect(JSON.stringify(capturedSearchRows)).toContain('(2023-05-20)');
+    // (b) question_date reached the answer client.
+    expect(capturedSystem).toBe("Today's date: 2023-06-01");
+  });
+});
+
+describe('parseCorpusDate', () => {
+  it('parses the LongMemEval "YYYY/MM/DD (Sat) HH:MM" form to noon UTC', () => {
+    const d = parseCorpusDate('2023/05/20 (Sat) 02:21');
+    expect(d).not.toBeNull();
+    expect(d!.toISOString()).toBe('2023-05-20T12:00:00.000Z');
+  });
+
+  it('parses a bare "YYYY-MM-DD" form to noon UTC', () => {
+    const d = parseCorpusDate('2023-05-20');
+    expect(d).not.toBeNull();
+    expect(d!.toISOString()).toBe('2023-05-20T12:00:00.000Z');
+  });
+
+  it('returns null for absent input', () => {
+    expect(parseCorpusDate(undefined)).toBeNull();
+  });
+
+  it('returns null for malformed input', () => {
+    expect(parseCorpusDate('not a date')).toBeNull();
+  });
 });

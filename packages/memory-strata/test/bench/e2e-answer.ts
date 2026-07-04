@@ -59,6 +59,13 @@ export interface E2EAnswerClient {
     injectedMemory: string;
     /** The question to answer. */
     question: string;
+    /**
+     * The LongMemEval sample's corpus question date (bench temporal fidelity,
+     * Task 5), e.g. "2023-06-01". Absent falls back to no date anchor at all —
+     * the prior wall-clock-only behavior — rather than injecting today's real
+     * date, which would be just as fictional as omitting it.
+     */
+    questionDate?: string;
     /** Executor for the agent's memory_search calls. */
     search: MemorySearchFn;
     /** Executor for the agent's memory_read_section calls (drill into a fact). */
@@ -158,10 +165,13 @@ export function makeAnthropicAnswerClient(
     },
   };
   return {
-    async answer({ injectedMemory, question, search, readSection }) {
-      const system = injectedMemory.trim().length > 0
+    async answer({ injectedMemory, question, questionDate, search, readSection }) {
+      let system = injectedMemory.trim().length > 0
         ? `${SYSTEM_PREAMBLE}\n\n# Injected memory\n${injectedMemory}`
         : SYSTEM_PREAMBLE;
+      if (questionDate !== undefined && questionDate.trim().length > 0) {
+        system += `\n\nToday's date: ${questionDate.trim()}`;
+      }
       return runAnswerLoop({ client, model, maxToolTurns, system, question, search, readSection });
     },
   };

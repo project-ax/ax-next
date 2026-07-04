@@ -94,6 +94,12 @@ export interface MemoryStrataConfig {
    */
   orchestrator?: { client: OrchestratorClient; timeoutMs?: number };
   /**
+   * Time source for observer stamps and consolidation passes. Bench-only
+   * seam (e2e temporal fidelity — the harness replays sessions whose fiction
+   * happened on corpus dates, not today). Production omits it: real time.
+   */
+  nowFn?: () => Date;
+  /**
    * Test-only seam — captures the per-plugin Debouncer so tests can
    * call `flush()` deterministically. NOT for production use.
    *
@@ -171,6 +177,9 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   // TASK-191 Task 3: resolve once here (not inside registerMemorySearch) so
   // the default lives alongside every other cfg-default in this constructor.
   const retrievalMode = cfg.retrievalMode ?? 'orchestrator';
+  // Bench temporal-fidelity seam (Task 5): production omits `cfg.nowFn`, so
+  // this is exactly `new Date` and every call site below is unchanged.
+  const nowFn = cfg.nowFn ?? (() => new Date());
 
   // Per-agent debouncer for the Consolidator (I10). Created at plugin
   // construction so it is shared across all chat:end firings for this
@@ -316,6 +325,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
         const observerWork = kickOffObserver(bus, ctx, payload, {
           llmCallHook,
           observerTimeoutMs,
+          nowFn,
         }).catch((err) => {
           ctx.logger.warn('memory_strata_observer_failed', {
             err: err instanceof Error ? err : new Error(String(err)),
@@ -379,6 +389,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
             llmCallHook,
             mapDensifyEnabled,
             mapDensifyTimeoutMs,
+            nowFn,
           });
           inflightWork.set(ctx.agentId, work);
           // Test-only settle handle: record the latest underlying work so a
@@ -461,7 +472,7 @@ async function kickOffObserver(
   bus: HookBus,
   ctx: AgentContext,
   payload: ChatEndPayload,
-  cfg: { llmCallHook: string; observerTimeoutMs: number },
+  cfg: { llmCallHook: string; observerTimeoutMs: number; nowFn: () => Date },
 ): Promise<void> {
   // Terminated outcomes (chat:start veto, runner crash, timeout) carry no
   // transcript. Skip cleanly.
@@ -486,7 +497,7 @@ async function kickOffObserver(
       messages: payload.outcome.messages,
       llmCall,
       workspaceRoot,
-      now: new Date(),
+      now: cfg.nowFn(),
       timeoutMs: cfg.observerTimeoutMs,
       model: agent.model,
       // TASK-187: thread the DURABLE per-conversation key onto each inbox
@@ -550,8 +561,9 @@ async function consolidateRoutedToTier(deps: {
   llmCallHook: string;
   mapDensifyEnabled: boolean;
   mapDensifyTimeoutMs: number;
+  nowFn: () => Date;
 }): Promise<ConsolidationResult> {
-  const { bus, ctx, consolidate, llmCallHook, mapDensifyEnabled, mapDensifyTimeoutMs } = deps;
+  const { bus, ctx, consolidate, llmCallHook, mapDensifyEnabled, mapDensifyTimeoutMs, nowFn } = deps;
   const logger = {
     info: (event: string, fields: Record<string, unknown>) => ctx.logger.info(event, fields),
     warn: (event: string, fields: Record<string, unknown>) => ctx.logger.warn(event, fields),
@@ -573,7 +585,7 @@ async function consolidateRoutedToTier(deps: {
   if (!agentTierAvailable(bus)) {
     return consolidate({
       workspaceRoot: ctx.workspace.rootPath,
-      now: new Date(),
+      now: nowFn(),
       logger,
       bus,
       ctx,
@@ -590,7 +602,7 @@ async function consolidateRoutedToTier(deps: {
     // AFTER the flush (below) from the durable `/agent` content instead.
     const result = await consolidate({
       workspaceRoot: hydrated.scratchRoot,
-      now: new Date(),
+      now: nowFn(),
       logger,
       densifyMap,
     });
