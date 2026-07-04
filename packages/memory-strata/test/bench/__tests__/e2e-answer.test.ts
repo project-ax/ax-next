@@ -181,9 +181,43 @@ describe('e2e answer loop (TASK-189)', () => {
     });
 
     const toolResult = create.mock.calls[1]![0].messages.at(-1).content[0];
-    expect(toolResult.content).toContain('facts:');
-    expect(toolResult.content).toContain('(2026-02-01) went to Austin Film Festival');
-    expect(toolResult.content).toContain('volunteered at Portland Film Festival');
+    // Pin the exact facts: block with its precise indentation so a wrong
+    // indent or order regression is caught, not just the bare fact text.
+    expect(toolResult.content).toContain(
+      '\n    facts:\n' +
+        '      - (2026-02-01) went to Austin Film Festival\n' +
+        '      - volunteered at Portland Film Festival',
+    );
+  });
+
+  it('renders the facts: block even when the snippet is empty (orchestrator <load> row)', async () => {
+    // The orchestrator-mode <load> row shape: snippet: '' (no query-matched
+    // excerpt) but matchedFacts carried from the index (Task 3). The facts
+    // block must still render, and no `match:` line should appear.
+    const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
+      { docId: 'episode/festivals', category: 'episode', slug: 'festivals',
+        summary: 'Film festivals attended', snippet: '',
+        matchedFacts: ['(2026-02-01) went to Austin Film Festival'],
+        score: 1 },
+    ]);
+    const create = vi.fn()
+      .mockResolvedValueOnce({
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'memory_search', input: { query: 'film festivals' } }],
+        usage: { input_tokens: 100, output_tokens: 20 },
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'You attended a festival.' }],
+        usage: { input_tokens: 150, output_tokens: 10 },
+      });
+
+    await runAnswerLoop({
+      client: { messages: { create } }, model: 'm', maxToolTurns: 4,
+      system: 'sys', question: 'What festivals?', search, readSection: noReadSection,
+    });
+
+    const toolResult = create.mock.calls[1]![0].messages.at(-1).content[0];
+    expect(toolResult.content).toContain('\n    facts:\n      - (2026-02-01) went to Austin Film Festival');
+    expect(toolResult.content).not.toContain('match:');
   });
 
   it('omits the facts: block when matchedFacts is empty', async () => {

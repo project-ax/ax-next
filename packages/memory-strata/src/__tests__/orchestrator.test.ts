@@ -95,6 +95,23 @@ describe('parseOrchestratorPlan', () => {
     expect(plan.ops).toHaveLength(8);
     expect(plan.ops[0]).toEqual({ kind: 'fts', query: 'probe 0' });
   });
+
+  it('logs when the op cap truncates a plan', () => {
+    const logger = { warn: vi.fn() };
+    const text = Array.from({ length: 12 }, (_, i) => `<fts query="probe ${i}"/>`).join('\n');
+    parseOrchestratorPlan(text, logger);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'memory_strata_orchestrator_ops_capped',
+      expect.objectContaining({ totalOps: 12, kept: 8 }),
+    );
+  });
+
+  it('does NOT log when the plan is within the op cap', () => {
+    const logger = { warn: vi.fn() };
+    const text = Array.from({ length: 8 }, (_, i) => `<fts query="probe ${i}"/>`).join('\n');
+    parseOrchestratorPlan(text, logger);
+    expect(logger.warn).not.toHaveBeenCalled();
+  });
 });
 
 // ─── parseMapEntries ──────────────────────────────────────────────────────

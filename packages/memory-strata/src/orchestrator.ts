@@ -96,7 +96,15 @@ const ATTR_RE = /(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
 /** Defensive cap on ops per plan — a runaway model can't force unbounded work. */
 export const MAX_OPS = 8;
 
-export function parseOrchestratorPlan(text: string): OrchestratorPlan {
+/** Minimal structured-warn sink the orchestrator emits into (satisfied by `@ax/core`'s Logger). */
+export interface OrchestratorLogger {
+  warn(event: string, fields: Record<string, unknown>): void;
+}
+
+export function parseOrchestratorPlan(
+  text: string,
+  logger?: OrchestratorLogger,
+): OrchestratorPlan {
   const stripped = text.replace(FENCE_RE, '').trim();
   const ops: OrchestratorOp[] = [];
 
@@ -113,6 +121,15 @@ export function parseOrchestratorPlan(text: string): OrchestratorPlan {
   for (const m of stripped.matchAll(FTS_RE)) {
     const attrs = parseAttrs(m[1] ?? '');
     if (attrs.query) ops.push({ kind: 'fts', query: attrs.query.trim() });
+  }
+  // Defensive cap (design: "drop extras, log"). A runaway planner that emits
+  // dozens of ops is truncated to the first MAX_OPS — order-preserving — and
+  // the truncation is surfaced so the eval-driven bench doesn't lose the signal.
+  if (ops.length > MAX_OPS) {
+    logger?.warn('memory_strata_orchestrator_ops_capped', {
+      totalOps: ops.length,
+      kept: MAX_OPS,
+    });
   }
   return { ops: ops.slice(0, MAX_OPS), followupNeeded: FOLLOWUP_RE.test(stripped) };
 }
@@ -224,7 +241,7 @@ export interface RunOrchestratedRetrieveDeps {
   topK: number;
   timeoutMs: number;
   ftsSearch: (query: string, topK: number) => Promise<RetrievalResult[]>;
-  logger?: { warn(event: string, fields: Record<string, unknown>): void };
+  logger?: OrchestratorLogger;
 }
 
 /**
@@ -266,7 +283,7 @@ export async function runOrchestratedRetrieve(
     return null;
   }
 
-  const plan = parseOrchestratorPlan(text);
+  const plan = parseOrchestratorPlan(text, deps.logger);
   // Single-hop by design (config E): we execute the plan's ops once and never
   // re-plan. `plan.followupNeeded` is parsed but deliberately NOT consumed here —
   // it's a forward-looking signal reserved for a future multi-hop retrieval
