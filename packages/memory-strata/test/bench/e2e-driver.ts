@@ -42,6 +42,20 @@ export const DEFAULT_EXTRACTION_MODEL = 'claude-haiku-4-5-20251001';
 /** A real LLM round-trip for the Observer's fact extraction. */
 export type ExtractionLlmFn = (input: LlmCallInput) => Promise<LlmCallOutput>;
 
+/** Parse a LongMemEval haystack/question date ("2023/05/20 (Sat) 02:21") to a
+ * Date, or null when absent/malformed — null falls back to wall-clock. */
+export function parseCorpusDate(raw: string | undefined): Date | null {
+  // `haystack_dates` comes from an unchecked `JSON.parse(...) as ...` cast, so a
+  // literal JSON `null` (or number) can slip past the declared type — guard on
+  // the runtime type, not just `undefined`, so a non-string returns null instead
+  // of throwing at `raw.trim()`.
+  if (typeof raw !== 'string') return null;
+  const m = /^(\d{4})[/-](\d{2})[/-](\d{2})/.exec(raw.trim());
+  if (m === null) return null;
+  const d = new Date(`${m[1]}-${m[2]}-${m[3]}T12:00:00.000Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
 export interface E2EQuestionResult {
   questionId: string;
   questionType: string | undefined;
@@ -107,6 +121,11 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
   let settleObserver: ((agentId: string) => Promise<void>) | undefined;
   let settleConsolidation: ((agentId: string) => Promise<void>) | undefined;
   let debouncer: ConsolidationDebouncer | undefined;
+  // Bench temporal fidelity (Task 5): the fiction each haystack session
+  // happened in is dated in the corpus, not today. Set per-session below (from
+  // `sample.haystack_dates[i]`) before each chat:end so the Observer's `now`
+  // stamps that session's facts with their real corpus date, not wall-clock.
+  let fictionNow: Date | null = null;
 
   const bus = new HookBus();
   let extractionIn = 0;
@@ -137,6 +156,10 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
     // Consolidate immediately after each chat:end so docs/recent are fresh before
     // the next session and before we answer — no debounce-window race in a batch run.
     consolidatorDebounceMs: 0,
+    // Bench temporal fidelity (Task 5): falls back to wall-clock when a session
+    // has no parseable corpus date (or once ingestion is done and we're just
+    // running the answer turn's own consolidation, if any).
+    nowFn: () => fictionNow ?? new Date(),
     ...(deps.orchestratorClient ? { orchestrator: { client: deps.orchestratorClient } } : {}),
     testHooks: {
       onDebouncerCreated(d) {
@@ -168,8 +191,11 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
 
     // Ingest each haystack session as one real chat:end → Observer → consolidator.
     let sessionsIngested = 0;
-    for (const session of sample.haystack_sessions) {
+    for (const [i, session] of sample.haystack_sessions.entries()) {
       if (deps.shouldStopIngest?.()) break;
+      // Bench temporal fidelity (Task 5): stamp this session's Observer +
+      // consolidation pass with its own corpus date, not wall-clock.
+      fictionNow = parseCorpusDate(sample.haystack_dates?.[i]);
       const messages = session
         .map((t) => ({ role: t.role, content: t.content }))
         .filter((m) => m.content.trim().length > 0);
@@ -202,6 +228,7 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
     const answer = await answerClient.answer({
       injectedMemory,
       question: sample.question,
+      ...(sample.question_date !== undefined ? { questionDate: sample.question_date } : {}),
       search,
       readSection,
     });

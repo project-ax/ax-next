@@ -7,6 +7,7 @@ import { createMemoryStrataPlugin } from '../plugin.js';
 import type { Debouncer } from '../debounce.js';
 import { systemFile, INBOX_DIR, docFile } from '../paths.js';
 import { buildMarkdownFile } from '../frontmatter.js';
+import { readDoc } from '../doc-store.js';
 import type { MemoryFrontmatter } from '../types.js';
 
 let workspaceRoot: string;
@@ -193,6 +194,57 @@ describe('createMemoryStrataPlugin', () => {
     expect(inbox).toHaveLength(1);
     const body = await readFile(join(workspaceRoot, INBOX_DIR, inbox[0]!), 'utf8');
     expect(body).toContain('React');
+  });
+
+  // TASK-198/Task 5 (bench temporal fidelity): the e2e harness replays corpus
+  // sessions whose fiction happened on a fixed historical date, not today.
+  // MemoryStrataConfig.nowFn is a bench-only seam threaded to BOTH the
+  // Observer's stamp (kickOffObserver) and the Consolidator's stamp
+  // (consolidateRoutedToTier) so a fixed nowFn drives the WHOLE chat:end →
+  // observer → consolidation chain deterministically, end to end.
+  it('nowFn seam: drives the Observer + Consolidator stamps end-to-end (bench temporal fidelity)', async () => {
+    const bus = buildBus({
+      llmText: JSON.stringify([
+        { fact: 'User prefers React.', subject: 'react', factType: 'preference', confidence: 0.9 },
+      ]),
+      agent: fakeAgent(),
+    });
+    let settleObserver: ((agentId: string) => Promise<void>) | undefined;
+    let settleConsolidation: ((agentId: string) => Promise<void>) | undefined;
+    let capturedDebouncer: Debouncer | undefined;
+    const plugin = createMemoryStrataPlugin({
+      consolidatorDebounceMs: 100,
+      nowFn: () => new Date('2023-05-20T00:00:00.000Z'),
+      testHooks: {
+        onObserverSettleReady(s) { settleObserver = s; },
+        onConsolidationSettleReady(s) { settleConsolidation = s; },
+        onDebouncerCreated(d) { capturedDebouncer = d; },
+      },
+    });
+    await plugin.init?.({ bus, config: {} });
+
+    const outcome: AgentOutcome = {
+      kind: 'complete',
+      messages: [
+        { role: 'user', content: 'I prefer React.' },
+        { role: 'assistant', content: 'Noted.' },
+      ],
+    };
+    const ctx = makeCtx(workspaceRoot);
+    await bus.fire('chat:end', ctx, { outcome });
+    // Observer chain: agents:resolve → llm:call → write-inbox (stamped with nowFn()).
+    await settleObserver!(ctx.agentId);
+    // Consolidator chain: debounce → promote inbox obs → doc write (also nowFn()).
+    await capturedDebouncer!.flush();
+    await settleConsolidation!(ctx.agentId);
+
+    const doc = await readDoc({ workspaceRoot, category: 'preference', slug: 'react' });
+    expect(doc).not.toBeNull();
+    // Consolidator's `now: nowFn()` stamps the promoted doc's frontmatter.created.
+    expect(doc!.frontmatter.created).toBe('2023-05-20T00:00:00.000Z');
+    // Observer's `now: nowFn()` stamps the inbox observation's event_time, which
+    // formatFactLine bakes into the fact line as a `(YYYY-MM-DD)` date prefix.
+    expect(doc!.body).toContain('(2023-05-20)');
   });
 
   it('skips Observer on terminated outcomes (no transcript)', async () => {

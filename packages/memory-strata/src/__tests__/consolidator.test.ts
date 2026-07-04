@@ -159,8 +159,9 @@ describe('consolidator', () => {
       'permanent/memory/docs/preference/react.md',
     );
     const reactDoc = await readFile(reactDocPath, 'utf8');
-    expect(reactDoc).toContain('- User prefers React');
-    expect(reactDoc).toContain('- User has used React for 5+ years');
+    // Fixtures carry event_time === now, so promoted facts render dated.
+    expect(reactDoc).toContain('- (2026-05-10) User prefers React');
+    expect(reactDoc).toContain('- (2026-05-10) User has used React for 5+ years');
     // source_observations must contain both inbox IDs (length 2).
     expect(reactDoc).toContain('obs-react-1');
     expect(reactDoc).toContain('obs-react-2');
@@ -267,7 +268,9 @@ describe('consolidator', () => {
     // output — proving regenerateMap ran the densifier rather than copying the
     // doc's raw frontmatter summary verbatim.
     expect(map).toContain('## preference/');
-    expect(map).toContain('DENSIFIED[1]: User prefers Tesla over BMW');
+    // Fixture carries event_time === now, so the doc's fact (fed to the
+    // densifier) is dated.
+    expect(map).toContain('DENSIFIED[1]: (2026-05-10) User prefers Tesla over BMW');
     expect(calls).toEqual(['preference/cars']);
   });
 
@@ -548,6 +551,60 @@ describe('consolidator', () => {
     await expect(stat(docPath)).resolves.toBeTruthy();
   });
 
+  it('promotes facts with a date tag from the observation event_time, and dedups a dated fact against its undated restatement', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // First observation: has event_time, so the promoted fact line is dated.
+    await writeInboxFixture(
+      'obs-dated-1.md',
+      {
+        id: 'obs-dated-1',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.85,
+        pinned: false,
+        summary: 'User visited The Art Cube',
+        subject: 'art-cube',
+        factType: 'episode',
+        event_time: '2026-02-15T18:30:00.000Z',
+      },
+      '# Observation\n\nUser visited The Art Cube\n',
+    );
+
+    const result1 = await runConsolidation({ workspaceRoot, now });
+    expect(result1.promoted).toBe(1);
+
+    const docPath = join(workspaceRoot, 'permanent/memory/docs/episode/art-cube.md');
+    const docAfterFirst = await readFile(docPath, 'utf8');
+    expect(docAfterFirst).toContain('- (2026-02-15) User visited The Art Cube');
+
+    // Second observation: same summary restated WITHOUT event_time — must
+    // dedup against the dated fact already in the doc (date-stripped compare).
+    await writeInboxFixture(
+      'obs-dated-2.md',
+      {
+        id: 'obs-dated-2',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.85,
+        pinned: false,
+        summary: 'User visited The Art Cube',
+        subject: 'art-cube',
+        factType: 'episode',
+      },
+      '# Observation\n\nUser visited The Art Cube\n',
+    );
+
+    const result2 = await runConsolidation({ workspaceRoot, now });
+    expect(result2.dupesMerged).toBe(1);
+    expect(result2.promoted).toBe(0);
+
+    const docAfterSecond = await readFile(docPath, 'utf8');
+    const factLines = docAfterSecond.split('\n').filter((l) => l.startsWith('- '));
+    expect(factLines).toHaveLength(1);
+    expect(factLines[0]).toBe('- (2026-02-15) User visited The Art Cube');
+  });
+
   it('warns on invalid created timestamp during decay (C3)', async () => {
     const now = new Date('2026-05-10T12:00:00.000Z');
 
@@ -583,5 +640,148 @@ describe('consolidator', () => {
       created: 'not-a-date',
       inboxPath: expect.stringContaining('obs-bad-date.md'),
     });
+  });
+
+  it('near-dup slug guard: a same-category token-subset slug folds into the existing doc instead of minting a sibling', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // --- First pass: seed decision/b-29-bomber-model-kit.md ---
+    await writeInboxFixture(
+      'obs-b29-kit.md',
+      {
+        id: 'obs-b29-kit',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'Bought a B-29 bomber model kit to build over the weekend',
+        subject: 'B-29 Bomber Model Kit',
+        factType: 'decision',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nBought a B-29 bomber model kit to build over the weekend\n',
+    );
+
+    const firstResult = await runConsolidation({ workspaceRoot, now });
+    expect(firstResult.promoted).toBe(1);
+
+    const kitDocPath = join(
+      workspaceRoot,
+      'permanent/memory/docs/decision/b-29-bomber-model-kit.md',
+    );
+    await expect(stat(kitDocPath)).resolves.toBeTruthy();
+
+    // --- Second pass: a NEW observation whose subject slugifies to the
+    // token-subset near-dup 'b-29-bomber-model' (same category) ---
+    await writeInboxFixture(
+      'obs-b29-standalone.md',
+      {
+        id: 'obs-b29-standalone',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'Decided to add a display stand for the finished model',
+        subject: 'B-29 Bomber Model',
+        factType: 'decision',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nDecided to add a display stand for the finished model\n',
+    );
+
+    const logger = makeLoggerSpy();
+    const secondResult = await runConsolidation({ workspaceRoot, now, logger });
+
+    // The new observation promoted (distinct summary) — but into the EXISTING
+    // near-dup doc, not a fresh sibling.
+    expect(secondResult.promoted).toBe(1);
+    expect(secondResult.dupesMerged).toBe(0);
+
+    // --- Assert no sibling doc was minted ---
+    const standaloneDocPath = join(
+      workspaceRoot,
+      'permanent/memory/docs/decision/b-29-bomber-model.md',
+    );
+    await expect(stat(standaloneDocPath)).rejects.toThrow(/ENOENT/);
+
+    // --- Assert the existing doc gained the new fact ---
+    const kitDoc = await readFile(kitDocPath, 'utf8');
+    expect(kitDoc).toContain('- (2026-05-10) Bought a B-29 bomber model kit to build over the weekend');
+    expect(kitDoc).toContain('- (2026-05-10) Decided to add a display stand for the finished model');
+    expect(kitDoc).toContain('obs-b29-standalone');
+
+    // --- Assert the near-dup merge was logged ---
+    const mergedWarnings = logger.warnCalls.filter(
+      (c) => c.event === 'memory_strata_near_dup_slug_merged',
+    );
+    expect(mergedWarnings).toHaveLength(1);
+    expect(mergedWarnings[0]!.fields).toMatchObject({
+      category: 'decision',
+      newSlug: 'b-29-bomber-model',
+      mergedInto: 'b-29-bomber-model-kit',
+    });
+  });
+
+  it('near-dup slug guard: does NOT log a merge when the redirected cluster never promotes (low-confidence)', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // --- First pass: seed decision/b-29-bomber-model-kit.md ---
+    await writeInboxFixture(
+      'obs-b29-kit.md',
+      {
+        id: 'obs-b29-kit',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'Bought a B-29 bomber model kit to build over the weekend',
+        subject: 'B-29 Bomber Model Kit',
+        factType: 'decision',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nBought a B-29 bomber model kit to build over the weekend\n',
+    );
+
+    const firstResult = await runConsolidation({ workspaceRoot, now });
+    expect(firstResult.promoted).toBe(1);
+
+    // --- Second pass: a near-dup-slug observation BELOW the promotion
+    // threshold (CONFIDENCE_THRESHOLD ~0.7). It slugifies to the token-subset
+    // near-dup 'b-29-bomber-model' in the SAME category, but it never
+    // promotes — so no write/merge into the existing doc happens and the
+    // near-dup merge warn must NOT fire (it would be a phantom-merge metric).
+    await writeInboxFixture(
+      'obs-b29-lowconf.md',
+      {
+        id: 'obs-b29-lowconf',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.3,
+        pinned: false,
+        summary: 'Maybe get a display stand for the finished model someday',
+        subject: 'B-29 Bomber Model',
+        factType: 'decision',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nMaybe get a display stand for the finished model someday\n',
+    );
+
+    const logger = makeLoggerSpy();
+    const secondResult = await runConsolidation({ workspaceRoot, now, logger });
+
+    // Low-confidence observation left in the inbox, nothing promoted/merged.
+    expect(secondResult.promoted).toBe(0);
+    expect(secondResult.dupesMerged).toBe(0);
+    expect(secondResult.leftInInbox).toBe(1);
+
+    // No phantom near-dup merge log.
+    const mergedWarnings = logger.warnCalls.filter(
+      (c) => c.event === 'memory_strata_near_dup_slug_merged',
+    );
+    expect(mergedWarnings).toHaveLength(0);
   });
 });

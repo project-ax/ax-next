@@ -65,14 +65,19 @@ You output ONLY XML, using these tags:
   <load doc="<docId>"/>                  — load a document into context
   <fts query="..."/>                     — when you genuinely cannot decide
                                             from the map alone, run a keyword
-                                            search (max 1-2 of these per query)
+                                            search
   <followup needed="true"/>              — emit when you suspect one hop
                                             won't be enough (e.g., cross-doc
                                             aggregation, "what was X before we
                                             changed it")
 
 Rules:
-- Emit between 1 and 5 ops total. Prefer the smallest precise set.
+- Emit between 1 and 8 ops total. Prefer the smallest precise set.
+- For counting or aggregation queries ("how many X", "sum of Y", "list all Z"),
+  instances are usually SCATTERED across several docs: load EVERY plausibly
+  relevant doc and add 1-3 <fts> probes with instance-level terms (for
+  "citrus fruits" also probe "lime", "lemon", "orange"; for "doctors" probe
+  "appointment", "specialist").
 - doc ids must exactly match entries in the map (e.g. "preference/coffee").
 - Do not output prose, code fences, or explanations. Only the XML ops.`;
 
@@ -88,7 +93,18 @@ const FTS_RE = /<fts\s+([^>]*?)\/?>/gi;
 const FOLLOWUP_RE = /<followup\s+[^>]*needed=["']?true["']?[^>]*\/?>/i;
 const ATTR_RE = /(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
 
-export function parseOrchestratorPlan(text: string): OrchestratorPlan {
+/** Defensive cap on ops per plan — a runaway model can't force unbounded work. */
+export const MAX_OPS = 8;
+
+/** Minimal structured-warn sink the orchestrator emits into (satisfied by `@ax/core`'s Logger). */
+export interface OrchestratorLogger {
+  warn(event: string, fields: Record<string, unknown>): void;
+}
+
+export function parseOrchestratorPlan(
+  text: string,
+  logger?: OrchestratorLogger,
+): OrchestratorPlan {
   const stripped = text.replace(FENCE_RE, '').trim();
   const ops: OrchestratorOp[] = [];
 
@@ -106,7 +122,16 @@ export function parseOrchestratorPlan(text: string): OrchestratorPlan {
     const attrs = parseAttrs(m[1] ?? '');
     if (attrs.query) ops.push({ kind: 'fts', query: attrs.query.trim() });
   }
-  return { ops, followupNeeded: FOLLOWUP_RE.test(stripped) };
+  // Defensive cap (design: "drop extras, log"). A runaway planner that emits
+  // dozens of ops is truncated to the first MAX_OPS — order-preserving — and
+  // the truncation is surfaced so the eval-driven bench doesn't lose the signal.
+  if (ops.length > MAX_OPS) {
+    logger?.warn('memory_strata_orchestrator_ops_capped', {
+      totalOps: ops.length,
+      kept: MAX_OPS,
+    });
+  }
+  return { ops: ops.slice(0, MAX_OPS), followupNeeded: FOLLOWUP_RE.test(stripped) };
 }
 
 function parseAttrs(s: string): Record<string, string> {
@@ -216,7 +241,7 @@ export interface RunOrchestratedRetrieveDeps {
   topK: number;
   timeoutMs: number;
   ftsSearch: (query: string, topK: number) => Promise<RetrievalResult[]>;
-  logger?: { warn(event: string, fields: Record<string, unknown>): void };
+  logger?: OrchestratorLogger;
 }
 
 /**
@@ -258,7 +283,7 @@ export async function runOrchestratedRetrieve(
     return null;
   }
 
-  const plan = parseOrchestratorPlan(text);
+  const plan = parseOrchestratorPlan(text, deps.logger);
   // Single-hop by design (config E): we execute the plan's ops once and never
   // re-plan. `plan.followupNeeded` is parsed but deliberately NOT consumed here —
   // it's a forward-looking signal reserved for a future multi-hop retrieval

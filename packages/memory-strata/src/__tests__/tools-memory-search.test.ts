@@ -2,10 +2,11 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { HookBus, makeAgentContext } from '@ax/core';
+import { HookBus, createLogger, makeAgentContext } from '@ax/core';
 import type { ToolDescriptor } from '@ax/core';
+import { writeNewDoc } from '../doc-store.js';
 import { buildMarkdownFile } from '../frontmatter.js';
-import { mapFile } from '../paths.js';
+import { docFile, mapFile } from '../paths.js';
 import type { OrchestratorClient } from '../orchestrator.js';
 import { registerMemorySearch, MEMORY_SEARCH_DESCRIPTOR } from '../tools/memory-search.js';
 import type { RetrievalResult } from '../retriever.js';
@@ -110,7 +111,13 @@ describe('tools/memory-search', () => {
       const ctx = makeCtx();
       const out = await bus.call('tool:execute:memory_search', ctx, asToolCall({ query: 'react' }));
 
-      expect(out).toEqual({ results: FIXTURE_RESULTS });
+      // Each row now carries matchedFacts (Task 3, enumeration design). FIXTURE_RESULTS'
+      // docId ('doc-1') doesn't parse as <category>/<slug>, so enrichment can't read a
+      // body and every row gets matchedFacts: [] — the same best-effort empty result a
+      // real doc-read failure would produce.
+      expect(out).toEqual({
+        results: FIXTURE_RESULTS.map((r) => ({ ...r, matchedFacts: [] })),
+      });
     });
 
     it('default topK = 5 when not supplied', async () => {
@@ -320,6 +327,9 @@ describe('orchestrator path', () => {
       asToolCall({ query: 'what coffee do I like?' }),
     );
 
+    // matchedFacts: [] here — 'preference/coffee' has no doc file on disk in this
+    // fixture's temp workspace (only system/map.md was written), so best-effort
+    // enrichment reads nothing back (Task 3, enumeration design).
     expect(out).toEqual({
       results: [
         {
@@ -329,6 +339,7 @@ describe('orchestrator path', () => {
           summary: 'User prefers cortados over drip',
           snippet: '',
           score: 1,
+          matchedFacts: [],
         },
       ],
     });
@@ -351,7 +362,11 @@ describe('orchestrator path', () => {
       asToolCall({ query: 'what coffee do I like?' }),
     );
 
-    expect(out).toEqual({ results: BM25_FIXTURE });
+    // matchedFacts: [] — 'general/bm25-fallback' has no doc file on disk in this
+    // fixture's temp workspace, so best-effort enrichment yields [] (Task 3).
+    expect(out).toEqual({
+      results: BM25_FIXTURE.map((r) => ({ ...r, matchedFacts: [] })),
+    });
     expect(capturedSearchInputs).toHaveLength(1);
   });
 
@@ -374,7 +389,11 @@ describe('orchestrator path', () => {
     );
 
     expect(client.complete).not.toHaveBeenCalled();
-    expect(out).toEqual({ results: BM25_FIXTURE });
+    // matchedFacts: [] — 'general/bm25-fallback' has no doc file on disk in this
+    // fixture's temp workspace, so best-effort enrichment yields [] (Task 3).
+    expect(out).toEqual({
+      results: BM25_FIXTURE.map((r) => ({ ...r, matchedFacts: [] })),
+    });
     expect(capturedSearchInputs).toHaveLength(1);
   });
 
@@ -397,7 +416,11 @@ describe('orchestrator path', () => {
     );
 
     expect(client.complete).not.toHaveBeenCalled();
-    expect(out).toEqual({ results: BM25_FIXTURE });
+    // matchedFacts: [] — 'general/bm25-fallback' has no doc file on disk in this
+    // fixture's temp workspace, so best-effort enrichment yields [] (Task 3).
+    expect(out).toEqual({
+      results: BM25_FIXTURE.map((r) => ({ ...r, matchedFacts: [] })),
+    });
     expect(capturedSearchInputs).toHaveLength(1);
     expect((capturedSearchInputs[0] as Record<string, unknown>).categoryFilter).toBe('preference');
   });
@@ -430,7 +453,164 @@ describe('orchestrator path', () => {
     );
 
     // Degraded cleanly to BM25 — did NOT throw/return an error out of the tool.
-    expect(out).toEqual({ results: BM25_FIXTURE });
+    // matchedFacts: [] — 'general/bm25-fallback' has no doc file on disk in this
+    // fixture's temp workspace, so best-effort enrichment yields [] (Task 3).
+    expect(out).toEqual({
+      results: BM25_FIXTURE.map((r) => ({ ...r, matchedFacts: [] })),
+    });
     expect(capturedSearchInputs).toHaveLength(1);
+  });
+});
+
+// ─── matchedFacts enrichment (multi-session enumeration design, Task 3) ─────
+//
+// memory_search now attaches every query-matching fact line from each hit's
+// OWN doc body, read host-side via readDocBody — no index/contract change.
+// These tests use a REAL temp workspace + a REAL doc written via writeNewDoc
+// so readDocBody's `readDoc` call hits actual files, not a stub.
+describe('matchedFacts enrichment', () => {
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'memory-search-matched-facts-'));
+  });
+
+  afterEach(async () => {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  function makeWorkspaceCtx() {
+    return makeAgentContext({
+      sessionId: 'mf-session',
+      agentId: 'mf-agent',
+      userId: 'mf-user',
+      workspace: { rootPath: workspaceRoot },
+    });
+  }
+
+  it('attaches every query-matching fact line from the hit doc body', async () => {
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'episode',
+      slug: 'weddings',
+      summary: 'Weddings attended',
+      subject: 'weddings',
+      factType: 'episode',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-1'],
+      now: new Date('2026-05-10T12:00:00Z'),
+      facts: [
+        '(2026-02-01) User attended a wedding in Austin.',
+        'User is researching fish stocking levels for a 55-gallon tank.',
+        '(2026-03-10) User attended a wedding in Portland.',
+      ],
+    });
+
+    const searchResults: RetrievalResult[] = [
+      {
+        docId: 'episode/weddings',
+        category: 'episode',
+        slug: 'weddings',
+        summary: 'Weddings attended',
+        snippet: 'User attended a wedding in Austin.',
+        score: 0.8,
+      },
+    ];
+    const { bus } = makeWiredBus({ searchResults });
+    await registerMemorySearch(bus);
+
+    const ctx = makeWorkspaceCtx();
+    const out = (await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'weddings attended' }),
+    )) as { results: Array<{ docId: string; matchedFacts: string[] }> };
+
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0]!.matchedFacts).toEqual([
+      '(2026-02-01) User attended a wedding in Austin.',
+      '(2026-03-10) User attended a wedding in Portland.',
+    ]);
+  });
+
+  it('doc file missing on disk → matchedFacts: [] and the call still succeeds', async () => {
+    const searchResults: RetrievalResult[] = [
+      {
+        docId: 'episode/nonexistent',
+        category: 'episode',
+        slug: 'nonexistent',
+        summary: 'Doc never written',
+        snippet: '',
+        score: 0.5,
+      },
+    ];
+    const { bus } = makeWiredBus({ searchResults });
+    await registerMemorySearch(bus);
+
+    const ctx = makeWorkspaceCtx();
+    const out = (await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'weddings attended' }),
+    )) as { results: Array<{ docId: string; matchedFacts: string[] }> };
+
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0]!.matchedFacts).toEqual([]);
+  });
+
+  it('doc read THROWS (EISDIR) → catch logs memory_strata_matched_facts_failed, matchedFacts: [], call still succeeds', async () => {
+    // Regression for the best-effort catch in withMatchedFacts. The two tests
+    // above only exercise the graceful readDoc→null path (ENOENT / missing
+    // file), where readDocBody returns null WITHOUT throwing — so the catch
+    // never fires. Here we make readDoc's `fs.readFile` throw a NON-ENOENT
+    // error (EISDIR) by creating the doc's `.md` path AS A DIRECTORY (same
+    // technique as the "orchestrator read throws" test above). readDoc rethrows
+    // any non-ENOENT error, so readDocBody throws, and the enrichment MUST
+    // catch it: log + matchedFacts:[] , never a failed tool call.
+    const docAbs = join(workspaceRoot, docFile('episode', 'eisdir'));
+    await mkdir(docAbs, { recursive: true }); // create the .md path AS A DIRECTORY → readFile → EISDIR
+
+    const searchResults: RetrievalResult[] = [
+      {
+        docId: 'episode/eisdir',
+        category: 'episode',
+        slug: 'eisdir',
+        summary: 'Doc whose .md path is a directory',
+        snippet: '',
+        score: 0.5,
+      },
+    ];
+    const { bus } = makeWiredBus({ searchResults });
+    await registerMemorySearch(bus);
+
+    // Real logger (writer suppressed so the EISDIR warn doesn't spam the run),
+    // with `warn` spied so we can assert the catch fired.
+    const logger = createLogger({ reqId: 'mf-eisdir', writer: () => {} });
+    const warnSpy = vi.spyOn(logger, 'warn');
+    const ctx = makeAgentContext({
+      sessionId: 'mf-session',
+      agentId: 'mf-agent',
+      userId: 'mf-user',
+      workspace: { rootPath: workspaceRoot },
+      logger,
+    });
+
+    const out = (await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'weddings attended' }),
+    )) as { results: Array<{ docId: string; matchedFacts: string[] }> };
+
+    // (a) call succeeded (did not reject), (b) row degraded to matchedFacts: [].
+    expect(out.results).toHaveLength(1);
+    expect(out.results[0]!.matchedFacts).toEqual([]);
+    // (c) the catch logged the failure with docId + err.
+    expect(warnSpy).toHaveBeenCalledWith(
+      'memory_strata_matched_facts_failed',
+      expect.objectContaining({
+        docId: 'episode/eisdir',
+        err: expect.any(Error),
+      }),
+    );
   });
 });

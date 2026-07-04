@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { runAnswerLoop, type MemorySearchResult, type ReadSectionFn } from '../e2e-answer.js';
+import { runAnswerLoop, buildAnswerSystem, type MemorySearchResult, type ReadSectionFn } from '../e2e-answer.js';
 
 /** A no-op read_section stub for tests that don't exercise the drill-in path. */
 const noReadSection = (): ReturnType<ReadSectionFn> => Promise.resolve({ body: '' });
@@ -10,7 +10,7 @@ describe('e2e answer loop (TASK-189)', () => {
     // memory_search (summaries) the agent abstains; it needs memory_read_section
     // to read the fact BODY. This asserts the two-step shipped retrieval flow.
     const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
-      { docId: 'entity/degree', category: 'entity', slug: 'degree', summary: 'User education background.', snippet: 'education background', score: 1 },
+      { docId: 'entity/degree', category: 'entity', slug: 'degree', summary: 'User education background.', snippet: 'education background', matchedFacts: [], score: 1 },
     ]);
     const readSection = vi.fn(
       async (): Promise<{ body: string } | { error: string }> => ({
@@ -62,7 +62,7 @@ describe('e2e answer loop (TASK-189)', () => {
 
   it('drives a memory_search round-trip then returns the final text answer', async () => {
     const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
-      { docId: 'preference/cortados', category: 'preference', slug: 'cortados', summary: 'User loves cortados.', snippet: 'loves cortados', score: 1 },
+      { docId: 'preference/cortados', category: 'preference', slug: 'cortados', summary: 'User loves cortados.', snippet: 'loves cortados', matchedFacts: [], score: 1 },
     ]);
 
     // Turn 1: model asks to search. Turn 2: model answers from the result.
@@ -106,7 +106,7 @@ describe('e2e answer loop (TASK-189)', () => {
   it('includes the result snippet in the tool_result shown to the model', async () => {
     const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
       { docId: 'decision/user', category: 'decision', slug: 'user',
-        summary: "User's decisions", snippet: 'graduated with a B.A. in Business Administration', score: 1 },
+        summary: "User's decisions", snippet: 'graduated with a B.A. in Business Administration', matchedFacts: [], score: 1 },
     ]);
     const create = vi.fn()
       .mockResolvedValueOnce({
@@ -133,7 +133,7 @@ describe('e2e answer loop (TASK-189)', () => {
     // the orchestrator judged most relevant — matched nothing.
     const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
       { docId: 'decision/user', category: 'decision', slug: 'user',
-        summary: "User's decisions", snippet: '', score: 1 },
+        summary: "User's decisions", snippet: '', matchedFacts: [], score: 1 },
     ]);
     const create = vi.fn()
       .mockResolvedValueOnce({
@@ -153,6 +153,95 @@ describe('e2e answer loop (TASK-189)', () => {
     const toolResult = create.mock.calls[1]![0].messages.at(-1).content[0];
     expect(toolResult.content).toBe("[1] (decision/user) User's decisions");
     expect(toolResult.content).not.toContain('match:');
+  });
+
+  it('renders matchedFacts as a facts: block under the hit', async () => {
+    const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
+      { docId: 'episode/festivals', category: 'episode', slug: 'festivals',
+        summary: 'Film festivals attended', snippet: 'festival',
+        matchedFacts: [
+          '(2026-02-01) went to Austin Film Festival',
+          'volunteered at Portland Film Festival',
+        ],
+        score: 1 },
+    ]);
+    const create = vi.fn()
+      .mockResolvedValueOnce({
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'memory_search', input: { query: 'film festivals' } }],
+        usage: { input_tokens: 100, output_tokens: 20 },
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'You attended two festivals.' }],
+        usage: { input_tokens: 150, output_tokens: 10 },
+      });
+
+    await runAnswerLoop({
+      client: { messages: { create } }, model: 'm', maxToolTurns: 4,
+      system: 'sys', question: 'How many film festivals did I attend?', search, readSection: noReadSection,
+    });
+
+    const toolResult = create.mock.calls[1]![0].messages.at(-1).content[0];
+    // Pin the exact facts: block with its precise indentation so a wrong
+    // indent or order regression is caught, not just the bare fact text.
+    expect(toolResult.content).toContain(
+      '\n    facts:\n' +
+        '      - (2026-02-01) went to Austin Film Festival\n' +
+        '      - volunteered at Portland Film Festival',
+    );
+  });
+
+  it('renders the facts: block even when the snippet is empty (orchestrator <load> row)', async () => {
+    // The orchestrator-mode <load> row shape: snippet: '' (no query-matched
+    // excerpt) but matchedFacts carried from the index (Task 3). The facts
+    // block must still render, and no `match:` line should appear.
+    const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
+      { docId: 'episode/festivals', category: 'episode', slug: 'festivals',
+        summary: 'Film festivals attended', snippet: '',
+        matchedFacts: ['(2026-02-01) went to Austin Film Festival'],
+        score: 1 },
+    ]);
+    const create = vi.fn()
+      .mockResolvedValueOnce({
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'memory_search', input: { query: 'film festivals' } }],
+        usage: { input_tokens: 100, output_tokens: 20 },
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'You attended a festival.' }],
+        usage: { input_tokens: 150, output_tokens: 10 },
+      });
+
+    await runAnswerLoop({
+      client: { messages: { create } }, model: 'm', maxToolTurns: 4,
+      system: 'sys', question: 'What festivals?', search, readSection: noReadSection,
+    });
+
+    const toolResult = create.mock.calls[1]![0].messages.at(-1).content[0];
+    expect(toolResult.content).toContain('\n    facts:\n      - (2026-02-01) went to Austin Film Festival');
+    expect(toolResult.content).not.toContain('match:');
+  });
+
+  it('omits the facts: block when matchedFacts is empty', async () => {
+    const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
+      { docId: 'decision/user', category: 'decision', slug: 'user',
+        summary: "User's decisions", snippet: 'graduated', matchedFacts: [], score: 1 },
+    ]);
+    const create = vi.fn()
+      .mockResolvedValueOnce({
+        content: [{ type: 'tool_use', id: 'tu_1', name: 'memory_search', input: { query: 'degree' } }],
+        usage: { input_tokens: 100, output_tokens: 20 },
+      })
+      .mockResolvedValueOnce({
+        content: [{ type: 'text', text: 'You graduated in Business Administration.' }],
+        usage: { input_tokens: 150, output_tokens: 10 },
+      });
+
+    await runAnswerLoop({
+      client: { messages: { create } }, model: 'm', maxToolTurns: 4,
+      system: 'sys', question: 'What degree?', search, readSection: noReadSection,
+    });
+
+    const toolResult = create.mock.calls[1]![0].messages.at(-1).content[0];
+    expect(toolResult.content).not.toContain('facts:');
   });
 
   it('answers directly without searching when the model emits text immediately', async () => {
@@ -180,7 +269,7 @@ describe('e2e answer loop (TASK-189)', () => {
 
   it('disables tools on the final turn so a runaway searcher still answers', async () => {
     const search = vi.fn(async (): Promise<MemorySearchResult[]> => [
-      { docId: 'episodes/x', category: 'episode', slug: 'x', summary: 's', snippet: 's', score: 1 },
+      { docId: 'episodes/x', category: 'episode', slug: 'x', summary: 's', snippet: 's', matchedFacts: [], score: 1 },
     ]);
     // Always tries to search; with maxToolTurns=2 the loop forces a tools-off
     // final turn where we make the model answer.
@@ -213,5 +302,43 @@ describe('e2e answer loop (TASK-189)', () => {
     expect(out.toolCalls).toBe(2);
     // The last request must NOT carry tools.
     expect(create.mock.calls.at(-1)![0].tools).toBeUndefined();
+  });
+});
+
+// Bench temporal fidelity (Task 5): the questionDate→system-prompt append lives
+// in makeAnthropicAnswerClient.answer, which the driver test can't cover (its
+// stub reconstructs the string itself). buildAnswerSystem is the extracted pure
+// fn so the exact format is pinned here — a dropped .trim(), a single-newline
+// separator, or a misspelled label fails LOUDLY instead of slipping through.
+describe('buildAnswerSystem (answer system-prompt assembly)', () => {
+  it('appends "Today\'s date: <date>" as the exact suffix when a questionDate is given', () => {
+    const system = buildAnswerSystem('', '2023-06-01');
+    // Pin the exact suffix, including BOTH newline separators.
+    expect(system.endsWith("\n\nToday's date: 2023-06-01")).toBe(true);
+  });
+
+  it('trims surrounding whitespace off the questionDate before appending', () => {
+    const system = buildAnswerSystem('', '  2023-06-01  ');
+    expect(system.endsWith("\n\nToday's date: 2023-06-01")).toBe(true);
+  });
+
+  it('omits the date line entirely when questionDate is undefined', () => {
+    const system = buildAnswerSystem('some memory', undefined);
+    expect(system).not.toContain("Today's date:");
+  });
+
+  it('omits the date line when questionDate is whitespace-only', () => {
+    const system = buildAnswerSystem('some memory', '   ');
+    expect(system).not.toContain("Today's date:");
+  });
+
+  it('wraps non-empty injected memory in a "# Injected memory" block', () => {
+    const system = buildAnswerSystem('User loves cortados.', undefined);
+    expect(system).toContain('\n\n# Injected memory\nUser loves cortados.');
+  });
+
+  it('uses the bare preamble (no injected-memory block) when memory is empty/whitespace', () => {
+    const system = buildAnswerSystem('   ', undefined);
+    expect(system).not.toContain('# Injected memory');
   });
 });

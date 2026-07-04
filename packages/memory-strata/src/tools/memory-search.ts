@@ -1,6 +1,9 @@
 import { makeAgentContext } from '@ax/core';
-import type { HookBus, ToolDescriptor } from '@ax/core';
+import type { AgentContext, HookBus, ToolDescriptor } from '@ax/core';
+import { readDocBody } from '../doc-body.js';
+import { parseDocId } from '../doc-id.js';
 import { readInjectedMapBody } from '../inject.js';
+import { extractMatchedFacts } from '../matched-facts.js';
 import {
   DEFAULT_ORCHESTRATOR_TIMEOUT_MS,
   runOrchestratedRetrieve,
@@ -25,10 +28,13 @@ export interface RegisterMemorySearchOptions {
 export const MEMORY_SEARCH_DESCRIPTOR: ToolDescriptor = {
   name: 'memory_search',
   description:
-    'Search long-term memory. Returns, per hit, a one-line summary AND a `snippet` — ' +
-    'a short excerpt of the matching document body. READ the snippet before deciding you ' +
-    "don't know: the specific value (a name, date, number, place) is usually in the snippet, " +
-    'not the summary. Use memory_read_section only to read more of a doc the snippet teased.',
+    'Search long-term memory. Each hit carries a one-line summary, a `snippet` ' +
+    '(match-centered body excerpt), and `matchedFacts` — EVERY fact line in that ' +
+    'doc matching your query, with dates like (2026-02-15) when known. For ' +
+    'counting/enumeration questions ("how many X"), read matchedFacts across ALL ' +
+    'hits, then run 1-2 more searches with instance-specific terms (e.g. for ' +
+    '"citrus" also try "lime", "lemon") before concluding. Use memory_read_section ' +
+    'to read a whole doc when matchedFacts looks truncated.',
   executesIn: 'host',
   inputSchema: {
     type: 'object',
@@ -71,6 +77,7 @@ export async function registerMemorySearch(
         summary: string;
         snippet: string;
         score: number;
+        matchedFacts: string[];
       }>;
     }
   >(
@@ -130,7 +137,9 @@ export async function registerMemorySearch(
             ftsSearch: (q, k) => retrieve(bus, ctx, { query: q, topK: k }),
             logger: ctx.logger,
           });
-          if (orchestrated !== null) return { results: orchestrated };
+          if (orchestrated !== null) {
+            return { results: await withMatchedFacts(bus, ctx, orchestrated, query) };
+          }
         } catch (err) {
           ctx.logger.warn('memory_strata_orchestrator_failed', {
             err: err instanceof Error ? err : new Error(String(err)),
@@ -144,7 +153,45 @@ export async function registerMemorySearch(
         topK,
         ...(categoryFilter !== undefined ? { categoryFilter } : {}),
       });
-      return { results };
+      return { results: await withMatchedFacts(bus, ctx, results, query) };
     },
   );
+}
+
+const MAX_FACTS_PER_DOC = 20;
+const MAX_FACTS_PER_RESPONSE = 60;
+
+/** D2 (enumeration design): attach every query-matching fact line from each
+ * hit's body. Best-effort — a read failure yields [] for that row, never a
+ * failed tool call. Applies to orchestrator `<load>` rows too (their doc
+ * bodies never touched the index). */
+async function withMatchedFacts<
+  R extends { docId: string },
+>(bus: HookBus, ctx: AgentContext, rows: R[], query: string): Promise<Array<R & { matchedFacts: string[] }>> {
+  const out: Array<R & { matchedFacts: string[] }> = [];
+  let total = 0;
+  for (const row of rows) {
+    let matchedFacts: string[] = [];
+    if (total < MAX_FACTS_PER_RESPONSE && query.length > 0) {
+      try {
+        const parsed = parseDocId(row.docId);
+        const body = parsed === null
+          ? null
+          : await readDocBody(bus, ctx, parsed.category, parsed.slug);
+        if (body !== null) {
+          matchedFacts = extractMatchedFacts(body, query, {
+            maxLines: Math.min(MAX_FACTS_PER_DOC, MAX_FACTS_PER_RESPONSE - total),
+          });
+          total += matchedFacts.length;
+        }
+      } catch (err) {
+        ctx.logger.warn('memory_strata_matched_facts_failed', {
+          err: err instanceof Error ? err : new Error(String(err)),
+          docId: row.docId,
+        });
+      }
+    }
+    out.push({ ...row, matchedFacts });
+  }
+  return out;
 }

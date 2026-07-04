@@ -24,6 +24,7 @@ export interface MemorySearchResult {
   slug: string;
   summary: string;
   snippet: string;
+  matchedFacts: string[];
   score: number;
 }
 
@@ -58,6 +59,13 @@ export interface E2EAnswerClient {
     injectedMemory: string;
     /** The question to answer. */
     question: string;
+    /**
+     * The LongMemEval sample's corpus question date (bench temporal fidelity,
+     * Task 5), e.g. "2023-06-01". Absent falls back to no date anchor at all —
+     * the prior wall-clock-only behavior — rather than injecting today's real
+     * date, which would be just as fictional as omitting it.
+     */
+    questionDate?: string;
     /** Executor for the agent's memory_search calls. */
     search: MemorySearchFn;
     /** Executor for the agent's memory_read_section calls (drill into a fact). */
@@ -78,7 +86,9 @@ const MEMORY_SEARCH_TOOL: Anthropic.Tool = {
   description:
     'Search long-term memory. Returns document summaries (~50 tokens each) + ids. ' +
     'Use this BEFORE asserting facts about durable preferences, decisions, or known entities, ' +
-    'then memory_read_section to read the body of the most relevant result.',
+    'then memory_read_section to read the body of the most relevant result. ' +
+    'For counting questions, read the facts lists across ALL hits and run follow-up searches ' +
+    'with instance-specific terms before concluding.',
   input_schema: {
     type: 'object',
     properties: {
@@ -115,7 +125,7 @@ const MEMORY_READ_SECTION_TOOL: Anthropic.Tool = {
 };
 
 /** Default ceiling on memory_search round-trips per question (cost + loop bound). */
-const DEFAULT_MAX_TOOL_TURNS = 4;
+const DEFAULT_MAX_TOOL_TURNS = 6;
 const MAX_ANSWER_TOKENS = 512;
 
 /**
@@ -155,13 +165,31 @@ export function makeAnthropicAnswerClient(
     },
   };
   return {
-    async answer({ injectedMemory, question, search, readSection }) {
-      const system = injectedMemory.trim().length > 0
-        ? `${SYSTEM_PREAMBLE}\n\n# Injected memory\n${injectedMemory}`
-        : SYSTEM_PREAMBLE;
+    async answer({ injectedMemory, question, questionDate, search, readSection }) {
+      const system = buildAnswerSystem(injectedMemory, questionDate);
       return runAnswerLoop({ client, model, maxToolTurns, system, question, search, readSection });
     },
   };
+}
+
+/**
+ * Assemble the answer turn's system prompt: the shared preamble, the injected
+ * memory block (only when non-empty), and — for bench temporal fidelity (Task
+ * 5) — a `Today's date:` anchor when the corpus question carried a date.
+ *
+ * Exported + pure so the format is unit-testable directly: the driver test's
+ * hand-rolled answerClient stub can't cover it (it reconstructs the string
+ * itself), so a dropped `.trim()`, a single-newline separator, or a misspelled
+ * label would otherwise slip through green.
+ */
+export function buildAnswerSystem(injectedMemory: string, questionDate?: string): string {
+  let system = injectedMemory.trim().length > 0
+    ? `${SYSTEM_PREAMBLE}\n\n# Injected memory\n${injectedMemory}`
+    : SYSTEM_PREAMBLE;
+  if (questionDate !== undefined && questionDate.trim().length > 0) {
+    system += `\n\nToday's date: ${questionDate.trim()}`;
+  }
+  return system;
 }
 
 /** The narrow client shape runAnswerLoop drives (also satisfied by test stubs). */
@@ -277,10 +305,14 @@ function formatSearchResults(rows: MemorySearchResult[]): string {
   if (rows.length === 0) return 'No matching memory documents found.';
   return rows
     .map((r, i) => {
-      const head = `[${i + 1}] (${r.docId}) ${r.summary}`;
+      let entry = `[${i + 1}] (${r.docId}) ${r.summary}`;
       // Orchestrator-mode map-<load> rows carry snippet: '' — rendering
       // `match: ""` would read as "this doc matched nothing", so omit the line.
-      return r.snippet.trim() === '' ? head : `${head}\n    match: "${r.snippet}"`;
+      if (r.snippet.trim() !== '') entry += `\n    match: "${r.snippet}"`;
+      if (r.matchedFacts.length > 0) {
+        entry += `\n    facts:\n${r.matchedFacts.map((f) => `      - ${f}`).join('\n')}`;
+      }
+      return entry;
     })
     .join('\n');
 }

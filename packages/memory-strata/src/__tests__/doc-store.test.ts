@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   writeNewDoc, appendFact, readDoc, listDocs, mergeConversationIntoDoc,
+  formatFactLine, stripFactDate,
 } from '../doc-store.js';
 
 // ESM note: `vi.spyOn` cannot intercept named bindings in strict ESM
@@ -227,5 +228,38 @@ describe('doc-store', () => {
         conversationId: 'conv-1', now: new Date('2026-06-08T12:00:00Z'),
       }),
     ).rejects.toThrow(/docNotFound/);
+  });
+});
+
+describe('formatFactLine', () => {
+  it('prefixes a date-only tag from an ISO timestamp', () => {
+    expect(formatFactLine('User visited The Art Cube.', '2026-02-15T18:30:00.000Z')).toBe(
+      '(2026-02-15) User visited The Art Cube.',
+    );
+  });
+  it('renders bare when no timestamp', () => {
+    expect(formatFactLine('User visited The Art Cube.', undefined)).toBe(
+      'User visited The Art Cube.',
+    );
+  });
+  it('renders bare on a malformed timestamp', () => {
+    expect(formatFactLine('fact', 'not-a-date')).toBe('fact');
+  });
+  it('renders bare on a non-string timestamp (never throws)', () => {
+    // @ts-expect-error — exercising the runtime guard against loosely-typed YAML
+    expect(formatFactLine('fact', new Date('2026-02-15T18:30:00.000Z'))).toBe('fact');
+    // @ts-expect-error — exercising the runtime guard against loosely-typed YAML
+    expect(formatFactLine('fact', 1234567890123)).toBe('fact');
+  });
+});
+
+describe('stripFactDate', () => {
+  it('strips a leading date tag', () => {
+    expect(stripFactDate('(2026-02-15) User visited The Art Cube.')).toBe(
+      'User visited The Art Cube.',
+    );
+  });
+  it('leaves undated lines alone', () => {
+    expect(stripFactDate('User visited The Art Cube.')).toBe('User visited The Art Cube.');
   });
 });
