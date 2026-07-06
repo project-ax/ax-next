@@ -79,16 +79,24 @@ Your injected memory below contains your User Profile and a Recent summary. You 
 - \`memory_search\` — finds relevant docs and returns a short SUMMARY plus an id for each. The summary names the topic but usually does NOT contain the specific value you need.
 - \`memory_read_section\` — reads the full BODY of a doc by its id. Use it AFTER memory_search to drill into the doc that looks relevant and read the actual fact (a preference, decision, date, name, or known entity).
 
-Before asserting any durable fact that isn't already in the injected memory: search first, then read the most relevant doc to confirm the value. If, after searching AND reading, your memory still does not contain the answer, say "I don't know." — do NOT guess or fabricate. Be concise.`;
+Before asserting any durable fact that isn't already in the injected memory: search first, then read the most relevant doc to confirm the value. If, after searching AND reading, your memory still does not contain the answer, say "I don't know." — do NOT guess or fabricate.
+
+For counting or enumeration questions ("how many X did I…", "list all the Y"), the facts you need are usually scattered across multiple docs and sessions, and each search returns only a CAPPED preview of matching lines. Do NOT answer a count after one or two searches. Instead: read the matched facts across every hit; whenever you see a "⋯ more matching lines" marker, call memory_read_section on that doc to read the full list; run additional searches with instance-specific terms (e.g. for "citrus fruit" also try "lime", "lemon", "orange"); and only then count, tallying distinct instances and excluding near-duplicate lines that describe the same event. Under-counting from stopping early is the most common mistake here.
+
+Be concise.`;
 
 const MEMORY_SEARCH_TOOL: Anthropic.Tool = {
   name: 'memory_search',
   description:
-    'Search long-term memory. Returns document summaries (~50 tokens each) + ids. ' +
+    'Search long-term memory. Returns document summaries (~50 tokens each) + ids, ' +
+    'plus a CAPPED preview of query-matching fact lines per hit. ' +
     'Use this BEFORE asserting facts about durable preferences, decisions, or known entities, ' +
     'then memory_read_section to read the body of the most relevant result. ' +
-    'For counting questions, read the facts lists across ALL hits and run follow-up searches ' +
-    'with instance-specific terms before concluding.',
+    'A "⋯ more matching lines" entry means that doc has more instances than shown — ' +
+    'read it in full with memory_read_section. ' +
+    'For counting questions, do NOT conclude a count from the first search: read the fact ' +
+    'lists across ALL hits, drill into any truncated doc, AND run follow-up searches ' +
+    'with instance-specific terms before answering. Count only distinct instances.',
   input_schema: {
     type: 'object',
     properties: {

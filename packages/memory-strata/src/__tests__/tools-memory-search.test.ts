@@ -613,4 +613,107 @@ describe('matchedFacts enrichment', () => {
       }),
     );
   });
+
+  // ── Per-doc truncation marker (WS-A early-termination fix) ────────────────
+  //
+  // Diagnosis 2026-07-05: on the orchestrator, a fat first search result (up to
+  // 20 fact lines) reads as *exhaustive*, so the answer model stops after 1–2
+  // searches and under-samples counting questions. Fix: cap facts per doc at
+  // MAX_FACTS_PER_DOC (now 6) AND, when a doc had MORE matching lines than the
+  // cap, append an explicit "there are more — go read the whole doc" marker so
+  // truncation is legible rather than silently mistaken for completeness.
+  it('doc with more matching facts than the per-doc cap → 6 facts + a truncation marker', async () => {
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'episode',
+      slug: 'weddings',
+      summary: 'Weddings attended',
+      subject: 'weddings',
+      factType: 'episode',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-1'],
+      now: new Date('2026-05-10T12:00:00Z'),
+      facts: Array.from({ length: 8 }, (_, i) => `(2026-0${i + 1}-01) User attended wedding number ${i + 1}.`),
+    });
+
+    const searchResults: RetrievalResult[] = [
+      {
+        docId: 'episode/weddings',
+        category: 'episode',
+        slug: 'weddings',
+        summary: 'Weddings attended',
+        snippet: '',
+        score: 0.8,
+      },
+    ];
+    const { bus } = makeWiredBus({ searchResults });
+    await registerMemorySearch(bus);
+
+    const ctx = makeWorkspaceCtx();
+    const out = (await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'weddings attended' }),
+    )) as { results: Array<{ matchedFacts: string[] }> };
+
+    const facts = out.results[0]!.matchedFacts;
+    // 6 real fact lines (the per-doc cap) + 1 trailing truncation marker.
+    expect(facts).toHaveLength(7);
+    // The 6 shown are the FIRST 6 in body order (deterministic, not a sample).
+    expect(facts.slice(0, 6)).toEqual([
+      '(2026-01-01) User attended wedding number 1.',
+      '(2026-02-01) User attended wedding number 2.',
+      '(2026-03-01) User attended wedding number 3.',
+      '(2026-04-01) User attended wedding number 4.',
+      '(2026-05-01) User attended wedding number 5.',
+      '(2026-06-01) User attended wedding number 6.',
+    ]);
+    // The marker is legible-to-the-model: it names the doc and the drill-in tool,
+    // and it must NOT be counted as another instance (it starts with a non-fact
+    // sentinel and mentions memory_read_section).
+    const marker = facts[6]!;
+    expect(marker).toContain('memory_read_section');
+    expect(marker).toContain('episode/weddings');
+    // No real wedding-instance text leaked into the marker slot.
+    expect(marker).not.toContain('User attended wedding number');
+  });
+
+  it('doc with matching facts at or under the cap → no truncation marker', async () => {
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'episode',
+      slug: 'weddings',
+      summary: 'Weddings attended',
+      subject: 'weddings',
+      factType: 'episode',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-1'],
+      now: new Date('2026-05-10T12:00:00Z'),
+      facts: Array.from({ length: 6 }, (_, i) => `(2026-0${i + 1}-01) User attended wedding number ${i + 1}.`),
+    });
+
+    const searchResults: RetrievalResult[] = [
+      {
+        docId: 'episode/weddings',
+        category: 'episode',
+        slug: 'weddings',
+        summary: 'Weddings attended',
+        snippet: '',
+        score: 0.8,
+      },
+    ];
+    const { bus } = makeWiredBus({ searchResults });
+    await registerMemorySearch(bus);
+
+    const ctx = makeWorkspaceCtx();
+    const out = (await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'weddings attended' }),
+    )) as { results: Array<{ matchedFacts: string[] }> };
+
+    const facts = out.results[0]!.matchedFacts;
+    expect(facts).toHaveLength(6);
+    expect(facts.every((f) => f.includes('User attended wedding number'))).toBe(true);
+  });
 });

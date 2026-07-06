@@ -73,3 +73,36 @@ It measured short, and the diagnosis says why: **read-time aggregation is the wa
 ## De-noising note
 
 Multi-session at n=30 is noisy (±1 question = 3.3pt). An n=500 (`--full`) run puts multi-session at n≈150 before any large investment — ~5× cost/time.
+
+## Update 2026-07-06: cheap orchestrator experiment ran — hypothesis confirmed, tweak ships
+
+The recommended cheap experiment (Rec #2) was run: `MAX_FACTS_PER_DOC` 20→6, an
+explicit per-doc **truncation marker** on `matchedFacts` when a doc has more
+matching lines than shown, plus strengthened "don't count after one search"
+coaching in `memory_search`'s descriptor and the bench answer loop. Orchestrator,
+n=100, same stack. Report: `2026-07-06-memory-strata-e2e-report-orch-exp.md`.
+
+| metric | snippet base | enum (#379) | **exp** | Δ vs enum |
+|---|---|---|---|---|
+| overall | 73.0% | 69.0% | **78.0%** | +9.0 |
+| multi-session | 46.7% | 43.3% | **60.0%** | +16.7 |
+| correct-refusal | 83.3% | 66.7% | **83.3%** | +16.6 |
+
+**The early-termination hypothesis is confirmed, not falsified.** Every gained
+multi-session question did *more* tool-calls than under enum (citrus 4→6, games
+2→6, cuisines 2→4, babies 1→2) — exactly the "keep sampling before you count"
+behavior the fat first result had suppressed. Read-time aggregation was **not**
+the whole wall; early termination was a large, cheaply-recoverable part of it.
+Multi-session lands at 60.0% (18/30) — ~2 questions shy of the 65% gate — while
+overall reaches a new high and correct-refusal returns to baseline. Per the
+pre-registered rule ("recovers toward ≥65% without hurting overall → ship the
+tweak, reflect deferrable"), the tweak ships.
+
+**`reflect` is downgraded from "the earned next lever" to a gap-closer.** The 12
+remaining multi-session misses split into: true sum/aggregation over found
+instances (luxury $2,500 total, driving hours, jogging 0.5h), off-by-one
+undercounts (clothing 2/3, kits 4/5, food-delivery 2/3, weddings "at least 3"),
+and pure retrieval misses/abstentions (properties viewed, bed time) that no
+write-time rollup can reach. Only the first two groups (~5–7 questions) are in
+reflect's scope — so reflect is still worth building to close the last ~5pt, but
+it is no longer the primary fix.
