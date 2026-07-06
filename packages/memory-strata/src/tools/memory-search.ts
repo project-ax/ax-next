@@ -29,12 +29,15 @@ export const MEMORY_SEARCH_DESCRIPTOR: ToolDescriptor = {
   name: 'memory_search',
   description:
     'Search long-term memory. Each hit carries a one-line summary, a `snippet` ' +
-    '(match-centered body excerpt), and `matchedFacts` — EVERY fact line in that ' +
-    'doc matching your query, with dates like (2026-02-15) when known. For ' +
-    'counting/enumeration questions ("how many X"), read matchedFacts across ALL ' +
-    'hits, then run 1-2 more searches with instance-specific terms (e.g. for ' +
-    '"citrus" also try "lime", "lemon") before concluding. Use memory_read_section ' +
-    'to read a whole doc when matchedFacts looks truncated.',
+    '(match-centered body excerpt), and `matchedFacts` — query-matching fact ' +
+    'lines from that doc, with dates like (2026-02-15) when known. matchedFacts ' +
+    'is a CAPPED PREVIEW, not the full set: a "⋯ more matching lines" entry means ' +
+    'the doc has more instances than shown — call memory_read_section on that doc ' +
+    'to read them all. For counting/enumeration questions ("how many X"), do NOT ' +
+    'conclude a count from the first search: read matchedFacts across ALL hits, ' +
+    'drill into any truncated doc, AND run more searches with instance-specific ' +
+    'terms (e.g. for "citrus" also try "lime", "lemon") before answering. Count ' +
+    'only distinct instances — ignore near-duplicate lines describing the same event.',
   executesIn: 'host',
   inputSchema: {
     type: 'object',
@@ -158,13 +161,33 @@ export async function registerMemorySearch(
   );
 }
 
-const MAX_FACTS_PER_DOC = 20;
+// WS-A early-termination fix (diagnosis 2026-07-05). Was 20 — a full first
+// search result that big read as *exhaustive* to the answer model, so it
+// stopped after 1–2 searches and under-sampled counting questions (lost cases
+// did FEWER tool-calls, 4.4→2.8). Capping lower means a doc with many instances
+// no longer looks complete from one hit; the truncation marker below makes that
+// incompleteness explicit so the model drills in / keeps searching before it
+// counts, instead of silently mistaking 6 lines for the whole set.
+const MAX_FACTS_PER_DOC = 6;
 const MAX_FACTS_PER_RESPONSE = 60;
+
+/** Build the trailing "there's more in this doc" marker appended to a row's
+ * matchedFacts when its body had more query-matching lines than we showed. Kept
+ * unambiguous so the answer model reads it as an instruction, never as another
+ * countable instance: it opens with a non-fact sentinel and names the drill-in
+ * tool + docId. */
+function truncationMarker(docId: string): string {
+  return `⋯ more matching lines in ${docId} not shown — call memory_read_section on it to read them all before counting.`;
+}
 
 /** D2 (enumeration design): attach every query-matching fact line from each
  * hit's body. Best-effort — a read failure yields [] for that row, never a
  * failed tool call. Applies to orchestrator `<load>` rows too (their doc
- * bodies never touched the index). */
+ * bodies never touched the index).
+ *
+ * WS-A: when a doc has more matching lines than we can show (per-doc cap or the
+ * shared response budget), append `truncationMarker` so the truncation is
+ * legible instead of silently reading as an exhaustive set. */
 async function withMatchedFacts<
   R extends { docId: string },
 >(bus: HookBus, ctx: AgentContext, rows: R[], query: string): Promise<Array<R & { matchedFacts: string[] }>> {
@@ -179,10 +202,16 @@ async function withMatchedFacts<
           ? null
           : await readDocBody(bus, ctx, parsed.category, parsed.slug);
         if (body !== null) {
-          matchedFacts = extractMatchedFacts(body, query, {
-            maxLines: Math.min(MAX_FACTS_PER_DOC, MAX_FACTS_PER_RESPONSE - total),
-          });
+          const cap = Math.min(MAX_FACTS_PER_DOC, MAX_FACTS_PER_RESPONSE - total);
+          // Probe one line past the cap: if extract returns more than `cap`,
+          // the doc was truncated and we append the marker. Cheap (one extra
+          // line scanned) and needs no return-shape change.
+          const probed = extractMatchedFacts(body, query, { maxLines: cap + 1 });
+          matchedFacts = probed.slice(0, cap);
           total += matchedFacts.length;
+          if (probed.length > cap) {
+            matchedFacts.push(truncationMarker(row.docId));
+          }
         }
       } catch (err) {
         ctx.logger.warn('memory_strata_matched_facts_failed', {
