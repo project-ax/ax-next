@@ -222,6 +222,10 @@ async function withMatchedFacts<
             // Soft-cap telemetry: this doc had more matching lines than we
             // showed. `debug`, not `warn` — a bound cap is expected, not a
             // failure (warn stays reserved for the read-throws catch below).
+            // `shown` is the EFFECTIVE cap min(MAX_FACTS_PER_DOC, remaining
+            // budget): usually MAX_FACTS_PER_DOC, but < that when the shared
+            // response budget was nearly spent and bit this doc mid-list — so a
+            // consumer must not read `doc_clipped` as strictly per-doc-cap.
             ctx.logger.debug('memory_strata_matched_facts_doc_clipped', {
               docId: row.docId,
               shown: cap,
