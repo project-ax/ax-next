@@ -17,6 +17,7 @@ Architectural / process decisions. Never deleted — strikethrough if reversed.
 |------|----------|-----------|--------------|
 | 2026-07-07 | `parseOrchestratorPlan` now **reserves `FTS_RESERVE=2` slots for `<fts>` probes** when `<load>` count alone would fill `MAX_OPS` (loadBudget = MAX_OPS − min(2, ftsCount)), instead of collecting all loads then all fts then `slice(0, 8)`. Loads still precede fts in the result. | The blind slice dropped 100% of instance-term `<fts>` probes the moment a counting query emitted ≥8 `<load>` ops, defeating the D3 "for citrus also probe lime/lemon" recall mechanism. Reserving headroom keeps ≥1 probe alive while honoring the MAX_OPS total. | **Interleave load/fts by emission order before slicing** — REJECTED: `runOps` pushes loads first so a `<load>` wins the dedup race against a later `<fts>` hit for the same docId; true emission-order interleave could place an fts before a load and break that documented invariant. Headroom preserves loads-before-fts. |
 
+## 2026-06-29 — TASK-193 undici drift: pin exact 7.28.0 + cap the override at <8.0.0
 
 | Date | Decision | Rationale | Alternatives |
 |------|----------|-----------|--------------|
