@@ -16,6 +16,7 @@
     "bench": "tsx test/bench/cli.ts",
     "bench:latency": "tsx test/bench/latency-probe.ts",
     "build": "tsc --build",
+    "pretest": "tsc --build",
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit -p tsconfig.bench.json"

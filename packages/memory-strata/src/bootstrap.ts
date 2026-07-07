@@ -19,6 +19,15 @@ export interface BootstrapInput {
    * placeholder body in that case.
    */
   composedIdentity: string;
+  /**
+   * Bench temporal-fidelity seam (TASK-204). The clock the seed files' `created`
+   * / `event_time` / `recorded_at` frontmatter is stamped from. Production omits
+   * it, so it defaults to `() => new Date()` and every stamp is wall-clock —
+   * unchanged. An e2e replay threads the plugin's `nowFn` through here so the
+   * seeded `system/{agent,user,session}.md` + `system/map.md` carry the corpus's
+   * historical date instead of fiction-vs-reality wall-clock.
+   */
+  nowFn?: () => Date;
 }
 
 /**
@@ -35,7 +44,7 @@ export async function bootstrapMemoryTree(
   input: BootstrapInput,
 ): Promise<{ created: string[] }> {
   const created: string[] = [];
-  const now = new Date();
+  const now = (input.nowFn ?? (() => new Date()))();
   const nowIso = now.toISOString();
 
   for (const name of ['agent', 'user', 'session'] as const) {
