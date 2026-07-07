@@ -523,7 +523,12 @@ async function detectAllClasses(
   log: RollupLogger,
   stageB: StageBNamer | undefined,
 ): Promise<DetectedClass[]> {
-  const { classes: stageA } = detectClasses(docs, config, log);
+  // Run Stage A UNCAPPED so (a) the shared cap is applied exactly once — on the
+  // merged A∪B set below — matching the "shared per-pass cap" contract, and (b)
+  // `claimed` reflects EVERY Stage-A-claimable doc, so a class dropped only by
+  // the cap can't leak its members back into the residue and get re-named by
+  // Stage B. The direct `detectClasses` cap contract is unchanged (still tested).
+  const { classes: stageA } = detectClasses(docs, { ...config, cap: Number.MAX_SAFE_INTEGER }, log);
 
   // slug → docId-keyed member map, seeded with Stage A.
   const bySlug = new Map<string, { slug: string; token: string; category: DocCategory; members: Map<string, DocFile> }>();
@@ -612,6 +617,12 @@ export function verifyStageBClasses(
     // disk (garbage like "!!!" collapses to slugify's `general` fallback).
     if (label.trim().length === 0) continue;
     const slug = slugify(label);
+    // Bound the slug LENGTH too, not just its charset: `slugify` sanitizes for
+    // traversal but never caps length, and the slug becomes a real filename
+    // (`docs/rollup/<slug>.md`). An overlong model label would throw
+    // ENAMETOOLONG on write, aborting the pass before GC. Drop it — a genuine
+    // class name is short; an overlong one is model noise, not a real class.
+    if (slug.length > STAGE_B_MAX_SLUG_LEN) continue;
     if (seenSlug.has(slug)) continue; // ignore a duplicate class label
 
     const rawMembers = Array.isArray((p as ProposedClass).members) ? (p as ProposedClass).members : [];
@@ -641,6 +652,13 @@ export function verifyStageBClasses(
 
 const STAGE_B_MAX_TOKENS = 1024;
 const STAGE_B_TEMPERATURE = 0.2;
+/** Max slug length for a Stage-B class (the slug becomes a filename). */
+const STAGE_B_MAX_SLUG_LEN = 80;
+/** Cap on residue docs shown to the LLM so the "single cheap call" prompt stays
+ *  bounded on a large memory. Beyond this, the extra residue simply isn't named
+ *  this pass — it falls back to read-time enumeration (best-effort accelerator).
+ *  Sliced deterministically (sorted by docId) so the prompt is cache-stable. */
+const STAGE_B_MAX_RESIDUE_DOCS = 200;
 
 function buildStageBSystem(k: number): string {
   return `\
@@ -706,6 +724,16 @@ export function makeStageBNamer(deps: {
   return async (residue, config, log) => {
     if (residue.length < config.k) return []; // can't form a ≥K class
 
+    // Bound the prompt on a large memory: show at most N residue docs (sorted by
+    // docId → deterministic + cache-stable). Verification below re-checks ids
+    // against THIS shown subset, so the cap can never admit an unshown doc.
+    const shown = residue.length > STAGE_B_MAX_RESIDUE_DOCS
+      ? [...residue].sort((a, b) => a.frontmatter.id.localeCompare(b.frontmatter.id)).slice(0, STAGE_B_MAX_RESIDUE_DOCS)
+      : residue;
+    if (shown.length < residue.length) {
+      log.info('memory_strata_rollup_stage_b_residue_capped', { residue: residue.length, shown: shown.length });
+    }
+
     let raced: LlmCallOutput;
     try {
       raced = await raceTimeout(
@@ -713,7 +741,7 @@ export function makeStageBNamer(deps: {
           model: deps.model,
           maxTokens: STAGE_B_MAX_TOKENS,
           system: buildStageBSystem(config.k),
-          messages: [{ role: 'user', content: formatResidue(residue) }],
+          messages: [{ role: 'user', content: formatResidue(shown) }],
           temperature: STAGE_B_TEMPERATURE,
         }),
         deps.timeoutMs,
@@ -731,7 +759,7 @@ export function makeStageBNamer(deps: {
       log.info('memory_strata_rollup_stage_b_parse_error', { rawLength: raced.text.length });
       return [];
     }
-    const verified = verifyStageBClasses(proposed, residue, config);
+    const verified = verifyStageBClasses(proposed, shown, config);
     log.info('memory_strata_rollup_stage_b_named', {
       proposed: proposed.length,
       verified: verified.length,

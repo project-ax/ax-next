@@ -133,6 +133,15 @@ describe('verifyStageBClasses (deterministic bound)', () => {
     expect(out[0]!.slug).toBe('general'); // slugify FALLBACK — never a raw model path
   });
 
+  it('an overlong label is dropped (slug length is bounded, not just its charset)', () => {
+    // slugify sanitizes charset but never caps length; an ~1KB label would become
+    // a filename that throws ENAMETOOLONG on write and abort the pass.
+    const proposed: ProposedClass[] = [
+      { class: 'a'.repeat(500), members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
+    ];
+    expect(verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG)).toHaveLength(0);
+  });
+
   it('a duplicate class label is ignored (first wins)', () => {
     const proposed: ProposedClass[] = [
       { class: 'furniture', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
@@ -207,6 +216,58 @@ describe('makeStageBNamer (stubbed LLM)', () => {
     const { log, events } = collectLog();
     expect(await namer(residue, DEFAULT_ROLLUP_CONFIG, log)).toEqual([]);
     expect(events.some((e) => e.event === 'memory_strata_rollup_stage_b_llm_failed')).toBe(true);
+  });
+
+  it('an LLM call that never resolves → timeout → [] (timeout:true logged)', async () => {
+    const namer = makeStageBNamer({
+      llmCall: () => new Promise<LlmCallOutput>(() => { /* never resolves */ }),
+      model: 'm',
+      timeoutMs: 1,
+    });
+    const { log, events } = collectLog();
+    expect(await namer(residue, DEFAULT_ROLLUP_CONFIG, log)).toEqual([]);
+    const evt = events.find((e) => e.event === 'memory_strata_rollup_stage_b_llm_failed');
+    expect(evt).toBeDefined();
+    expect(evt!.fields.timeout).toBe(true);
+  });
+
+  it('passes the configured model verbatim to the LLM call (pins the id contract)', async () => {
+    let seenModel: string | undefined;
+    const namer = makeStageBNamer({
+      llmCall: async (input) => {
+        seenModel = input.model;
+        return { text: '[]', stopReason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0 } };
+      },
+      model: 'claude-haiku-4-5-20251001',
+      timeoutMs: 1000,
+    });
+    await namer(residue, DEFAULT_ROLLUP_CONFIG, collectLog().log);
+    expect(seenModel).toBe('claude-haiku-4-5-20251001');
+  });
+
+  it('caps the residue shown to the LLM (bounded single call) and validates ids against the shown subset', async () => {
+    // 250 residue docs; only STAGE_B_MAX_RESIDUE_DOCS (200) are shown. A verified
+    // furniture class over 3 shown ids still lands; residue_capped is logged.
+    const big: DocFile[] = Array.from({ length: 250 }, (_, i) =>
+      mkDoc('episode', `d${String(i).padStart(3, '0')}`, { summary: `misc item ${i}` }));
+    let shownCount = 0;
+    const namer = makeStageBNamer({
+      llmCall: async (input) => {
+        // The prompt body is one "<id>: <summary>" line per shown doc.
+        shownCount = input.messages[0]!.content.split('\n').filter((l) => l.includes(': ')).length;
+        return {
+          text: JSON.stringify([{ class: 'items', members: ['episode/d000', 'episode/d001', 'episode/d002'] }]),
+          stopReason: 'end_turn', usage: { inputTokens: 0, outputTokens: 0 },
+        };
+      },
+      model: 'm',
+      timeoutMs: 1000,
+    });
+    const { log, events } = collectLog();
+    const out = await namer(big, DEFAULT_ROLLUP_CONFIG, log);
+    expect(shownCount).toBe(200); // capped
+    expect(out).toHaveLength(1); // d000..d002 are in the first-200 (sorted by id)
+    expect(events.some((e) => e.event === 'memory_strata_rollup_stage_b_residue_capped')).toBe(true);
   });
 
   it('residue smaller than K → no LLM call at all (returns [])', async () => {
