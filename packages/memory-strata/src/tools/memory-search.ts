@@ -193,9 +193,17 @@ async function withMatchedFacts<
 >(bus: HookBus, ctx: AgentContext, rows: R[], query: string): Promise<Array<R & { matchedFacts: string[] }>> {
   const out: Array<R & { matchedFacts: string[] }> = [];
   let total = 0;
+  // D2 telemetry ("caps are soft; log when clipped"): count hit rows we never
+  // enriched because the shared response budget was already spent — they show []
+  // purely because of the cap, not a read miss. Logged once after the loop.
+  let rowsSkippedForBudget = 0;
   for (const row of rows) {
     let matchedFacts: string[] = [];
-    if (total < MAX_FACTS_PER_RESPONSE && query.length > 0) {
+    if (query.length === 0) {
+      // No query text → no facts to match; not a cap event.
+    } else if (total >= MAX_FACTS_PER_RESPONSE) {
+      rowsSkippedForBudget += 1;
+    } else {
       try {
         const parsed = parseDocId(row.docId);
         const body = parsed === null
@@ -211,6 +219,13 @@ async function withMatchedFacts<
           total += matchedFacts.length;
           if (probed.length > cap) {
             matchedFacts.push(truncationMarker(row.docId));
+            // Soft-cap telemetry: this doc had more matching lines than we
+            // showed. `debug`, not `warn` — a bound cap is expected, not a
+            // failure (warn stays reserved for the read-throws catch below).
+            ctx.logger.debug('memory_strata_matched_facts_doc_clipped', {
+              docId: row.docId,
+              shown: cap,
+            });
           }
         }
       } catch (err) {
@@ -221,6 +236,14 @@ async function withMatchedFacts<
       }
     }
     out.push({ ...row, matchedFacts });
+  }
+  if (rowsSkippedForBudget > 0) {
+    // The shared per-response budget bound: at least one hit row was left with no
+    // facts shown. Surfaces how often the 60-line cap clips real responses.
+    ctx.logger.debug('memory_strata_matched_facts_response_capped', {
+      limit: MAX_FACTS_PER_RESPONSE,
+      rowsSkipped: rowsSkippedForBudget,
+    });
   }
   return out;
 }
