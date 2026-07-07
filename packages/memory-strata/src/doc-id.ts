@@ -20,6 +20,11 @@ const VALID_CATEGORIES = new Set<DocCategory>([
   'decision',
   'episode',
   'general',
+  // TASK-200: rollups are addressable docs. `parseDocId` gates the orchestrator
+  // map menu, the `<load>` guard, `memory_read_section`, AND matchedFacts
+  // enrichment (tools/memory-search.ts). Omit and a retrieved rollup surfaces
+  // with NO instance lines on the orchestrator path being tuned 60→65%.
+  'rollup',
 ]);
 const SLUG_RE = /^[a-z0-9-]+$/;
 

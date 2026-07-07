@@ -626,6 +626,15 @@ async function consolidateRoutedToTier(deps: {
     // happened (events were omitted), so `memory_search` returned nothing in
     // tier deployments. Best-effort: a reindex failure must not fail the pass.
     await reindexTierDocs(bus, ctx);
+    // TASK-200: the rollup pass ran on the scratch WITHOUT a bus, so its GC
+    // `memory:doc:deleted` events never fired. reindexTierDocs re-upserts every
+    // doc STILL present (including surviving rollups), but a rollup that was GC'd
+    // is gone from `/agent` and would otherwise leave a STALE index row answering
+    // `## Count: 3` after the file is gone. Re-fire the deletions here — the
+    // symmetric twin of the doc:written re-fire above — so the index row drops.
+    for (const docId of result.rollupsDeleted) {
+      await bus.fire('memory:doc:deleted', ctx, { docId });
+    }
     return result;
   } finally {
     await hydrated.dispose();

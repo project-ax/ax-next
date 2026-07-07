@@ -1,0 +1,94 @@
+// Layer 6 — consolidator ↔ rollup-pass integration (TASK-200):
+// the per-category dirty gate (skip vs run) and the ordering guarantee
+// (rollup pass runs AFTER promotion/merge, BEFORE map regen — so a fresh
+// rollup gets a map line in the same pass).
+
+import { describe, it, expect, beforeEach } from 'vitest';
+import { mkdtemp, mkdir, writeFile, readFile, access } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { runConsolidation } from '../consolidator.js';
+import { writeNewDoc } from '../doc-store.js';
+import { buildMarkdownFile } from '../frontmatter.js';
+import { INBOX_DIR, docFile, mapFile } from '../paths.js';
+import type { MemoryFrontmatter } from '../types.js';
+
+const NOW = new Date('2026-06-01T00:00:00.000Z');
+
+const FILLERS = ['hiking-trip', 'concert', 'museum', 'road', 'garden'];
+
+let root: string;
+beforeEach(async () => {
+  root = await mkdtemp(join(tmpdir(), 'consol-rollup-'));
+});
+
+/** Seed a qualifying `weddings` class on disk (3 weddings + 5 fillers = 8 episodes,
+ *  weddings 3/8 = 0.375 ≤ 0.4). */
+async function seedWeddingCorpus(): Promise<void> {
+  for (const s of ['emily-and-sarah', 'jen-and-tom', 'rachel-and-mike']) {
+    await writeNewDoc({
+      workspaceRoot: root, category: 'episode', slug: s,
+      summary: 'a wedding', subject: s, factType: 'episode', confidence: 0.9,
+      sourceObservationIds: ['o'], now: NOW, facts: [`(2026-01-05) Attended the wedding of ${s}`],
+    });
+  }
+  for (const f of FILLERS) {
+    await writeNewDoc({
+      workspaceRoot: root, category: 'episode', slug: f,
+      summary: `a ${f} outing`, subject: f, factType: 'episode', confidence: 0.9,
+      sourceObservationIds: ['o'], now: NOW, facts: [`(2026-01-06) a ${f} outing`],
+    });
+  }
+}
+
+async function writeInbox(filename: string, fm: MemoryFrontmatter, body: string): Promise<void> {
+  const dir = join(root, INBOX_DIR);
+  await mkdir(dir, { recursive: true });
+  await writeFile(join(dir, filename), buildMarkdownFile(fm, body), 'utf8');
+}
+
+function inboxFm(id: string, subject: string, factType: string, summary: string): MemoryFrontmatter {
+  return {
+    id, type: 'inbox/observation', created: NOW.toISOString(), confidence: 0.9,
+    pinned: false, summary, subject, factType,
+    event_time: NOW.toISOString(), recorded_at: NOW.toISOString(),
+  };
+}
+
+describe('consolidator rollup dirty gate + ordering', () => {
+  it('a pass with NO enumerable-category write SKIPS the rollup pass', async () => {
+    // A qualifying weddings class already exists on disk...
+    await seedWeddingCorpus();
+    // ...but this pass promotes ONLY a preference (non-enumerable) observation.
+    await writeInbox(
+      '2026-06-01T00-00-00.000Z-coffee.md',
+      inboxFm('obs-coffee', 'coffee', 'preference', 'User prefers pour-over coffee'),
+      '# Observation\n\nUser prefers pour-over coffee\n',
+    );
+
+    const result = await runConsolidation({ workspaceRoot: root, now: NOW });
+    // Dirty gate held: rollup pass skipped despite a qualifying class on disk.
+    expect(result.rollupsWritten).toBe(0);
+    await expect(access(join(root, docFile('rollup', 'weddings')))).rejects.toThrow();
+  });
+
+  it('a promoting (enumerable) pass RUNS the rollup pass and the rollup lands in the map', async () => {
+    await seedWeddingCorpus();
+    // Promote an EPISODE observation → enumerableWrite → rollup pass runs.
+    await writeInbox(
+      '2026-06-01T00-00-00.000Z-picnic.md',
+      inboxFm('obs-picnic', 'picnic', 'episode', 'A lakeside picnic'),
+      '# Observation\n\nA lakeside picnic\n',
+    );
+
+    const result = await runConsolidation({ workspaceRoot: root, now: NOW });
+    expect(result.rollupsWritten).toBeGreaterThanOrEqual(1);
+    await access(join(root, docFile('rollup', 'weddings'))); // rollup materialized
+
+    // Ordering: the rollup pass ran BEFORE regenerateMap, so map.md carries the
+    // rollup line (it wouldn't if the pass ran after map regen).
+    const map = await readFile(join(root, mapFile()), 'utf8');
+    expect(map).toContain('rollup/');
+    expect(map).toContain('weddings');
+  });
+});

@@ -203,7 +203,9 @@ export async function listDocs(input: { workspaceRoot: string }): Promise<DocFil
   return out;
 }
 
-const CATEGORIES: DocCategory[] = ['entity', 'preference', 'decision', 'episode', 'general'];
+// TASK-200: 'rollup' included so `listDocs` enumerates `docs/rollup/` — the map
+// regen + consolidator rollup pass both rely on rollups showing up here.
+const CATEGORIES: DocCategory[] = ['entity', 'preference', 'decision', 'episode', 'general', 'rollup'];
 
 function buildBody(facts: string[]): string {
   return ['# Doc', '', '## Facts', ...facts.map((f) => `- ${f}`), ''].join('\n');
@@ -266,7 +268,13 @@ function parseDoc(relPath: string, raw: string): DocFile {
   return { path: relPath, frontmatter: fm, body: m[2]! };
 }
 
-async function atomicWriteUtf8(absPath: string, contents: string): Promise<void> {
+/**
+ * Atomically write UTF-8 contents via write-to-temp + POSIX rename. Exported
+ * (TASK-200) so the rollup writer re-uses the SAME crash-safe primitive as
+ * `writeNewDoc` instead of a bare `fs.writeFile` that could leave a partial
+ * rollup the frontmatter parser would choke on.
+ */
+export async function atomicWriteUtf8(absPath: string, contents: string): Promise<void> {
   // Write to a sibling temp file then rename. POSIX rename is atomic on
   // the same filesystem; this prevents a crash mid-write from leaving
   // a partially-written doc that our parser would later choke on.

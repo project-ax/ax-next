@@ -18,7 +18,8 @@ export type MemoryFileType =
   | 'docs/preference'
   | 'docs/decision'
   | 'docs/episode'
-  | 'docs/general';
+  | 'docs/general'
+  | 'docs/rollup';
 
 /** Subset of {@link MemoryFileType} covering promoted fact pages under `docs/`. */
 export type DocFileType =
@@ -26,7 +27,11 @@ export type DocFileType =
   | 'docs/preference'
   | 'docs/decision'
   | 'docs/episode'
-  | 'docs/general';
+  | 'docs/general'
+  // TASK-200: synthesized rollup docs. Same on-disk shape (canonical
+  // frontmatter fence) so the reindexer/map/retrieval treat them as ordinary
+  // docs; the rollup-specific fields below are optional additions.
+  | 'docs/rollup';
 
 /**
  * Canonical Strata frontmatter fields written by Phase 1. All timestamps
@@ -135,6 +140,25 @@ export interface DocFrontmatter {
   source_conversations?: string[];
   supersedes?: string[];
   superseded_by?: string;
+  /**
+   * Provenance marker (TASK-200). `'reflect'` on a synthesized rollup doc — it
+   * was materialized from member docs at consolidation time, not promoted from
+   * an inbox observation. Absent on ordinary promoted docs.
+   */
+  origin?: string;
+  /** Rollup only (TASK-200): the number of distinct member instances counted. */
+  rollup_count?: number;
+  /** Rollup only (TASK-200): the member docIds this rollup enumerates, sorted. */
+  rollup_members?: string[];
+  /** Rollup only (TASK-200): ISO-8601 timestamp of the last CONTENT change. */
+  rollup_generated?: string;
+  /**
+   * Rollup only (TASK-200): stable hash of `(members, count, instance-line
+   * text)`. The consolidator's idempotent write compares this to the recomputed
+   * hash and SKIPS the write when unchanged — so `rollup_generated` only moves
+   * when content actually changes.
+   */
+  rollup_hash?: string;
 }
 
 /**

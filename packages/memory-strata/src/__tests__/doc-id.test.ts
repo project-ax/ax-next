@@ -9,6 +9,13 @@ describe('parseDocId', () => {
     });
   });
 
+  it('accepts a rollup docId (TASK-200 — gates matchedFacts enrichment + map menu)', () => {
+    expect(parseDocId('rollup/weddings')).toEqual({
+      category: 'rollup',
+      slug: 'weddings',
+    });
+  });
+
   it('rejects an empty string', () => {
     expect(parseDocId('')).toBeNull();
   });

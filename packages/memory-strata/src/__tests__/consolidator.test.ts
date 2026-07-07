@@ -152,6 +152,11 @@ describe('consolidator', () => {
       quarantined: 1,
       leftInInbox: 1,
       decayed: 0,
+      // TASK-200: react (preference) is non-enumerable and alpha (general) stays
+      // in inbox — no enumerable-category write, so the rollup pass is skipped.
+      rollupsWritten: 0,
+      rollupsSkipped: 0,
+      rollupsDeleted: [],
     });
 
     // --- Assert docs/preference/react.md exists with both facts merged ---
@@ -226,6 +231,9 @@ describe('consolidator', () => {
       quarantined: 0,
       leftInInbox: 0,
       decayed: 0,
+      rollupsWritten: 0,
+      rollupsSkipped: 0,
+      rollupsDeleted: [],
     });
     // recent.md should still be regenerated even on an empty pass.
     const recentPath = join(workspaceRoot, 'permanent/memory/system/recent.md');

@@ -32,7 +32,14 @@ export type DocCategory =
   | 'preference'
   | 'decision'
   | 'episode'
-  | 'general';
+  | 'general'
+  // Synthesized write-time rollup docs (TASK-200): one `docs/rollup/<class>.md`
+  // per recurring instance-class (≥K member docs), materializing a count + the
+  // enumerated instance list so "how many X" reads a precomputed answer. A
+  // first-class category so `listDocs`/`parseDocId`/the map menu treat rollups
+  // as ordinary docs; excluded from `recent.md` (search-time accelerator, not
+  // hot-tier content).
+  | 'rollup';
 
 export function workspaceMemoryRoot(): string {
   return MEMORY_ROOT;
