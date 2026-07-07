@@ -251,7 +251,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: ['memory:doc:written', 'tool:execute:memory_search', 'tool:execute:memory_read_section', 'tool:execute:memory_note', 'system-prompt:augment'],
+      registers: ['memory:doc:written', 'memory:doc:deleted', 'tool:execute:memory_search', 'tool:execute:memory_read_section', 'tool:execute:memory_note', 'system-prompt:augment'],
       // I5: minimal capability list. We `agents:resolve` to read the
       // agent's systemPrompt + model; we call llmCallHook for extraction.
       // No filesystem capability is declared at the manifest level
@@ -272,8 +272,12 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       //
       // `tool:register` is called at init time to register the
       // memory_search agent tool with the tool catalog (tool-dispatcher).
-      calls: ['agents:resolve', llmCallHook, 'memory:index:upsert', 'tool:register'],
-      subscribes: ['chat:start', 'chat:end', 'memory:doc:written'],
+      // `memory:index:delete` is a HARD dependency for the same reason as
+      // `memory:index:upsert`: both are registered by the SAME indexer plugin
+      // (sqlite or postgres), so any deployment with an indexer has both. The
+      // reindexer's `memory:doc:deleted` branch maps a doc removal to it.
+      calls: ['agents:resolve', llmCallHook, 'memory:index:upsert', 'memory:index:delete', 'tool:register'],
+      subscribes: ['chat:start', 'chat:end', 'memory:doc:written', 'memory:doc:deleted'],
     },
 
     async init({ bus }) {

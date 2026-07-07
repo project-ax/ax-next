@@ -10,6 +10,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HookBus, makeAgentContext } from '@ax/core';
+import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
 import { writeNewDoc } from '../doc-store.js';
 import { registerReindexer } from '../reindex.js';
 
@@ -99,6 +100,31 @@ async function fireDocWritten(
   },
 ) {
   await bus.fire('memory:doc:written', ctx, payload);
+}
+
+/**
+ * Fire a `memory:doc:deleted` event on the bus and wait for all subscribers
+ * to complete. Storage-agnostic payload — `docId` only.
+ */
+async function fireDocDeleted(
+  bus: HookBus,
+  ctx: ReturnType<typeof makeAgentContext>,
+  docId: string,
+) {
+  await bus.fire('memory:doc:deleted', ctx, { docId });
+}
+
+/**
+ * Register a no-op `memory:index:delete` service that captures the docIds it
+ * was asked to delete. Returns the array (mutated in-place as calls arrive).
+ */
+function registerDeleteCapture(bus: HookBus): string[] {
+  const docIds: string[] = [];
+  bus.registerService('memory:index:delete', '@ax/memory-strata-index-stub', async (_ctx, payload) => {
+    docIds.push((payload as { docId: string }).docId);
+    return {};
+  });
+  return docIds;
 }
 
 // ---------------------------------------------------------------------------
@@ -269,5 +295,88 @@ describe('registerReindexer', () => {
         summary: 'Decision with no indexer',
       }),
     ).resolves.not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Deletion path (TASK-199): memory:doc:deleted → memory:index:delete
+// ---------------------------------------------------------------------------
+
+describe('registerReindexer — deletion path', () => {
+  it('memory:doc:deleted forwards docId to memory:index:delete', async () => {
+    const bus = new HookBus();
+    const ctx = makeCtx(bus);
+    const deleted = registerDeleteCapture(bus);
+    registerReindexer(bus);
+
+    await fireDocDeleted(bus, ctx, 'preference/react');
+
+    expect(deleted).toEqual(['preference/react']);
+  });
+
+  it('delete hook throws — exception does not propagate to fire() resolver', async () => {
+    const bus = new HookBus();
+    const ctx = makeCtx(bus);
+
+    bus.registerService('memory:index:delete', '@ax/memory-strata-index-stub', async () => {
+      throw new Error('delete kaboom');
+    });
+    registerReindexer(bus);
+
+    await expect(fireDocDeleted(bus, ctx, 'preference/boom')).resolves.not.toThrow();
+  });
+
+  it('no indexer registered (graceful) — memory:doc:deleted resolves, no crash', async () => {
+    const bus = new HookBus();
+    const ctx = makeCtx(bus);
+    // Intentionally do NOT register memory:index:delete.
+    registerReindexer(bus);
+
+    await expect(fireDocDeleted(bus, ctx, 'preference/none')).resolves.not.toThrow();
+  });
+
+  it('end-to-end (real sqlite index) — deleted doc drops out of memory_search', async () => {
+    const bus = new HookBus();
+    const ctx = makeCtx(bus);
+
+    // Wire the REAL sqlite indexer so upsert / search / delete all round-trip
+    // through the same backend the acceptance criterion names.
+    const indexPlugin = createMemoryStrataIndexSqlitePlugin({ databasePath: ':memory:' });
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    await indexPlugin.init({ bus } as any);
+    registerReindexer(bus);
+
+    await seedDoc({
+      category: 'preference',
+      slug: 'react',
+      summary: 'User prefers React over Vue',
+      factType: 'preference',
+    });
+
+    // Write path: index the doc.
+    await fireDocWritten(bus, ctx, {
+      docId: 'preference/react',
+      category: 'preference',
+      slug: 'react',
+      kind: 'created',
+      summary: 'User prefers React over Vue',
+    });
+
+    const before = await bus.call<{ query: string }, { results: Array<{ docId: string }> }>(
+      'memory:index:search',
+      ctx,
+      { query: 'React', topK: 10 },
+    );
+    expect(before.results.map((r) => r.docId)).toContain('preference/react');
+
+    // Deletion path: remove the doc from the index.
+    await fireDocDeleted(bus, ctx, 'preference/react');
+
+    const after = await bus.call<{ query: string }, { results: Array<{ docId: string }> }>(
+      'memory:index:search',
+      ctx,
+      { query: 'React', topK: 10 },
+    );
+    expect(after.results.map((r) => r.docId)).not.toContain('preference/react');
   });
 });
