@@ -8,7 +8,8 @@ import { mkdtemp, mkdir, writeFile, readFile, readdir, access } from 'node:fs/pr
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runConsolidation } from '../consolidator.js';
-import { writeNewDoc } from '../doc-store.js';
+import { verifyStageBClasses, type StageBNamer } from '../rollup.js';
+import { writeNewDoc, readDoc } from '../doc-store.js';
 import { buildMarkdownFile } from '../frontmatter.js';
 import { INBOX_DIR, docFile, mapFile } from '../paths.js';
 import type { MemoryFrontmatter } from '../types.js';
@@ -100,5 +101,62 @@ describe('consolidator rollup dirty gate + ordering', () => {
     const map = await readFile(join(root, mapFile()), 'utf8');
     expect(map).toContain('rollup/');
     expect(map).toContain('weddings');
+  });
+});
+
+// TASK-201 — Stage B (bounded LLM naming) threads through the SAME dirty gate:
+// no extra LLM call on a clean/non-enumerable pass; a promoting pass runs it and
+// a Stage-B rollup materializes through the unchanged writer.
+describe('consolidator Stage-B rollup wiring (TASK-201)', () => {
+  /** Seed 3 furniture docs that share NO surface token — Stage A cannot group
+   *  them, so they only ever materialize via Stage B. */
+  async function seedFurniture(): Promise<void> {
+    for (const it of [
+      { slug: 'couch', summary: 'bought a leather couch' },
+      { slug: 'dining-table', summary: 'refinished the oak dining table' },
+      { slug: 'standing-desk', summary: 'assembled a standing desk' },
+    ]) {
+      await writeNewDoc({
+        workspaceRoot: root, category: 'episode', slug: it.slug,
+        summary: it.summary, subject: it.slug, factType: 'episode', confidence: 0.9,
+        sourceObservationIds: ['o'], now: NOW, facts: [`(2026-02-01) ${it.summary}`],
+      });
+    }
+  }
+
+  it('a non-enumerable pass does NOT invoke Stage B (no extra LLM call)', async () => {
+    await seedFurniture();
+    // Promote ONLY a preference (non-enumerable) → dirty gate skips the rollup
+    // pass entirely, so the Stage-B namer must never be called.
+    await writeInbox(
+      '2026-06-01T00-00-00.000Z-coffee.md',
+      inboxFm('obs-coffee', 'coffee', 'preference', 'User prefers pour-over coffee'),
+      '# Observation\n\nUser prefers pour-over coffee\n',
+    );
+    let called = false;
+    const stageB: StageBNamer = async () => { called = true; return []; };
+    const result = await runConsolidation({ workspaceRoot: root, now: NOW, rollupStageB: stageB });
+    expect(called).toBe(false);
+    expect(result.rollupsWritten).toBe(0);
+  });
+
+  it('a promoting pass invokes Stage B and materializes the Stage-B rollup', async () => {
+    await seedFurniture();
+    // Promote an EPISODE observation → enumerableWrite → rollup pass runs → Stage B.
+    await writeInbox(
+      '2026-06-01T00-00-00.000Z-picnic.md',
+      inboxFm('obs-picnic', 'picnic', 'episode', 'A lakeside picnic'),
+      '# Observation\n\nA lakeside picnic\n',
+    );
+    const stageB: StageBNamer = async (residue, config) =>
+      verifyStageBClasses(
+        [{ class: 'furniture', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] }],
+        residue, config,
+      );
+    const result = await runConsolidation({ workspaceRoot: root, now: NOW, rollupStageB: stageB });
+    expect(result.rollupsWritten).toBe(1);
+    const doc = await readDoc({ workspaceRoot: root, category: 'rollup', slug: 'furniture' });
+    expect(doc).not.toBeNull();
+    expect(doc!.frontmatter.rollup_count).toBe(3);
   });
 });

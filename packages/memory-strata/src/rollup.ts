@@ -10,9 +10,17 @@
 // scattered docs — the one-hop cross-document-aggregation failure c137 documents.
 //
 // Stage A is deterministic (NO LLM): it catches classes whose members share the
-// class word on the surface (model kits, doctors, weddings). Stage B (bounded
-// LLM naming over the residue) is a SEPARATE follow-on card (TASK-201) and is
-// deliberately NOT built here.
+// class word on the surface (model kits, doctors, weddings). Stage B (TASK-201,
+// below) is a bounded, single-LLM-call-per-dirty-pass NAMER over the RESIDUE
+// (enumerable docs Stage A did NOT claim): it reaches semantically-named classes
+// whose members share no surface token (furniture: couch/table/desk; cuisines).
+// The LLM is STRICTLY a namer/clusterer of REAL docs — its output is verified
+// deterministically (every cited doc id must exist in the input; sub-K classes
+// dropped; slugs pass `slugify`) BEFORE anything reaches disk, so the ≥K bound is
+// enforced in code, not trusted. Stage B is an OPTIONAL seam into `runRollupPass`:
+// when no namer is wired (tests without an LLM, CI without keys) the pass runs
+// Stage A only. Stage-B classes flow through the SAME buildRollup/writeRollupDoc/
+// GC contract — the writer and GC are NOT re-implemented.
 //
 // A rollup is a best-effort ACCELERATOR, never the sole path: a missing or stale
 // rollup must degrade to read-time enumeration, never produce a wrong answer.
@@ -23,11 +31,13 @@
 import { mkdir, unlink } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
-import type { AgentContext, HookBus } from '@ax/core';
+import type { AgentContext, HookBus, LlmCallOutput } from '@ax/core';
 import { atomicWriteUtf8, listDocs, readDoc, stripFactDate } from './doc-store.js';
 import { buildMarkdownFile } from './frontmatter.js';
+import type { LlmCallFn } from './observer.js';
 import { docFile, type DocCategory } from './paths.js';
 import { slugify } from './slugify.js';
+import { raceTimeout, TimeoutError } from './timeout.js';
 import type { DocFile, DocFrontmatter } from './types.js';
 
 /** Minimal structured-logger interface (structurally matches the consolidator's
@@ -394,10 +404,17 @@ export interface RollupPassResult {
 }
 
 /**
- * One rollup pass: detect classes over the current doc tree, idempotently write
- * qualifying rollups, and GC rollups whose class no longer qualifies. Fires
- * `memory:doc:written`/`memory:doc:deleted` inline when a bus is present (CLI
- * path); always returns the deleted docIds for the bus-less tier path.
+ * One rollup pass: detect classes over the current doc tree (Stage A
+ * deterministic + optional Stage B LLM naming over the residue), idempotently
+ * write qualifying rollups, and GC rollups whose class no longer qualifies.
+ * Fires `memory:doc:written`/`memory:doc:deleted` inline when a bus is present
+ * (CLI path); always returns the deleted docIds for the bus-less tier path.
+ *
+ * `stageB` is the bounded LLM namer (TASK-201). When omitted, only Stage A
+ * runs — a missing namer (no LLM wired, CI without keys) degrades cleanly to the
+ * deterministic pass. Stage-B classes are merged into the SAME writer/GC contract
+ * as Stage A: on a slug collision their members are UNIONed (deduped by docId),
+ * and the per-pass `cap` is SHARED across both stages (applied to the merged set).
  */
 export async function runRollupPass(input: {
   workspaceRoot: string;
@@ -406,10 +423,11 @@ export async function runRollupPass(input: {
   bus?: HookBus | undefined;
   ctx?: AgentContext | undefined;
   config?: RollupConfig | undefined;
+  stageB?: StageBNamer | undefined;
 }): Promise<RollupPassResult> {
   const config = input.config ?? DEFAULT_ROLLUP_CONFIG;
   const docs = await listDocs({ workspaceRoot: input.workspaceRoot });
-  const { classes } = detectClasses(docs, config, input.log);
+  const classes = await detectAllClasses(docs, config, input.log, input.stageB);
   const qualifyingSlugs = new Set(classes.map((c) => c.slug));
 
   let written = 0;
@@ -465,4 +483,287 @@ export async function runRollupPass(input: {
   }
 
   return { written, skipped, deletedDocIds };
+}
+
+// ===========================================================================
+// Stage B — bounded LLM class naming over the RESIDUE (TASK-201)
+// ===========================================================================
+
+/**
+ * A namer over the RESIDUE (enumerable docs Stage A did NOT claim): given the
+ * residue docs, returns qualifying `DetectedClass`es (≥K verified real members).
+ * Bus-agnostic and best-effort — the plugin builds the concrete implementation
+ * (`makeStageBNamer`) by closing over an `llm:call` seam + a fixed extraction
+ * model, so the tier path (which runs the pass without a bus) can still name.
+ */
+export type StageBNamer = (
+  residue: DocFile[],
+  config: RollupConfig,
+  log: RollupLogger,
+) => Promise<DetectedClass[]>;
+
+/** One LLM-proposed class: a human label + the doc ids it claims as members.
+ *  UNTRUSTED — every field is re-validated by `verifyStageBClasses`. */
+export interface ProposedClass {
+  class: string;
+  members: string[];
+}
+
+/**
+ * Detect the full class set for a pass: Stage A (deterministic) plus, when a
+ * `stageB` namer is wired, Stage B over the RESIDUE. The two are merged into one
+ * slug-keyed set — on a slug collision members are UNIONed (deduped by docId) —
+ * and the per-pass `cap` is SHARED across both stages (enforced on the merged
+ * set, logged once as `rollup_cap_exceeded`). Stage B is fault-isolated: a throw
+ * from the namer leaves the Stage-A classes intact (a rollup is an accelerator).
+ */
+async function detectAllClasses(
+  docs: DocFile[],
+  config: RollupConfig,
+  log: RollupLogger,
+  stageB: StageBNamer | undefined,
+): Promise<DetectedClass[]> {
+  // Run Stage A UNCAPPED so (a) the shared cap is applied exactly once — on the
+  // merged A∪B set below — matching the "shared per-pass cap" contract, and (b)
+  // `claimed` reflects EVERY Stage-A-claimable doc, so a class dropped only by
+  // the cap can't leak its members back into the residue and get re-named by
+  // Stage B. The direct `detectClasses` cap contract is unchanged (still tested).
+  const { classes: stageA } = detectClasses(docs, { ...config, cap: Number.MAX_SAFE_INTEGER }, log);
+
+  // slug → docId-keyed member map, seeded with Stage A.
+  const bySlug = new Map<string, { slug: string; token: string; category: DocCategory; members: Map<string, DocFile> }>();
+  for (const c of stageA) {
+    bySlug.set(c.slug, {
+      slug: c.slug,
+      token: c.token,
+      category: c.category,
+      members: new Map(c.members.map((m) => [m.frontmatter.id, m])),
+    });
+  }
+
+  if (stageB !== undefined) {
+    // Residue = enumerable docs whose id NO Stage-A class claimed. Feeding only
+    // the residue to the LLM is what makes A/B members doc-disjoint, so unioning
+    // on a slug collision can never double-write a doc (design D2/D5).
+    const claimed = new Set(stageA.flatMap((c) => c.members.map((m) => m.frontmatter.id)));
+    const residue = docs.filter((d) => {
+      const cat = categoryOf(d);
+      return cat !== 'rollup' && config.enumerableCategories.has(cat) && !claimed.has(d.frontmatter.id);
+    });
+
+    let bClasses: DetectedClass[] = [];
+    try {
+      bClasses = await stageB(residue, config, log);
+    } catch (err) {
+      log.warn('memory_strata_rollup_stage_b_failed', {
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+    }
+
+    for (const c of bClasses) {
+      const existing = bySlug.get(c.slug);
+      if (existing === undefined) {
+        bySlug.set(c.slug, {
+          slug: c.slug,
+          token: c.token,
+          category: c.category,
+          members: new Map(c.members.map((m) => [m.frontmatter.id, m])),
+        });
+      } else {
+        // Slug collision with a Stage-A (or earlier Stage-B) class: union the
+        // members, deduped by docId. Count rides the authoritative summary.
+        for (const m of c.members) existing.members.set(m.frontmatter.id, m);
+      }
+    }
+  }
+
+  let merged: DetectedClass[] = [...bySlug.values()]
+    .map((c) => ({ slug: c.slug, token: c.token, category: c.category, members: [...c.members.values()] }))
+    .sort((a, b) => a.slug.localeCompare(b.slug));
+
+  // Shared per-pass cap across BOTH stages — no silent truncation.
+  if (merged.length > config.cap) {
+    log.warn('memory_strata_rollup_cap_exceeded', { detected: merged.length, cap: config.cap });
+    merged = merged.slice(0, config.cap);
+  }
+  return merged;
+}
+
+/**
+ * Deterministically verify an UNTRUSTED LLM proposal against the residue — the
+ * bound is ENFORCED here, not trusted to the model. For each proposed class:
+ * - the label must survive `slugify` (a non-empty slug), else the class is dropped;
+ * - each cited doc id must EXIST in the residue input set (hallucinated ids are
+ *   dropped), members deduped by docId;
+ * - classes with fewer than K verified members are discarded.
+ * The model never supplies a path or body — the surviving classes carry the REAL
+ * `DocFile`s, and `buildRollup` renders the doc from those, not from model text.
+ */
+export function verifyStageBClasses(
+  proposed: ProposedClass[],
+  residue: DocFile[],
+  config: RollupConfig,
+): DetectedClass[] {
+  const byId = new Map(residue.map((d) => [d.frontmatter.id, d]));
+  const seenSlug = new Set<string>();
+  const out: DetectedClass[] = [];
+
+  for (const p of proposed) {
+    if (p === null || typeof p !== 'object') continue;
+    const label = typeof (p as ProposedClass).class === 'string' ? (p as ProposedClass).class : '';
+    // A missing/blank label is dropped outright (don't mint a rollup the model
+    // never actually named). A non-empty label is normalized by `slugify`, which
+    // guarantees a traversal-safe slug — no arbitrary path from the model reaches
+    // disk (garbage like "!!!" collapses to slugify's `general` fallback).
+    if (label.trim().length === 0) continue;
+    const slug = slugify(label);
+    // Bound the slug LENGTH too, not just its charset: `slugify` sanitizes for
+    // traversal but never caps length, and the slug becomes a real filename
+    // (`docs/rollup/<slug>.md`). An overlong model label would throw
+    // ENAMETOOLONG on write, aborting the pass before GC. Drop it — a genuine
+    // class name is short; an overlong one is model noise, not a real class.
+    if (slug.length > STAGE_B_MAX_SLUG_LEN) continue;
+    if (seenSlug.has(slug)) continue; // ignore a duplicate class label
+
+    const rawMembers = Array.isArray((p as ProposedClass).members) ? (p as ProposedClass).members : [];
+    const members = new Map<string, DocFile>();
+    for (const id of rawMembers) {
+      if (typeof id !== 'string') continue;
+      const doc = byId.get(id); // MUST exist in the residue — drop hallucinations
+      if (doc === undefined) continue;
+      members.set(id, doc); // dedup by docId
+    }
+    if (members.size < config.k) continue; // sub-K after verification → discard
+
+    seenSlug.add(slug);
+    const memberDocs = [...members.values()];
+    out.push({
+      slug,
+      // No surface token to group on (that's Stage A's job) — use the slug so
+      // `memberInstance` falls back to each member's summary for the instance
+      // line (residue members share no class token by construction).
+      token: slug,
+      category: categoryOf(memberDocs[0]!),
+      members: memberDocs,
+    });
+  }
+  return out.sort((a, b) => a.slug.localeCompare(b.slug));
+}
+
+const STAGE_B_MAX_TOKENS = 1024;
+const STAGE_B_TEMPERATURE = 0.2;
+/** Max slug length for a Stage-B class (the slug becomes a filename). */
+const STAGE_B_MAX_SLUG_LEN = 80;
+/** Cap on residue docs shown to the LLM so the "single cheap call" prompt stays
+ *  bounded on a large memory. Beyond this, the extra residue simply isn't named
+ *  this pass — it falls back to read-time enumeration (best-effort accelerator).
+ *  Sliced deterministically (sorted by docId) so the prompt is cache-stable. */
+const STAGE_B_MAX_RESIDUE_DOCS = 200;
+
+function buildStageBSystem(k: number): string {
+  return `\
+You group a user's memory documents into CLASSES for a memory system. A class is \
+a kind of thing the user did or owns repeatedly — e.g. furniture (couch, table, \
+desk), cuisines (Italian, Thai), weddings. You are shown documents one per line \
+as "<doc-id>: <summary>".
+
+Cluster the shown documents into classes. Return ONLY classes with at least ${k} \
+members. Cite each member by its EXACT doc id, copied verbatim from a shown line. \
+Do NOT invent doc ids, and do NOT return a class with fewer than ${k} members. A \
+document may belong to more than one class.
+
+Respond with ONLY a JSON array, no prose, no markdown fences:
+[{ "class": string, "members": [string, ...] }]
+
+If no class has at least ${k} members, respond with [].`;
+}
+
+/** ≤50-token summary per residue doc, one "<id>: <summary>" line each. */
+function formatResidue(residue: DocFile[]): string {
+  const lines = residue.map((d) => {
+    const summary = (d.frontmatter.summary ?? '').split(/\s+/).filter((w) => w.length > 0).slice(0, 50).join(' ');
+    return `${d.frontmatter.id}: ${summary}`;
+  });
+  return `Documents:\n\n${lines.join('\n')}`;
+}
+
+/** Defensive JSON parse of the LLM's class proposal (mirrors the Observer's
+ *  parse: strict first, then hunt for a top-level array). Field validation is
+ *  left to `verifyStageBClasses`. Returns null on non-array / parse failure. */
+function parseProposedClasses(text: string): ProposedClass[] | null {
+  const trimmed = text.trim();
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf('[');
+    const end = trimmed.lastIndexOf(']');
+    if (start === -1 || end === -1 || end < start) return null;
+    try {
+      parsed = JSON.parse(trimmed.slice(start, end + 1));
+    } catch {
+      return null;
+    }
+  }
+  if (!Array.isArray(parsed)) return null;
+  return parsed as ProposedClass[];
+}
+
+/**
+ * Build the concrete Stage-B namer: ONE cheap `llm:call` per dirty pass over the
+ * residue summaries, bounded by `timeoutMs`, its output verified by
+ * `verifyStageBClasses`. Best-effort — timeout / parse-error / call failure all
+ * return `[]` so the deterministic Stage-A rollups still ship. `model` is the
+ * fixed in-stack extraction tier (no new egress). Mirrors `makeLlmDensifier`.
+ */
+export function makeStageBNamer(deps: {
+  llmCall: LlmCallFn;
+  model: string;
+  timeoutMs: number;
+}): StageBNamer {
+  return async (residue, config, log) => {
+    if (residue.length < config.k) return []; // can't form a ≥K class
+
+    // Bound the prompt on a large memory: show at most N residue docs (sorted by
+    // docId → deterministic + cache-stable). Verification below re-checks ids
+    // against THIS shown subset, so the cap can never admit an unshown doc.
+    const shown = residue.length > STAGE_B_MAX_RESIDUE_DOCS
+      ? [...residue].sort((a, b) => a.frontmatter.id.localeCompare(b.frontmatter.id)).slice(0, STAGE_B_MAX_RESIDUE_DOCS)
+      : residue;
+    if (shown.length < residue.length) {
+      log.info('memory_strata_rollup_stage_b_residue_capped', { residue: residue.length, shown: shown.length });
+    }
+
+    let raced: LlmCallOutput;
+    try {
+      raced = await raceTimeout(
+        deps.llmCall({
+          model: deps.model,
+          maxTokens: STAGE_B_MAX_TOKENS,
+          system: buildStageBSystem(config.k),
+          messages: [{ role: 'user', content: formatResidue(shown) }],
+          temperature: STAGE_B_TEMPERATURE,
+        }),
+        deps.timeoutMs,
+      );
+    } catch (err) {
+      log.warn('memory_strata_rollup_stage_b_llm_failed', {
+        timeout: err instanceof TimeoutError,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return [];
+    }
+
+    const proposed = parseProposedClasses(raced.text);
+    if (proposed === null) {
+      log.info('memory_strata_rollup_stage_b_parse_error', { rawLength: raced.text.length });
+      return [];
+    }
+    const verified = verifyStageBClasses(proposed, shown, config);
+    log.info('memory_strata_rollup_stage_b_named', {
+      proposed: proposed.length,
+      verified: verified.length,
+    });
+    return verified;
+  };
 }
