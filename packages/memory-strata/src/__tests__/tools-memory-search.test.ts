@@ -717,3 +717,140 @@ describe('matchedFacts enrichment', () => {
     expect(facts.every((f) => f.includes('User attended wedding number'))).toBe(true);
   });
 });
+
+// ─── Soft-cap clip logging (TASK-203, enumeration design D2 "log when clipped") ──
+//
+// The per-doc (MAX_FACTS_PER_DOC=6) and per-response (MAX_FACTS_PER_RESPONSE=60)
+// caps are deliberately soft. withMatchedFacts must emit a debug event when either
+// binds so real traffic reveals how often it clips — telemetry, not a failure
+// (hence debug, not the read-throws warn). These tests spy ctx.logger.debug.
+describe('matchedFacts soft-cap clip logging', () => {
+  let workspaceRoot: string;
+
+  beforeEach(async () => {
+    workspaceRoot = await mkdtemp(join(tmpdir(), 'memory-search-cap-log-'));
+  });
+
+  afterEach(async () => {
+    await rm(workspaceRoot, { recursive: true, force: true });
+  });
+
+  /** A ctx whose logger.debug is spied (writer suppressed so debug output doesn't
+   * spam the run). Mirrors the EISDIR test's warn-spy setup. */
+  function makeSpiedCtx() {
+    const logger = createLogger({ reqId: 'cap-log', writer: () => {} });
+    const debugSpy = vi.spyOn(logger, 'debug');
+    const ctx = makeAgentContext({
+      sessionId: 'cap-session',
+      agentId: 'cap-agent',
+      userId: 'cap-user',
+      workspace: { rootPath: workspaceRoot },
+      logger,
+    });
+    return { ctx, debugSpy };
+  }
+
+  it('doc clipped by the per-doc cap → logs memory_strata_matched_facts_doc_clipped {docId, shown:6}', async () => {
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'episode',
+      slug: 'weddings',
+      summary: 'Weddings attended',
+      subject: 'weddings',
+      factType: 'episode',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-1'],
+      now: new Date('2026-05-10T12:00:00Z'),
+      facts: Array.from({ length: 8 }, (_, i) => `(2026-0${i + 1}-01) User attended wedding number ${i + 1}.`),
+    });
+
+    const searchResults: RetrievalResult[] = [
+      { docId: 'episode/weddings', category: 'episode', slug: 'weddings', summary: 'Weddings attended', snippet: '', score: 0.8 },
+    ];
+    const { bus } = makeWiredBus({ searchResults });
+    await registerMemorySearch(bus);
+
+    const { ctx, debugSpy } = makeSpiedCtx();
+    await bus.call('tool:execute:memory_search', ctx, asToolCall({ query: 'weddings attended' }));
+
+    expect(debugSpy).toHaveBeenCalledWith(
+      'memory_strata_matched_facts_doc_clipped',
+      expect.objectContaining({ docId: 'episode/weddings', shown: 6 }),
+    );
+    // The response budget was NOT exhausted (one 8-fact doc contributes 6 of 60).
+    expect(debugSpy).not.toHaveBeenCalledWith(
+      'memory_strata_matched_facts_response_capped',
+      expect.anything(),
+    );
+  });
+
+  it('doc at/under the per-doc cap → does NOT log a clip event', async () => {
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'episode',
+      slug: 'weddings',
+      summary: 'Weddings attended',
+      subject: 'weddings',
+      factType: 'episode',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-1'],
+      now: new Date('2026-05-10T12:00:00Z'),
+      facts: Array.from({ length: 6 }, (_, i) => `(2026-0${i + 1}-01) User attended wedding number ${i + 1}.`),
+    });
+
+    const searchResults: RetrievalResult[] = [
+      { docId: 'episode/weddings', category: 'episode', slug: 'weddings', summary: 'Weddings attended', snippet: '', score: 0.8 },
+    ];
+    const { bus } = makeWiredBus({ searchResults });
+    await registerMemorySearch(bus);
+
+    const { ctx, debugSpy } = makeSpiedCtx();
+    await bus.call('tool:execute:memory_search', ctx, asToolCall({ query: 'weddings attended' }));
+
+    expect(debugSpy).not.toHaveBeenCalledWith('memory_strata_matched_facts_doc_clipped', expect.anything());
+    expect(debugSpy).not.toHaveBeenCalledWith('memory_strata_matched_facts_response_capped', expect.anything());
+  });
+
+  it('response budget spent → trailing rows get [] AND logs memory_strata_matched_facts_response_capped {rowsSkipped}', async () => {
+    // 11 docs × 6 matching facts = 66; the 60-line response budget is spent after
+    // 10 docs, so the 11th row shows no facts purely because of the shared cap.
+    const searchResults: RetrievalResult[] = [];
+    for (let d = 0; d < 11; d++) {
+      const slug = `weddings-${d}`;
+      await writeNewDoc({
+        workspaceRoot,
+        category: 'episode',
+        slug,
+        summary: `Weddings ${d}`,
+        subject: 'weddings',
+        factType: 'episode',
+        confidence: 0.9,
+        sourceObservationIds: [`obs-${d}`],
+        now: new Date('2026-05-10T12:00:00Z'),
+        facts: Array.from({ length: 6 }, (_, i) => `(2026-0${i + 1}-01) User attended wedding ${d}-${i}.`),
+      });
+      searchResults.push({ docId: `episode/${slug}`, category: 'episode', slug, summary: `Weddings ${d}`, snippet: '', score: 1 - d * 0.01 });
+    }
+
+    const { bus } = makeWiredBus({ searchResults });
+    await registerMemorySearch(bus);
+
+    const { ctx, debugSpy } = makeSpiedCtx();
+    const out = (await bus.call(
+      'tool:execute:memory_search',
+      ctx,
+      asToolCall({ query: 'weddings attended' }),
+    )) as { results: Array<{ matchedFacts: string[] }> };
+
+    // All 11 rows returned; the last shows no facts (budget spent, not a read miss).
+    expect(out.results).toHaveLength(11);
+    expect(out.results[10]!.matchedFacts).toEqual([]);
+    // Each of the first 10 docs contributed exactly 6 (their full set — no per-doc clip).
+    expect(out.results[9]!.matchedFacts).toHaveLength(6);
+    expect(debugSpy).not.toHaveBeenCalledWith('memory_strata_matched_facts_doc_clipped', expect.anything());
+    expect(debugSpy).toHaveBeenCalledWith(
+      'memory_strata_matched_facts_response_capped',
+      expect.objectContaining({ limit: 60, rowsSkipped: 1 }),
+    );
+  });
+});

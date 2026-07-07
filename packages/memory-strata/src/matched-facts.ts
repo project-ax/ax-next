@@ -11,6 +11,16 @@
 // only substantive-length token is "user") always short-circuit to [] before
 // the maxLines cap ever runs, even though every fact line is a legitimate
 // (if maximally unspecific) match.
+//
+// The cost is over-inclusion: a query carrying the token "user" matches ~every
+// line. That's deliberately tolerated (TASK-203) because it's bounded by the
+// per-doc / per-response caps in withMatchedFacts (memory-search.ts) + the
+// truncation marker, over-inclusion is the safe direction for enumeration, and
+// real queries rarely carry the literal token "user" (the user self-refers as
+// I/me/my, all stopwords). Special-casing the leading "User " here would also
+// break the maxLines cap test below, which relies on "user" matching it. If the
+// `memory_strata_matched_facts_*_clipped` debug telemetry shows this cap binding
+// often on real traffic, revisit then — with evidence, not on the synthetic case.
 const STOPWORDS = new Set([
   'the', 'a', 'an', 'and', 'or', 'of', 'in', 'on', 'at', 'to', 'for', 'with',
   'my', 'i', 'me', 'did', 'do', 'does', 'how', 'many', 'much', 'what', 'when',
