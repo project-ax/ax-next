@@ -33,6 +33,17 @@ import { regenerateRecent } from './recent.js';
 import { regenerateMap, type MapDensifier } from './map.js';
 import { categoryDir, MEMORY_ROOT, type DocCategory } from './paths.js';
 import { findNearDupSlug } from './slug-guard.js';
+import { runRollupPass, type RollupConfig } from './rollup.js';
+
+/**
+ * Categories a rollup class can be built over (TASK-200). Mirrors
+ * `DEFAULT_ROLLUP_CONFIG.enumerableCategories` — the consolidator's dirty gate
+ * only runs the rollup pass when a fact was promoted/merged into one of these.
+ * `preference`/`decision` are single-state (not enumerable).
+ */
+const ENUMERABLE_CATEGORIES: ReadonlySet<DocCategory> = new Set<DocCategory>([
+  'episode', 'entity', 'general',
+]);
 
 /**
  * Minimal structured-logger interface the consolidator uses. The caller
@@ -66,6 +77,12 @@ export interface ConsolidationInput {
    * LLM-densified one-liners.
    */
   densifyMap?: MapDensifier | undefined;
+  /**
+   * Optional rollup-pass config override (TASK-200). Omitted in production — the
+   * pass uses `DEFAULT_ROLLUP_CONFIG` (K=3, salience 0.4, cap 50). Tests thread
+   * a smaller K etc. through here to drive edge cases deterministically.
+   */
+  rollupConfig?: RollupConfig | undefined;
 }
 
 export interface ConsolidationResult {
@@ -79,6 +96,17 @@ export interface ConsolidationResult {
   leftInInbox: number;
   /** Inbox files deleted because they aged past the decay window. */
   decayed: number;
+  /** Rollup docs written/rewritten this pass (TASK-200). 0 when the dirty gate
+   *  skipped the rollup pass (no enumerable-category write). */
+  rollupsWritten: number;
+  /** Qualifying rollups whose content was unchanged (skipped, idempotent). */
+  rollupsSkipped: number;
+  /**
+   * docIds of rollups GC'd this pass (`rollup/<slug>`). On the CLI/direct path
+   * their `memory:doc:deleted` events already fired inline; the tier path (which
+   * runs the pass without a bus) re-fires them after flush.
+   */
+  rollupsDeleted: string[];
 }
 
 /** Quarantine directory path relative to workspaceRoot. */
@@ -111,6 +139,14 @@ export async function runConsolidation(
   let quarantined = 0;
   let leftInInbox = 0;
   let decayed = 0;
+  let rollupsWritten = 0;
+  let rollupsSkipped = 0;
+  let rollupsDeleted: string[] = [];
+  // TASK-200 dirty gate: the `promoted`/`dupesMerged` counters are
+  // category-agnostic, so track separately whether ANY fact was promoted/merged
+  // into an ENUMERABLE-category doc this pass. The rollup pass runs only then —
+  // a pass that only touched preferences/decisions can't change any class.
+  let enumerableWrite = false;
 
   try {
     ({ decayed } = await decayInbox(input.workspaceRoot, input.now, log));
@@ -188,6 +224,10 @@ export async function runConsolidation(
         // I12: dedup against facts already in the doc (or accumulated this pass).
         if (isDupe(obs.frontmatter.summary ?? '', factsInDoc)) {
           dupesMerged += 1;
+          // TASK-200 dirty gate: a merge into an enumerable-category doc can
+          // change a class's member content (its representative fact), so it
+          // counts toward running the rollup pass.
+          if (ENUMERABLE_CATEGORIES.has(cluster.category)) enumerableWrite = true;
           // TASK-187: a recurring procedure restates a fact already in the doc,
           // so we don't append it — but it recurred, possibly in a NEW
           // conversation. Fold its conversation id into the doc's distinct set
@@ -293,6 +333,9 @@ export async function runConsolidation(
         factsInDoc.push(obs.frontmatter.summary ?? '');
         await deleteInboxFile(input.workspaceRoot, obs.path);
         promoted += 1;
+        // TASK-200 dirty gate: a promotion into an enumerable-category doc can
+        // create/grow a class → run the rollup pass this consolidation.
+        if (ENUMERABLE_CATEGORIES.has(cluster.category)) enumerableWrite = true;
       }
 
       // D4: emit the near-dup merge line iff the redirect actually led to a
@@ -304,6 +347,35 @@ export async function runConsolidation(
           category: cluster.category,
           newSlug: originalSlug,
           mergedInto: nearDup,
+        });
+      }
+    }
+
+    // TASK-200 rollup pass — ordered AFTER near-dup merge/write (so a class
+    // counts merged docs once) and BEFORE the final regenerateMap (so new/GC'd
+    // rollups get map lines in the SAME pass): decay → cluster → decide/dedup/
+    // write → rollup pass → recent/map regen. Runs only on a dirty pass (a fact
+    // was promoted/merged into an enumerable-category doc); an idle pass or a
+    // preference/decision-only pass can't change any class, so it's skipped.
+    if (enumerableWrite) {
+      // Best-effort, like regenerateMap below: a rollup is an ACCELERATOR, never
+      // the sole path (design), so a throw in the rollup code must NOT abort the
+      // pass and skip the always-injected recent.md/map.md regen. Isolate it.
+      try {
+        const rollup = await runRollupPass({
+          workspaceRoot: input.workspaceRoot,
+          now: input.now,
+          log,
+          bus: input.bus,
+          ctx: input.ctx,
+          config: input.rollupConfig,
+        });
+        rollupsWritten = rollup.written;
+        rollupsSkipped = rollup.skipped;
+        rollupsDeleted = rollup.deletedDocIds;
+      } catch (rollupErr) {
+        log.warn('memory_strata_rollup_pass_failed', {
+          err: rollupErr instanceof Error ? rollupErr : new Error(String(rollupErr)),
         });
       }
     }
@@ -344,8 +416,12 @@ export async function runConsolidation(
 
   log.info('memory_strata_consolidation_complete', {
     promoted, dupesMerged, quarantined, leftInInbox, decayed,
+    rollupsWritten, rollupsSkipped, rollupsDeleted: rollupsDeleted.length,
   });
-  return { promoted, dupesMerged, quarantined, leftInInbox, decayed };
+  return {
+    promoted, dupesMerged, quarantined, leftInInbox, decayed,
+    rollupsWritten, rollupsSkipped, rollupsDeleted,
+  };
 }
 
 // ---------------------------------------------------------------------------

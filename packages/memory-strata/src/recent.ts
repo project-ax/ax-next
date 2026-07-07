@@ -31,7 +31,12 @@ export async function regenerateRecent(input: {
   now: Date;
 }): Promise<{ path: string }> {
   const inbox = await listInbox(input.workspaceRoot);
-  const docs = await listDocs({ workspaceRoot: input.workspaceRoot });
+  // TASK-200: rollups are a search-time accelerator, NOT hot-tier content — they
+  // must not crowd the always-injected Recent summary (Recent Changes would
+  // otherwise list a freshly-rewritten rollup on every consolidation pass).
+  // Filter them out here so `recent.md` is regenerated exactly as before.
+  const docs = (await listDocs({ workspaceRoot: input.workspaceRoot }))
+    .filter((d) => d.frontmatter.type !== 'docs/rollup');
 
   // Open Threads: inbox items whose factType is `episode` or `decision`
   // (proxy for "in-progress work" per design § "system/recent.md").

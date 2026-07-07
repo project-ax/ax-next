@@ -717,7 +717,7 @@ describe('Consolidator wiring (chat:end subscriber, I10)', () => {
           runConsolidation: () =>
             new Promise((resolve) => {
               setTimeout(
-                () => resolve({ promoted: 0, dupesMerged: 0, quarantined: 0, leftInInbox: 0, decayed: 0 }),
+                () => resolve({ promoted: 0, dupesMerged: 0, quarantined: 0, leftInInbox: 0, decayed: 0, rollupsWritten: 0, rollupsSkipped: 0, rollupsDeleted: [] }),
                 PASS_MS,
               );
             }),
