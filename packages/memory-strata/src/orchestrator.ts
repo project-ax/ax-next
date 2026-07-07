@@ -96,6 +96,17 @@ const ATTR_RE = /(\w+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
 /** Defensive cap on ops per plan — a runaway model can't force unbounded work. */
 export const MAX_OPS = 8;
 
+/**
+ * Slots reserved for `<fts>` probes when `<load>` ops alone would fill the cap.
+ * A counting/aggregation query (the D3 coaching) emits one `<load>` per
+ * plausibly-relevant doc PLUS a few instance-term `<fts>` probes ("for citrus
+ * also probe lime/lemon"). Collecting all loads before all fts and then blindly
+ * slicing to MAX_OPS drops 100% of those probes the moment loads ≥ MAX_OPS —
+ * defeating the recall mechanism. Reserving headroom keeps up to this many fts
+ * probes alive even in a load-heavy plan, while still honoring the MAX_OPS total.
+ */
+export const FTS_RESERVE = 2;
+
 /** Minimal structured-warn sink the orchestrator emits into (satisfied by `@ax/core`'s Logger). */
 export interface OrchestratorLogger {
   warn(event: string, fields: Record<string, unknown>): void;
@@ -106,12 +117,13 @@ export function parseOrchestratorPlan(
   logger?: OrchestratorLogger,
 ): OrchestratorPlan {
   const stripped = text.replace(FENCE_RE, '').trim();
-  const ops: OrchestratorOp[] = [];
+  const loads: OrchestratorOp[] = [];
+  const ftsOps: OrchestratorOp[] = [];
 
   for (const m of stripped.matchAll(LOAD_RE)) {
     const attrs = parseAttrs(m[1] ?? '');
     if (attrs.doc) {
-      ops.push({
+      loads.push({
         kind: 'load',
         docId: attrs.doc,
         ...(attrs.section ? { section: attrs.section } : {}),
@@ -120,18 +132,32 @@ export function parseOrchestratorPlan(
   }
   for (const m of stripped.matchAll(FTS_RE)) {
     const attrs = parseAttrs(m[1] ?? '');
-    if (attrs.query) ops.push({ kind: 'fts', query: attrs.query.trim() });
+    if (attrs.query) ftsOps.push({ kind: 'fts', query: attrs.query.trim() });
   }
+
+  const totalOps = loads.length + ftsOps.length;
+
   // Defensive cap (design: "drop extras, log"). A runaway planner that emits
-  // dozens of ops is truncated to the first MAX_OPS — order-preserving — and
-  // the truncation is surfaced so the eval-driven bench doesn't lose the signal.
-  if (ops.length > MAX_OPS) {
+  // dozens of ops is truncated to MAX_OPS. But loads-before-fts + a blind slice
+  // would let a load-heavy counting plan starve out every `<fts>` probe (see
+  // FTS_RESERVE) — so when loads alone would crowd them out, reserve headroom
+  // for the probes before slicing. Loads still precede fts in the result:
+  // runOps pushes loads first so they win the dedup race against a later fts hit.
+  const loadBudget =
+    ftsOps.length > 0 && loads.length > MAX_OPS - FTS_RESERVE
+      ? MAX_OPS - Math.min(FTS_RESERVE, ftsOps.length)
+      : MAX_OPS;
+  const keptLoads = loads.slice(0, loadBudget);
+  const keptFts = ftsOps.slice(0, MAX_OPS - keptLoads.length);
+  const ops = [...keptLoads, ...keptFts];
+
+  if (totalOps > MAX_OPS) {
     logger?.warn('memory_strata_orchestrator_ops_capped', {
-      totalOps: ops.length,
-      kept: MAX_OPS,
+      totalOps,
+      kept: ops.length,
     });
   }
-  return { ops: ops.slice(0, MAX_OPS), followupNeeded: FOLLOWUP_RE.test(stripped) };
+  return { ops, followupNeeded: FOLLOWUP_RE.test(stripped) };
 }
 
 function parseAttrs(s: string): Record<string, string> {

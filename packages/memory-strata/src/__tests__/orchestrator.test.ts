@@ -112,6 +112,41 @@ describe('parseOrchestratorPlan', () => {
     parseOrchestratorPlan(text, logger);
     expect(logger.warn).not.toHaveBeenCalled();
   });
+
+  it('reserves headroom so fts probes survive when loads alone would fill the cap', () => {
+    // A counting query (D3 coaching) emits many <load> ops PLUS instance-term
+    // <fts> probes ("for citrus also probe lime/lemon"). With load-before-fts +
+    // a blind slice(0, 8), 8+ loads would drop 100% of the fts probes and defeat
+    // the recall mechanism. Headroom must keep at least one fts alive.
+    const loads = Array.from({ length: 8 }, (_, i) => `<load doc="entity/e${i}"/>`);
+    const fts = Array.from({ length: 3 }, (_, i) => `<fts query="probe ${i}"/>`);
+    const plan = parseOrchestratorPlan([...loads, ...fts].join('\n'));
+    expect(plan.ops).toHaveLength(8);
+    const ftsOps = plan.ops.filter((op) => op.kind === 'fts');
+    expect(ftsOps.length).toBeGreaterThanOrEqual(1);
+    // Loads still precede fts (runOps relies on loads winning the dedup race).
+    const firstFtsIdx = plan.ops.findIndex((op) => op.kind === 'fts');
+    const lastLoadIdx = plan.ops.map((op) => op.kind).lastIndexOf('load');
+    expect(lastLoadIdx).toBeLessThan(firstFtsIdx);
+  });
+
+  it('still logs total vs kept when a mixed-kind plan is truncated', () => {
+    const logger = { warn: vi.fn() };
+    const loads = Array.from({ length: 8 }, (_, i) => `<load doc="entity/e${i}"/>`);
+    const fts = Array.from({ length: 3 }, (_, i) => `<fts query="probe ${i}"/>`);
+    parseOrchestratorPlan([...loads, ...fts].join('\n'), logger);
+    expect(logger.warn).toHaveBeenCalledWith(
+      'memory_strata_orchestrator_ops_capped',
+      expect.objectContaining({ totalOps: 11, kept: 8 }),
+    );
+  });
+
+  it('does not steal load slots for fts when there are no fts ops', () => {
+    const loads = Array.from({ length: 12 }, (_, i) => `<load doc="entity/e${i}"/>`);
+    const plan = parseOrchestratorPlan(loads.join('\n'));
+    expect(plan.ops).toHaveLength(8);
+    expect(plan.ops.every((op) => op.kind === 'load')).toBe(true);
+  });
 });
 
 // ─── parseMapEntries ──────────────────────────────────────────────────────
