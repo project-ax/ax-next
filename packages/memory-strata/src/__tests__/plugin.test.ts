@@ -107,13 +107,16 @@ describe('createMemoryStrataPlugin', () => {
     const plugin = createMemoryStrataPlugin();
     expect(plugin.manifest.name).toBe('@ax/memory-strata');
     expect(plugin.manifest.registers).toContain('memory:doc:written');
+    expect(plugin.manifest.registers).toContain('memory:doc:deleted');
     expect(plugin.manifest.registers).toContain('tool:execute:memory_search');
     expect(plugin.manifest.subscribes).toContain('chat:start');
     expect(plugin.manifest.subscribes).toContain('chat:end');
     expect(plugin.manifest.subscribes).toContain('memory:doc:written');
+    expect(plugin.manifest.subscribes).toContain('memory:doc:deleted');
     expect(plugin.manifest.calls).toContain('agents:resolve');
     expect(plugin.manifest.calls).toContain('llm:call:anthropic');
     expect(plugin.manifest.calls).toContain('memory:index:upsert');
+    expect(plugin.manifest.calls).toContain('memory:index:delete');
     expect(plugin.manifest.calls).toContain('tool:register');
   });
 
@@ -127,7 +130,7 @@ describe('createMemoryStrataPlugin', () => {
     const withOrchestrator = createMemoryStrataPlugin({
       orchestrator: { client: { complete: async () => ({ text: '', usage: { in: 0, out: 0 } }) } },
     });
-    const expectedCalls = ['agents:resolve', 'llm:call:anthropic', 'memory:index:upsert', 'tool:register'];
+    const expectedCalls = ['agents:resolve', 'llm:call:anthropic', 'memory:index:upsert', 'memory:index:delete', 'tool:register'];
     expect(withoutOrchestrator.manifest.calls.slice().sort()).toEqual(expectedCalls.slice().sort());
     expect(withOrchestrator.manifest.calls.slice().sort()).toEqual(expectedCalls.slice().sort());
   });

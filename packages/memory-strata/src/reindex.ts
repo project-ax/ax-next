@@ -36,6 +36,17 @@ interface MemoryDocWrittenPayload {
   summary: string;
 }
 
+/**
+ * Payload for `memory:doc:deleted` — fired when a doc is removed from the
+ * store (e.g. a rollup GC's its source docs). Storage-agnostic: it carries
+ * ONLY the opaque `docId`, never a `path`/`sha`/`bucket`. The reindexer maps
+ * it straight to the existing `memory:index:delete` hook so the search index
+ * stops returning a doc that no longer exists on disk.
+ */
+interface MemoryDocDeletedPayload {
+  docId: string;
+}
+
 /** The slice of a doc the reindexer needs to build an index upsert. Both
  *  frontmatter fields are optional — `factType` defaults to 'general' and
  *  `summary` to '' at the upsert site, matching a hand-edited / fence-less doc. */
@@ -61,6 +72,28 @@ export function registerReindexer(bus: HookBus): void {
         ctx.logger.warn('memory_strata_reindex_failed', {
           docId: payload.docId,
           kind: payload.kind,
+          err: err instanceof Error ? err : new Error(String(err)),
+        });
+      }
+      return undefined;
+    },
+  );
+
+  // Deletion path (TASK-199): map `memory:doc:deleted` to the existing
+  // `memory:index:delete` hook so a removed doc drops out of search. Unlike
+  // the write path, there is nothing to re-read from disk — the doc is gone —
+  // so we forward the opaque `docId` straight through. Same catch-not-throw
+  // posture: a missing indexer (`no-service`) or a delete failure is swallowed
+  // + logged, never propagated out of the subscriber.
+  bus.subscribe<MemoryDocDeletedPayload>(
+    'memory:doc:deleted',
+    PLUGIN_NAME,
+    async (ctx, payload) => {
+      try {
+        await bus.call('memory:index:delete', ctx, { docId: payload.docId });
+      } catch (err) {
+        ctx.logger.warn('memory_strata_reindex_delete_failed', {
+          docId: payload.docId,
           err: err instanceof Error ? err : new Error(String(err)),
         });
       }
