@@ -13,6 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { HookBus, makeAgentContext } from '@ax/core';
 import { runConsolidation, type ConsolidationLogger } from '../consolidator.js';
+import { writeNewDoc } from '../doc-store.js';
 import { buildMarkdownFile } from '../frontmatter.js';
 import { INBOX_DIR, MEMORY_ROOT } from '../paths.js';
 import type { MemoryFrontmatter } from '../types.js';
@@ -779,6 +780,93 @@ describe('consolidator', () => {
     expect(secondResult.leftInInbox).toBe(1);
 
     // No phantom near-dup merge log.
+    const mergedWarnings = logger.warnCalls.filter(
+      (c) => c.event === 'memory_strata_near_dup_slug_merged',
+    );
+    expect(mergedWarnings).toHaveLength(0);
+  });
+
+  it('near-dup slug guard: an exact-slug doc wins over a near-dup (legacy dup workspace)', async () => {
+    const now = new Date('2026-05-10T12:00:00.000Z');
+
+    // --- Legacy pre-#379 state: a workspace that already holds BOTH the exact
+    // slug b-29-bomber-model AND its near-dup sibling b-29-bomber-model-kit.
+    // #379 shipped the near-dup guard with no migration, so on pre-existing data
+    // both docs coexist. Seed them directly — a single consolidation pass can't
+    // create both, because the near-dup guard would fold one into the other.
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'decision',
+      slug: 'b-29-bomber-model-kit',
+      summary: 'Bought a B-29 bomber model kit to build over the weekend',
+      subject: 'B-29 Bomber Model Kit',
+      factType: 'decision',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-seed-kit'],
+      conversationId: 'conv-kit',
+      now,
+      // buildBody prefixes each entry with "- ", so seed the bare fact line
+      // (mirrors formatFactLine output — no leading dash) to reproduce the real
+      // single-dash on-disk bullet, not a double-dash "- - ..." artifact.
+      facts: ['(2026-05-10) Bought a B-29 bomber model kit to build over the weekend'],
+    });
+    await writeNewDoc({
+      workspaceRoot,
+      category: 'decision',
+      slug: 'b-29-bomber-model',
+      summary: 'Started the B-29 bomber model build',
+      subject: 'B-29 Bomber Model',
+      factType: 'decision',
+      confidence: 0.9,
+      sourceObservationIds: ['obs-seed-model'],
+      conversationId: 'conv-model',
+      now,
+      facts: ['(2026-05-10) Started the B-29 bomber model build'],
+    });
+
+    // --- A new observation whose subject slugifies to the EXACT existing slug
+    // b-29-bomber-model. findNearDupSlug skips the exact match and would return
+    // the -kit sibling, so without the exact-wins guard this fact is misrouted
+    // into -kit. It must append to its OWN exact doc instead.
+    await writeInboxFixture(
+      'obs-b29-exact.md',
+      {
+        id: 'obs-b29-exact',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'Decided to add a display stand for the finished model',
+        subject: 'B-29 Bomber Model',
+        factType: 'decision',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nDecided to add a display stand for the finished model\n',
+    );
+
+    const logger = makeLoggerSpy();
+    const result = await runConsolidation({ workspaceRoot, now, logger });
+    expect(result.promoted).toBe(1);
+
+    // --- The new fact landed in the EXACT doc (alongside its seed fact) ---
+    const exactDoc = await readFile(
+      join(workspaceRoot, 'permanent/memory/docs/decision/b-29-bomber-model.md'),
+      'utf8',
+    );
+    expect(exactDoc).toContain('- (2026-05-10) Started the B-29 bomber model build');
+    expect(exactDoc).toContain('- (2026-05-10) Decided to add a display stand for the finished model');
+    expect(exactDoc).toContain('obs-b29-exact');
+
+    // --- ...and NOT in the -kit near-dup sibling ---
+    const kitDoc = await readFile(
+      join(workspaceRoot, 'permanent/memory/docs/decision/b-29-bomber-model-kit.md'),
+      'utf8',
+    );
+    expect(kitDoc).not.toContain('Decided to add a display stand for the finished model');
+    expect(kitDoc).not.toContain('obs-b29-exact');
+
+    // --- No near-dup merge was logged — nothing was redirected ---
     const mergedWarnings = logger.warnCalls.filter(
       (c) => c.event === 'memory_strata_near_dup_slug_merged',
     );

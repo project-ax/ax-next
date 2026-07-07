@@ -130,7 +130,16 @@ export async function runConsolidation(
       // feature exists to expose.
       const originalSlug = cluster.slug;
       const slugsInCategory = await listCategorySlugs(input.workspaceRoot, cluster.category);
-      const nearDup = findNearDupSlug(cluster.slug, slugsInCategory);
+      // An exact-slug doc wins over a near-dup (TASK-202). In a LEGACY workspace
+      // that already holds BOTH b-29-bomber-model AND b-29-bomber-model-kit
+      // (created before #379, no migration), a new b-29-bomber-model cluster must
+      // append to its OWN exact doc — findNearDupSlug skips the exact match, so
+      // without this guard the cluster is misrouted into the -kit sibling. Only
+      // redirect when the exact doc does NOT already exist. (Keeping nearDup null
+      // in that case also suppresses the phantom near-dup-merge log below.)
+      const nearDup = slugsInCategory.includes(originalSlug)
+        ? null
+        : findNearDupSlug(cluster.slug, slugsInCategory);
       if (nearDup !== null) {
         cluster.slug = nearDup;
       }
