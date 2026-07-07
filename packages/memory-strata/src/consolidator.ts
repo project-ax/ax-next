@@ -33,7 +33,7 @@ import { regenerateRecent } from './recent.js';
 import { regenerateMap, type MapDensifier } from './map.js';
 import { categoryDir, MEMORY_ROOT, type DocCategory } from './paths.js';
 import { findNearDupSlug } from './slug-guard.js';
-import { runRollupPass, type RollupConfig } from './rollup.js';
+import { runRollupPass, type RollupConfig, type StageBNamer } from './rollup.js';
 
 /**
  * Categories a rollup class can be built over (TASK-200). Mirrors
@@ -83,6 +83,15 @@ export interface ConsolidationInput {
    * a smaller K etc. through here to drive edge cases deterministically.
    */
   rollupConfig?: RollupConfig | undefined;
+  /**
+   * Optional Stage-B LLM class namer (TASK-201). When provided, the rollup pass
+   * runs bounded LLM naming over the RESIDUE (enumerable docs Stage A did not
+   * claim) in addition to Stage A. Omitted in tests and when no LLM is wired —
+   * the pass then runs Stage A only (graceful degradation, mirrors `densifyMap`).
+   * Built HERE by the plugin (closing over `llm:call` + the fixed extraction
+   * model) so the tier path — which runs the pass without a bus — can still name.
+   */
+  rollupStageB?: StageBNamer | undefined;
 }
 
 export interface ConsolidationResult {
@@ -369,6 +378,7 @@ export async function runConsolidation(
           bus: input.bus,
           ctx: input.ctx,
           config: input.rollupConfig,
+          stageB: input.rollupStageB,
         });
         rollupsWritten = rollup.written;
         rollupsSkipped = rollup.skipped;

@@ -20,6 +20,7 @@ import { createDebouncer, type Debouncer } from './debounce.js';
 import { registerInject } from './inject.js';
 import { makeLlmDensifier, type MapDensifier } from './map.js';
 import { runObserver, type LlmCallFn } from './observer.js';
+import { makeStageBNamer, type StageBNamer } from './rollup.js';
 import type { OrchestratorClient } from './orchestrator.js';
 import { registerReindexer } from './reindex.js';
 import { raceTimeout } from './timeout.js';
@@ -35,6 +36,11 @@ const DEFAULT_LLM_HOOK = 'llm:call:anthropic';
 const DEFAULT_CONSOLIDATOR_DEBOUNCE_MS = 5_000;
 const DEFAULT_CONSOLIDATOR_TIMEOUT_MS = 60_000;
 const DEFAULT_MAP_DENSIFY_TIMEOUT_MS = 30_000;
+/** Cheap in-stack extraction tier for Stage-B rollup naming (TASK-201). Fixed —
+ *  NOT the agent's model — so the pass stays O(1 cheap call)/dirty pass with no
+ *  new egress (design §D2). */
+const DEFAULT_ROLLUP_STAGE_B_MODEL = 'claude-haiku-4-5';
+const DEFAULT_ROLLUP_STAGE_B_TIMEOUT_MS = 30_000;
 
 export interface MemoryStrataConfig {
   /**
@@ -77,6 +83,27 @@ export interface MemoryStrataConfig {
    * degrades to its raw summary. Default 30 000 ms.
    */
   mapDensifyTimeoutMs?: number;
+  /**
+   * Whether to run Stage-B bounded LLM class naming during the rollup pass
+   * (TASK-201). Default `true`. When disabled — or when no `llm:call` provider
+   * is registered — the rollup pass runs Stage A (deterministic) only, so this
+   * flag only controls whether we ATTEMPT the single cheap LLM call over the
+   * residue, never whether rollups are produced. Set `false` for a latency- or
+   * cost-sensitive deployment that wants the deterministic pass only.
+   */
+  rollupStageBEnabled?: boolean;
+  /**
+   * Model id for the Stage-B rollup namer. Default `claude-haiku-4-5` — the cheap
+   * in-stack extraction tier (NOT the agent's model), so naming is one cheap call
+   * per dirty pass with no new external egress.
+   */
+  rollupStageBModel?: string;
+  /**
+   * Hard deadline for the single Stage-B naming call (ms). A slow call is
+   * abandoned and the pass keeps its Stage-A rollups (best-effort accelerator).
+   * Default 30 000 ms.
+   */
+  rollupStageBTimeoutMs?: number;
   /**
    * Retrieval mode for the memory_search tool. 'orchestrator' (default) uses
    * the cheap-LLM retrieval planner over system/map.md with a BM25 fallback
@@ -174,6 +201,9 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   const consolidatorTimeoutMs = cfg.consolidatorTimeoutMs ?? DEFAULT_CONSOLIDATOR_TIMEOUT_MS;
   const mapDensifyEnabled = cfg.mapDensifyEnabled ?? true;
   const mapDensifyTimeoutMs = cfg.mapDensifyTimeoutMs ?? DEFAULT_MAP_DENSIFY_TIMEOUT_MS;
+  const rollupStageBEnabled = cfg.rollupStageBEnabled ?? true;
+  const rollupStageBModel = cfg.rollupStageBModel ?? DEFAULT_ROLLUP_STAGE_B_MODEL;
+  const rollupStageBTimeoutMs = cfg.rollupStageBTimeoutMs ?? DEFAULT_ROLLUP_STAGE_B_TIMEOUT_MS;
   // TASK-191 Task 3: resolve once here (not inside registerMemorySearch) so
   // the default lives alongside every other cfg-default in this constructor.
   const retrievalMode = cfg.retrievalMode ?? 'orchestrator';
@@ -393,6 +423,9 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
             llmCallHook,
             mapDensifyEnabled,
             mapDensifyTimeoutMs,
+            rollupStageBEnabled,
+            rollupStageBModel,
+            rollupStageBTimeoutMs,
             nowFn,
           });
           inflightWork.set(ctx.agentId, work);
@@ -574,9 +607,15 @@ async function consolidateRoutedToTier(deps: {
   llmCallHook: string;
   mapDensifyEnabled: boolean;
   mapDensifyTimeoutMs: number;
+  rollupStageBEnabled: boolean;
+  rollupStageBModel: string;
+  rollupStageBTimeoutMs: number;
   nowFn: () => Date;
 }): Promise<ConsolidationResult> {
-  const { bus, ctx, consolidate, llmCallHook, mapDensifyEnabled, mapDensifyTimeoutMs, nowFn } = deps;
+  const {
+    bus, ctx, consolidate, llmCallHook, mapDensifyEnabled, mapDensifyTimeoutMs,
+    rollupStageBEnabled, rollupStageBModel, rollupStageBTimeoutMs, nowFn,
+  } = deps;
   const logger = {
     info: (event: string, fields: Record<string, unknown>) => ctx.logger.info(event, fields),
     warn: (event: string, fields: Record<string, unknown>) => ctx.logger.warn(event, fields),
@@ -595,6 +634,21 @@ async function consolidateRoutedToTier(deps: {
     timeoutMs: mapDensifyTimeoutMs,
   });
 
+  // TASK-201: build the Stage-B rollup namer (bounded LLM class naming over the
+  // residue). Same `llm:call:*` gating as the densifier/Observer, but a FIXED
+  // extraction model (not the agent's) — so no `agents:resolve`. When disabled or
+  // no provider is registered, `rollupStageB` is undefined and the rollup pass
+  // runs Stage A only. Bus-agnostic (the closure captures the call), so the tier
+  // path — which runs the pass without a bus — can still name.
+  const rollupStageB = buildStageBNamer({
+    bus,
+    ctx,
+    llmCallHook,
+    enabled: rollupStageBEnabled,
+    model: rollupStageBModel,
+    timeoutMs: rollupStageBTimeoutMs,
+  });
+
   if (!agentTierAvailable(bus)) {
     return consolidate({
       workspaceRoot: ctx.workspace.rootPath,
@@ -603,6 +657,7 @@ async function consolidateRoutedToTier(deps: {
       bus,
       ctx,
       densifyMap,
+      rollupStageB,
     });
   }
 
@@ -618,6 +673,7 @@ async function consolidateRoutedToTier(deps: {
       now: nowFn(),
       logger,
       densifyMap,
+      rollupStageB,
     });
     await flushAgentTier(bus, ctx, hydrated, 'memory-consolidate');
     // TASK-186: now that the consolidated docs are durably in `/agent`, fire
@@ -709,6 +765,31 @@ async function buildMapDensifier(deps: {
   if (agent === null) return undefined;
   const llmCall: LlmCallFn = (input) => bus.call(llmCallHook, ctx, input);
   return makeLlmDensifier({ llmCall, model: agent.model, timeoutMs });
+}
+
+/**
+ * Build the Stage-B rollup namer for a consolidation pass (TASK-201), or return
+ * `undefined` when Stage B is disabled or no `llm:call` provider is registered
+ * (the rollup pass then runs Stage A only). Unlike the map densifier, the model
+ * is FIXED (the cheap extraction tier) — so there's no `agents:resolve`; we gate
+ * on `bus.hasService(llmCallHook)` so a CI/host without an LLM provider degrades
+ * cleanly instead of throwing on every dirty pass. The namer closes over the
+ * `llm:call` closure, keeping rollup.ts bus-agnostic (needed for the tier path,
+ * which runs the pass without a bus).
+ */
+function buildStageBNamer(deps: {
+  bus: HookBus;
+  ctx: AgentContext;
+  llmCallHook: string;
+  enabled: boolean;
+  model: string;
+  timeoutMs: number;
+}): StageBNamer | undefined {
+  const { bus, ctx, llmCallHook, enabled, model, timeoutMs } = deps;
+  if (!enabled) return undefined;
+  if (!bus.hasService(llmCallHook)) return undefined;
+  const llmCall: LlmCallFn = (input) => bus.call(llmCallHook, ctx, input);
+  return makeStageBNamer({ llmCall, model, timeoutMs });
 }
 
 async function resolveAgent(
