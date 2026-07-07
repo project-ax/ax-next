@@ -805,7 +805,10 @@ describe('consolidator', () => {
       sourceObservationIds: ['obs-seed-kit'],
       conversationId: 'conv-kit',
       now,
-      facts: ['- (2026-05-10) Bought a B-29 bomber model kit to build over the weekend'],
+      // buildBody prefixes each entry with "- ", so seed the bare fact line
+      // (mirrors formatFactLine output — no leading dash) to reproduce the real
+      // single-dash on-disk bullet, not a double-dash "- - ..." artifact.
+      facts: ['(2026-05-10) Bought a B-29 bomber model kit to build over the weekend'],
     });
     await writeNewDoc({
       workspaceRoot,
@@ -818,7 +821,7 @@ describe('consolidator', () => {
       sourceObservationIds: ['obs-seed-model'],
       conversationId: 'conv-model',
       now,
-      facts: ['- (2026-05-10) Started the B-29 bomber model build'],
+      facts: ['(2026-05-10) Started the B-29 bomber model build'],
     });
 
     // --- A new observation whose subject slugifies to the EXACT existing slug
