@@ -172,9 +172,13 @@ export function detectClasses(
     (byCategory.get(cat) ?? byCategory.set(cat, []).get(cat)!).push(doc);
   }
 
-  // slug → class (dedup across categories on the rare slug collision; keep the
-  // larger member set so the rollup is maximally complete).
-  const bySlug = new Map<string, DetectedClass>();
+  // slug → class. When two categories yield the SAME slug (3 entity "doctor"
+  // docs + 3 episode "doctor-visit" docs → both slug `doctors`), we UNION the
+  // member docs (deduped by docId) rather than keep the larger set — otherwise
+  // the count would be a confident undercount (3, not 6), and that count rides
+  // the authoritative `summary` channel the model is coached to trust. Members
+  // are held in a docId-keyed map so the union is dedup-correct across passes.
+  const bySlug = new Map<string, { slug: string; token: string; category: DocCategory; members: Map<string, DocFile> }>();
   for (const [category, catDocs] of byCategory) {
     const n = catDocs.length;
     // token → member docs (dedup by docId within a token).
@@ -191,15 +195,19 @@ export function detectClasses(
       if (df < config.k) continue; // below K → not a class
       if (df / n > config.salienceMaxFraction) continue; // too generic
       const slug = slugify(pluralize(token));
-      const members = [...membersMap.values()];
       const existing = bySlug.get(slug);
-      if (existing === undefined || members.length > existing.members.length) {
-        bySlug.set(slug, { slug, token, category, members });
+      if (existing === undefined) {
+        bySlug.set(slug, { slug, token, category, members: new Map(membersMap) });
+      } else {
+        // Cross-category collision: union the member sets (dedup by docId).
+        for (const [id, doc] of membersMap) existing.members.set(id, doc);
       }
     }
   }
 
-  const all = [...bySlug.values()].sort((a, b) => a.slug.localeCompare(b.slug));
+  const all: DetectedClass[] = [...bySlug.values()]
+    .map((c) => ({ slug: c.slug, token: c.token, category: c.category, members: [...c.members.values()] }))
+    .sort((a, b) => a.slug.localeCompare(b.slug));
   const capExceeded = all.length > config.cap;
   if (capExceeded) {
     log?.warn('memory_strata_rollup_cap_exceeded', {
@@ -219,7 +227,12 @@ function memberInstance(member: DocFile, token: string): { date: string; text: s
   const facts = extractFactBullets(member.body);
   const matches = (line: string): boolean =>
     tokenize(stripFactDate(line)).some((w) => singularize(w) === token);
-  const fallbackDate = member.frontmatter.updated.slice(0, 10);
+  // Defensive: `updated`/`created` are required by the type, but a hand-edited /
+  // externally-written enumerable doc can lack them and still pass `parseDoc`
+  // (which only guards `source_observations`). A bare `.slice` on undefined would
+  // throw and — via the consolidator's now-isolated rollup pass — abort nothing,
+  // but we still want a valid date. Fall back through updated → created → epoch.
+  const fallbackDate = (member.frontmatter.updated ?? member.frontmatter.created ?? '1970-01-01').slice(0, 10);
 
   let firstMatch: string | undefined;
   for (const f of facts) {
@@ -345,14 +358,18 @@ export async function writeRollupDoc(input: {
  * `memory:doc:deleted { docId }` so the index row is removed (TASK-199 →
  * reindex.ts → memory:index:delete). Slug-guarded: unlinks ONLY
  * `docs/rollup/<slug>.md` with slug ∈ SLUG_RE. ENOENT is benign (already gone).
+ *
+ * Returns `true` when the slug passed the guard and the delete path ran (so the
+ * caller records the deletion + fires the index-delete), `false` when the guard
+ * rejected a malformed slug (nothing unlinked, no event fired).
  */
 export async function deleteRollupDoc(input: {
   workspaceRoot: string;
   slug: string;
   bus?: HookBus | undefined;
   ctx?: AgentContext | undefined;
-}): Promise<void> {
-  if (!SLUG_RE.test(input.slug)) return; // never unlink an unguarded path
+}): Promise<boolean> {
+  if (!SLUG_RE.test(input.slug)) return false; // never unlink an unguarded path
   const rel = docFile('rollup', input.slug);
   try {
     await unlink(join(input.workspaceRoot, rel));
@@ -364,6 +381,7 @@ export async function deleteRollupDoc(input: {
       docId: `rollup/${input.slug}`,
     });
   }
+  return true;
 }
 
 export interface RollupPassResult {
@@ -429,12 +447,19 @@ export async function runRollupPass(input: {
     .map((d) => d.frontmatter.id.replace(/^rollup\//, ''));
   for (const slug of existingRollupSlugs) {
     if (qualifyingSlugs.has(slug)) continue;
-    await deleteRollupDoc({
+    // Only record the deletion (and let the tier path re-fire index-delete) when
+    // the guarded delete actually ran — a malformed on-disk slug is skipped, so
+    // we must NOT re-fire `memory:doc:deleted` for a docId nothing unlinked.
+    const acted = await deleteRollupDoc({
       workspaceRoot: input.workspaceRoot,
       slug,
       bus: input.bus,
       ctx: input.ctx,
     });
+    if (!acted) {
+      input.log.warn('memory_strata_rollup_gc_skipped_bad_slug', { class: slug });
+      continue;
+    }
     deletedDocIds.push(`rollup/${slug}`);
     input.log.info('memory_strata_rollup_gc_deleted', { class: slug });
   }

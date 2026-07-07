@@ -4,7 +4,7 @@
 // rollup gets a map line in the same pass).
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtemp, mkdir, writeFile, readFile, access } from 'node:fs/promises';
+import { mkdtemp, mkdir, writeFile, readFile, readdir, access } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runConsolidation } from '../consolidator.js';
@@ -25,11 +25,16 @@ beforeEach(async () => {
 /** Seed a qualifying `weddings` class on disk (3 weddings + 5 fillers = 8 episodes,
  *  weddings 3/8 = 0.375 ≤ 0.4). */
 async function seedWeddingCorpus(): Promise<void> {
-  for (const s of ['emily-and-sarah', 'jen-and-tom', 'rachel-and-mike']) {
+  // Verbs vary so "wedding" is the ONLY token shared across all three — a shared
+  // verb ("attended") would itself form a spurious `attendeds` rollup.
+  const verbs = ['Attended', 'Danced at', 'Toasted at'];
+  const wslugs = ['emily-and-sarah', 'jen-and-tom', 'rachel-and-mike'];
+  for (let i = 0; i < wslugs.length; i++) {
+    const s = wslugs[i]!;
     await writeNewDoc({
       workspaceRoot: root, category: 'episode', slug: s,
       summary: 'a wedding', subject: s, factType: 'episode', confidence: 0.9,
-      sourceObservationIds: ['o'], now: NOW, facts: [`(2026-01-05) Attended the wedding of ${s}`],
+      sourceObservationIds: ['o'], now: NOW, facts: [`(2026-01-05) ${verbs[i]} a ${s} wedding`],
     });
   }
   for (const f of FILLERS) {
@@ -82,8 +87,13 @@ describe('consolidator rollup dirty gate + ordering', () => {
     );
 
     const result = await runConsolidation({ workspaceRoot: root, now: NOW });
-    expect(result.rollupsWritten).toBeGreaterThanOrEqual(1);
+    // Exactly ONE rollup — `weddings`. Asserting the exact set (not just ≥1)
+    // catches spurious verb/adjective rollups (e.g. a junk `attendeds`) that a
+    // loose ≥1 check would silently write to disk on the tuned counting path.
+    expect(result.rollupsWritten).toBe(1);
     await access(join(root, docFile('rollup', 'weddings'))); // rollup materialized
+    const rollupDir = await readdir(join(root, 'permanent/memory/docs/rollup'));
+    expect(rollupDir.filter((f) => f.endsWith('.md'))).toEqual(['weddings.md']);
 
     // Ordering: the rollup pass ran BEFORE regenerateMap, so map.md carries the
     // rollup line (it wouldn't if the pass ran after map regen).

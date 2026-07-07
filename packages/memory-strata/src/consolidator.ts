@@ -358,17 +358,26 @@ export async function runConsolidation(
     // was promoted/merged into an enumerable-category doc); an idle pass or a
     // preference/decision-only pass can't change any class, so it's skipped.
     if (enumerableWrite) {
-      const rollup = await runRollupPass({
-        workspaceRoot: input.workspaceRoot,
-        now: input.now,
-        log,
-        bus: input.bus,
-        ctx: input.ctx,
-        config: input.rollupConfig,
-      });
-      rollupsWritten = rollup.written;
-      rollupsSkipped = rollup.skipped;
-      rollupsDeleted = rollup.deletedDocIds;
+      // Best-effort, like regenerateMap below: a rollup is an ACCELERATOR, never
+      // the sole path (design), so a throw in the rollup code must NOT abort the
+      // pass and skip the always-injected recent.md/map.md regen. Isolate it.
+      try {
+        const rollup = await runRollupPass({
+          workspaceRoot: input.workspaceRoot,
+          now: input.now,
+          log,
+          bus: input.bus,
+          ctx: input.ctx,
+          config: input.rollupConfig,
+        });
+        rollupsWritten = rollup.written;
+        rollupsSkipped = rollup.skipped;
+        rollupsDeleted = rollup.deletedDocIds;
+      } catch (rollupErr) {
+        log.warn('memory_strata_rollup_pass_failed', {
+          err: rollupErr instanceof Error ? rollupErr : new Error(String(rollupErr)),
+        });
+      }
     }
 
     // I13: regenerate the cached views last, after all promotions are

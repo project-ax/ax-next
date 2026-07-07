@@ -92,7 +92,12 @@ export function registerReindexer(bus: HookBus): void {
       try {
         await bus.call('memory:index:delete', ctx, { docId: payload.docId });
       } catch (err) {
-        ctx.logger.warn('memory_strata_reindex_delete_failed', {
+        // ESCALATED to error (asymmetric with the upsert-swallow above): a
+        // swallowed DELETE fails UNSAFE — the file is already unlinked, so the
+        // stale index row keeps answering (e.g. a rollup's `## Count: 3` after
+        // GC), and the next GC pass won't re-fire (the file is gone from
+        // `existingRollupSlugs`). So this never self-heals — surface it loudly.
+        ctx.logger.error('memory_strata_reindex_delete_failed', {
           docId: payload.docId,
           err: err instanceof Error ? err : new Error(String(err)),
         });

@@ -7,6 +7,7 @@ import type { ToolDescriptor } from '@ax/core';
 import {
   DEFAULT_ROLLUP_CONFIG,
   buildRollup,
+  deleteRollupDoc,
   detectClasses,
   runRollupPass,
   writeRollupDoc,
@@ -136,6 +137,29 @@ describe('detectClasses (Stage A, no LLM)', () => {
     expect(w1InBoth).toBe(true);
   });
 
+  it('cross-category slug collision UNIONs members (not the larger set) — count is not an undercount', () => {
+    // 3 entity "doctor" docs + 3 episode "doctor visit" docs → both singularize
+    // to `doctor` → slug `doctors`. The count must be 6 (union), not 3 (larger
+    // set) — the count rides the authoritative summary the model trusts.
+    // salience 1 isolates this from the generic filter (tiny homogeneous corpus).
+    const cfg: RollupConfig = { ...DEFAULT_ROLLUP_CONFIG, salienceMaxFraction: 1 };
+    const docs: DocFile[] = [
+      mkDoc('entity', 'dr-smith', { summary: 'doctor' }),
+      mkDoc('entity', 'dr-jones', { summary: 'doctor' }),
+      mkDoc('entity', 'dr-lee', { summary: 'doctor' }),
+      mkDoc('episode', 'checkup-1', { summary: 'doctor appointment' }),
+      mkDoc('episode', 'checkup-2', { summary: 'doctor appointment' }),
+      mkDoc('episode', 'checkup-3', { summary: 'doctor appointment' }),
+    ];
+    const { classes } = detectClasses(docs, cfg);
+    const doctors = classes.find((c) => c.slug === 'doctors');
+    expect(doctors).toBeDefined();
+    expect(doctors!.members).toHaveLength(6); // union, not 3
+    const ids = new Set(doctors!.members.map((m) => m.frontmatter.id));
+    expect(ids.has('entity/dr-smith')).toBe(true);
+    expect(ids.has('episode/checkup-1')).toBe(true);
+  });
+
   it('preference/decision categories are NOT enumerable (no class)', () => {
     const docs: DocFile[] = [
       mkDoc('preference', 'a', { summary: 'wedding' }),
@@ -245,6 +269,38 @@ describe('writeRollupDoc materialization', () => {
     await writeRollupDoc({ workspaceRoot: root, content, now: NOW });
     const doc = await readDoc({ workspaceRoot: root, category: 'rollup', slug: 'weddings' });
     expect(doc!.body).toContain('(2026-02-02) a wedding — [[episode/a]]');
+    await rm(root, { recursive: true, force: true });
+  });
+});
+
+describe('rollup robustness (fault isolation inputs)', () => {
+  it('buildRollup tolerates a member missing `updated` (no throw; epoch-dated fallback)', () => {
+    const m = mkDoc('episode', 'a', { summary: 'a wedding' });
+    // Simulate a hand-edited / externally-written doc that passes parseDoc
+    // (only source_observations is guarded) but lacks `updated`.
+    delete (m.frontmatter as { updated?: string }).updated;
+    delete (m.frontmatter as { created?: string }).created;
+    const cls: DetectedClass = {
+      slug: 'weddings', token: 'wedding', category: 'episode',
+      members: [m, mkDoc('episode', 'b', { summary: 'a wedding' }), mkDoc('episode', 'c', { summary: 'a wedding' })],
+    };
+    expect(() => buildRollup(cls)).not.toThrow();
+    const content = buildRollup(cls);
+    expect(content.instanceLines.some((l) => l.includes('[[episode/a]]'))).toBe(true);
+  });
+
+  it('deleteRollupDoc rejects a malformed slug (returns false, unlinks nothing, fires nothing)', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'rollup-badslug-'));
+    const bus = new HookBus();
+    const fired: string[] = [];
+    bus.subscribe('memory:doc:deleted', 'test', async (_ctx, p) => {
+      fired.push((p as { docId: string }).docId);
+      return undefined;
+    });
+    const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
+    const acted = await deleteRollupDoc({ workspaceRoot: root, slug: '../evil', bus, ctx });
+    expect(acted).toBe(false);
+    expect(fired).toHaveLength(0);
     await rm(root, { recursive: true, force: true });
   });
 });
