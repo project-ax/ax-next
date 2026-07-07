@@ -152,6 +152,26 @@ describe('createMemoryStrataPlugin', () => {
     expect(raw).toContain('I value rigor.');
   });
 
+  it('TASK-204: nowFn threads into the chat:start bootstrap seed frontmatter', async () => {
+    // The bench nowFn seam must reach the seed files too — not just the
+    // Observer/Consolidator stamps — so a replay's system/*.md carry the
+    // corpus date, not wall-clock. Fire chat:start with a fixed nowFn and
+    // assert the seeded agent.md frontmatter.created is the fixed date.
+    const bus = buildBus({ llmText: '[]', agent: fakeAgent() });
+    const plugin = createMemoryStrataPlugin({
+      nowFn: () => new Date('2023-05-20T00:00:00.000Z'),
+    });
+    await plugin.init?.({ bus, config: {} });
+
+    await bus.fire('chat:start', makeCtx(workspaceRoot), {});
+
+    const raw = await readFile(join(workspaceRoot, systemFile('agent')), 'utf8');
+    const m = /^---\n([\s\S]*?)\n---\n/.exec(raw);
+    expect(m).not.toBeNull();
+    // The frontmatter serializer may quote the ISO string; match either form.
+    expect(m![1]).toMatch(/created: '?2023-05-20T00:00:00\.000Z'?/);
+  });
+
   it('seeds agent.md with a placeholder when the agent has no .ax/ identity files yet', async () => {
     // A still-bootstrapping agent has no IDENTITY/SOUL — agent.md gets a
     // placeholder body rather than an empty section.

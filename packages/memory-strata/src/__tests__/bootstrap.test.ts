@@ -126,6 +126,34 @@ describe('bootstrapMemoryTree', () => {
     expect(winners).toHaveLength(1);
   });
 
+  it('TASK-204: threads nowFn through so seed frontmatter stamps replay-time, not wall-clock', async () => {
+    // Bench temporal-fidelity seam: an e2e replay of a corpus whose fiction
+    // happened on a fixed historical date must stamp the seed files with that
+    // date, not `new Date()`. Without the seam these admin/system files carry
+    // wall-clock dates that are fiction-vs-reality in the replay. Production
+    // omits nowFn, so this defaults to `() => new Date()` and is a no-op there.
+    const fixed = '2023-05-20T00:00:00.000Z';
+    await bootstrapMemoryTree({
+      workspaceRoot,
+      composedIdentity: 'identity',
+      nowFn: () => new Date(fixed),
+    });
+
+    for (const name of ['agent', 'user', 'session'] as const) {
+      const raw = await readFile(join(workspaceRoot, systemFile(name)), 'utf8');
+      const { fm } = splitFrontmatter(raw);
+      expect(fm['created']).toBe(fixed);
+      expect(fm['event_time']).toBe(fixed);
+      expect(fm['recorded_at']).toBe(fixed);
+    }
+
+    const mapRaw = await readFile(join(workspaceRoot, mapFile()), 'utf8');
+    const { fm: mapFm } = splitFrontmatter(mapRaw);
+    expect(mapFm['created']).toBe(fixed);
+    expect(mapFm['event_time']).toBe(fixed);
+    expect(mapFm['recorded_at']).toBe(fixed);
+  });
+
   it('isolates per agent inside the same workspace root', async () => {
     const second = join(workspaceRoot, 'second-agent-workspace');
     await bootstrapMemoryTree({

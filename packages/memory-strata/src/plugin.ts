@@ -297,7 +297,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
           // logs subscriber errors, but doing it here keeps log keys
           // stable + pins the plugin name.
           try {
-            await handleChatStart(bus, ctx);
+            await handleChatStart(bus, ctx, nowFn);
           } catch (err) {
             ctx.logger.warn('memory_strata_bootstrap_failed', {
               err: err instanceof Error ? err : new Error(String(err)),
@@ -421,7 +421,14 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
   };
 }
 
-async function handleChatStart(bus: HookBus, ctx: AgentContext): Promise<void> {
+async function handleChatStart(
+  bus: HookBus,
+  ctx: AgentContext,
+  // Bench temporal-fidelity seam (TASK-204): threaded into bootstrapMemoryTree so
+  // an e2e replay stamps the seed files with the corpus date, not wall-clock.
+  // Production passes `() => new Date()`, so this is a no-op there.
+  nowFn: () => Date,
+): Promise<void> {
   const agent = await resolveAgent(bus, ctx);
   if (agent === null) {
     // No agent record (e.g., a synthetic ctx without a registered agent).
@@ -444,6 +451,7 @@ async function handleChatStart(bus: HookBus, ctx: AgentContext): Promise<void> {
       await bootstrapMemoryTree({
         workspaceRoot: hydrated.scratchRoot,
         composedIdentity,
+        nowFn,
       });
       await flushAgentTier(bus, ctx, hydrated, 'memory-bootstrap');
     } finally {
@@ -465,6 +473,7 @@ async function handleChatStart(bus: HookBus, ctx: AgentContext): Promise<void> {
   await bootstrapMemoryTree({
     workspaceRoot: ctx.workspace.rootPath,
     composedIdentity,
+    nowFn,
   });
 }
 
