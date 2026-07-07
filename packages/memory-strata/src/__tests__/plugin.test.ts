@@ -12,6 +12,14 @@ import type { MemoryFrontmatter } from '../types.js';
 
 let workspaceRoot: string;
 
+// TASK-208: a debounce window large enough that the consolidation timer can
+// NEVER auto-fire within a (multi-second-bounded) test. Tests that populate the
+// inbox via the ASYNC Observer chain then drive the single consolidation pass
+// solely via the explicit `debouncer.flush()` — AFTER `settleObserver` has put
+// the observation on disk — so there is no wall-clock race between the debounce
+// window and the Observer's write. See the two seam tests below.
+const CONSOLIDATOR_DEBOUNCE_NO_AUTOFIRE_MS = 600_000;
+
 beforeEach(async () => {
   workspaceRoot = await mkdtemp(join(tmpdir(), 'memory-strata-plugin-'));
 });
@@ -235,8 +243,20 @@ describe('createMemoryStrataPlugin', () => {
     let settleObserver: ((agentId: string) => Promise<void>) | undefined;
     let settleConsolidation: ((agentId: string) => Promise<void>) | undefined;
     let capturedDebouncer: Debouncer | undefined;
+    // DETERMINISM (TASK-208): unlike the seeded-inbox consolidation tests below
+    // (which write the inbox observation synchronously BEFORE firing chat:end),
+    // this test relies on the async Observer chain (settleObserver: agents:resolve
+    // → llm:call → write-inbox) to populate the inbox. With a small debounce
+    // window, the consolidation timer auto-fires DURING settleObserver — before
+    // the inbox observation is on disk — so the pass runs on an empty inbox,
+    // promotes nothing, and the later `flush()` finds no pending slot. The doc
+    // read then returns null (`expected null not to be null`) — the push-to-main
+    // full-suite flake that surfaced under TASK-199's raised parallelism.
+    // Fix: a large debounce window so the timer NEVER auto-fires; the explicit
+    // `flush()` below is the sole trigger, and it runs only AFTER settleObserver
+    // has populated the inbox. This removes the wall-clock race entirely.
     const plugin = createMemoryStrataPlugin({
-      consolidatorDebounceMs: 100,
+      consolidatorDebounceMs: CONSOLIDATOR_DEBOUNCE_NO_AUTOFIRE_MS,
       nowFn: () => new Date('2023-05-20T00:00:00.000Z'),
       testHooks: {
         onObserverSettleReady(s) { settleObserver = s; },
@@ -268,6 +288,76 @@ describe('createMemoryStrataPlugin', () => {
     // Observer's `now: nowFn()` stamps the inbox observation's event_time, which
     // formatFactLine bakes into the fact line as a `(YYYY-MM-DD)` date prefix.
     expect(doc!.body).toContain('(2023-05-20)');
+  });
+
+  // TASK-208 regression: the Observer→Consolidator seam must promote the doc even
+  // when the Observer's inbox write is SLOWER than the consolidator debounce
+  // window. This is the exact full-suite flake: with a small debounce, the
+  // consolidation timer auto-fired during the async Observer chain, ran on an
+  // empty inbox (promoting nothing), and the doc read returned null. Here we make
+  // the extraction LLM deliberately slow (200 ms) — far longer than the old
+  // 100 ms window — and pin a large debounce so the timer never auto-fires; the
+  // explicit `flush()` (post-settleObserver) is the sole trigger. If someone
+  // shrinks the debounce back below the Observer latency, this test fails
+  // deterministically (no reliance on ambient CI load to surface the race).
+  it('TASK-208: promotes the Observer-written obs even when the Observer is slower than a small debounce window (no wall-clock race)', async () => {
+    const bus = new HookBus();
+    bus.registerService('agents:resolve', 'test-agents', async () => ({ agent: fakeAgent() }));
+    bus.registerService('tool:register', 'test-tool-dispatcher', async () => ({ ok: true as const }));
+    // Extraction LLM resolves only after 200 ms — longer than any naive debounce.
+    bus.registerService<LlmCallInput, LlmCallOutput>(
+      'llm:call:anthropic',
+      'slow-extraction-llm',
+      () =>
+        new Promise<LlmCallOutput>((resolve) =>
+          setTimeout(
+            () =>
+              resolve({
+                text: JSON.stringify([
+                  { fact: 'User prefers React.', subject: 'react', factType: 'preference', confidence: 0.9 },
+                ]),
+                stopReason: 'end_turn',
+                usage: { inputTokens: 10, outputTokens: 10 },
+              }),
+            200,
+          ),
+        ),
+    );
+
+    let settleObserver: ((agentId: string) => Promise<void>) | undefined;
+    let settleConsolidation: ((agentId: string) => Promise<void>) | undefined;
+    let capturedDebouncer: Debouncer | undefined;
+    const plugin = createMemoryStrataPlugin({
+      // Large window: the pending consolidation pass must NOT auto-fire before
+      // the (slow) Observer has written the inbox observation. The explicit
+      // `flush()` below drives it, deterministically, after settleObserver.
+      consolidatorDebounceMs: CONSOLIDATOR_DEBOUNCE_NO_AUTOFIRE_MS,
+      testHooks: {
+        onObserverSettleReady(s) { settleObserver = s; },
+        onConsolidationSettleReady(s) { settleConsolidation = s; },
+        onDebouncerCreated(d) { capturedDebouncer = d; },
+      },
+    });
+    await plugin.init?.({ bus, config: {} });
+
+    const outcome: AgentOutcome = {
+      kind: 'complete',
+      messages: [
+        { role: 'user', content: 'I prefer React.' },
+        { role: 'assistant', content: 'Noted.' },
+      ],
+    };
+    const ctx = makeCtx(workspaceRoot);
+    await bus.fire('chat:end', ctx, { outcome });
+    // Await the slow Observer chain — the inbox observation lands only after this.
+    await settleObserver!(ctx.agentId);
+    // Drive consolidation now that the inbox is populated.
+    await capturedDebouncer!.flush();
+    await settleConsolidation!(ctx.agentId);
+
+    const doc = await readDoc({ workspaceRoot, category: 'preference', slug: 'react' });
+    expect(doc).not.toBeNull();
+    expect(doc!.body).toContain('React');
   });
 
   it('skips Observer on terminated outcomes (no transcript)', async () => {
