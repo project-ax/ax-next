@@ -2,6 +2,14 @@
 
 Architectural / process decisions. Never deleted — strikethrough if reversed.
 
+## 2026-07-07 — TASK-200 deterministic (Stage A) write-time rollups
+
+| Date | Decision | Rationale | Alternatives |
+|------|----------|-----------|--------------|
+| 2026-07-07 | `rollup` is a first-class `DocCategory` requiring FOUR edits (paths `DocCategory`, doc-store `CATEGORIES`, **doc-id `VALID_CATEGORIES`**, types `DocFileType`/`MemoryFileType`) + exclusion from `recent.ts`. All load-bearing. | The doc-id edit is the sneaky one: `parseDocId` gates matchedFacts enrichment (`tools/memory-search.ts`) + the orchestrator map menu + `<load>` guard. Omit it and a retrieved rollup surfaces with NO instance lines on the exact orchestrator path being tuned. Rollups excluded from recent.md (search-time accelerator, not hot-tier). | Add rollup only to the two lists the first draft named — REJECTED (silent no-op on the orchestrator path). |
+| 2026-07-07 | Stage-A detection is **per-enumerable-category**: salience denominator = that category's doc count. A class needs df≥K AND df/N ≤ SALIENCE_MAX_FRACTION (0.4). Class slug = pluralize(singularize(token)). Idempotence via a `rollup_hash` frontmatter field over (members, count, instance-line text). | Per-category matches the card's "≤ fraction of the category's docs". The salience gate means a class only materializes when it's a MINORITY pattern (weddings among many episode types) — the year token "2026" or "user" (in ~every doc) is auto-dropped. Storing the hash in frontmatter avoids re-parsing `## Instances` bullets to compare. GOTCHA in tests: with a tiny corpus, adding a member can push a class over 0.4 and DE-qualify it — give enough fillers. | Salience over ALL enumerable docs — REJECTED (card says "the category's docs"). Recompute hash from on-disk body — heavier, fragile bullet re-parse. |
+| 2026-07-07 | GC of a de-qualified rollup fires the TASK-199 `memory:doc:deleted { docId }` event INLINE on the CLI/direct path (bus present) AND is RE-FIRED on the k8s tier path after flush (plugin.ts `consolidateRoutedToTier`, symmetric with the existing doc:written re-fire via `reindexTierDocs`). `runRollupPass` returns `deletedDocIds` so the bus-less scratch pass can surface them. | A stale rollup answering `## Count: 3` after its file is gone is wrong-answer-by-construction. The consolidator runs WITHOUT a bus on the tier scratch (events deferred to after flush), so without the re-fire the tier path would leak stale index rows. GC unlinks ONLY `docs/rollup/<slug>.md` with slug ∈ `^[a-z0-9-]+$` (never a raw readdir+unlink). | Fire only on the direct path — REJECTED (tier-path index staleness). Raw readdir+unlink — REJECTED (traversal). |
+
 ## 2026-07-01 — TASK-191 promote the retrieval orchestrator (config E) into the Strata runtime
 
 | Date | Decision | Rationale | Alternatives |
