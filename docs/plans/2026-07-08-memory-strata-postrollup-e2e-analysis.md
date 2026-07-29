@@ -108,3 +108,67 @@ Settled the "open question" above: it's a **bench-driver race**, so **our measur
 **Consequence:** every prior e2e number (n=100 orch/BM25, the aborted n=500) under-measured by silently dropping each question's final-session facts. **Re-measure on the fixed harness** — expect an uplift concentrated in the recall bucket. The n=500 was aborted at 34 rows for this reason.
 
 **Production follow-up (separate):** the shipped plugin has the same two-subscriber structure. Whether production strands the most-recent turn's facts on an "ask immediately after telling" depends on its real debounce window vs Observer latency; it self-heals on the next turn, but an ask-time drain guard may be worth a card. Not fixed here (scope = bench correctness).
+
+## Fixed-harness re-measure (2026-07-09, n=100 both paths)
+
+After the stranding fix, re-ran both paths (labels `*-postfix-drain`):
+
+| Path | overall | multi-session | correct-refusal | vs buggy baseline |
+|---|---|---|---|---|
+| **BM25 fixed** | **82.5%** | 62.1% (18/29) | 100% (6/6) | overall +3.5 (79.0→82.5); ms −4.6 (noise) |
+| ORCH fixed | 71.1% | 51.7% (15/29) | 4/6 | overall −1.9; ms flat |
+
+- **The fix lifts OVERALL (single-session recall recovered: +5/−0 on single-session), but multi-session is unchanged-to-down and stays BELOW the 65% gate.** Multi-session has now printed 53/60/67/62% across runs — n≈30 is noise-dominated (±3.3pt/Q); the gate is genuinely unanswerable at n=30 (brief's warning confirmed). BM25 still clearly beats the orchestrator.
+- (3 questions skipped per run on transient API errors → 97 scored.)
+
+## Counting diagnosis (2026-07-09) — the multi-session wall needs two OPPOSITE fixes
+
+Kept-workspace repro (`test/bench/repro-count-diag.ts`, BM25 path) of one overcount + one undercount:
+
+- **Overcount — projects (gold 2, answered 7): boundary/definition, partly unwinnable.** Memory holds **20 "project" fact-lines** (engineering lead, data-clustering, data-mining *class* project, Nigeria water project, a *book*, *sculpting class* project, "binge-watching project"…) — all genuinely captured. The failure is the *set boundary* ("led/leading" as real work vs. anything called a project); the gold's "2" is one strict reading. Answer-side reasoning against ambiguous gold → **low ceiling**.
+- **Undercount — food delivery (gold 3, answered 2): recall/extraction.** Only Uber Eats + Fresh Fusion are in the docs; the 3rd service isn't captured (even topK-20 enumeration didn't surface it). The agent counted correctly given what it had. **Recall problem, not counting logic.**
+- Shipped rollup formed **wrong classes** here (`rollup/marketings` count 3, `rollup/uses` count 3) — noise, not signal.
+
+**Design implication:** a read-time counting scaffold won't crack multi-session — undercount needs *recall*, overcount needs *boundary reasoning* (low, gold-bound ceiling). Undercount == the same recall problem as the single-session wins, so **recall/extraction completeness is the highest-EV lever** (lifts undercount + the 52% recall bucket). Decision: **measure the true multi-session number first** (n=500 BM25 on the fixed harness, label `bm25-full-fixed`) before investing — the n=30 gate is noise-bound.
+
+## FINAL: n=500 BM25 on the fixed harness (2026-07-10) — gate PASSES; one structural outlier
+
+`bm25-full-fixed.jsonl`, 488/500 scored (12 skipped on transient API errors), ~$143.
+
+| Type | score | pct |
+|---|---|---|
+| single-session-user | 59/70 | 84.3% |
+| single-session-preference | 21/30 | 70.0% |
+| knowledge-update | 48/69 | 69.6% |
+| temporal-reasoning | 91/132 | 68.9% |
+| **multi-session** | **90/133** | **67.7%** ✅ (gate ≥65%) |
+| **single-session-assistant** | **14/54** | **25.9%** ⚠️ |
+| **OVERALL** | **323/488** | **66.2%** |
+| correct-refusal | 22/25 | 88.0% ✅ (gate ≥83%) |
+
+**Gates: multi-session 67.7% ≥65% PASS; correct-refusal 88.0% ≥83% PASS.** De-noised at n=133 multi-session (vs n=30), the earlier pessimism (53/60/62%) was confirmed noise — it settled *above* the gate. **The aggregation-counting lever and dense embeddings were NOT needed to pass the gate** — measuring first saved building both.
+
+**Every type sits at 68–84% except one.** Type scores that looked weak at small n de-noised upward as their samples filled (temporal 62.5%→68.9%; knowledge-update 64.7%→69.6%). Only `single-session-assistant` stayed low — at n=54 that is structural, not variance.
+
+### The dominant remaining gap: assistant-content is never stored
+
+`single-session-assistant` asks what the *assistant* said ("remind me what color the Plesiosaur was", "what was the 7th job on that list", "what were CITGO's refining processes"). **35 of its 40 failures are abstentions**, and the answers share one signature — memory has the **topic** but not the **content**:
+
+> "I can see we **did discuss** a children's book about dinosaurs, but I don't have that detail."
+> "My memory **confirms we discussed** CITGO's three refineries (Lake Charles, Lemont, Corpus Christi) — but…"
+
+**Root cause (`src/observer.ts`, prompt-level — NOT an input problem):** `formatTranscript` *does* feed assistant turns to the extraction LLM, but `EXTRACTION_PROMPT_SYSTEM` is entirely user-centric — "durable facts… likely to still matter to **this user**: preferences, decisions, deadlines, identities, project state" — and the factType taxonomy (entity/preference/decision/episode/general) has no slot for assistant-provided content. So the model reads the assistant's answer and dutifully writes "User is writing a children's book about dinosaurs," discarding "the Plesiosaur had a blue scaly body."
+
+**Impact:** 54 questions = 11.1% of the benchmark, and **49% of ALL false refusals** in the run (35 of 71). Overall false-refusal rate is 14.5%.
+
+| Lift single-session-assistant to | Δ questions | overall |
+|---|---|---|
+| 50% | +13 | 68.9% (+2.7pp) |
+| 70% (parity with other types) | +24 | **71.1% (+4.9pp)** |
+| 84% (best-type parity) | +31 | 72.5% (+6.4pp) |
+
+### Recommended next lever: assistant-content extraction
+
+Cheapest, largest, best-evidenced lever available — and **it is not in the brief's WS1–WS5**. It's an Observer prompt/taxonomy change (extend extraction to assistant-provided content: recommendations, lists, named entities, specifics the user may later ask to recall), not a new index dimension, not multi-hop, not embeddings. Guardrails: don't bloat memory with every assistant utterance (confidence/durability bar, dedup against user-side facts); watch that recall gains don't raise hallucination on the abstention set (correct-refusal is currently 88% and must stay ≥83%).
+
+**De-prioritized by this data:** aggregation-counting (gate already passes; overcount is gold-ambiguous, low ceiling), dense embeddings/WS5 (no evidence lexical mismatch is the wall; would aggravate overcount), WS3 multi-hop (knowledge-update/temporal both de-noised to ~69%, no longer outliers).
