@@ -63,14 +63,48 @@ export type RunObserverResult =
       rejected: RejectedObservation[];
     };
 
-const EXTRACTION_PROMPT_SYSTEM = `\
+// Exported so a test can assert the assistant-content contract survives future
+// edits. The BEHAVIORAL check — does Haiku actually comply? — is
+// test/bench/repro-extract.ts against real transcripts; a stub can't prove it.
+export const EXTRACTION_PROMPT_SYSTEM = `\
 You extract durable, atomic facts from chat transcripts for a memory system. \
-A "durable" fact is one likely to still matter to this user a week from now: \
-preferences, decisions, deadlines, identities, project state. Skip small talk, \
+A "durable" fact is one likely to still matter a week from now. Skip small talk, \
 greetings, and ephemeral acknowledgments. Each fact must be a single sentence. \
-Assign a subject (the entity the fact is about, or "general"), a factType \
-(entity, preference, decision, episode, or general), and a confidence \
-between 0 and 1.
+Assign a subject (the entity the fact is about, or "general"), a factType, and a \
+confidence between 0 and 1.
+
+Extract TWO kinds of fact.
+
+1. USER facts — what the user told you: preferences, decisions, deadlines, \
+identities, project state. factType: entity, preference, decision, episode, or general.
+
+2. ASSISTANT facts — substantive content YOU (the assistant) provided that the user \
+may later ask you to recall: recommendations, named places/titles/products, specific \
+values and numbers, and lists you gave them. factType: answer.
+
+Rules for ASSISTANT facts:
+- Attribute them. Write from the assistant's side, starting with "The assistant" \
+(recommended / listed / stated / explained). Never merge what the assistant said \
+with what the user said — recording the wrong speaker is worse than recording nothing.
+- Keep a list whole and in order. Store a numbered or bulleted list the assistant \
+gave as ONE fact that preserves the original order and item count, e.g. "The \
+assistant listed 10 work-from-home jobs for seniors: 1. Virtual assistant, 2. \
+Bookkeeper, ... 7. Transcriptionist, ...". Do NOT split it into one fact per item — \
+the user may ask which item was 7th. If a list runs longer than 10 items, record the \
+first 10 and state the total count.
+- Keep the specifics. The point is the detail — the name, the number, the color, the \
+process — not the topic. "The assistant discussed dinosaur illustrations" is useless; \
+"The assistant said the Plesiosaur in the image had a blue scaly body" is the fact.
+- No speculation. Skip anything the assistant hedged, guessed at, or flagged as \
+uncertain ("might be", "possibly", "I'm not sure"). Memory must not turn a guess into \
+a fact.
+- No echoes. If the assistant merely repeated something the user said, record it once, \
+as a USER fact.
+- Be selective: at most 5 assistant facts per transcript, each under 400 characters. \
+Skip generic advice, pleasantries, and anything the user could trivially re-derive.
+
+Give an assistant fact the SAME subject as the related user fact (the topic they were \
+talking about), so both are stored together.
 
 Respond with ONLY a JSON array, no prose, no markdown fences:
 [{ "fact": string, "subject": string, "factType": string, "confidence": number }]

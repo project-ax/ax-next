@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { load as yamlLoad } from 'js-yaml';
-import { runObserver } from '../observer.js';
+import { runObserver, EXTRACTION_PROMPT_SYSTEM } from '../observer.js';
 import { INBOX_DIR } from '../paths.js';
 import type { AgentMessage, LlmCallInput, LlmCallOutput } from '@ax/core';
 
@@ -295,5 +295,20 @@ describe('assistant-content extraction (factType: answer)', () => {
     expect(result.kind).toBe('written');
     const files = await readInboxFiles(workspaceRoot);
     expect(files[0]?.fm['factType']).toBe('general');
+  });
+});
+
+describe('EXTRACTION_PROMPT_SYSTEM — assistant-content contract', () => {
+  it('instructs capture of assistant-provided content with attribution', () => {
+    // Guard against a future prompt edit silently reverting the lever. The
+    // BEHAVIORAL proof is test/bench/repro-extract.ts (real Haiku, a few cents).
+    expect(EXTRACTION_PROMPT_SYSTEM).toMatch(/assistant/i);
+    expect(EXTRACTION_PROMPT_SYSTEM).toContain('answer');
+    expect(EXTRACTION_PROMPT_SYSTEM).toContain('The assistant');
+  });
+
+  it('bars speculation and preserves list order', () => {
+    expect(EXTRACTION_PROMPT_SYSTEM).toMatch(/speculat|hedge|guess/i);
+    expect(EXTRACTION_PROMPT_SYSTEM).toMatch(/order|numbered/i);
   });
 });
