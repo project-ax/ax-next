@@ -17,6 +17,7 @@ function makeInboxFile(overrides: {
   confidence: number;
   body?: string;
   summary?: string;
+  factType?: string;
 }): InboxFile {
   return {
     path: 'permanent/memory/inbox/2026-05-10T00:00:00.000Z.md',
@@ -27,6 +28,7 @@ function makeInboxFile(overrides: {
       confidence: overrides.confidence,
       pinned: false,
       summary: overrides.summary ?? '',
+      ...(overrides.factType !== undefined ? { factType: overrides.factType } : {}),
     },
     body: overrides.body ?? '',
   };
@@ -140,5 +142,24 @@ describe('decidePromotion', () => {
     } else {
       throw new Error(`expected sensitive rejection, got ${JSON.stringify(decision)}`);
     }
+  });
+
+  // I11 — defense-in-depth: even if the write-time gate (I7) is bypassed (a
+  // direct inbox write, or a future code path that forgets to gate),
+  // assistant-authored content must not graduate to docs/, where it is
+  // re-injected into the system prompt.
+  it('quarantines an assistant-authored fact that carries a credential (I11)', () => {
+    const file = makeInboxFile({
+      confidence: 0.95,
+      summary:
+        'The assistant said the API key is sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.',
+      factType: 'answer',
+    });
+
+    const decision = decidePromotion(file);
+
+    expect(decision.promote).toBe(false);
+    if (decision.promote) throw new Error('unreachable');
+    expect(decision.reason).toBe('sensitive');
   });
 });

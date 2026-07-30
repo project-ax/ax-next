@@ -360,6 +360,45 @@ describe('truncated-extraction salvage', () => {
   });
 });
 
+describe('sensitive gate covers assistant-authored facts (I7)', () => {
+  it('rejects an answer fact carrying a credential before it reaches the inbox', async () => {
+    // Invariant 5: assistant output is untrusted model output. The write-time
+    // gate is factType-agnostic and MUST stay that way — assistant content is
+    // exactly the path where an echoed secret could otherwise be persisted.
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(
+        JSON.stringify([
+          {
+            fact: 'The assistant said the API key is sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.',
+            subject: 'setup',
+            factType: 'answer',
+            confidence: 0.95,
+          },
+          {
+            fact: 'The assistant recommended Roscioli for dinner in Rome.',
+            subject: 'rome',
+            factType: 'answer',
+            confidence: 0.9,
+          },
+        ]),
+      ),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    if (result.kind !== 'written') throw new Error('unreachable');
+    expect(result.rejected).toHaveLength(1);
+    expect(result.written).toHaveLength(1);
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.fm['summary']).toContain('Roscioli');
+  });
+});
+
 describe('EXTRACTION_PROMPT_SYSTEM — assistant-content contract', () => {
   it('instructs capture of assistant-provided content with attribution', () => {
     // Guard against a future prompt edit silently reverting the lever. The
