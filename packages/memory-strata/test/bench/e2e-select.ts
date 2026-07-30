@@ -13,6 +13,8 @@
 // unless one is passed.
 
 import type { LongMemEvalSample } from './corpora/longmemeval-s.js';
+import type { E2EReportRow } from './e2e-report.js';
+import type { E2EResumeRow } from './e2e-resume.js';
 
 export interface SelectSamplesInput {
   /** The full loaded corpus, in corpus order. */
@@ -55,4 +57,50 @@ export function parseCsvFlag(raw: string | undefined): string[] | undefined {
   if (raw === undefined) return undefined;
   const parts = raw.split(',').map((p) => p.trim()).filter((p) => p.length > 0);
   return parts.length > 0 ? parts : undefined;
+}
+
+/**
+ * Seed a report's `rows` from a resumed run's JSONL, restricted to THIS run's
+ * selected sample set (review fix, 2026-07-29). Without this filter, seeding
+ * from the entire resume file folds in rows from any other run that happens to
+ * share the same resume JSONL — e.g. an unfiltered run's rows leaking into a
+ * `--types single-session-assistant` run's per-type table (`resumeId` defaults
+ * to today's date, so same-day runs share a file). Resuming the SAME selection
+ * (filtered or not) is unaffected: every row it wrote is, by construction, for a
+ * question in that selection.
+ */
+export function seedResumeRows(
+  done: Map<string, E2EResumeRow>,
+  samples: LongMemEvalSample[],
+): E2EReportRow[] {
+  const ids = new Set(samples.map((s) => s.question_id));
+  const out: E2EReportRow[] = [];
+  for (const [questionId, row] of done) {
+    if (ids.has(questionId)) out.push(row);
+  }
+  return out;
+}
+
+/**
+ * Build the "0 questions matched" integrity-guard message for a `--types`/`--ids`
+ * run whose selection is empty (review fix, 2026-07-29) — e.g. a typo'd
+ * `--types` value. Extracted as a pure function so the guard is unit-testable
+ * without loading the live corpus. Returns undefined when there's nothing to
+ * report (a match was found, or no filter was requested at all — an empty
+ * unfiltered corpus is not this guard's concern).
+ */
+export function zeroMatchError(input: {
+  types: string[] | undefined;
+  ids: string[] | undefined;
+  matched: number;
+}): string | undefined {
+  if (input.matched > 0) return undefined;
+  if (input.types === undefined && input.ids === undefined) return undefined;
+  return (
+    '--types/--ids matched 0 questions' +
+    `${input.types ? ` types=[${input.types.join(',')}]` : ''}` +
+    `${input.ids ? ` ids=[${input.ids.join(',')}]` : ''}. ` +
+    'Refusing to render a report for zero questions — check the values against the corpus ' +
+    '(see question_type values in corpora/longmemeval-s.ts).'
+  );
 }

@@ -170,6 +170,33 @@ describe('detectClasses (Stage A, no LLM)', () => {
     expect(classes).toHaveLength(0);
   });
 
+  it('mandated attribution-prefix boilerplate ("The assistant recommended…") does not ' +
+    'seed a spurious rollup, while a legitimate class over the same docs still forms (review fix)', () => {
+    // 3 `general` docs each carry a fact beginning with the mandated
+    // assistant-attribution prefix (docs/plans/2026-07-29 extraction prompt) and
+    // all three also happen to share a genuine topic token ("restaurant"). 10
+    // docs total → 3/10 = 0.3, inside the K=3..40%-salience band where a
+    // boilerplate token would otherwise materialize `docs/rollup/assistants.md`
+    // and `docs/rollup/recommendeds.md`.
+    const attributed = [
+      { slug: 'dinner-plan', text: "The assistant recommended Nonna's Kitchen restaurant for dinner." },
+      { slug: 'lunch-plan', text: 'The assistant recommended Trattoria Roma restaurant for lunch.' },
+      { slug: 'brunch-plan', text: 'The assistant recommended Cafe Milano restaurant for brunch.' },
+    ];
+    const docs: DocFile[] = [
+      ...attributed.map((a) => mkDoc('general', a.slug, { summary: a.text, facts: [a.text] })),
+      ...FILLERS.map((f) => mkDoc('general', f.slug, { summary: f.summary })),
+      mkDoc('general', 'extra1', { summary: 'a quiet library evening' }),
+      mkDoc('general', 'extra2', { summary: 'a busy grocery run' }),
+    ];
+    const { classes } = detectClasses(docs, DEFAULT_ROLLUP_CONFIG);
+    expect(classes.find((c) => c.slug === 'assistants')).toBeUndefined();
+    expect(classes.find((c) => c.slug === 'recommendeds')).toBeUndefined();
+    const restaurants = classes.find((c) => c.slug === 'restaurants');
+    expect(restaurants).toBeDefined();
+    expect(restaurants!.members).toHaveLength(3);
+  });
+
   it('per-pass cap is enforced and logged (no silent truncation)', () => {
     // Two distinct classes, cap=1 → one dropped + rollup_cap_exceeded logged.
     const docs: DocFile[] = [

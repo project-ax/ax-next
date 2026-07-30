@@ -265,7 +265,10 @@ function salvageTruncatedArray(text: string): unknown[] | null {
     if (ch === '"') { inString = true; continue; }
     if (ch === '{') { if (depth === 0) objStart = i; depth += 1; continue; }
     if (ch === '}') {
-      depth -= 1;
+      // Floor at 0 (review fix): an unmatched stray '}' before the first '{'
+      // would otherwise drive depth negative permanently, so `depth === 0` below
+      // never fires again and every later complete object is silently dropped.
+      depth = Math.max(0, depth - 1);
       if (depth === 0 && objStart !== -1) {
         try {
           out.push(JSON.parse(text.slice(objStart, i + 1)));

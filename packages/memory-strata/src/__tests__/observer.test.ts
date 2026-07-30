@@ -346,6 +346,28 @@ describe('truncated-extraction salvage', () => {
     expect(result.salvagedFromTruncation).toBeUndefined();
   });
 
+  it('recovers a complete object even after a stray leading "}" (review fix — no depth floor)', async () => {
+    // A stray unmatched '}' right after the array's '[' used to drive `depth` to
+    // -1 permanently (no floor), so the '{' that follows was never recognized as
+    // an object start (`depth === 0` never true again) and the complete object
+    // after it was silently dropped. Flooring the decrement at 0 recovers it.
+    const STRAY_BRACE = '[}{"fact":"User likes tea.","subject":"tea","factType":"preference","confidence":0.9}]';
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(STRAY_BRACE),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    if (result.kind !== 'written') throw new Error('unreachable');
+    expect(result.written).toHaveLength(1);
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files.map((f) => f.fm['summary'])).toEqual(['User likes tea.']);
+  });
+
   it('still reports parse-error when nothing can be salvaged', async () => {
     const result = await runObserver({
       messages: TRANSCRIPT,

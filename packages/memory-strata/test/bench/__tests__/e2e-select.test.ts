@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { selectSamples, parseCsvFlag } from '../e2e-select.js';
+import { selectSamples, parseCsvFlag, seedResumeRows, zeroMatchError } from '../e2e-select.js';
 import type { LongMemEvalSample } from '../corpora/longmemeval-s.js';
+import type { E2EResumeRow } from '../e2e-resume.js';
 
 /** Minimal sample; only question_id + question_type drive selection. */
 function mk(id: string, type: string): LongMemEvalSample {
@@ -74,6 +75,70 @@ describe('selectSamples', () => {
   it('treats an empty filter list as no filter', () => {
     const all = corpus();
     expect(selectSamples({ samples: all, types: [], ids: [], limit: 500 })).toEqual(all);
+  });
+});
+
+/** Minimal E2EResumeRow; only questionId drives the seeding logic under test. */
+function mkRow(id: string): E2EResumeRow {
+  return {
+    questionId: id,
+    questionType: 'single-session-user',
+    unanswerable: false,
+    verdict: 'correct',
+    judgeReason: 'r',
+    sessionsIngested: 1,
+    toolCalls: 1,
+    dollars: 0.01,
+    question: 'q',
+    goldAnswer: 'a',
+    agentAnswer: 'a',
+  };
+}
+
+describe('seedResumeRows (review fix — filtered-run row stranding)', () => {
+  it('seeds only rows whose questionId is in the CURRENTLY selected sample set', () => {
+    // "asst-0" is a row left over from a prior (differently-filtered, or
+    // unfiltered) run sharing the same resume file — it must not leak into a
+    // report for a run that didn't select it.
+    const done = new Map<string, E2EResumeRow>([
+      ['user-0', mkRow('user-0')],
+      ['asst-0', mkRow('asst-0')],
+    ]);
+    const samples = [mk('user-0', 'single-session-user')];
+    const rows = seedResumeRows(done, samples);
+    expect(rows.map((r) => r.questionId)).toEqual(['user-0']);
+  });
+
+  it('seeds everything for an unfiltered run (samples = full corpus slice)', () => {
+    const all = corpus();
+    const done = new Map<string, E2EResumeRow>(all.map((s) => [s.question_id, mkRow(s.question_id)]));
+    const rows = seedResumeRows(done, all);
+    expect(rows).toHaveLength(all.length);
+  });
+
+  it('resuming the SAME filtered set keeps all its rows', () => {
+    const samples = [mk('asst-0', 'single-session-assistant'), mk('asst-1', 'single-session-assistant')];
+    const done = new Map<string, E2EResumeRow>(samples.map((s) => [s.question_id, mkRow(s.question_id)]));
+    const rows = seedResumeRows(done, samples);
+    expect(rows).toHaveLength(2);
+  });
+});
+
+describe('zeroMatchError (review fix — zero-match integrity guard)', () => {
+  it('returns an error when --types/--ids matched nothing', () => {
+    const err = zeroMatchError({ types: ['nope'], ids: undefined, matched: 0 });
+    expect(err).toBeDefined();
+    expect(err).toContain('0 questions');
+    expect(err).toContain('nope');
+  });
+
+  it('returns undefined when the selection matched something', () => {
+    expect(zeroMatchError({ types: ['single-session-user'], ids: undefined, matched: 5 })).toBeUndefined();
+  });
+
+  it('returns undefined for an unfiltered run even if 0 samples were loaded', () => {
+    // No --types/--ids requested at all — not this guard's concern.
+    expect(zeroMatchError({ types: undefined, ids: undefined, matched: 0 })).toBeUndefined();
   });
 });
 

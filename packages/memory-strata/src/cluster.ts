@@ -95,14 +95,27 @@ function normalizeCategory(raw: string | undefined): ClusterCategory {
 /**
  * Pick the most common `factType` across a group of observations.
  *
- * Ties are broken by the first-encountered winner (Map insertion order).
- * Any `factType` value not matching the five known categories is treated
- * as 'general' — which is the Observer's declared default, so in practice
- * this branch is noise protection.
+ * `answer` observations do NOT vote (review fix, 2026-07-29): `answer` normalizes
+ * to `general` for DOC ROUTING (see FACT_TYPE_TO_CATEGORY), but letting it also
+ * vote in the election means enough assistant facts on a subject can outvote a
+ * genuine majority (e.g. 2 `entity` + 3 `answer` → `general`), flipping the
+ * cluster's category across consolidation passes. That splits the same subject
+ * across BOTH `docs/entity/<slug>.md` and `docs/general/<slug>.md` — exactly the
+ * co-location breakage the design rejected a separate `docs/answer/` category to
+ * avoid, and `findNearDupSlug` only dedups within one category so it goes blind
+ * across the twins. A cluster with NO non-answer observations still falls back
+ * to 'general' — `best`'s initial value covers that; the loop below only ever
+ * raises it when a non-answer vote exists.
+ *
+ * Ties among the remaining (non-answer) votes are broken by first-encountered
+ * winner (Map insertion order). Any `factType` value not matching the five known
+ * categories is treated as 'general' — which is the Observer's declared default,
+ * so in practice this branch is noise protection.
  */
 function pickCategory(obs: InboxFile[]): ClusterCategory {
   const counts = new Map<ClusterCategory, number>();
   for (const o of obs) {
+    if (o.frontmatter.factType === 'answer') continue; // does not vote
     const cat = normalizeCategory(o.frontmatter.factType);
     counts.set(cat, (counts.get(cat) ?? 0) + 1);
   }

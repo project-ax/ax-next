@@ -136,4 +136,30 @@ describe('answer factType routing (2026-07-29)', () => {
     const clusters = clusterBySubject(inbox);
     expect(clusters[0]?.category).toBe('entity');
   });
+
+  it('does NOT let answer facts outvote a minority of non-answer facts (review fix)', () => {
+    // Before the fix, `answer` votes normalize to `general` and can win a
+    // majority outright — 2 entity + 3 answer would flip the cluster to
+    // `general`, splitting the subject across docs/entity/rome.md AND
+    // docs/general/rome.md. `answer` observations must not vote at all.
+    const inbox: InboxFile[] = [
+      makeFile('rome', 'entity', 'e1'),
+      makeFile('rome', 'entity', 'e2'),
+      makeFile('rome', 'answer', 'a1'),
+      makeFile('rome', 'answer', 'a2'),
+      makeFile('rome', 'answer', 'a3'),
+    ];
+    const clusters = clusterBySubject(inbox);
+    expect(clusters[0]?.category).toBe('entity');
+  });
+
+  it('an all-answer cluster falls back to "general" (no non-answer votes)', () => {
+    const inbox: InboxFile[] = [
+      makeFile('rome', 'answer', 'a1'),
+      makeFile('rome', 'answer', 'a2'),
+      makeFile('rome', 'answer', 'a3'),
+    ];
+    const clusters = clusterBySubject(inbox);
+    expect(clusters[0]?.category).toBe('general');
+  });
 });
