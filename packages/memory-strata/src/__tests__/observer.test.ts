@@ -298,6 +298,68 @@ describe('assistant-content extraction (factType: answer)', () => {
   });
 });
 
+describe('truncated-extraction salvage', () => {
+  // A cut-off array currently loses EVERY fact in the session, including user
+  // facts — assistant content just makes hitting the cap likelier.
+  const TRUNCATED = `[
+    {"fact":"User prefers React over Vue.","subject":"frontend","factType":"preference","confidence":0.9},
+    {"fact":"The project ships next Friday.","subject":"project","factType":"episode","confidence":0.85},
+    {"fact":"The assistant listed 10 work-from-home jobs for seniors: 1. Virtual assis`;
+
+  it('keeps the complete objects when the array is cut mid-object', async () => {
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(TRUNCATED),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    if (result.kind !== 'written') throw new Error('unreachable');
+    expect(result.written).toHaveLength(2);
+    expect(result.salvagedFromTruncation).toBe(true);
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files.map((f) => f.fm['summary'])).toEqual([
+      'User prefers React over Vue.',
+      'The project ships next Friday.',
+    ]);
+  });
+
+  it('does not flag a well-formed response as salvaged', async () => {
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(
+        JSON.stringify([
+          { fact: 'User prefers React.', subject: 'frontend', factType: 'preference', confidence: 0.9 },
+        ]),
+      ),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    if (result.kind !== 'written') throw new Error('unreachable');
+    expect(result.salvagedFromTruncation).toBeUndefined();
+  });
+
+  it('still reports parse-error when nothing can be salvaged', async () => {
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning('I am afraid I cannot help with that.'),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('parse-error');
+  });
+});
+
 describe('EXTRACTION_PROMPT_SYSTEM — assistant-content contract', () => {
   it('instructs capture of assistant-provided content with attribution', () => {
     // Guard against a future prompt edit silently reverting the lever. The
