@@ -880,4 +880,53 @@ describe('consolidator', () => {
     );
     expect(mergedWarnings).toHaveLength(0);
   });
+
+  it('promotes an answer fact into the SAME general doc as the user fact on that subject', async () => {
+    // Co-location is the retrieval assumption: BM25 must find the assistant's
+    // content from the question's topic terms, which live on the user-side fact.
+    const now = new Date('2026-07-29T12:00:00.000Z');
+
+    await writeInboxFixture(
+      'obs-rome-user.md',
+      {
+        id: 'obs-rome-user',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'User is planning a trip to Rome.',
+        subject: 'rome',
+        factType: 'general',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nUser is planning a trip to Rome.\n',
+    );
+    await writeInboxFixture(
+      'obs-rome-answer.md',
+      {
+        id: 'obs-rome-answer',
+        type: 'inbox/observation',
+        created: now.toISOString(),
+        confidence: 0.9,
+        pinned: false,
+        summary: 'The assistant recommended Roscioli for a romantic Italian dinner in Rome.',
+        subject: 'rome',
+        factType: 'answer',
+        event_time: now.toISOString(),
+        recorded_at: now.toISOString(),
+      },
+      '# Observation\n\nThe assistant recommended Roscioli for a romantic Italian dinner in Rome.\n',
+    );
+
+    const result = await runConsolidation({ workspaceRoot, now });
+
+    expect(result.promoted).toBe(2);
+    const doc = await readFile(
+      join(workspaceRoot, 'permanent/memory/docs/general/rome.md'),
+      'utf8',
+    );
+    expect(doc).toContain('Roscioli');
+    expect(doc).toContain('planning a trip to Rome');
+  });
 });

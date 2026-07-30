@@ -292,4 +292,19 @@ describe('regenerateRecent', () => {
     expect(positions).toEqual([...positions].sort((a, b) => a - b));
     expect(recentSection).not.toContain('preference/item-1');
   });
+
+  it('keeps answer observations out of Open Threads', async () => {
+    // recent.md is ALWAYS injected; assistant content must not crowd the hot tier.
+    await writeInboxObservation(workspaceRoot, {
+      id: 'ans-1',
+      factType: 'answer',
+      summary: 'The assistant listed 10 work-from-home jobs.',
+      timestamp: new Date('2026-05-10T07:00:00Z'),
+    });
+
+    const result = await regenerateRecent({ workspaceRoot, now: NOW });
+    const content = await readFile(join(workspaceRoot, result.path), 'utf8');
+
+    expect(content).not.toContain('work-from-home');
+  });
 });

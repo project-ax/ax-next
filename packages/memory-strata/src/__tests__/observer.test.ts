@@ -250,3 +250,50 @@ describe('runObserver', () => {
     expect(llm).not.toHaveBeenCalled();
   });
 });
+
+describe('assistant-content extraction (factType: answer)', () => {
+  it('preserves factType "answer" instead of coercing it to general', async () => {
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(
+        JSON.stringify([
+          {
+            fact: 'The assistant recommended Roscioli for a romantic Italian dinner in Rome.',
+            subject: 'rome-restaurants',
+            factType: 'answer',
+            confidence: 0.9,
+          },
+        ]),
+      ),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.fm['factType']).toBe('answer');
+    expect(files[0]?.fm['summary']).toContain('Roscioli');
+  });
+
+  it('still coerces a genuinely unknown factType to general', async () => {
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(
+        JSON.stringify([
+          { fact: 'A fact.', subject: 's', factType: 'wat', confidence: 0.9 },
+        ]),
+      ),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files[0]?.fm['factType']).toBe('general');
+  });
+});

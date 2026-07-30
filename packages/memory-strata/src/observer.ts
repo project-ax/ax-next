@@ -176,7 +176,7 @@ function parseObservations(text: string): Observation[] | null {
     const subject = typeof r['subject'] === 'string' ? (r['subject'] as string) : 'general';
     const factTypeRaw = typeof r['factType'] === 'string' ? (r['factType'] as string) : 'general';
     const factType = (
-      ['entity', 'preference', 'decision', 'episode', 'general'].includes(factTypeRaw)
+      ['entity', 'preference', 'decision', 'episode', 'answer', 'general'].includes(factTypeRaw)
         ? factTypeRaw
         : 'general'
     ) as Observation['factType'];

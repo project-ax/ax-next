@@ -115,3 +115,25 @@ describe('clusterBySubject', () => {
     expect(cluster!.category).toBe('general');
   });
 });
+
+describe('answer factType routing (2026-07-29)', () => {
+  it('routes an answer observation to the general doc category', () => {
+    const inbox: InboxFile[] = [
+      makeFile('rome-restaurants', 'answer', 'a'),
+    ];
+    const clusters = clusterBySubject(inbox);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0]?.category).toBe('general');
+    expect(clusters[0]?.slug).toBe('rome-restaurants');
+  });
+
+  it('lets a majority user factType win over a single answer fact', () => {
+    const inbox: InboxFile[] = [
+      makeFile('rome-restaurants', 'answer', 'a'),
+      makeFile('rome-restaurants', 'entity', 'b'),
+      makeFile('rome-restaurants', 'entity', 'c'),
+    ];
+    const clusters = clusterBySubject(inbox);
+    expect(clusters[0]?.category).toBe('entity');
+  });
+});
