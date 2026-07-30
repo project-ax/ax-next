@@ -172,3 +172,70 @@ Kept-workspace repro (`test/bench/repro-count-diag.ts`, BM25 path) of one overco
 Cheapest, largest, best-evidenced lever available — and **it is not in the brief's WS1–WS5**. It's an Observer prompt/taxonomy change (extend extraction to assistant-provided content: recommendations, lists, named entities, specifics the user may later ask to recall), not a new index dimension, not multi-hop, not embeddings. Guardrails: don't bloat memory with every assistant utterance (confidence/durability bar, dedup against user-side facts); watch that recall gains don't raise hallucination on the abstention set (correct-refusal is currently 88% and must stay ≥83%).
 
 **De-prioritized by this data:** aggregation-counting (gate already passes; overcount is gold-ambiguous, low ceiling), dense embeddings/WS5 (no evidence lexical mismatch is the wall; would aggravate overcount), WS3 multi-hop (knowledge-update/temporal both de-noised to ~69%, no longer outliers).
+
+## Assistant-content extraction — targeted result (2026-07-30, n=54)
+
+The lever recommended above is **built and measured**. Design:
+`docs/plans/2026-07-29-assistant-content-extraction-design.md`; plan:
+`docs/plans/2026-07-29-assistant-content-extraction-plan.md`.
+
+Targeted run on the 54 `single-session-assistant` questions (`assistant-extraction-v1.jsonl`,
+BM25 path, fixed harness, $24.75, ~8h):
+
+| | before (`bm25-full-fixed`) | after | |
+|---|---|---|---|
+| **score** | **14/54 = 25.9%** | **47/54 = 87.0%** | **+33 questions** |
+| correct | 14 | 47 | |
+| abstained-incorrectly | 35 | 7 | −28 |
+| incorrect | 5 | 0 | −5 |
+
+**87.0% is above the previous best type** (single-session-user, 84.3%) — the type went from the
+sole structural outlier to the strongest. Pre-declared gate was ≥35/54; it cleared by 12.
+Flips: +33 / −1 (`7a8d0b71`, DHL influencer budget, `correct → abstained-incorrectly`; n=1, noise-scale).
+
+### What changed
+
+`EXTRACTION_PROMPT_SYSTEM` now extracts two kinds of fact — USER facts (unchanged) and ASSISTANT
+facts (new, `factType: 'answer'`) under four rules, each traceable to an observed failure:
+attribute from the assistant's side; keep enumerated lists whole and ordered; keep the specific
+value rather than the topic; skip anything the assistant hedged. `answer` maps to the **existing**
+`docs/general` category — a separate `docs/answer/` would have split a subject's facts across two
+docs and broken the co-location BM25 depends on.
+
+Shipped alongside (a risk the change created): `MAX_EXTRACTION_TOKENS` 1024→2048 plus a salvage
+parser, because a truncated JSON array previously returned `null` and **lost every fact in the
+session, user facts included**. The pre-change diagnostic hit that failure once in ~300 sessions;
+the post-change run hit it zero times.
+
+### Live extraction evidence (`test/bench/repro-extract.ts`, ~$0.83)
+
+Same three transcripts, before → after:
+
+| question | before | after |
+|---|---|---|
+| Plesiosaur's colour | topic only | "Plesiosaur (**blue scaly body**, long neck…)" |
+| Lake Charles processes | vague "catalytic cracking interest" | "1. Atmospheric distillation, 2. FCC, 3. Alkylation, 4. Hydrotreating" |
+| 7th WFH job | "user is interested in WFH jobs" | "…6. Online survey taker, **7. Transcriptionist**, 8…" |
+
+### The 7 survivors split cleanly — and route the next lever
+
+- **6 = capture, not retrieval.** Fine-grained single values still dropped: a phone number
+  (`+49 (0) 62 32 / 14 23 - 0`), a chord progression, a construction year, a `$2,000` line item.
+  Consistent with the prompt's deliberate volume caps (≤5 assistant facts/transcript, ≤400 chars
+  each) — a **tunable**, not a design flaw. Cheapest next experiment: relax the caps and re-run
+  the 54 at ~$25.
+- **1 = retrieval/trust** (`6ae235be`, CITGO). The repro proves extraction captured the Lake
+  Charles process list verbatim, and the agent *still* abstained. This is the branch the
+  `memory_search` descriptor-wording lever targets — held in reserve in the design.
+
+### Caveats
+
+- Per-type regression and correct-refusal are **not** settled by this run — that is the pending
+  n=500 (`bm25-full-assistant`). More stored content = more chances to answer an unanswerable
+  question, and correct-refusal must hold ≥83%.
+- Throughput was ~10x slower than estimated (~9 min/question): the richer extraction slows every
+  one of a question's ~135 haystack sessions. Budget wall-clock, not just dollars, for full runs.
+- Watch item from review: `isDupe` (Jaccard 0.6) can collapse two *short* assistant facts on one
+  subject — "…recommended Hotel Estherea in Amsterdam" vs "…Hotel Ambassade in Amsterdam" scores
+  0.667 — and the mandated attribution prefix makes that likelier. Long list-facts are unaffected.
+  No evidence it bit this run; re-check on the n=500.
