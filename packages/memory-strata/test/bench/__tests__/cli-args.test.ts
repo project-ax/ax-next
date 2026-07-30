@@ -27,4 +27,20 @@ describe('parseCliArgs — e2e mode flags (TASK-189)', () => {
   it('treats an unknown --mode value as bench (safe default)', () => {
     expect(parseCliArgs(['--mode', 'wat']).mode).toBe('bench');
   });
+
+  it('parses --types and --ids as comma-separated lists', () => {
+    const a = parseCliArgs([
+      '--mode', 'e2e',
+      '--types', 'single-session-assistant, multi-session',
+      '--ids', 'q1,q2',
+    ]);
+    expect(a.types).toEqual(['single-session-assistant', 'multi-session']);
+    expect(a.ids).toEqual(['q1', 'q2']);
+  });
+
+  it('leaves types/ids undefined when the flags are absent', () => {
+    const a = parseCliArgs(['--mode', 'e2e']);
+    expect(a.types).toBeUndefined();
+    expect(a.ids).toBeUndefined();
+  });
 });

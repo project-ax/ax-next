@@ -33,6 +33,7 @@ import { judgeAnswer, makeOpenRouterJudgeClient, type JudgeClient } from './judg
 import { renderReport } from './report.js';
 import { renderFairRerankReport } from './fair-reranker-report.js';
 import { runE2EMode } from './e2e-cli.js';
+import { parseCsvFlag } from './e2e-select.js';
 import {
   rewriteMapSummaries,
   loadMapRewriteCache,
@@ -74,6 +75,10 @@ export interface CliArgs {
   resume?: string;
   /** e2e mode: produce a representative report from the fixture (no keys, no spend). */
   fixture: boolean;
+  /** e2e mode: only run questions of these `question_type`s (opt-in; unioned with --ids). */
+  types?: string[];
+  /** e2e mode: only run these `question_id`s (opt-in; unioned with --types). */
+  ids?: string[];
 }
 
 export function parseCliArgs(argv: string[]): CliArgs {
@@ -94,6 +99,8 @@ export function parseCliArgs(argv: string[]): CliArgs {
       cap: { type: 'string' },
       resume: { type: 'string' },
       fixture: { type: 'boolean', default: false },
+      types: { type: 'string' },
+      ids: { type: 'string' },
     },
   });
   const base: CliArgs = {
@@ -112,6 +119,10 @@ export function parseCliArgs(argv: string[]): CliArgs {
   if (values.sample) base.sample = Number(values.sample);
   if (values.cap) base.cap = Number(values.cap);
   if (values.resume) base.resume = values.resume;
+  const types = parseCsvFlag(values.types as string | undefined);
+  if (types !== undefined) base.types = types;
+  const ids = parseCsvFlag(values.ids as string | undefined);
+  if (ids !== undefined) base.ids = ids;
   return base;
 }
 
@@ -128,6 +139,8 @@ async function main(): Promise<number> {
       cap: args.cap ?? 25,
       fixture: args.fixture,
       ...(args.resume !== undefined ? { resumeId: args.resume } : {}),
+      ...(args.types !== undefined ? { types: args.types } : {}),
+      ...(args.ids !== undefined ? { ids: args.ids } : {}),
     });
   }
 
