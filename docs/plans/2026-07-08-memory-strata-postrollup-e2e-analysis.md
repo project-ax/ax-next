@@ -239,3 +239,61 @@ Same three transcripts, before → after:
   subject — "…recommended Hotel Estherea in Amsterdam" vs "…Hotel Ambassade in Amsterdam" scores
   0.667 — and the mandated attribution prefix makes that likelier. Long list-facts are unaffected.
   No evidence it bit this run; re-check on the n=500.
+
+## FINAL: assistant-content extraction, n=500 confirmation (2026-08-02)
+
+`bm25-full-assistant.jsonl`, **500/500 scored** (the baseline run completed 488), BM25 path, fixed
+harness, **$221.16**. Compared on the **488 questions both runs scored**:
+
+| type | before | after | Δ |
+|---|---|---|---|
+| **single-session-assistant** | 14/54 — 25.9% | **45/54 — 83.3%** | **+57.4** |
+| **temporal-reasoning** | 91/132 — 68.9% | **103/132 — 78.0%** | **+9.1** |
+| single-session-preference | 21/30 — 70.0% | 22/30 — 73.3% | +3.3 |
+| multi-session | 90/133 — 67.7% | 92/133 — 69.2% | +1.5 ✅ (gate ≥65%) |
+| knowledge-update | 48/69 — 69.6% | 49/69 — 71.0% | +1.4 |
+| single-session-user | 59/70 — 84.3% | 59/70 — 84.3% | +0.0 |
+| **OVERALL** | **323/488 — 66.2%** | **370/488 — 75.8%** | **+9.6** |
+| correct-refusal | 23/25 | **22/25 — 88.0%** | −1 ✅ (gate ≥83%) |
+
+On all 500 rows the run scores **380/500 = 76.0%**.
+
+**Both gates pass. No type regressed — five of six improved, the sixth held exactly flat.**
+
+### The result beat its own design estimate, for a reason the design didn't anticipate
+
+The design projected **+4.9pp** overall (target type reaching 70% parity). Actual: **+9.6pp**. Two
+sources, one expected and one not:
+
+1. **The target type overshot** — 83.3% vs the 70% modelled, and vs the 87.0% its own targeted run
+   printed (`assistant-extraction-v1`). The 87.0 → 83.3 gap is 2 questions of run-to-run variance,
+   not a real difference; quote **~83–87%** for this type, not either endpoint.
+2. **`temporal-reasoning` gained +9.1pp (+12 questions) — unforecast.** This was NOT in scope. At
+   n=26 it printed +11.5 and was written off here as small-sample noise that would regress to the
+   mean (this corpus has a documented history of exactly that). It did not regress: the **complete
+   132-question block** landed at +9.1.
+
+**Hypothesis for the temporal gain, explicitly NOT yet established:** temporal questions often turn
+on specifics the *assistant* supplied — dates, durations, enumerated timelines — which the
+user-centric prompt discarded along with everything else. Plausible and consistent with the
+mechanism, but no repro was run. **Do not cite this as a finding**; cite the number, flag the
+explanation as untested. A kept-workspace repro on 2–3 temporal flips would settle it cheaply and is
+the single highest-value follow-up diagnostic from this run.
+
+### Cost of the win, stated plainly
+
+`correct-refusal` fell by exactly one question (23/25 → 22/25, 88.0%). Storing more content buys
+recall and costs a little abstention discipline — precisely the tradeoff the guardrail exists to
+detect. It sits 5pp above the ≥83% gate. If a future lever stores still more, re-check this first.
+
+### Operational notes for the next full run
+
+- **Wall-clock, not dollars, is the binding constraint.** ~2.5 days for n=500 (~9 min/question:
+  each sample ingests ~135 sessions, every one an Observer round-trip). Cost tracked the estimate
+  ($221 vs ~$224 projected); time was ~10x the original guess.
+- **The run was SIGTERM'd (exit 143) repeatedly by something outside the bench** — not a crash.
+  `--resume` makes this a non-issue: each kill costs only the in-flight question. A supervisor loop
+  that relaunches the identical command until the JSONL reaches 500 turns a multi-day run into
+  fire-and-forget. Do not launch a long bench as a harness-tracked background task.
+- This run scored **500/500** where the baseline managed 488 — the salvage parser and cap raise
+  plausibly contributed, since transient extraction failures no longer lose a whole session.
