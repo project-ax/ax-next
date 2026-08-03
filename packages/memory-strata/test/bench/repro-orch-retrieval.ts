@@ -13,7 +13,6 @@ import { join } from 'node:path';
 import {
   HookBus,
   makeAgentContext,
-  type AgentContext,
   type AgentOutcome,
   type LlmCallInput,
   type LlmCallOutput,
