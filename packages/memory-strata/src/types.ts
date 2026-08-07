@@ -53,7 +53,16 @@ export interface MemoryFrontmatter {
   summary: string;
   /** Free-form classification used by the Observer to bucket facts. */
   subject?: string;
-  /** Loose category — entity / preference / decision / episode / general. */
+  /**
+   * Loose category — entity / preference / decision / episode / answer / general.
+   *
+   * `answer` (2026-07-29) marks durable content the ASSISTANT provided —
+   * recommendations, named entities, specific values, enumerated lists — as
+   * opposed to something the user asserted. It is a first-class factType but NOT
+   * a doc category: `cluster.ts` maps it onto `general` so an assistant fact
+   * lands in the SAME doc as the user-side facts on that subject, which is what
+   * lets BM25 find it from the question's topic terms.
+   */
   factType?: string;
   /** Conversation messages this fact was extracted from. */
   source_messages?: number;
@@ -95,7 +104,7 @@ export interface MemoryFrontmatter {
 export interface Observation {
   fact: string;
   subject: string;
-  factType: 'entity' | 'preference' | 'decision' | 'episode' | 'general';
+  factType: 'entity' | 'preference' | 'decision' | 'episode' | 'answer' | 'general';
   confidence: number;
 }
 

@@ -579,6 +579,10 @@ async function kickOffObserver(
           written: result.written.length,
           rejected: result.rejected.length,
           rejectedKinds: result.rejected.flatMap((r) => r.kinds),
+          // Truncated extraction: complete facts were kept, the tail was lost.
+          // Never silent — a persistent signal here means MAX_EXTRACTION_TOKENS
+          // needs another raise.
+          ...(result.salvagedFromTruncation === true ? { salvagedFromTruncation: true } : {}),
         });
       }
     } else if (result.kind === 'parse-error') {

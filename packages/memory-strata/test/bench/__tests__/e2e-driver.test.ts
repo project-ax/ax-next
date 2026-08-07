@@ -22,6 +22,29 @@ function stubExtraction(): (input: LlmCallInput) => Promise<LlmCallOutput> {
   };
 }
 
+// A stubbed extraction LLM that returns `fact` when the transcript matches
+// `pattern`, else []. Unlike stubExtraction() it awaits a real macrotask
+// (setTimeout) to SIMULATE LLM network latency — without it the Observer's
+// inbox write completes in the microtask queue before the consolidation
+// debounce's `setTimeout(0)` macrotask fires, so the 0ms-debounce race the
+// final-session test targets never manifests under instant stubs.
+function stubExtractionLatent(
+  pattern: RegExp,
+  fact: Record<string, unknown>,
+  delayMs = 25,
+): (input: LlmCallInput) => Promise<LlmCallOutput> {
+  return async (input: LlmCallInput) => {
+    const transcript = input.messages.map((m) => m.content).join('\n');
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    const facts = pattern.test(transcript) ? [fact] : [];
+    return {
+      text: JSON.stringify(facts),
+      stopReason: 'end_turn',
+      usage: { inputTokens: 50, outputTokens: 20 },
+    };
+  };
+}
+
 const answerableSample: LongMemEvalSample = {
   question_id: 'q-coffee',
   question_type: 'single-session-preference',
@@ -78,6 +101,56 @@ describe('runE2EQuestion (TASK-189 integration, stubbed LLMs)', () => {
     // (`preference/coffee`) ⇒ one densify call (+50). The map densifier shares
     // the Observer's host-LLM gating, so its tokens land in the same meter.
     expect(result.extractionTokens.in).toBe(150);
+  });
+
+  it('retrieves a fact stated in the FINAL ingested session (no final-session inbox stranding)', async () => {
+    // Regression (2026-07-08 inbox-stranding bug). Each session's consolidation
+    // pass is scheduled at chat:end on a 0ms debounce; under real Observer
+    // latency that setTimeout(0) fires DURING settleObserver — before the
+    // session's facts are written — so a session's facts are actually
+    // consolidated by the NEXT session's pass. The final session has no next
+    // pass, so without a post-Observer drain its facts strand in the inbox,
+    // invisible to answer-time retrieval. Put the only durable fact in the LAST
+    // session and assert memory_search surfaces it.
+    const finalFactSample: LongMemEvalSample = {
+      question_id: 'q-final-fact',
+      question_type: 'single-session-user',
+      question: 'Where do I take yoga classes?',
+      answer: 'Serenity Yoga',
+      haystack_session_ids: ['s0', 's1'],
+      haystack_sessions: [
+        [
+          { role: 'user', content: 'Just chatting about the cloudy weather today.' },
+          { role: 'assistant', content: 'Sounds gloomy!' },
+        ],
+        [
+          { role: 'user', content: 'I take my yoga classes at the Serenity Yoga studio downtown.' },
+          { role: 'assistant', content: 'Noted — Serenity Yoga.' },
+        ],
+      ],
+    };
+    let rows: unknown[] = [];
+    const answerClient: E2EAnswerClient = {
+      async answer({ search }) {
+        rows = await search({ query: 'yoga studio location' });
+        return { text: 'Serenity Yoga.', usage: { in: 1, out: 1 }, toolCalls: 1 };
+      },
+    };
+
+    const result = await runE2EQuestion({
+      sample: finalFactSample,
+      extractionLlm: stubExtractionLatent(/serenity|yoga/i, {
+        fact: 'User takes yoga classes at Serenity Yoga studio.',
+        subject: 'yoga',
+        factType: 'preference',
+        confidence: 0.9,
+      }),
+      answerClient,
+    });
+
+    expect(result.sessionsIngested).toBe(2);
+    // The final session's fact must be consolidated + retrievable at answer time.
+    expect(JSON.stringify(rows).toLowerCase()).toContain('serenity');
   });
 
   it('flags the _abs split as unanswerable and tolerates no extracted facts', async () => {

@@ -102,6 +102,12 @@ const STOPWORDS = new Set([
   'which', 'when', 'about', 'from', 'into', 'over', 'then', 'than', 'also', 'just',
   'some', 'any', 'all', 'one', 'two', 'new', 'got', 'get', 'went', 'user', 'users',
   'day', 'days', 'time', 'week', 'month', 'year', 'thing', 'things',
+  // From the mandated assistant-attribution prefix ("The assistant
+  // recommended/listed/stated/explained…", 2026-07-29 extraction prompt): these
+  // recur across most `docs/general/*` docs regardless of topic, and without
+  // this entry they can seed a spurious `docs/rollup/assistants.md` in the band
+  // between K and the 40% salience cutoff (review fix).
+  'assistant', 'assistants', 'recommended', 'listed', 'stated', 'explained',
 ]);
 
 function tokenize(s: string): string[] {

@@ -115,3 +115,51 @@ describe('clusterBySubject', () => {
     expect(cluster!.category).toBe('general');
   });
 });
+
+describe('answer factType routing (2026-07-29)', () => {
+  it('routes an answer observation to the general doc category', () => {
+    const inbox: InboxFile[] = [
+      makeFile('rome-restaurants', 'answer', 'a'),
+    ];
+    const clusters = clusterBySubject(inbox);
+    expect(clusters).toHaveLength(1);
+    expect(clusters[0]?.category).toBe('general');
+    expect(clusters[0]?.slug).toBe('rome-restaurants');
+  });
+
+  it('lets a majority user factType win over a single answer fact', () => {
+    const inbox: InboxFile[] = [
+      makeFile('rome-restaurants', 'answer', 'a'),
+      makeFile('rome-restaurants', 'entity', 'b'),
+      makeFile('rome-restaurants', 'entity', 'c'),
+    ];
+    const clusters = clusterBySubject(inbox);
+    expect(clusters[0]?.category).toBe('entity');
+  });
+
+  it('does NOT let answer facts outvote a minority of non-answer facts (review fix)', () => {
+    // Before the fix, `answer` votes normalize to `general` and can win a
+    // majority outright — 2 entity + 3 answer would flip the cluster to
+    // `general`, splitting the subject across docs/entity/rome.md AND
+    // docs/general/rome.md. `answer` observations must not vote at all.
+    const inbox: InboxFile[] = [
+      makeFile('rome', 'entity', 'e1'),
+      makeFile('rome', 'entity', 'e2'),
+      makeFile('rome', 'answer', 'a1'),
+      makeFile('rome', 'answer', 'a2'),
+      makeFile('rome', 'answer', 'a3'),
+    ];
+    const clusters = clusterBySubject(inbox);
+    expect(clusters[0]?.category).toBe('entity');
+  });
+
+  it('an all-answer cluster falls back to "general" (no non-answer votes)', () => {
+    const inbox: InboxFile[] = [
+      makeFile('rome', 'answer', 'a1'),
+      makeFile('rome', 'answer', 'a2'),
+      makeFile('rome', 'answer', 'a3'),
+    ];
+    const clusters = clusterBySubject(inbox);
+    expect(clusters[0]?.category).toBe('general');
+  });
+});

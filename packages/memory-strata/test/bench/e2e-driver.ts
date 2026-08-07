@@ -153,9 +153,19 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
   bus.registerService('tool:register', 'e2e-tool-dispatcher', async () => ({ ok: true as const }));
 
   const strata = createMemoryStrataPlugin({
-    // Consolidate immediately after each chat:end so docs/recent are fresh before
-    // the next session and before we answer — no debounce-window race in a batch run.
-    consolidatorDebounceMs: 0,
+    // Consolidation is driven EXCLUSIVELY by the explicit `debouncer.flush()`
+    // the ingest loop runs AFTER `settleObserver` — never by the debounce auto-
+    // timer. A short window (the old `0`) is a bug, not an optimization: the
+    // `setTimeout(0)` pass fires DURING `settleObserver` (the Observer's LLM call
+    // is a macrotask that yields), i.e. BEFORE that session's facts are written,
+    // so each session's facts are consolidated by the NEXT session's pass — and
+    // the final session, having no next pass, strands its facts in the inbox,
+    // invisible to answer-time retrieval (2026-07-08 inbox-stranding bug; see the
+    // "FINAL ingested session" regression test). A window longer than any
+    // Observer call (its timeout is 30s) guarantees the auto-timer never beats
+    // flush(), so flush() consolidates every session — including the last —
+    // after its facts land. It's unref'd, and each flush clears its timer.
+    consolidatorDebounceMs: 10 * 60_000,
     // Bench temporal fidelity (Task 5): falls back to wall-clock when a session
     // has no parseable corpus date (or once ingestion is done and we're just
     // running the answer turn's own consolidation, if any).

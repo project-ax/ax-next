@@ -3,7 +3,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { load as yamlLoad } from 'js-yaml';
-import { runObserver } from '../observer.js';
+import { runObserver, EXTRACTION_PROMPT_SYSTEM } from '../observer.js';
 import { INBOX_DIR } from '../paths.js';
 import type { AgentMessage, LlmCallInput, LlmCallOutput } from '@ax/core';
 
@@ -248,5 +248,190 @@ describe('runObserver', () => {
 
     expect(result.kind).toBe('skipped');
     expect(llm).not.toHaveBeenCalled();
+  });
+});
+
+describe('assistant-content extraction (factType: answer)', () => {
+  it('preserves factType "answer" instead of coercing it to general', async () => {
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(
+        JSON.stringify([
+          {
+            fact: 'The assistant recommended Roscioli for a romantic Italian dinner in Rome.',
+            subject: 'rome-restaurants',
+            factType: 'answer',
+            confidence: 0.9,
+          },
+        ]),
+      ),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.fm['factType']).toBe('answer');
+    expect(files[0]?.fm['summary']).toContain('Roscioli');
+  });
+
+  it('still coerces a genuinely unknown factType to general', async () => {
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(
+        JSON.stringify([
+          { fact: 'A fact.', subject: 's', factType: 'wat', confidence: 0.9 },
+        ]),
+      ),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files[0]?.fm['factType']).toBe('general');
+  });
+});
+
+describe('truncated-extraction salvage', () => {
+  // A cut-off array currently loses EVERY fact in the session, including user
+  // facts — assistant content just makes hitting the cap likelier.
+  const TRUNCATED = `[
+    {"fact":"User prefers React over Vue.","subject":"frontend","factType":"preference","confidence":0.9},
+    {"fact":"The project ships next Friday.","subject":"project","factType":"episode","confidence":0.85},
+    {"fact":"The assistant listed 10 work-from-home jobs for seniors: 1. Virtual assis`;
+
+  it('keeps the complete objects when the array is cut mid-object', async () => {
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(TRUNCATED),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    if (result.kind !== 'written') throw new Error('unreachable');
+    expect(result.written).toHaveLength(2);
+    expect(result.salvagedFromTruncation).toBe(true);
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files.map((f) => f.fm['summary'])).toEqual([
+      'User prefers React over Vue.',
+      'The project ships next Friday.',
+    ]);
+  });
+
+  it('does not flag a well-formed response as salvaged', async () => {
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(
+        JSON.stringify([
+          { fact: 'User prefers React.', subject: 'frontend', factType: 'preference', confidence: 0.9 },
+        ]),
+      ),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    if (result.kind !== 'written') throw new Error('unreachable');
+    expect(result.salvagedFromTruncation).toBeUndefined();
+  });
+
+  it('recovers a complete object even after a stray leading "}" (review fix — no depth floor)', async () => {
+    // A stray unmatched '}' right after the array's '[' used to drive `depth` to
+    // -1 permanently (no floor), so the '{' that follows was never recognized as
+    // an object start (`depth === 0` never true again) and the complete object
+    // after it was silently dropped. Flooring the decrement at 0 recovers it.
+    const STRAY_BRACE = '[}{"fact":"User likes tea.","subject":"tea","factType":"preference","confidence":0.9}]';
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(STRAY_BRACE),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    if (result.kind !== 'written') throw new Error('unreachable');
+    expect(result.written).toHaveLength(1);
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files.map((f) => f.fm['summary'])).toEqual(['User likes tea.']);
+  });
+
+  it('still reports parse-error when nothing can be salvaged', async () => {
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning('I am afraid I cannot help with that.'),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('parse-error');
+  });
+});
+
+describe('sensitive gate covers assistant-authored facts (I7)', () => {
+  it('rejects an answer fact carrying a credential before it reaches the inbox', async () => {
+    // Invariant 5: assistant output is untrusted model output. The write-time
+    // gate is factType-agnostic and MUST stay that way — assistant content is
+    // exactly the path where an echoed secret could otherwise be persisted.
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(
+        JSON.stringify([
+          {
+            fact: 'The assistant said the API key is sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA.',
+            subject: 'setup',
+            factType: 'answer',
+            confidence: 0.95,
+          },
+          {
+            fact: 'The assistant recommended Roscioli for dinner in Rome.',
+            subject: 'rome',
+            factType: 'answer',
+            confidence: 0.9,
+          },
+        ]),
+      ),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    if (result.kind !== 'written') throw new Error('unreachable');
+    expect(result.rejected).toHaveLength(1);
+    expect(result.written).toHaveLength(1);
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.fm['summary']).toContain('Roscioli');
+  });
+});
+
+describe('EXTRACTION_PROMPT_SYSTEM — assistant-content contract', () => {
+  it('instructs capture of assistant-provided content with attribution', () => {
+    // Guard against a future prompt edit silently reverting the lever. The
+    // BEHAVIORAL proof is test/bench/repro-extract.ts (real Haiku, a few cents).
+    expect(EXTRACTION_PROMPT_SYSTEM).toMatch(/assistant/i);
+    expect(EXTRACTION_PROMPT_SYSTEM).toContain('answer');
+    expect(EXTRACTION_PROMPT_SYSTEM).toContain('The assistant');
+  });
+
+  it('bars speculation and preserves list order', () => {
+    expect(EXTRACTION_PROMPT_SYSTEM).toMatch(/speculat|hedge|guess/i);
+    expect(EXTRACTION_PROMPT_SYSTEM).toMatch(/order|numbered/i);
   });
 });

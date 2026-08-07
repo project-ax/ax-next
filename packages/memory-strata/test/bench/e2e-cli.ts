@@ -14,6 +14,7 @@ import { CostMeter, type Pricing } from './meter.js';
 import { BenchCache } from './cache.js';
 import { withRetry } from './retry.js';
 import { loadLongMemEvalSSamples } from './corpora/longmemeval-s.js';
+import { selectSamples, seedResumeRows, zeroMatchError } from './e2e-select.js';
 import { judgeAnswer, makeOpenRouterJudgeClient } from './judge.js';
 import { makeAnthropicAnswerClient, type E2EAnswerClient } from './e2e-answer.js';
 import { runE2EQuestion, DEFAULT_EXTRACTION_MODEL } from './e2e-driver.js';
@@ -46,6 +47,14 @@ export interface RunE2EOptions {
    * report is clearly labelled fixture-mode; the numbers are illustrative.
    */
   fixture?: boolean;
+  /**
+   * Opt-in question-type filter (e.g. `['single-session-assistant']`). Applied
+   * BEFORE `sample` slices, because the corpus is ordered in type blocks — see
+   * e2e-select.ts. Absent = no filter, i.e. today's behavior.
+   */
+  types?: string[];
+  /** Opt-in question-id filter, unioned with `types`. */
+  ids?: string[];
 }
 
 /**
@@ -97,7 +106,28 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
   }
 
   const cache = new BenchCache();
-  const samples = (await loadLongMemEvalSSamples(cache)).slice(0, opts.sample);
+  const samples = selectSamples({
+    samples: await loadLongMemEvalSSamples(cache),
+    limit: opts.sample,
+    ...(opts.types !== undefined ? { types: opts.types } : {}),
+    ...(opts.ids !== undefined ? { ids: opts.ids } : {}),
+  });
+  if (opts.types !== undefined || opts.ids !== undefined) {
+    // Integrity guard (review fix, 2026-07-29): a typo'd --types/--ids value
+    // silently selects 0 questions — spend $0 and still render a confident-
+    // looking (empty) report unless we refuse outright.
+    const zeroErr = zeroMatchError({ types: opts.types, ids: opts.ids, matched: samples.length });
+    if (zeroErr !== undefined) {
+      console.error(zeroErr);
+      return 1;
+    }
+    console.log(
+      `Filtered run: ${samples.length} question(s)` +
+        `${opts.types ? ` types=[${opts.types.join(',')}]` : ''}` +
+        `${opts.ids ? ` ids=[${opts.ids.join(',')}]` : ''}. ` +
+        'NOT comparable to a full-corpus overall score.',
+    );
+  }
 
   // The CostMeter guards the NEW work THIS run does. It does not re-seed spend
   // from a prior (resumed) run — the resume rows carry only per-question dollar
@@ -110,7 +140,10 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
   const answerClient = makeAnthropicAnswerClient(env.ANTHROPIC_API_KEY, { model: ANSWER_MODEL });
   const judge = makeOpenRouterJudgeClient(env.OPENROUTER_API_KEY, JUDGE_MODEL);
 
-  const rows: E2EReportRow[] = [...done.values()];
+  // Seeded ONLY from resume rows in THIS run's selection (review fix, 2026-07-29)
+  // — see seedResumeRows for why an unfiltered seed silently strands another
+  // run's rows into this one's per-type table.
+  const rows: E2EReportRow[] = seedResumeRows(done, samples);
   const skipped: Array<{ questionId: string; reason: string }> = [];
   let capExceeded = false;
   let abortError: string | null = null;
@@ -188,7 +221,10 @@ export async function runE2EMode(opts: RunE2EOptions): Promise<number> {
     answerModel: ANSWER_MODEL,
     extractionModel: DEFAULT_EXTRACTION_MODEL,
     judgeModel: JUDGE_MODEL,
-    command: `pnpm --filter @ax/memory-strata bench --mode e2e --sample ${opts.sample}`,
+    command:
+      `pnpm --filter @ax/memory-strata bench --mode e2e --sample ${opts.sample}` +
+      `${opts.types ? ` --types ${opts.types.join(',')}` : ''}` +
+      `${opts.ids ? ` --ids ${opts.ids.join(',')}` : ''}`,
     abortError,
     skipped,
     retrievalMode,
