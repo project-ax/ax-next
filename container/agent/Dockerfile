@@ -138,11 +138,11 @@ FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d
 RUN apt-get update \
  && apt-get install -y --no-install-recommends \
       ca-certificates=20230311+deb12u1 \
-      curl=7.88.1-10+deb12u14 \
+      curl=7.88.1-10+deb12u15 \
       tini=0.19.0-1+b3 \
       git=1:2.39.5-0+deb12u3 \
       python3=3.11.2-1+b1 \
-      xz-utils=5.4.1-1 \
+      xz-utils=5.4.1-1+deb12u1 \
  && rm -rf /var/lib/apt/lists/*
 # `git` is needed by the host pod's @ax/ipc-core workspace.materialize
 # handler (it runs `git bundle` to seed the runner's /agent dir at
