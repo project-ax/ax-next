@@ -23,6 +23,7 @@ overrides:
   '@grpc/grpc-js@>=1.14.0 <1.14.4': '>=1.14.4'
   form-data@>=4.0.0 <4.0.6: '>=4.0.6'
   js-yaml@<4.3.1: '>=4.3.1 <5.0.0'
+  nanoid@>=4.0.0 <5.1.16: '>=5.1.16 <6.0.0'
   postcss@<8.5.23: '>=8.5.23 <9.0.0'
   undici@>=7.0.0 <7.29.0: '>=7.29.0 <8.0.0'
   undici@>=6.0.0 <6.28.0: '>=6.28.0 <7.0.0'
@@ -6974,13 +6975,8 @@ packages:
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
     hasBin: true
 
-  nanoid@5.1.11:
-    resolution: {integrity: sha512-v+KEsUv2ps74PaSKv0gHTxTCgMXOIfBEbaqa6w6ISIGC7ZsvHN4N9oJ8d4cmf0n5oTzQz2SLmThbQWhjd/8eKg==}
-    engines: {node: ^18 || >=20}
-    hasBin: true
-
-  nanoid@5.1.9:
-    resolution: {integrity: sha512-ZUvP7KeBLe3OZ1ypw6dI/TzYJuvHP77IM4Ry73waSQTLn8/g8rpdjfyVAh7t1/+FjBtG4lCP42MEbDxOsRpBMw==}
+  nanoid@5.1.16:
+    resolution: {integrity: sha512-kVrnsrJqMR8+oLJnGEmSWw9BivK5mt7H3FZatVRjrc5wGqFYuBxX1yG7+A7Gi5AefkX6t/oCkizcQgpu0cY1dQ==}
     engines: {node: ^18 || >=20}
     hasBin: true
 
@@ -8524,7 +8520,7 @@ snapshots:
       '@assistant-ui/store': 0.2.13(@assistant-ui/tap@0.5.14(@types/react@19.2.14)(react@19.2.5))(@types/react@19.2.14)(react@19.2.5)
       '@assistant-ui/tap': 0.5.14(@types/react@19.2.14)(react@19.2.5)
       assistant-stream: 0.3.19
-      nanoid: 5.1.11
+      nanoid: 5.1.16
     optionalDependencies:
       '@types/react': 19.2.14
       assistant-cloud: 0.1.30
@@ -8579,7 +8575,7 @@ snapshots:
       '@radix-ui/react-use-escape-keydown': 1.1.1(@types/react@19.2.14)(react@19.2.5)
       assistant-cloud: 0.1.30
       assistant-stream: 0.3.19
-      nanoid: 5.1.11
+      nanoid: 5.1.16
       radix-ui: 1.4.3(@types/react-dom@19.2.3(@types/react@19.2.14))(@types/react@19.2.14)(react-dom@19.2.5(react@19.2.5))(react@19.2.5)
       react: 19.2.5
       react-dom: 19.2.5(react@19.2.5)
@@ -11298,13 +11294,13 @@ snapshots:
   assistant-stream@0.3.12:
     dependencies:
       '@standard-schema/spec': 1.1.0
-      nanoid: 5.1.9
+      nanoid: 5.1.16
       secure-json-parse: 4.1.0
 
   assistant-stream@0.3.19:
     dependencies:
       '@standard-schema/spec': 1.1.0
-      nanoid: 5.1.11
+      nanoid: 5.1.16
       secure-json-parse: 4.1.0
 
   async-lock@1.4.1: {}
@@ -13017,9 +13013,7 @@ snapshots:
 
   nanoid@3.3.18: {}
 
-  nanoid@5.1.11: {}
-
-  nanoid@5.1.9: {}
+  nanoid@5.1.16: {}
 
   nanostores@1.4.2: {}
 
