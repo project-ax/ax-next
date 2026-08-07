@@ -20,7 +20,7 @@
   "dependencies": {
     "@ax/core": "workspace:*",
     "better-auth": "^1.6.22",
-    "jose": "5.10.0",
+    "jose": "^6.2.8",
     "kysely": "0.28.17"
   },
   "devDependencies": {

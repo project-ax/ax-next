@@ -23,7 +23,7 @@
   },
   "dependencies": {
     "@ax/core": "workspace:*",
-    "js-yaml": "^4.1.0"
+    "js-yaml": "^4.3.1"
   },
   "devDependencies": {
     "@anthropic-ai/sdk": "^0.91.1",

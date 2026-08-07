@@ -75,7 +75,7 @@
     "jsdom": "^26.0.0",
     "lucide-react": "^0.474.0",
     "pg": "8.20.0",
-    "postcss": "^8.5.10",
+    "postcss": "^8.5.23",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "remark-gfm": "^4.0.1",
