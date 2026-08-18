@@ -1396,7 +1396,7 @@ Expected: PASS, all three cases.
 
 - [ ] **Step 6: Reduce `main.ts` to a loop**
 
-`main.ts` keeps: the `query()` options literal, the `for await` message loop, `system-prompt.ts`, the two MCP servers, `can-use-tool`, `tool-names`, `telemetry-env`, `turn-end-uuid`, and the two hook adapters. Its `main()` becomes:
+`main.ts` keeps: the `query()` options literal, the `for await` message loop, the two MCP servers, `can-use-tool`, `tool-names`, `telemetry-env`, `turn-end-uuid`, and the two hook adapters. Its `main()` becomes:
 
 ```ts
 export async function main(): Promise<number> {
