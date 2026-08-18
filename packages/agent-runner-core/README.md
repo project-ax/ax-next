@@ -13,12 +13,19 @@ Design source of truth: `docs/plans/2026-08-18-provider-agnostic-runner-design.m
 
 **This package must never import `@anthropic-ai/claude-agent-sdk`.** Anything
 that only makes sense against that SDK — its jsonl transcript layout, its
-`query()` options shape, its `CLAUDE_CONFIG_DIR` project-symlink convention —
-belongs in `@ax/agent-claude-sdk-runner`, not here. That is enforced
-mechanically, not just by convention: see
+`query()` options shape — belongs in `@ax/agent-claude-sdk-runner`, not here.
+That is enforced mechanically, not just by convention: see
 `src/__tests__/no-sdk-dependency.test.ts`, which fails the build if any file
 under `src/` imports or requires the SDK package, or if it appears in
 `package.json`'s `dependencies`.
+
+One residual leak: `installed-skills.ts`'s `materializeInstalledSkillsFromEnv`
+still reads the `CLAUDE_CONFIG_DIR` env var directly and throws if it's
+unset — that's the SDK's own convention for where it expects skills to be
+installed, carried into core as-is because this extraction's job is "no
+behaviour change," not "no SDK-specific config left." Generalizing it behind
+a config-dir seam both runners can supply is future work for the second
+runner, not solved here.
 
 ## The three seams
 

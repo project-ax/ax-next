@@ -181,8 +181,7 @@ import. Most of it moves wholesale; three files split along a seam.
 `local-dispatcher` (75), `proxy-ca-from-env` (69), `home-bin-env` (60), `tty-hint-env` (56),
 `tool-cache-env` (31), `commit-trace` (24), `identity-templates` (19).
 
-**Stays SDK-side** (1,009 LOC plus the loop): `system-prompt` (271, encodes SDK quirks
-such as `append` being a no-op on a custom string prompt), `host-mcp-server` (202),
+**Stays SDK-side** (738 LOC plus the loop): `host-mcp-server` (202),
 `sandbox-mcp-server` (124), `tool-names` (89, `DISABLED_BUILTINS` names SDK built-ins),
 `telemetry-env` (67), `can-use-tool` (65), `turn-end-uuid` (191).
 

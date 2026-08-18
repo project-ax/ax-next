@@ -33,8 +33,7 @@
     "@ax/ipc-protocol": "workspace:*",
     "@ax/tool-artifact-publish": "workspace:*",
     "@ax/tool-skill-propose": "workspace:*",
-    "undici": "^6.28.0",
-    "zod": "^3.23.8"
+    "undici": "^6.28.0"
   },
   "devDependencies": {
     "@types/node": "^25.6.0",
