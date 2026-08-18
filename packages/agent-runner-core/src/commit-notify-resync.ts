@@ -5,7 +5,7 @@ import {
   resyncBaselineAndReplay,
   rollbackToBaseline,
 } from './git-workspace.js';
-import { commitTrace } from '@ax/agent-runner-core';
+import { commitTrace } from './commit-trace.js';
 
 // ---------------------------------------------------------------------------
 // Shared commit-notify re-sync+retry helper.

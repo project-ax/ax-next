@@ -6,7 +6,6 @@ import {
   type SDKAssistantMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
-import { createInboxLoop } from './inbox-loop.js';
 import {
   createIpcClient,
   IpcRequestError,
@@ -22,17 +21,6 @@ import {
 import { createCanUseTool } from './can-use-tool.js';
 import { createHostMcpServer } from './host-mcp-server.js';
 import {
-  commitTurnAndBundle,
-  materializeWorkspace,
-  scaffoldSdkProjectsSymlink,
-  scaffoldWorkspaceGitignore,
-} from './git-workspace.js';
-import {
-  commitNotifyWithResync,
-  flushWorkspaceToHost,
-  type FlushOutcome,
-} from './commit-notify-resync.js';
-import {
   buildToolCacheEnv,
   buildHomeBinEnv,
   buildTtyHintEnv,
@@ -47,11 +35,19 @@ import {
   resolveMaterializedPath,
   uploadsBaseDir,
   writeProxyCaFromEnv,
+  createInboxLoop,
+  commitTurnAndBundle,
+  materializeWorkspace,
+  scaffoldSdkProjectsSymlink,
+  scaffoldWorkspaceGitignore,
+  commitNotifyWithResync,
+  flushWorkspaceToHost,
+  type FlushOutcome,
+  setupProxy,
 } from '@ax/agent-runner-core';
 import { buildTelemetryEnv } from './telemetry-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
-import { setupProxy } from './proxy-startup.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { buildSystemPrompt } from './prompt-engine.js';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';

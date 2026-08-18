@@ -8,7 +8,7 @@ import type {
   InboxLoop,
   InboxLoopEntry,
   InboxLoopOptions,
-} from '../inbox-loop.js';
+} from '@ax/agent-runner-core';
 import {
   afterEach,
   beforeEach,
@@ -74,17 +74,6 @@ vi.mock('@ax/ipc-protocol', async (importOriginal) => {
   };
 });
 
-vi.mock('../inbox-loop.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../inbox-loop.js')>();
-  return {
-    ...actual,
-    createInboxLoop: (opts: InboxLoopOptions): InboxLoop => {
-      createInboxLoopMock(opts);
-      return fakeInbox;
-    },
-  };
-});
-
 // Phase 3: the runner now spawns `git` for session-start materialize +
 // turn-end commit/bundle/rollback. Mocking these out keeps these unit
 // tests fast, hermetic, and free of stderr noise from git ops failing
@@ -94,13 +83,32 @@ vi.mock('../inbox-loop.js', async (importOriginal) => {
 // against real tempdirs + git binary; the workspace-commit-notify
 // handler tests cover the host-side bundler. This file focuses on
 // main.ts's control-flow shape (env → boot → SDK loop → events).
+//
+// TASK-3 runner-core move: `git-workspace.ts` now lives in `@ax/agent-runner-core`,
+// re-exported through its barrel (`materializeWorkspace`/`commitTurnAndBundle`)
+// AND consumed *internally* by that package's own `commit-notify-resync.ts`
+// (`advanceBaseline`/`rollbackToBaseline`/`resyncBaselineAndReplay`, never
+// exported through the barrel). Mocking the barrel alone would not reach that
+// internal call — commitNotifyWithResync is left "actual" below and would call
+// the real git ops. So this mock targets the package's *built* git-workspace
+// module directly (by relative path into its `dist/`, since `exports` in
+// agent-runner-core's package.json only publishes the barrel entry point) —
+// the same module identity the barrel re-export AND commit-notify-resync.ts's
+// internal `./git-workspace.js` import both resolve to, so ONE mock here
+// intercepts both call sites exactly as the pre-move single-package mock did.
+// NOTE (flagged for review): this reaches across the package boundary into a
+// sibling's build output, which is fragile if agent-runner-core's internal
+// file layout changes. Left as-is to keep the granular per-call assertions
+// (`advanceBaselineMock`, etc.) below working unmodified; a cleaner seam is a
+// follow-up.
 const materializeMock = vi.fn().mockResolvedValue({ baselineCommit: 'mock-baseline-oid' });
 const commitTurnAndBundleMock = vi.fn().mockResolvedValue(null);
 const advanceBaselineMock = vi.fn().mockResolvedValue(undefined);
 const rollbackToBaselineMock = vi.fn().mockResolvedValue(undefined);
 const resyncBaselineAndReplayMock = vi.fn().mockResolvedValue(undefined);
-vi.mock('../git-workspace.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../git-workspace.js')>();
+vi.mock('../../../agent-runner-core/dist/git-workspace.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('../../../agent-runner-core/dist/git-workspace.js')>();
   return {
     ...actual,
     materializeWorkspace: materializeMock,
@@ -111,13 +119,24 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
   };
 });
 
-// Mock ONLY the venv scaffold (it spawns `uv`) so these unit tests stay
-// hermetic. `buildPythonVenvEnv` / `pythonVenvDir` stay real via `...actual`
-// so the env-literal assertions below exercise the real env builder.
+// Mock the venv scaffold (it spawns `uv`) and `createInboxLoop` (session-start
+// inbox wiring) so these unit tests stay hermetic. `buildPythonVenvEnv` /
+// `pythonVenvDir` stay real via `...actual` so the env-literal assertions
+// below exercise the real env builder. `createInboxLoop` has no internal
+// cross-module calls within agent-runner-core, so — unlike git-workspace.js
+// above — mocking it at the barrel is sufficient; main.ts's only call site
+// goes through this same specifier.
 const scaffoldPythonVenvMock = vi.fn().mockResolvedValue(true);
 vi.mock('@ax/agent-runner-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@ax/agent-runner-core')>();
-  return { ...actual, scaffoldPythonVenv: scaffoldPythonVenvMock };
+  return {
+    ...actual,
+    scaffoldPythonVenv: scaffoldPythonVenvMock,
+    createInboxLoop: (opts: InboxLoopOptions): InboxLoop => {
+      createInboxLoopMock(opts);
+      return fakeInbox;
+    },
+  };
 });
 
 // Mock the transcript-flush seam. `readLastTurnUuid` defaults to undefined
