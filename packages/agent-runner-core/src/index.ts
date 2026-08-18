@@ -56,7 +56,6 @@ export {
   restoreTranscriptForResume,
   splitCompleteLines,
   hashBytes,
-  encodeProjectSlug,
 } from './transcript-delta.js';
 export type {
   TranscriptSource,

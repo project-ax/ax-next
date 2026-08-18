@@ -795,7 +795,7 @@ export async function main(): Promise<number> {
       try {
         const restored = await restoreTranscriptForResume({
           client,
-          workspaceRoot: env.workspaceRoot,
+          source: transcriptSource,
           sessionId: runnerSessionId,
         });
         resumable = restored.written;

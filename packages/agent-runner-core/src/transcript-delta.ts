@@ -1,6 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import type { IpcClient } from '@ax/ipc-protocol';
 
 // ---------------------------------------------------------------------------
@@ -40,6 +39,14 @@ export interface ShipDeltaResult extends TranscriptShipState {
 export interface TranscriptSource {
   /** Absolute path to the transcript bytes, or null when none exists yet. */
   locate(sessionId: string): Promise<string | null>;
+  /**
+   * Persist reconstructed transcript bytes for `sessionId` on resume. The
+   * SDK source writes them where the SDK expects (`.claude/projects/<slug>/`,
+   * creating the dir); a runner that owns its messages can load them into
+   * memory and write nothing. Core must never name the destination itself —
+   * that is exactly the SDK-private layout this seam exists to hide.
+   */
+  write(sessionId: string, bytes: Buffer): Promise<void>;
 }
 
 /**
@@ -181,55 +188,23 @@ async function resyncWholeFile(
 // Resume rebuild
 // ---------------------------------------------------------------------------
 
-// Mirror of the SDK's project-dir-slug length cap. A realpath longer than this
-// is truncated to SLUG_MAX chars + '-' + a stable hash of the FULL path, so two
-// long paths sharing a prefix don't collide. Verified against the vendored SDK
-// 0.2.119: `var P0=200`.
-const SLUG_MAX = 200;
-
 /**
- * Stable hash the SDK appends to an over-length slug. Byte-for-byte port of the
- * vendored SDK's `kB`/`gE` (a djb2-style 32-bit rolling hash, |0-truncated each
- * step, then `Math.abs(...).toString(36)`). Replicated exactly so a long
- * workspace path resolves to the SAME dir the SDK computes.
- */
-function slugHash(s: string): string {
-  let h = 0;
-  for (let i = 0; i < s.length; i++) {
-    h = ((h << 5) - h + s.charCodeAt(i)) | 0;
-  }
-  return Math.abs(h).toString(36);
-}
-
-/**
- * The SDK derives the project-dir name from `realpath(cwd)` by replacing each
- * non-alphanumeric character with `-` (so `/agent` → `-agent`,
- * `/var/lib/ax` → `-var-lib-ax`), truncating to 200 chars + a hash suffix when
- * longer. We mirror that exact transform so the dir we WRITE on resume is the
- * same one the SDK READS when it opens `query({ resume })`. Verified against the
- * vendored SDK 0.2.119 (`replace(/[^a-zA-Z0-9]/g,"-")` + the P0=200 cap).
- */
-export function encodeProjectSlug(cwdRealpath: string): string {
-  const dashed = cwdRealpath.replace(/[^a-zA-Z0-9]/g, '-');
-  if (dashed.length <= SLUG_MAX) return dashed;
-  return `${dashed.slice(0, SLUG_MAX)}-${slugHash(cwdRealpath)}`;
-}
-
-/**
- * Resume rebuild: fetch the reconstructed jsonl from the host store and write
- * it to `<workspaceRoot>/.claude/projects/<slug>/<sessionId>.jsonl` (the path
- * the SDK reads on `query({ resume })`). Returns the initial ship state for the
- * resumed session: `sentOffset` = the written byte length, `sentSeq` = the
- * host's max seq (the rows already durable). When the host has no transcript
- * (`maxSeq === 0`) NOTHING is written and `{ written: false }` is returned — the
- * caller demotes `resume` to a fresh start (the F2a guard).
+ * Resume rebuild: fetch the reconstructed jsonl from the host store and hand
+ * the bytes to `source.write` — where they land (a real path for the SDK
+ * source, nothing on disk at all for a runner that owns its own messages) is
+ * entirely the source's call; core never names a destination. Returns the
+ * initial ship state for the resumed session: `sentOffset` = the byte length
+ * handed off, `sentSeq` = the host's max seq (the rows already durable). When
+ * the host has no transcript (`maxSeq === 0`) `write` is never called and
+ * `{ written: false }` is returned — the caller demotes `resume` to a fresh
+ * start (the F2a guard).
  */
 export async function restoreTranscriptForResume(input: {
   client: IpcClient;
-  workspaceRoot: string;
+  source: TranscriptSource;
   sessionId: string;
 }): Promise<{ written: boolean; state: TranscriptShipState }> {
-  const { client, workspaceRoot, sessionId } = input;
+  const { client, source, sessionId } = input;
   const { path: tmpPath, bytes } = await client.callBinary(
     'session.get-transcript',
     {},
@@ -249,20 +224,7 @@ export async function restoreTranscriptForResume(input: {
     return { written: false, state: { sentOffset: 0, sentSeq: 0 } };
   }
 
-  // Compute the SDK's project-dir slug from realpath(cwd). cwd === workspaceRoot
-  // (the runner passes it to query({ cwd })). realpath resolves any symlink the
-  // SDK would also resolve.
-  let cwdReal: string;
-  try {
-    cwdReal = await realpath(workspaceRoot);
-  } catch {
-    cwdReal = workspaceRoot;
-  }
-  const slug = encodeProjectSlug(cwdReal);
-  const dir = join(workspaceRoot, '.claude', 'projects', slug);
-  await mkdir(dir, { recursive: true, mode: 0o755 });
-  const jsonlPath = join(dir, `${sessionId}.jsonl`);
-  await writeFile(jsonlPath, buf);
+  await source.write(sessionId, buf);
 
   // Thread the ship state from the COMPLETE lines only: `sentSeq` = the number
   // of complete `\n`-terminated lines (= host max seq), `sentOffset` = the bytes

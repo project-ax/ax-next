@@ -2766,10 +2766,15 @@ describe('main()', () => {
       const rc = await main();
       expect(rc).toBe(0);
 
-      // The guard ran via the DB-backed restore (the workspace root + bound id).
+      // The guard ran via the DB-backed restore (the bound id, against the
+      // workspace-scoped source main() constructs from env.workspaceRoot —
+      // the source now owns "which workspace", not a raw workspaceRoot arg).
       expect(restoreTranscriptForResumeMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceRoot: '/tmp/workspace',
+          source: expect.objectContaining({
+            locate: expect.any(Function),
+            write: expect.any(Function),
+          }),
           sessionId: 'sdk-sess-missing',
         }),
       );
@@ -2830,7 +2835,7 @@ describe('main()', () => {
       // sentOffset/sentSeq state across calls.
       expect(shipTranscriptDeltaMock).toHaveBeenCalled();
       const shipArg = shipTranscriptDeltaMock.mock.calls[0]![0] as {
-        workspaceRoot: string;
+        source: unknown;
         sessionId: string;
         state: { sentOffset: number; sentSeq: number };
       };
