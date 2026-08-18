@@ -937,9 +937,10 @@ add to the `ToolPolicy` interface:
 ```ts
   postToolUse(
     axToolName: string,
-    toolUseId: string,
+    toolUseId: string | undefined,
     toolInput: unknown,
     toolOutput: unknown,
+    isBuiltinTool: boolean,
   ): Promise<{ note?: string }>;
 ```
 
@@ -962,7 +963,14 @@ and add to the returned object:
       // (npx / curl / git / pip), so we drain its blocks right after it runs.
       // The proxy denies the CONNECT before the command returns, so by here
       // the block is already buffered.
-      if (opts.drainEgressBlocks === undefined || axToolName !== 'Bash') {
+      // The gate is (builtin AND named Bash), not name alone:
+      // classifySdkToolName strips the `mcp__<server>__` prefix, so an MCP
+      // tool named `Bash` would otherwise reach this drain too.
+      if (
+        opts.drainEgressBlocks === undefined ||
+        !isBuiltinTool ||
+        axToolName !== 'Bash'
+      ) {
         return {};
       }
       let hosts: string[] = [];
@@ -1036,7 +1044,7 @@ export function createPostToolUseHook(
 }
 ```
 
-Note the Bash gate moved into the policy but the `klass.kind === 'builtin'` half of the original condition is now implicit: only a built-in can be named `Bash`, since MCP tool names are prefix-stripped to their ax names and no MCP server registers a tool called `Bash`. If `post-tool-use.test.ts` has a case asserting an MCP tool named `Bash` is not drained, keep the explicit `klass.kind === 'builtin'` check in this adapter and pass a boolean through instead.
+The adapter passes `klass.kind === 'builtin'` as the policy's `isBuiltinTool`. Do NOT collapse the gate to the name alone: `classifySdkToolName` strips the `mcp__<server>__` prefix and returns the bare name, so an MCP tool named `Bash` on either in-process server would otherwise trigger the drain — a silent widening of the original `klass.kind === 'builtin' && klass.axName === 'Bash'` condition.
 
 Append to `packages/agent-runner-core/src/index.ts`:
 
