@@ -35,3 +35,11 @@ export type { FlushOutcome } from './commit-notify-resync.js';
 export { setupProxy } from './proxy-startup.js';
 export { createInboxLoop } from './inbox-loop.js';
 export type { InboxLoop, InboxLoopEntry, InboxLoopOptions } from './inbox-loop.js';
+export { materializeInstalledSkillsFromEnv, validateMcpEntry } from './installed-skills.js';
+export { buildSystemPrompt } from './prompt-engine.js';
+export { createSkillProposeExecutor } from './skill-propose-executor.js';
+export { createArtifactPublishExecutor } from './artifact-publish-executor.js';
+export type {
+  ArtifactPublishOutput,
+  CreateArtifactPublishExecutorOptions,
+} from './artifact-publish-executor.js';

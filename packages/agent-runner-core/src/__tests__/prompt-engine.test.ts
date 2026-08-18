@@ -9,7 +9,7 @@ import {
   readAxIdentityFiles,
   safetyFloorNote,
 } from '../prompt-engine.js';
-import { fallbackIdentityLine, bootstrapPreamble } from '@ax/agent-runner-core';
+import { fallbackIdentityLine, bootstrapPreamble } from '../identity-templates.js';
 import {
   capabilityHandoffNote,
   ephemeralScratchNote,

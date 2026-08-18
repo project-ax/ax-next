@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { validateMcpEntry } from '../installed-skills.js';
+import { validateMcpEntry } from '@ax/agent-runner-core';
 
 // ---------------------------------------------------------------------------
 // ARCH-11 — MCP-server-entry drift guard (runner side).

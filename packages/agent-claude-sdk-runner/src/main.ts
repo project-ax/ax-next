@@ -44,15 +44,15 @@ import {
   flushWorkspaceToHost,
   type FlushOutcome,
   setupProxy,
+  buildSystemPrompt,
+  createArtifactPublishExecutor,
+  createSkillProposeExecutor,
+  materializeInstalledSkillsFromEnv,
 } from '@ax/agent-runner-core';
 import { buildTelemetryEnv } from './telemetry-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
-import { buildSystemPrompt } from './prompt-engine.js';
-import { createArtifactPublishExecutor } from './artifact-publish-executor.js';
-import { createSkillProposeExecutor } from './skill-propose-executor.js';
-import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
 import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME } from './tool-names.js';
 import {
   hasResumableTranscript,
@@ -101,12 +101,14 @@ import { SKILL_PROPOSE_TOOL_NAME } from '@ax/tool-skill-propose';
 // perspective.
 // ---------------------------------------------------------------------------
 
-export { createArtifactPublishExecutor } from './artifact-publish-executor.js';
-export { createSkillProposeExecutor } from './skill-propose-executor.js';
+export {
+  createArtifactPublishExecutor,
+  createSkillProposeExecutor,
+} from '@ax/agent-runner-core';
 export type {
   ArtifactPublishOutput,
   CreateArtifactPublishExecutorOptions,
-} from './artifact-publish-executor.js';
+} from '@ax/agent-runner-core';
 
 export async function main(): Promise<number> {
   let env;

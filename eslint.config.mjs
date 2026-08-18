@@ -77,11 +77,19 @@
 // Path-scoped exceptions (rule turned off):
 //   packages/cli/**                 — the CLI loads plugins per ax.config.ts
 //   presets/**                      — meta-packages that reference plugins
-//   packages/agent-*-runner/**      — runner binaries legitimately wire
-//                                     sandbox-side tool-impl packages into
-//                                     the local dispatcher; they live on
-//                                     the sandbox side of the trust
-//                                     boundary and aren't host-side plugins
+//   packages/agent-*-runner/**,
+//   packages/agent-runner-core/**   — runner binaries (and the loop-agnostic
+//                                     machinery shared between them,
+//                                     @ax/agent-runner-core) legitimately wire
+//                                     sandbox-side tool-impl packages (e.g.
+//                                     @ax/tool-artifact-publish,
+//                                     @ax/tool-skill-propose) into the local
+//                                     dispatcher; they live on the sandbox
+//                                     side of the trust boundary and aren't
+//                                     host-side plugins. agent-runner-core
+//                                     doesn't match the `agent-*-runner` glob
+//                                     (it ends in `-core`, not `-runner`), so
+//                                     it needs its own line.
 //   packages/*/src/**/__tests__/**  — test files may reach into peer
 //                                     plugins to drive realistic integration
 //                                     scenarios. Glob covers nested test
@@ -199,6 +207,9 @@ export default tseslint.config(
       'packages/cli/**',
       'presets/**',
       'packages/agent-*-runner/**',
+      // agent-runner-core doesn't match the `agent-*-runner` glob above (it
+      // ends in `-core`, not `-runner`) — see the file-header note.
+      'packages/agent-runner-core/**',
       // Glob includes both `src/__tests__/**` and `src/**/__tests__/**` so
       // nested test dirs (e.g. workspace-git-http/src/server/__tests__/)
       // are covered.
