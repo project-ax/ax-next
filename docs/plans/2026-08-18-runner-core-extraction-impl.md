@@ -1092,10 +1092,18 @@ Co-Authored-By: Claude Opus 5 (1M context) <noreply@anthropic.com>"
 export interface TranscriptSource {
   /** Absolute path to the transcript bytes, or null when none exists yet. */
   locate(sessionId: string): Promise<string | null>;
+  /**
+   * Persist reconstructed transcript bytes for `sessionId` on resume. The
+   * SDK source writes them where the SDK expects (`.claude/projects/<slug>/`,
+   * creating the dir); a runner that owns its messages can load them into
+   * memory and write nothing. Core must never name the destination itself —
+   * that is exactly the SDK-private layout this seam exists to hide.
+   */
+  write(sessionId: string, bytes: Buffer): Promise<void>;
 }
 ```
 
-  plus the existing `shipTranscriptDelta`, `restoreTranscriptForResume`, `splitCompleteLines`, `hashBytes`, `encodeProjectSlug`, and the `TranscriptShipState` / `ShipDeltaResult` types, all moved verbatim. `shipTranscriptDelta` and `restoreTranscriptForResume` take a `source: TranscriptSource` in place of calling `locateJsonl` directly.
+  plus the existing `shipTranscriptDelta`, `restoreTranscriptForResume`, `splitCompleteLines`, `hashBytes`, and the `TranscriptShipState` / `ShipDeltaResult` types. `shipTranscriptDelta` takes a `source` and calls `source.locate(sessionId)` in place of `locateJsonl`. `restoreTranscriptForResume` does NOT locate anything — it computes a *write* target — so it calls `source.write(sessionId, buf)` instead of building the path itself. `encodeProjectSlug` and the `.claude/projects/<slug>` join move OUT to `jsonl-transcript-source.ts` with `locateJsonl`; core must retain no knowledge of the SDK's on-disk layout.
 
 - [ ] **Step 1: Move the module and its test**
 
