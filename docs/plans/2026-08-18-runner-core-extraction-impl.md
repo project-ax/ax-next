@@ -209,8 +209,8 @@ and to its `tsconfig.json` `references`:
 ```bash
 pnpm install
 pnpm build
-pnpm test --filter @ax/agent-runner-core
-pnpm test --filter @ax/agent-claude-sdk-runner
+pnpm --filter @ax/agent-runner-core test
+pnpm --filter @ax/agent-claude-sdk-runner test
 ```
 
 Expected: build succeeds; the three moved tests pass under `@ax/agent-runner-core`; the runner's remaining tests pass unchanged. If `tsc` reports an unresolved `@ax/agent-runner-core`, the root tsconfig reference or the runner's `references` entry is missing.
@@ -313,8 +313,8 @@ Rewrite each hit to import from `@ax/agent-runner-core`. Merge into the existing
 
 ```bash
 pnpm build
-pnpm test --filter @ax/agent-runner-core
-pnpm test --filter @ax/agent-claude-sdk-runner
+pnpm --filter @ax/agent-runner-core test
+pnpm --filter @ax/agent-claude-sdk-runner test
 ```
 
 Expected: all green, no test bodies edited.
@@ -385,8 +385,8 @@ export { createInboxLoop } from './inbox-loop.js';
 grep -rn "from './\(git-workspace\|commit-notify-resync\|proxy-startup\|inbox-loop\)\.js'" \
   packages/agent-claude-sdk-runner/src
 pnpm build
-pnpm test --filter @ax/agent-runner-core
-pnpm test --filter @ax/agent-claude-sdk-runner
+pnpm --filter @ax/agent-runner-core test
+pnpm --filter @ax/agent-claude-sdk-runner test
 ```
 
 Expected: all green. `proxy-startup.test.ts` asserts the `ENV_ALLOWLIST` contents — if it fails, an import rewrite changed a constant, which is a behaviour change and must be reverted.
@@ -536,7 +536,7 @@ function fakeClient(response: unknown) {
 
 describe('createToolPolicy', () => {
   it('forwards the re-rooted input to tool.pre-call and allows on accept', async () => {
-    const client = fakeClient({ verdict: 'accept' });
+    const client = fakeClient({ verdict: 'allow' });
     const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
 
     const verdict = await policy.preToolUse(
@@ -576,9 +576,14 @@ describe('createToolPolicy', () => {
   });
 
   it('prefers the host modifiedCall input over our re-rooted input', async () => {
+    // modifiedCall is a full ToolCallSchema — { id, name, input }.
     const client = fakeClient({
-      verdict: 'accept',
-      modifiedCall: { input: { file_path: '/permanent/a.pdf' } },
+      verdict: 'allow',
+      modifiedCall: {
+        id: 'call-4',
+        name: 'Read',
+        input: { file_path: '/permanent/a.pdf' },
+      },
     });
     const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
 
@@ -595,7 +600,7 @@ describe('createToolPolicy', () => {
 - [ ] **Step 2: Run it to confirm it fails**
 
 ```bash
-pnpm test --filter @ax/agent-runner-core -- tool-policy
+pnpm --filter @ax/agent-runner-core test -- tool-policy
 ```
 
 Expected: FAIL — cannot resolve `../tool-policy.js`.
@@ -713,7 +718,7 @@ export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
 - [ ] **Step 5: Run the policy test**
 
 ```bash
-pnpm test --filter @ax/agent-runner-core -- tool-policy
+pnpm --filter @ax/agent-runner-core test -- tool-policy
 ```
 
 Expected: PASS, all four cases.
@@ -808,7 +813,7 @@ grep -rn "resolveGovernedPaths\|resolveAttachmentPaths" packages/agent-claude-sd
 
 ```bash
 pnpm build
-pnpm test --filter @ax/agent-claude-sdk-runner -- pre-tool-use
+pnpm --filter @ax/agent-claude-sdk-runner test -- pre-tool-use
 ```
 
 Expected: PASS with **no edits to the test file**. This is the proof the refactor preserved behaviour — the existing suite covers the disabled-tool short-circuit, re-rooting, reject mapping, and `updatedInput` forwarding. If a case fails, the adapter's mapping is wrong; fix the adapter, not the test.
@@ -906,7 +911,7 @@ describe('ToolPolicy.postToolUse', () => {
 - [ ] **Step 2: Run it to confirm it fails**
 
 ```bash
-pnpm test --filter @ax/agent-runner-core -- tool-policy
+pnpm --filter @ax/agent-runner-core test -- tool-policy
 ```
 
 Expected: FAIL — `policy.postToolUse is not a function`.
@@ -973,7 +978,7 @@ with `import { buildEgressBlockNote } from './egress-note.js';` at the top.
 - [ ] **Step 5: Run the test**
 
 ```bash
-pnpm test --filter @ax/agent-runner-core -- tool-policy
+pnpm --filter @ax/agent-runner-core test -- tool-policy
 ```
 
 Expected: PASS, all six cases.
@@ -1040,8 +1045,8 @@ export { buildEgressBlockNote } from './egress-note.js';
 
 ```bash
 pnpm build
-pnpm test --filter @ax/agent-runner-core
-pnpm test --filter @ax/agent-claude-sdk-runner -- post-tool-use
+pnpm --filter @ax/agent-runner-core test
+pnpm --filter @ax/agent-claude-sdk-runner test -- post-tool-use
 ```
 
 Expected: PASS with no edits to `post-tool-use.test.ts` assertions.
@@ -1167,7 +1172,7 @@ describe('createJsonlTranscriptSource', () => {
 
 ```bash
 pnpm build
-pnpm test --filter @ax/agent-claude-sdk-runner -- jsonl-transcript-source
+pnpm --filter @ax/agent-claude-sdk-runner test -- jsonl-transcript-source
 ```
 
 Expected: PASS. If the first case fails on the path layout, read `locateJsonl`'s actual walk and fix the **test fixture** to match the real directory shape — this test documents existing behaviour, so the implementation is the source of truth here.
@@ -1315,7 +1320,7 @@ Define `fakeEnv()` in the test file to return the minimal `RunnerEnv` shape `rea
 - [ ] **Step 3: Run it to confirm it fails**
 
 ```bash
-pnpm test --filter @ax/agent-runner-core -- run-runner
+pnpm --filter @ax/agent-runner-core test -- run-runner
 ```
 
 Expected: FAIL — cannot resolve `../run-runner.js`.
@@ -1384,7 +1389,7 @@ Do not restructure the moved steps while moving them. If a step's ordering looks
 - [ ] **Step 5: Run the shell test**
 
 ```bash
-pnpm test --filter @ax/agent-runner-core -- run-runner
+pnpm --filter @ax/agent-runner-core test -- run-runner
 ```
 
 Expected: PASS, all three cases.
@@ -1406,7 +1411,7 @@ Keep the existing executor re-exports at the top of the file (Task 4, Step 3) �
 ```bash
 pnpm build
 pnpm test
-pnpm test --filter @ax/cli
+pnpm --filter @ax/cli test
 ```
 
 Expected: green, including `main.test.ts` with unmodified assertions and the CLI's canary acceptance test. This is the real gate on the extraction.
@@ -1460,7 +1465,11 @@ describe('@ax/agent-runner-core', () => {
     const offenders: string[] = [];
     for (const file of await tsFiles(SRC)) {
       const body = await readFile(file, 'utf8');
-      if (body.includes('@anthropic-ai/claude-agent-sdk')) offenders.push(file);
+      // Match real import/require sites, not prose. src/index.ts documents
+      // this very rule in a comment, so a substring match self-trips.
+      if (/(from|require\()\s*['"]@anthropic-ai\/claude-agent-sdk/.test(body)) {
+        offenders.push(file);
+      }
     }
     expect(offenders).toEqual([]);
   });
@@ -1479,7 +1488,7 @@ describe('@ax/agent-runner-core', () => {
 - [ ] **Step 2: Run it**
 
 ```bash
-pnpm test --filter @ax/agent-runner-core -- no-sdk-dependency
+pnpm --filter @ax/agent-runner-core test -- no-sdk-dependency
 ```
 
 Expected: PASS both cases.
