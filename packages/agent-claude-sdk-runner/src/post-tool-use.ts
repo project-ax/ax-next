@@ -62,9 +62,10 @@ export function createPostToolUseHook(
 
     const { note } = await policy.postToolUse(
       klass.axName,
-      toolUseID ?? '',
+      toolUseID,
       input.tool_input,
       input.tool_response,
+      klass.kind === 'builtin',
     );
 
     return note === undefined

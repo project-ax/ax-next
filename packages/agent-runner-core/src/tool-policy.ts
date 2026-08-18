@@ -26,9 +26,10 @@ export interface ToolPolicy {
   ): Promise<PreToolVerdict>;
   postToolUse(
     axToolName: string,
-    toolUseId: string,
+    toolUseId: string | undefined,
     toolInput: unknown,
     toolOutput: unknown,
+    isBuiltinTool: boolean,
   ): Promise<{ note?: string }>;
 }
 
@@ -93,12 +94,15 @@ export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
       return { decision: 'allow' };
     },
 
-    async postToolUse(axToolName, toolUseId, toolInput, toolOutput) {
+    async postToolUse(axToolName, toolUseId, toolInput, toolOutput, isBuiltinTool) {
       // Fire-and-forget. Failures here must not stall the turn loop; dropping
       // an audit event is recoverable, a hung turn is not.
+      // The original (pre-split) hook did `toolUseID ?? ''` — no id generation
+      // on the post-call path, unlike preToolUse's `?? idGen()`. Preserve that
+      // coercion here so the wire payload is unchanged.
       void opts.client
         .event('event.tool-post-call', {
-          call: { id: toolUseId, name: axToolName, input: toolInput },
+          call: { id: toolUseId ?? '', name: axToolName, input: toolInput },
           output: toolOutput,
         })
         .catch(() => {
@@ -108,8 +112,15 @@ export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
       // Bash is the one tool through which the agent initiates sandbox egress
       // (npx / curl / git / pip), so we drain its blocks right after it runs.
       // The proxy denies the CONNECT before the command returns, so by here
-      // the block is already buffered.
-      if (opts.drainEgressBlocks === undefined || axToolName !== 'Bash') {
+      // the block is already buffered. Gate on builtin-AND-Bash, not name
+      // alone: classifySdkToolName strips the `mcp__<server>__` prefix before
+      // this policy ever sees the name, so an MCP tool literally named `Bash`
+      // would otherwise reach this drain too.
+      if (
+        opts.drainEgressBlocks === undefined ||
+        !isBuiltinTool ||
+        axToolName !== 'Bash'
+      ) {
         return {};
       }
       let hosts: string[] = [];
