@@ -1,0 +1,26 @@
+{
+  "name": "@ax/agent-runner-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "files": ["dist"],
+  "scripts": { "build": "tsc --build", "test": "vitest run", "test:watch": "vitest" },
+  "dependencies": {
+    "@ax/agent-identity-templates": "workspace:*",
+    "@ax/core": "workspace:*",
+    "@ax/credential-proxy-bridge": "workspace:*",
+    "@ax/ipc-protocol": "workspace:*",
+    "@ax/tool-artifact-publish": "workspace:*",
+    "@ax/tool-skill-propose": "workspace:*",
+    "undici": "^6.28.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.4"
+  }
+}

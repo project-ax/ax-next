@@ -37,11 +37,13 @@ import {
   flushWorkspaceToHost,
   type FlushOutcome,
 } from './commit-notify-resync.js';
-import { commitTrace } from './commit-trace.js';
 import { createLocalDispatcher } from './local-dispatcher.js';
-import { buildToolCacheEnv } from './tool-cache-env.js';
-import { buildHomeBinEnv } from './home-bin-env.js';
-import { buildTtyHintEnv } from './tty-hint-env.js';
+import {
+  buildToolCacheEnv,
+  buildHomeBinEnv,
+  buildTtyHintEnv,
+  commitTrace,
+} from '@ax/agent-runner-core';
 import { buildTelemetryEnv } from './telemetry-env.js';
 import { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
 import { createPostToolUseHook } from './post-tool-use.js';

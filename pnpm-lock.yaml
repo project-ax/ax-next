@@ -103,6 +103,9 @@ importers:
       '@ax/agent-identity-templates':
         specifier: workspace:*
         version: link:../agent-identity-templates
+      '@ax/agent-runner-core':
+        specifier: workspace:*
+        version: link:../agent-runner-core
       '@ax/core':
         specifier: workspace:*
         version: link:../core
@@ -155,6 +158,43 @@ importers:
         version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.2.1(@types/node@25.6.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
 
   packages/agent-identity-templates:
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.2.1(@types/node@25.6.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
+
+  packages/agent-runner-core:
+    dependencies:
+      '@ax/agent-identity-templates':
+        specifier: workspace:*
+        version: link:../agent-identity-templates
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+      '@ax/credential-proxy-bridge':
+        specifier: workspace:*
+        version: link:../credential-proxy-bridge
+      '@ax/ipc-protocol':
+        specifier: workspace:*
+        version: link:../ipc-protocol
+      '@ax/tool-artifact-publish':
+        specifier: workspace:*
+        version: link:../tool-artifact-publish
+      '@ax/tool-skill-propose':
+        specifier: workspace:*
+        version: link:../tool-skill-propose
+      undici:
+        specifier: ^6.28.0
+        version: 6.28.0
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^25.6.0
