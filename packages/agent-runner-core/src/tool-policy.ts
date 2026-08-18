@@ -21,7 +21,7 @@ export interface ToolPolicy {
   preToolUse(
     axToolName: string,
     toolInput: unknown,
-    toolUseId: string,
+    toolUseId: string | undefined,
   ): Promise<PreToolVerdict>;
 }
 
@@ -51,7 +51,7 @@ export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
       try {
         const raw = await opts.client.call('tool.pre-call', {
           call: {
-            id: toolUseId || idGen(),
+            id: toolUseId ?? idGen(),
             name: axToolName,
             input: resolved.input,
           },

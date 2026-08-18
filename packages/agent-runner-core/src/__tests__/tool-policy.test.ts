@@ -65,4 +65,43 @@ describe('createToolPolicy', () => {
       updatedInput: { file_path: '/permanent/a.pdf' },
     });
   });
+
+  // The original (pre-split) hook did `toolUseID ?? idGen()`, which sends the
+  // literal '' as the call id when the SDK hands us an empty string — it only
+  // generates a fresh id for `undefined`. These two cases pin that behaviour
+  // so a `||` (or similar) regression that treats '' as "missing" is caught.
+  it('sends the literal empty string as call.id, not a generated id', async () => {
+    const client = fakeClient({ verdict: 'allow' });
+    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+
+    await policy.preToolUse('Bash', { command: 'ls' }, '');
+
+    expect((client as never as { call: ReturnType<typeof vi.fn> }).call)
+      .toHaveBeenCalledWith('tool.pre-call', {
+        call: { id: '', name: 'Bash', input: { command: 'ls' } },
+      });
+  });
+
+  it('generates a call.id when toolUseId is undefined', async () => {
+    const client = fakeClient({ verdict: 'allow' });
+    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+
+    await policy.preToolUse('Bash', { command: 'ls' }, undefined);
+
+    const call = (client as never as { call: ReturnType<typeof vi.fn> }).call;
+    expect(call).toHaveBeenCalledTimes(1);
+    const sentId = (call.mock.calls[0]![1] as { call: { id: string } }).call.id;
+    expect(sentId).not.toBe('');
+    expect(typeof sentId).toBe('string');
+    expect(sentId.length).toBeGreaterThan(0);
+  });
+
+  it('denies (fail-closed) when the host response fails schema validation', async () => {
+    const client = fakeClient({ verdict: 'not-a-real-verdict' });
+    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+
+    const verdict = await policy.preToolUse('Bash', { command: 'ls' }, 'call-5');
+
+    expect(verdict.decision).toBe('deny');
+  });
 });
