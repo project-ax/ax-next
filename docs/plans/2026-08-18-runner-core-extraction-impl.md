@@ -508,7 +508,7 @@ export interface ToolPolicy {
   preToolUse(
     axToolName: string,
     toolInput: unknown,
-    toolUseId: string,
+    toolUseId: string | undefined,
   ): Promise<PreToolVerdict>;
 }
 
@@ -649,7 +649,7 @@ export interface ToolPolicy {
   preToolUse(
     axToolName: string,
     toolInput: unknown,
-    toolUseId: string,
+    toolUseId: string | undefined,
   ): Promise<PreToolVerdict>;
 }
 
@@ -679,7 +679,7 @@ export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
       try {
         const raw = await opts.client.call('tool.pre-call', {
           call: {
-            id: toolUseId || idGen(),
+            id: toolUseId ?? idGen(),
             name: axToolName,
             input: resolved.input,
           },
@@ -760,10 +760,13 @@ export function createPreToolUseHook(
       };
     }
 
+    // Pass toolUseID through as `string | undefined` — coercing to '' would
+    // make the policy's `?? idGen()` fire on an empty-string id, which the
+    // original hook did NOT do (it used `??`, so '' was sent verbatim).
     const verdict = await policy.preToolUse(
       klass.axName,
       input.tool_input,
-      toolUseID ?? '',
+      toolUseID,
     );
 
     if (verdict.decision === 'deny') {
