@@ -5,7 +5,13 @@
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "exports": { ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" } },
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "default": "./dist/index.js" },
+    "./internal/git-workspace.js": {
+      "types": "./dist/git-workspace.d.ts",
+      "default": "./dist/git-workspace.js"
+    }
+  },
   "files": ["dist"],
   "scripts": { "build": "tsc --build", "test": "vitest run", "test:watch": "vitest" },
   "dependencies": {

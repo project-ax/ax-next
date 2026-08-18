@@ -90,25 +90,20 @@ vi.mock('@ax/ipc-protocol', async (importOriginal) => {
 // (`advanceBaseline`/`rollbackToBaseline`/`resyncBaselineAndReplay`, never
 // exported through the barrel). Mocking the barrel alone would not reach that
 // internal call — commitNotifyWithResync is left "actual" below and would call
-// the real git ops. So this mock targets the package's *built* git-workspace
-// module directly (by relative path into its `dist/`, since `exports` in
-// agent-runner-core's package.json only publishes the barrel entry point) —
-// the same module identity the barrel re-export AND commit-notify-resync.ts's
-// internal `./git-workspace.js` import both resolve to, so ONE mock here
-// intercepts both call sites exactly as the pre-move single-package mock did.
-// NOTE (flagged for review): this reaches across the package boundary into a
-// sibling's build output, which is fragile if agent-runner-core's internal
-// file layout changes. Left as-is to keep the granular per-call assertions
-// (`advanceBaselineMock`, etc.) below working unmodified; a cleaner seam is a
-// follow-up.
+// the real git ops. So this mock targets an explicitly-declared internal
+// subpath (`@ax/agent-runner-core/internal/git-workspace.js`, see that
+// package's `exports` map) rather than the public barrel — the same module
+// identity the barrel re-export AND commit-notify-resync.ts's internal
+// `./git-workspace.js` import both resolve to, so ONE mock here intercepts
+// both call sites exactly as the pre-move single-package mock did.
 const materializeMock = vi.fn().mockResolvedValue({ baselineCommit: 'mock-baseline-oid' });
 const commitTurnAndBundleMock = vi.fn().mockResolvedValue(null);
 const advanceBaselineMock = vi.fn().mockResolvedValue(undefined);
 const rollbackToBaselineMock = vi.fn().mockResolvedValue(undefined);
 const resyncBaselineAndReplayMock = vi.fn().mockResolvedValue(undefined);
-vi.mock('../../../agent-runner-core/dist/git-workspace.js', async (importOriginal) => {
+vi.mock('@ax/agent-runner-core/internal/git-workspace.js', async (importOriginal) => {
   const actual =
-    await importOriginal<typeof import('../../../agent-runner-core/dist/git-workspace.js')>();
+    await importOriginal<typeof import('@ax/agent-runner-core/internal/git-workspace.js')>();
   return {
     ...actual,
     materializeWorkspace: materializeMock,
