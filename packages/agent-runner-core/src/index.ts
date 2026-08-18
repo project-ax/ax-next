@@ -51,3 +51,15 @@ export type {
 } from './tool-policy.js';
 export { resolveGovernedPaths, resolveAttachmentPaths } from './governed-paths.js';
 export { buildEgressBlockNote } from './egress-note.js';
+export {
+  shipTranscriptDelta,
+  restoreTranscriptForResume,
+  splitCompleteLines,
+  hashBytes,
+  encodeProjectSlug,
+} from './transcript-delta.js';
+export type {
+  TranscriptSource,
+  TranscriptShipState,
+  ShipDeltaResult,
+} from './transcript-delta.js';

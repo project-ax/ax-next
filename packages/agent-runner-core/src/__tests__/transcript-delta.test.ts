@@ -7,7 +7,7 @@ import {
   readFileSync,
   rmSync,
 } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IpcClient } from '@ax/ipc-protocol';
@@ -17,6 +17,7 @@ import {
   restoreTranscriptForResume,
   shipTranscriptDelta,
   splitCompleteLines,
+  type TranscriptSource,
 } from '../transcript-delta.js';
 
 function writeJsonl(root: string, sessionId: string, body: string): string {
@@ -25,6 +26,25 @@ function writeJsonl(root: string, sessionId: string, body: string): string {
   const file = join(projDir, `${sessionId}.jsonl`);
   writeFileSync(file, body);
   return file;
+}
+
+// `locateJsonl`'s real readdir-walk now lives behind `createJsonlTranscriptSource`
+// in @ax/agent-claude-sdk-runner (covered by jsonl-transcript-source.test.ts
+// there) — core can't depend on that downstream package, so this fixture-local
+// fake just resolves the fixed `my-proj` path `writeJsonl` above writes to,
+// preserving these tests' existing "not found" vs "found" behavior verbatim.
+function fakeSource(root: string): TranscriptSource {
+  return {
+    locate: async (sessionId: string) => {
+      const candidate = join(root, '.claude', 'projects', 'my-proj', `${sessionId}.jsonl`);
+      try {
+        await stat(candidate);
+        return candidate;
+      } catch {
+        return null;
+      }
+    },
+  };
 }
 
 describe('splitCompleteLines', () => {
@@ -126,7 +146,7 @@ describe('shipTranscriptDelta', () => {
 
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         state: { sentOffset: 0, sentSeq: 0 },
       });
@@ -164,7 +184,7 @@ describe('shipTranscriptDelta', () => {
 
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         state: { sentOffset: 0, sentSeq: 0 },
       });
@@ -189,7 +209,7 @@ describe('shipTranscriptDelta', () => {
 
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         // Already shipped l1 (offset after 'l1\n', seq 1).
         state: { sentOffset: 'l1\n'.length, sentSeq: 1 },
@@ -220,7 +240,7 @@ describe('shipTranscriptDelta', () => {
 
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         state: { sentOffset: 5, sentSeq: 1 },
       });
@@ -252,7 +272,7 @@ describe('shipTranscriptDelta', () => {
       const client = fakeClient({ callBinaryUpload: callBinaryUpload as never });
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         state: { sentOffset: 'rewritten\n'.length, sentSeq: 1 },
       });
@@ -281,7 +301,7 @@ describe('shipTranscriptDelta', () => {
       const client = fakeClient({ callBinaryUpload: callBinaryUpload as never });
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         state: { sentOffset: 'l1\n'.length, sentSeq: 1 },
       });
@@ -307,7 +327,7 @@ describe('shipTranscriptDelta', () => {
       const client = fakeClient({});
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'missing',
         state: { sentOffset: 0, sentSeq: 0 },
       });

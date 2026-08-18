@@ -48,6 +48,9 @@ import {
   createArtifactPublishExecutor,
   createSkillProposeExecutor,
   materializeInstalledSkillsFromEnv,
+  restoreTranscriptForResume,
+  shipTranscriptDelta,
+  type TranscriptShipState,
 } from '@ax/agent-runner-core';
 import { buildTelemetryEnv } from './telemetry-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
@@ -59,11 +62,7 @@ import {
   readLastTurnUuid,
   waitForTranscriptUuid,
 } from './turn-end-uuid.js';
-import {
-  restoreTranscriptForResume,
-  shipTranscriptDelta,
-  type TranscriptShipState,
-} from './transcript-delta.js';
+import { createJsonlTranscriptSource } from './jsonl-transcript-source.js';
 import { ARTIFACT_PUBLISH_TOOL_NAME } from '@ax/tool-artifact-publish';
 import { SKILL_PROPOSE_TOOL_NAME } from '@ax/tool-skill-propose';
 
@@ -120,6 +119,12 @@ export async function main(): Promise<number> {
     );
     return 2;
   }
+
+  // TASK-67 split (runner-core extraction): the delta/prefixHash/resync
+  // protocol lives in @ax/agent-runner-core; locating the SDK's jsonl (its
+  // private cwd-slug encoding) is SDK-specific and hides behind this source,
+  // constructed once and threaded into every `shipTranscriptDelta` call.
+  const transcriptSource = createJsonlTranscriptSource(env.workspaceRoot);
 
   // TASK-149: in TCP-Service mode (production gVisor — no hostPath), the
   // host can't mount the proxy MITM CA into this pod, so it ships the PEM as
@@ -279,7 +284,7 @@ export async function main(): Promise<number> {
     // `.claude/projects/` is gitignored (scaffoldWorkspaceGitignore above),
     // so the jsonl never rides a commit/bundle anymore. Its purpose now is
     // PATH LOCALITY for the out-of-git transcript pipeline: the per-turn
-    // delta-ship + uuid-wait readers (transcript-delta.ts `locateJsonl`,
+    // delta-ship + uuid-wait readers (jsonl-transcript-source.ts `locateJsonl`,
     // turn-end-uuid.ts) readdir-walk `<workspaceRoot>/.claude/projects`, and
     // resume (`restoreTranscriptForResume`) WRITES the rebuilt jsonl there
     // for the SDK to read back via this same symlink. Remove it and both the
@@ -1534,7 +1539,7 @@ export async function main(): Promise<number> {
           if (transcriptSessionId !== null && conversationId !== null) {
             const shipped = await shipTranscriptDelta({
               client,
-              workspaceRoot: env.workspaceRoot,
+              source: transcriptSource,
               sessionId: transcriptSessionId,
               state: transcriptShipState,
             });
@@ -1718,7 +1723,7 @@ export async function main(): Promise<number> {
       if (transcriptSessionId !== null && conversationId !== null) {
         const shipped = await shipTranscriptDelta({
           client,
-          workspaceRoot: env.workspaceRoot,
+          source: transcriptSource,
           sessionId: transcriptSessionId,
           state: transcriptShipState,
         });

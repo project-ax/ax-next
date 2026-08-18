@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { IpcClient } from '@ax/ipc-protocol';
 
@@ -31,33 +31,15 @@ export interface ShipDeltaResult extends TranscriptShipState {
 }
 
 /**
- * Locate the runner-native jsonl for `sessionId`. The SDK writes to
- * `${HOME}/.claude/projects/<cwd-slug>/<sessionId>.jsonl`; we don't know the
- * slug a priori (it's the SDK's encoding of realpath(cwd)), so we readdir-walk
- * `<workspaceRoot>/.claude/projects` and pick the dir holding the file. Returns
- * null when no such file exists yet. (Same walk as `turn-end-uuid.ts`.)
+ * Where a runner's transcript bytes live. The SDK runner hunts for the SDK's
+ * jsonl (readdir-walking its private cwd-slug encoding — see
+ * `createJsonlTranscriptSource` in `@ax/agent-claude-sdk-runner`); a runner
+ * that owns its own messages has no such problem and can serialize them
+ * itself. The delta/prefixHash protocol below is identical either way.
  */
-export async function locateJsonl(
-  workspaceRoot: string,
-  sessionId: string,
-): Promise<string | null> {
-  const projectsDir = join(workspaceRoot, '.claude', 'projects');
-  let entries: string[];
-  try {
-    entries = await readdir(projectsDir);
-  } catch {
-    return null;
-  }
-  for (const slug of entries) {
-    const candidate = join(projectsDir, slug, `${sessionId}.jsonl`);
-    try {
-      await stat(candidate);
-      return candidate;
-    } catch {
-      continue;
-    }
-  }
-  return null;
+export interface TranscriptSource {
+  /** Absolute path to the transcript bytes, or null when none exists yet. */
+  locate(sessionId: string): Promise<string | null>;
 }
 
 /**
@@ -104,12 +86,12 @@ export function hashBytes(buf: Buffer): string {
  */
 export async function shipTranscriptDelta(input: {
   client: IpcClient;
-  workspaceRoot: string;
+  source: TranscriptSource;
   sessionId: string;
   state: TranscriptShipState;
 }): Promise<ShipDeltaResult> {
-  const { client, workspaceRoot, sessionId, state } = input;
-  const jsonlPath = await locateJsonl(workspaceRoot, sessionId);
+  const { client, source, sessionId, state } = input;
+  const jsonlPath = await source.locate(sessionId);
   if (jsonlPath === null) {
     return { ...state, outcome: 'no-jsonl' };
   }

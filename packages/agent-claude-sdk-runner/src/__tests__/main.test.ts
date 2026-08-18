@@ -122,6 +122,23 @@ vi.mock('@ax/agent-runner-core/internal/git-workspace.js', async (importOriginal
 // above — mocking it at the barrel is sufficient; main.ts's only call site
 // goes through this same specifier.
 const scaffoldPythonVenvMock = vi.fn().mockResolvedValue(true);
+// TASK-67 (runner-core extraction): shipTranscriptDelta / restoreTranscriptForResume
+// moved into @ax/agent-runner-core's barrel alongside everything else this suite
+// mocks at that specifier. These are wire-shape tests (no real jsonl on disk), so
+// we mock the functions here — their real fs/IPC behavior is covered in
+// transcript-delta.test.ts (now in @ax/agent-runner-core). Defaults model the
+// happy path: the per-turn ship 'appended' (so the F2a bind fires), and resume
+// rebuilds a real transcript ('written: true'). The F2a-guard test overrides
+// restore to 'written: false'.
+const shipTranscriptDeltaMock = vi.fn().mockResolvedValue({
+  outcome: 'appended',
+  sentOffset: 10,
+  sentSeq: 1,
+});
+const restoreTranscriptForResumeMock = vi.fn().mockResolvedValue({
+  written: true,
+  state: { sentOffset: 10, sentSeq: 1 },
+});
 vi.mock('@ax/agent-runner-core', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@ax/agent-runner-core')>();
   return {
@@ -131,6 +148,8 @@ vi.mock('@ax/agent-runner-core', async (importOriginal) => {
       createInboxLoopMock(opts);
       return fakeInbox;
     },
+    shipTranscriptDelta: shipTranscriptDeltaMock,
+    restoreTranscriptForResume: restoreTranscriptForResumeMock,
   };
 });
 
@@ -155,30 +174,6 @@ vi.mock('../turn-end-uuid.js', async (importOriginal) => {
     readLastTurnUuid: readLastTurnUuidMock,
     waitForTranscriptUuid: waitForTranscriptUuidMock,
     hasResumableTranscript: hasResumableTranscriptMock,
-  };
-});
-
-// TASK-67: the resume-transcript delta-ship + resume rebuild. These are
-// wire-shape tests (no real jsonl on disk), so we mock the module — its real
-// fs/IPC behavior is covered in transcript-delta.test.ts. Defaults model the
-// happy path: the per-turn ship 'appended' (so the F2a bind fires), and resume
-// rebuilds a real transcript ('written: true'). The F2a-guard test overrides
-// restore to 'written: false'.
-const shipTranscriptDeltaMock = vi.fn().mockResolvedValue({
-  outcome: 'appended',
-  sentOffset: 10,
-  sentSeq: 1,
-});
-const restoreTranscriptForResumeMock = vi.fn().mockResolvedValue({
-  written: true,
-  state: { sentOffset: 10, sentSeq: 1 },
-});
-vi.mock('../transcript-delta.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../transcript-delta.js')>();
-  return {
-    ...actual,
-    shipTranscriptDelta: shipTranscriptDeltaMock,
-    restoreTranscriptForResume: restoreTranscriptForResumeMock,
   };
 });
 
