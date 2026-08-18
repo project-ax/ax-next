@@ -19,6 +19,7 @@ import {
   commitTrace,
   buildPythonVenvEnv,
   runRunner,
+  scaffoldSdkProjectsSymlink,
   type Loop,
   type LoopContext,
   type RunnerDeps,
@@ -85,7 +86,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
     flushWorkspaceForHostTool,
     proxyStartup,
     pythonVenvReady,
-    sdkHome,
+    // The shell calls it `homeDir`; inside this loop it IS the SDK subprocess's
+    // HOME + cwd, which is what every comment below calls it.
+    homeDir: sdkHome,
     systemPrompt,
     resumeSessionId,
   } = deps;
@@ -750,6 +753,44 @@ export async function main(): Promise<number> {
     // materialized workspace's jsonl.
     hasLocalTranscript: (env, sessionId) =>
       hasResumableTranscript(env.workspaceRoot, sessionId),
+    afterMaterialize: async (env) => {
+      // Redirect the SDK's turn-transcript jsonl writes into the workspace.
+      // Phase 0 set CLAUDE_CONFIG_DIR OUTSIDE /agent so the `'user'`
+      // skill-discovery source could be distinct from the `'project'` source,
+      // but the SDK ALSO derives `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
+      // <sid>.jsonl` from the same var — the transcript writes moved with it.
+      // A filesystem-level redirect (a symlink at `$CLAUDE_CONFIG_DIR/projects`
+      // pointing into `<workspaceRoot>/.claude/projects`) lands those writes
+      // inside the workspace.
+      //
+      // This symlink stays LOAD-BEARING after TASK-67/70 — but NOT for git:
+      // `.claude/projects/` is gitignored (the shell's .gitignore scaffold runs
+      // just before this), so the jsonl never rides a commit/bundle anymore.
+      // Its purpose now is PATH LOCALITY for the out-of-git transcript
+      // pipeline: the per-turn delta-ship + uuid-wait readers
+      // (jsonl-transcript-source.ts `locateJsonl`, turn-end-uuid.ts)
+      // readdir-walk `<workspaceRoot>/.claude/projects`, and resume
+      // (`restoreTranscriptForResume`) WRITES the rebuilt jsonl there for the
+      // SDK to read back via this same symlink. Remove it and both the
+      // delta-ship and resume go blind. See scaffoldSdkProjectsSymlink's doc
+      // and the (a)/(b) comment block around the query() env literal above.
+      //
+      // Guard: CLAUDE_CONFIG_DIR is sandbox-injected. If a future sandbox
+      // provider doesn't set it, fall through to the pre-Phase-0 behavior
+      // (the HOME redirect sends the SDK's jsonls to `<HOME>/.claude/
+      // projects/...` which IS inside workspaceRoot already).
+      const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
+      if (claudeConfigDir) {
+        await scaffoldSdkProjectsSymlink(env.workspaceRoot, claudeConfigDir);
+      }
+    },
+    // Phase 2: feature-detect whether the pinned claude-agent-sdk supports
+    // `document` content blocks. The SDK exposes its accepted block types via
+    // a type-only export, so we probe by environment variable for now. Pinning
+    // the SDK version makes this a static answer in practice; we keep the
+    // override so a future SDK bump doesn't silently regress. Conservative
+    // default: false. Override via env for early access.
+    supportsDocumentBlocks: process.env.AX_SDK_DOCUMENT_BLOCKS === '1',
   });
 }
 

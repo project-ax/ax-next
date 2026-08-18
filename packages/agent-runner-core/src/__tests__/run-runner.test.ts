@@ -131,6 +131,40 @@ describe('runRunner', () => {
     expect(fakeClient.event).not.toHaveBeenCalled();
   });
 
+  it('returns 2, closes the client, and fires NO chat-end when boot fails AFTER the client exists', async () => {
+    // The load-bearing half of the contract. A bootstrap failure past the IPC
+    // client (here: tool.list) must NOT emit event.chat-end — the orchestrator's
+    // `handle.exited` watcher synthesizes the terminated outcome, so chat:end
+    // fires exactly once per agent:invoke. An extra chat-end here would double it.
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-1',
+          agentId: 'a-1',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'claude-sonnet-4-7',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'tool.list') throw new Error('host returned 503');
+      throw new Error(`unexpected call: ${action}`);
+    });
+
+    const makeLoop = vi.fn();
+    const code = await runRunner(makeLoop, seams(fakeEnv));
+
+    expect(code).toBe(2);
+    expect(makeLoop).not.toHaveBeenCalled();
+    expect(fakeClient.close).toHaveBeenCalledTimes(1);
+    expect(fakeClient.event).not.toHaveBeenCalled();
+  });
+
   it('returns the loop exit code on a normal run', async () => {
     const loop: Loop = { run: vi.fn().mockResolvedValue(0) };
     const code = await runRunner(() => loop, seams(fakeEnv));
@@ -143,6 +177,21 @@ describe('runRunner', () => {
     expect((chatEnds[0]?.[1] as { outcome: { kind: string } }).outcome.kind).toBe(
       'complete',
     );
+  });
+
+  it('carries a loop-supplied reason into the terminated chat-end outcome', async () => {
+    const loop: Loop = {
+      run: vi.fn().mockResolvedValue({ code: 1, reason: 'provider stream closed' }),
+    };
+    const code = await runRunner(() => loop, seams(fakeEnv));
+    expect(code).toBe(1);
+    const chatEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.chat-end',
+    );
+    expect(chatEnds).toHaveLength(1);
+    expect(chatEnds[0]?.[1]).toMatchObject({
+      outcome: { kind: 'terminated', reason: 'provider stream closed' },
+    });
   });
 
   it('returns 1 when the loop throws', async () => {

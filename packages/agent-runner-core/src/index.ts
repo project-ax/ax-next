@@ -68,6 +68,7 @@ export type {
   EndTurnInput,
   Loop,
   LoopContext,
+  LoopOutcome,
   LoopUserMessage,
   RunnerDeps,
   RunnerSeams,

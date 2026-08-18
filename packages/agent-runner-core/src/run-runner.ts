@@ -27,7 +27,6 @@ import { readRunnerEnv, type RunnerEnv } from './env.js';
 import {
   commitTurnAndBundle,
   materializeWorkspace,
-  scaffoldSdkProjectsSymlink,
   scaffoldWorkspaceGitignore,
 } from './git-workspace.js';
 import { createInboxLoop } from './inbox-loop.js';
@@ -114,7 +113,7 @@ export interface RunnerDeps {
    * The agent's WORKING frame — the durable per-agent user-files mount when
    * one was wired, else the governed workspace root. Loops use it for cwd/HOME.
    */
-  sdkHome: string;
+  homeDir: string;
   /** The system prompt the file-based prompt-engine composed for this session. */
   systemPrompt: string;
   /**
@@ -195,9 +194,17 @@ export interface LoopContext {
   setTranscriptSessionId(sessionId: string): void;
 }
 
+/**
+ * What a loop resolves with. A bare number is the exit code with no diagnostic
+ * (0 = drained normally). The object form carries the `reason` that lands in
+ * the `event.chat-end` terminated outcome — use it whenever a loop stops
+ * abnormally without throwing, so the host sees why instead of 'unknown'.
+ */
+export type LoopOutcome = number | { code: number; reason: string };
+
 export interface Loop {
   /** Runs until the inbox cancels or the loop errors. Resolves the exit code. */
-  run(ctx: LoopContext): Promise<number>;
+  run(ctx: LoopContext): Promise<LoopOutcome>;
 }
 
 export interface RunnerSeams {
@@ -212,6 +219,18 @@ export interface RunnerSeams {
    * non-conversation sessions (no host transcript store to ask).
    */
   hasLocalTranscript: (env: RunnerEnv, sessionId: string) => Promise<boolean>;
+  /**
+   * Loop-specific scaffolding for the freshly-materialized workspace, run
+   * inside the materialize step (so a failure is bootstrap-fatal) and after
+   * the .gitignore scaffold. Where a loop redirects its own transcript writes
+   * into the governed tier.
+   */
+  afterMaterialize?: (env: RunnerEnv) => Promise<void>;
+  /**
+   * Whether the loop's provider accepts `document` content blocks in a user
+   * message. Drives attachment translation. Defaults to false.
+   */
+  supportsDocumentBlocks?: boolean;
   /** Defaults to readRunnerEnv. Injected so the shell is testable. */
   readEnv?: () => RunnerEnv;
 }
@@ -389,33 +408,13 @@ async function runRunnerInner(
     // bundled back to the host. Must run AFTER the clone for the same reason
     // as the skill-surface scaffold (it appends to any baseline .gitignore).
     await scaffoldWorkspaceGitignore(env.workspaceRoot);
-    // Redirect the SDK's turn-transcript jsonl writes into the workspace.
-    // Phase 0 set CLAUDE_CONFIG_DIR OUTSIDE /agent so the `'user'`
-    // skill-discovery source could be distinct from the `'project'` source,
-    // but the SDK ALSO derives `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
-    // <sid>.jsonl` from the same var — the transcript writes moved with it.
-    // A filesystem-level redirect (a symlink at `$CLAUDE_CONFIG_DIR/projects`
-    // pointing into `<workspaceRoot>/.claude/projects`) lands those writes
-    // inside the workspace.
-    //
-    // This symlink stays LOAD-BEARING after TASK-67/70 — but NOT for git:
-    // `.claude/projects/` is gitignored (scaffoldWorkspaceGitignore above),
-    // so the jsonl never rides a commit/bundle anymore. Its purpose now is
-    // PATH LOCALITY for the out-of-git transcript pipeline: the per-turn
-    // delta-ship + uuid-wait readers (jsonl-transcript-source.ts `locateJsonl`,
-    // turn-end-uuid.ts) readdir-walk `<workspaceRoot>/.claude/projects`, and
-    // resume (`restoreTranscriptForResume`) WRITES the rebuilt jsonl there
-    // for the SDK to read back via this same symlink. Remove it and both the
-    // delta-ship and resume go blind. See scaffoldSdkProjectsSymlink's doc
-    // and the (a)/(b) comment block around the loop's query() env literal.
-    //
-    // Guard: CLAUDE_CONFIG_DIR is sandbox-injected. If a future sandbox
-    // provider doesn't set it, fall through to the pre-Phase-0 behavior
-    // (HOME redirect in the loop sends the SDK's jsonls to `<HOME>/.claude/
-    // projects/...` which IS inside workspaceRoot already).
-    const claudeConfigDir = process.env.CLAUDE_CONFIG_DIR;
-    if (claudeConfigDir) {
-      await scaffoldSdkProjectsSymlink(env.workspaceRoot, claudeConfigDir);
+    // Whatever the loop needs scaffolded into the freshly-cloned tree before
+    // it starts — typically redirecting the loop's own transcript writes into
+    // the workspace. Loop-shaped by nature (it knows where its SDK writes), so
+    // it is a seam; it runs INSIDE this try, so a failure is bootstrap-fatal
+    // exactly like the clone itself.
+    if (seams.afterMaterialize !== undefined) {
+      await seams.afterMaterialize(env);
     }
   } catch (err) {
     process.stderr.write(
@@ -640,13 +639,10 @@ async function runRunnerInner(
 
   const inbox = createInboxLoop({ client });
 
-  // Phase 2: feature-detect whether the pinned SDK supports `document`
-  // content blocks. The SDK exposes its accepted block types via a type-only
-  // export, so we probe by environment variable for now. Pinning the SDK
-  // version makes this a static answer in practice; we keep the override so a
-  // future SDK bump doesn't silently regress. Conservative default: false.
-  // Override via env for early access.
-  const SUPPORTS_DOCUMENT_BLOCKS = process.env.AX_SDK_DOCUMENT_BLOCKS === '1';
+  // Phase 2: whether the loop's provider accepts `document` content blocks.
+  // A per-loop capability (each SDK pin answers differently), so the loop
+  // declares it; conservative default false.
+  const SUPPORTS_DOCUMENT_BLOCKS = seams.supportsDocumentBlocks ?? false;
 
   // TASK-68 + TASK-78: the attachment-translation reader fetches an attachment's
   // bytes to inline (text) or pass through (image/pdf) to the loop. Uploads left
@@ -904,19 +900,19 @@ async function runRunnerInner(
   //     incoherent.
   async function bindRunnerSessionIfNeeded(): Promise<void> {
     const convId = conversationId;
-    const sdkSessionId = transcriptSessionId;
+    const loopSessionId = transcriptSessionId;
     if (
       runnerSessionIdSent ||
       convId === null ||
       runnerSessionId !== null ||
-      sdkSessionId === null
+      loopSessionId === null
     ) {
       return;
     }
     try {
       await client.call('conversation.store-runner-session', {
         conversationId: convId,
-        runnerSessionId: sdkSessionId,
+        runnerSessionId: loopSessionId,
       });
       runnerSessionIdSent = true;
     } catch (err) {
@@ -953,7 +949,7 @@ async function runRunnerInner(
   // prompt-engine's `${workspaceRoot}/.ax` reads, uploads materialization, and —
   // critically — the PreToolUse re-rooter's TARGET, so `.ax/**`+`.claude/**`
   // self-edits land back on /agent even though cwd is now ungoverned NFS (§14).
-  const sdkHome = env.userFilesRoot ?? env.workspaceRoot;
+  const homeDir = env.userFilesRoot ?? env.workspaceRoot;
 
   // Conversational-agent-identity: the file-based prompt-engine reads
   // `${workspaceRoot}/.ax/` and composes the system prompt for THIS turn —
@@ -981,7 +977,7 @@ async function runRunnerInner(
     // directory. When it differs from the governed root, the workspace note
     // states both so the model resolves shared `.ax/uploads/…` files under the
     // governed root, not the new cwd.
-    sdkHome,
+    homeDir,
   );
 
   // Turn boundary (Phase 3). Replaces the legacy PostToolUse-based
@@ -1204,21 +1200,35 @@ async function runRunnerInner(
     },
   };
 
+  // Constructed OUTSIDE the try below on purpose. Building the loop (its MCP
+  // servers, hook adapters, provider client) is the tail of bootstrap, not the
+  // run: a throw here must stay bootstrap-fatal — propagate, exit 2, no
+  // `event.chat-end` — exactly as it did when these constructions sat inline in
+  // the runner binary's boot sequence.
+  const loop = makeLoop({
+    client,
+    env,
+    agentConfig,
+    tools,
+    localDispatcher,
+    flushWorkspaceForHostTool,
+    proxyStartup,
+    pythonVenvReady,
+    homeDir,
+    systemPrompt: composedSystemPrompt,
+    resumeSessionId,
+  });
+
   try {
-    const loop = makeLoop({
-      client,
-      env,
-      agentConfig,
-      tools,
-      localDispatcher,
-      flushWorkspaceForHostTool,
-      proxyStartup,
-      pythonVenvReady,
-      sdkHome,
-      systemPrompt: composedSystemPrompt,
-      resumeSessionId,
-    });
-    exitCode = await loop.run(ctx);
+    const outcome = await loop.run(ctx);
+    if (typeof outcome === 'number') {
+      exitCode = outcome;
+    } else {
+      exitCode = outcome.code;
+      // A loop that stops abnormally without throwing still owes the host a
+      // reason; without this the chat-end outcome degrades to 'unknown'.
+      terminatedReason = outcome.reason;
+    }
 
     // Final commit: the loop's SDK subprocess writes the assistant response to
     // the transcript AFTER yielding `result` to Node.js. The per-turn commit in
