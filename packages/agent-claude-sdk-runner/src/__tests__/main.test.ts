@@ -153,6 +153,27 @@ vi.mock('@ax/agent-runner-core', async (importOriginal) => {
   };
 });
 
+// TranscriptSource split (runner-core extraction fix round 2): main() builds
+// ONE `transcriptSource` from `env.workspaceRoot` and threads it into every
+// shipTranscriptDelta/restoreTranscriptForResume call. shipTranscriptDelta /
+// restoreTranscriptForResume are mocked wholesale above, so nothing exercises
+// the source's real locate()/write() closures in this suite — but a
+// regression that built the source from the wrong root (or diverged the
+// restore source from the ship sources) would be invisible without this spy.
+// Wraps the real factory (harmless — its output is never invoked here) so we
+// can assert what root main() actually passed.
+const createJsonlTranscriptSourceSpy = vi.fn();
+vi.mock('../jsonl-transcript-source.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../jsonl-transcript-source.js')>();
+  return {
+    ...actual,
+    createJsonlTranscriptSource: (workspaceRoot: string) => {
+      createJsonlTranscriptSourceSpy(workspaceRoot);
+      return actual.createJsonlTranscriptSource(workspaceRoot);
+    },
+  };
+});
+
 // Mock the transcript-flush seam. `readLastTurnUuid` defaults to undefined
 // (the fake AX_WORKSPACE_ROOT has no jsonl — matching real behavior).
 // `waitForTranscriptUuid` defaults to a fast no-op (true = landed) so tests
@@ -396,6 +417,7 @@ beforeEach(() => {
     written: true,
     state: { sentOffset: 10, sentSeq: 1 },
   });
+  createJsonlTranscriptSourceSpy.mockClear();
   scaffoldPythonVenvMock.mockReset();
   scaffoldPythonVenvMock.mockResolvedValue(true);
   createIpcClientMock = vi.fn();
@@ -2769,6 +2791,11 @@ describe('main()', () => {
       // The guard ran via the DB-backed restore (the bound id, against the
       // workspace-scoped source main() constructs from env.workspaceRoot —
       // the source now owns "which workspace", not a raw workspaceRoot arg).
+      // Two checks restore the original claim: the call got a well-shaped
+      // source (below), AND that source was built from the right root (the
+      // spy on createJsonlTranscriptSource — otherwise a source of the right
+      // SHAPE but the wrong workspace would pass silently).
+      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith('/tmp/workspace');
       expect(restoreTranscriptForResumeMock).toHaveBeenCalledWith(
         expect.objectContaining({
           source: expect.objectContaining({
