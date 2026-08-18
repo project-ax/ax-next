@@ -105,3 +105,45 @@ describe('createToolPolicy', () => {
     expect(verdict.decision).toBe('deny');
   });
 });
+
+describe('ToolPolicy.postToolUse', () => {
+  function policyWith(drain: () => Promise<string[]>) {
+    const client = { call: vi.fn(), event: vi.fn().mockResolvedValue(undefined) };
+    const policy = createToolPolicy({
+      client: client as never,
+      workspaceRoot: '/agent',
+      drainEgressBlocks: drain,
+    });
+    return { policy, client };
+  }
+
+  it('fires event.tool-post-call with the call and output', async () => {
+    const { policy, client } = policyWith(async () => []);
+    await policy.postToolUse('Read', 'call-1', { file_path: '/agent/a.ts' }, 'contents');
+    expect(client.event).toHaveBeenCalledWith('event.tool-post-call', {
+      call: { id: 'call-1', name: 'Read', input: { file_path: '/agent/a.ts' } },
+      output: 'contents',
+    });
+  });
+
+  it('returns a remediation note when Bash hit blocked hosts', async () => {
+    const { policy } = policyWith(async () => ['registry.npmjs.org']);
+    const out = await policy.postToolUse('Bash', 'call-2', { command: 'npm i' }, '');
+    expect(out.note).toContain('registry.npmjs.org');
+  });
+
+  it('does not drain for non-Bash tools', async () => {
+    const drain = vi.fn().mockResolvedValue(['registry.npmjs.org']);
+    const { policy } = policyWith(drain);
+    await expect(policy.postToolUse('Read', 'call-3', {}, '')).resolves.toEqual({});
+    expect(drain).not.toHaveBeenCalled();
+  });
+
+  it('degrades to silent when the drain throws', async () => {
+    const { policy } = policyWith(async () => {
+      throw new Error('proxy gone');
+    });
+    await expect(policy.postToolUse('Bash', 'call-4', { command: 'ls' }, ''))
+      .resolves.toEqual({});
+  });
+});

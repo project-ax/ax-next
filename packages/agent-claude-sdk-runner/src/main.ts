@@ -1192,6 +1192,12 @@ export async function main(): Promise<number> {
               hooks: [
                 createPostToolUseHook({
                   client,
+                  // Only preToolUse (re-rooting) reads workspaceRoot today, but
+                  // CreatePostToolUseHookOptions is now the shared
+                  // CreateToolPolicyOptions type, so it's a required field here
+                  // too — pass the same governed root as the PreToolUse hook
+                  // above for consistency even though postToolUse ignores it.
+                  workspaceRoot: env.workspaceRoot,
                   // Agent-visible egress-block note: after a Bash tool, drain the
                   // hosts this session was allowlist-blocked on and inject a
                   // remediation note. The host returns `{ hosts: [] }` when no

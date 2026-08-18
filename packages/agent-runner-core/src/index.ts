@@ -50,3 +50,4 @@ export type {
   CreateToolPolicyOptions,
 } from './tool-policy.js';
 export { resolveGovernedPaths, resolveAttachmentPaths } from './governed-paths.js';
+export { buildEgressBlockNote } from './egress-note.js';

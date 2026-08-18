@@ -12,6 +12,7 @@ import {
   type ToolPreCallResponse,
 } from '@ax/ipc-protocol';
 import { resolveGovernedPaths } from './governed-paths.js';
+import { buildEgressBlockNote } from './egress-note.js';
 
 export type PreToolVerdict =
   | { decision: 'deny'; reason: string }
@@ -23,6 +24,12 @@ export interface ToolPolicy {
     toolInput: unknown,
     toolUseId: string | undefined,
   ): Promise<PreToolVerdict>;
+  postToolUse(
+    axToolName: string,
+    toolUseId: string,
+    toolInput: unknown,
+    toolOutput: unknown,
+  ): Promise<{ note?: string }>;
 }
 
 export interface CreateToolPolicyOptions {
@@ -33,6 +40,8 @@ export interface CreateToolPolicyOptions {
   broaden?: boolean;
   recognizedRoots?: readonly string[];
   idGen?: () => string;
+  /** Drain the hosts this session was allowlist-blocked on since the last call. */
+  drainEgressBlocks?: () => Promise<string[]>;
 }
 
 export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
@@ -82,6 +91,35 @@ export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
         return { decision: 'allow', updatedInput: resolved.input };
       }
       return { decision: 'allow' };
+    },
+
+    async postToolUse(axToolName, toolUseId, toolInput, toolOutput) {
+      // Fire-and-forget. Failures here must not stall the turn loop; dropping
+      // an audit event is recoverable, a hung turn is not.
+      void opts.client
+        .event('event.tool-post-call', {
+          call: { id: toolUseId, name: axToolName, input: toolInput },
+          output: toolOutput,
+        })
+        .catch(() => {
+          /* swallow — fire-and-forget */
+        });
+
+      // Bash is the one tool through which the agent initiates sandbox egress
+      // (npx / curl / git / pip), so we drain its blocks right after it runs.
+      // The proxy denies the CONNECT before the command returns, so by here
+      // the block is already buffered.
+      if (opts.drainEgressBlocks === undefined || axToolName !== 'Bash') {
+        return {};
+      }
+      let hosts: string[] = [];
+      try {
+        hosts = await opts.drainEgressBlocks();
+      } catch {
+        // A best-effort note must never break the turn loop — degrade to silent.
+        hosts = [];
+      }
+      return hosts.length > 0 ? { note: buildEgressBlockNote(hosts) } : {};
     },
   };
 }
