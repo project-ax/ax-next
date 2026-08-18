@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { ToolDescriptor } from '@ax/ipc-protocol';
-import { createLocalDispatcher } from '../local-dispatcher.js';
+import { createLocalDispatcher } from '@ax/agent-runner-core';
 import { buildSandboxToolEntries } from '../sandbox-mcp-server.js';
 
 const sampleSandboxDescriptor: ToolDescriptor = {

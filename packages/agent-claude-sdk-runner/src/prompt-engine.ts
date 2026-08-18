@@ -58,7 +58,7 @@ import { operationalNotes, type SdkSystemPrompt } from './system-prompt.js';
 // the shared pure-data templates package so the runner imports it rather than
 // duplicating the line (Invariant #4). `displayName` is host-controlled (the
 // agent row's display name), never model/user/tool input.
-import { fallbackIdentityLine, bootstrapPreamble } from './identity-templates.js';
+import { fallbackIdentityLine, bootstrapPreamble } from '@ax/agent-runner-core';
 
 /** Per-file hard cap on an `.ax/` identity file. A file larger than this is
  * skipped whole (logged), never truncated mid-content — identity is never

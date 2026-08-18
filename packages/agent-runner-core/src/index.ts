@@ -10,3 +10,17 @@ export { buildHomeBinEnv } from './home-bin-env.js';
 export { buildTtyHintEnv } from './tty-hint-env.js';
 export { buildToolCacheEnv } from './tool-cache-env.js';
 export { commitTrace } from './commit-trace.js';
+export { readRunnerEnv, MissingEnvError } from './env.js';
+export type { RunnerEnv } from './env.js';
+export { createLocalDispatcher } from './local-dispatcher.js';
+export type { LocalDispatcher } from './local-dispatcher.js';
+export { writeProxyCaFromEnv } from './proxy-ca-from-env.js';
+export { translateContentBlocks } from './attachment-translation.js';
+export type { WorkspaceReader } from './attachment-translation.js';
+export {
+  materializeUploads,
+  resolveMaterializedPath,
+  uploadsBaseDir,
+} from './materialize-uploads.js';
+export { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
+export * from './identity-templates.js';

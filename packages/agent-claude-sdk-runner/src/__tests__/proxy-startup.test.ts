@@ -4,8 +4,8 @@ import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { setupProxy, withProxyToken } from '../proxy-startup.js';
-import type { RunnerEnv } from '../env.js';
-import { MissingEnvError } from '../env.js';
+import type { RunnerEnv } from '@ax/agent-runner-core';
+import { MissingEnvError } from '@ax/agent-runner-core';
 
 // Snapshot a few env vars setupProxy mutates so the test suite stays
 // deterministic — tests run sequentially in vitest by default but

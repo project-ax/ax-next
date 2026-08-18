@@ -19,12 +19,7 @@ import {
   type WorkspaceReadRequest,
   type WorkspaceReadResponse,
 } from '@ax/ipc-protocol';
-import {
-  translateContentBlocks,
-  type WorkspaceReader,
-} from './attachment-translation.js';
 import { createCanUseTool } from './can-use-tool.js';
-import { readRunnerEnv } from './env.js';
 import { createHostMcpServer } from './host-mcp-server.js';
 import {
   commitTurnAndBundle,
@@ -37,20 +32,26 @@ import {
   flushWorkspaceToHost,
   type FlushOutcome,
 } from './commit-notify-resync.js';
-import { createLocalDispatcher } from './local-dispatcher.js';
 import {
   buildToolCacheEnv,
   buildHomeBinEnv,
   buildTtyHintEnv,
   commitTrace,
+  translateContentBlocks,
+  type WorkspaceReader,
+  readRunnerEnv,
+  createLocalDispatcher,
+  buildPythonVenvEnv,
+  scaffoldPythonVenv,
+  materializeUploads,
+  resolveMaterializedPath,
+  uploadsBaseDir,
+  writeProxyCaFromEnv,
 } from '@ax/agent-runner-core';
 import { buildTelemetryEnv } from './telemetry-env.js';
-import { buildPythonVenvEnv, scaffoldPythonVenv } from './python-venv.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
-import { materializeUploads, resolveMaterializedPath, uploadsBaseDir } from './materialize-uploads.js';
 import { setupProxy } from './proxy-startup.js';
-import { writeProxyCaFromEnv } from './proxy-ca-from-env.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
 import { buildSystemPrompt } from './prompt-engine.js';
 import { createArtifactPublishExecutor } from './artifact-publish-executor.js';

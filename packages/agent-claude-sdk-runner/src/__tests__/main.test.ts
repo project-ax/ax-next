@@ -115,8 +115,8 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
 // hermetic. `buildPythonVenvEnv` / `pythonVenvDir` stay real via `...actual`
 // so the env-literal assertions below exercise the real env builder.
 const scaffoldPythonVenvMock = vi.fn().mockResolvedValue(true);
-vi.mock('../python-venv.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../python-venv.js')>();
+vi.mock('@ax/agent-runner-core', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@ax/agent-runner-core')>();
   return { ...actual, scaffoldPythonVenv: scaffoldPythonVenvMock };
 });
 

@@ -27,7 +27,7 @@
 
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MissingEnvError, type RunnerEnv } from './env.js';
+import { MissingEnvError, type RunnerEnv } from '@ax/agent-runner-core';
 
 // Path to the CJS bootstrap that the SDK subprocess loads via
 // NODE_OPTIONS=--require. Resolved relative to THIS file so it survives
