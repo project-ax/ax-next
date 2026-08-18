@@ -62,3 +62,14 @@ export type {
   TranscriptShipState,
   ShipDeltaResult,
 } from './transcript-delta.js';
+export type { ProxyStartup } from './proxy-startup.js';
+export { runRunner } from './run-runner.js';
+export type {
+  EndTurnInput,
+  Loop,
+  LoopContext,
+  LoopUserMessage,
+  RunnerDeps,
+  RunnerSeams,
+  StreamChunk,
+} from './run-runner.js';

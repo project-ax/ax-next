@@ -116,11 +116,16 @@ vi.mock('@ax/agent-runner-core/internal/git-workspace.js', async (importOriginal
 
 // Mock the venv scaffold (it spawns `uv`) and `createInboxLoop` (session-start
 // inbox wiring) so these unit tests stay hermetic. `buildPythonVenvEnv` /
-// `pythonVenvDir` stay real via `...actual` so the env-literal assertions
-// below exercise the real env builder. `createInboxLoop` has no internal
-// cross-module calls within agent-runner-core, so — unlike git-workspace.js
-// above — mocking it at the barrel is sufficient; main.ts's only call site
-// goes through this same specifier.
+// `pythonVenvDir` stay real (a separate module) so the env-literal assertions
+// below exercise the real env builder.
+//
+// TASK-67 runner-core extraction (task 8): the boot sequence these back now
+// runs inside @ax/agent-runner-core's own `run-runner.ts`, which imports its
+// siblings by relative path (`./python-venv.js`, …) — a mock on the package
+// BARREL would never be reached, exactly like the git-workspace case above.
+// So each of these targets the explicitly-declared internal subpath (see that
+// package's `exports` map), which is the same module identity the barrel
+// re-export and run-runner.ts's relative import both resolve to.
 const scaffoldPythonVenvMock = vi.fn().mockResolvedValue(true);
 // TASK-67 (runner-core extraction): shipTranscriptDelta / restoreTranscriptForResume
 // moved into @ax/agent-runner-core's barrel alongside everything else this suite
@@ -139,15 +144,27 @@ const restoreTranscriptForResumeMock = vi.fn().mockResolvedValue({
   written: true,
   state: { sentOffset: 10, sentSeq: 1 },
 });
-vi.mock('@ax/agent-runner-core', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('@ax/agent-runner-core')>();
+vi.mock('@ax/agent-runner-core/internal/python-venv.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@ax/agent-runner-core/internal/python-venv.js')>();
+  return { ...actual, scaffoldPythonVenv: scaffoldPythonVenvMock };
+});
+vi.mock('@ax/agent-runner-core/internal/inbox-loop.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@ax/agent-runner-core/internal/inbox-loop.js')>();
   return {
     ...actual,
-    scaffoldPythonVenv: scaffoldPythonVenvMock,
     createInboxLoop: (opts: InboxLoopOptions): InboxLoop => {
       createInboxLoopMock(opts);
       return fakeInbox;
     },
+  };
+});
+vi.mock('@ax/agent-runner-core/internal/transcript-delta.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@ax/agent-runner-core/internal/transcript-delta.js')>();
+  return {
+    ...actual,
     shipTranscriptDelta: shipTranscriptDeltaMock,
     restoreTranscriptForResume: restoreTranscriptForResumeMock,
   };

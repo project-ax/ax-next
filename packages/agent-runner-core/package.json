@@ -10,6 +10,18 @@
     "./internal/git-workspace.js": {
       "types": "./dist/git-workspace.d.ts",
       "default": "./dist/git-workspace.js"
+    },
+    "./internal/python-venv.js": {
+      "types": "./dist/python-venv.d.ts",
+      "default": "./dist/python-venv.js"
+    },
+    "./internal/inbox-loop.js": {
+      "types": "./dist/inbox-loop.d.ts",
+      "default": "./dist/inbox-loop.js"
+    },
+    "./internal/transcript-delta.js": {
+      "types": "./dist/transcript-delta.d.ts",
+      "default": "./dist/transcript-delta.js"
     }
   },
   "files": ["dist"],
