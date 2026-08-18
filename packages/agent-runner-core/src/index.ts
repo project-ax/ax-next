@@ -43,3 +43,10 @@ export type {
   ArtifactPublishOutput,
   CreateArtifactPublishExecutorOptions,
 } from './artifact-publish-executor.js';
+export { createToolPolicy } from './tool-policy.js';
+export type {
+  ToolPolicy,
+  PreToolVerdict,
+  CreateToolPolicyOptions,
+} from './tool-policy.js';
+export { resolveGovernedPaths, resolveAttachmentPaths } from './governed-paths.js';

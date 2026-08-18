@@ -1,10 +1,7 @@
+import { resolveAttachmentPaths, resolveGovernedPaths } from '@ax/agent-runner-core';
 import type { IpcClient } from '@ax/ipc-protocol';
 import { describe, expect, it } from 'vitest';
-import {
-  createPreToolUseHook,
-  resolveAttachmentPaths,
-  resolveGovernedPaths,
-} from '../pre-tool-use.js';
+import { createPreToolUseHook } from '../pre-tool-use.js';
 
 // PreToolUse is the primary `tool.pre-call` forwarder: the SDK fires it
 // for EVERY tool invocation, including built-ins the CLI auto-approves
