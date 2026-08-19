@@ -1,9 +1,10 @@
 import {
-  PluginError,
+  parseModelRef,
   type AgentContext,
   type HookBus,
   type LlmCallInput,
   type LlmCallOutput,
+  type ParsedModelRef,
   type Plugin,
 } from '@ax/core';
 import type { ContentBlock } from '@ax/ipc-protocol';
@@ -60,40 +61,13 @@ export interface ConversationTitlesConfig {
   model?: string;
 }
 
-export interface ParsedModelRef {
-  provider: string;
-  modelId: string;
-}
-
-/**
- * Parse a `provider/model-id` reference. Splits on the FIRST `/` so a
- * future routing-style value like `openrouter/anthropic/claude-3-5-sonnet`
- * yields provider=`openrouter`, modelId=`anthropic/claude-3-5-sonnet`.
- *
- * Throws `PluginError({ code: 'invalid-config' })` on:
- *   - empty string
- *   - missing `/`
- *   - leading `/` (empty provider)
- *   - trailing `/` (empty model-id)
- */
-export function parseModelRef(ref: string): ParsedModelRef {
-  if (typeof ref !== 'string' || ref.length === 0) {
-    throw new PluginError({
-      code: 'invalid-config',
-      plugin: PLUGIN_NAME,
-      message: `model must be 'provider/model-id' (got empty value)`,
-    });
-  }
-  const idx = ref.indexOf('/');
-  if (idx <= 0 || idx === ref.length - 1) {
-    throw new PluginError({
-      code: 'invalid-config',
-      plugin: PLUGIN_NAME,
-      message: `model must be 'provider/model-id' (got: ${ref})`,
-    });
-  }
-  return { provider: ref.slice(0, idx), modelId: ref.slice(idx + 1) };
-}
+// `parseModelRef`/`ParsedModelRef` used to be implemented here (this plugin
+// was the first consumer of the `provider/model-id` shape via
+// `settings:fast-model`). They now live in `@ax/core` — the kernel every
+// plugin may import — as the single implementation (Invariant 4). Re-export
+// so existing imports of `parseModelRef` from this plugin keep working.
+export { parseModelRef };
+export type { ParsedModelRef };
 
 /**
  * `chat:turn-end` payload shape. The bus delivers whatever the publisher
