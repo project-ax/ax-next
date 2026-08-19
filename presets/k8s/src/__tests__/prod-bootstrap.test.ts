@@ -171,7 +171,7 @@ describe('@ax/preset-k8s production bootstrap (testcontainer + fake-k8s)', () =>
         port: 0,
         hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80',
       },
-      chat: { runnerBinary: '/tmp/stub-runner.js', chatTimeoutMs: 60_000 },
+      chat: { runnerBinaries: { 'claude-sdk': '/tmp/stub-runner.js' }, chatTimeoutMs: 60_000 },
       http: {
         host: '127.0.0.1',
         port: 0,

@@ -58,6 +58,7 @@ interface TestAgentRecord {
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
+  runner: string;
   workspaceRef: string | null;
   allowedHosts: string[];
   requiredCredentials: Record<string, { ref: string; kind: string }>;
@@ -75,6 +76,7 @@ const AGENT_A: TestAgentRecord = {
   allowedTools: [],
   mcpConfigIds: [],
   model: 'stub-model',
+  runner: 'claude-sdk',
   workspaceRef: null,
   allowedHosts: [],
   requiredCredentials: {},
@@ -92,6 +94,7 @@ const AGENT_B: TestAgentRecord = {
   allowedTools: [],
   mcpConfigIds: [],
   model: 'stub-model',
+  runner: 'claude-sdk',
   workspaceRef: null,
   allowedHosts: [],
   requiredCredentials: {},
@@ -366,7 +369,7 @@ describe('@ax/preset-k8s multi-tenant ACL gate (stub runner)', () => {
         },
         sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
         ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
-        chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+        chat: { runnerBinaries: { 'claude-sdk': stubRunnerPath }, chatTimeoutMs: 60_000 },
         http: {
           host: '127.0.0.1',
           port: 0,

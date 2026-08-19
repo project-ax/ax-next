@@ -93,11 +93,18 @@ import { createBlobStoreS3Plugin } from '@ax/blob-store-s3';
 const requireFromPreset = createRequire(import.meta.url);
 
 /**
- * Default location of the claude-sdk runner binary. Resolved against the
- * preset's own URL so pnpm hoisting and prod/dev installs both work.
+ * Default runner id → binary path map. Resolved against the preset's own
+ * URL so pnpm hoisting and prod/dev installs both work.
+ *
+ * Today there is exactly one runner (`'claude-sdk'`) and exactly one key in
+ * this map; PR 3 adds `'aisdk'` alongside it, at which point this function
+ * (and the `AX_RUNNER_BINARY` env var below, which maps onto the
+ * `'claude-sdk'` key only) grow a second entry.
  */
-function defaultRunnerBinary(): string {
-  return requireFromPreset.resolve('@ax/agent-claude-sdk-runner');
+function defaultRunnerBinaries(): Record<string, string> {
+  return {
+    'claude-sdk': requireFromPreset.resolve('@ax/agent-claude-sdk-runner'),
+  };
 }
 
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
@@ -330,11 +337,14 @@ export interface K8sPresetConfig {
     hostIpcUrl: string;
   };
   /**
-   * Chat orchestrator overrides. `runnerBinary` defaults to the resolved
-   * @ax/agent-claude-sdk-runner; tests/embedders may override it.
+   * Chat orchestrator overrides. `runnerBinaries` defaults to
+   * `{ 'claude-sdk': <resolved @ax/agent-claude-sdk-runner> }`;
+   * tests/embedders may override or extend it (e.g. PR 3's `'aisdk'` entry).
+   * A partial override merges with the defaults rather than replacing them,
+   * so setting one runner's path doesn't lose the other's default.
    */
   chat?: {
-    runnerBinary?: string;
+    runnerBinaries?: Record<string, string>;
     chatTimeoutMs?: number;
     oneShot?: boolean;
   };
@@ -890,7 +900,7 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   );
 
   const orchestratorCfg: Parameters<typeof createChatOrchestratorPlugin>[0] = {
-    runnerBinary: config.chat?.runnerBinary ?? defaultRunnerBinary(),
+    runnerBinaries: { ...defaultRunnerBinaries(), ...(config.chat?.runnerBinaries ?? {}) },
     chatTimeoutMs: config.chat?.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
     // Keepalive: the channel-web chat UI is multi-turn. Leave the runner warm
     // between turns so a follow-up reuses it (skips pod-create + workspace
@@ -1401,7 +1411,9 @@ export function blobConfigFromEnv(
 //                                  — sandbox-k8s overrides
 //   - BIND_HOST / PORT             — @ax/ipc-http listen address (defaults
 //                                    '0.0.0.0' / 8080)
-//   - AX_RUNNER_BINARY             — chat orchestrator override (tests)
+//   - AX_RUNNER_BINARY             — chat orchestrator override (tests); maps
+//                                    onto the 'claude-sdk' runnerBinaries key
+//                                    only — today's sole runner id
 //   - AX_CHAT_TIMEOUT_MS           — chat orchestrator override
 //   - AX_AUTH_SESSION_LIFETIME_SECONDS — auth session cookie lifetime
 //
@@ -1501,8 +1513,11 @@ export function loadK8sConfigFromEnv(
   }
 
   const chat: NonNullable<K8sPresetConfig['chat']> = {};
+  // AX_RUNNER_BINARY carries one path today, for the one shipped runner id.
+  // Map it onto the 'claude-sdk' key of the runnerBinaries map; PR 3 adds a
+  // second env var (and key) for 'aisdk'.
   if (env.AX_RUNNER_BINARY !== undefined && env.AX_RUNNER_BINARY !== '') {
-    chat.runnerBinary = env.AX_RUNNER_BINARY;
+    chat.runnerBinaries = { 'claude-sdk': env.AX_RUNNER_BINARY };
   }
   if (env.AX_CHAT_TIMEOUT_MS !== undefined && env.AX_CHAT_TIMEOUT_MS !== '') {
     const n = Number(env.AX_CHAT_TIMEOUT_MS);

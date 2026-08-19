@@ -1,8 +1,8 @@
 import { basename } from 'node:path';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { resolveRunnerBinary } from '../main.js';
+import { resolveRunnerBinaries } from '../main.js';
 
-describe('resolveRunnerBinary', () => {
+describe('resolveRunnerBinaries', () => {
   let savedEnv: string | undefined;
 
   beforeEach(() => {
@@ -15,27 +15,28 @@ describe('resolveRunnerBinary', () => {
     else process.env.AX_TEST_RUNNER_BINARY_OVERRIDE = savedEnv;
   });
 
-  it('uses opts.runnerBinaryOverride when set', () => {
-    expect(resolveRunnerBinary({ runnerBinaryOverride: '/tmp/fake-runner.js' })).toBe(
-      '/tmp/fake-runner.js',
-    );
+  it('uses opts.runnerBinaryOverride for the claude-sdk key when set', () => {
+    expect(
+      resolveRunnerBinaries({ runnerBinaryOverride: '/tmp/fake-runner.js' }),
+    ).toEqual({ 'claude-sdk': '/tmp/fake-runner.js' });
   });
 
   it('falls back to AX_TEST_RUNNER_BINARY_OVERRIDE env var when opts override is absent', () => {
     process.env.AX_TEST_RUNNER_BINARY_OVERRIDE = '/tmp/env-runner.js';
-    expect(resolveRunnerBinary({})).toBe('/tmp/env-runner.js');
+    expect(resolveRunnerBinaries({})).toEqual({ 'claude-sdk': '/tmp/env-runner.js' });
   });
 
   it('opts.runnerBinaryOverride takes precedence over env var', () => {
     process.env.AX_TEST_RUNNER_BINARY_OVERRIDE = '/tmp/env-runner.js';
-    expect(resolveRunnerBinary({ runnerBinaryOverride: '/tmp/opts-runner.js' })).toBe(
-      '/tmp/opts-runner.js',
-    );
+    expect(
+      resolveRunnerBinaries({ runnerBinaryOverride: '/tmp/opts-runner.js' }),
+    ).toEqual({ 'claude-sdk': '/tmp/opts-runner.js' });
   });
 
-  it('defaults to resolved @ax/agent-claude-sdk-runner when neither override is set', () => {
-    const result = resolveRunnerBinary({});
-    expect(result).toContain('agent-claude-sdk-runner');
-    expect(basename(result)).toBe('main.js');
+  it('defaults the claude-sdk key to resolved @ax/agent-claude-sdk-runner when neither override is set', () => {
+    const result = resolveRunnerBinaries({});
+    expect(Object.keys(result)).toEqual(['claude-sdk']);
+    expect(result['claude-sdk']).toContain('agent-claude-sdk-runner');
+    expect(basename(result['claude-sdk'])).toBe('main.js');
   });
 });

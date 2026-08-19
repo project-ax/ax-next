@@ -621,6 +621,6 @@ skills:
 config:
   preset: k8s
   models:
-    default: ["claude-sonnet-4-5"]
+    default: ["anthropic/claude-sonnet-4-5"]
   history:
     maxTurns: 50
