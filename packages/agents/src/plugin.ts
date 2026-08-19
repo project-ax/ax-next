@@ -465,7 +465,7 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
       // calls inside their handlers reach our own services, which were
       // registered above. The unregister callbacks are tracked so a
       // re-init in tests doesn't trip duplicate-route on the http-server.
-      const unregisters = await registerAdminAgentRoutes(bus, initCtx);
+      const unregisters = await registerAdminAgentRoutes(bus, initCtx, allowedModels);
       unregisterRoutes.push(...unregisters);
 
       // Bootstrap-reset cleanup: when an operator runs `ax admin
