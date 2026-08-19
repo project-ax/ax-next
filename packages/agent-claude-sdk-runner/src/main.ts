@@ -5,6 +5,7 @@ import {
   type SDKAssistantMessage,
   type SDKUserMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import { parseModelRef } from '@ax/core';
 import type {
   ContentBlock,
   ImageBlock,
@@ -199,6 +200,29 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           proxyStartup.anthropicEnv.NODE_EXTRA_CA_CERTS,
       });
 
+      // Provider-agnostic model refs (PR 2): `agentConfig.model` is a
+      // `provider/model-id` ref (e.g. `anthropic/claude-sonnet-4-6`), not a
+      // raw Anthropic model id. Parse it BEFORE constructing query() so a
+      // malformed or non-Anthropic ref fails the turn loudly instead of
+      // reaching the SDK. This runner drives the Claude Agent SDK, which
+      // only ever talks to api.anthropic.com — there is no way for it to
+      // honor a non-Anthropic provider, so silently dropping the prefix
+      // (or ignoring the provider) would run the WRONG model under a
+      // config that explicitly named a different one. See
+      // docs/plans/2026-08-18-provider-agnostic-runner-design.md §6.
+      const { provider: modelProvider, modelId } = parseModelRef(
+        agentConfig.model,
+      );
+      if (modelProvider !== 'anthropic') {
+        throw new Error(
+          `agent-claude-sdk-runner: agentConfig.model "${agentConfig.model}" ` +
+            `targets provider "${modelProvider}", but this runner drives the ` +
+            `Anthropic Claude Agent SDK only. Select a runner that supports ` +
+            `"${modelProvider}", or set the agent's model to an ` +
+            `"anthropic/<model-id>" ref.`,
+        );
+      }
+
       const queryIter = query({
         prompt: userMessages(),
         options: {
@@ -388,6 +412,15 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             }
             return extra.length > 0 ? { additionalDirectories: extra } : {};
           })(),
+          // The SDK's `model` option wants the RAW Anthropic model id
+          // (`claude-sonnet-4-6`), not the `provider/model-id` ref
+          // (`anthropic/claude-sonnet-4-6`) stored on AgentConfig — the
+          // `anthropic/` prefix is host/admin-picker vocabulary for
+          // provider routing, meaningless to the SDK itself. `modelId` is
+          // the parsed, provider-stripped value computed above (and the
+          // provider !== 'anthropic' case already threw before reaching
+          // here). See docs/plans/2026-08-18-provider-agnostic-runner-design.md §6.
+          model: modelId,
           // `Skill` is added to the allow list so the SDK auto-permits the
           // built-in Skill tool without prompting — that's the path the SDK
           // uses to invoke a skill it discovered under `settingSources`
