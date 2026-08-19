@@ -41,7 +41,8 @@ const OWNER: { userId: string; agentId: string; agentConfig: AgentConfig } = {
     systemPromptAugment: 'be helpful',
     allowedTools: [],
     mcpConfigIds: [],
-    model: 'claude-sonnet-4-7',
+    model: 'anthropic/claude-sonnet-4-7',
+    runner: 'claude-sdk',
   },
 };
 

@@ -260,7 +260,7 @@ async function createPersonalAgent(h: TestHarness, userId: string): Promise<stri
       systemPrompt: 'You are helpful.',
       allowedTools: [],
       mcpConfigIds: [],
-      model: 'claude-opus-4-7',
+      model: 'anthropic/claude-opus-4-7',
       visibility: 'personal',
     },
   });
@@ -359,7 +359,7 @@ describe('skill-install canary: install → attach → invoke (real plugins)', (
         createAgentsPlugin(),
         createSkillsPlugin(),
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           oneShot: true,
           chatTimeoutMs: 5_000,
         }),
@@ -426,7 +426,7 @@ describe('skill-install canary: install → attach → invoke (real plugins)', (
         createAgentsPlugin(),
         createSkillsPlugin(),
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           oneShot: true,
           chatTimeoutMs: 5_000,
         }),
@@ -501,7 +501,7 @@ describe('skill-install canary: per-user attachment union (TASK-33, real plugins
         createAgentsPlugin(),
         createSkillsPlugin(),
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           oneShot: true,
           chatTimeoutMs: 5_000,
         }),
@@ -883,7 +883,7 @@ describe('skill-install canary: approve → apply-capability-grant → fresh re-
         createToolDispatcherPlugin(),
         createSkillBrokerPlugin(),
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           oneShot: true,
           chatTimeoutMs: 5_000,
         }),
@@ -991,7 +991,7 @@ describe('skill-install canary: share-to-catalog promotion (§6D, real plugins)'
         createAgentsPlugin(),
         createSkillsPlugin(),
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           oneShot: true,
           chatTimeoutMs: 5_000,
         }),

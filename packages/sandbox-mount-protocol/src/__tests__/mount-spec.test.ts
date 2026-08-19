@@ -151,6 +151,7 @@ describe('sandbox:resolve-mounts signature', () => {
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude',
+        runner: 'claude-sdk',
       },
     };
     const input: ResolveMountsInput = { owner };
@@ -171,6 +172,7 @@ describe('sandbox:resolve-mounts signature', () => {
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude',
+        runner: 'claude-sdk',
       },
     };
     const ro: ResolveMountsInput = { owner, readOnly: true };
@@ -226,6 +228,7 @@ describe('sandbox:read-user-files signature (TASK-167 §11 host-read)', () => {
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude',
+        runner: 'claude-sdk',
       },
     };
     const root: ReadUserFilesInput = { owner };
