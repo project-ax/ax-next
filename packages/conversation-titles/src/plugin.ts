@@ -64,10 +64,9 @@ export interface ConversationTitlesConfig {
 // `parseModelRef`/`ParsedModelRef` used to be implemented here (this plugin
 // was the first consumer of the `provider/model-id` shape via
 // `settings:fast-model`). They now live in `@ax/core` — the kernel every
-// plugin may import — as the single implementation (Invariant 4). Re-export
-// so existing imports of `parseModelRef` from this plugin keep working.
-export { parseModelRef };
-export type { ParsedModelRef };
+// plugin may import — as the single implementation (Invariant 4). Import
+// them from `@ax/core`, not from here; this plugin re-exported them briefly
+// and no longer does, so there is exactly one public name for the parser.
 
 /**
  * `chat:turn-end` payload shape. The bus delivers whatever the publisher

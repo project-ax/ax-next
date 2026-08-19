@@ -2,16 +2,14 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   HookBus,
   makeAgentContext,
+  parseModelRef,
   PluginError,
   type AgentContext,
   type LlmCallInput,
   type LlmCallOutput,
 } from '@ax/core';
 import type { ContentBlock } from '@ax/ipc-protocol';
-import {
-  createConversationTitlesPlugin,
-  parseModelRef,
-} from '../plugin.js';
+import { createConversationTitlesPlugin } from '../plugin.js';
 import type {
   Conversation,
   GetInput,

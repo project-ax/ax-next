@@ -32,6 +32,9 @@ describe('parseModelRef', () => {
     ['no slash', 'claude-sonnet-4-6'],
     ['empty provider', '/model'],
     ['empty model id', 'provider/'],
+    ['leading whitespace', ' anthropic/claude-sonnet-4-6'],
+    ['trailing whitespace', 'anthropic/claude-sonnet-4-6 '],
+    ['inner whitespace', 'anthropic/claude sonnet'],
   ])('throws PluginError(invalid-payload) on %s', (_label, ref) => {
     expect(() => parseModelRef(ref)).toThrowError(PluginError);
     try {
@@ -55,6 +58,8 @@ describe('isModelRef', () => {
     ['claude-sonnet-4-6', false],
     ['/model', false],
     ['provider/', false],
+    [' anthropic/claude-sonnet-4-6', false],
+    ['anthropic/claude-sonnet-4-6 ', false],
   ])('isModelRef(%j) === %s', (ref, expected) => {
     expect(isModelRef(ref)).toBe(expected);
   });

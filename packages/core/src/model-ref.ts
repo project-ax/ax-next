@@ -44,6 +44,17 @@ export function parseModelRef(ref: string): ParsedModelRef {
       message: `model ref must be 'provider/model-id' (got empty value)`,
     });
   }
+  // Reject embedded whitespace rather than trimming it. A ref like
+  // ' anthropic/claude-sonnet-4-6' would otherwise parse to provider
+  // ' anthropic', which matches no `llm:call:<provider>` hook and no
+  // allow-list entry — a silent mis-route instead of a loud rejection.
+  if (/\s/.test(ref)) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      message: `model ref must not contain whitespace (got: ${ref})`,
+    });
+  }
   const idx = ref.indexOf('/');
   if (idx <= 0 || idx === ref.length - 1) {
     throw new PluginError({
