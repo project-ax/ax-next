@@ -30,7 +30,7 @@ function buildMocks(opts: {
       agent: {
         id: 'agent-1', ownerId: 'user-1', ownerType: 'user', visibility: 'personal',
         displayName: 'A', allowedTools: [], mcpConfigIds: [],
-        model: 'claude-sonnet-4-7', workspaceRef: null,
+        model: 'claude-sonnet-4-7', runner: 'claude-sdk', workspaceRef: null,
       },
     }),
     'agents:resolve-authored-skills': async () => {
@@ -77,7 +77,7 @@ function ctx() {
 async function harnessFor(mocks: ReturnType<typeof buildMocks>) {
   return createTestHarness({
     services: mocks.services,
-    plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', oneShot: true })],
+    plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, oneShot: true })],
   });
 }
 

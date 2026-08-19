@@ -39,6 +39,7 @@ const TEST_AGENT = {
   allowedTools: ['file.read'],
   mcpConfigIds: [],
   model: 'claude-sonnet-4-7',
+  runner: 'claude-sdk',
   workspaceRef: null,
 };
 
@@ -185,7 +186,7 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -211,7 +212,7 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -247,7 +248,7 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -277,7 +278,7 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -319,7 +320,7 @@ describe('chat-orchestrator system-prompt:augment (Phase 2B)', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],

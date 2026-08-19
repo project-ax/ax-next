@@ -25,6 +25,7 @@ const TEST_AGENT = {
   allowedTools: ['file.read'],
   mcpConfigIds: [],
   model: 'claude-sonnet-4-7',
+  runner: 'claude-sdk',
   workspaceRef: null,
 };
 
@@ -182,7 +183,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -257,7 +258,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -295,7 +296,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 1_000,
         }),
       ],
@@ -335,7 +336,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 1_000,
         }),
       ],
@@ -378,7 +379,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 1_000,
         }),
       ],
@@ -436,7 +437,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 1_000,
         }),
       ],
@@ -467,7 +468,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 50,
         }),
       ],
@@ -501,7 +502,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 10_000,
         }),
       ],
@@ -545,7 +546,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 1_000,
         }),
       ],
@@ -599,7 +600,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 1_000,
         }),
       ],
@@ -665,7 +666,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000 }),
       ],
     });
     busRef = h.bus;
@@ -697,7 +698,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000 }),
       ],
     });
     const turnErrors: unknown[] = [];
@@ -741,7 +742,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000 }),
       ],
     });
     busRef = h.bus;
@@ -768,7 +769,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000 }),
       ],
     });
     const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
@@ -797,7 +798,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000 }),
       ],
     });
     const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
@@ -874,7 +875,7 @@ describe('chat-orchestrator', () => {
         services: mocks.services,
         plugins: [
           createChatOrchestratorPlugin({
-            runnerBinary: '/irrelevant',
+            runnerBinaries: { 'claude-sdk': '/irrelevant' },
             chatTimeoutMs: 1_000,
           }),
         ],
@@ -918,7 +919,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -958,7 +959,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -1020,7 +1021,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -1046,6 +1047,7 @@ describe('chat-orchestrator', () => {
           allowedTools: string[];
           mcpConfigIds: string[];
           model: string;
+          runner: string;
         };
       };
     };
@@ -1071,7 +1073,116 @@ describe('chat-orchestrator', () => {
       ],
       mcpConfigIds: ['mcp-1'],
       model: 'claude-opus-4-7',
+      // PR 2 — the agent's runner ID is frozen onto the config and rides the
+      // wire. TEST_AGENT is a 'claude-sdk' agent.
+      runner: 'claude-sdk',
     });
+  });
+
+  // -------------------------------------------------------------------------
+  // PR 2 (provider-agnostic runner, design doc §1) — runner SELECTION.
+  //
+  // The agent row carries a runner **id**; `ChatOrchestratorConfig.runnerBinaries`
+  // maps ids to binary paths host-side. Two entries in the map, and an agent that
+  // selects the NON-default one: a lookup that ignored the agent's id (or fell
+  // back to 'claude-sdk') would ship '/bin/a' and fail here.
+  // -------------------------------------------------------------------------
+  it("resolves the agent's runner id through runnerBinaries → sandbox:open-session.runnerBinary", async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: { ...TEST_AGENT, id: 'a-aisdk', runner: 'aisdk' },
+      }),
+    });
+    let busRef: HookBus | null = null;
+    mocks.services['sandbox:open-session'] = async (ctx, input: unknown) => {
+      mocks.calls.sandboxOpen += 1;
+      mocks.calls.lastSandboxInput = input;
+      const sessionId = (input as { sessionId: string }).sessionId;
+      const originatingReqId = ctx.reqId;
+      setImmediate(() => {
+        void busRef!.fire(
+          'chat:end',
+          makeAgentContext({
+            sessionId,
+            agentId: 'a-aisdk',
+            userId: 'test-user',
+            reqId: originatingReqId,
+            logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+          }),
+          { outcome: { kind: 'complete', messages: [] } },
+        );
+      });
+      return {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
+      };
+    };
+
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/bin/a', aisdk: '/bin/b' },
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('aisdk-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(mocks.calls.sandboxOpen).toBe(1);
+
+    const last = mocks.calls.lastSandboxInput as {
+      runnerBinary: string;
+      owner: { agentConfig: { runner: string } };
+    };
+    // The BINARY is the one this runner id maps to — not the first/default entry.
+    expect(last.runnerBinary).toBe('/bin/b');
+    // The wire carries the ID, never the path (boundary review: `runner` is an
+    // id in every AgentConfig copy; only `runnerBinary` is a filesystem path).
+    expect(last.owner.agentConfig.runner).toBe('aisdk');
+  });
+
+  // An unknown runner id must FAIL the turn. Not a fallback to 'claude-sdk':
+  // a fallback would run the agent on a runner the operator did not select.
+  it('an agent whose runner id has no configured binary fails the turn (no fallback)', async () => {
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: { ...TEST_AGENT, id: 'a-nope', runner: 'nope' },
+      }),
+    });
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/bin/a', aisdk: '/bin/b' },
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('nope-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    if (outcome.kind !== 'terminated') throw new Error('expected a terminated outcome');
+    // The sandbox is never opened — the lookup fails before the spawn.
+    expect(mocks.calls.sandboxOpen).toBe(0);
+    const message = String(
+      (outcome.error as Error | undefined)?.message ?? outcome.error ?? '',
+    );
+    // The operator needs BOTH halves to fix this: the id that missed, and what
+    // this deployment actually has configured.
+    expect(message).toContain('nope');
+    expect(message).toContain('claude-sdk');
+    expect(message).toContain('aisdk');
   });
 
   // -------------------------------------------------------------------------
@@ -1112,7 +1223,7 @@ describe('chat-orchestrator', () => {
     };
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef = h.bus;
 
@@ -1165,7 +1276,7 @@ describe('chat-orchestrator', () => {
     };
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef = h.bus;
 
@@ -1237,7 +1348,7 @@ describe('chat-orchestrator', () => {
     const getConfig = withRecordingOpenSession(mocks, () => busRef);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/x', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/x' }, chatTimeoutMs: 5_000 })],
     });
     busRef = h.bus;
     const outcome = await h.bus.call<unknown, AgentOutcome>(
@@ -1266,7 +1377,7 @@ describe('chat-orchestrator', () => {
     const getConfig = withRecordingOpenSession(mocks, () => busRef);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/x', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/x' }, chatTimeoutMs: 5_000 })],
     });
     busRef = h.bus;
     const outcome = await h.bus.call<unknown, AgentOutcome>(
@@ -1290,7 +1401,7 @@ describe('chat-orchestrator', () => {
     const getConfig = withRecordingOpenSession(mocks, () => busRef);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/x', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/x' }, chatTimeoutMs: 5_000 })],
     });
     busRef = h.bus;
     const outcome = await h.bus.call<unknown, AgentOutcome>(
@@ -1325,7 +1436,7 @@ describe('chat-orchestrator', () => {
     const getConfig = withRecordingOpenSession(mocks, () => busRef);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/x', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/x' }, chatTimeoutMs: 5_000 })],
     });
     busRef = h.bus;
     const outcome = await h.bus.call<unknown, AgentOutcome>(
@@ -1359,7 +1470,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -1489,7 +1600,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -1579,7 +1690,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -1624,7 +1735,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -1662,7 +1773,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -1719,7 +1830,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -1772,7 +1883,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -1799,7 +1910,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 1_000,
         }),
       ],
@@ -1837,7 +1948,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 1_000,
         }),
       ],
@@ -1879,7 +1990,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000 }),
       ],
     });
     const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
@@ -1930,7 +2041,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000 }),
       ],
     });
     const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
@@ -1968,7 +2079,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 1_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000 }),
       ],
     });
     const turnErrors: Array<{ reqId?: string; reason?: string }> = [];
@@ -2005,7 +2116,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 1_000,
         }),
       ],
@@ -2054,7 +2165,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 1_000,
         }),
       ],
@@ -2092,7 +2203,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 1_000,
         }),
       ],
@@ -2187,7 +2298,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -2235,7 +2346,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -2289,7 +2400,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -2339,7 +2450,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -2395,7 +2506,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -2555,7 +2666,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -2690,7 +2801,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -2773,7 +2884,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -2829,7 +2940,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -2918,7 +3029,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -2945,7 +3056,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -2973,7 +3084,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -3008,7 +3119,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -3039,7 +3150,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -3093,7 +3204,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, skillsHooks.services);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -3142,7 +3253,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, skillsHooks.services);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -3198,7 +3309,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, skillsHooks.services);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -3238,7 +3349,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, hostGrants);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -3275,7 +3386,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, hostGrants);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -3316,7 +3427,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, skillsHooks.services);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
     await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('npm-pkg-session'), { message: { role: 'user', content: 'hi' } });
@@ -3348,7 +3459,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, skillsHooks.services);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
     await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('pypi-pkg-session'), { message: { role: 'user', content: 'hi' } });
@@ -3381,7 +3492,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, skillsHooks.services);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
     await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('nopkgs-session'), { message: { role: 'user', content: 'hi' } });
@@ -3418,7 +3529,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, defaults.services);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
     await h.bus.call<unknown, AgentOutcome>('agent:invoke', silentCtx('default-pkg-session'), { message: { role: 'user', content: 'hi' } });
@@ -3522,7 +3633,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, connectorHooks);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -3599,7 +3710,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, connHook.services);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -3656,7 +3767,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, connHook.services);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -3710,7 +3821,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, skillsHooks.services, connectorHooks);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -3757,7 +3868,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, skillsHooks.services, connectorHooks);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -3811,7 +3922,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -3880,7 +3991,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -3926,7 +4037,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -3969,7 +4080,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -4020,7 +4131,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
 
@@ -4069,7 +4180,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -4131,7 +4242,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -4185,7 +4296,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -4260,7 +4371,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -4332,7 +4443,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, authoredServices);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -4392,7 +4503,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, authoredServices);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -4458,7 +4569,7 @@ describe('chat-orchestrator', () => {
     Object.assign(mocks.services, proxy.services, defaults.services, authoredServices);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -4514,7 +4625,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -4556,7 +4667,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -4592,7 +4703,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -4640,7 +4751,7 @@ describe('chat-orchestrator', () => {
     const h = await createTestHarness({
       services: mocks.services,
       plugins: [
-        createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+        createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
       ],
     });
     busRef.current = h.bus;
@@ -4687,7 +4798,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
           builtinSkills: [
             {
@@ -4754,7 +4865,7 @@ describe('chat-orchestrator', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
           builtinSkills: [
             {
@@ -4820,7 +4931,7 @@ describe('chat-orchestrator', () => {
     } satisfies Record<string, ServiceHandler>);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
 
@@ -4871,7 +4982,7 @@ describe('chat-orchestrator', () => {
     } satisfies Record<string, ServiceHandler>);
     const h = await createTestHarness({
       services: mocks.services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
     busRef.current = h.bus;
     const cards: unknown[] = [];
@@ -4910,7 +5021,7 @@ describe('chat-orchestrator — reactive egress wall (TASK-37)', () => {
       services: mocks.services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 10_000,
         }),
       ],
@@ -5247,7 +5358,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
           keepAlive: true,
           idleWindowMs: 60_000,
@@ -5394,7 +5505,7 @@ describe('chat-orchestrator session-dirty re-spawn (skills:proposed)', () => {
       services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
           keepAlive: true,
           idleWindowMs: 60_000,

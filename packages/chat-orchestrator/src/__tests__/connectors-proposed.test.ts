@@ -36,7 +36,7 @@ const HARD_CALL_STUBS: Record<string, ServiceHandler> = {
     runnerEndpoint: 'unix:///tmp/mock.sock',
     handle: { kill: async () => undefined, exited: new Promise(() => undefined) },
   }),
-  'agents:resolve': async () => ({ agent: {} }),
+  'agents:resolve': async () => ({ agent: { runner: 'claude-sdk' } }),
 };
 
 function proposeCtx(opts: { conversationId: string; userId: string; agentId: string }) {
@@ -79,7 +79,7 @@ describe('chat-orchestrator — connectors:proposed fires the card mid-turn', ()
       services,
       plugins: [
         createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant',
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
           chatTimeoutMs: 5_000,
         }),
       ],
@@ -117,7 +117,7 @@ describe('chat-orchestrator — connectors:proposed fires the card mid-turn', ()
     };
     const h = await createTestHarness({
       services,
-      plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 })],
+      plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 })],
     });
 
     const cards: Array<Record<string, unknown>> = [];
