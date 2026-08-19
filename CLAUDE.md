@@ -22,8 +22,13 @@ The v1 AX codebase lives at `~/dev/ai/ax/`. It is a **read-only reference** — 
 ```bash
 pnpm build
 pnpm test
-pnpm test --filter @ax/<plugin>
+pnpm --filter @ax/<plugin> test
 ```
+
+Note the argument order: `--filter` must come **before** the script name. The root
+`test` script is `pnpm -r run test`, so `pnpm test --filter @ax/<plugin>` passes the
+filter to the script rather than to pnpm — it is silently ignored and the entire repo
+suite runs, including the Docker-dependent `@ax/auth-better` tests.
 
 (Tooling lands in Week 1–2 per architecture doc Section 10.)
 
