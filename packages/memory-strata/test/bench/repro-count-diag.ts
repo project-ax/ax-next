@@ -56,7 +56,8 @@ async function diag(sample: Awaited<ReturnType<typeof loadLongMemEvalSSamples>>[
   let deb: Debouncer | undefined;
   let fnow: Date | null = null;
   const bus = new HookBus();
-  bus.registerService('agents:resolve', 'x', async () => ({ agent: { model: EXTRACTION_MODEL } }));
+  // PR 2: agent model is a `provider/model-id` ref (bare id goes on `llm:call`).
+  bus.registerService('agents:resolve', 'x', async () => ({ agent: { model: `anthropic/${EXTRACTION_MODEL}` } }));
   bus.registerService<LlmCallInput, LlmCallOutput>('llm:call:anthropic', 'x', async (_c, i) => extractionLlm(i));
   bus.registerService('tool:register', 'x', async () => ({ ok: true as const }));
   const strata = createMemoryStrataPlugin({

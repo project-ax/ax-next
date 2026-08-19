@@ -86,7 +86,8 @@ async function reproOne(
 
   const bus = new HookBus();
   bus.registerService<{ agentId: string; userId: string }, { agent: { model: string } }>(
-    'agents:resolve', 'e2e-agents', async () => ({ agent: { model: EXTRACTION_MODEL } }),
+    // PR 2: agent model is a `provider/model-id` ref (bare id goes on `llm:call`).
+    'agents:resolve', 'e2e-agents', async () => ({ agent: { model: `anthropic/${EXTRACTION_MODEL}` } }),
   );
   bus.registerService<LlmCallInput, LlmCallOutput>(
     'llm:call:anthropic', 'e2e-llm', async (_ctx, input) => extractionLlm(input),

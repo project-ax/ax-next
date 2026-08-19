@@ -52,7 +52,10 @@ function fakeAgent(overrides: Partial<AgentRow> = {}): AgentRow {
     displayName: 'Test Agent',
     allowedTools: [],
     mcpConfigIds: [],
-    model: 'claude-haiku-4-5-20251001',
+    // PR 2: `agents_v1_agents.model` stores a `provider/model-id` REF (the
+    // migration backfills the `anthropic/` prefix). memory-strata parses it and
+    // passes only the BARE id to `llm:call:<provider>`.
+    model: 'anthropic/claude-haiku-4-5-20251001',
     workspaceRef: null,
     createdAt: now,
     updatedAt: now,
