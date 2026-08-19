@@ -445,7 +445,7 @@ The acceptance suite asserts the *degradation*, not the capability: a skill decl
 
 | # | PR | Gate |
 |---|---|---|
-| 1 | `@ax/agent-runner-core` extraction | No behaviour change; existing suites + canary green |
+| 1 | ✅ **Merged 2026-08-19 (#395).** `@ax/agent-runner-core` extraction | Gate met: no behaviour change; suites + canary green. `main.ts` 1,839 → 770 lines. Two follow-up fixes landed after merge — #397 (the `--require` bootstrap artifact was produced by a `postbuild` hook that fires on no build path that ships) and a CodeQL ReDoS hardening. |
 | 2 | Host-side runner + model selection (`agents.runner`, orchestrator map, `AgentConfig`, migration) | Model picker drives a real value on the SDK runner |
 | 3 | `@ax/agent-aisdk-runner` — loop, tools, policy wiring, transcript | Canary green on both runners; loaded in CLI + k8s preset |
 | 4 | Provider layer — OpenRouter credential path + `models:list-supported` | grok-4.6 / kimi-k3 drive a real conversation on the cluster |
