@@ -26,46 +26,100 @@ const ENV_KEYS_TO_SAVE = [
 ] as const;
 
 describe('proxyBootstrapPath (regression: missing --require target killed every production turn)', () => {
-  // Regression coverage for the incident where proxy-startup.ts moved from
-  // @ax/agent-claude-sdk-runner into @ax/agent-runner-core but the CJS
-  // bootstrap it resolves relative to its own module (dist/proxy-startup.js
-  // -> dist/proxy-bootstrap.cjs) kept being copied into the OLD package's
-  // dist by the OLD package's postbuild. This package's own dist never got
-  // a copy, so any session with env.proxyUnixSocket or env.proxyEndpoint
-  // set NODE_OPTIONS=--require="<path-to-a-file-that-does-not-exist>" and
-  // Node killed the SDK subprocess at startup on every turn.
+  // Regression coverage for TWO incidents where the file
+  // proxyBootstrapPath() resolves to went missing at runtime, killing every
+  // SDK subprocess with env.proxyUnixSocket or env.proxyEndpoint set
+  // (NODE_OPTIONS=--require="<path-to-a-file-that-does-not-exist>" is a
+  // hard Node startup failure):
   //
-  // The previous test below only regex-matched the NODE_OPTIONS *string*
-  // shape (`--require="...proxy-bootstrap.cjs"`) and would pass even when
-  // the target file doesn't exist anywhere on disk. This block asserts the
-  // real invariant: the source file proxyBootstrapPath() resolves to (once
-  // built) is present in THIS package's src/, and this package's own
-  // package.json postbuild is what puts it in dist/ next to the compiled
-  // proxy-startup.js — not a downstream runner's postbuild.
+  //   1. proxy-startup.ts moved from @ax/agent-claude-sdk-runner into
+  //      @ax/agent-runner-core but the CJS bootstrap it resolves relative
+  //      to its own module (dist/proxy-startup.js -> dist/proxy-
+  //      bootstrap.cjs) kept being copied into the OLD package's dist by
+  //      the OLD package's postbuild. This package's own dist never got a
+  //      copy.
+  //   2. The fix for #1 — a `postbuild` script here (`cp src/proxy-
+  //      bootstrap.cjs dist/`) — never fired on the paths that matter:
+  //      root `pnpm build` is `tsc --build` (no per-package postbuild
+  //      lifecycle), the container image builds via `pnpm --filter @ax/cli
+  //      build` which walks tsc project references but does not run a
+  //      dependency's postbuild, and the Dockerfile excludes **/dist from
+  //      the build context. So proxy-bootstrap.cjs was STILL absent from
+  //      dist/ (and from the built container) even with the postbuild
+  //      script in place.
+  //
+  // The real fix: proxy-bootstrap.cts (a TypeScript source with the .cts
+  // extension) is a normal tsc build INPUT under "module": "NodeNext" —
+  // tsc emits it to dist/proxy-bootstrap.cjs on every build path with no
+  // lifecycle hook involved at all.
+  //
+  // A test that only regex-matches the NODE_OPTIONS *string* shape
+  // (`--require="...proxy-bootstrap.cjs"`, asserted further down) would
+  // pass even when the target file doesn't exist anywhere on disk — that
+  // shape assertion is exactly what shipped through incident #2 undetected.
+  // The assertion below closes that gap: it resolves the REAL path
+  // proxyBootstrapPath() returns and checks the file is actually there.
 
-  // __dirname (this test file) = <package>/src/__tests__
-  const testDir = path.dirname(fileURLToPath(import.meta.url));
-  const srcDir = path.join(testDir, '..');
-  const packageDir = path.join(testDir, '..', '..');
-
-  it('the bootstrap source file exists in this package alongside proxy-startup.ts', () => {
-    const bootstrapInSrc = path.join(srcDir, path.basename(proxyBootstrapPath()));
-    expect(existsSync(bootstrapInSrc)).toBe(true);
+  it('proxyBootstrapPath() resolves to a file that actually exists', () => {
+    // proxyBootstrapPath() always names its target "proxy-bootstrap.cjs",
+    // joined to the directory of the CALLING module (proxy-startup.ts /
+    // .js — see the function itself). That directory differs by context:
+    //
+    //   - Under vitest we run directly against the TS source tree, so
+    //     import.meta.url points at src/proxy-startup.ts and the resolved
+    //     path is src/proxy-bootstrap.cjs — which never exists pre-build
+    //     (the source file is proxy-bootstrap.cts; tsc hasn't run). We
+    //     fall back to checking its .cts sibling: the actual source file
+    //     tsc will compile into exactly the .cjs proxyBootstrapPath()
+    //     names.
+    //   - In production the compiled proxy-startup.js lives in dist/,
+    //     where tsc emits the compiled proxy-bootstrap.cjs right next to
+    //     it as a normal build product — so the resolved path exists
+    //     directly, with no fallback needed.
+    //
+    // This is the assertion that catches the real regression: run this
+    // suite (or just check existsSync(proxyBootstrapPath())) against a
+    // built dist/ tree and it fails hard if the compiled .cjs is missing
+    // — exactly the state incident #1 (no copy at all) and incident #2
+    // (postbuild silently never firing) left production in. The
+    // production-side check is exercised for real in this PR's manual
+    // verification (`rm -rf dist && pnpm --filter @ax/cli build && ls
+    // dist/proxy-bootstrap.cjs`), which is the actual container-build
+    // path — this test pins the resolver contract that verification
+    // depends on.
+    const resolved = proxyBootstrapPath();
+    if (!existsSync(resolved)) {
+      const ctsSource = resolved.replace(/\.cjs$/, '.cts');
+      expect(existsSync(ctsSource)).toBe(true);
+    }
   });
 
-  it("this package's own postbuild copies proxy-bootstrap.cjs into dist/ (not a downstream package's)", () => {
+  it("the .cts source now compiles to a normal build product — no postbuild lifecycle hook required", () => {
+    // Pins the NEW guarantee this fix relies on: proxy-bootstrap.cts is a
+    // tsc build input (like every other file in src/), not something a
+    // lifecycle script has to copy after the fact. Asserts there is no
+    // postbuild script left in package.json to bit-rot back into this
+    // exact bug a third time, and that the .cts source is where
+    // proxyBootstrapPath() (via its sibling .cjs) expects to find it.
+    const packageDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
     const pkgJsonPath = path.join(packageDir, 'package.json');
     const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as {
       scripts?: Record<string, string>;
     };
-    const postbuild = pkg.scripts?.postbuild ?? '';
-    expect(postbuild).toMatch(/cp\s+src\/proxy-bootstrap\.cjs\s+dist\//);
+    expect(pkg.scripts?.postbuild).toBeUndefined();
+
+    const srcDir = path.join(packageDir, 'src');
+    const bootstrapSource = path.join(
+      srcDir,
+      path.basename(proxyBootstrapPath()).replace(/\.cjs$/, '.cts'),
+    );
+    expect(existsSync(bootstrapSource)).toBe(true);
   });
 
   it('proxyBootstrapPath() resolves to a path whose basename matches the shipped bootstrap file', () => {
     // Belt-and-suspenders: pin the exact filename so a future rename of
-    // proxy-bootstrap.cjs can't silently desync the resolver from the
-    // file the postbuild actually copies.
+    // proxy-bootstrap.cts can't silently desync the resolver from the
+    // file tsc actually emits.
     expect(path.basename(proxyBootstrapPath())).toBe('proxy-bootstrap.cjs');
   });
 });

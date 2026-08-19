@@ -193,9 +193,11 @@ export default tseslint.config(
   },
 
   {
-    // .cjs files are CommonJS by design (e.g. NODE_OPTIONS=--require
-    // bootstraps that must load synchronously) and need require().
-    files: ['**/*.cjs'],
+    // .cjs/.cts files are CommonJS by design (e.g. NODE_OPTIONS=--require
+    // bootstraps that must load synchronously) and need require(). .cts is
+    // the TypeScript-source counterpart — tsc (module: NodeNext) compiles
+    // it to a plain .cjs output — so it needs the same carve-out.
+    files: ['**/*.cjs', '**/*.cts'],
     rules: {
       '@typescript-eslint/no-require-imports': 'off',
     },

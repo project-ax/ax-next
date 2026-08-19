@@ -33,14 +33,19 @@ import { MissingEnvError, type RunnerEnv } from './env.js';
 // NODE_OPTIONS=--require. Resolved relative to THIS file (proxy-startup.js
 // in this package's own dist/), NOT to whichever runner package re-exports
 // setupProxy — the bootstrap's source lives at
-// packages/agent-runner-core/src/proxy-bootstrap.cjs and this package's own
-// `postbuild` (`cp src/proxy-bootstrap.cjs dist/`) copies it next to the
-// compiled proxy-startup.js. Any runner built on @ax/agent-runner-core gets
-// the bootstrap for free through that copy — it does NOT need its own copy
-// step. (This used to be resolved relative to the runner package instead;
-// that broke when proxy-startup.ts moved into core without a matching
-// postbuild here — see the CI-invisible incident this comment now guards
-// against, caught only by a real existsSync check in proxy-startup.test.ts.)
+// packages/agent-runner-core/src/proxy-bootstrap.cts and tsc (module:
+// NodeNext, so a .cts source emits a plain .cjs output) compiles it to
+// dist/proxy-bootstrap.cjs next to the compiled proxy-startup.js as a
+// normal build product. Any runner built on @ax/agent-runner-core gets the
+// bootstrap for free — it does NOT need its own copy step. (This used to be
+// resolved relative to the runner package instead; that broke when
+// proxy-startup.ts moved into core without a matching postbuild here. It
+// broke AGAIN later when the postbuild hook that replaced that fix turned
+// out to never run on the paths that matter — root `tsc --build` and the
+// container's `pnpm --filter @ax/cli build` don't invoke a dependency's
+// postbuild. Making the file a first-class tsc build product removes the
+// lifecycle-hook dependency entirely instead of re-fixing the copy step a
+// third time. See the real existsSync check in proxy-startup.test.ts.)
 export function proxyBootstrapPath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), 'proxy-bootstrap.cjs');
 }
