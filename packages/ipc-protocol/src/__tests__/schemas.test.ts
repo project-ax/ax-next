@@ -429,6 +429,7 @@ describe('session.get-config', () => {
     allowedTools: ['file.read'],
     mcpConfigIds: [],
     model: 'claude-sonnet-4-7',
+    runner: 'claude-sdk',
   };
 
   it('accepts a response with conversationId set', () => {

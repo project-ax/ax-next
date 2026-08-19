@@ -47,6 +47,12 @@ export const AgentConfigSchema = z.object({
   allowedTools: z.array(z.string()),
   mcpConfigIds: z.array(z.string()),
   model: z.string(),
+  /** Runner id (e.g. `'claude-sdk'`) the host resolves to a binary path via
+   * `ChatOrchestratorConfig.runnerBinaries`. `z.string()`, not a zod enum: the
+   * wire is a transport boundary and the authoritative allow-list
+   * (`SUPPORTED_RUNNERS`) lives in `@ax/agents` — a second enum here would
+   * need editing again in PR 3 for no safety gain. */
+  runner: z.string(),
 });
 export type AgentConfig = z.infer<typeof AgentConfigSchema>;
 

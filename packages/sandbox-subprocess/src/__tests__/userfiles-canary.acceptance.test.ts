@@ -45,6 +45,7 @@ function owner(agentId: string) {
       allowedTools: [],
       mcpConfigIds: [],
       model: 'claude',
+      runner: 'claude-sdk',
     },
   };
 }

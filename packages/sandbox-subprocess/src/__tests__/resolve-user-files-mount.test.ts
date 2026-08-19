@@ -17,6 +17,7 @@ const OWNER: ResolveMountsOwner = {
     allowedTools: [],
     mcpConfigIds: [],
     model: 'claude',
+    runner: 'claude-sdk',
   },
 };
 

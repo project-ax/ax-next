@@ -430,6 +430,7 @@ describe('AgentConfigSchema', () => {
       allowedTools: ['Read'],
       mcpConfigIds: [],
       model: 'claude',
+      runner: 'claude-sdk',
     });
     expect(result.success).toBe(true);
   });

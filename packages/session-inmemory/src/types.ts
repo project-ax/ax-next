@@ -37,6 +37,9 @@ export interface AgentConfig {
   mcpConfigIds: string[];
   /** LLM model id. Allow-listed at agent creation. */
   model: string;
+  /** Runner id (e.g. `'claude-sdk'`) the host resolves to a binary path via
+   * `ChatOrchestratorConfig.runnerBinaries`. Allow-listed at agent creation. */
+  runner: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +283,9 @@ export const SessionGetConfigOutputSchema = z.object({
     allowedTools: z.array(z.string()),
     mcpConfigIds: z.array(z.string()),
     model: z.string(),
+    // z.string(), not a zod enum — wire is a transport boundary; the
+    // authoritative allow-list (SUPPORTED_RUNNERS) lives in @ax/agents.
+    runner: z.string(),
   }),
   conversationId: z.string().nullable(),
 }) as unknown as ZodType<SessionGetConfigOutput>;

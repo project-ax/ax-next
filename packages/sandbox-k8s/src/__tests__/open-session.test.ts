@@ -326,6 +326,7 @@ describe('sandbox:open-session (k8s)', () => {
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: 'conv-42',
         },
@@ -364,6 +365,7 @@ describe('sandbox:open-session (k8s)', () => {
             allowedTools: [],
             mcpConfigIds: [],
             model: 'claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
         },
       },
@@ -712,6 +714,7 @@ describe('sandbox:open-session (k8s)', () => {
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude',
+        runner: 'claude-sdk',
       },
     };
 

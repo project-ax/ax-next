@@ -60,6 +60,7 @@ describe('@ax/session-inmemory store', () => {
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude-sonnet-4-7',
+        runner: 'claude-sdk',
       },
     });
     expect(store.resolveToken(rec.token)).toEqual({
@@ -83,6 +84,7 @@ describe('@ax/session-inmemory store', () => {
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude-sonnet-4-7',
+        runner: 'claude-sdk',
       },
       conversationId: 'cnv_test_1',
     });
@@ -107,6 +109,7 @@ describe('@ax/session-inmemory store', () => {
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude-sonnet-4-7',
+        runner: 'claude-sdk',
       },
       source: 'routine',
     });
