@@ -25,7 +25,12 @@
     }
   },
   "files": ["dist"],
-  "scripts": { "build": "tsc --build", "test": "vitest run", "test:watch": "vitest" },
+  "scripts": {
+    "build": "tsc --build",
+    "postbuild": "cp src/proxy-bootstrap.cjs dist/",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
   "dependencies": {
     "@ax/agent-identity-templates": "workspace:*",
     "@ax/core": "workspace:*",

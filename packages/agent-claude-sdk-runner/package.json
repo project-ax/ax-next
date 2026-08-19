@@ -19,7 +19,7 @@
   ],
   "scripts": {
     "build": "tsc --build",
-    "postbuild": "chmod +x dist/main.js && cp src/proxy-bootstrap.cjs dist/",
+    "postbuild": "chmod +x dist/main.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
@@ -28,7 +28,6 @@
     "@ax/agent-runner-core": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "@ax/tool-artifact-publish": "workspace:*",
-    "undici": "^6.28.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {
