@@ -219,7 +219,11 @@ export function resolveGovernedPaths(
     return { changed: false, input: {} };
   }
   const src = input as Record<string, unknown>;
-  const wsRoot = workspaceRoot.replace(/\/+$/, '');
+  // Strip trailing slashes without a backtracking regex: `/\/+$/` is
+  // quadratic on inputs with many slashes (CodeQL js/polynomial-redos), and
+  // this function is package-public, so its input counts as library input.
+  let wsRoot = workspaceRoot;
+  while (wsRoot.endsWith('/')) wsRoot = wsRoot.slice(0, -1);
   // The broadened re-rooter recognizes a top-level governed segment under any of
   // these roots (plus /home/ + ~/, always). workspaceRoot is included so an
   // already-`/agent`-rooted path is recognized (and idempotent). The legacy

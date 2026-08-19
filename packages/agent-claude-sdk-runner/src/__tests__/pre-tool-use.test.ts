@@ -405,6 +405,33 @@ describe('resolveAttachmentPaths', () => {
     });
   });
 
+  it('normalizes many trailing slashes on workspaceRoot the same as one', () => {
+    // Pins the linear trailing-slash strip's output against the manual-loop
+    // replacement for `/\/+$/` (CodeQL js/polynomial-redos): must match on any
+    // run length of trailing slashes, not just a single one.
+    expect(
+      resolveAttachmentPaths({ file_path: '.ax/uploads/x' }, '/agent////'),
+    ).toEqual({
+      changed: true,
+      input: { file_path: '/agent/.ax/uploads/x' },
+    });
+  });
+
+  it('normalizes an all-slashes workspaceRoot to the empty string', () => {
+    expect(
+      resolveAttachmentPaths({ file_path: '.ax/uploads/x' }, '////'),
+    ).toEqual({
+      changed: true,
+      input: { file_path: '/.ax/uploads/x' },
+    });
+  });
+
+  it('leaves an empty-string workspaceRoot as empty (no-op strip)', () => {
+    expect(resolveAttachmentPaths({ file_path: '.ax/uploads/x' }, '')).toEqual(
+      { changed: true, input: { file_path: '/.ax/uploads/x' } },
+    );
+  });
+
   it('refuses to re-root a path with a .. traversal segment (security)', () => {
     // A crafted `.ax/uploads/../../etc/x` must NOT be re-rooted (which could
     // walk out of the workspace). Legit attachment paths never contain `..`.
@@ -635,5 +662,20 @@ describe('resolveGovernedPaths (broaden: the §14 linchpin)', () => {
     expect(
       resolveGovernedPaths({ file_path: '.ax/SOUL.md' }, '/agent/', B),
     ).toEqual({ changed: true, input: { file_path: '/agent/.ax/SOUL.md' } });
+  });
+
+  it('normalizes many trailing slashes on workspaceRoot the same as one', () => {
+    // Same pin as resolveAttachmentPaths above, for the broadened re-rooter.
+    expect(
+      resolveGovernedPaths({ file_path: '.ax/SOUL.md' }, '/agent////', B),
+    ).toEqual({ changed: true, input: { file_path: '/agent/.ax/SOUL.md' } });
+  });
+
+  it('normalizes an all-slashes workspaceRoot to the empty string', () => {
+    expect(
+      resolveGovernedPaths({ file_path: '.ax/SOUL.md' }, '////', {
+        broaden: true,
+      }),
+    ).toEqual({ changed: true, input: { file_path: '/.ax/SOUL.md' } });
   });
 });
