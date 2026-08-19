@@ -8,7 +8,7 @@ import type {
   InboxLoop,
   InboxLoopEntry,
   InboxLoopOptions,
-} from '../inbox-loop.js';
+} from '@ax/agent-runner-core';
 import {
   afterEach,
   beforeEach,
@@ -74,17 +74,6 @@ vi.mock('@ax/ipc-protocol', async (importOriginal) => {
   };
 });
 
-vi.mock('../inbox-loop.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../inbox-loop.js')>();
-  return {
-    ...actual,
-    createInboxLoop: (opts: InboxLoopOptions): InboxLoop => {
-      createInboxLoopMock(opts);
-      return fakeInbox;
-    },
-  };
-});
-
 // Phase 3: the runner now spawns `git` for session-start materialize +
 // turn-end commit/bundle/rollback. Mocking these out keeps these unit
 // tests fast, hermetic, and free of stderr noise from git ops failing
@@ -94,13 +83,27 @@ vi.mock('../inbox-loop.js', async (importOriginal) => {
 // against real tempdirs + git binary; the workspace-commit-notify
 // handler tests cover the host-side bundler. This file focuses on
 // main.ts's control-flow shape (env → boot → SDK loop → events).
+//
+// TASK-3 runner-core move: `git-workspace.ts` now lives in `@ax/agent-runner-core`,
+// re-exported through its barrel (`materializeWorkspace`/`commitTurnAndBundle`)
+// AND consumed *internally* by that package's own `commit-notify-resync.ts`
+// (`advanceBaseline`/`rollbackToBaseline`/`resyncBaselineAndReplay`, never
+// exported through the barrel). Mocking the barrel alone would not reach that
+// internal call — commitNotifyWithResync is left "actual" below and would call
+// the real git ops. So this mock targets an explicitly-declared internal
+// subpath (`@ax/agent-runner-core/internal/git-workspace.js`, see that
+// package's `exports` map) rather than the public barrel — the same module
+// identity the barrel re-export AND commit-notify-resync.ts's internal
+// `./git-workspace.js` import both resolve to, so ONE mock here intercepts
+// both call sites exactly as the pre-move single-package mock did.
 const materializeMock = vi.fn().mockResolvedValue({ baselineCommit: 'mock-baseline-oid' });
 const commitTurnAndBundleMock = vi.fn().mockResolvedValue(null);
 const advanceBaselineMock = vi.fn().mockResolvedValue(undefined);
 const rollbackToBaselineMock = vi.fn().mockResolvedValue(undefined);
 const resyncBaselineAndReplayMock = vi.fn().mockResolvedValue(undefined);
-vi.mock('../git-workspace.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../git-workspace.js')>();
+vi.mock('@ax/agent-runner-core/internal/git-workspace.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@ax/agent-runner-core/internal/git-workspace.js')>();
   return {
     ...actual,
     materializeWorkspace: materializeMock,
@@ -111,13 +114,81 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
   };
 });
 
-// Mock ONLY the venv scaffold (it spawns `uv`) so these unit tests stay
-// hermetic. `buildPythonVenvEnv` / `pythonVenvDir` stay real via `...actual`
-// so the env-literal assertions below exercise the real env builder.
+// Mock the venv scaffold (it spawns `uv`) and `createInboxLoop` (session-start
+// inbox wiring) so these unit tests stay hermetic. `buildPythonVenvEnv` /
+// `pythonVenvDir` stay real (a separate module) so the env-literal assertions
+// below exercise the real env builder.
+//
+// TASK-67 runner-core extraction (task 8): the boot sequence these back now
+// runs inside @ax/agent-runner-core's own `run-runner.ts`, which imports its
+// siblings by relative path (`./python-venv.js`, …) — a mock on the package
+// BARREL would never be reached, exactly like the git-workspace case above.
+// So each of these targets the explicitly-declared internal subpath (see that
+// package's `exports` map), which is the same module identity the barrel
+// re-export and run-runner.ts's relative import both resolve to.
 const scaffoldPythonVenvMock = vi.fn().mockResolvedValue(true);
-vi.mock('../python-venv.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../python-venv.js')>();
+// TASK-67 (runner-core extraction): shipTranscriptDelta / restoreTranscriptForResume
+// moved into @ax/agent-runner-core's barrel alongside everything else this suite
+// mocks at that specifier. These are wire-shape tests (no real jsonl on disk), so
+// we mock the functions here — their real fs/IPC behavior is covered in
+// transcript-delta.test.ts (now in @ax/agent-runner-core). Defaults model the
+// happy path: the per-turn ship 'appended' (so the F2a bind fires), and resume
+// rebuilds a real transcript ('written: true'). The F2a-guard test overrides
+// restore to 'written: false'.
+const shipTranscriptDeltaMock = vi.fn().mockResolvedValue({
+  outcome: 'appended',
+  sentOffset: 10,
+  sentSeq: 1,
+});
+const restoreTranscriptForResumeMock = vi.fn().mockResolvedValue({
+  written: true,
+  state: { sentOffset: 10, sentSeq: 1 },
+});
+vi.mock('@ax/agent-runner-core/internal/python-venv.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@ax/agent-runner-core/internal/python-venv.js')>();
   return { ...actual, scaffoldPythonVenv: scaffoldPythonVenvMock };
+});
+vi.mock('@ax/agent-runner-core/internal/inbox-loop.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@ax/agent-runner-core/internal/inbox-loop.js')>();
+  return {
+    ...actual,
+    createInboxLoop: (opts: InboxLoopOptions): InboxLoop => {
+      createInboxLoopMock(opts);
+      return fakeInbox;
+    },
+  };
+});
+vi.mock('@ax/agent-runner-core/internal/transcript-delta.js', async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import('@ax/agent-runner-core/internal/transcript-delta.js')>();
+  return {
+    ...actual,
+    shipTranscriptDelta: shipTranscriptDeltaMock,
+    restoreTranscriptForResume: restoreTranscriptForResumeMock,
+  };
+});
+
+// TranscriptSource split (runner-core extraction fix round 2): main() builds
+// ONE `transcriptSource` from `env.workspaceRoot` and threads it into every
+// shipTranscriptDelta/restoreTranscriptForResume call. shipTranscriptDelta /
+// restoreTranscriptForResume are mocked wholesale above, so nothing exercises
+// the source's real locate()/write() closures in this suite — but a
+// regression that built the source from the wrong root (or diverged the
+// restore source from the ship sources) would be invisible without this spy.
+// Wraps the real factory (harmless — its output is never invoked here) so we
+// can assert what root main() actually passed.
+const createJsonlTranscriptSourceSpy = vi.fn();
+vi.mock('../jsonl-transcript-source.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../jsonl-transcript-source.js')>();
+  return {
+    ...actual,
+    createJsonlTranscriptSource: (workspaceRoot: string) => {
+      createJsonlTranscriptSourceSpy(workspaceRoot);
+      return actual.createJsonlTranscriptSource(workspaceRoot);
+    },
+  };
 });
 
 // Mock the transcript-flush seam. `readLastTurnUuid` defaults to undefined
@@ -141,30 +212,6 @@ vi.mock('../turn-end-uuid.js', async (importOriginal) => {
     readLastTurnUuid: readLastTurnUuidMock,
     waitForTranscriptUuid: waitForTranscriptUuidMock,
     hasResumableTranscript: hasResumableTranscriptMock,
-  };
-});
-
-// TASK-67: the resume-transcript delta-ship + resume rebuild. These are
-// wire-shape tests (no real jsonl on disk), so we mock the module — its real
-// fs/IPC behavior is covered in transcript-delta.test.ts. Defaults model the
-// happy path: the per-turn ship 'appended' (so the F2a bind fires), and resume
-// rebuilds a real transcript ('written: true'). The F2a-guard test overrides
-// restore to 'written: false'.
-const shipTranscriptDeltaMock = vi.fn().mockResolvedValue({
-  outcome: 'appended',
-  sentOffset: 10,
-  sentSeq: 1,
-});
-const restoreTranscriptForResumeMock = vi.fn().mockResolvedValue({
-  written: true,
-  state: { sentOffset: 10, sentSeq: 1 },
-});
-vi.mock('../transcript-delta.js', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('../transcript-delta.js')>();
-  return {
-    ...actual,
-    shipTranscriptDelta: shipTranscriptDeltaMock,
-    restoreTranscriptForResume: restoreTranscriptForResumeMock,
   };
 });
 
@@ -387,6 +434,7 @@ beforeEach(() => {
     written: true,
     state: { sentOffset: 10, sentSeq: 1 },
   });
+  createJsonlTranscriptSourceSpy.mockClear();
   scaffoldPythonVenvMock.mockReset();
   scaffoldPythonVenvMock.mockResolvedValue(true);
   createIpcClientMock = vi.fn();
@@ -2757,10 +2805,20 @@ describe('main()', () => {
       const rc = await main();
       expect(rc).toBe(0);
 
-      // The guard ran via the DB-backed restore (the workspace root + bound id).
+      // The guard ran via the DB-backed restore (the bound id, against the
+      // workspace-scoped source main() constructs from env.workspaceRoot —
+      // the source now owns "which workspace", not a raw workspaceRoot arg).
+      // Two checks restore the original claim: the call got a well-shaped
+      // source (below), AND that source was built from the right root (the
+      // spy on createJsonlTranscriptSource — otherwise a source of the right
+      // SHAPE but the wrong workspace would pass silently).
+      expect(createJsonlTranscriptSourceSpy).toHaveBeenCalledWith('/tmp/workspace');
       expect(restoreTranscriptForResumeMock).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceRoot: '/tmp/workspace',
+          source: expect.objectContaining({
+            locate: expect.any(Function),
+            write: expect.any(Function),
+          }),
           sessionId: 'sdk-sess-missing',
         }),
       );
@@ -2821,7 +2879,7 @@ describe('main()', () => {
       // sentOffset/sentSeq state across calls.
       expect(shipTranscriptDeltaMock).toHaveBeenCalled();
       const shipArg = shipTranscriptDeltaMock.mock.calls[0]![0] as {
-        workspaceRoot: string;
+        source: unknown;
         sessionId: string;
         state: { sentOffset: number; sentSeq: number };
       };

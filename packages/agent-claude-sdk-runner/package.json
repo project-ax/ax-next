@@ -19,19 +19,15 @@
   ],
   "scripts": {
     "build": "tsc --build",
-    "postbuild": "chmod +x dist/main.js && cp src/proxy-bootstrap.cjs dist/",
+    "postbuild": "chmod +x dist/main.js",
     "test": "vitest run",
     "test:watch": "vitest"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.2.119",
-    "@ax/agent-identity-templates": "workspace:*",
-    "@ax/core": "workspace:*",
-    "@ax/credential-proxy-bridge": "workspace:*",
+    "@ax/agent-runner-core": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "@ax/tool-artifact-publish": "workspace:*",
-    "@ax/tool-skill-propose": "workspace:*",
-    "undici": "^6.28.0",
     "zod": "^3.23.8"
   },
   "devDependencies": {

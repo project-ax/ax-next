@@ -260,12 +260,12 @@ export async function scaffoldWorkspaceGitignore(root: string): Promise<void> {
  * jsonl no longer needs to be COMMITTED — `.claude/projects/` is gitignored
  * and the transcript ships as opaque rows via session.append-transcript,
  * NOT a git bundle. But the per-turn delta-ship + uuid-wait readers
- * (`locateJsonl` in transcript-delta.ts, turn-end-uuid.ts) readdir-walk
- * `<workspaceRoot>/.claude/projects`, and the resume rebuild
- * (`restoreTranscriptForResume`) WRITES the reconstructed jsonl there for
- * the SDK to read back through THIS symlink. So the redirect is still
- * load-bearing for path locality; only the "so git add -A sees it" reason
- * is gone.
+ * (`locateJsonl` in the SDK runner's jsonl-transcript-source.ts,
+ * turn-end-uuid.ts) readdir-walk `<workspaceRoot>/.claude/projects`, and the
+ * resume rebuild (`restoreTranscriptForResume`) WRITES the reconstructed
+ * jsonl there for the SDK to read back through THIS symlink. So the redirect
+ * is still load-bearing for path locality; only the "so git add -A sees it"
+ * reason is gone.
  *
  * The SDK's `projectsDir = join(configDir, "projects")` is hard-coded
  * (no separable env override), so we redirect the I/O at the filesystem

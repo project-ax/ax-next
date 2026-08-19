@@ -5,8 +5,11 @@ import * as path from 'node:path';
 import type { IpcClient } from '@ax/ipc-protocol';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { buildHostToolEntries } from '../host-mcp-server.js';
-import { commitNotifyWithResync, flushWorkspaceToHost } from '../commit-notify-resync.js';
-import { commitTurnAndBundle } from '../git-workspace.js';
+import {
+  commitNotifyWithResync,
+  flushWorkspaceToHost,
+  commitTurnAndBundle,
+} from '@ax/agent-runner-core';
 import { rmScratch } from './rm-scratch.js';
 
 // ---------------------------------------------------------------------------

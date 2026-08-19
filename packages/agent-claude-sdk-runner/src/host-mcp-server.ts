@@ -33,7 +33,7 @@ import {
   type ToolDescriptor,
 } from '@ax/ipc-protocol';
 import { z } from 'zod';
-import type { FlushOutcome } from './commit-notify-resync.js';
+import type { FlushOutcome } from '@ax/agent-runner-core';
 import { MCP_HOST_SERVER_NAME } from './tool-names.js';
 
 export interface CreateHostMcpServerOptions {

@@ -19,7 +19,7 @@ import {
 } from '@anthropic-ai/claude-agent-sdk';
 import type { ToolDescriptor } from '@ax/ipc-protocol';
 import { z } from 'zod';
-import type { LocalDispatcher } from './local-dispatcher.js';
+import type { LocalDispatcher } from '@ax/agent-runner-core';
 import { MCP_SANDBOX_SERVER_NAME } from './tool-names.js';
 
 /**

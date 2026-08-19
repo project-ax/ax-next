@@ -4,19 +4,18 @@ import {
   mkdtempSync,
   mkdirSync,
   writeFileSync,
-  readFileSync,
   rmSync,
 } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
+import { stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IpcClient } from '@ax/ipc-protocol';
 import {
-  encodeProjectSlug,
   hashBytes,
   restoreTranscriptForResume,
   shipTranscriptDelta,
   splitCompleteLines,
+  type TranscriptSource,
 } from '../transcript-delta.js';
 
 function writeJsonl(root: string, sessionId: string, body: string): string {
@@ -25,6 +24,35 @@ function writeJsonl(root: string, sessionId: string, body: string): string {
   const file = join(projDir, `${sessionId}.jsonl`);
   writeFileSync(file, body);
   return file;
+}
+
+// `locateJsonl`'s real readdir-walk and the SDK-slug `write` destination now
+// live behind `createJsonlTranscriptSource` in @ax/agent-claude-sdk-runner
+// (covered by jsonl-transcript-source.test.ts there) — core can't depend on
+// that downstream package, so this fixture-local fake resolves the fixed
+// `my-proj` path `writeJsonl` above writes to for `locate` (preserving these
+// tests' existing "not found" vs "found" behavior verbatim), and records
+// `write` calls in-memory instead of naming any on-disk destination — core
+// must never know where the bytes land.
+function fakeSource(
+  root: string,
+): TranscriptSource & { writes: Array<{ sessionId: string; bytes: Buffer }> } {
+  const writes: Array<{ sessionId: string; bytes: Buffer }> = [];
+  return {
+    writes,
+    locate: async (sessionId: string) => {
+      const candidate = join(root, '.claude', 'projects', 'my-proj', `${sessionId}.jsonl`);
+      try {
+        await stat(candidate);
+        return candidate;
+      } catch {
+        return null;
+      }
+    },
+    write: async (sessionId: string, bytes: Buffer) => {
+      writes.push({ sessionId, bytes });
+    },
+  };
 }
 
 describe('splitCompleteLines', () => {
@@ -69,27 +97,9 @@ describe('hashBytes / prefix-hash convention', () => {
   });
 });
 
-describe('encodeProjectSlug', () => {
-  it('mirrors the SDK encoding (realpath cwd → non-alnum to dash)', () => {
-    expect(encodeProjectSlug('/agent')).toBe('-agent');
-    expect(encodeProjectSlug('/var/lib/ax')).toBe('-var-lib-ax');
-  });
-
-  it('truncates + hash-suffixes an over-200-char path (SDK P0 cap)', () => {
-    const longPath = '/' + 'a'.repeat(250);
-    const slug = encodeProjectSlug(longPath);
-    // dashed = '-' + 250 'a' = 251 chars > 200 → truncate to 200 + '-' + hash.
-    const dashed = longPath.replace(/[^a-zA-Z0-9]/g, '-');
-    // Reproduce the SDK's djb2-style hash to pin the exact suffix.
-    let h = 0;
-    for (let i = 0; i < longPath.length; i++) {
-      h = ((h << 5) - h + longPath.charCodeAt(i)) | 0;
-    }
-    const expected = `${dashed.slice(0, 200)}-${Math.abs(h).toString(36)}`;
-    expect(slug).toBe(expected);
-    expect(slug.startsWith(dashed.slice(0, 200))).toBe(true);
-  });
-});
+// `encodeProjectSlug` moved with `locateJsonl`/`write` to
+// @ax/agent-claude-sdk-runner's jsonl-transcript-source.ts — its unit
+// coverage now lives in jsonl-transcript-source.test.ts there.
 
 function fakeClient(over: Partial<IpcClient>): IpcClient {
   return {
@@ -126,7 +136,7 @@ describe('shipTranscriptDelta', () => {
 
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         state: { sentOffset: 0, sentSeq: 0 },
       });
@@ -164,7 +174,7 @@ describe('shipTranscriptDelta', () => {
 
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         state: { sentOffset: 0, sentSeq: 0 },
       });
@@ -189,7 +199,7 @@ describe('shipTranscriptDelta', () => {
 
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         // Already shipped l1 (offset after 'l1\n', seq 1).
         state: { sentOffset: 'l1\n'.length, sentSeq: 1 },
@@ -220,7 +230,7 @@ describe('shipTranscriptDelta', () => {
 
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         state: { sentOffset: 5, sentSeq: 1 },
       });
@@ -252,7 +262,7 @@ describe('shipTranscriptDelta', () => {
       const client = fakeClient({ callBinaryUpload: callBinaryUpload as never });
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         state: { sentOffset: 'rewritten\n'.length, sentSeq: 1 },
       });
@@ -281,7 +291,7 @@ describe('shipTranscriptDelta', () => {
       const client = fakeClient({ callBinaryUpload: callBinaryUpload as never });
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'sess',
         state: { sentOffset: 'l1\n'.length, sentSeq: 1 },
       });
@@ -307,7 +317,7 @@ describe('shipTranscriptDelta', () => {
       const client = fakeClient({});
       const res = await shipTranscriptDelta({
         client,
-        workspaceRoot: root,
+        source: fakeSource(root),
         sessionId: 'missing',
         state: { sentOffset: 0, sentSeq: 0 },
       });
@@ -319,7 +329,7 @@ describe('shipTranscriptDelta', () => {
 });
 
 describe('restoreTranscriptForResume', () => {
-  it('writes the rebuilt jsonl to the SDK slug path and seeds the ship state', async () => {
+  it('hands the rebuilt jsonl bytes to source.write and seeds the ship state', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
     try {
       const rebuilt = 'u1\na1\na2\n';
@@ -329,24 +339,23 @@ describe('restoreTranscriptForResume', () => {
       const client = fakeClient({
         callBinary: vi.fn(async () => ({ path: tmpFile, bytes: rebuilt.length })) as never,
       });
+      const source = fakeSource(root);
 
       const res = await restoreTranscriptForResume({
         client,
-        workspaceRoot: root,
+        source,
         sessionId: 'sess-resume',
       });
       expect(res.written).toBe(true);
       expect(res.state.sentSeq).toBe(3);
       expect(res.state.sentOffset).toBe(rebuilt.length);
 
-      // The jsonl landed at the SDK slug path so query({resume}) can read it.
-      const { realpathSync } = await import('node:fs');
-      const slug = encodeProjectSlug(realpathSync(root));
-      const written = readFileSync(
-        join(root, '.claude', 'projects', slug, 'sess-resume.jsonl'),
-        'utf8',
-      );
-      expect(written).toBe(rebuilt);
+      // Core hands the reconstructed bytes to the source — where they land
+      // (the SDK slug path, for the real source) is the source's call, not
+      // core's; see jsonl-transcript-source.test.ts for that placement.
+      expect(source.writes).toHaveLength(1);
+      expect(source.writes[0]!.sessionId).toBe('sess-resume');
+      expect(source.writes[0]!.bytes.toString('utf8')).toBe(rebuilt);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -360,13 +369,16 @@ describe('restoreTranscriptForResume', () => {
       const client = fakeClient({
         callBinary: vi.fn(async () => ({ path: tmpFile, bytes: 0 })) as never,
       });
+      const source = fakeSource(root);
       const res = await restoreTranscriptForResume({
         client,
-        workspaceRoot: root,
+        source,
         sessionId: 'sess-empty',
       });
       expect(res.written).toBe(false);
       expect(res.state).toEqual({ sentOffset: 0, sentSeq: 0 });
+      // No transcript to restore — the source is never asked to write anything.
+      expect(source.writes).toHaveLength(0);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

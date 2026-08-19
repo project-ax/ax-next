@@ -7,11 +7,8 @@
   "include": ["src/**/*"],
   "exclude": ["src/**/__tests__/**", "dist", "node_modules"],
   "references": [
-    { "path": "../agent-identity-templates" },
-    { "path": "../core" },
-    { "path": "../credential-proxy-bridge" },
+    { "path": "../agent-runner-core" },
     { "path": "../ipc-protocol" },
-    { "path": "../tool-artifact-publish" },
-    { "path": "../tool-skill-propose" }
+    { "path": "../tool-artifact-publish" }
   ]
 }

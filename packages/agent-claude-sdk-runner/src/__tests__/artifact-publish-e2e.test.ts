@@ -2,9 +2,8 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as os from 'node:os';
-import { createLocalDispatcher } from '../local-dispatcher.js';
+import { createLocalDispatcher, createArtifactPublishExecutor } from '@ax/agent-runner-core';
 import { buildSandboxToolEntries } from '../sandbox-mcp-server.js';
-import { createArtifactPublishExecutor } from '../artifact-publish-executor.js';
 import { ARTIFACT_PUBLISH_DESCRIPTOR } from '@ax/tool-artifact-publish';
 
 let workspaceRoot: string;

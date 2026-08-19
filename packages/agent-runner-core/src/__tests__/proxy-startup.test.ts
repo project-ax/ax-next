@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { existsSync, readFileSync } from 'node:fs';
 import * as fs from 'node:fs/promises';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { setupProxy, withProxyToken } from '../proxy-startup.js';
+import { fileURLToPath } from 'node:url';
+import { proxyBootstrapPath, setupProxy, withProxyToken } from '../proxy-startup.js';
 import type { RunnerEnv } from '../env.js';
 import { MissingEnvError } from '../env.js';
 
@@ -22,6 +24,51 @@ const ENV_KEYS_TO_SAVE = [
   'GIT_SSL_CAINFO',
   'DENO_CERT',
 ] as const;
+
+describe('proxyBootstrapPath (regression: missing --require target killed every production turn)', () => {
+  // Regression coverage for the incident where proxy-startup.ts moved from
+  // @ax/agent-claude-sdk-runner into @ax/agent-runner-core but the CJS
+  // bootstrap it resolves relative to its own module (dist/proxy-startup.js
+  // -> dist/proxy-bootstrap.cjs) kept being copied into the OLD package's
+  // dist by the OLD package's postbuild. This package's own dist never got
+  // a copy, so any session with env.proxyUnixSocket or env.proxyEndpoint
+  // set NODE_OPTIONS=--require="<path-to-a-file-that-does-not-exist>" and
+  // Node killed the SDK subprocess at startup on every turn.
+  //
+  // The previous test below only regex-matched the NODE_OPTIONS *string*
+  // shape (`--require="...proxy-bootstrap.cjs"`) and would pass even when
+  // the target file doesn't exist anywhere on disk. This block asserts the
+  // real invariant: the source file proxyBootstrapPath() resolves to (once
+  // built) is present in THIS package's src/, and this package's own
+  // package.json postbuild is what puts it in dist/ next to the compiled
+  // proxy-startup.js — not a downstream runner's postbuild.
+
+  // __dirname (this test file) = <package>/src/__tests__
+  const testDir = path.dirname(fileURLToPath(import.meta.url));
+  const srcDir = path.join(testDir, '..');
+  const packageDir = path.join(testDir, '..', '..');
+
+  it('the bootstrap source file exists in this package alongside proxy-startup.ts', () => {
+    const bootstrapInSrc = path.join(srcDir, path.basename(proxyBootstrapPath()));
+    expect(existsSync(bootstrapInSrc)).toBe(true);
+  });
+
+  it("this package's own postbuild copies proxy-bootstrap.cjs into dist/ (not a downstream package's)", () => {
+    const pkgJsonPath = path.join(packageDir, 'package.json');
+    const pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8')) as {
+      scripts?: Record<string, string>;
+    };
+    const postbuild = pkg.scripts?.postbuild ?? '';
+    expect(postbuild).toMatch(/cp\s+src\/proxy-bootstrap\.cjs\s+dist\//);
+  });
+
+  it('proxyBootstrapPath() resolves to a path whose basename matches the shipped bootstrap file', () => {
+    // Belt-and-suspenders: pin the exact filename so a future rename of
+    // proxy-bootstrap.cjs can't silently desync the resolver from the
+    // file the postbuild actually copies.
+    expect(path.basename(proxyBootstrapPath())).toBe('proxy-bootstrap.cjs');
+  });
+});
 
 describe('withProxyToken (TASK-52)', () => {
   const TOKEN = 'a'.repeat(32);

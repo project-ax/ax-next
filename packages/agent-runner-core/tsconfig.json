@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "rootDir": "src", "outDir": "dist" },
+  "include": ["src/**/*"],
+  "exclude": ["src/__tests__/**", "dist", "node_modules"],
+  "references": [
+    { "path": "../core" },
+    { "path": "../ipc-protocol" },
+    { "path": "../credential-proxy-bridge" },
+    { "path": "../agent-identity-templates" },
+    { "path": "../tool-artifact-publish" },
+    { "path": "../tool-skill-propose" }
+  ]
+}

@@ -2,7 +2,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { validateMcpEntry } from '../installed-skills.js';
+import { validateMcpEntry } from '@ax/agent-runner-core';
 
 // ---------------------------------------------------------------------------
 // ARCH-11 — MCP-server-entry drift guard (runner side).
@@ -85,13 +85,22 @@ describe('validateMcpEntry golden-vectors drift guard (runner side)', () => {
     // static or dynamic import without false-positiving on a comment or
     // string that merely names the package.
     const importRe = /(?:\bfrom|\brequire\s*\(|\bimport\s*\()\s*['"]@ax\/sandbox-protocol['"]/;
-    const srcRoot = path.join(repoRoot, 'packages', 'agent-claude-sdk-runner', 'src');
+    // validateMcpEntry itself now lives in @ax/agent-runner-core
+    // (installed-skills.ts) rather than this package — the guard must scan
+    // BOTH src trees, or a `@ax/sandbox-protocol` import added over there
+    // would pass CI silently.
+    const srcRoots = [
+      path.join(repoRoot, 'packages', 'agent-claude-sdk-runner', 'src'),
+      path.join(repoRoot, 'packages', 'agent-runner-core', 'src'),
+    ];
     const selfPath = fileURLToPath(import.meta.url);
-    const offenders = collectTsFiles(srcRoot).filter(
-      // This guard file legitimately names the package in its assertion text;
-      // exclude it so its own description can't trip the check.
-      (file) => file !== selfPath && importRe.test(readFileSync(file, 'utf-8')),
-    );
+    const offenders = srcRoots
+      .flatMap((srcRoot) => collectTsFiles(srcRoot))
+      .filter(
+        // This guard file legitimately names the package in its assertion text;
+        // exclude it so its own description can't trip the check.
+        (file) => file !== selfPath && importRe.test(readFileSync(file, 'utf-8')),
+      );
     expect(offenders).toEqual([]);
   });
 });

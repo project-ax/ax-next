@@ -30,9 +30,18 @@ import { fileURLToPath } from 'node:url';
 import { MissingEnvError, type RunnerEnv } from './env.js';
 
 // Path to the CJS bootstrap that the SDK subprocess loads via
-// NODE_OPTIONS=--require. Resolved relative to THIS file so it survives
-// pnpm hoisting and tsc dist layout (both ts → js sit next to the .cjs).
-function proxyBootstrapPath(): string {
+// NODE_OPTIONS=--require. Resolved relative to THIS file (proxy-startup.js
+// in this package's own dist/), NOT to whichever runner package re-exports
+// setupProxy — the bootstrap's source lives at
+// packages/agent-runner-core/src/proxy-bootstrap.cjs and this package's own
+// `postbuild` (`cp src/proxy-bootstrap.cjs dist/`) copies it next to the
+// compiled proxy-startup.js. Any runner built on @ax/agent-runner-core gets
+// the bootstrap for free through that copy — it does NOT need its own copy
+// step. (This used to be resolved relative to the runner package instead;
+// that broke when proxy-startup.ts moved into core without a matching
+// postbuild here — see the CI-invisible incident this comment now guards
+// against, caught only by a real existsSync check in proxy-startup.test.ts.)
+export function proxyBootstrapPath(): string {
   return path.join(path.dirname(fileURLToPath(import.meta.url)), 'proxy-bootstrap.cjs');
 }
 
