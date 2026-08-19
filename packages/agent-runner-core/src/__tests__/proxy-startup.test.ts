@@ -60,38 +60,33 @@ describe('proxyBootstrapPath (regression: missing --require target killed every 
   // The assertion below closes that gap: it resolves the REAL path
   // proxyBootstrapPath() returns and checks the file is actually there.
 
-  it('proxyBootstrapPath() resolves to a file that actually exists', () => {
-    // proxyBootstrapPath() always names its target "proxy-bootstrap.cjs",
-    // joined to the directory of the CALLING module (proxy-startup.ts /
-    // .js — see the function itself). That directory differs by context:
-    //
-    //   - Under vitest we run directly against the TS source tree, so
-    //     import.meta.url points at src/proxy-startup.ts and the resolved
-    //     path is src/proxy-bootstrap.cjs — which never exists pre-build
-    //     (the source file is proxy-bootstrap.cts; tsc hasn't run). We
-    //     fall back to checking its .cts sibling: the actual source file
-    //     tsc will compile into exactly the .cjs proxyBootstrapPath()
-    //     names.
-    //   - In production the compiled proxy-startup.js lives in dist/,
-    //     where tsc emits the compiled proxy-bootstrap.cjs right next to
-    //     it as a normal build product — so the resolved path exists
-    //     directly, with no fallback needed.
-    //
-    // This is the assertion that catches the real regression: run this
-    // suite (or just check existsSync(proxyBootstrapPath())) against a
-    // built dist/ tree and it fails hard if the compiled .cjs is missing
-    // — exactly the state incident #1 (no copy at all) and incident #2
-    // (postbuild silently never firing) left production in. The
-    // production-side check is exercised for real in this PR's manual
-    // verification (`rm -rf dist && pnpm --filter @ax/cli build && ls
-    // dist/proxy-bootstrap.cjs`), which is the actual container-build
-    // path — this test pins the resolver contract that verification
-    // depends on.
-    const resolved = proxyBootstrapPath();
-    if (!existsSync(resolved)) {
-      const ctsSource = resolved.replace(/\.cjs$/, '.cts');
-      expect(existsSync(ctsSource)).toBe(true);
-    }
+  it('tsc emits proxy-bootstrap.cjs into dist/ — the exact file proxyBootstrapPath() resolves to in production', () => {
+    // Unconditional, not a fallback: this asserts the build ARTIFACT
+    // exists, full stop. CI's `pnpm build` (or `pnpm typecheck`, which also
+    // invokes `tsc --build`) runs before tests, so by the time this suite
+    // executes, dist/proxy-bootstrap.cjs must already be on disk — tsc is
+    // what puts it there now, not a postbuild copy step. If this fails,
+    // either the tree hasn't been built yet (run `pnpm --filter
+    // @ax/agent-runner-core build` first) or the .cts -> .cjs emission is
+    // broken — in which case every proxy-configured SDK subprocess in
+    // production is dead at startup (incidents #1 and #2 above).
+    const packageDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
+    const distArtifact = path.join(packageDir, 'dist', 'proxy-bootstrap.cjs');
+    expect(existsSync(distArtifact)).toBe(true);
+  });
+
+  it('proxyBootstrapPath() resolves to that same dist/ file at runtime', () => {
+    // proxyBootstrapPath() is defined relative to proxy-startup.ts's own
+    // module. Under vitest that's src/, so the resolved path names
+    // src/proxy-bootstrap.cjs — a file that never exists (the source is
+    // proxy-bootstrap.cts). This pins the RELATIONSHIP: whatever directory
+    // proxyBootstrapPath() resolves relative to, the basename it asks for
+    // is exactly the basename tsc emits into dist/ alongside the compiled
+    // proxy-startup.js. Combined with the previous test (which proves the
+    // dist/ file exists), this is the full chain the previous "existsSync
+    // with a fallback" assertion was supposed to establish but couldn't,
+    // because the fallback branch could never fail.
+    expect(path.basename(proxyBootstrapPath())).toBe('proxy-bootstrap.cjs');
   });
 
   it("the .cts source now compiles to a normal build product — no postbuild lifecycle hook required", () => {
@@ -114,13 +109,6 @@ describe('proxyBootstrapPath (regression: missing --require target killed every 
       path.basename(proxyBootstrapPath()).replace(/\.cjs$/, '.cts'),
     );
     expect(existsSync(bootstrapSource)).toBe(true);
-  });
-
-  it('proxyBootstrapPath() resolves to a path whose basename matches the shipped bootstrap file', () => {
-    // Belt-and-suspenders: pin the exact filename so a future rename of
-    // proxy-bootstrap.cts can't silently desync the resolver from the
-    // file tsc actually emits.
-    expect(path.basename(proxyBootstrapPath())).toBe('proxy-bootstrap.cjs');
   });
 });
 
