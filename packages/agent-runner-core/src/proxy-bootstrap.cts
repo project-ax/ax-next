@@ -17,6 +17,12 @@
 // CommonJS deliberately: NODE_OPTIONS=--require expects a synchronous
 // CJS module; --import (ESM) is also supported but only on Node 20.6+
 // AND requires URL form (more fiddly for a portable bootstrap).
+//
+// .cts (not .cjs): tsconfig.base.json sets "module": "NodeNext", so tsc
+// compiles this source to a plain .cjs output as a normal build product —
+// present in dist/ on every build path (root `tsc --build`, a filtered
+// `pnpm --filter @ax/cli build` walking project references, the container
+// image build) with no separate copy step required.
 const proxy = process.env.HTTPS_PROXY || process.env.HTTP_PROXY;
 if (proxy) {
   try {
@@ -25,8 +31,7 @@ if (proxy) {
   } catch (err) {
     // Subprocess will end up bypassing the proxy. Surface to stderr so
     // the runner can correlate via its own stderr capture.
-    process.stderr.write(
-      `[ax-proxy-bootstrap] failed to install ProxyAgent: ${err && err.message}\n`,
-    );
+    const message = err instanceof Error ? err.message : String(err);
+    process.stderr.write(`[ax-proxy-bootstrap] failed to install ProxyAgent: ${message}\n`);
   }
 }
