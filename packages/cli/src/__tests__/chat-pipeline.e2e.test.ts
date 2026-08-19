@@ -9,8 +9,8 @@ import {
   stubRunnerPath,
   type StubRunnerScript,
 } from '@ax/test-harness';
-import { main } from '../main.js';
-import type { Plugin, ToolCall } from '@ax/core';
+import { main, resolveRunnerBinaries } from '../main.js';
+import type { AgentContext, Plugin, ToolCall } from '@ax/core';
 
 // ---------------------------------------------------------------------------
 // Phase 6.6 Task 7 — chat-pipeline e2e (I_R2).
@@ -38,6 +38,17 @@ interface PostCallRecord {
 }
 
 type Record_ = PreCallRecord | PostCallRecord;
+
+/**
+ * The slice of the `sandbox:open-session` input this test asserts on. The
+ * authoritative shape lives in @ax/sandbox-protocol / @ax/chat-orchestrator;
+ * declaring a local structural view keeps invariant 2 (no cross-plugin
+ * imports) intact and keeps the test honest about what it reads.
+ */
+interface ObservedOpenSession {
+  runnerBinary: string;
+  owner: { agentConfig: { runner: string; model: string } };
+}
 
 describe('@ax/cli chat pipeline e2e (stub runner)', () => {
   let tmp: string;
@@ -179,6 +190,119 @@ describe('@ax/cli chat pipeline e2e (stub runner)', () => {
       expect(records[0]!.toolCallId).toBe(records[1]!.toolCallId); // Bash pre = Bash post
       expect(records[2]!.toolCallId).toBe(records[3]!.toolCallId); // test-host-echo pre = test-host-echo post
       expect(records[0]!.toolCallId).not.toBe(records[2]!.toolCallId); // different tools have different IDs
+    },
+  );
+
+  // -------------------------------------------------------------------------
+  // PR 2 Task 9 — invariant 3 (no half-wired plugins): per-agent runner +
+  // model selection must be reachable end-to-end, not just unit-tested per
+  // hop. This drives the SAME real plugin set as the test above (dev
+  // agents-stub → chat-orchestrator → sandbox-subprocess → stub runner) and
+  // asserts the three values that PR 2 introduced, all in one run:
+  //
+  //   1. runnerBinary is the 'claude-sdk' entry of the map main() built
+  //      (chat-orchestrator resolves agent.runner → ChatOrchestratorConfig.
+  //      runnerBinaries at the wire boundary),
+  //   2. agentConfig.runner survived agents:resolve → AgentRecord → the
+  //      frozen agentConfig (a zod strip anywhere on that path drops it
+  //      silently — that's what this witnesses),
+  //   3. agentConfig.model is the dev stub's prefixed `provider/model-id`
+  //      ref, so the runner receives a ref it can parse rather than a bare id.
+  //
+  // Observation mechanism: `sandbox:open-session` is a SERVICE hook, so it is
+  // single-registrant (HookBus.registerService throws `duplicate-service`) —
+  // an observer plugin cannot register a second handler alongside the real
+  // @ax/sandbox-subprocess one, and replacing it would stop the run being
+  // end-to-end. Instead we wrap `bus.call` and delegate to the original, the
+  // same technique packages/conversations/src/__tests__/subscribe.test.ts:98
+  // uses to witness which service hooks a code path consulted. The wrap
+  // happens in an extraPlugin's init, which runs long before agent:invoke
+  // fires the call.
+  // -------------------------------------------------------------------------
+  it(
+    "resolves the agent's runner + model end-to-end onto sandbox:open-session",
+    { timeout: 20_000 },
+    async () => {
+      const script: StubRunnerScript = {
+        entries: [
+          { kind: 'assistant-text', content: 'ok' },
+          { kind: 'finish', reason: 'end_turn' },
+        ],
+      };
+
+      // The exact map main() hands the chat-orchestrator for this run:
+      // resolveRunnerBinaries is the production builder, and we feed it the
+      // same override the main() call below passes. Asserting against
+      // `expectedBinaries['claude-sdk']` (not `stubRunnerPath` directly, and
+      // not "some non-empty path") is what makes this a check of the runner-id
+      // → binary lookup rather than a check that a binary was spawned at all.
+      const expectedBinaries = resolveRunnerBinaries({
+        runnerBinaryOverride: stubRunnerPath,
+      });
+
+      let observed: ObservedOpenSession | undefined;
+      const openSessionObserver: Plugin = {
+        manifest: {
+          name: '@ax/test-chat-pipeline-open-session-observer',
+          version: '0.0.0',
+          registers: [],
+          calls: [],
+          subscribes: [],
+        },
+        init({ bus }) {
+          const originalCall = bus.call.bind(bus);
+          bus.call = (async <I, O>(
+            hookName: string,
+            callCtx: AgentContext,
+            input: I,
+          ): Promise<O> => {
+            if (hookName === 'sandbox:open-session') {
+              observed = input as ObservedOpenSession;
+            }
+            return originalCall<I, O>(hookName, callCtx, input);
+          }) as typeof bus.call;
+        },
+      };
+
+      const stdoutLines: string[] = [];
+      const stderrLines: string[] = [];
+
+      const rc = await main({
+        message: 'go',
+        configOverride: { sandbox: 'subprocess', storage: 'sqlite' },
+        workspaceRoot: tmp,
+        sqlitePath: path.join(tmp, 'runner-model.sqlite'),
+        stdout: (line) => stdoutLines.push(line),
+        stderr: (line) => stderrLines.push(line),
+        runnerBinaryOverride: stubRunnerPath,
+        skipCredentialProxy: true,
+        extraPlugins: [createTestProxyPlugin({ script }), openSessionObserver],
+      });
+
+      if (rc !== 0) {
+        throw new Error(
+          `main exited ${rc}; stderr:\n${stderrLines.join('\n')}`,
+        );
+      }
+      expect(rc).toBe(0);
+      expect(stdoutLines.join('\n')).toContain('ok');
+
+      // Fail loudly rather than skipping the three assertions below if the
+      // hook was never called — a `if (observed) { ... }` guard here would be
+      // an always-green test.
+      if (observed === undefined) {
+        throw new Error('sandbox:open-session was never called');
+      }
+
+      // 1. The map lookup, not merely "a path".
+      expect(observed.runnerBinary).toBe(expectedBinaries['claude-sdk']);
+      // 2. The runner ID survived every wire copy of AgentConfig.
+      expect(observed.owner.agentConfig.runner).toBe('claude-sdk');
+      // 3. The model is a `provider/model-id` ref (@ax/cli dev-agents-stub's
+      //    default), which is what @ax/agent-claude-sdk-runner parses.
+      expect(observed.owner.agentConfig.model).toBe(
+        'anthropic/claude-sonnet-4-6',
+      );
     },
   );
 });
