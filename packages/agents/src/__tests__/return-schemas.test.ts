@@ -10,7 +10,8 @@ describe('agents return schemas', () => {
     displayName: 'Helper',
     allowedTools: ['bash', 'web-search'],
     mcpConfigIds: ['m1'],
-    model: 'claude',
+    model: 'anthropic/claude-sonnet-4-6',
+    runner: 'claude-sdk',
     workspaceRef: 'v123',
     skillAttachments: [{ skillId: 's1', credentialBindings: { slotA: 'ref1' } }],
     connectorAttachments: ['salesforce', 'gh'],
@@ -32,6 +33,22 @@ describe('agents return schemas', () => {
         agent: { ...agent, connectorAttachments: 'gh' },
       }).success,
     ).toBe(false);
+  });
+
+  // PR 2 — `AgentSchema` is the `returns` schema on `agents:resolve` and zod
+  // object schemas STRIP undeclared keys. If `runner` were missing here the
+  // field would vanish silently between the store and the orchestrator.
+  it('requires runner on the resolve output and does not strip it', () => {
+    const { runner: _omit, ...withoutRunner } = agent;
+    expect(ResolveOutputSchema.safeParse({ agent: withoutRunner }).success).toBe(
+      false,
+    );
+    expect(
+      ResolveOutputSchema.safeParse({ agent: { ...agent, runner: 'nope' } })
+        .success,
+    ).toBe(false);
+    const parsed = ResolveOutputSchema.parse({ agent }) as { agent: Agent };
+    expect(parsed.agent.runner).toBe('claude-sdk');
   });
 
   it('accepts a null workspaceRef and empty skillAttachments', () => {

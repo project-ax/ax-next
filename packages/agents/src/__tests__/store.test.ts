@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { stopPostgresContainer } from '@ax/test-harness';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
 import {
   PostgreSqlContainer,
   type StartedPostgreSqlContainer,
@@ -13,6 +13,7 @@ import {
   validateCreateInput,
   validateUpdatePatch,
   validateConnectorAttachmentIds,
+  SUPPORTED_RUNNERS,
 } from '../store.js';
 import { scopedAgents } from '../scope.js';
 import type { AgentInput } from '../types.js';
@@ -31,14 +32,16 @@ function makeKysely(): Kysely<AgentsDatabase> {
   return k;
 }
 
-const ALLOWED = ['claude-opus-4-7', 'claude-sonnet-4-6'];
+// PR 2 (provider-agnostic runner, design §6): model ids are
+// `provider/model-id` refs. A bare id is no longer in any allow-list.
+const ALLOWED = ['anthropic/claude-opus-4-7', 'anthropic/claude-sonnet-4-6'];
 
 function makeInput(overrides: Partial<AgentInput> = {}): AgentInput {
   return {
     displayName: 'My Agent',
     allowedTools: ['bash.run', 'fs.read'],
     mcpConfigIds: [],
-    model: 'claude-opus-4-7',
+    model: 'anthropic/claude-opus-4-7',
     visibility: 'personal',
     ...overrides,
   };
@@ -89,6 +92,61 @@ describe('validation', () => {
     expect(() =>
       validateCreateInput(makeInput({ model: 'gpt-4' }), vctx),
     ).toThrow(/not in the allow-list/);
+  });
+
+  // PR 2 — no implicit "no slash means anthropic" fallback at runtime. A
+  // legacy bare id is rewritten by the migration; at the write boundary it
+  // simply isn't in the (now prefixed) allow-list.
+  it('rejects a bare (unprefixed) model id', () => {
+    expect(() =>
+      validateCreateInput(makeInput({ model: 'claude-sonnet-4-6' }), vctx),
+    ).toThrow(/not in the allow-list/);
+  });
+
+  it('defaults runner to claude-sdk when omitted', () => {
+    expect(validateCreateInput(makeInput(), vctx).runner).toBe('claude-sdk');
+  });
+
+  it('accepts an explicit claude-sdk runner', () => {
+    expect(
+      validateCreateInput(makeInput({ runner: 'claude-sdk' }), vctx).runner,
+    ).toBe('claude-sdk');
+  });
+
+  // PR 3 flips this test: the `RunnerId` union already names 'aisdk', but no
+  // binary exists behind it yet, so SUPPORTED_RUNNERS does not contain it.
+  it("rejects runner 'aisdk' until the binary ships (PR 3)", () => {
+    expect(SUPPORTED_RUNNERS).not.toContain('aisdk');
+    expect(() =>
+      validateCreateInput(makeInput({ runner: 'aisdk' }), vctx),
+    ).toThrow(/not in the allow-list/);
+  });
+
+  it('rejects an unknown runner id', () => {
+    expect(() =>
+      validateCreateInput(makeInput({ runner: 'nope' }), vctx),
+    ).toThrow(/not in the allow-list/);
+  });
+
+  it('rejects a non-string runner', () => {
+    expect(() =>
+      validateCreateInput(
+        makeInput({ runner: 42 as unknown as string }),
+        vctx,
+      ),
+    ).toThrow(/runner must be a string/);
+  });
+
+  it('validates runner on an update patch the same way', () => {
+    expect(validateUpdatePatch({ runner: 'claude-sdk' }, vctx)).toEqual({
+      runner: 'claude-sdk',
+    });
+    expect(() => validateUpdatePatch({ runner: 'aisdk' }, vctx)).toThrow(
+      /not in the allow-list/,
+    );
+    expect(() => validateUpdatePatch({ runner: 'nope' }, vctx)).toThrow(
+      /not in the allow-list/,
+    );
   });
 
   it('rejects allowedTools > 100 entries', () => {
@@ -188,13 +246,19 @@ describe('validation', () => {
 
 describe('resolveAllowedModels', () => {
   it('uses configured list when non-empty', () => {
-    expect(resolveAllowedModels(['x'])).toEqual(['x']);
+    expect(resolveAllowedModels(['openrouter/x-ai/grok-4.6'])).toEqual([
+      'openrouter/x-ai/grok-4.6',
+    ]);
   });
 
   it('falls back to env var when configured is empty/undefined', () => {
-    process.env.AX_AGENT_MODELS_ALLOWED = 'a, b , c';
+    process.env.AX_AGENT_MODELS_ALLOWED = 'anthropic/a, anthropic/b , anthropic/c';
     try {
-      expect(resolveAllowedModels(undefined)).toEqual(['a', 'b', 'c']);
+      expect(resolveAllowedModels(undefined)).toEqual([
+        'anthropic/a',
+        'anthropic/b',
+        'anthropic/c',
+      ]);
     } finally {
       delete process.env.AX_AGENT_MODELS_ALLOWED;
     }
@@ -204,7 +268,25 @@ describe('resolveAllowedModels', () => {
     delete process.env.AX_AGENT_MODELS_ALLOWED;
     const out = resolveAllowedModels(undefined);
     expect(out.length).toBeGreaterThan(0);
-    expect(out).toContain('claude-opus-4-7');
+    expect(out).toContain('anthropic/claude-opus-4-7');
+  });
+
+  // PR 2 — fail fast on operator misconfiguration. A bare id in the
+  // allow-list would make every agent that selects it unroutable at
+  // runtime (there is no provider to route to), so reject it at boot.
+  it('throws when a configured entry is not a provider/model-id ref', () => {
+    expect(() => resolveAllowedModels(['claude-sonnet-4-6'])).toThrow(
+      /provider\/model-id/,
+    );
+  });
+
+  it('throws when an env entry is not a provider/model-id ref', () => {
+    process.env.AX_AGENT_MODELS_ALLOWED = 'anthropic/claude-opus-4-7, gpt-4';
+    try {
+      expect(() => resolveAllowedModels(undefined)).toThrow(/gpt-4/);
+    } finally {
+      delete process.env.AX_AGENT_MODELS_ALLOWED;
+    }
   });
 });
 
@@ -306,6 +388,56 @@ describe('store + scopedAgents', () => {
     expect(updated.displayName).toBe('Renamed');
     // unchanged fields preserved
     expect(updated.model).toBe(created.model);
+  });
+
+  it('persists runner and defaults it to claude-sdk', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    const created = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(makeInput(), { allowedModels: ALLOWED }),
+    });
+    expect(created.runner).toBe('claude-sdk');
+    const round = await store.getById(created.id);
+    expect(round!.runner).toBe('claude-sdk');
+  });
+
+  // Guards the PATCH set-clause: a row whose runner drifted (here forced by
+  // raw SQL, in PR 3 selected by an operator) must be writable back through
+  // store.update. Without `runner` in the set-clause this stays 'aisdk'.
+  it('update writes the runner column', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    const created = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(makeInput(), { allowedModels: ALLOWED }),
+    });
+    await sql`UPDATE agents_v1_agents SET runner = 'aisdk' WHERE agent_id = ${created.id}`.execute(
+      db,
+    );
+    expect((await store.getById(created.id))!.runner).toBe('aisdk');
+    const updated = await store.update(created.id, { runner: 'claude-sdk' });
+    expect(updated.runner).toBe('claude-sdk');
+    expect((await store.getById(created.id))!.runner).toBe('claude-sdk');
+  });
+
+  it('rejects a row whose runner is not a known runner id', async () => {
+    const db = makeKysely();
+    await runAgentsMigration(db);
+    const store = createAgentStore(db);
+    const created = await store.create({
+      ownerId: 'u1',
+      ownerType: 'user',
+      validated: validateCreateInput(makeInput(), { allowedModels: ALLOWED }),
+    });
+    await sql`UPDATE agents_v1_agents SET runner = 'bogus' WHERE agent_id = ${created.id}`.execute(
+      db,
+    );
+    await expect(store.getById(created.id)).rejects.toThrow(/invalid runner/);
   });
 
   it('deleteById is idempotent', async () => {

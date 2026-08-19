@@ -120,6 +120,15 @@ const mcpConfigIdsSchema = z
 
 const modelSchema = z.string().min(1, 'model must be a non-empty string');
 
+// Runner id. Kept a plain bounded string here: the authoritative allow-list is
+// SUPPORTED_RUNNERS in store.ts, and a second enum on the HTTP boundary would
+// need editing in PR 3 for no safety gain (the store rejects anything it can't
+// spawn, and its error surfaces as a 400).
+const runnerSchema = z
+  .string()
+  .min(1, 'runner must be a non-empty string')
+  .max(64, 'runner must be at most 64 chars');
+
 const visibilitySchema = z.enum(['personal', 'team']);
 
 const teamIdSchema = z.string().min(1).max(128);
@@ -144,6 +153,7 @@ const createBodySchema = z
     allowedTools: allowedToolsSchema,
     mcpConfigIds: mcpConfigIdsSchema,
     model: modelSchema,
+    runner: runnerSchema.optional(),
     visibility: visibilitySchema,
     teamId: teamIdSchema.optional(),
     workspaceRef: workspaceRefSchema.optional(),
@@ -178,6 +188,7 @@ const updateBodySchema = z
     allowedTools: allowedToolsSchema.optional(),
     mcpConfigIds: mcpConfigIdsSchema.optional(),
     model: modelSchema.optional(),
+    runner: runnerSchema.optional(),
     workspaceRef: workspaceRefSchema.optional(),
   })
   .strict();
@@ -370,6 +381,7 @@ function serializeAgent(a: Agent): Record<string, unknown> {
     allowedTools: a.allowedTools,
     mcpConfigIds: a.mcpConfigIds,
     model: a.model,
+    runner: a.runner,
     workspaceRef: a.workspaceRef,
     skillAttachments: a.skillAttachments,
     connectorAttachments: a.connectorAttachments,

@@ -1,9 +1,9 @@
 import { randomBytes } from 'node:crypto';
-import { PluginError } from '@ax/core';
+import { isModelRef, PluginError } from '@ax/core';
 import { sql, type Kysely, type Transaction } from 'kysely';
 import type { AgentsDatabase, AgentsRow } from './migrations.js';
 import { scopedAgents, type AgentScope } from './scope.js';
-import type { Agent, AgentInput, SkillAttachment } from './types.js';
+import type { Agent, AgentInput, RunnerId, SkillAttachment } from './types.js';
 
 const PLUGIN_NAME = '@ax/agents';
 
@@ -34,11 +34,30 @@ const TOOL_NAME_RE = /^[A-Za-z][A-Za-z0-9_.-]{0,63}$/;
 const MCP_ID_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;
 const WORKSPACE_REF_RE = /^[A-Za-z0-9_./-]+$/;
 
+// Model ids are `provider/model-id` refs (design doc §6). No bare ids: there
+// is deliberately no runtime "no slash means anthropic" fallback, so an
+// unprefixed entry here would be an allow-list nobody can match.
 const DEFAULT_ALLOWED_MODELS: readonly string[] = [
-  'claude-opus-4-7',
-  'claude-sonnet-4-6',
-  'claude-haiku-4-5-20251001',
+  'anthropic/claude-opus-4-7',
+  'anthropic/claude-sonnet-4-6',
+  'anthropic/claude-haiku-4-5-20251001',
 ];
+
+/**
+ * Runner ids an agent may actually select today.
+ *
+ * The `RunnerId` union names `'aisdk'` because the type is the vocabulary,
+ * but no binary exists behind it until PR 3 — so it is NOT in this list and
+ * validation rejects it. There is deliberately no config field and no
+ * `AX_AGENT_RUNNERS_ALLOWED` env override: an escape hatch here would let an
+ * operator select a runner the host cannot spawn, turning a clean write-time
+ * rejection into a failed turn at session-open. PR 3 adds `'aisdk'` to this
+ * array in the same PR that ships the binary. (Deliberate deviation from
+ * `allowedModels`, which IS operator-configurable — a model id is routed to a
+ * provider at runtime; a runner id must map to a binary the host already has.)
+ */
+export const SUPPORTED_RUNNERS = ['claude-sdk'] as const;
+const DEFAULT_RUNNER: RunnerId = 'claude-sdk';
 
 function loadAllowedModelsFromEnv(): readonly string[] | null {
   const raw = process.env.AX_AGENT_MODELS_ALLOWED;
@@ -47,12 +66,38 @@ function loadAllowedModelsFromEnv(): readonly string[] | null {
   return parts.length === 0 ? null : parts;
 }
 
+/**
+ * Fail fast on an allow-list entry that isn't a `provider/model-id` ref.
+ * A bare id can never be routed (design §6 removed the implicit
+ * "no slash means anthropic" fallback), so an agent that selected it would
+ * fail every turn. Better to refuse to boot with a message naming the value.
+ */
+function assertModelRefs(models: readonly string[], source: string): void {
+  for (const model of models) {
+    if (!isModelRef(model)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        message:
+          `allowed model '${model}' (from ${source}) must be a ` +
+          `'provider/model-id' ref, e.g. 'anthropic/claude-sonnet-4-6'`,
+      });
+    }
+  }
+}
+
 export function resolveAllowedModels(
   configured: readonly string[] | undefined,
 ): readonly string[] {
-  if (configured !== undefined && configured.length > 0) return configured;
+  if (configured !== undefined && configured.length > 0) {
+    assertModelRefs(configured, 'AgentsConfig.allowedModels');
+    return configured;
+  }
   const fromEnv = loadAllowedModelsFromEnv();
-  if (fromEnv !== null) return fromEnv;
+  if (fromEnv !== null) {
+    assertModelRefs(fromEnv, 'AX_AGENT_MODELS_ALLOWED');
+    return fromEnv;
+  }
   return DEFAULT_ALLOWED_MODELS;
 }
 
@@ -193,6 +238,21 @@ function validateModel(value: unknown, allowed: readonly string[]): string {
   return value;
 }
 
+/**
+ * Mirrors `validateModel` — same error shape, same `not in the allow-list`
+ * message — but checks the CODE-owned `SUPPORTED_RUNNERS` rather than an
+ * operator-supplied list (see the SUPPORTED_RUNNERS comment for why).
+ */
+function validateRunner(value: unknown, allowed: readonly string[]): RunnerId {
+  if (typeof value !== 'string') {
+    throw invalid('runner must be a string');
+  }
+  if (!allowed.includes(value)) {
+    throw invalid(`runner '${value}' is not in the allow-list`);
+  }
+  return value as RunnerId;
+}
+
 function validateVisibility(value: unknown): 'personal' | 'team' {
   if (value !== 'personal' && value !== 'team') {
     throw invalid("visibility must be 'personal' or 'team'");
@@ -228,6 +288,7 @@ interface ValidatedAgentInput {
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
+  runner: RunnerId;
   workspaceRef: string | null;
   visibility: 'personal' | 'team';
   teamId: string | null;
@@ -247,6 +308,7 @@ export function validateCreateInput(
     allowedTools: validateAllowedTools(input.allowedTools),
     mcpConfigIds: validateMcpConfigIds(input.mcpConfigIds),
     model: validateModel(input.model, vctx.allowedModels),
+    runner: validateRunner(input.runner ?? DEFAULT_RUNNER, SUPPORTED_RUNNERS),
     workspaceRef: validateWorkspaceRef(input.workspaceRef ?? null),
     visibility,
     teamId,
@@ -282,6 +344,9 @@ export function validateUpdatePatch(
   }
   if (patch.model !== undefined) {
     out.model = validateModel(patch.model, vctx.allowedModels);
+  }
+  if (patch.runner !== undefined) {
+    out.runner = validateRunner(patch.runner, SUPPORTED_RUNNERS);
   }
   if (patch.workspaceRef !== undefined) {
     out.workspaceRef = validateWorkspaceRef(patch.workspaceRef);
@@ -357,6 +422,16 @@ function rowToAgent(row: AgentsRow): Agent {
       message: `agents_v1_agents.${row.agent_id} has invalid visibility`,
     });
   }
+  // Same posture as owner_type / visibility: the column is a domain enum, so
+  // a value outside `RunnerId` is a corrupt row, NOT a new runner. Failing
+  // loudly here beats handing the orchestrator an id it has no binary for.
+  if (row.runner !== 'claude-sdk' && row.runner !== 'aisdk') {
+    throw new PluginError({
+      code: 'corrupt-row',
+      plugin: PLUGIN_NAME,
+      message: `agents_v1_agents.${row.agent_id} has invalid runner '${row.runner}'`,
+    });
+  }
   const skillAttachmentsRaw = row.skill_attachments;
   if (
     !Array.isArray(skillAttachmentsRaw) ||
@@ -401,6 +476,7 @@ function rowToAgent(row: AgentsRow): Agent {
     allowedTools,
     mcpConfigIds,
     model: row.model,
+    runner: row.runner,
     workspaceRef: row.workspace_ref,
     skillAttachments,
     connectorAttachments,
@@ -525,6 +601,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           allowed_tools: JSON.stringify(validated.allowedTools) as unknown,
           mcp_config_ids: JSON.stringify(validated.mcpConfigIds) as unknown,
           model: validated.model,
+          runner: validated.runner,
           workspace_ref: validated.workspaceRef,
           skill_attachments: JSON.stringify([]) as unknown,
           connector_attachments: JSON.stringify([]) as unknown,
@@ -540,6 +617,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'allowed_tools',
           'mcp_config_ids',
           'model',
+          'runner',
           'workspace_ref',
           'webhook_token',
           'skill_attachments',
@@ -562,6 +640,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
         setClause.mcp_config_ids = JSON.stringify(patch.mcpConfigIds);
       }
       if (patch.model !== undefined) setClause.model = patch.model;
+      if (patch.runner !== undefined) setClause.runner = patch.runner;
       if (patch.workspaceRef !== undefined) setClause.workspace_ref = patch.workspaceRef;
 
       const row = await db
@@ -577,6 +656,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'allowed_tools',
           'mcp_config_ids',
           'model',
+          'runner',
           'workspace_ref',
           'webhook_token',
           'skill_attachments',
@@ -696,6 +776,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'allowed_tools',
           'mcp_config_ids',
           'model',
+          'runner',
           'workspace_ref',
           'webhook_token',
           'skill_attachments',
@@ -731,6 +812,7 @@ export function createAgentStore(db: Kysely<AgentsDatabase>): AgentStore {
           'allowed_tools',
           'mcp_config_ids',
           'model',
+          'runner',
           'workspace_ref',
           'webhook_token',
           'skill_attachments',

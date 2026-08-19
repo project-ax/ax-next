@@ -106,6 +106,31 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
     ALTER TABLE agents_v1_agents
       DROP COLUMN IF EXISTS system_prompt
   `.execute(db);
+
+  // PR 2 of the provider-agnostic runner sequence
+  // (docs/plans/2026-08-18-provider-agnostic-runner-design.md §1/§6):
+  // per-agent runner selection. The value is an ID (`claude-sdk`), never a
+  // path — the id → binary-path mapping lives in host config, so nothing
+  // filesystem-shaped leaks into the row or the hook payload (Invariant I1).
+  // NOT NULL DEFAULT backfills every existing row in one statement: before
+  // this column there was exactly one runner, and it was the SDK one.
+  await sql`
+    ALTER TABLE agents_v1_agents
+      ADD COLUMN IF NOT EXISTS runner TEXT NOT NULL DEFAULT 'claude-sdk'
+  `.execute(db);
+
+  // Same PR: model ids become `provider/model-id` refs (design §6). Legacy
+  // rows hold a bare Anthropic id, and there is deliberately NO runtime
+  // "no slash means anthropic" fallback — the ambiguity the prefix removes
+  // would come straight back. So the rewrite happens here, once, and the
+  // `NOT LIKE '%/%'` guard makes it idempotent: an already-prefixed row (or
+  // a nested `openrouter/x-ai/...` ref) is skipped, so re-running the
+  // migration can never produce `anthropic/anthropic/...`.
+  await sql`
+    UPDATE agents_v1_agents
+       SET model = 'anthropic/' || model
+     WHERE model NOT LIKE '%/%'
+  `.execute(db);
 }
 
 /**
@@ -121,6 +146,8 @@ export interface AgentsRow {
   allowed_tools: unknown;
   mcp_config_ids: unknown;
   model: string;
+  /** Runner id (`claude-sdk`), never a path. See the migration comment. */
+  runner: string;
   workspace_ref: string | null;
   webhook_token: string | null;
   skill_attachments: unknown; // JSONB; validated by store

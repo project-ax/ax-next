@@ -222,7 +222,7 @@ function makeBody(overrides: Partial<AgentInput> = {}): AgentInput {
     displayName: 'My Agent',
     allowedTools: ['bash.run'],
     mcpConfigIds: [],
-    model: 'claude-opus-4-7',
+    model: 'anthropic/claude-opus-4-7',
     visibility: 'personal',
     ...overrides,
   };
@@ -275,6 +275,7 @@ interface SerializedAgent {
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
+  runner: string;
   workspaceRef: string | null;
   skillAttachments: SerializedSkillAttachment[];
   connectorAttachments: string[];
@@ -317,6 +318,58 @@ describe('@ax/agents admin routes', () => {
     expect(agent.displayName).toBe('Created');
     expect(agent.ownerType).toBe('user');
     expect(agent.visibility).toBe('personal');
+  });
+
+  // PR 2 — the runner id is a first-class agent field on the admin wire.
+  it('POST /admin/agents serializes runner, defaulting to claude-sdk', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody({ displayName: 'Runner default' }),
+    });
+    expect(r.status).toBe(201);
+    expect((r.body as { agent: SerializedAgent }).agent.runner).toBe('claude-sdk');
+  });
+
+  it('POST /admin/agents accepts an explicit supported runner', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: { ...makeBody(), runner: 'claude-sdk' },
+    });
+    expect(r.status).toBe(201);
+    expect((r.body as { agent: SerializedAgent }).agent.runner).toBe('claude-sdk');
+  });
+
+  it('POST /admin/agents with an unsupported runner → 400', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: { ...makeBody(), runner: 'aisdk' },
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error: string }).error).toMatch(/runner/);
+  });
+
+  it('PATCH /admin/agents/:id accepts runner', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    const r = await http(stack.port, 'PATCH', `/admin/agents/${id}`, {
+      cookie,
+      body: { runner: 'claude-sdk' },
+    });
+    expect(r.status).toBe(200);
+    expect((r.body as { agent: SerializedAgent }).agent.runner).toBe('claude-sdk');
+
+    const bad = await http(stack.port, 'PATCH', `/admin/agents/${id}`, {
+      cookie,
+      body: { runner: 'aisdk' },
+    });
+    expect(bad.status).toBe(400);
   });
 
   it('POST /admin/agents with allowedTools=[] AND mcpConfigIds=[] → 400 with wildcard reject message', async () => {
