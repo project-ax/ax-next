@@ -123,6 +123,27 @@ describe('providers handlers', () => {
     expect(anthropic?.configured).toBe(false);
   });
 
+  it('advertises BARE model ids — the consumer joins provider + model into the ref', async () => {
+    // The admin "Model config" tab builds `settings:fast-model` as
+    // `${provider.id}/${modelId}`. If these ids carried their own `anthropic/`
+    // prefix the stored ref would come out as 'anthropic/anthropic/claude-…'
+    // and the preselect (which strips one prefix) would never match.
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createProviderHandlers({ bus });
+    const { res, bodyOf } = mkRes();
+
+    await handlers.list(mkReq({}), res);
+
+    const body = bodyOf() as {
+      providers: Array<{ id: string; models: string[] }>;
+    };
+    const anthropic = body.providers.find((p) => p.id === 'anthropic');
+    expect(anthropic?.models.length).toBeGreaterThan(0);
+    for (const m of anthropic!.models) {
+      expect(m).not.toContain('/');
+    }
+  });
+
   it('returns configured=true after a key has been saved', async () => {
     const bus = await makeBus({ id: 'admin', isAdmin: true });
     // Pre-seed a global anthropic credential.

@@ -81,7 +81,7 @@ describe('mock admin agents', () => {
           color: '#abcdef',
           allowed_tools: [],
           mcp_config_ids: [],
-          model: 'claude-sonnet-4-6',
+          model: 'anthropic/claude-sonnet-4-6',
         }),
       });
       expect(res.status).toBe(201);

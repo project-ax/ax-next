@@ -30,6 +30,7 @@
 import { useEffect, useState } from 'react';
 import {
   listAdminAgents,
+  listAgentModels,
   createAgent,
   patchAgent,
   patchAgentConnectorAttachments,
@@ -39,6 +40,7 @@ import {
   listTeams,
   type AdminAgent,
   type AdminAgentInput,
+  type AgentModelOption,
 } from '../../lib/admin';
 import { listConnectors, getConnector, type ConnectorSummary, type ConnectorRouteBase } from '../../lib/connectors';
 import { getOAuthStatus, type OAuthStatus } from '../../lib/connectors-oauth';
@@ -57,6 +59,7 @@ import { Card } from '@/components/ui/card';
 import { Textarea } from '@/components/ui/textarea';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
   Dialog,
   DialogContent,
@@ -64,12 +67,6 @@ import {
   DialogTitle,
 } from '@/components/ui/dialog';
 import { RoleCard } from './RoleCard';
-
-const MODELS = [
-  'claude-sonnet-4-6',
-  'claude-opus-4-7',
-  'claude-haiku-4-5-20251001',
-];
 
 type FormState = {
   displayName: string;
@@ -97,7 +94,9 @@ const emptyForm = (): FormState => ({
   identity: '',
   soul: '',
   operating: '',
-  model: MODELS[0] ?? 'claude-sonnet-4-6',
+  // Empty until GET /admin/agents/models resolves — this deployment's
+  // allow-list decides what a valid model is, not a constant in the SPA.
+  model: '',
   allowedTools: '',
   connectorIds: [],
 });
@@ -111,7 +110,7 @@ const formFromAgent = (a: AdminAgent): FormState => ({
   identity: '',
   soul: '',
   operating: '',
-  model: a.model || MODELS[0] || 'claude-sonnet-4-6',
+  model: a.model,
   allowedTools: (a.allowedTools ?? []).join(', '),
   connectorIds: a.connectorAttachments ?? [],
 });
@@ -174,6 +173,12 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   // user toggles to `team` before `/admin/teams` resolves.
   const [teams, setTeams] = useState<Team[] | null>(null);
   const [connectors, setConnectors] = useState<ConnectorSummary[]>([]);
+  // The selectable models for this deployment, from GET /admin/agents/models
+  // (the agents allow-list ∩ the provider plugin's `models:list-supported`).
+  // `null` = not loaded yet, `[]` = loaded and genuinely empty (no provider
+  // plugin), which the form calls out instead of showing a blank picker.
+  const [models, setModels] = useState<AgentModelOption[] | null>(null);
+  const [modelsError, setModelsError] = useState<string | null>(null);
   const [editing, setEditing] = useState<AdminAgent | 'new' | null>(null);
   const [form, setForm] = useState<FormState>(() => emptyForm());
   const [busy, setBusy] = useState(false);
@@ -221,6 +226,16 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     void listTeams()
       .then((t) => setTeams(t ?? []))
       .catch(() => setTeams([]));
+    // The model list is NOT best-effort-empty: an empty picker with no
+    // explanation is how someone ends up staring at a form they can't submit.
+    // A failure is surfaced in the form (see the Model field below).
+    setModelsError(null);
+    void listAgentModels()
+      .then((m) => setModels(m))
+      .catch((err: unknown) => {
+        setModels([]);
+        setModelsError(err instanceof Error ? err.message : String(err));
+      });
     // A non-admin reads/writes their OWN connectors via /settings/connectors and
     // may only attach PERSONAL ones (their own key) — workspace/shared connectors
     // are admin-only to attach (the server enforces this; filtering the picker is
@@ -345,6 +360,28 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     setEditing(a);
   };
 
+  // Once the list lands, preselect the first option for a NEW agent (an edit
+  // keeps whatever the agent already has). Runs on `models` so it can't race
+  // the fetch, and only fills a BLANK model so it never overwrites a choice.
+  useEffect(() => {
+    if (models === null || models.length === 0) return;
+    setForm((f) => (f.model === '' ? { ...f, model: models[0]!.id } : f));
+  }, [models]);
+
+  // What the picker renders: the fetched options, plus the agent's CURRENT
+  // model when the list no longer carries it (allow-list changed, provider
+  // swapped). Without that fallback a `<select>` whose value matches no option
+  // renders blank and quietly implies a model the agent isn't using.
+  const fetchedModels = models ?? [];
+  const currentModelMissing =
+    form.model !== '' && !fetchedModels.some((m) => m.id === form.model);
+  const modelOptions: AgentModelOption[] = currentModelMissing
+    ? [
+        ...fetchedModels,
+        { id: form.model, label: `${form.model} (not available)`, kind: 'either' },
+      ]
+    : fetchedModels;
+
   const cancelForm = () => {
     setEditing(null);
     setError(null);
@@ -388,6 +425,18 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     if (allowedTools.length === 0 && !bareStaysBare) {
       setBusy(false);
       setError('agent must list at least one tool');
+      return;
+    }
+    // The server rejects an empty/unknown model, so say why HERE rather than
+    // shipping a blank one and surfacing a bare 400. Two distinct causes: the
+    // list is still in flight, or this deployment genuinely has no models.
+    if (!form.model) {
+      setBusy(false);
+      setError(
+        models === null
+          ? 'still loading the model list — give it a second and save again'
+          : 'no model is available to assign — configure a model provider first',
+      );
       return;
     }
     const base: AdminAgentInput = {
@@ -663,23 +712,41 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
             </div>
           )}
 
-          {/* Model */}
+          {/* Model — the options are whatever THIS deployment can serve
+              (GET /admin/agents/models = the agents allow-list ∩ the loaded
+              provider plugin's `models:list-supported`), never a list baked
+              into the SPA. Values are `provider/model-id` refs. */}
           <div className="flex flex-col gap-2">
             <Label htmlFor="agent-model">Model</Label>
-            <select
-              id="agent-model"
-              className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-              value={form.model}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, model: e.target.value }))
-              }
-            >
-              {MODELS.map((m) => (
-                <option key={m} value={m}>
-                  {m}
-                </option>
-              ))}
-            </select>
+            {models !== null && modelOptions.length === 0 ? (
+              <Alert variant="destructive">
+                <AlertDescription>
+                  {modelsError === null
+                    ? 'No models are available yet. That usually means no model provider is configured — add a provider key on the Model config tab, then reopen this form.'
+                    : `We couldn’t load the model list (${modelsError}). Close and reopen this form to try again.`}
+                </AlertDescription>
+              </Alert>
+            ) : (
+              <select
+                id="agent-model"
+                className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                value={form.model}
+                disabled={models === null}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, model: e.target.value }))
+                }
+              >
+                {models === null ? (
+                  <option value="">Loading models…</option>
+                ) : (
+                  modelOptions.map((m) => (
+                    <option key={m.id} value={m.id}>
+                      {m.label}
+                    </option>
+                  ))
+                )}
+              </select>
+            )}
           </div>
 
           {/* Identity files (TASK-142). The agent's identity lives in its

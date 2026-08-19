@@ -109,6 +109,25 @@ export async function putAgentIdentity(
   }
 }
 
+/** One selectable model, as reported by `GET /admin/agents/models`. The route
+ *  intersects the provider plugin's `models:list-supported` output with this
+ *  deployment's agents allow-list, so every id here is a valid agent `model`
+ *  (`provider/model-id`). An empty list means no provider plugin is loaded /
+ *  configured — the caller must say so rather than render an empty picker. */
+export interface AgentModelOption {
+  id: string;
+  label: string;
+  kind: 'fast' | 'default' | 'either';
+}
+
+/** GET the models this deployment can actually assign to an agent. */
+export async function listAgentModels(): Promise<AgentModelOption[]> {
+  const res = await fetch('/admin/agents/models', { credentials: 'include' });
+  if (!res.ok) throw new Error(`list agent models: ${res.status}`);
+  const body = (await res.json()) as { models?: AgentModelOption[] };
+  return body.models ?? [];
+}
+
 export async function listAdminAgents(): Promise<AdminAgent[]> {
   const res = await fetch('/admin/agents', { credentials: 'include' });
   if (!res.ok) throw new Error(`list agents: ${res.status}`);

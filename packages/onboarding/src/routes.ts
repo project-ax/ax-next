@@ -2,7 +2,7 @@ import type { OnboardingStore } from './store.js';
 import type { BootstrapSessionStore } from './sessions.js';
 import type { RateLimiter } from './rate-limit.js';
 import { verifyToken } from './token.js';
-import type { AgentContext, HookBus } from '@ax/core';
+import { isModelRef, type AgentContext, type HookBus } from '@ax/core';
 import { runCompletionTransaction } from './completion-tx.js';
 
 // ---------------------------------------------------------------------------
@@ -237,10 +237,22 @@ export function createOnboardingRouteHandlers(deps: OnboardingRouteHandlerDeps) 
         res.status(400).json({ error: 'missing-apiKey' });
         return;
       }
+      // Both ids are fully-qualified `provider/model-id` refs — the same shape
+      // the agents allow-list and `settings:fast-model` store. They are written
+      // VERBATIM downstream (completion-tx.ts), so a malformed one is rejected
+      // here rather than silently persisted.
       const fastModel =
-        typeof models?.fast === 'string' ? models.fast : 'claude-haiku-4-5-20251001';
+        typeof models?.fast === 'string'
+          ? models.fast
+          : 'anthropic/claude-haiku-4-5-20251001';
       const defaultModel =
-        typeof models?.default === 'string' ? models.default : 'claude-sonnet-4-6';
+        typeof models?.default === 'string'
+          ? models.default
+          : 'anthropic/claude-sonnet-4-6';
+      if (!isModelRef(fastModel) || !isModelRef(defaultModel)) {
+        res.status(400).json({ error: 'invalid-model-ref' });
+        return;
+      }
 
       // 4) Run the completion transaction.
       const result = await runCompletionTransaction({

@@ -211,7 +211,10 @@ describe('Onboarding wizard — end-to-end happy path canary', () => {
         },
         body: JSON.stringify({
           apiKey: VALID_ANTHROPIC_KEY,
-          models: { fast: 'claude-haiku-4-5-20251001', default: 'claude-sonnet-4-6' },
+          models: {
+            fast: 'anthropic/claude-haiku-4-5-20251001',
+            default: 'anthropic/claude-sonnet-4-6',
+          },
         }),
       });
       expect(modelRes.status).toBe(200);
@@ -252,14 +255,14 @@ describe('Onboarding wizard — end-to-end happy path canary', () => {
       const adminUserId = meBody.user.id;
 
       // d) agents:list-for-user — exactly one agent: 'Default Agent' with
-      //    model = the chosen defaultModel ('claude-sonnet-4-6').
+      //    model = the chosen defaultModel ('anthropic/claude-sonnet-4-6').
       const agentsOut = await harness.bus.call<
         { userId: string; teamIds: string[] },
         { agents: Array<{ displayName: string; model: string }> }
       >('agents:list-for-user', harness.ctx(), { userId: adminUserId, teamIds: [] });
       expect(agentsOut.agents).toHaveLength(1);
       expect(agentsOut.agents[0].displayName).toBe('Default Agent');
-      expect(agentsOut.agents[0].model).toBe('claude-sonnet-4-6');
+      expect(agentsOut.agents[0].model).toBe('anthropic/claude-sonnet-4-6');
 
       // e) storage:get('settings:fast-model') — returns the chosen fastModel
       //    as the canonical `provider/model-id` ref that @ax/conversation-
@@ -269,9 +272,10 @@ describe('Onboarding wizard — end-to-end happy path canary', () => {
         { value: Uint8Array | undefined }
       >('storage:get', harness.ctx(), { key: 'settings:fast-model' });
       expect(fastModelOut.value).toBeDefined();
-      expect(new TextDecoder().decode(fastModelOut.value!)).toBe(
-        'anthropic/claude-haiku-4-5-20251001',
-      );
+      const storedFastModel = new TextDecoder().decode(fastModelOut.value!);
+      expect(storedFastModel).toBe('anthropic/claude-haiku-4-5-20251001');
+      // The ref is stored verbatim — never re-prefixed into 'anthropic/anthropic/…'.
+      expect(storedFastModel).not.toContain('anthropic/anthropic/');
 
       // -----------------------------------------------------------------------
       // Post-completion lockdown (I11)

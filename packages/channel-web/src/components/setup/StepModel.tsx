@@ -16,16 +16,20 @@ interface Props {
   onComplete: () => void;
 }
 
+// Ids are fully-qualified `provider/model-id` refs — the shape POST /setup/model
+// validates and stores verbatim (the agents allow-list and `settings:fast-model`
+// both speak it). The wizard only offers Anthropic today; the prefix is part of
+// the id, NOT something a later step tacks on.
 const MODELS = [
-  { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (fast)', kind: 'fast' as const },
-  { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (balanced)', kind: 'either' as const },
-  { id: 'claude-opus-4-7', label: 'Claude Opus 4.7 (capable)', kind: 'default' as const },
+  { id: 'anthropic/claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5 (fast)', kind: 'fast' as const },
+  { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6 (balanced)', kind: 'either' as const },
+  { id: 'anthropic/claude-opus-4-7', label: 'Claude Opus 4.7 (capable)', kind: 'default' as const },
 ];
 
 export function StepModel({ onComplete }: Props) {
   const [apiKey, setApiKey] = useState('');
-  const [fastModel, setFastModel] = useState('claude-haiku-4-5-20251001');
-  const [defaultModel, setDefaultModel] = useState('claude-sonnet-4-6');
+  const [fastModel, setFastModel] = useState('anthropic/claude-haiku-4-5-20251001');
+  const [defaultModel, setDefaultModel] = useState('anthropic/claude-sonnet-4-6');
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 

@@ -13,8 +13,10 @@ import { actualParentFromMismatch, NO_ACTUAL_PARENT } from './workspace-cas.js';
 
 const PLUGIN_NAME = '@ax/channel-web';
 
-/** Hidden default — see plan decision #2. No persisted "default model" setting exists. */
-const DEFAULT_PERSONAL_AGENT_MODEL = 'claude-sonnet-4-6';
+/** Hidden default — see plan decision #2. No persisted "default model" setting
+ *  exists. Fully-qualified `provider/model-id`: the agents allow-list rejects
+ *  bare ids, so a bare value here fails first-run agent creation outright. */
+const DEFAULT_PERSONAL_AGENT_MODEL = 'anthropic/claude-sonnet-4-6';
 
 // ---------------------------------------------------------------------------
 // POST /api/agents/bootstrap — first-run personal-agent bootstrap (TASK-140,
