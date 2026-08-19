@@ -126,6 +126,13 @@ export async function runAgentsMigration<DB>(db: Kysely<DB>): Promise<void> {
   // `NOT LIKE '%/%'` guard makes it idempotent: an already-prefixed row (or
   // a nested `openrouter/x-ai/...` ref) is skipped, so re-running the
   // migration can never produce `anthropic/anthropic/...`.
+  //
+  // SCOPE: agent ROWS only. A session snapshot frozen before this deploy
+  // (`session_v1`'s persisted agent_config_json) keeps its bare model and is
+  // NOT rewritten — the runner's parseModelRef then rejects it and that turn
+  // terminates. Deliberate: there is no runtime bare-id fallback by design,
+  // and sessions are ephemeral, so the next conversation self-heals off the
+  // migrated row. Worth knowing before a rolling upgrade with live sessions.
   await sql`
     UPDATE agents_v1_agents
        SET model = 'anthropic/' || model

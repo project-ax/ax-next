@@ -1392,6 +1392,19 @@ export function createOrchestrator(
       model: agent.model,
       // PR 2 — the runner ID rides the wire (the runner-visible contract stays
       // the id, never the host's binary path; see resolveRunnerBinary above).
+      //
+      // NOTE this copy is NOT what selects the binary — that lookup below uses
+      // `agent.runner` off the freshly-resolved AgentRecord. This is the frozen
+      // SNAPSHOT (Invariant I10: config captured once at session creation), and
+      // it has no runtime reader yet. Its consumer arrives in PR 3: with two
+      // runners, resuming a session has to know which runner produced the
+      // existing transcript, because the transcript formats differ and a
+      // cross-runner resume must demote to a fresh session rather than hand one
+      // runner's transcript to the other (design doc §8, "Documented
+      // non-parity"). Reading the agent row instead would answer "which runner
+      // does this agent use NOW", not "which runner wrote this transcript" —
+      // and those diverge exactly when someone switches an agent's runner
+      // mid-conversation, which is the case the demotion exists for.
       runner: agent.runner,
     };
 

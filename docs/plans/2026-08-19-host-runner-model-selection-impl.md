@@ -354,9 +354,17 @@ Half-wired policy: both presets change in the same PR.
   and maps it onto the `'claude-sdk'` key (documented in the JSDoc — one binary today,
   one key).
 - [ ] **Step 5:** Helm — `deploy/charts/ax-next/values.yaml:624` and
-  `gke-values.yaml:200` currently default `AX_AGENT_MODELS_ALLOWED` to
-  `["claude-sonnet-4-5"]`. Prefix to `["anthropic/claude-sonnet-4-5"]`. Check the
-  chart's render test for assertions on that value.
+  `gke-values.yaml:200` carry `config.models.default: ["claude-sonnet-4-5"]`.
+  **Correction (found in review):** this value does NOT feed
+  `AX_AGENT_MODELS_ALLOWED` — the chart never sets that env var, and
+  `config.models` only renders into the mounted `ax.config.yaml` ConfigMap,
+  which nothing parses for models. The k8s allow-list is therefore
+  `@ax/agents`' built-in `DEFAULT_ALLOWED_MODELS`. The value is dead config.
+  Still bring it to the `provider/model-id` shape (so it is correct if ever
+  wired) and to an id `models:list-supported` actually advertises
+  (`anthropic/claude-sonnet-4-6` — `claude-sonnet-4-5` appears nowhere else in
+  the repo), with a comment marking it unwired. Wiring it through is a
+  follow-up card, not this PR. Check the chart's render test for assertions.
 - [ ] **Step 6:** **Verify build output, not just the diff** (PR-1 lesson). After
   `pnpm build`, confirm the resolved runner path exists:
   `node -e "console.log(require.resolve('@ax/agent-claude-sdk-runner'))"` from
