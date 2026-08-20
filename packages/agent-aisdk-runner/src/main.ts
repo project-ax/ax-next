@@ -338,7 +338,13 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
  */
 export function composeInstructions(prompt: string, section: string): string {
   if (section.length === 0) return prompt;
-  return `${prompt.replace(/\s+$/, '')}\n\n${section}`;
+  // `trimEnd()`, NOT `.replace(/\s+$/, '')`. The composed prompt includes
+  // agent-authored `.ax/` files, so it counts as uncontrolled input, and a
+  // trailing-whitespace regex is quadratic on a string of many repeated
+  // whitespace chars (CodeQL js/polynomial-redos — it flagged exactly this).
+  // `governed-paths.ts` already dodges the same rule for trailing slashes with
+  // a loop; `trimEnd` is the native, linear equivalent here.
+  return `${prompt.trimEnd()}\n\n${section}`;
 }
 
 /**
