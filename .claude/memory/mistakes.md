@@ -152,3 +152,32 @@ owning packages' suites — per-package green means nothing here; (b) grep for *
   **Guards:** never build the workspace from a test under CI (`scripts/__tests__/no-workspace-build-in-tests.test.js`
   is a tripwire for it); and when triaging a zero-assertion CI failure, check for heavy work spawned BY the suite
   before blaming the runner.
+
+- `2026-08-20` — **The aisdk runner could not boot in the container at all, and 220+ green tests could not see it.**
+  `packages/agent-aisdk-runner/src/tools/builtins.ts` imported `glob` from `node:fs/promises` for the Glob/Grep
+  built-ins. That API landed in **Node 22**; `container/agent/Dockerfile` pins **Node 20**. So the runner died at
+  module load with a `SyntaxError`, the host logged `sandbox-terminated` → `sandbox-open-failed`, and EVERY turn on
+  an `aisdk`-pinned agent failed with no explanation. The `claude-sdk` runner was fine in the same image, which made
+  it look environmental rather than runner-specific.
+  **Why nothing caught it:** the repo's `engines.node` is `>=24` and the whole suite — including the parity e2e that
+  drives the real `runRunner` shell — runs on the DEVELOPER's Node, never on the container's. The docker build even
+  printed `WARN Unsupported engine: wanted {"node":">=24.0.0"} (current: v20.20.2)` on every build; nobody read it.
+  **The general shape:** the runner executes on a different Node than the one that tests it. Any API newer than the
+  Dockerfile's pin compiles, type-checks, unit-tests and e2e-tests green, then dies in the pod.
+  **Guard:** `packages/agent-aisdk-runner/src/__tests__/node-floor.test.ts` reads the pinned major straight out of
+  the Dockerfile and fails on a runner-side import of anything newer. Bump the base image and entries drop off the
+  deny-list by themselves.
+
+- `2026-08-20` — **"Cross-runner resume demotes to fresh" was true in one direction only; the other direction
+  bricked the conversation.** Switching an agent `aisdk` → `claude-sdk` handed
+  `agent-claude-sdk-runner`'s `JsonlTranscriptSource` the aisdk runner's transcript. It adopted the bytes
+  unconditionally, the shell's F2a guard read "bytes present ⟹ resumable", and `query({ resume })` exited 1 with
+  "No conversation found with session ID". Every later turn crashed identically — reproduced 5/5.
+  **The seam already had the fix in it:** `TranscriptSource.write` may return `'unusable'`, which
+  `restoreTranscriptForResume` turns into "no resumable transcript" and F2a turns into a clean fresh start. The aisdk
+  source used it; this one never did, behind a comment asserting "any bytes the host store returns for a session
+  this runner wrote are, by construction, in the shape the SDK reads back" — a premise that stopped being true the
+  moment an agent could change runner.
+  **Lesson:** when a comment justifies skipping a check by naming an invariant, re-read whether that invariant still
+  holds after the feature that made it conditional. And a documented behaviour is a claim to TEST, not to trust —
+  both of this walk's real bugs were found by exercising something the docs said already worked.

@@ -611,3 +611,39 @@ could not fail) and told me a claim I had written in a comment was overstated
 (`dropTurnFromJsonl` already matched an explicit `turnId` by top-level `uuid`, so
 the new `role` branch was doing less than the comment said). Mutation results are
 evidence about the TEST; they also fact-check the prose.
+
+## Proving a turn really ran on the runner you think (walk technique, 2026-08-20)
+
+`conversations.runner_type` is **not** a witness — it is a host-wide constant frozen at
+conversation create (`ConversationsConfig.defaultRunnerType`, default `'claude-sdk'`), and it
+predates per-agent `agents.runner`. An `aisdk` agent's conversations all read
+`runnerType: "claude-sdk"`. Nothing reads the column, so it is stale metadata rather than a
+functional bug — but do not use it to confirm a pin.
+
+The ground-truth witness is the runner pod's argv:
+
+```bash
+kubectl -n ax-next-runners get pods \
+  -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.spec.containers[0].args}{"\n"}{end}'
+# -> ["node","/opt/ax-next/host/node_modules/.../@ax/agent-aisdk-runner/dist/main.js"]
+```
+
+Related walk techniques that paid off:
+
+- **Map reqId → pod** with `kubectl -n ax-next logs deploy/ax-next-host | grep creating_pod`;
+  runner pods are reaped seconds after a failure, so a name captured after the fact is useless.
+- **`ps` is not in the sandbox image.** To prove a Bash call is genuinely mid-flight before
+  injecting a fault, have the command `touch` a sentinel first and poll for it with
+  `kubectl exec … -- test -f`. Killing an idle warm pod makes the fault silently not fire.
+- **The model may refuse or ask to confirm a deliberately long command**, which ends the turn
+  early and looks like the fault failing to fire. Say the long duration is the point, and
+  confirm when it asks.
+- **npm-egress proof:** the `npm notice` banner the sweep catalog relies on is absent on this
+  image, so it cannot distinguish a real npx run from a model-drawn cow. Ask instead for
+  `curl -o /dev/null -w '%{http_code}'` against `registry.npmjs.org` (expect `200`) AND a
+  non-allowlisted host (expect `000` + `curl: (56) CONNECT tunnel failed, response 403`).
+  The 200/403 pair proves the allowlist is real, live, and specific.
+- **npm/pypi egress is now gated by a CONNECTOR, not a skill.** A skill manifest declaring a
+  `capabilities:` block is rejected outright (`capability-block-forbidden`); create a connector
+  with `capabilities.packages.npm` (all four capability keys are required by the schema) and
+  attach it. The chat-qa-sweep skill's Phase 0 still documents the old skill-based lever.
