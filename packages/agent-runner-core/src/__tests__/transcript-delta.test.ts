@@ -6,7 +6,7 @@ import {
   writeFileSync,
   rmSync,
 } from 'node:fs';
-import { stat, writeFile } from 'node:fs/promises';
+import { readFile, stat, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { IpcClient } from '@ax/ipc-protocol';
@@ -16,6 +16,7 @@ import {
   shipTranscriptDelta,
   splitCompleteLines,
   type TranscriptSource,
+  type TranscriptWriteOutcome,
 } from '../transcript-delta.js';
 
 function writeJsonl(root: string, sessionId: string, body: string): string {
@@ -29,28 +30,31 @@ function writeJsonl(root: string, sessionId: string, body: string): string {
 // `locateJsonl`'s real readdir-walk and the SDK-slug `write` destination now
 // live behind `createJsonlTranscriptSource` in @ax/agent-claude-sdk-runner
 // (covered by jsonl-transcript-source.test.ts there) — core can't depend on
-// that downstream package, so this fixture-local fake resolves the fixed
-// `my-proj` path `writeJsonl` above writes to for `locate` (preserving these
-// tests' existing "not found" vs "found" behavior verbatim), and records
-// `write` calls in-memory instead of naming any on-disk destination — core
-// must never know where the bytes land.
+// that downstream package, so this fixture-local fake reads the fixed
+// `my-proj` path `writeJsonl` above writes to (preserving these tests' existing
+// "not found" vs "found" behavior verbatim), and records `write` calls
+// in-memory instead of naming any on-disk destination — core must never know
+// where the bytes land. `writeOutcome` lets a test drive the 'unusable' answer
+// a runner gives when it cannot adopt a foreign serialization.
 function fakeSource(
   root: string,
+  writeOutcome: TranscriptWriteOutcome = 'accepted',
 ): TranscriptSource & { writes: Array<{ sessionId: string; bytes: Buffer }> } {
   const writes: Array<{ sessionId: string; bytes: Buffer }> = [];
   return {
     writes,
-    locate: async (sessionId: string) => {
+    read: async (sessionId: string) => {
       const candidate = join(root, '.claude', 'projects', 'my-proj', `${sessionId}.jsonl`);
       try {
         await stat(candidate);
-        return candidate;
+        return await readFile(candidate);
       } catch {
         return null;
       }
     },
     write: async (sessionId: string, bytes: Buffer) => {
       writes.push({ sessionId, bytes });
+      return writeOutcome;
     },
   };
 }
@@ -311,7 +315,7 @@ describe('shipTranscriptDelta', () => {
     }
   });
 
-  it('is no-jsonl when the file does not exist yet', async () => {
+  it('is no-transcript when the source has nothing for the session yet', async () => {
     const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
     try {
       const client = fakeClient({});
@@ -321,7 +325,7 @@ describe('shipTranscriptDelta', () => {
         sessionId: 'missing',
         state: { sentOffset: 0, sentSeq: 0 },
       });
-      expect(res.outcome).toBe('no-jsonl');
+      expect(res.outcome).toBe('no-transcript');
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
@@ -379,6 +383,40 @@ describe('restoreTranscriptForResume', () => {
       expect(res.state).toEqual({ sentOffset: 0, sentSeq: 0 });
       // No transcript to restore — the source is never asked to write anything.
       expect(source.writes).toHaveLength(0);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  // Cross-runner demotion (design §5). The host store hands back bytes the
+  // source cannot represent — a transcript the OTHER runner serialized. The
+  // source answers 'unusable' and core reports written:false, which routes
+  // into the SAME F2a demote-to-fresh branch as "no rows at all". No second
+  // branch exists in runRunner for this, by design.
+  it('reports written:false when the source answers unusable (foreign transcript)', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
+    try {
+      const foreign = '{"some":"other-runners-format"}\n';
+      const tmpFile = join(tmpdir(), `ax-restore-foreign-${Date.now()}.bin`);
+      await writeFile(tmpFile, foreign);
+      const client = fakeClient({
+        callBinary: vi.fn(async () => ({ path: tmpFile, bytes: foreign.length })) as never,
+      });
+      const source = fakeSource(root, 'unusable');
+
+      const res = await restoreTranscriptForResume({
+        client,
+        source,
+        sessionId: 'sess-foreign',
+      });
+
+      expect(res.written).toBe(false);
+      // Ship state resets to zero — a demoted session must not ship a delta
+      // against an offset derived from bytes it never adopted.
+      expect(res.state).toEqual({ sentOffset: 0, sentSeq: 0 });
+      // The source WAS offered the bytes (that is how it recognized them as
+      // foreign); it simply refused them.
+      expect(source.writes).toHaveLength(1);
     } finally {
       rmSync(root, { recursive: true, force: true });
     }

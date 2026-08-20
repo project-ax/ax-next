@@ -2,23 +2,34 @@ import { describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, readFile, realpath, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createJsonlTranscriptSource, encodeProjectSlug } from '../jsonl-transcript-source.js';
+import {
+  createJsonlTranscriptSource,
+  encodeProjectSlug,
+  locateJsonl,
+} from '../jsonl-transcript-source.js';
 
 describe('createJsonlTranscriptSource', () => {
-  it('finds the jsonl under an unknown project slug', async () => {
+  it('reads the jsonl bytes from under an unknown project slug', async () => {
     const root = await mkdtemp(join(tmpdir(), 'jsonl-src-'));
     const dir = join(root, '.claude', 'projects', '-some-encoded-slug');
     await mkdir(dir, { recursive: true });
     await writeFile(join(dir, 'sess-1.jsonl'), '{"type":"user"}\n');
 
     const source = createJsonlTranscriptSource(root);
-    await expect(source.locate('sess-1')).resolves.toBe(join(dir, 'sess-1.jsonl'));
+    // The seam hands core BYTES, not a path — core must not learn that this
+    // runner's transcript is a file at all.
+    const bytes = await source.read('sess-1');
+    expect(bytes?.toString('utf8')).toBe('{"type":"user"}\n');
+    // The walk that found it is still exported for turn-end-uuid.ts.
+    await expect(locateJsonl(root, 'sess-1')).resolves.toBe(
+      join(dir, 'sess-1.jsonl'),
+    );
   });
 
-  it('returns null when no transcript exists yet', async () => {
+  it('read returns null when no transcript exists yet', async () => {
     const root = await mkdtemp(join(tmpdir(), 'jsonl-src-'));
     const source = createJsonlTranscriptSource(root);
-    await expect(source.locate('sess-missing')).resolves.toBeNull();
+    await expect(source.read('sess-missing')).resolves.toBeNull();
   });
 
   it('write puts bytes at the SDK slug path and creates the directory', async () => {
@@ -26,7 +37,8 @@ describe('createJsonlTranscriptSource', () => {
     const source = createJsonlTranscriptSource(root);
     const bytes = Buffer.from('u1\na1\na2\n', 'utf8');
 
-    await source.write('sess-resume', bytes);
+    // The SDK jsonl is opaque to this source, so it can never refuse bytes.
+    await expect(source.write('sess-resume', bytes)).resolves.toBe('accepted');
 
     // This is the SDK-private on-disk layout `restoreTranscriptForResume` in
     // @ax/agent-runner-core no longer knows about — it's entirely this
@@ -37,10 +49,9 @@ describe('createJsonlTranscriptSource', () => {
     );
     expect(written.equals(bytes)).toBe(true);
 
-    // The next locate() for the same session finds exactly what write() wrote.
-    await expect(source.locate('sess-resume')).resolves.toBe(
-      join(root, '.claude', 'projects', slug, 'sess-resume.jsonl'),
-    );
+    // The next read() for the same session returns exactly what write() wrote.
+    const roundTripped = await source.read('sess-resume');
+    expect(roundTripped?.equals(bytes)).toBe(true);
   });
 });
 

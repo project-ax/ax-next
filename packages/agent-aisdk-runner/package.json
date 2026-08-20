@@ -1,0 +1,41 @@
+{
+  "name": "@ax/agent-aisdk-runner",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/main.js",
+  "types": "./dist/main.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/main.d.ts",
+      "default": "./dist/main.js"
+    }
+  },
+  "bin": {
+    "ax-aisdk-runner": "./dist/main.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc --build",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.40",
+    "@ax/agent-runner-core": "workspace:*",
+    "@ax/core": "workspace:*",
+    "@ax/ipc-protocol": "workspace:*",
+    "@ax/skills-parser": "workspace:*",
+    "@ax/tool-artifact-publish": "workspace:*",
+    "@ax/tool-skill-propose": "workspace:*",
+    "ai": "^7.0.70",
+    "undici": "^6.28.0"
+  },
+  "devDependencies": {
+    "@types/node": "^25.6.0",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.4"
+  }
+}

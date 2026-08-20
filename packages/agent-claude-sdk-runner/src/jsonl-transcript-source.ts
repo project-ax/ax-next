@@ -1,6 +1,9 @@
-import { mkdir, readdir, realpath, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, realpath, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { TranscriptSource } from '@ax/agent-runner-core';
+import type {
+  TranscriptSource,
+  TranscriptWriteOutcome,
+} from '@ax/agent-runner-core';
 
 /**
  * Locate the runner-native jsonl for `sessionId`. The SDK writes to
@@ -78,7 +81,7 @@ async function writeJsonl(
   workspaceRoot: string,
   sessionId: string,
   bytes: Buffer,
-): Promise<void> {
+): Promise<TranscriptWriteOutcome> {
   let cwdReal: string;
   try {
     cwdReal = await realpath(workspaceRoot);
@@ -90,6 +93,11 @@ async function writeJsonl(
   await mkdir(dir, { recursive: true, mode: 0o755 });
   const jsonlPath = join(dir, `${sessionId}.jsonl`);
   await writeFile(jsonlPath, bytes);
+  // The SDK's jsonl is opaque to us — any bytes the host store returns for a
+  // session this runner wrote are, by construction, in the shape the SDK reads
+  // back. There is no format this source can refuse, so it never answers
+  // 'unusable'. (The aisdk runner's source does, on a foreign header line.)
+  return 'accepted';
 }
 
 /**
@@ -99,7 +107,14 @@ async function writeJsonl(
  */
 export function createJsonlTranscriptSource(workspaceRoot: string): TranscriptSource {
   return {
-    locate: (sessionId: string) => locateJsonl(workspaceRoot, sessionId),
+    // The seam is BYTES, not a path (see TranscriptSource in
+    // @ax/agent-runner-core): locate the jsonl, then read it. A missing file is
+    // `null` — "nothing to ship this turn", not an error.
+    read: async (sessionId: string) => {
+      const jsonlPath = await locateJsonl(workspaceRoot, sessionId);
+      if (jsonlPath === null) return null;
+      return readFile(jsonlPath);
+    },
     write: (sessionId: string, bytes: Buffer) => writeJsonl(workspaceRoot, sessionId, bytes),
   };
 }

@@ -74,8 +74,8 @@ function fakeEnv(): RunnerEnv {
 }
 
 const transcriptSource: TranscriptSource = {
-  locate: vi.fn().mockResolvedValue(null),
-  write: vi.fn().mockResolvedValue(undefined),
+  read: vi.fn().mockResolvedValue(null),
+  write: vi.fn().mockResolvedValue('accepted'),
 };
 
 function seams(readEnv: () => RunnerEnv): RunnerSeams {

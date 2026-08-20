@@ -174,7 +174,7 @@ vi.mock('@ax/agent-runner-core/internal/transcript-delta.js', async (importOrigi
 // ONE `transcriptSource` from `env.workspaceRoot` and threads it into every
 // shipTranscriptDelta/restoreTranscriptForResume call. shipTranscriptDelta /
 // restoreTranscriptForResume are mocked wholesale above, so nothing exercises
-// the source's real locate()/write() closures in this suite — but a
+// the source's real read()/write() closures in this suite — but a
 // regression that built the source from the wrong root (or diverged the
 // restore source from the ship sources) would be invisible without this spy.
 // Wraps the real factory (harmless — its output is never invoked here) so we
@@ -2431,13 +2431,13 @@ describe('main()', () => {
       // A turn killed in that window left a stale binding that crashed the
       // retry's query({resume}) with "No conversation found". With the bind
       // deferred (TASK-67) to a DURABLE TRANSCRIPT ship, a turn whose transcript
-      // never reached the store (shipTranscriptDelta → no-jsonl/noop, never
+      // never reached the store (shipTranscriptDelta → no-transcript/noop, never
       // 'appended') leaves the row UNBOUND, so the host returns
       // runner_session_id=null on the retry and the fresh runner starts clean.
       setEnv(COMPLETE_ENV);
       // Simulate a turn killed before the transcript landed: the ship is a noop.
       shipTranscriptDeltaMock.mockResolvedValue({
-        outcome: 'no-jsonl',
+        outcome: 'no-transcript',
         sentOffset: 0,
         sentSeq: 0,
       });
@@ -2916,7 +2916,7 @@ describe('main()', () => {
       expect(restoreTranscriptForResumeMock).toHaveBeenCalledWith(
         expect.objectContaining({
           source: expect.objectContaining({
-            locate: expect.any(Function),
+            read: expect.any(Function),
             write: expect.any(Function),
           }),
           sessionId: 'sdk-sess-missing',

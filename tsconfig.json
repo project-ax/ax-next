@@ -17,6 +17,7 @@
     { "path": "packages/session-inmemory" },
     { "path": "packages/agent-identity-templates" },
     { "path": "packages/agent-runner-core" },
+    { "path": "packages/agent-aisdk-runner" },
     { "path": "packages/agent-claude-sdk-runner" },
     { "path": "packages/agent-claude-sdk-runner-host" },
     { "path": "packages/chat-orchestrator" },
