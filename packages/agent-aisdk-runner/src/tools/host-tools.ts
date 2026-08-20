@@ -100,12 +100,22 @@ export function buildHostTools(opts: BuildHostToolsOptions): Record<string, Tool
           // In those cases we surface a clear, retryable message instead of
           // forwarding into a stale read (BUG-W2 follow-up; Codex review).
           //
-          // This is deliberately a RETURNED string, not a throw: like a
-          // policy veto, the model should read it and retry, not have the
-          // turn treated as aborted by a tool failure. An actual IPC/
-          // dispatcher failure below (the forward itself) is a different
-          // event and DOES throw (see the file-level comment + constraint 5
-          // of the port brief).
+          // This THROWS rather than returning a plain string, and the
+          // difference is about parity, not style. The SDK runner's shim
+          // returns this refusal as `{ isError: true }` content, so the host
+          // persists `is_error` and the UI renders a failed tool. Returning a
+          // plain result here would render the same refusal as a SUCCESSFUL
+          // tool call whose text happens to complain — a visible divergence
+          // between two runners that are supposed to be
+          // host-indistinguishable. Throwing does NOT abort the turn: ai@7
+          // converts a thrown executor into a `tool-error` part plus an
+          // `error-text` tool result and continues the loop (verified against
+          // ai@7.0.70), so the model still reads the message and retries.
+          //
+          // A policy VETO is the one case that stays a plain result — that is
+          // a design mandate (§3), and it is a different event: permission
+          // refused before the tool ran, not a precondition failing on a
+          // permitted call.
           if (descriptor.flushWorkspaceBeforeCall === true && flushWorkspace !== undefined) {
             let outcome: FlushOutcome | 'error';
             try {
@@ -117,7 +127,9 @@ export function buildHostTools(opts: BuildHostToolsOptions): Record<string, Tool
               outcome = 'error';
             }
             if (outcome !== 'accepted' && outcome !== 'noop') {
-              return `Could not sync your just-authored workspace files to the host before '${descriptor.name}' (flush outcome: ${outcome}). The files are not visible to the installer yet — please try again.`;
+              throw new Error(
+                `Could not sync your just-authored workspace files to the host before '${descriptor.name}' (flush outcome: ${outcome}). The files are not visible to the installer yet — please try again.`,
+              );
             }
           }
 

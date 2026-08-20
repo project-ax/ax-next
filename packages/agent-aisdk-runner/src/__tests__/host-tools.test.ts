@@ -352,7 +352,7 @@ describe('buildHostTools', () => {
     });
 
     it.each(['kept', 'rolled-back'] as const)(
-      'does NOT forward and returns a retryable message when the flush is %s',
+      'does NOT forward and raises a retryable tool error when the flush is %s',
       async (outcome) => {
         const order: string[] = [];
         const { client } = mkClient(async () => {
@@ -369,15 +369,19 @@ describe('buildHostTools', () => {
           tools: [HOST_TOOL_FLUSH],
           flushWorkspace,
         });
-        const out = await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS);
+        // Throws, so the host records `is_error` and the UI renders a FAILED
+        // tool — matching the SDK runner's `{ isError: true }` shim. The turn
+        // survives: ai@7 turns this into an error-text tool result and keeps
+        // looping, so the model reads the message and can retry.
+        await expect(
+          unwrap(tools['host_reads_workspace']?.execute)({}, OPTS),
+        ).rejects.toThrow(new RegExp(outcome));
         // Flushed, but did NOT forward.
         expect(order).toEqual(['flush']);
-        expect(out).toContain(outcome);
-        expect(out).toContain('please try again');
       },
     );
 
-    it('does NOT forward and returns a retryable message when the flush throws', async () => {
+    it('does NOT forward and raises a retryable tool error when the flush throws', async () => {
       const order: string[] = [];
       const { client } = mkClient(async () => {
         order.push('forward');
@@ -393,9 +397,10 @@ describe('buildHostTools', () => {
         tools: [HOST_TOOL_FLUSH],
         flushWorkspace,
       });
-      const out = await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS);
+      await expect(
+        unwrap(tools['host_reads_workspace']?.execute)({}, OPTS),
+      ).rejects.toThrow(/flush outcome: error/);
       expect(order).toEqual(['flush-throw']);
-      expect(out).toContain('error');
     });
   });
 });
