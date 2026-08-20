@@ -380,3 +380,35 @@ describe('readProxyCaPem', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// The gateway-bypass property.
+//
+// `ai@7`'s `LanguageModel` type is `string | LanguageModelV4 | …`. Hand
+// `ToolLoopAgent` a STRING and it resolves the model through the AI SDK's
+// DEFAULT GATEWAY provider, which performs its own credential discovery
+// (`AI_GATEWAY_API_KEY`, then Vercel OIDC). That is exactly the auth discovery
+// design §6 forbids — and it is the kind of change that still "works" on a
+// developer's machine with a gateway key set, so it would not be caught by
+// anything except this assertion.
+//
+// Returning a constructed provider model object is what keeps the gateway out
+// of the path entirely.
+// ---------------------------------------------------------------------------
+describe('no gateway, no auth discovery', () => {
+  it('resolves to a provider model OBJECT, never a bare model-id string', () => {
+    const model = resolveModel({
+      modelRef: 'anthropic/claude-sonnet-4-6',
+      anthropicEnv: env({}),
+      fetchImpl: (async () => new Response('{}')) as unknown as typeof fetch,
+    });
+
+    expect(typeof model).not.toBe('string');
+    expect(model).toMatchObject({
+      specificationVersion: expect.stringMatching(/^v\d+$/),
+      modelId: 'claude-sonnet-4-6',
+    });
+    // And it is the Anthropic provider, not the gateway.
+    expect(String((model as { provider?: unknown }).provider)).toMatch(/anthropic/i);
+  });
+});
