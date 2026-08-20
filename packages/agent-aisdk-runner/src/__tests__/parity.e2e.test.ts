@@ -453,6 +453,46 @@ describe('aisdk runner — parity', () => {
     );
   });
 
+  it('dispatches a catalog sandbox tool through the local dispatcher', async () => {
+    // `artifact_publish` and `skill_propose` reach the agent this way: the shell
+    // registers their executors on the local dispatcher, and the loop must turn
+    // every `executesIn: 'sandbox'` descriptor into a tool that dispatches
+    // there rather than over IPC. Asserted end-to-end because the wiring lives
+    // in main.ts, not in buildSandboxTools.
+    toolCatalog = [
+      {
+        name: 'artifact_publish',
+        description: 'publish an artifact',
+        inputSchema: { type: 'object', properties: { path: { type: 'string' } } },
+        executesIn: 'sandbox',
+      },
+    ];
+    scriptedModel.mockReturnValue(
+      modelReplaying([
+        toolStep('artifact_publish', { path: 'out.txt' }),
+        textStep('published'),
+      ]),
+    );
+    inboxEntries = [userMessage('publish it')];
+
+    await expect(main()).resolves.toBe(0);
+
+    // It went through the gate...
+    const preCall = calls.find(
+      (c) =>
+        c.action === 'tool.pre-call' &&
+        (c.payload as { call: { name: string } }).call.name === 'artifact_publish',
+    );
+    expect(preCall).toBeDefined();
+    // ...and NOT over the host IPC path.
+    expect(calls.find((c) => c.action === 'tool.execute-host')).toBeUndefined();
+    // The real executor isn't registered in this harness (no conversation blob
+    // store), so the dispatcher reports the tool as unregistered — which is
+    // itself the proof that dispatch went to the LOCAL dispatcher.
+    const toolResult = JSON.stringify(shippedEntries().find((e) => e.role === 'tool'));
+    expect(toolResult).toContain('artifact_publish');
+  });
+
   it('discovers an installed skill, indexes it, and serves its body through Skill', async () => {
     await installSkill(
       'note-taker',
