@@ -37,18 +37,35 @@ export interface Database {
 // into a no-op instead of a crash.
 // ---------------------------------------------------------------------------
 
-const openDrivers = new Set<BetterSqliteDb>();
+// WEAK references on purpose. A strong Set would pin every Database for the
+// life of the process, so a handle the caller abandoned could never be
+// collected — turning a crash-on-exit into fds and WAL files held open for the
+// whole run. Weak refs keep the pre-existing behaviour (an unreachable Database
+// is collected, and its destructor runs mid-run while the environment is still
+// alive, which is harmless) and add only the exit-time sweep.
+const openDrivers = new Set<WeakRef<BetterSqliteDb>>();
 let exitHookInstalled = false;
 
+// Prune the WeakRef wrapper when its Database is collected, so a long-lived
+// host that opens and drops databases doesn't accumulate dead refs.
+const driverFinalizer = new FinalizationRegistry<WeakRef<BetterSqliteDb>>(
+  (ref) => {
+    openDrivers.delete(ref);
+  },
+);
+
 /**
- * Close every still-open driver. Exported for the regression test — the
+ * Close every still-open tracked driver. Exported for the regression test — the
  * behaviour worth pinning is "an unclosed database gets closed before the
- * environment goes away", and reproducing the native abort itself depends on
- * the Node patch version, so asserting the abort would prove nothing on a
- * machine whose Node happens not to trip it.
+ * environment goes away". Reproducing the native abort itself depends on the
+ * Node patch version (it fires on CI's 24.19 and not on 24.15), so a test that
+ * asserted the crash would pass for the wrong reason on half the machines that
+ * run it.
  */
 export function closeTrackedDatabasesForExit(): void {
-  for (const driver of openDrivers) {
+  for (const ref of openDrivers) {
+    const driver = ref.deref();
+    if (driver === undefined) continue;
     try {
       if (driver.open) driver.close();
     } catch {
@@ -60,11 +77,13 @@ export function closeTrackedDatabasesForExit(): void {
 }
 
 function trackDriver(driver: BetterSqliteDb): void {
-  openDrivers.add(driver);
+  const ref = new WeakRef(driver);
+  openDrivers.add(ref);
+  driverFinalizer.register(driver, ref);
   if (exitHookInstalled) return;
   exitHookInstalled = true;
-  // `once`, and never `unref`-ed: this must run on a normal exit, which is
-  // exactly the path a vitest worker takes.
+  // `once`, and deliberately not `unref`-ed: this must run on a normal exit,
+  // which is exactly the path a vitest worker takes.
   process.once('exit', closeTrackedDatabasesForExit);
 }
 
