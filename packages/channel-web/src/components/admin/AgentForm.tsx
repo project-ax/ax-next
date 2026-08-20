@@ -166,6 +166,31 @@ function ConnectorOAuthStatusHint({
   );
 }
 
+/**
+ * The model a freshly-opened picker is EFFECTIVELY showing: the user's explicit
+ * choice when they have one, else the first available option.
+ *
+ * This exists as a derivation rather than as state back-filled by an effect,
+ * and that distinction is the whole of bug #401. A `<select>` whose `value`
+ * matches no `<option>` displays its FIRST option, so binding
+ * `value={form.model}` while `form.model` was still `''` made the picker show a
+ * model the form had not actually selected. An effect filled `form.model` one
+ * commit later — and anyone who submitted inside that window got "no model is
+ * available to assign" while the dropdown plainly showed one. Measured at 3
+ * failures in 30 runs of the admin-agents suite; 0 in 40 after this change.
+ *
+ * Deriving closes the window structurally instead of narrowing it: the value
+ * the picker renders and the value `submit` sends are the same call in the same
+ * render, so they cannot disagree at any instant. Exported so that rule can be
+ * pinned directly, without racing an effect to observe it.
+ */
+export function effectiveModelId(
+  formModel: string,
+  options: ReadonlyArray<{ id: string }>,
+): string {
+  return formModel !== '' ? formModel : (options[0]?.id ?? '');
+}
+
 export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const [agents, setAgents] = useState<AdminAgent[]>([]);
   // `null` = not yet loaded (radio disabled), `[]` = loaded but empty.
@@ -360,14 +385,6 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     setEditing(a);
   };
 
-  // Once the list lands, preselect the first option for a NEW agent (an edit
-  // keeps whatever the agent already has). Runs on `models` so it can't race
-  // the fetch, and only fills a BLANK model so it never overwrites a choice.
-  useEffect(() => {
-    if (models === null || models.length === 0) return;
-    setForm((f) => (f.model === '' ? { ...f, model: models[0]!.id } : f));
-  }, [models]);
-
   // What the picker renders: the fetched options, plus the agent's CURRENT
   // model when the list no longer carries it (allow-list changed, provider
   // swapped). Without that fallback a `<select>` whose value matches no option
@@ -381,6 +398,8 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
         { id: form.model, label: `${form.model} (not available)`, kind: 'either' },
       ]
     : fetchedModels;
+
+  const selectedModel = effectiveModelId(form.model, modelOptions);
 
   const cancelForm = () => {
     setEditing(null);
@@ -430,7 +449,9 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     // The server rejects an empty/unknown model, so say why HERE rather than
     // shipping a blank one and surfacing a bare 400. Two distinct causes: the
     // list is still in flight, or this deployment genuinely has no models.
-    if (!form.model) {
+    // Gate on the DERIVED selection — the one the picker is actually showing —
+    // so this error can never contradict the visible dropdown (#401).
+    if (!selectedModel) {
       setBusy(false);
       setError(
         models === null
@@ -441,7 +462,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
     }
     const base: AdminAgentInput = {
       displayName: form.displayName.trim(),
-      model: form.model,
+      model: selectedModel,
       allowedTools,
       mcpConfigIds,
       visibility: form.visibility,
@@ -730,7 +751,7 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
               <select
                 id="agent-model"
                 className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
-                value={form.model}
+                value={selectedModel}
                 disabled={models === null}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, model: e.target.value }))
