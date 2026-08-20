@@ -12,9 +12,11 @@ import {
 import { fallbackIdentityLine, bootstrapPreamble } from '../identity-templates.js';
 import {
   capabilityHandoffNote,
+  communicationNote,
   ephemeralScratchNote,
   pythonVenvNote,
   skillAuthoringNote,
+  workPolicyNote,
   workspaceNote,
 } from '../system-prompt.js';
 
@@ -192,6 +194,46 @@ describe('composeNormalModePrompt (pinned order, inject-if-present)', () => {
     const out = composeNormalModePrompt({ identity: 'X', notes, prepend: '' });
     // No leading blank prepend — starts at the safety floor.
     expect(out.startsWith(safetyFloorNote())).toBe(true);
+  });
+
+  it('places the work + communication policy between the floor and AGENTS.md', () => {
+    // Order encodes precedence: the floor is non-overridable, the policy block
+    // is a DEFAULT, and `.ax/AGENTS.md` is the agent's override layer — so the
+    // overrides must come after the defaults they override.
+    const out = composeNormalModePrompt({
+      agents: 'AGENTS_BODY',
+      identity: 'IDENTITY_BODY',
+      notes,
+    });
+    const iFloor = out.indexOf(safetyFloorNote());
+    const iWork = out.indexOf(workPolicyNote());
+    const iComms = out.indexOf(communicationNote());
+    const iAgents = out.indexOf('AGENTS_BODY');
+    expect(iWork).toBeGreaterThanOrEqual(0);
+    expect(iComms).toBeGreaterThanOrEqual(0);
+    expect(iFloor).toBeLessThan(iWork);
+    expect(iWork).toBeLessThan(iComms);
+    expect(iComms).toBeLessThan(iAgents);
+  });
+
+  it('gives the AGENTS.md body its own heading so it reads as overrides, not more policy', () => {
+    const out = composeNormalModePrompt({ agents: 'AGENTS_BODY', notes });
+    expect(out).toContain('## Operating overrides');
+    expect(out).toContain('AGENTS_BODY');
+    // Heading immediately precedes the body — nothing wedged between them.
+    expect(out).toContain('## Operating overrides\n\nAGENTS_BODY');
+  });
+
+  it('omits the ## Operating overrides heading when AGENTS.md is absent', () => {
+    expect(composeNormalModePrompt({ identity: 'X', notes })).not.toContain(
+      '## Operating overrides',
+    );
+  });
+
+  it('includes the policy block even when the agent has no .ax/ files at all', () => {
+    const out = composeNormalModePrompt({ notes });
+    expect(out).toContain(workPolicyNote());
+    expect(out).toContain(communicationNote());
   });
 
   it('always includes the safety floor regardless of file contents', () => {
