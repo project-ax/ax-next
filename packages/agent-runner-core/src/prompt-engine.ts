@@ -26,6 +26,8 @@
 //      order:
 //        [augment prepend]                    (the host system-prompt:augment)
 //        + [safety floor]                     (hardcoded, NOT editable)
+//        + [work + communication policy]      (hardcoded DEFAULTS, overridable
+//                                              by AGENTS.md below)
 //        + [.ax/AGENTS.md if present]         (operating-behavior overrides)
 //        + ## Identity (.ax/IDENTITY.md if present, ELSE the displayName
 //          fallback identity "You are <displayName>, a helpful personal
@@ -52,7 +54,12 @@
 
 import { readFile, lstat } from 'node:fs/promises';
 import { join } from 'node:path';
-import { operationalNotes, type SdkSystemPrompt } from './system-prompt.js';
+import {
+  communicationNote,
+  operationalNotes,
+  workPolicyNote,
+  type SdkSystemPrompt,
+} from './system-prompt.js';
 // The fallback identity line ("You are <displayName>, …") is the SAME canonical
 // constant the Phase 2 identity backfill wrote into IDENTITY.md — versioned in
 // the shared pure-data templates package so the runner imports it rather than
@@ -213,13 +220,16 @@ export interface ComposeNormalModeInput {
 
 /**
  * Compose the normal-mode system prompt in the pinned order:
- *   [prepend] + [safety floor] + [AGENTS.md?] + ## Identity + ## Soul +
- *   evolution guidance + operational notes.
+ *   [prepend] + [safety floor] + [work policy] + [communication policy] +
+ *   [AGENTS.md?] + ## Identity + ## Soul + evolution guidance +
+ *   operational notes.
  *
- * The safety floor, evolution guidance, and notes are ALWAYS present. The
+ * The safety floor, the two policy notes, evolution guidance, and notes are
+ * ALWAYS present. The
  * `.ax/` file slots are inject-if-present; their headings (`## Identity`,
- * `## Soul`) appear only when the corresponding body is present (no empty
- * sections). AGENTS.md is injected raw (it's the operating-overrides layer).
+ * `## Soul`, `## Operating overrides`) appear only when the corresponding body
+ * is present (no empty sections). The AGENTS.md body itself is injected
+ * verbatim under its heading — it's the operating-overrides layer.
  */
 export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
   const parts: string[] = [];
@@ -229,8 +239,19 @@ export function composeNormalModePrompt(input: ComposeNormalModeInput): string {
   // Floor first among runner-authored content so a long evolved SOUL.md can't
   // displace it from the model's primacy window.
   parts.push(safetyFloorNote());
+  // The default operating policy sits BETWEEN the floor and AGENTS.md, and the
+  // order is the precedence: the floor cannot be overridden, these are defaults,
+  // and `.ax/AGENTS.md` is the agent's override layer — so the overrides follow
+  // the defaults they act on. Both notes say so in their own first line, so the
+  // model reads the precedence rather than having to infer it from position.
+  parts.push(workPolicyNote());
+  parts.push(communicationNote());
   if (input.agents !== undefined && input.agents.length > 0) {
-    parts.push(input.agents);
+    // Headed, not raw. The two policy notes above are `##` sections, so a bare
+    // AGENTS body would read as more bullets belonging to the last one instead
+    // of as the layer that overrides it. The heading is the section boundary;
+    // the body itself is still injected verbatim.
+    parts.push(`## Operating overrides\n\n${input.agents}`);
   }
   if (input.identity !== undefined && input.identity.length > 0) {
     parts.push(`## Identity\n\n${input.identity}`);

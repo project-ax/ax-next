@@ -2,15 +2,21 @@ import { describe, expect, it } from 'vitest';
 import {
   capabilityHandoffNote,
   clarifyingQuestionsNote,
+  communicationNote,
   ephemeralScratchNote,
   operationalNotes,
   pythonVenvNote,
   skillAuthoringNote,
   userFilesNote,
+  workPolicyNote,
   workspaceNote,
 } from '../system-prompt.js';
 
 const WS = '/agent';
+
+/** Collapse the hard-wrapped prose to one line so phrase assertions don't turn
+ * into line-wrap assertions — where a bullet wraps is not behavior. */
+const flat = (text: string): string => text.replace(/\s+/g, ' ');
 
 describe('workspaceNote', () => {
   it('names the workspace root and steers attachment paths away from home dirs', () => {
@@ -196,5 +202,89 @@ describe('operationalNotes — the single assembly point', () => {
     expect(iVenv).toBeLessThan(iHandoff);
     expect(iHandoff).toBeLessThan(iSkill);
     expect(iSkill).toBeLessThan(iClarify);
+  });
+});
+
+describe('workPolicyNote (default operating behavior)', () => {
+  it('requires evidence before claiming work is done, fixed, or tested', () => {
+    // The single most load-bearing line: a model with no harness training will
+    // otherwise report success it never observed.
+    const note = flat(workPolicyNote());
+    expect(note).toMatch(/done, fixed, tested/i);
+    expect(note).toMatch(/tool output/i);
+  });
+
+  it('separates action requests from questions, so a question does not trigger edits', () => {
+    expect(flat(workPolicyNote())).toMatch(/unsolicited/i);
+  });
+
+  it('holds requirements open until done, superseded, or blocked — never silently dropped', () => {
+    const note = flat(workPolicyNote());
+    expect(note).toMatch(/blocked/i);
+    expect(note).toMatch(/quietly dropping|silently dropping/i);
+  });
+
+  it('steers file work to the dedicated tools and off shell equivalents', () => {
+    const note = flat(workPolicyNote());
+    expect(note).toContain('`Read`');
+    expect(note).toContain('`Edit`');
+    expect(note).toContain('`Bash`');
+    expect(note).toMatch(/cat|sed/);
+    // Never narrate to the user through the shell.
+    expect(note).toMatch(/echo/);
+  });
+
+  it('names AGENTS.md as the override layer and the floor as non-overridable', () => {
+    const note = flat(workPolicyNote());
+    expect(note).toContain('.ax/AGENTS.md');
+    expect(note).toMatch(/floor/i);
+  });
+
+  it('stays bounded — a policy block, not a wall of rules', () => {
+    // Same intent as the safety-floor length guard: everything endlessly
+    // customizable belongs in AGENTS.md, not in runner-authored prose.
+    expect(workPolicyNote().length).toBeLessThan(2000);
+  });
+});
+
+describe('communicationNote (default reply style)', () => {
+  it('writes for a reader who has not seen the tool calls', () => {
+    const note = flat(communicationNote());
+    expect(note).toMatch(/has not seen|hasn't seen/i);
+    expect(note).toMatch(/tool calls/i);
+  });
+
+  it('leads with the answer and does not bounce a clarifying question back when answerable', () => {
+    const note = flat(communicationNote());
+    expect(note).toMatch(/lead with the answer/i);
+    expect(note).toMatch(/clarifying question/i);
+  });
+
+  it('requires the final message to stand alone', () => {
+    expect(flat(communicationNote())).toMatch(/stand alone/i);
+  });
+
+  it('states the GitHub-flavored markdown rendering contract and the nested-fence rule', () => {
+    const note = flat(communicationNote());
+    expect(note).toMatch(/markdown/i);
+    expect(note).toMatch(/fence/i);
+  });
+
+  it('does NOT flatten agent personality', () => {
+    // Deliberate divergence from the upstream prompt: its "never coin
+    // acronyms / state facts literally / no metaphors" clauses would fight
+    // the agent-authored SOUL.md that gives an agent its voice. Style is the
+    // agent's; structure is ours.
+    const note = flat(communicationNote()).toLowerCase();
+    expect(note).not.toContain('metaphor');
+    expect(note).not.toContain('acronym');
+  });
+
+  it('names AGENTS.md as the override layer', () => {
+    expect(flat(communicationNote())).toContain('.ax/AGENTS.md');
+  });
+
+  it('stays bounded', () => {
+    expect(communicationNote().length).toBeLessThan(2000);
   });
 });

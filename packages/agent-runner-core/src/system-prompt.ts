@@ -34,6 +34,112 @@ import { draftPrefix } from '@ax/tool-skill-propose';
  */
 export type SdkSystemPrompt = string;
 
+// ---------------------------------------------------------------------------
+// Default operating policy — how the agent works, and how it writes back.
+//
+// ATTRIBUTION: `workPolicyNote` and `communicationNote` are ADAPTED from the
+// Grok Build system prompt — `crates/codegen/xai-grok-agent/templates/prompt.md`
+// in https://github.com/xai-org/grok-build (Apache-2.0), at commit
+// 19d42e35c07a9c9244f03f6df0c4c353f970d4f9. See `THIRD-PARTY-NOTICES.md` at the
+// repo root. Modifications are listed there and flagged inline below.
+//
+// WHY these exist: the composed prompt is a plain string on BOTH runners — the
+// Claude Agent SDK's `claude_code` preset was dropped in TASK-142 and a string
+// `systemPrompt` REPLACES the preset rather than appending to it. So neither
+// runner has ever carried work or communication guidance; the SDK runner only
+// got the behavior implicitly, from Claude's own post-training on that harness.
+// A non-Claude model on `@ax/agent-aisdk-runner` has neither, which is what
+// these two notes fix. They live in core (not in one runner) because a
+// runner-conditional prompt would fork behavior at exactly the seam the
+// two-runner parity bar exists to keep honest.
+//
+// PRECEDENCE: composed AFTER the safety floor (which no file can suppress) and
+// BEFORE `.ax/AGENTS.md` (the agent's override layer) — defaults first, then
+// the overrides that act on them. See `composeNormalModePrompt`.
+//
+// Both are FIXED runner-authored strings with no interpolation: no untrusted
+// input path, nothing to escape.
+// ---------------------------------------------------------------------------
+
+/**
+ * Default working behavior — scope, honesty about what was verified, and which
+ * tool to reach for. Overridable by `.ax/AGENTS.md`; the safety floor above it
+ * is not.
+ *
+ * The evidence line ("done, fixed, tested … only when tool output supports the
+ * claim") is the load-bearing one: a model without harness post-training will
+ * otherwise report a success it never observed.
+ */
+export function workPolicyNote(): string {
+  // Bulleted, not a paragraph: these are six independent rules the model checks
+  // against, and the rest of the composed prompt is already markdown.
+  return [
+    `## How you work`,
+    ``,
+    `These are defaults. \`.ax/AGENTS.md\` below can override any of them; the`,
+    `operating floor above them cannot be overridden.`,
+    ``,
+    `- Keep every explicit requirement of the request in view until it is done,`,
+    `  superseded by the user, or genuinely blocked. If something is blocked, say`,
+    `  so plainly rather than quietly dropping it.`,
+    `- Match your response to what was asked: implement clear action requests, but`,
+    `  answer questions, reviews, explanations and planning requests without`,
+    `  making unsolicited edits.`,
+    `- For work that is clear and reversible, do it in this turn instead of asking`,
+    `  permission conversationally or ending with an offer to do it later.`,
+    `- Say that something is done, fixed, tested or verified ONLY when tool output`,
+    `  supports the claim. Otherwise state what you did not verify, and why.`,
+    `- Keep changes scoped to what was asked, and match the surrounding code's`,
+    `  comment and tooling conventions — comments stay short and factual and`,
+    `  explain non-obvious constraints only. Never leave placeholder comments for`,
+    `  unrelated work, and never let a comment or a suppression stand in for`,
+    `  fixing the problem.`,
+    `- Prefer the dedicated tools over their shell equivalents: \`Read\` over`,
+    `  \`cat\`, \`Edit\` over \`sed\`, \`Glob\` and \`Grep\` over \`find\` and \`grep\`.`,
+    `  Reserve \`Bash\` for commands that genuinely need a shell, and never use`,
+    `  \`echo\` to talk to the user — everything you want them to read goes in your`,
+    `  reply.`,
+  ].join('\n');
+}
+
+/**
+ * Default reply style — what a user-facing message has to carry on its own.
+ *
+ * DIVERGENCE from the upstream prompt (deliberate): its "never coin acronyms /
+ * state facts literally / no metaphors or idioms" clauses are dropped. They
+ * would fight the agent-authored `.ax/SOUL.md` that gives an agent its voice.
+ * Structure is ours to set; style is the agent's. The upstream `<user_guide>`
+ * and `<browser_verification>` sections are dropped as inapplicable, and the
+ * subagent / background-task lines with them — we register no such tools.
+ */
+export function communicationNote(): string {
+  return [
+    `## How you communicate`,
+    ``,
+    `Defaults, and \`.ax/AGENTS.md\` below can override them.`,
+    ``,
+    `- Write every user-facing message for a reader who has not seen your tool`,
+    `  calls, your notes, or the files you opened. Restate what you did and what`,
+    `  you found in plain language; don't assume they remember earlier messages`,
+    `  or know the state of the work.`,
+    `- Define project-specific terms, abbreviations and codenames the first time`,
+    `  you use them, and don't carry vocabulary out of internal docs, rules or`,
+    `  skills into your replies unless the user used it first.`,
+    `- Lead with the answer. Answer the actual question first — especially a`,
+    `  "why" question — then give the supporting detail.`,
+    `- If a question is answerable from what you already have, answer it instead`,
+    `  of sending a clarifying question back, and give the relevant subset rather`,
+    `  than dumping raw data.`,
+    `- Keep progress updates short and infrequent. Your final message has to`,
+    `  stand alone: what you did, how it came out, and the answer to what was`,
+    `  asked.`,
+    `- Your text is rendered as GitHub-flavored markdown. Use it where it helps`,
+    `  the reader — lists for parallel items, \`inline code\` for identifiers,`,
+    `  paths and commands, tables for short enumerable facts. When you nest`,
+    `  fenced code blocks, make the outer fence longer than every inner fence.`,
+  ].join('\n');
+}
+
 /**
  * Operational note telling the agent where its workspace is and how to resolve
  * workspace-relative paths — fixed runner-authored prose for the LLM.
