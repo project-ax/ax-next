@@ -108,3 +108,16 @@ owning packages' suites — per-package green means nothing here; (b) grep for *
 `**/__tests__/**` before dispatching, because tsc will not; (c) a shape scan beats a keyword grep — walk
 `agentConfig: {` blocks by brace depth and check for the new key, rather than `grep -L runner` (the word
 "runner" appears in prose in most of these files, so the keyword filter hid `ipc-core` entirely).
+
+- `2026-08-19` (PR 3, aisdk runner) — **A test HARNESS fake with the wrong response shape silently disabled a whole
+  code path across an entire e2e suite, and announced itself only as a stderr line that read like benign noise.**
+  The `attachments.list` fake returned `{ attachments: [] }`; `AttachmentsListResponseSchema` is `{ files: [...] }`.
+  `materializeUploads` parses defensively and swallows its own failures (correct — a bad upload must not abort a
+  session), so every parity row logged `runner: attachments.list failed; skipping upload materialization` and the
+  upload/attachment path never executed ANYWHERE. Every test still passed. Worse: the same line appears in the
+  claude-sdk runner's suite output for the same reason, so I had already scrolled past it once without connecting it.
+  Caught only by an adversarial reviewer reading the stderr rather than the assertions.
+  **Guard:** when a fake stands in for a schema-validated response, build it from the SCHEMA (import it and
+  `Schema.parse(fake)` in the harness, or copy the shape from the schema definition) — never from memory of the field
+  names. And treat recurring stderr in a green suite as a finding, not as scenery: a swallowed-error code path is
+  exactly where a fake's shape error hides. Corollary for reviewers: read the suite's stderr, not just its verdict.
