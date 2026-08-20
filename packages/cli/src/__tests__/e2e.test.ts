@@ -12,19 +12,53 @@ describe('@ax/cli end-to-end', () => {
   let workDir: string;
 
   beforeAll(() => {
-    // Ensure the CLI and its workspace deps are built. spawnSync with an
-    // argv array avoids shell quoting / injection — there is no user input
-    // here, but keeping shell: false is the repo's safer-by-default pattern.
-    const built = spawnSync(
-      'pnpm',
-      ['--filter', '@ax/cli...', 'build'],
-      { cwd: repoRoot, encoding: 'utf8', stdio: 'inherit' },
-    );
-    if (built.status !== 0) {
-      throw new Error(`workspace build failed (exit ${built.status})`);
+    // Build the CLI + its workspace deps — but NOT under CI, where the
+    // pipeline already did it and doing it again is actively harmful.
+    //
+    // WHY THIS GUARD EXISTS. `pnpm --filter '@ax/cli...' build` is 71 of the 76
+    // workspace projects, including channel-web's `vite build` (rollup +
+    // minify, the heaviest step in the repo). Running that from INSIDE a vitest
+    // worker — while pnpm is concurrently running other packages' suites and
+    // several testcontainer Postgres containers, on a 4-vCPU/16 GB
+    // `ubuntu-latest` box — is what produced the long-running CI fork-pool
+    // flake: a worker gets OOM-killed, so the job fails with `Worker exited
+    // unexpectedly` / `Timeout terminating forks worker` and **zero failing
+    // assertions**, and the file blamed migrates from run to run.
+    //
+    // The tell that identified it: the repeat offender was
+    // `credentials-wiring.test.ts` — a SIBLING file in this same package, i.e.
+    // a concurrent fork of the very vitest instance whose other file was
+    // detonating the build. It reddened `main` (on a docs-only commit) and
+    // three unrelated PRs before this.
+    //
+    // In CI the artifact is already there: the workflow runs `pnpm typecheck`
+    // (= `tsc --build` across every project reference, which emits
+    // `packages/cli/dist/main.js`) before the test step. The CLI is launched
+    // below as `node <cliEntry>`, so it needs no exec bit — the tsc output is
+    // sufficient on its own, and nothing here needs channel-web's `dist-web`.
+    //
+    // Locally the build still runs unconditionally, so a dev editing CLI
+    // source and re-running this file keeps testing their edit rather than a
+    // stale `dist/`.
+    if (process.env.CI === undefined || process.env.CI === '') {
+      // spawnSync with an argv array avoids shell quoting / injection — there
+      // is no user input here, but keeping shell: false is the repo's
+      // safer-by-default pattern.
+      const built = spawnSync(
+        'pnpm',
+        ['--filter', '@ax/cli...', 'build'],
+        { cwd: repoRoot, encoding: 'utf8', stdio: 'inherit' },
+      );
+      if (built.status !== 0) {
+        throw new Error(`workspace build failed (exit ${built.status})`);
+      }
     }
     if (!existsSync(cliEntry)) {
-      throw new Error(`CLI entry not found at ${cliEntry}; build must have failed`);
+      throw new Error(
+        `CLI entry not found at ${cliEntry}. Under CI this test does NOT build ` +
+          `(see the comment above); the pipeline's \`pnpm typecheck\` step is what ` +
+          `emits it. Locally, run \`pnpm --filter '@ax/cli...' build\`.`,
+      );
     }
   }, 120000);
 
