@@ -134,3 +134,21 @@ owning packages' suites — per-package green means nothing here; (b) grep for *
   or a `while (s.endsWith(c))` loop — this repo treats that as the house style, and CodeQL enforces it; (b) a ReDoS
   regression test MUST use a non-matching-suffix input, or it proves nothing. Both times this session that a guard of
   mine looked strong and wasn't, the tell was the same: I never ran it against the mutation it was supposed to catch.
+
+- `2026-08-20` — **A test ran a 71-project workspace build from inside a vitest worker, and the resulting OOM was
+  misread as a vitest bug for weeks.** `packages/cli/src/__tests__/e2e.test.ts`'s `beforeAll` called
+  `pnpm --filter '@ax/cli...' build` — which includes channel-web's `vite build` (rollup + minify, the heaviest step
+  in the repo) — while pnpm concurrently ran other packages' suites and several testcontainer Postgres containers on
+  a 4-vCPU/16 GB `ubuntu-latest` runner. A worker got OOM-killed, so CI failed with `Worker exited unexpectedly` /
+  `Timeout terminating forks worker`, **zero failing assertions**, and a DIFFERENT file blamed each run. It reddened
+  `main` (on a docs-only commit) plus PRs #399/#400/#402 before anyone traced it; the standing note said "raise/limit
+  `poolOptions.forks.maxForks`", i.e. we were about to tune the symptom.
+  **The tell that cracked it:** the repeat-offender file (`credentials-wiring.test.ts`) was a SIBLING of the
+  build-spawning file — a concurrent fork of the very vitest instance detonating the build. When a flake keeps
+  blaming one package, look at what its OTHER test files do, not at the blamed file.
+  **Also worth noting:** the in-test build was never even load-bearing for imports — a missing `@ax/test-harness`
+  dist fails at import time, before `beforeAll` runs. It only ever produced `dist/main.js` for a `node` spawn, which
+  the pipeline's `pnpm typecheck` (`tsc --build`) already emits.
+  **Guards:** never build the workspace from a test under CI (`scripts/__tests__/no-workspace-build-in-tests.test.js`
+  is a tripwire for it); and when triaging a zero-assertion CI failure, check for heavy work spawned BY the suite
+  before blaming the runner.
