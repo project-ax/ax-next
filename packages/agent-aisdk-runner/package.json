@@ -23,14 +23,14 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@ai-sdk/anthropic": "^4.0.40",
+    "@ai-sdk/anthropic": "4.0.40",
     "@ax/agent-runner-core": "workspace:*",
     "@ax/core": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",
     "@ax/skills-parser": "workspace:*",
     "@ax/tool-artifact-publish": "workspace:*",
     "@ax/tool-skill-propose": "workspace:*",
-    "ai": "^7.0.70",
+    "ai": "7.0.70",
     "undici": "^6.28.0"
   },
   "devDependencies": {

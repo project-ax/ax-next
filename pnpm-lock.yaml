@@ -98,7 +98,7 @@ importers:
   packages/agent-aisdk-runner:
     dependencies:
       '@ai-sdk/anthropic':
-        specifier: ^4.0.40
+        specifier: 4.0.40
         version: 4.0.40(zod@4.4.3)
       '@ax/agent-runner-core':
         specifier: workspace:*
@@ -119,7 +119,7 @@ importers:
         specifier: workspace:*
         version: link:../tool-skill-propose
       ai:
-        specifier: ^7.0.70
+        specifier: 7.0.70
         version: 7.0.70(zod@4.4.3)
       undici:
         specifier: ^6.28.0
