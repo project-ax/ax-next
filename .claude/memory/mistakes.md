@@ -121,3 +121,16 @@ owning packages' suites — per-package green means nothing here; (b) grep for *
   `Schema.parse(fake)` in the harness, or copy the shape from the schema definition) — never from memory of the field
   names. And treat recurring stderr in a green suite as a finding, not as scenery: a swallowed-error code path is
   exactly where a fake's shape error hides. Corollary for reviewers: read the suite's stderr, not just its verdict.
+
+- `2026-08-19` (PR 3) — **Reintroduced a regex class this repo had ALREADY solved, and then wrote a guard for it that
+  could not fail.** `composeInstructions` used `.replace(/\s+$/, '')` on the composed system prompt (which concatenates
+  agent-authored `.ax/` files, so: uncontrolled input). CodeQL caught it as `js/polynomial-redos`, HIGH. `governed-paths.ts`
+  already avoids the identical shape for trailing slashes, with a comment naming the same rule — so the prior art was one
+  grep away and I didn't look.
+  Worse, my first regression test used `'x' + '\t'.repeat(200000)` — an all-whitespace TAIL, which the regex handles in
+  0ms. The pathological shape is a whitespace RUN FOLLOWED BY a non-whitespace char (`'\t'.repeat(60000) + 'x'`): `$`
+  never matches, so the engine retries from every position. Measured 1830ms vs 0ms for `trimEnd()`.
+  **Guards:** (a) before writing any `/<something>+$/` or `/^<something>+/` trim, use the native `trimEnd`/`trimStart`
+  or a `while (s.endsWith(c))` loop — this repo treats that as the house style, and CodeQL enforces it; (b) a ReDoS
+  regression test MUST use a non-matching-suffix input, or it proves nothing. Both times this session that a guard of
+  mine looked strong and wasn't, the tell was the same: I never ran it against the mutation it was supposed to catch.
