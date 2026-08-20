@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
+import { createHash } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -49,6 +50,15 @@ let toolCatalog: unknown[];
 let preCallVerdicts: Record<string, { verdict: 'allow' | 'reject'; reason?: string }>;
 /** Hosts `proxy.drain-egress-blocks` reports. */
 let egressBlockedHosts: string[];
+/** What `attachments.list` reports, and the bytes `blob.get` serves for each. */
+let uploadedFiles: Array<{
+  path: string;
+  sha256: string;
+  mediaType: string;
+  displayName: string;
+  sizeBytes: number;
+}>;
+let blobBytes: Map<string, Buffer>;
 
 vi.mock('@ax/ipc-protocol', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@ax/ipc-protocol')>();
@@ -140,11 +150,15 @@ const toolStep = (
   },
 ];
 
+/** Every prompt the model was handed, so a test can assert what it saw. */
+let sentPrompts: unknown[];
+
 /** Build a model that replays `steps` in order, one per provider call. */
 function modelReplaying(steps: Chunk[][]): unknown {
   let i = 0;
   return new MockLanguageModelV4({
-    doStream: async () => {
+    doStream: async ({ prompt }) => {
+      sentPrompts.push(prompt);
       const chunks = steps[i++];
       if (chunks === undefined) throw new Error('model script exhausted');
       return { stream: simulateReadableStream({ chunks: chunks as never }) };
@@ -193,6 +207,9 @@ beforeEach(async () => {
   toolCatalog = [];
   preCallVerdicts = {};
   egressBlockedHosts = [];
+  uploadedFiles = [];
+  blobBytes = new Map();
+  sentPrompts = [];
   sessionConfig = {
     userId: 'u-1',
     agentId: 'a-1',
@@ -232,7 +249,12 @@ beforeEach(async () => {
         case 'tool.list':
           return { tools: toolCatalog };
         case 'attachments.list':
-          return { attachments: [] };
+          // Shape matters: `AttachmentsListResponseSchema` is `{ files: [...] }`.
+          // An `{ attachments: [] }` fake parses as a FAILURE, and
+          // materializeUploads swallows it — so the whole upload path silently
+          // never ran and every row logged "attachments.list failed". Caught in
+          // review; the row below now depends on this being right.
+          return { files: uploadedFiles };
         case 'tool.pre-call': {
           const name = (payload as { call: { name: string } }).call.name;
           const v = preCallVerdicts[name];
@@ -252,8 +274,16 @@ beforeEach(async () => {
       }
     }),
     callGet: vi.fn(),
-    callBinary: vi.fn(async (action: string) => {
-      calls.push({ action, payload: undefined });
+    callBinary: vi.fn(async (action: string, payload: unknown) => {
+      calls.push({ action, payload });
+      if (action === 'blob.get') {
+        const sha = (payload as { sha256: string }).sha256;
+        const bytes = blobBytes.get(sha);
+        if (bytes === undefined) throw new Error(`no blob for ${sha}`);
+        const p = path.join(tmp, `blob-${sha}.bin`);
+        await fs.writeFile(p, bytes);
+        return { path: p, bytes: bytes.length };
+      }
       if (action === 'session.get-transcript') {
         const p = path.join(tmp, `restore-${shippedTranscript.length}.bin`);
         await fs.writeFile(p, storedTranscript);
@@ -451,6 +481,67 @@ describe('aisdk runner — parity', () => {
     expect((exec!.payload as { call: { name: string; input: unknown } }).call).toMatchObject(
       { name: 'linear_search', input: { q: 'bug' } },
     );
+  });
+
+  // The upload + attachment-translation row. This one exercises the whole
+  // chain for real: attachments.list -> blob.get -> materialize under
+  // .ax/uploads/ -> the shell's translate pass (Anthropic-shaped blocks) ->
+  // this runner's toUserModelMessage adapter -> an AI SDK image part in the
+  // prompt the provider actually receives.
+  //
+  // It is also the row that a wrong-shaped `attachments.list` fake silently
+  // disabled for the whole suite until review caught it.
+  it('materializes an upload and hands the model a real image part', async () => {
+    const png = Buffer.from('\u0089PNG\r\n\u001a\nfake-image-bytes', 'binary');
+    const sha256 = createHash('sha256').update(png).digest('hex');
+    const relPath = '.ax/uploads/conv-1/turn-1/shot.png';
+    uploadedFiles = [
+      {
+        path: relPath,
+        sha256,
+        mediaType: 'image/png',
+        displayName: 'shot.png',
+        sizeBytes: png.length,
+      },
+    ];
+    blobBytes.set(sha256, png);
+
+    scriptedModel.mockReturnValue(modelReplaying([textStep('I see a screenshot')]));
+    inboxEntries = [
+      {
+        type: 'user-message',
+        reqId: 'req-1',
+        payload: {
+          content: 'what is this?',
+          contentBlocks: [
+            {
+              type: 'attachment',
+              path: relPath,
+              displayName: 'shot.png',
+              mediaType: 'image/png',
+              sizeBytes: png.length,
+            },
+          ],
+        },
+      } as InboxLoopEntry,
+    ];
+
+    await expect(main()).resolves.toBe(0);
+
+    // The bytes really landed on disk where the prompt says they are.
+    const onDisk = await fs.readFile(path.join(workspaceRoot, relPath));
+    expect(onDisk.equals(png)).toBe(true);
+
+    // And the model was handed an AI SDK image part, not a text mention.
+    const first = JSON.parse(JSON.stringify(sentPrompts[0]));
+    const user = (first as Array<{ role: string; content: unknown }>).find(
+      (m) => m.role === 'user',
+    );
+    const parts = user?.content as Array<{ type: string; mediaType?: string }>;
+    expect(parts.map((p) => p.type)).toContain('text');
+    const image = parts.find((p) => p.type === 'file' || p.type === 'image');
+    expect(image, JSON.stringify(parts)).toBeDefined();
+    expect(image!.mediaType).toBe('image/png');
   });
 
   it('dispatches a catalog sandbox tool through the local dispatcher', async () => {

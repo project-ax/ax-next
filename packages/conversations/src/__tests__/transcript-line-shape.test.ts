@@ -117,8 +117,7 @@ describe('dropTurnFromJsonl', () => {
     expect(out).not.toContain('"uuid":"a1"');
   });
 
-  // A tool line is turn-bearing in the declared shape (the aisdk runner emits
-  // role:'tool' for tool results), so it must be addressable by uuid.
+  // A tool line is addressable by an EXPLICIT uuid...
   it('drops a declared tool line by uuid', () => {
     const out = dec(
       dropTurnFromJsonl(
@@ -128,6 +127,28 @@ describe('dropTurnFromJsonl', () => {
     );
     expect(out).toContain('"uuid":"a1"');
     expect(out).not.toContain('"uuid":"t1"');
+  });
+
+  // ...but it is NOT "the most recent turn". A turn can end on a tool result,
+  // and dropping that line alone would strand the preceding assistant message
+  // holding a tool-call with no matching result — which the provider rejects on
+  // the next request. The empty-turnId scan must skip past it to the assistant.
+  it('skips a trailing tool line when dropping the most recent turn', () => {
+    const out = dec(
+      dropTurnFromJsonl(
+        doc([
+          AISDK_HEADER,
+          declared('user', 'u1'),
+          declared('assistant', 'a1'),
+          declared('tool', 't1'),
+        ]),
+        '',
+      ),
+    );
+    // The assistant turn went; the tool line and the user turn stayed.
+    expect(out).not.toContain('"uuid":"a1"');
+    expect(out).toContain('"uuid":"t1"');
+    expect(out).toContain('"uuid":"u1"');
   });
 
   it('still drops SDK-shaped lines and their coalesced message.id siblings', () => {

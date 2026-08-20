@@ -1157,10 +1157,18 @@ export function dropTurnFromJsonl(
       // scan, and the assistant-sibling coalescing below.
       const isAssistant =
         o.role === undefined ? o.type === 'assistant' : o.role === 'assistant';
+      // `tool` is deliberately NOT turn-bearing, matching the SDK branch (which
+      // only counts `assistant`/`user`). Turn-bearing drives the empty-`turnId`
+      // "drop the most recent turn" scan, and a runner that stores tool results
+      // as their own lines can legitimately END a turn on one — dropping that
+      // line alone would leave the preceding assistant message holding a
+      // tool-call with no matching result, which the provider rejects on the
+      // very next request. A tool line is still droppable by an EXPLICIT
+      // turnId, since that match is on `uuid` and ignores this flag.
       const isTurnBearing =
         o.role === undefined
           ? o.type === 'assistant' || o.type === 'user'
-          : o.role === 'assistant' || o.role === 'user' || o.role === 'tool';
+          : o.role === 'assistant' || o.role === 'user';
       const result: Parsed = { line, isAssistant, isTurnBearing };
       if (typeof o.uuid === 'string') result.uuid = o.uuid;
       if (isAssistant && typeof o.message?.id === 'string') result.messageId = o.message.id;

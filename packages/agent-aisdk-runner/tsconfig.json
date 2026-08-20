@@ -4,14 +4,26 @@
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src/**/*"],
-  "exclude": ["src/**/__tests__/**", "dist", "node_modules"],
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "src/**/__tests__/**",
+    "dist",
+    "node_modules"
+  ],
   "references": [
-    { "path": "../agent-runner-core" },
-    { "path": "../core" },
-    { "path": "../ipc-protocol" },
-    { "path": "../skills-parser" },
-    { "path": "../tool-artifact-publish" },
-    { "path": "../tool-skill-propose" }
+    {
+      "path": "../agent-runner-core"
+    },
+    {
+      "path": "../core"
+    },
+    {
+      "path": "../ipc-protocol"
+    },
+    {
+      "path": "../skills-parser"
+    }
   ]
 }

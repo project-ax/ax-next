@@ -112,12 +112,6 @@ importers:
       '@ax/skills-parser':
         specifier: workspace:*
         version: link:../skills-parser
-      '@ax/tool-artifact-publish':
-        specifier: workspace:*
-        version: link:../tool-artifact-publish
-      '@ax/tool-skill-propose':
-        specifier: workspace:*
-        version: link:../tool-skill-propose
       ai:
         specifier: 7.0.70
         version: 7.0.70(zod@4.4.3)
