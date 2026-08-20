@@ -140,9 +140,18 @@ export function decodeTranscript(bytes: Buffer): DecodeResult {
     // message shapes is explicitly out of scope — it would be lossy in both
     // directions — so we report the transcript unusable and the shell starts a
     // fresh session.
+    //
+    // The absent-`runner` case is the common one and deserves its own wording:
+    // a claude-sdk jsonl's first line is a real SDK entry, which parses as JSON
+    // perfectly well and simply has no `runner` key. Saying "written by runner
+    // 'undefined'" would send whoever reads the runner log hunting for a
+    // misconfigured runner id that does not exist.
     return {
       ok: false,
-      reason: `transcript was written by runner '${String(h.runner)}', not '${TRANSCRIPT_RUNNER}'`,
+      reason:
+        h.runner === undefined
+          ? `transcript has no '${TRANSCRIPT_RUNNER}' header line (it was written by another runner)`
+          : `transcript was written by runner '${String(h.runner)}', not '${TRANSCRIPT_RUNNER}'`,
     };
   }
   if (h.v !== TRANSCRIPT_VERSION) {

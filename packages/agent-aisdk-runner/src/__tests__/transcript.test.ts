@@ -106,7 +106,11 @@ describe('transcript codec', () => {
       const res = decodeTranscript(sdkJsonl);
       expect(res.ok).toBe(false);
       if (res.ok) return;
-      expect(res.reason).toMatch(/runner/);
+      // An SDK line parses as JSON fine and simply has no `runner` key, so the
+      // message must not read as "runner 'undefined'" — whoever finds this in
+      // the runner log would go hunting for a misconfigured runner id.
+      expect(res.reason).toContain('no \'aisdk\' header line');
+      expect(res.reason).not.toContain('undefined');
     });
 
     it('a header naming a different runner explicitly', () => {
