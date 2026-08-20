@@ -181,3 +181,28 @@ owning packages' suites — per-package green means nothing here; (b) grep for *
   **Lesson:** when a comment justifies skipping a check by naming an invariant, re-read whether that invariant still
   holds after the feature that made it conditional. And a documented behaviour is a claim to TEST, not to trust —
   both of this walk's real bugs were found by exercising something the docs said already worked.
+
+- `2026-08-20` — **The "fork-pool flake" was never one bug, and #404 only fixed the first one.** The standing note said
+  RESOLVED; `main` was red on most runs anyway, with a DIFFERENT zero-assertion cause: a better-sqlite3 native
+  destructor running after the Node environment is torn down —
+  `Assertion failed: (env) != nullptr` in `Statement::~Statement()` / `Database::~Database()`. SIGABRT, so vitest's
+  forks pool reports `Worker exited unexpectedly` and blames whichever test file the dying worker held. **A different
+  file each run** (`cli/credentials-wiring`, `memory-strata` bench smoke,
+  `credentials-admin-routes/destination-handlers`) — which is exactly why it kept reading as a vitest flake.
+  Probabilistic, not a version bump: Node 24.19.0 was on the last GREEN main run too.
+  **Three wrong turns worth remembering**, all from reasoning instead of measuring:
+  1. Assumed my PR caused it. It did not — three pre-branch `main` runs carry the identical signature. Check `main`
+     before debugging your own diff.
+  2. "Pinning handles for the process lifetime is a leak" → switched the exit-close registry to `WeakRef`. CI put the
+     abort straight back on the next run. Keeping the handle REACHABLE is most of the fix: an unreachable unclosed
+     handle is GC-finalized on V8's schedule, possibly during isolate disposal. Strong refs, deliberately.
+  3. Read one green-ish run as proof the weak version was the culprit. It is probabilistic — a single run proves
+     nothing either way. Compare signatures across several.
+  **What actually fixes it:** better-sqlite3 **13.x deletes `AddEnvironmentCleanupHook`** (verified by unpacking the
+  tarballs — absent in 13.0.3, present in 11.10.0 AND 12.11.1, so 12.x is not an escape hatch). It needs Node >=22;
+  `container/agent/Dockerfile` pins Node 20 and the image ships better-sqlite3, so it is blocked on bumping the
+  container — the SAME Node-20-vs-Node-24 split that made the aisdk runner unbootable. Card filed.
+  **Partial mitigation that did land:** close tracked Databases on `process.exit` (kills the `Database::~Database()`
+  variant, not the `Statement` one), fix the bench's real leak, and raise `teardownTimeout` where a native-module
+  worker overran vitest's 10s default — that message only LOGS, the stop is still awaited, and the log is what
+  reddens an otherwise all-passing run.
