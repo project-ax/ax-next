@@ -152,3 +152,57 @@ owning packages' suites — per-package green means nothing here; (b) grep for *
   **Guards:** never build the workspace from a test under CI (`scripts/__tests__/no-workspace-build-in-tests.test.js`
   is a tripwire for it); and when triaging a zero-assertion CI failure, check for heavy work spawned BY the suite
   before blaming the runner.
+
+- `2026-08-20` — **The aisdk runner could not boot in the container at all, and 220+ green tests could not see it.**
+  `packages/agent-aisdk-runner/src/tools/builtins.ts` imported `glob` from `node:fs/promises` for the Glob/Grep
+  built-ins. That API landed in **Node 22**; `container/agent/Dockerfile` pins **Node 20**. So the runner died at
+  module load with a `SyntaxError`, the host logged `sandbox-terminated` → `sandbox-open-failed`, and EVERY turn on
+  an `aisdk`-pinned agent failed with no explanation. The `claude-sdk` runner was fine in the same image, which made
+  it look environmental rather than runner-specific.
+  **Why nothing caught it:** the repo's `engines.node` is `>=24` and the whole suite — including the parity e2e that
+  drives the real `runRunner` shell — runs on the DEVELOPER's Node, never on the container's. The docker build even
+  printed `WARN Unsupported engine: wanted {"node":">=24.0.0"} (current: v20.20.2)` on every build; nobody read it.
+  **The general shape:** the runner executes on a different Node than the one that tests it. Any API newer than the
+  Dockerfile's pin compiles, type-checks, unit-tests and e2e-tests green, then dies in the pod.
+  **Guard:** `packages/agent-aisdk-runner/src/__tests__/node-floor.test.ts` reads the pinned major straight out of
+  the Dockerfile and fails on a runner-side import of anything newer. Bump the base image and entries drop off the
+  deny-list by themselves.
+
+- `2026-08-20` — **"Cross-runner resume demotes to fresh" was true in one direction only; the other direction
+  bricked the conversation.** Switching an agent `aisdk` → `claude-sdk` handed
+  `agent-claude-sdk-runner`'s `JsonlTranscriptSource` the aisdk runner's transcript. It adopted the bytes
+  unconditionally, the shell's F2a guard read "bytes present ⟹ resumable", and `query({ resume })` exited 1 with
+  "No conversation found with session ID". Every later turn crashed identically — reproduced 5/5.
+  **The seam already had the fix in it:** `TranscriptSource.write` may return `'unusable'`, which
+  `restoreTranscriptForResume` turns into "no resumable transcript" and F2a turns into a clean fresh start. The aisdk
+  source used it; this one never did, behind a comment asserting "any bytes the host store returns for a session
+  this runner wrote are, by construction, in the shape the SDK reads back" — a premise that stopped being true the
+  moment an agent could change runner.
+  **Lesson:** when a comment justifies skipping a check by naming an invariant, re-read whether that invariant still
+  holds after the feature that made it conditional. And a documented behaviour is a claim to TEST, not to trust —
+  both of this walk's real bugs were found by exercising something the docs said already worked.
+
+- `2026-08-20` — **The "fork-pool flake" was never one bug, and #404 only fixed the first one.** The standing note said
+  RESOLVED; `main` was red on most runs anyway, with a DIFFERENT zero-assertion cause: a better-sqlite3 native
+  destructor running after the Node environment is torn down —
+  `Assertion failed: (env) != nullptr` in `Statement::~Statement()` / `Database::~Database()`. SIGABRT, so vitest's
+  forks pool reports `Worker exited unexpectedly` and blames whichever test file the dying worker held. **A different
+  file each run** (`cli/credentials-wiring`, `memory-strata` bench smoke,
+  `credentials-admin-routes/destination-handlers`) — which is exactly why it kept reading as a vitest flake.
+  Probabilistic, not a version bump: Node 24.19.0 was on the last GREEN main run too.
+  **Three wrong turns worth remembering**, all from reasoning instead of measuring:
+  1. Assumed my PR caused it. It did not — three pre-branch `main` runs carry the identical signature. Check `main`
+     before debugging your own diff.
+  2. "Pinning handles for the process lifetime is a leak" → switched the exit-close registry to `WeakRef`. CI put the
+     abort straight back on the next run. Keeping the handle REACHABLE is most of the fix: an unreachable unclosed
+     handle is GC-finalized on V8's schedule, possibly during isolate disposal. Strong refs, deliberately.
+  3. Read one green-ish run as proof the weak version was the culprit. It is probabilistic — a single run proves
+     nothing either way. Compare signatures across several.
+  **What actually fixes it:** better-sqlite3 **13.x deletes `AddEnvironmentCleanupHook`** (verified by unpacking the
+  tarballs — absent in 13.0.3, present in 11.10.0 AND 12.11.1, so 12.x is not an escape hatch). It needs Node >=22;
+  `container/agent/Dockerfile` pins Node 20 and the image ships better-sqlite3, so it is blocked on bumping the
+  container — the SAME Node-20-vs-Node-24 split that made the aisdk runner unbootable. Card filed.
+  **Partial mitigation that did land:** close tracked Databases on `process.exit` (kills the `Database::~Database()`
+  variant, not the `Statement` one), fix the bench's real leak, and raise `teardownTimeout` where a native-module
+  worker overran vitest's 10s default — that message only LOGS, the stop is still awaited, and the log is what
+  reddens an otherwise all-passing run.

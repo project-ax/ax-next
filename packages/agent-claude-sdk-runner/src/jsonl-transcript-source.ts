@@ -77,11 +77,67 @@ export function encodeProjectSlug(cwdRealpath: string): string {
  * `query({ cwd })`). realpath resolves any symlink the SDK would also
  * resolve.
  */
+/**
+ * Does this transcript announce that some OTHER runner wrote it?
+ *
+ * The premise this function exists to defend against used to be stated here as
+ * fact: "any bytes the host store returns are, by construction, in the shape the
+ * SDK reads back." That holds only while a conversation never changes runner.
+ * Switch an agent from `aisdk` to `claude-sdk` mid-conversation and the host
+ * store hands THIS source the aisdk runner's transcript — which we adopted,
+ * handed to `query({ resume })`, and the SDK died on with "No conversation found
+ * with session ID", exiting 1. Every later turn on that conversation crashed the
+ * same way, so the conversation was permanently stuck. Found by the §8
+ * acceptance walk; the SDK-direction twin of the check `transcript-codec.ts`
+ * already does in the aisdk runner.
+ *
+ * The rule is deliberately narrow: reject ONLY a first line that is a JSON
+ * object carrying a top-level `runner` string — the header every runner-native
+ * serializer in this repo stamps (`{"v":1,"runner":"aisdk"}`; see
+ * `TRANSCRIPT_RUNNER` in @ax/agent-aisdk-runner's transcript-codec.ts, re-checked
+ * here rather than imported — invariant I2, no cross-plugin imports). The SDK's
+ * own jsonl never carries that key: its first line is a record like
+ * `{"type":"queue-operation",…,"sessionId":"…"}`. Anything we cannot positively
+ * identify as foreign is still ACCEPTED, because a false "unusable" would
+ * silently break resume for genuine SDK sessions — a worse failure than the one
+ * being fixed.
+ */
+export function isForeignRunnerTranscript(bytes: Buffer): boolean {
+  // Only the header line matters, and it is tiny. Cap the slice so a multi-MB
+  // transcript is never fully decoded just to read its first line.
+  const head = bytes.subarray(0, 4096).toString('utf8');
+  const newline = head.indexOf('\n');
+  const firstLine = (newline === -1 ? head : head.slice(0, newline)).trim();
+  if (firstLine.length === 0) return false;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(firstLine);
+  } catch {
+    // Unparseable is not positively foreign — leave it to the SDK, which is
+    // the behaviour that shipped before this check existed.
+    return false;
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    return false;
+  }
+  return typeof (parsed as { runner?: unknown }).runner === 'string';
+}
+
 async function writeJsonl(
   workspaceRoot: string,
   sessionId: string,
   bytes: Buffer,
 ): Promise<TranscriptWriteOutcome> {
+  // Refuse BEFORE writing: adopting the bytes and then reporting 'unusable'
+  // would leave a foreign jsonl sitting at the path the SDK reads, so a later
+  // boot could still find and choke on it.
+  if (isForeignRunnerTranscript(bytes)) {
+    process.stderr.write(
+      `runner: cannot resume transcript for session ${sessionId}: ` +
+        `it was written by another runner; starting fresh\n`,
+    );
+    return 'unusable';
+  }
   let cwdReal: string;
   try {
     cwdReal = await realpath(workspaceRoot);
@@ -93,10 +149,6 @@ async function writeJsonl(
   await mkdir(dir, { recursive: true, mode: 0o755 });
   const jsonlPath = join(dir, `${sessionId}.jsonl`);
   await writeFile(jsonlPath, bytes);
-  // The SDK's jsonl is opaque to us — any bytes the host store returns for a
-  // session this runner wrote are, by construction, in the shape the SDK reads
-  // back. There is no format this source can refuse, so it never answers
-  // 'unusable'. (The aisdk runner's source does, on a foreign header line.)
   return 'accepted';
 }
 

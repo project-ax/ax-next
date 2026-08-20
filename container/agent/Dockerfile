@@ -47,9 +47,9 @@
 #     overrides AX_PROXY_CA_DIR onto a mounted volume).
 #
 # Base image: digest-pinned (content-addressed). Both stages pin
-# `node:20-bookworm-slim` to the multi-arch OCI index digest below so a
+# `node:24-bookworm-slim` to the multi-arch OCI index digest below so a
 # mutated/re-pushed tag can't swap the bytes out from under us; the
-# `20-bookworm-slim` tag stays inline for human eyes. The `docker-build` CI
+# `24-bookworm-slim` tag stays inline for human eyes. The `docker-build` CI
 # lane (.github/workflows/ci.yml) builds this image on every change that
 # touches it, so the pin is exercised on every PR. To bump Node: pick the new
 # tag, re-resolve its index digest with
@@ -64,11 +64,25 @@
 # @ax/agent-claude-sdk-runner and @ax/agent-aisdk-runner — plus every other
 # workspace dep on the cli's path).
 # -----------------------------------------------------------------------------
-FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS builder
+FROM node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS builder
 
 # pnpm via corepack — the version pinned in the repo's root package.json
 # packageManager field is picked up automatically once that file is on disk.
 RUN corepack enable
+
+# Native-addon toolchain — BUILDER ONLY.
+#
+# better-sqlite3 publishes no prebuilt binary for Node 24's ABI (137), so
+# `pnpm install` falls through to compiling it with node-gyp, which needs
+# python3 and a C++ toolchain. Without these the install dies on
+# `gyp ERR! find Python`.
+#
+# Deliberately NOT in the runtime stage: that one copies the already-compiled
+# deploy tree, so it stays toolchain-free — smaller, and a compiler is not
+# something a sandbox host should be able to reach for.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /workspace
 
@@ -118,7 +132,7 @@ RUN pnpm install --frozen-lockfile \
 # -----------------------------------------------------------------------------
 # Stage 2: runtime — slim base, no toolchain, deployed tree only.
 # -----------------------------------------------------------------------------
-FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS runtime
+FROM node:24-bookworm-slim@sha256:3638d9a6fe4030bd716be989438248074489337ba3275657f93595428be4fc03 AS runtime
 
 # ca-certificates: HTTPS_PROXY → credential-proxy → api.anthropic.com.
 # curl: general-purpose HTTP client for agent Bash sessions. It adds NO new

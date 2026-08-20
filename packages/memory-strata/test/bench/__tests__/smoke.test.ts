@@ -62,8 +62,13 @@ describe('Smoke: all configs × 3 corpora × 10 Qs with stubbed LLMs', () => {
     try {
       for (const corpus of corpora) {
         for (const driver of drivers) {
-          await driver.build(corpus);
+          // build() INSIDE the try: config C opens a better-sqlite3 handle
+          // partway through it, and only teardown() closes that handle. Built
+          // outside, a throw anywhere after the open skipped teardown and left
+          // the Database open — which aborts the worker at exit
+          // (`Assertion failed: (env) != nullptr` in Database::~Database).
           try {
+            await driver.build(corpus);
             for (const q of corpus.questions) {
               const r = await driver.retrieve(q, 5, new AbortController().signal);
               const a = await runAgent(agentClient, q, r.retrievedDocs);
