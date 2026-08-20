@@ -37,22 +37,28 @@ export interface Database {
 // into a no-op instead of a crash.
 // ---------------------------------------------------------------------------
 
-// WEAK references on purpose. A strong Set would pin every Database for the
-// life of the process, so a handle the caller abandoned could never be
-// collected — turning a crash-on-exit into fds and WAL files held open for the
-// whole run. Weak refs keep the pre-existing behaviour (an unreachable Database
-// is collected, and its destructor runs mid-run while the environment is still
-// alive, which is harmless) and add only the exit-time sweep.
-const openDrivers = new Set<WeakRef<BetterSqliteDb>>();
+// STRONG references, deliberately — and this is the whole trick.
+//
+// The first cut of this net used `WeakRef` + `FinalizationRegistry`, reasoning
+// that pinning handles for the life of the process was a leak. CI disagreed,
+// immediately and reproducibly: the weak version put the abort straight back
+// (`credentials-admin-routes` that time, which opens ~30 `:memory:` databases in
+// a `beforeEach` and never shuts any of them down).
+//
+// The reason is that keeping the handle REACHABLE is most of the fix. An
+// unreachable, unclosed Database gets finalized by GC on V8's schedule — and if
+// that lands while the isolate is being disposed, the destructor's
+// `RemoveEnvironmentCleanupHook` runs against an environment that is already
+// gone, which is the abort. Holding a strong reference means GC never finalizes
+// it; the only thing that ever closes it is this sweep, which runs on `exit`
+// while the environment is still alive.
+//
+// The cost is bounded and boring: a host opens a handful of databases for the
+// life of the process (and closes them via `shutdown()` anyway), and a test file
+// opens a few dozen tiny ones. Trading that for "never aborts" is the right way
+// round.
+const openDrivers = new Set<BetterSqliteDb>();
 let exitHookInstalled = false;
-
-// Prune the WeakRef wrapper when its Database is collected, so a long-lived
-// host that opens and drops databases doesn't accumulate dead refs.
-const driverFinalizer = new FinalizationRegistry<WeakRef<BetterSqliteDb>>(
-  (ref) => {
-    openDrivers.delete(ref);
-  },
-);
 
 /**
  * Close every still-open tracked driver. Exported for the regression test — the
@@ -63,9 +69,7 @@ const driverFinalizer = new FinalizationRegistry<WeakRef<BetterSqliteDb>>(
  * run it.
  */
 export function closeTrackedDatabasesForExit(): void {
-  for (const ref of openDrivers) {
-    const driver = ref.deref();
-    if (driver === undefined) continue;
+  for (const driver of openDrivers) {
     try {
       if (driver.open) driver.close();
     } catch {
@@ -77,9 +81,7 @@ export function closeTrackedDatabasesForExit(): void {
 }
 
 function trackDriver(driver: BetterSqliteDb): void {
-  const ref = new WeakRef(driver);
-  openDrivers.add(ref);
-  driverFinalizer.register(driver, ref);
+  openDrivers.add(driver);
   if (exitHookInstalled) return;
   exitHookInstalled = true;
   // `once`, and deliberately not `unref`-ed: this must run on a normal exit,

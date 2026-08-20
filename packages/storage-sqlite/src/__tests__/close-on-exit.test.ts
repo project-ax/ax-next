@@ -108,26 +108,6 @@ describe('close-on-exit net', () => {
     }
   });
 
-  it('does not pin an abandoned database (weak refs, not a leak)', async () => {
-    // The net must not turn "crashes on exit" into "holds every fd for the
-    // whole run". Tracking is by WeakRef, so an abandoned handle stays
-    // collectable; we can't force GC deterministically, so assert the property
-    // that makes that true — the registry holds weak refs, and a swept
-    // registry is empty rather than growing.
-    const dir = scratch();
-    openDatabase(join(dir, 'w1.sqlite'));
-    openDatabase(join(dir, 'w2.sqlite'));
-    closeTrackedDatabasesForExit();
-    // A second open after a sweep starts from a clean registry, and sweeping
-    // again must still be safe.
-    const db = openDatabase(join(dir, 'w3.sqlite'));
-    await db.selectFrom('kv').select('key').limit(1).execute();
-    closeTrackedDatabasesForExit();
-    await expect(
-      db.selectFrom('kv').select('key').limit(1).execute(),
-    ).rejects.toThrow(/not open/i);
-  });
-
   it('registers exactly one process exit listener however many databases open', () => {
     const before = process.listenerCount('exit');
     const dir = scratch();
