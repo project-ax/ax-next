@@ -54,9 +54,11 @@ export interface DevAgentsStubConfig {
    */
   model?: string;
   /**
-   * Runner id. Defaults to `'claude-sdk'`, the only runner shipped today;
-   * PR 3 adds `'aisdk'`. Echoed onto the resolved agent so the orchestrator
-   * can look up the matching binary in `ChatOrchestratorConfig.runnerBinaries`.
+   * Runner id — `'claude-sdk'` (the default) or `'aisdk'` (PR 3). Echoed onto
+   * the resolved agent so the orchestrator can look up the matching binary in
+   * `ChatOrchestratorConfig.runnerBinaries`. Threaded from
+   * `MainOptions.devAgentRunner`, which is how the acceptance canary drives
+   * both ids through the real host selection path.
    */
   runner?: string;
   /**

@@ -40,6 +40,7 @@
     "@ax/session-inmemory": "workspace:*",
     "@ax/ipc-server": "workspace:*",
     "@ax/chat-orchestrator": "workspace:*",
+    "@ax/agent-aisdk-runner": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/mcp-client": "workspace:*",
     "@ax/tool-artifact-publish": "workspace:*",

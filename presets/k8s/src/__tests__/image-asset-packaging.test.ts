@@ -65,8 +65,42 @@ function isTscOnly(build: string): boolean {
     .every((seg) => seg === '' || seg.startsWith('tsc'));
 }
 
+/**
+ * The runner packages are the OTHER way something can be missing from the
+ * image, and it fails differently: their build scripts are plain `tsc --build`
+ * (so the cli's project-reference walk emits their dist for free, no
+ * Dockerfile `--filter` line needed), but the compiled bytes only reach
+ * /opt/ax-next/host if `pnpm deploy --prod` copies them — and it copies the
+ * PROD DEPENDENCY CLOSURE of @ax/cli. A runner that both binary maps name but
+ * neither package depends on resolves fine in the repo (pnpm hoists the whole
+ * workspace) and then throws MODULE_NOT_FOUND at host boot in the image.
+ */
+const RUNNER_PACKAGES = ['@ax/agent-claude-sdk-runner', '@ax/agent-aisdk-runner'];
+
+function prodDeps(pkgPath: string): Record<string, string> {
+  const pj = JSON.parse(readFileSync(pkgPath, 'utf8')) as {
+    dependencies?: Record<string, string>;
+  };
+  return pj.dependencies ?? {};
+}
+
 describe('production image asset packaging', () => {
   const dockerfile = readFileSync(DOCKERFILE, 'utf8');
+
+  it.each([
+    ['@ax/cli', `${REPO_ROOT}packages/cli/package.json`],
+    ['@ax/preset-k8s', `${REPO_ROOT}presets/k8s/package.json`],
+  ])('%s declares every shipped runner as a prod dependency', (_name, pkgPath) => {
+    const deps = prodDeps(pkgPath);
+    for (const runner of RUNNER_PACKAGES) {
+      expect(
+        deps[runner],
+        `${runner} is named in a runner-id -> binary map but is not a prod ` +
+          `dependency of ${_name}, so \`pnpm deploy --prod\` will not copy it ` +
+          `into the container image and require.resolve will throw at boot.`,
+      ).toBeDefined();
+    }
+  });
 
   it('Dockerfile builds every workspace package that emits non-tsc artifacts', () => {
     const nonTscOnly = readPkgJsons().filter((p) => !isTscOnly(p.build));

@@ -22,6 +22,7 @@
   },
   "dependencies": {
     "@ax/admin-settings-routes": "workspace:*",
+    "@ax/agent-aisdk-runner": "workspace:*",
     "@ax/agent-claude-sdk-runner": "workspace:*",
     "@ax/agent-identity-templates": "workspace:*",
     "@ax/agents": "workspace:*",

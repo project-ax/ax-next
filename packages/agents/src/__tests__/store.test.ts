@@ -113,18 +113,24 @@ describe('validation', () => {
     ).toBe('claude-sdk');
   });
 
-  // PR 3 flips this test: the `RunnerId` union already names 'aisdk', but no
-  // binary exists behind it yet, so SUPPORTED_RUNNERS does not contain it.
-  it("rejects runner 'aisdk' until the binary ships (PR 3)", () => {
-    expect(SUPPORTED_RUNNERS).not.toContain('aisdk');
-    expect(() =>
-      validateCreateInput(makeInput({ runner: 'aisdk' }), vctx),
-    ).toThrow(/not in the allow-list/);
+  // PR 3 shipped @ax/agent-aisdk-runner and added it to both host binary
+  // maps, so 'aisdk' joined the allow-list in that same PR. (This test used to
+  // assert the opposite — it was the marker for the half-wired window.)
+  it("accepts runner 'aisdk' now that the binary ships", () => {
+    expect(SUPPORTED_RUNNERS).toContain('aisdk');
+    expect(
+      validateCreateInput(makeInput({ runner: 'aisdk' }), vctx).runner,
+    ).toBe('aisdk');
   });
 
+  // The negative case has to survive the flip above, or the allow-list stops
+  // being proven to reject anything at all: with both shipped ids accepted, a
+  // validator that silently passed EVERY string would still be green on the
+  // positive tests.
   it('rejects an unknown runner id', () => {
+    expect(SUPPORTED_RUNNERS).not.toContain('not-a-runner');
     expect(() =>
-      validateCreateInput(makeInput({ runner: 'nope' }), vctx),
+      validateCreateInput(makeInput({ runner: 'not-a-runner' }), vctx),
     ).toThrow(/not in the allow-list/);
   });
 
@@ -141,10 +147,10 @@ describe('validation', () => {
     expect(validateUpdatePatch({ runner: 'claude-sdk' }, vctx)).toEqual({
       runner: 'claude-sdk',
     });
-    expect(() => validateUpdatePatch({ runner: 'aisdk' }, vctx)).toThrow(
-      /not in the allow-list/,
-    );
-    expect(() => validateUpdatePatch({ runner: 'nope' }, vctx)).toThrow(
+    expect(validateUpdatePatch({ runner: 'aisdk' }, vctx)).toEqual({
+      runner: 'aisdk',
+    });
+    expect(() => validateUpdatePatch({ runner: 'not-a-runner' }, vctx)).toThrow(
       /not in the allow-list/,
     );
   });

@@ -989,15 +989,32 @@ export function createConversationStore(
 }
 
 /**
- * TASK-67 (B3) — map ONE raw jsonl line to a display-comparable role. The SDK
- * jsonl whitelists turn-bearing entry types (`user` / `assistant`); a `user`
- * line carrying a `tool_result` block is the SDK's echo of a tool turn, so it
- * maps to `'tool'`. Everything else (SDK bookkeeping: queue-operation,
- * last-prompt, skill_listing, system, etc.) maps to `null` (not a display
- * turn). A malformed/partial line is also `null`. We parse defensively — the
- * line is untrusted; a parse failure must never throw here.
+ * TASK-67 (B3) — map ONE raw transcript line to a display-comparable role.
+ *
+ * TWO line shapes reach this function, one per runner:
+ *
+ *   1. A line that DECLARES its role (`{"role":"assistant",…}`). Preferred and
+ *      checked first. `@ax/agent-aisdk-runner` writes these, and any future
+ *      runner should too — declaring the display role is runner-neutral, and it
+ *      spares the host from reverse-engineering roles out of a vendor's private
+ *      serialization the way branch 2 has to.
+ *   2. The Claude Agent SDK's own jsonl, which does not. It whitelists
+ *      turn-bearing entry types (`user` / `assistant`); a `user` line carrying a
+ *      `tool_result` block is the SDK's echo of a tool turn, so it maps to
+ *      `'tool'`.
+ *
+ * Everything else (SDK bookkeeping: queue-operation, last-prompt,
+ * skill_listing, system, etc., and the aisdk runner's header line) maps to
+ * `null` — not a display turn. A malformed/partial line is also `null`. We
+ * parse defensively — the line is untrusted; a parse failure must never throw
+ * here.
+ *
+ * Exported ONLY so the pure line-shape suite can drive both branches without a
+ * database (the store's own suites need testcontainers). It is a pure function
+ * — no I/O — so exporting it grants no runtime capability. Same posture as
+ * `validateMcpEntry` in @ax/agent-runner-core.
  */
-function roleOfJsonlLine(line: string): TurnRole | null {
+export function roleOfJsonlLine(line: string): TurnRole | null {
   const trimmed = line.trim();
   if (trimmed.length === 0) return null;
   let parsed: unknown;
@@ -1007,7 +1024,12 @@ function roleOfJsonlLine(line: string): TurnRole | null {
     return null;
   }
   if (parsed === null || typeof parsed !== 'object') return null;
-  const o = parsed as { type?: unknown; message?: unknown };
+  const o = parsed as { type?: unknown; role?: unknown; message?: unknown };
+  // Shape 1: the line states its own role. `system` is a real transcript role
+  // but not a display turn, so it falls through to null with everything else.
+  if (o.role === 'assistant' || o.role === 'user' || o.role === 'tool') {
+    return o.role;
+  }
   if (o.type === 'assistant') return 'assistant';
   if (o.type === 'user') {
     // A user line whose message content carries a tool_result block is the
@@ -1116,9 +1138,37 @@ export function dropTurnFromJsonl(
   const parsed: Parsed[] = rawLines.map((line) => {
     if (line.trim().length === 0) return { line, isAssistant: false, isTurnBearing: false };
     try {
-      const o = JSON.parse(line) as { type?: string; uuid?: string; message?: { id?: string } };
-      const isAssistant = o.type === 'assistant';
-      const isTurnBearing = o.type === 'assistant' || o.type === 'user';
+      const o = JSON.parse(line) as {
+        type?: string;
+        role?: string;
+        uuid?: string;
+        message?: { id?: string };
+      };
+      // A line that declares its own `role` wins over the Claude SDK's `type`
+      // sniffing, for the same reason `roleOfJsonlLine` prefers it: the host
+      // must be able to drop a turn from ANY runner's transcript without
+      // knowing that runner's message shape.
+      //
+      // Scope note, so nobody over-credits this branch: targeting an EXPLICIT
+      // `turnId` already worked for any runner, because that match is on the
+      // top-level `uuid` alone (which every runner's lines carry). What this
+      // branch adds is the two paths that need to know what a line IS rather
+      // than which line it is — the empty-`turnId` "drop the most recent turn"
+      // scan, and the assistant-sibling coalescing below.
+      const isAssistant =
+        o.role === undefined ? o.type === 'assistant' : o.role === 'assistant';
+      // `tool` is deliberately NOT turn-bearing, matching the SDK branch (which
+      // only counts `assistant`/`user`). Turn-bearing drives the empty-`turnId`
+      // "drop the most recent turn" scan, and a runner that stores tool results
+      // as their own lines can legitimately END a turn on one — dropping that
+      // line alone would leave the preceding assistant message holding a
+      // tool-call with no matching result, which the provider rejects on the
+      // very next request. A tool line is still droppable by an EXPLICIT
+      // turnId, since that match is on `uuid` and ignores this flag.
+      const isTurnBearing =
+        o.role === undefined
+          ? o.type === 'assistant' || o.type === 'user'
+          : o.role === 'assistant' || o.role === 'user';
       const result: Parsed = { line, isAssistant, isTurnBearing };
       if (typeof o.uuid === 'string') result.uuid = o.uuid;
       if (isAssistant && typeof o.message?.id === 'string') result.messageId = o.message.id;

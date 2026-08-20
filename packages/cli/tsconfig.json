@@ -25,6 +25,7 @@
     { "path": "../session-inmemory" },
     { "path": "../ipc-server" },
     { "path": "../chat-orchestrator" },
+    { "path": "../agent-aisdk-runner" },
     { "path": "../agent-claude-sdk-runner" },
     { "path": "../mcp-client" },
     { "path": "../tool-artifact-publish" },

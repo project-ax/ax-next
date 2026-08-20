@@ -63,29 +63,45 @@ const minRequired = (extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv => ({
 });
 
 describe('@ax/preset-k8s runner id -> binary map (PR 2 Task 6)', () => {
-  it('defaults runnerBinaries to a claude-sdk entry resolving @ax/agent-claude-sdk-runner', () => {
+  it('defaults runnerBinaries to one entry per shipped runner, each resolving its own package', () => {
     createK8sPlugins(stubConfig());
     const runnerBinaries = captured.cfg?.runnerBinaries as Record<string, string> | undefined;
     expect(runnerBinaries).toBeDefined();
-    expect(Object.keys(runnerBinaries!)).toEqual(['claude-sdk']);
+    // PR 3 added the second key. The key SET is asserted (not just presence)
+    // because a key missing here is not a preset bug that shows up in the
+    // preset — it surfaces as a session-open failure for an agent row whose
+    // `runner` @ax/agents already accepted.
+    expect(Object.keys(runnerBinaries!).sort()).toEqual(['aisdk', 'claude-sdk']);
     expect(runnerBinaries!['claude-sdk']).toContain('agent-claude-sdk-runner');
+    expect(runnerBinaries!['aisdk']).toContain('agent-aisdk-runner');
+    expect(runnerBinaries!['aisdk']).not.toBe(runnerBinaries!['claude-sdk']);
   });
 
-  it('an explicit chat.runnerBinaries override replaces the claude-sdk entry', () => {
+  it('an explicit chat.runnerBinaries override replaces the claude-sdk entry and keeps the aisdk default', () => {
     createK8sPlugins(stubConfig({ runnerBinaries: { 'claude-sdk': '/tmp/stub-runner.js' } }));
     const runnerBinaries = captured.cfg?.runnerBinaries as Record<string, string> | undefined;
-    expect(runnerBinaries).toEqual({ 'claude-sdk': '/tmp/stub-runner.js' });
+    expect(runnerBinaries?.['claude-sdk']).toBe('/tmp/stub-runner.js');
+    expect(runnerBinaries?.aisdk).toContain('agent-aisdk-runner');
   });
 
-  it('a chat.runnerBinaries override for an unrelated key MERGES with (does not drop) the claude-sdk default', () => {
+  it('a chat.runnerBinaries override for one key MERGES with (does not drop) the other default', () => {
     createK8sPlugins(stubConfig({ runnerBinaries: { aisdk: '/tmp/aisdk-runner.js' } }));
     const runnerBinaries = captured.cfg?.runnerBinaries as Record<string, string> | undefined;
     expect(runnerBinaries?.aisdk).toBe('/tmp/aisdk-runner.js');
     expect(runnerBinaries?.['claude-sdk']).toContain('agent-claude-sdk-runner');
   });
 
+  // Deliberate as of PR 3: AX_RUNNER_BINARY is the legacy single-runner knob
+  // (one path, no runner id in it). It stays claude-sdk-only rather than
+  // sprouting a sibling env var per runner; the 'aisdk' default survives
+  // because createK8sPlugins merges over the defaults key-by-key.
   it('loadK8sConfigFromEnv maps AX_RUNNER_BINARY onto the claude-sdk key only', () => {
     const cfg = loadK8sConfigFromEnv(minRequired({ AX_RUNNER_BINARY: '/opt/ax-next/runner.js' }));
     expect(cfg.chat?.runnerBinaries).toEqual({ 'claude-sdk': '/opt/ax-next/runner.js' });
+
+    createK8sPlugins(stubConfig(cfg.chat));
+    const merged = captured.cfg?.runnerBinaries as Record<string, string> | undefined;
+    expect(merged?.['claude-sdk']).toBe('/opt/ax-next/runner.js');
+    expect(merged?.aisdk).toContain('agent-aisdk-runner');
   });
 });

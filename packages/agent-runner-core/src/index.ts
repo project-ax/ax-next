@@ -60,6 +60,7 @@ export {
 export type {
   TranscriptSource,
   TranscriptShipState,
+  TranscriptWriteOutcome,
   ShipDeltaResult,
 } from './transcript-delta.js';
 export type { ProxyStartup } from './proxy-startup.js';

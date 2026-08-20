@@ -44,19 +44,23 @@ const DEFAULT_ALLOWED_MODELS: readonly string[] = [
 ];
 
 /**
- * Runner ids an agent may actually select today.
+ * Runner ids an agent may actually select — i.e. the ids that have a binary
+ * behind them, shipped in the same image the host spawns from. Both entries
+ * are real today: `'claude-sdk'` → @ax/agent-claude-sdk-runner,
+ * `'aisdk'` → @ax/agent-aisdk-runner (PR 3). Adding an id here is only ever
+ * correct in the PR that also adds it to BOTH binary maps
+ * (`resolveRunnerBinaries` in @ax/cli, `defaultRunnerBinaries` in
+ * @ax/preset-k8s) — that pairing is what keeps this list from promising a
+ * runner the host cannot spawn.
  *
- * The `RunnerId` union names `'aisdk'` because the type is the vocabulary,
- * but no binary exists behind it until PR 3 — so it is NOT in this list and
- * validation rejects it. There is deliberately no config field and no
- * `AX_AGENT_RUNNERS_ALLOWED` env override: an escape hatch here would let an
- * operator select a runner the host cannot spawn, turning a clean write-time
- * rejection into a failed turn at session-open. PR 3 adds `'aisdk'` to this
- * array in the same PR that ships the binary. (Deliberate deviation from
- * `allowedModels`, which IS operator-configurable — a model id is routed to a
- * provider at runtime; a runner id must map to a binary the host already has.)
+ * There is deliberately no config field and no `AX_AGENT_RUNNERS_ALLOWED` env
+ * override: an escape hatch here would let an operator select a runner absent
+ * from the binary map, turning a clean write-time rejection into a failed turn
+ * at session-open. (Deliberate deviation from `allowedModels`, which IS
+ * operator-configurable — a model id is routed to a provider at runtime; a
+ * runner id must map to a binary the host already has.)
  */
-export const SUPPORTED_RUNNERS = ['claude-sdk'] as const;
+export const SUPPORTED_RUNNERS = ['claude-sdk', 'aisdk'] as const;
 const DEFAULT_RUNNER: RunnerId = 'claude-sdk';
 
 function loadAllowedModelsFromEnv(): readonly string[] | null {

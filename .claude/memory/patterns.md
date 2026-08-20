@@ -576,3 +576,38 @@ backends) is exact-match and needs the new `source:` key.
 - **You cannot register a second handler on a service hook** (`HookBus.registerService` throws `duplicate-service`), and the CLI's `configOverride.sandbox` enum only admits `'subprocess'`, so a library-mode e2e can't swap `@ax/sandbox-subprocess` out to spy on `sandbox:open-session` without losing the real end-to-end path. The working technique: an **`extraPlugins` observer that wraps `bus.call` in its `init` and delegates to the original** — the same wrap `packages/conversations/src/__tests__/subscribe.test.ts:98` uses to witness which hooks a code path consulted. `init` runs long before `agent:invoke`, and every plugin holds the same `HookBus` instance, so the orchestrator's call is captured. Use this instead of replacing the registrant when the point of the test is that the REAL chain ran.
 - **Assert the map lookup, not "a path".** `packages/cli/src/__tests__/chat-pipeline.e2e.test.ts` compares `sandbox:open-session.runnerBinary` against `resolveRunnerBinaries({ runnerBinaryOverride })['claude-sdk']` — the production builder, fed the same override `main()` got. Comparing against `stubRunnerPath` directly would also pass if the orchestrator ignored the map entirely.
 - **A missing observation must throw, not skip.** `if (observed === undefined) throw` before the three assertions; an `if (observed) { ...expect... }` guard is an always-green test (the softened-assertion failure mode from PR 1).
+
+## Probing a pinned SDK beats trusting a design doc (2026-08-19, PR 3)
+
+Before writing a line of the `ai@7` runner, install the exact version in a scratch
+dir and drive the real API with its own mocks (`ai/test`'s `MockLanguageModelV4` +
+`simulateReadableStream`). Three load-bearing facts came out of ~20 minutes of
+probing that no amount of careful reading would have produced:
+
+1. `result.response.messages` carries only the **last step's** messages. The full
+   turn is `(await result.steps).flatMap(s => s.response.messages)`. Get it wrong
+   and every tool call/result silently vanishes from the transcript.
+2. The provider stream part `finish` carries `finishReason: {unified, raw}` in V4,
+   not a bare string. A bare string makes the SDK skip tool execution entirely and
+   end the turn — no error, no warning.
+3. A thrown `execute` becomes a `tool-error` part + an `error-text` tool result and
+   the loop CONTINUES; a provider failure arrives as an `error` PART, so
+   `await result.steps` throws a useless generic wrapper.
+
+Also: validate what you produce against the SDK's OWN schema
+(`userModelMessageSchema`, `modelMessageSchema`) rather than against your belief
+about the shape. That is what caught that `translateContentBlocks` emits
+Anthropic-shaped blocks the AI SDK rejects, and that `modelMessageSchema` STRIPS
+unknown keys (which is why restored transcript lines must be re-emitted verbatim).
+
+## Mutation-test every guard, and report which mutations you ran (2026-08-19)
+
+`mistakes.md` records three separate occasions where a required assertion was
+softened into a conditional that always passed. The cheap antidote: after writing
+a guard, break the thing it guards, confirm red, restore, confirm green — and say
+in the PR which mutations you ran. In PR 3 this caught a genuinely weak test of my
+own (a byte-stability assertion whose fixture had nothing for zod to strip, so it
+could not fail) and told me a claim I had written in a comment was overstated
+(`dropTurnFromJsonl` already matched an explicit `turnId` by top-level `uuid`, so
+the new `role` branch was doing less than the comment said). Mutation results are
+evidence about the TEST; they also fact-check the prose.

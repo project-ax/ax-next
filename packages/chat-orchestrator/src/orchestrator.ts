@@ -1395,16 +1395,24 @@ export function createOrchestrator(
       //
       // NOTE this copy is NOT what selects the binary — that lookup below uses
       // `agent.runner` off the freshly-resolved AgentRecord. This is the frozen
-      // SNAPSHOT (Invariant I10: config captured once at session creation), and
-      // it has no runtime reader yet. Its consumer arrives in PR 3: with two
-      // runners, resuming a session has to know which runner produced the
-      // existing transcript, because the transcript formats differ and a
-      // cross-runner resume must demote to a fresh session rather than hand one
-      // runner's transcript to the other (design doc §8, "Documented
-      // non-parity"). Reading the agent row instead would answer "which runner
-      // does this agent use NOW", not "which runner wrote this transcript" —
-      // and those diverge exactly when someone switches an agent's runner
-      // mid-conversation, which is the case the demotion exists for.
+      // SNAPSHOT (Invariant I10: config captured once at session creation).
+      //
+      // PR 3 gave it a reader, but NOT the one predicted here. The prediction
+      // was that it would drive the cross-runner resume demotion. It can't:
+      // this is a snapshot of the agent's runner, not of whatever wrote the
+      // stored transcript, and the two diverge exactly in the case the
+      // demotion exists for — someone switching an agent's runner
+      // mid-conversation. So the demotion reads the TRANSCRIPT's own header
+      // line instead (`packages/agent-aisdk-runner/src/transcript-codec.ts`:
+      // a foreign/absent header decodes to `ok:false`, the source answers
+      // `'unusable'`, and runRunner takes its existing demote-to-fresh branch).
+      //
+      // What this field is actually read for is a boot self-check in the
+      // runner (`packages/agent-aisdk-runner/src/main.ts`, search RUNNER_ID):
+      // the runner asserts the session it was handed was configured for the
+      // runner id it implements, so a mis-keyed `runnerBinaries` map fails
+      // loudly at spawn instead of silently running the wrong harness under
+      // the operator's chosen runner id.
       runner: agent.runner,
     };
 
