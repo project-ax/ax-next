@@ -36,9 +36,9 @@ export interface SkillAttachment {
  * path. Nothing filesystem-shaped leaks into an agent row or a hook payload
  * (Invariant I1).
  *
- * `'aisdk'` is named here because the type is the vocabulary; it is NOT
- * accepted by validation until PR 3 ships the binary behind it — see
- * `SUPPORTED_RUNNERS` in store.ts.
+ * Both ids are selectable as of PR 3, which shipped the `'aisdk'` binary
+ * (@ax/agent-aisdk-runner) — see `SUPPORTED_RUNNERS` in store.ts, the
+ * allow-list validation actually enforces.
  */
 export type RunnerId = 'claude-sdk' | 'aisdk';
 

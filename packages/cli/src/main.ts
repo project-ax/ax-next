@@ -103,25 +103,48 @@ export interface MainOptions {
    * substitute via env. Resolution order: opts > env > default.
    */
   runnerBinaryOverride?: string;
+  /**
+   * Test-seam ONLY. The runner id the dev agents-stub reports on the agent it
+   * resolves. Defaults to the stub's own default (`'claude-sdk'`).
+   *
+   * This exists so the acceptance canary can drive the SECOND runner id
+   * through the real host path — the dev stub is the CLI's only
+   * `agents:resolve` impl, so without a way to change what it answers, every
+   * library-mode run selects `'claude-sdk'` and the id → binary lookup is
+   * never exercised for anything else. Not reachable from file-based config:
+   * a single-tenant dev loop has no agent rows to configure, and production
+   * presets get this from the real @ax/agents store instead.
+   */
+  devAgentRunner?: string;
 }
 
 /**
- * Resolve the runner id → binary path map. The CLI ships exactly one runner
- * today (`'claude-sdk'`); PR 3 adds `'aisdk'` alongside it. Production
- * resolves @ax/agent-claude-sdk-runner for the `'claude-sdk'` key; tests
- * override via opts.runnerBinaryOverride (library-mode) or via
+ * Resolve the runner id → binary path map. The CLI ships two runners as of
+ * PR 3: `'claude-sdk'` → @ax/agent-claude-sdk-runner, `'aisdk'` →
+ * @ax/agent-aisdk-runner. The keys here MUST stay in step with
+ * `SUPPORTED_RUNNERS` in @ax/agents — an agent may select any id on that
+ * allow-list, and an id missing from this map fails at session-open instead
+ * of at write time.
+ *
+ * Tests override via opts.runnerBinaryOverride (library-mode) or via
  * AX_TEST_RUNNER_BINARY_OVERRIDE env var (binary-mode where the CLI is spawned
- * from a test as a subprocess and MainOptions can't be threaded through). The
- * override, when present, replaces only the `'claude-sdk'` entry.
+ * from a test as a subprocess and MainOptions can't be threaded through).
+ *
+ * The override, when present, replaces EVERY entry — not just `'claude-sdk'`.
+ * That is deliberate and load-bearing: the acceptance canary
+ * (chat-pipeline.e2e.test.ts) runs the same stub runner under both ids to
+ * prove the host-side runner-id → binary → AgentConfig selection path, which
+ * only works if selecting either id lands on the stub.
  */
 export function resolveRunnerBinaries(
   opts: Pick<MainOptions, 'runnerBinaryOverride'>,
 ): Record<string, string> {
+  const override =
+    opts.runnerBinaryOverride ?? process.env.AX_TEST_RUNNER_BINARY_OVERRIDE;
   return {
     'claude-sdk':
-      opts.runnerBinaryOverride ??
-      process.env.AX_TEST_RUNNER_BINARY_OVERRIDE ??
-      requireFromCli.resolve('@ax/agent-claude-sdk-runner'),
+      override ?? requireFromCli.resolve('@ax/agent-claude-sdk-runner'),
+    aisdk: override ?? requireFromCli.resolve('@ax/agent-aisdk-runner'),
   };
 }
 
@@ -315,7 +338,11 @@ export async function main(opts: MainOptions): Promise<number> {
   // multi-tenant preset. Production presets register the real @ax/agents
   // plugin instead; the kernel's "exactly one impl per service hook" rule
   // catches accidental dual-loading. See dev-agents-stub.ts.
-  plugins.push(createDevAgentsStubPlugin());
+  plugins.push(
+    createDevAgentsStubPlugin(
+      opts.devAgentRunner !== undefined ? { runner: opts.devAgentRunner } : {},
+    ),
+  );
 
   // Tool dispatcher is the single entry point for `tool:execute`, fanning
   // out to whatever tool plugins register descriptors. The dispatcher's

@@ -96,14 +96,24 @@ const requireFromPreset = createRequire(import.meta.url);
  * Default runner id → binary path map. Resolved against the preset's own
  * URL so pnpm hoisting and prod/dev installs both work.
  *
- * Today there is exactly one runner (`'claude-sdk'`) and exactly one key in
- * this map; PR 3 adds `'aisdk'` alongside it, at which point this function
- * (and the `AX_RUNNER_BINARY` env var below, which maps onto the
- * `'claude-sdk'` key only) grow a second entry.
+ * Two runners ship as of PR 3: `'claude-sdk'` → @ax/agent-claude-sdk-runner
+ * and `'aisdk'` → @ax/agent-aisdk-runner. The key set MUST match
+ * `SUPPORTED_RUNNERS` in @ax/agents — that allow-list is what an agent row's
+ * `runner` is validated against, so a key missing here turns a legal agent
+ * config into a session-open failure. Both packages are prod dependencies of
+ * this preset, which is also what puts them inside the container image
+ * (`pnpm deploy --prod` copies the prod dep closure).
+ *
+ * The `AX_RUNNER_BINARY` env var below deliberately stays a `'claude-sdk'`-only
+ * override: it predates the map (it was the single-runner "point the tests at
+ * my stub" knob) and its one string has no room for a runner id. Anything
+ * needing per-runner paths sets `chat.runnerBinaries` directly, which merges
+ * with these defaults key-by-key.
  */
 function defaultRunnerBinaries(): Record<string, string> {
   return {
     'claude-sdk': requireFromPreset.resolve('@ax/agent-claude-sdk-runner'),
+    aisdk: requireFromPreset.resolve('@ax/agent-aisdk-runner'),
   };
 }
 
@@ -337,9 +347,9 @@ export interface K8sPresetConfig {
     hostIpcUrl: string;
   };
   /**
-   * Chat orchestrator overrides. `runnerBinaries` defaults to
-   * `{ 'claude-sdk': <resolved @ax/agent-claude-sdk-runner> }`;
-   * tests/embedders may override or extend it (e.g. PR 3's `'aisdk'` entry).
+   * Chat orchestrator overrides. `runnerBinaries` defaults to the two shipped
+   * runners (`'claude-sdk'` → @ax/agent-claude-sdk-runner, `'aisdk'` →
+   * @ax/agent-aisdk-runner); tests/embedders may override or extend it.
    * A partial override merges with the defaults rather than replacing them,
    * so setting one runner's path doesn't lose the other's default.
    */
@@ -1413,7 +1423,9 @@ export function blobConfigFromEnv(
 //                                    '0.0.0.0' / 8080)
 //   - AX_RUNNER_BINARY             — chat orchestrator override (tests); maps
 //                                    onto the 'claude-sdk' runnerBinaries key
-//                                    only — today's sole runner id
+//                                    only (see defaultRunnerBinaries: it is a
+//                                    legacy single-runner knob; per-runner
+//                                    paths go through chat.runnerBinaries)
 //   - AX_CHAT_TIMEOUT_MS           — chat orchestrator override
 //   - AX_AUTH_SESSION_LIFETIME_SECONDS — auth session cookie lifetime
 //
@@ -1513,9 +1525,13 @@ export function loadK8sConfigFromEnv(
   }
 
   const chat: NonNullable<K8sPresetConfig['chat']> = {};
-  // AX_RUNNER_BINARY carries one path today, for the one shipped runner id.
-  // Map it onto the 'claude-sdk' key of the runnerBinaries map; PR 3 adds a
-  // second env var (and key) for 'aisdk'.
+  // AX_RUNNER_BINARY carries exactly one path and no runner id, so it maps
+  // onto the 'claude-sdk' key only. Kept that way on purpose when PR 3 added
+  // the 'aisdk' key: it is a legacy single-runner override, and growing a
+  // parallel AX_AISDK_RUNNER_BINARY (etc.) per runner would re-encode the
+  // whole map in env-var names. The default for every other key survives —
+  // createK8sPlugins merges this partial override over defaultRunnerBinaries()
+  // key-by-key rather than replacing the map.
   if (env.AX_RUNNER_BINARY !== undefined && env.AX_RUNNER_BINARY !== '') {
     chat.runnerBinaries = { 'claude-sdk': env.AX_RUNNER_BINARY };
   }

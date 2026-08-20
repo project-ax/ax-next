@@ -695,6 +695,9 @@ importers:
 
   packages/cli:
     dependencies:
+      '@ax/agent-aisdk-runner':
+        specifier: workspace:*
+        version: link:../agent-aisdk-runner
       '@ax/agent-claude-sdk-runner':
         specifier: workspace:*
         version: link:../agent-claude-sdk-runner
@@ -2433,6 +2436,9 @@ importers:
       '@ax/admin-settings-routes':
         specifier: workspace:*
         version: link:../../packages/admin-settings-routes
+      '@ax/agent-aisdk-runner':
+        specifier: workspace:*
+        version: link:../../packages/agent-aisdk-runner
       '@ax/agent-claude-sdk-runner':
         specifier: workspace:*
         version: link:../../packages/agent-claude-sdk-runner

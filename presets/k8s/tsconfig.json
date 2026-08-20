@@ -16,6 +16,7 @@
     { "path": "../../packages/workspace-git-server" },
     { "path": "../../packages/workspace-filestore" },
     { "path": "../../packages/sandbox-k8s" },
+    { "path": "../../packages/agent-aisdk-runner" },
     { "path": "../../packages/agent-claude-sdk-runner" },
     { "path": "../../packages/agent-identity-templates" },
     { "path": "../../packages/chat-orchestrator" },

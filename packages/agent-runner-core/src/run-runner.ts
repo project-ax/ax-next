@@ -169,12 +169,20 @@ export interface EndTurnInput {
    */
   beforeCommit?: () => Promise<void>;
   /**
-   * Reads the id of the last transcript line of `role` for `sessionId`. The
-   * transcript's on-disk shape is loop-specific, so the loop supplies this.
+   * Reads the id of the last transcript entry for `sessionId` carrying the
+   * given DISPLAY role — the same role the shell is about to stamp on
+   * `event.turn-end`, so subscribers can refer back to that exact turn (e.g.
+   * `conversations:drop-turn`).
+   *
+   * The role vocabulary here is the HOST's (`chat:turn-end`'s `role`), never a
+   * loop's storage vocabulary. The Claude Agent SDK, for instance, echoes tool
+   * results back as `user` jsonl lines; mapping `'tool'` onto that is the SDK
+   * adapter's job, not the shell's. The transcript's shape is loop-specific,
+   * so the loop supplies this whole function.
    */
   readTurnId: (
     sessionId: string,
-    role: 'user' | 'assistant',
+    role: 'tool' | 'assistant',
   ) => Promise<string | undefined>;
 }
 
@@ -1111,9 +1119,11 @@ async function runRunnerInner(
     // Failures here MUST NOT terminate the chat (host may be tearing
     // down). Each call swallows independently.
     if (input.toolResultBlocks.length > 0) {
-      // The loop echoes tool_result blocks back as transcript lines with
-      // `type: 'user'`, so we look up the uuid of the LAST 'user'
-      // line for this session. Best-effort: undefined-on-miss is
+      // Ask for the TOOL turn's id in the host's own display-role vocabulary
+      // — the same `role` this event carries. How a given loop stores a tool
+      // turn (the Claude SDK echoes them back as `user` jsonl lines; the aisdk
+      // runner stores them as role 'tool') is the loop's business, resolved
+      // inside its `readTurnId`. Best-effort: undefined-on-miss is
       // fine because subscribers gracefully skip without a turnId.
       // Read via `transcriptSessionId` (the loop's real session id,
       // captured at its init) — NOT the boot `runnerSessionId`,
@@ -1125,7 +1135,7 @@ async function runRunnerInner(
       // couldn't refer back to it. (FAULTA-3)
       const turnId =
         transcriptSessionId !== null
-          ? await input.readTurnId(transcriptSessionId, 'user')
+          ? await input.readTurnId(transcriptSessionId, 'tool')
           : undefined;
       await client
         .event('event.turn-end', {

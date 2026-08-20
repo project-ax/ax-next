@@ -1,6 +1,7 @@
 # syntax=docker/dockerfile:1.7
 #
-# @ax/cli + @ax/agent-claude-sdk-runner runtime image (the "agent" image).
+# @ax/cli + @ax/agent-claude-sdk-runner + @ax/agent-aisdk-runner runtime
+# image (the "agent" image).
 #
 # What this image is:
 #   - The shared image for the ax-next host pod AND the per-session runner
@@ -59,8 +60,9 @@
 # -----------------------------------------------------------------------------
 # Stage 1: builder — pnpm deploy resolves workspace:* deps into a self-
 # contained tree. We then build the cli's TypeScript (project references
-# walk transitively, so this also builds @ax/agent-claude-sdk-runner +
-# every other workspace dep on the cli's path).
+# walk transitively, so this also builds BOTH runners —
+# @ax/agent-claude-sdk-runner and @ax/agent-aisdk-runner — plus every other
+# workspace dep on the cli's path).
 # -----------------------------------------------------------------------------
 FROM node:20-bookworm-slim@sha256:2cf067cfed83d5ea958367df9f966191a942351a2df77d6f0193e162b5febfc0 AS builder
 
@@ -77,8 +79,14 @@ WORKDIR /workspace
 COPY . .
 
 # Build then deploy. `pnpm --filter @ax/cli build` walks tsc project
-# references, so this transitively builds @ax/agent-claude-sdk-runner and
-# every other workspace dep.
+# references, so this transitively builds both runner packages
+# (@ax/agent-claude-sdk-runner, @ax/agent-aisdk-runner) and every other
+# workspace dep. Neither runner needs its own `--filter … build` line: both
+# build scripts are plain `tsc --build`, which the reference walk already
+# performs, and both are prod dependencies of @ax/cli so `pnpm deploy --prod`
+# copies their dist into the image. (The `--filter` lines below exist only for
+# packages whose build script emits NON-tsc artifacts — see
+# presets/k8s image-asset-packaging.test.ts, which enforces exactly that rule.)
 #
 # `pnpm --filter @ax/channel-web build` runs tsc + Vite for the SPA
 # bundle. tsc-alone (which the cli's reference graph would do) emits the

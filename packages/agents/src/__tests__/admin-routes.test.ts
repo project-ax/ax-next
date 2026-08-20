@@ -344,11 +344,21 @@ describe('@ax/agents admin routes', () => {
     expect((r.body as { agent: SerializedAgent }).agent.runner).toBe('claude-sdk');
   });
 
-  it('POST /admin/agents with an unsupported runner → 400', async () => {
+  it('POST /admin/agents accepts the aisdk runner (PR 3 shipped its binary)', async () => {
     const cookie = await signIn(stack);
     const r = await http(stack.port, 'POST', '/admin/agents', {
       cookie,
       body: { ...makeBody(), runner: 'aisdk' },
+    });
+    expect(r.status).toBe(201);
+    expect((r.body as { agent: SerializedAgent }).agent.runner).toBe('aisdk');
+  });
+
+  it('POST /admin/agents with an unsupported runner → 400', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: { ...makeBody(), runner: 'not-a-runner' },
     });
     expect(r.status).toBe(400);
     expect((r.body as { error: string }).error).toMatch(/runner/);
@@ -368,9 +378,20 @@ describe('@ax/agents admin routes', () => {
     expect(r.status).toBe(200);
     expect((r.body as { agent: SerializedAgent }).agent.runner).toBe('claude-sdk');
 
-    const bad = await http(stack.port, 'PATCH', `/admin/agents/${id}`, {
+    // Switching an existing agent to the other shipped runner is allowed; the
+    // mid-conversation consequence (a stored transcript the new runner can't
+    // read) is handled at resume time by demoting to a fresh session, not by
+    // refusing the write.
+    const switched = await http(stack.port, 'PATCH', `/admin/agents/${id}`, {
       cookie,
       body: { runner: 'aisdk' },
+    });
+    expect(switched.status).toBe(200);
+    expect((switched.body as { agent: SerializedAgent }).agent.runner).toBe('aisdk');
+
+    const bad = await http(stack.port, 'PATCH', `/admin/agents/${id}`, {
+      cookie,
+      body: { runner: 'not-a-runner' },
     });
     expect(bad.status).toBe(400);
   });

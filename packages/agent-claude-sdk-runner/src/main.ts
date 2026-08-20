@@ -759,7 +759,15 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               }
             },
             readTurnId: (sessionId, role) =>
-              readLastTurnUuid(env.workspaceRoot, sessionId, role),
+              // The shell asks in DISPLAY roles. The SDK echoes tool results
+              // back into the transcript as `user` lines, so 'tool' resolves
+              // to 'user' here — that mapping is SDK-private and belongs in
+              // this adapter rather than in the shell's vocabulary.
+              readLastTurnUuid(
+                env.workspaceRoot,
+                sessionId,
+                role === 'tool' ? 'user' : role,
+              ),
           });
           // Reset the turn's final-assistant-uuid tracker so the NEXT turn's
           // flush wait is gated on its own assistant message (an empty turn with

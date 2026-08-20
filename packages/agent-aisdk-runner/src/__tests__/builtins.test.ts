@@ -624,9 +624,12 @@ describe('Grep', () => {
     expect(out).toContain('const x = 1;');
   });
 
+  // Anchored on OUR message, not the engine's: V8's own SyntaxError also says
+  // "Invalid regular expression", so a laxer matcher would still pass if the
+  // try/catch were deleted and the raw throw escaped.
   it('turns a malformed regex into a clean executor error', async () => {
     await expect(run('Grep', { pattern: '(' })).rejects.toThrow(
-      /invalid regular expression/i,
+      /^Grep: invalid regular expression/,
     );
   });
 
