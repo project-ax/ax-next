@@ -39,7 +39,7 @@
 
 import { spawn } from 'node:child_process';
 import type { Dirent, Stats } from 'node:fs';
-import { glob, mkdir, open, readFile, stat, writeFile } from 'node:fs/promises';
+import { mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { jsonSchema, tool, type Tool } from 'ai';
 import type { ToolPolicy } from '@ax/agent-runner-core';
@@ -85,7 +85,7 @@ const SEARCH_BUDGET_MS = 15_000;
 /**
  * Never walked into. `node_modules` is the expensive one; `.git` is expensive
  * AND useless (packed objects are binary). Other dot-directories need no rule:
- * glob's own semantics already stop `*` and `**` from crossing a dot segment,
+ * the matcher's dot rule already stops `*` and `**` from crossing a dot segment,
  * while an EXPLICIT `.ax/**` still resolves — which is what we want, since
  * `.ax/` and `.claude/` are governed state the agent legitimately edits.
  */
@@ -687,33 +687,183 @@ async function collectGlobMatches(
   pattern: string,
   limit: number,
 ): Promise<{ matches: string[]; truncated: boolean }> {
-  const matches: string[] = [];
-  let truncated = false;
-  const deadline = Date.now() + SEARCH_BUDGET_MS;
-  for await (const entry of glob(pattern, {
-    cwd: root,
-    withFileTypes: true,
-    exclude: excludeDirent,
-  })) {
-    if (!entry.isFile()) continue;
-    const full = join(entry.parentPath, entry.name);
-    if (isUnderExcludedDir(root, full)) continue;
-    if (matches.length >= limit || Date.now() > deadline) {
-      truncated = true;
-      break;
-    }
-    matches.push(full);
-  }
-  return { matches, truncated };
+  const segments = compileGlob(pattern);
+  // A Set, not an array: two globstars in one pattern (`**/a/**/*.ts`) can
+  // reach the same file by different splits, and the model should see one hit.
+  const matches = new Set<string>();
+  const state: WalkState = {
+    truncated: false,
+    deadline: Date.now() + SEARCH_BUDGET_MS,
+  };
+  await walkGlob(root, root, segments, 0, matches, limit, state);
+  return { matches: [...matches], truncated: state.truncated };
+}
+
+interface WalkState {
+  truncated: boolean;
+  deadline: number;
 }
 
 /**
- * `exclude` PRUNES the walk (verified against Node 24: the predicate is called
- * on the directory and its subtree is never visited), which is what keeps a
- * `**` over a big repo cheap.
+ * Recursive descent over the directory tree, matching one pattern segment per
+ * level. Deliberately hand-rolled rather than `fs/promises.glob`: that landed
+ * in Node 22, and the runner ships inside `container/agent/Dockerfile`'s
+ * **Node 20** base image — importing it there is a module-load `SyntaxError`
+ * that kills the runner before it can report anything, so every turn on this
+ * runner fails as `sandbox-terminated`. The repo's own `engines.node` is >=24,
+ * which is why the in-process suite never saw it. See the Node-floor guard in
+ * `__tests__/node-floor.test.ts`.
+ *
+ * Semantics kept identical to the `fs.glob` call this replaces:
+ *
+ * - `*` / `?` match within one segment; `**` matches zero or more segments.
+ * - Dot rule (`dot: false`): a wildcard segment never matches a name starting
+ *   with `.`, but an explicitly-written `.ax/**` still resolves — which is what
+ *   we want, since `.ax/` and `.claude/` are governed state the agent edits.
+ * - Only real files are emitted and only real directories are descended, so a
+ *   symlink is never followed out of the tree (`fs.glob`'s `follow: false`).
+ *
+ * Pruning is stronger here than `exclude` was: an excluded directory is never
+ * read, whatever segment named it, so `node_modules/**` cannot route around it
+ * by resolving the leading literal by path.
  */
-function excludeDirent(entry: Dirent): boolean {
-  return entry.isDirectory() && SEARCH_EXCLUDED_DIRS.has(entry.name);
+async function walkGlob(
+  dir: string,
+  root: string,
+  segments: readonly GlobSegment[],
+  index: number,
+  out: Set<string>,
+  limit: number,
+  state: WalkState,
+): Promise<void> {
+  if (state.truncated) return;
+  if (Date.now() > state.deadline) {
+    state.truncated = true;
+    return;
+  }
+  const segment = segments[index];
+  if (segment === undefined) return;
+
+  let entries: Dirent[];
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch {
+    // A directory that vanished or is unreadable mid-walk is not a search
+    // failure — the caller already proved the ROOT exists.
+    return;
+  }
+  // Sorted so a truncated result set is stable across runs rather than
+  // whatever order the filesystem handed back.
+  entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
+
+  const record = (full: string): void => {
+    if (isUnderExcludedDir(root, full)) return;
+    if (out.size >= limit || Date.now() > state.deadline) {
+      state.truncated = true;
+      return;
+    }
+    out.add(full);
+  };
+
+  const isLast = index === segments.length - 1;
+
+  if (segment.kind === 'globstar') {
+    // Zero segments consumed: try the rest of the pattern right here.
+    if (!isLast) {
+      await walkGlob(dir, root, segments, index + 1, out, limit, state);
+    }
+    for (const entry of entries) {
+      if (state.truncated) return;
+      if (entry.isDirectory()) {
+        if (SEARCH_EXCLUDED_DIRS.has(entry.name)) continue;
+        if (entry.name.startsWith('.')) continue;
+        // Consume this segment and keep the globstar active one level down.
+        await walkGlob(join(dir, entry.name), root, segments, index, out, limit, state);
+      } else if (isLast && entry.isFile() && !entry.name.startsWith('.')) {
+        record(join(dir, entry.name));
+      }
+    }
+    return;
+  }
+
+  for (const entry of entries) {
+    if (state.truncated) return;
+    if (entry.name.startsWith('.') && !segment.literalDot) continue;
+    if (!segment.re.test(entry.name)) continue;
+    if (isLast) {
+      if (entry.isFile()) record(join(dir, entry.name));
+    } else if (entry.isDirectory()) {
+      if (SEARCH_EXCLUDED_DIRS.has(entry.name)) continue;
+      await walkGlob(join(dir, entry.name), root, segments, index + 1, out, limit, state);
+    }
+  }
+}
+
+type GlobSegment =
+  | { kind: 'globstar' }
+  /** `literalDot` records that the segment was WRITTEN with a leading dot, which
+   *  is what lets `.ax/**` through while `*` keeps skipping dot entries. */
+  | { kind: 'match'; re: RegExp; literalDot: boolean };
+
+/** Bound on a model-supplied pattern. Segment regexes are `[^/]*`-shaped and
+ *  run against filesystem names (<=255 bytes), so backtracking is bounded — but
+ *  an unbounded pattern length is free ammunition, and no real glob is longer
+ *  than this. */
+const GLOB_MAX_PATTERN_CHARS = 1_024;
+
+function compileGlob(pattern: string): GlobSegment[] {
+  if (pattern.length > GLOB_MAX_PATTERN_CHARS) {
+    throw new Error(
+      `Glob: pattern is longer than ${GLOB_MAX_PATTERN_CHARS} characters.`,
+    );
+  }
+  const out: GlobSegment[] = [];
+  for (const raw of pattern.split('/')) {
+    if (raw.length === 0 || raw === '.') continue;
+    if (raw === '**') {
+      // Collapse `**/**` — two adjacent globstars mean what one does, and the
+      // zero-consume branch would otherwise recurse on an unchanged directory.
+      if (out[out.length - 1]?.kind === 'globstar') continue;
+      out.push({ kind: 'globstar' });
+      continue;
+    }
+    out.push({
+      kind: 'match',
+      re: segmentRegExp(raw),
+      literalDot: raw.startsWith('.'),
+    });
+  }
+  return out;
+}
+
+/** One pattern segment -> an anchored RegExp over a single path name. */
+function segmentRegExp(segment: string): RegExp {
+  let source = '';
+  for (let i = 0; i < segment.length; i += 1) {
+    const ch = segment[i] as string;
+    if (ch === '*') {
+      source += '[^/]*';
+    } else if (ch === '?') {
+      source += '[^/]';
+    } else if (ch === '[') {
+      const close = segment.indexOf(']', i + 1);
+      if (close === -1) {
+        // An unterminated class is a literal bracket, not a syntax error —
+        // same forgiving read every shell glob takes.
+        source += '\\[';
+      } else {
+        const body = segment.slice(i + 1, close);
+        const negated = body.startsWith('!') || body.startsWith('^');
+        // Escape only what would break OUT of the class; ranges stay ranges.
+        const inner = (negated ? body.slice(1) : body).replace(/[\\\]]/g, '\\$&');
+        source += `[${negated ? '^' : ''}${inner}]`;
+        i = close;
+      }
+    } else {
+      source += ch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    }
+  }
+  return new RegExp(`^${source}$`);
 }
 
 /**
