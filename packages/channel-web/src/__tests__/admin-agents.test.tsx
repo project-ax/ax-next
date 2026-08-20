@@ -131,6 +131,86 @@ describe('AdminSettings — agents tab', () => {
     expect(screen.getByLabelText(/Operating instructions/)).toBeTruthy();
   });
 
+
+  // ---------------------------------------------------------------------
+  // #401 — the picker must never display a model the form would not save.
+  //
+  // The old code bound `value={form.model}` and back-filled `form.model` from
+  // an effect one commit after the model list landed. A `<select>` whose value
+  // matches no `<option>` displays its FIRST option, so inside that window the
+  // dropdown showed "Claude Sonnet 4.6" while the form held `''` — and Save
+  // answered "no model is available to assign", contradicting the visible UI.
+  //
+  // The window was ~10% of runs (measured: 3 failures in 30 runs of this file
+  // before the fix, 0 in 40 after), which is why it surfaced as a flaky test
+  // rather than as the contradiction it actually was.
+  //
+  // This assertion is deliberately written as the INVARIANT — what the picker
+  // shows is what gets posted — rather than against a hardcoded model id, so it
+  // fails for the real reason instead of merely noticing a different string.
+  // ---------------------------------------------------------------------
+  it('posts the model the picker is displaying, never a contradiction', async () => {
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/admin/agents/models') {
+        return Promise.resolve(jsonOk({ models: MODEL_OPTIONS }));
+      }
+      if (url === '/admin/agents' && method === 'POST') {
+        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
+      }
+      if (/connector-attachments/.test(url)) {
+        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
+      }
+      if (/\/identity$/.test(url)) return Promise.resolve(jsonOk({ ok: true }));
+      if (/\/admin\/teams(\?|$)/.test(url)) return Promise.resolve(jsonOk({ teams: [] }));
+      if (/\/admin\/connectors(\?|$)/.test(url)) {
+        return Promise.resolve(jsonOk({ connectors: [] }));
+      }
+      return Promise.resolve(jsonOk({ agents: [] }));
+    });
+
+    render(<AgentForm isAdmin />);
+    await waitFor(() => screen.getByText(/New agent/i));
+    fireEvent.click(screen.getByText(/New agent/i));
+    fireEvent.change(screen.getByLabelText(/name/i), {
+      target: { value: 'new-bot' },
+    });
+    fireEvent.change(screen.getByLabelText(/allowed tools/i), {
+      target: { value: 'bash' },
+    });
+
+    // Wait only for the OPTIONS to exist — deliberately NOT for the select's
+    // value to settle. Waiting on the value is what let the old bug hide: the
+    // browser's first-option fallback satisfied that wait before the form state
+    // caught up, so the test's readiness signal was not evidence of readiness.
+    await waitFor(() =>
+      expect(
+        within(screen.getByLabelText('Model') as HTMLSelectElement).getAllByRole(
+          'option',
+        ).length,
+      ).toBe(MODEL_OPTIONS.length),
+    );
+    const shown = (screen.getByLabelText('Model') as HTMLSelectElement).value;
+    expect(shown).not.toBe('');
+
+    fireEvent.click(screen.getByRole('button', { name: /Save/i }));
+
+    await waitFor(() => {
+      const post = fetchMock.mock.calls.find(
+        ([url, opts]) =>
+          url === '/admin/agents' &&
+          (opts as RequestInit | undefined)?.method === 'POST',
+      );
+      expect(post).toBeTruthy();
+      expect(JSON.parse(String((post![1] as RequestInit).body)).model).toBe(shown);
+    });
+    // The contradiction itself, asserted directly.
+    expect(screen.queryByText(/no model is available to assign/i)).toBeNull();
+  });
+
   it('submitting the form POSTs to /admin/agents with camelCase + CSRF header', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
