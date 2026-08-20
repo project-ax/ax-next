@@ -7,6 +7,10 @@ changed.
 (This file covers material adapted into our source. Dependencies we merely install
 carry their own licenses in `node_modules`; this is for code and text we copied.)
 
+ax-next itself is MIT — see `LICENSE`. That does **not** relicense anything listed
+below: each entry stays under its own terms, and where those terms ask for more
+than MIT does, the stricter obligation wins.
+
 ---
 
 ## Grok Build — system prompt (Apache-2.0)
@@ -15,9 +19,16 @@ carry their own licenses in `node_modules`; this is for code and text we copied.
 `crates/codegen/xai-grok-agent/templates/prompt.md`, at commit
 `19d42e35c07a9c9244f03f6df0c4c353f970d4f9`.
 
-**License:** Apache License 2.0. Copyright xAI Corp. The full license text is at
-<https://www.apache.org/licenses/LICENSE-2.0>, and in the upstream repository's
-`LICENSE` file.
+**License:** Apache License 2.0, `Copyright 2023-2026 SpaceXAI`. The upstream
+`LICENSE` file — their copyright notice plus the full Apache-2.0 text — is
+vendored here at [`licenses/grok-build-LICENSE.txt`](licenses/grok-build-LICENSE.txt),
+so a copy travels with this repository rather than only a link
+(Apache-2.0 §4(a)). Upstream ships no `NOTICE` file at the commit named above, so
+§4(d) does not apply.
+
+The adapted prose remains under Apache-2.0 notwithstanding this project's MIT
+license. Anyone redistributing it carries the §4 obligations: this notice, the
+license copy, and the statement of changes below.
 
 **Where it lives here:** `packages/agent-runner-core/src/system-prompt.ts` —
 the `workPolicyNote()` and `communicationNote()` functions.
