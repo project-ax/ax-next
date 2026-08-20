@@ -10,6 +10,7 @@ export {
   resolveAllowedModels,
   validateCreateInput,
   validateUpdatePatch,
+  SUPPORTED_RUNNERS,
   type AgentStore,
 } from './store.js';
 export { scopedAgents, type AgentScope } from './scope.js';
@@ -30,6 +31,7 @@ export type {
   ListForUserOutput,
   ResolveInput,
   ResolveOutput,
+  RunnerId,
   UpdateInput,
   UpdateOutput,
 } from './types.js';

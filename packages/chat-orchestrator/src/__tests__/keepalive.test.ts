@@ -9,7 +9,8 @@ import { createChatOrchestratorPlugin } from '../index.js';
 const TEST_AGENT = {
   id: 'test-agent', ownerId: 'test-user', ownerType: 'user' as const,
   visibility: 'personal' as const, displayName: 'Test',
-  allowedTools: ['file.read'], mcpConfigIds: [], model: 'claude-sonnet-4-7', workspaceRef: null,
+  allowedTools: ['file.read'], mcpConfigIds: [], model: 'claude-sonnet-4-7',
+  runner: 'claude-sdk', workspaceRef: null,
 };
 
 // A controllable warm sandbox: kill() flips a flag + resolves exited.
@@ -93,7 +94,7 @@ describe('chat-orchestrator keepalive', () => {
     const h = await createTestHarness({
       services,
       plugins: [createChatOrchestratorPlugin({
-        runnerBinary: '/irrelevant', chatTimeoutMs: 5_000,
+        runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
         keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 1_000,
       })],
     });
@@ -139,7 +140,7 @@ describe('chat-orchestrator keepalive', () => {
       const h = await createTestHarness({
         services,
         plugins: [createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant', chatTimeoutMs: 1_000,
+          runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 1_000,
           keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 1_000,
         })],
       });
@@ -210,7 +211,7 @@ describe('chat-orchestrator keepalive', () => {
     const h = await createTestHarness({
       services,
       plugins: [createChatOrchestratorPlugin({
-        runnerBinary: '/irrelevant', chatTimeoutMs: 5_000,
+        runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
         keepAlive: true, idleWindowMs: 60_000, idleGraceMs: 1_000,
       })],
     });
@@ -261,7 +262,7 @@ describe('chat-orchestrator keepalive', () => {
       const h = await createTestHarness({
         services,
         plugins: [createChatOrchestratorPlugin({
-          runnerBinary: '/irrelevant', chatTimeoutMs: 5_000,
+          runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000,
           keepAlive: true, idleWindowMs: 1_000, idleGraceMs: 500,
         })],
       });

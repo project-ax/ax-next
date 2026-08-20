@@ -202,6 +202,7 @@ describe('createSandboxK8sPlugin — §11 host-read + cleanup wiring', () => {
             allowedTools: [],
             mcpConfigIds: [],
             model: '',
+            runner: 'claude-sdk',
           },
         },
         relPath: 'hello.txt',

@@ -41,7 +41,7 @@ describe('@ax/llm-anthropic models:list-supported', () => {
     expect(out.models.length).toBeGreaterThan(0);
     expect(out.models.some((m) => m.kind === 'fast')).toBe(true);
     expect(out.models.some((m) => m.kind === 'default' || m.kind === 'either')).toBe(true);
-    expect(out.models[0].id).toMatch(/^claude-/);
+    expect(out.models[0].id).toMatch(/^anthropic\/claude-/);
   });
 
   it('each model has id, label, and a valid kind', async () => {

@@ -129,6 +129,7 @@ function validateOwner(
     hookName,
   );
   requireString(cfg.model, 'owner.agentConfig.model', hookName);
+  requireString(cfg.runner, 'owner.agentConfig.runner', hookName);
   if (!Array.isArray(cfg.allowedTools) || !cfg.allowedTools.every((t) => typeof t === 'string')) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -196,6 +197,7 @@ function validateOwner(
       allowedTools: cfg.allowedTools as string[],
       mcpConfigIds: cfg.mcpConfigIds as string[],
       model: cfg.model as string,
+      runner: cfg.runner as string,
     },
     conversationId,
     source,

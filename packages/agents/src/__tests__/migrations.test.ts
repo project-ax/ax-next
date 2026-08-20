@@ -293,6 +293,80 @@ describe('runAgentsMigration', () => {
     expect(row.skill_attachments).toEqual([]);
   });
 
+  // PR 2 (provider-agnostic runner, design §6 / §1) ------------------------
+
+  it('adds the runner column as TEXT NOT NULL DEFAULT claude-sdk', async () => {
+    const k = makeKysely();
+    await runAgentsMigration(k);
+    const cols = await sql<{
+      data_type: string;
+      is_nullable: 'YES' | 'NO';
+      column_default: string | null;
+    }>`
+      SELECT data_type, is_nullable, column_default
+        FROM information_schema.columns
+       WHERE table_name = 'agents_v1_agents' AND column_name = 'runner'
+    `.execute(k);
+    expect(cols.rows).toHaveLength(1);
+    expect(cols.rows[0]).toMatchObject({ data_type: 'text', is_nullable: 'NO' });
+    expect(cols.rows[0]?.column_default ?? '').toContain('claude-sdk');
+  });
+
+  it('backfills runner=claude-sdk on rows that predate the column', async () => {
+    const k = makeKysely();
+    await runAgentsMigration(k);
+    // Simulate a DB deployed BEFORE the column existed.
+    await sql`ALTER TABLE agents_v1_agents DROP COLUMN runner`.execute(k);
+    await sql`
+      INSERT INTO agents_v1_agents
+        (agent_id, owner_id, owner_type, visibility, display_name,
+         allowed_tools, mcp_config_ids, model, workspace_ref, created_at, updated_at)
+      VALUES ('a-legacy', 'u1', 'user', 'personal', 'Legacy',
+              '[]'::jsonb, '[]'::jsonb, 'anthropic/claude-opus-4-7', NULL, NOW(), NOW())
+    `.execute(k);
+
+    await runAgentsMigration(k); // re-run — ADD COLUMN IF NOT EXISTS fires.
+
+    const row = await sql<{ runner: string }>`
+      SELECT runner FROM agents_v1_agents WHERE agent_id = 'a-legacy'
+    `.execute(k);
+    expect(row.rows[0]?.runner).toBe('claude-sdk');
+  });
+
+  it('rewrites legacy bare model ids to anthropic/<id>, idempotently', async () => {
+    const k = makeKysely();
+    await runAgentsMigration(k);
+    await sql`
+      INSERT INTO agents_v1_agents
+        (agent_id, owner_id, owner_type, visibility, display_name,
+         allowed_tools, mcp_config_ids, model, workspace_ref, created_at, updated_at)
+      VALUES
+        ('a-bare', 'u1', 'user', 'personal', 'Bare',
+         '[]'::jsonb, '[]'::jsonb, 'claude-sonnet-4-6', NULL, NOW(), NOW()),
+        ('a-prefixed', 'u2', 'user', 'personal', 'Prefixed',
+         '[]'::jsonb, '[]'::jsonb, 'anthropic/claude-opus-4-7', NULL, NOW(), NOW()),
+        ('a-nested', 'u3', 'user', 'personal', 'Nested',
+         '[]'::jsonb, '[]'::jsonb, 'openrouter/x-ai/grok-4.6', NULL, NOW(), NOW())
+    `.execute(k);
+
+    await runAgentsMigration(k);
+    const first = await sql<{ agent_id: string; model: string }>`
+      SELECT agent_id, model FROM agents_v1_agents ORDER BY agent_id
+    `.execute(k);
+    expect(first.rows).toEqual([
+      { agent_id: 'a-bare', model: 'anthropic/claude-sonnet-4-6' },
+      { agent_id: 'a-nested', model: 'openrouter/x-ai/grok-4.6' },
+      { agent_id: 'a-prefixed', model: 'anthropic/claude-opus-4-7' },
+    ]);
+
+    // Idempotent: a third run must NOT produce 'anthropic/anthropic/...'.
+    await runAgentsMigration(k);
+    const second = await sql<{ agent_id: string; model: string }>`
+      SELECT agent_id, model FROM agents_v1_agents ORDER BY agent_id
+    `.execute(k);
+    expect(second.rows).toEqual(first.rows);
+  });
+
   it('is idempotent — running twice does not throw', async () => {
     const db = makeKysely();
     await runAgentsMigration(db);

@@ -120,6 +120,15 @@ const mcpConfigIdsSchema = z
 
 const modelSchema = z.string().min(1, 'model must be a non-empty string');
 
+// Runner id. Kept a plain bounded string here: the authoritative allow-list is
+// SUPPORTED_RUNNERS in store.ts, and a second enum on the HTTP boundary would
+// need editing in PR 3 for no safety gain (the store rejects anything it can't
+// spawn, and its error surfaces as a 400).
+const runnerSchema = z
+  .string()
+  .min(1, 'runner must be a non-empty string')
+  .max(64, 'runner must be at most 64 chars');
+
 const visibilitySchema = z.enum(['personal', 'team']);
 
 const teamIdSchema = z.string().min(1).max(128);
@@ -144,6 +153,7 @@ const createBodySchema = z
     allowedTools: allowedToolsSchema,
     mcpConfigIds: mcpConfigIdsSchema,
     model: modelSchema,
+    runner: runnerSchema.optional(),
     visibility: visibilitySchema,
     teamId: teamIdSchema.optional(),
     workspaceRef: workspaceRefSchema.optional(),
@@ -178,6 +188,7 @@ const updateBodySchema = z
     allowedTools: allowedToolsSchema.optional(),
     mcpConfigIds: mcpConfigIdsSchema.optional(),
     model: modelSchema.optional(),
+    runner: runnerSchema.optional(),
     workspaceRef: workspaceRefSchema.optional(),
   })
   .strict();
@@ -370,6 +381,7 @@ function serializeAgent(a: Agent): Record<string, unknown> {
     allowedTools: a.allowedTools,
     mcpConfigIds: a.mcpConfigIds,
     model: a.model,
+    runner: a.runner,
     workspaceRef: a.workspaceRef,
     skillAttachments: a.skillAttachments,
     connectorAttachments: a.connectorAttachments,
@@ -489,6 +501,15 @@ async function listTeamIdsForUser(
 
 export interface AdminRouteDeps {
   bus: HookBus;
+  /** The agents allow-list (`provider/model-id` refs) — GET /admin/agents/models
+   *  intersects this with `models:list-supported`'s output. */
+  allowedModels: readonly string[];
+}
+
+/** Local shape of `@ax/llm-anthropic`'s `models:list-supported` output
+ *  (Invariant I2 — no cross-plugin import; the hook bus is the contract). */
+interface ModelsListSupportedOutput {
+  models: Array<{ id: string; label: string; kind: 'fast' | 'default' | 'either' }>;
 }
 
 export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
@@ -553,6 +574,44 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
         { userId: actor.id, teamIds },
       );
       res.status(200).json({ agents: out.agents.map(serializeAgent) });
+    },
+
+    /**
+     * GET /admin/agents/models
+     *
+     * Backs the admin model picker (Task 3). Returns the intersection of
+     * what `models:list-supported` reports and this deployment's agents
+     * allow-list — the set the picker may actually offer, not merely the
+     * set a provider registrant knows how to serve. `models:list-supported`
+     * is a SOFT dependency: it is registered by `@ax/llm-anthropic` (and,
+     * per the design doc's Sequencing table, other provider plugins from PR
+     * 4 on), but a preset can run with none of them loaded. Rather than add
+     * it to the manifest's `calls` (which `verifyCalls` enforces as HARD
+     * presence, forcing every deployment to load a provider plugin), we
+     * gate with `bus.hasService` and degrade to an empty list at 200 — the
+     * same graceful-degrade pattern this plugin already uses for
+     * `teams:list-for-user` above.
+     *
+     * Route ordering: this exact path is matched BEFORE the `:id` pattern
+     * route below (`packages/http-server/src/router.ts` checks static
+     * routes first), so it can never be shadowed by `GET /admin/agents/:id`
+     * with `id: 'models'`.
+     */
+    async listModels(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const actor = await requireUser(deps.bus, ctx, req, res);
+      if (actor === null) return;
+      if (!deps.bus.hasService('models:list-supported')) {
+        res.status(200).json({ models: [] });
+        return;
+      }
+      const out = await deps.bus.call<unknown, ModelsListSupportedOutput>(
+        'models:list-supported',
+        ctx,
+        {},
+      );
+      const allowed = new Set(deps.allowedModels);
+      const models = out.models.filter((m) => allowed.has(m.id));
+      res.status(200).json({ models });
     },
 
     /** GET /admin/agents/:id */
@@ -1004,8 +1063,9 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
 export async function registerAdminAgentRoutes(
   bus: HookBus,
   initCtx: AgentContext,
+  allowedModels: readonly string[],
 ): Promise<Array<() => void>> {
-  const handlers = createAdminAgentRouteHandlers({ bus });
+  const handlers = createAdminAgentRouteHandlers({ bus, allowedModels });
   const routes: Array<{
     method: 'GET' | 'POST' | 'PATCH' | 'DELETE';
     path: string;
@@ -1013,6 +1073,9 @@ export async function registerAdminAgentRoutes(
   }> = [
     { method: 'POST', path: '/admin/agents', handler: handlers.create },
     { method: 'GET', path: '/admin/agents', handler: handlers.list },
+    // Registered BEFORE the `:id` pattern route (Router.match checks exact
+    // routes first) — see listModels' doc comment for why this is safe.
+    { method: 'GET', path: '/admin/agents/models', handler: handlers.listModels },
     { method: 'GET', path: '/admin/agents/:id', handler: handlers.show },
     { method: 'PATCH', path: '/admin/agents/:id', handler: handlers.update },
     { method: 'DELETE', path: '/admin/agents/:id', handler: handlers.destroy },

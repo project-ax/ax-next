@@ -108,7 +108,7 @@ import { createK8sPlugins, type K8sPresetConfig } from '../index.js';
 //
 //   * Manifest drift in the chat-path plugins the preset shares with the
 //     CLI (chat-orchestrator, tool-dispatcher, audit-log, mcp-client).
-//   * The chat-orchestrator's interaction with the preset's runnerBinary
+//   * The chat-orchestrator's interaction with the preset's runnerBinaries
 //     resolution path (we pass an explicit override here, but the type
 //     contract still goes through the preset's K8sPresetConfig.chat shape).
 //   * That chat:end still fires once per agent:invoke (I1). Audit-log no
@@ -284,6 +284,7 @@ function createPermissiveAgentsStubPlugin(): Plugin {
               systemPrompt: 'You are a helpful assistant.',
               allowedTools: [] as string[],
               mcpConfigIds: [] as string[],
+              runner: 'claude-sdk',
               model: 'claude-sonnet-4-7',
               workspaceRef: null,
               // The test-proxy ignores allowedHosts/requiredCredentials —
@@ -398,7 +399,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
       // The preset config we hand to createK8sPlugins. None of these values
       // matter at factory time for the plugins we KEEP — we only filter
       // them out once the manifests have been built. The values that DO
-      // matter are: chat.runnerBinary (consumed by chat-orchestrator) and
+      // matter are: chat.runnerBinaries (consumed by chat-orchestrator) and
       // the auth + http fields (parsed even though we drop the resulting
       // plugin — keeps the K8sPresetConfig contract honest).
       const presetConfig: K8sPresetConfig = {
@@ -415,7 +416,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
         sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
         ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
-        chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+        chat: { runnerBinaries: { 'claude-sdk': stubRunnerPath }, chatTimeoutMs: 60_000 },
         http: {
           host: '127.0.0.1',
           port: 0,
@@ -620,7 +621,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
         sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
           ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
-          chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+          chat: { runnerBinaries: { 'claude-sdk': stubRunnerPath }, chatTimeoutMs: 60_000 },
           http: {
             host: '127.0.0.1',
             port: 0,
@@ -920,7 +921,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
         sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
         ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
-        chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+        chat: { runnerBinaries: { 'claude-sdk': stubRunnerPath }, chatTimeoutMs: 60_000 },
         http: {
           host: '127.0.0.1',
           port: 0,
@@ -1777,7 +1778,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         blob: { backend: 'fs', root: path.join(tmp, 'blobs') },
         sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
           ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
-          chat: { runnerBinary: stubRunnerPath, chatTimeoutMs: 60_000 },
+          chat: { runnerBinaries: { 'claude-sdk': stubRunnerPath }, chatTimeoutMs: 60_000 },
           http: {
             host: '127.0.0.1',
             port: 0,
@@ -2062,6 +2063,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
                   systemPrompt: 'You are a helpful assistant.',
                   allowedTools: [] as string[],
                   mcpConfigIds: [] as string[],
+                  runner: 'claude-sdk',
                   model: 'claude-sonnet-4-7',
                   workspaceRef: null,
                   allowedHosts: [] as string[],
@@ -2489,6 +2491,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
                   systemPrompt: 'You are a helpful assistant.',
                   allowedTools: ['artifact_publish'] as string[],
                   mcpConfigIds: [] as string[],
+                  runner: 'claude-sdk',
                   model: 'claude-sonnet-4-7',
                   workspaceRef: null,
                   allowedHosts: [] as string[],
@@ -2985,7 +2988,7 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
               systemPrompt: 'You are a helpful assistant.',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-6',
+              model: 'anthropic/claude-sonnet-4-6',
               visibility: 'personal',
             },
           },

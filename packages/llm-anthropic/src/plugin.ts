@@ -189,14 +189,23 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
         );
       }
 
+      // Ids are `anthropic/<model-id>` refs (design doc §6, the user-facing
+      // model-selection namespace) — the picker stores and the agents
+      // allow-list matches against the same `provider/model-id` shape. No
+      // bare ids: there is deliberately no runtime "no slash means
+      // anthropic" fallback (Global constraints).
       bus.registerService<unknown, ModelsListSupportedOutput>(
         'models:list-supported',
         PLUGIN_NAME,
         async () => ({
           models: [
-            { id: 'claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', kind: 'fast' },
-            { id: 'claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
-            { id: 'claude-opus-4-7', label: 'Claude Opus 4.7', kind: 'default' },
+            {
+              id: 'anthropic/claude-haiku-4-5-20251001',
+              label: 'Claude Haiku 4.5',
+              kind: 'fast',
+            },
+            { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
+            { id: 'anthropic/claude-opus-4-7', label: 'Claude Opus 4.7', kind: 'default' },
           ],
         }),
         { returns: ModelsListSupportedOutputSchema },

@@ -78,7 +78,9 @@ async function dropAllTables(): Promise<void> {
   }
 }
 
-async function bootStack(): Promise<BootedStack> {
+async function bootStack(
+  extraServices: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>> = {},
+): Promise<BootedStack> {
   await dropAllTables();
   process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
   const http = createHttpServerPlugin({
@@ -93,6 +95,7 @@ async function bootStack(): Promise<BootedStack> {
     // TASK-100 — a skill declares NO capabilities; it resolves to id + body +
     // manifest only (its reach is the connectors it references).
     services: {
+      ...extraServices,
       'skills:resolve': async (
         _ctx: unknown,
         input: { skillIds: string[]; ownerUserId?: string },
@@ -222,7 +225,7 @@ function makeBody(overrides: Partial<AgentInput> = {}): AgentInput {
     displayName: 'My Agent',
     allowedTools: ['bash.run'],
     mcpConfigIds: [],
-    model: 'claude-opus-4-7',
+    model: 'anthropic/claude-opus-4-7',
     visibility: 'personal',
     ...overrides,
   };
@@ -275,6 +278,7 @@ interface SerializedAgent {
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
+  runner: string;
   workspaceRef: string | null;
   skillAttachments: SerializedSkillAttachment[];
   connectorAttachments: string[];
@@ -317,6 +321,58 @@ describe('@ax/agents admin routes', () => {
     expect(agent.displayName).toBe('Created');
     expect(agent.ownerType).toBe('user');
     expect(agent.visibility).toBe('personal');
+  });
+
+  // PR 2 — the runner id is a first-class agent field on the admin wire.
+  it('POST /admin/agents serializes runner, defaulting to claude-sdk', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody({ displayName: 'Runner default' }),
+    });
+    expect(r.status).toBe(201);
+    expect((r.body as { agent: SerializedAgent }).agent.runner).toBe('claude-sdk');
+  });
+
+  it('POST /admin/agents accepts an explicit supported runner', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: { ...makeBody(), runner: 'claude-sdk' },
+    });
+    expect(r.status).toBe(201);
+    expect((r.body as { agent: SerializedAgent }).agent.runner).toBe('claude-sdk');
+  });
+
+  it('POST /admin/agents with an unsupported runner → 400', async () => {
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: { ...makeBody(), runner: 'aisdk' },
+    });
+    expect(r.status).toBe(400);
+    expect((r.body as { error: string }).error).toMatch(/runner/);
+  });
+
+  it('PATCH /admin/agents/:id accepts runner', async () => {
+    const cookie = await signIn(stack);
+    const created = await http(stack.port, 'POST', '/admin/agents', {
+      cookie,
+      body: makeBody(),
+    });
+    const id = (created.body as { agent: SerializedAgent }).agent.id;
+    const r = await http(stack.port, 'PATCH', `/admin/agents/${id}`, {
+      cookie,
+      body: { runner: 'claude-sdk' },
+    });
+    expect(r.status).toBe(200);
+    expect((r.body as { agent: SerializedAgent }).agent.runner).toBe('claude-sdk');
+
+    const bad = await http(stack.port, 'PATCH', `/admin/agents/${id}`, {
+      cookie,
+      body: { runner: 'aisdk' },
+    });
+    expect(bad.status).toBe(400);
   });
 
   it('POST /admin/agents with allowedTools=[] AND mcpConfigIds=[] → 400 with wildcard reject message', async () => {
@@ -399,6 +455,55 @@ describe('@ax/agents admin routes', () => {
   it('GET /admin/agents anonymous → 401', async () => {
     const r = await http(stack.port, 'GET', '/admin/agents');
     expect(r.status).toBe(401);
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /admin/agents/models (Task 3 — the picker's option list)
+  // -------------------------------------------------------------------------
+
+  it('GET /admin/agents/models anonymous → 401', async () => {
+    const r = await http(stack.port, 'GET', '/admin/agents/models');
+    expect(r.status).toBe(401);
+  });
+
+  it('GET /admin/agents/models with no models:list-supported registrant → 200 + empty list', async () => {
+    // The default bootStack() (used by beforeEach) never registers
+    // models:list-supported — no @ax/llm-anthropic in the plugin list — so
+    // this exercises the hasService degrade path directly.
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'GET', '/admin/agents/models', { cookie });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({ models: [] });
+  });
+
+  it('GET /admin/agents/models returns only models in BOTH models:list-supported and the allow-list', async () => {
+    // Rebuild the stack with a models:list-supported stub. The default
+    // agents allow-list (no `allowedModels` override passed to
+    // createAgentsPlugin()) is exactly the three DEFAULT_ALLOWED_MODELS ids
+    // — 'anthropic/claude-opus-4-7', 'anthropic/claude-sonnet-4-6',
+    // 'anthropic/claude-haiku-4-5-20251001'. The stub reports one of those
+    // PLUS one model that is deliberately NOT in the allow-list
+    // ('openrouter/x-ai/grok-4.6') — the fixture that proves the
+    // intersection filter, not just a pass-through.
+    await stack.harness.close({ onError: () => {} });
+    stack = await bootStack({
+      'models:list-supported': async () => ({
+        models: [
+          { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
+          { id: 'openrouter/x-ai/grok-4.6', label: 'Grok 4.6', kind: 'default' },
+        ],
+      }),
+    });
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'GET', '/admin/agents/models', { cookie });
+    expect(r.status).toBe(200);
+    const { models } = r.body as {
+      models: Array<{ id: string; label: string; kind: string }>;
+    };
+    expect(models).toEqual([
+      { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
+    ]);
+    expect(models.some((m) => m.id === 'openrouter/x-ai/grok-4.6')).toBe(false);
   });
 
   it('GET /admin/agents from a DIFFERENT user → empty', async () => {

@@ -94,7 +94,7 @@ async function createPersonalAgent(h: TestHarness, userId: string): Promise<stri
       displayName: 'Test Agent',
       allowedTools: [],
       mcpConfigIds: [],
-      model: 'claude-opus-4-7',
+      model: 'anthropic/claude-opus-4-7',
       visibility: 'personal',
     },
   });

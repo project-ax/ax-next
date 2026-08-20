@@ -39,6 +39,7 @@ interface SessionConfig {
     allowedTools: string[];
     mcpConfigIds: string[];
     model: string;
+    runner: string;
   };
 }
 
@@ -116,7 +117,8 @@ describe('tool:list with per-agent scope', () => {
           agentConfig: {
             displayName: 'Test Agent',
             systemPromptAugment: 'a',
-            model: 'claude-opus-4-7',
+            model: 'anthropic/claude-opus-4-7',
+            runner: 'claude-sdk',
             allowedTools: ['bash'],
             mcpConfigIds: ['alpha'],
           },
@@ -228,7 +230,8 @@ describe('tool:list with per-agent scope', () => {
           agentConfig: {
             displayName: 'Test Agent',
             systemPromptAugment: 'a',
-            model: 'claude-opus-4-7',
+            model: 'anthropic/claude-opus-4-7',
+            runner: 'claude-sdk',
             allowedTools: ['read_file'],
             mcpConfigIds: ['alpha'],
           },
@@ -242,7 +245,8 @@ describe('tool:list with per-agent scope', () => {
           agentConfig: {
             displayName: 'Test Agent',
             systemPromptAugment: 'b',
-            model: 'claude-opus-4-7',
+            model: 'anthropic/claude-opus-4-7',
+            runner: 'claude-sdk',
             allowedTools: ['read_file'],
             mcpConfigIds: ['beta'],
           },

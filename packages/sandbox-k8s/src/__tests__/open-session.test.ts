@@ -325,7 +325,8 @@ describe('sandbox:open-session (k8s)', () => {
             systemPromptAugment: 'be helpful',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: 'conv-42',
         },
@@ -363,7 +364,8 @@ describe('sandbox:open-session (k8s)', () => {
             systemPromptAugment: 'be helpful',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
         },
       },
@@ -712,6 +714,7 @@ describe('sandbox:open-session (k8s)', () => {
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude',
+        runner: 'claude-sdk',
       },
     };
 

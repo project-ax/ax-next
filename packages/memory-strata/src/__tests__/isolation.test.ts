@@ -75,8 +75,9 @@ describe('per-agent memory isolation (I8)', () => {
   it('keeps each agent\'s memory tree confined to its own workspace root', async () => {
     const bus = buildBus(
       {
-        atlas: { id: 'atlas', model: 'claude-haiku-4-5-20251001' },
-        zephyr: { id: 'zephyr', model: 'claude-haiku-4-5-20251001' },
+        // PR 2: agent models are `provider/model-id` refs.
+        atlas: { id: 'atlas', model: 'anthropic/claude-haiku-4-5-20251001' },
+        zephyr: { id: 'zephyr', model: 'anthropic/claude-haiku-4-5-20251001' },
       },
       JSON.stringify([
         { fact: 'User prefers atlas-only fact.', subject: 'user', factType: 'preference', confidence: 0.9 },

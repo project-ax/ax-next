@@ -135,7 +135,10 @@ export async function runE2EQuestion(deps: RunE2EQuestionDeps): Promise<E2EQuest
   bus.registerService<{ agentId: string; userId: string }, { agent: { model: string } }>(
     'agents:resolve',
     'e2e-agents',
-    async () => ({ agent: { model: extractionModel } }),
+    // PR 2: `agents:resolve` returns a `provider/model-id` ref; memory-strata
+    // routes on the provider half and calls `llm:call:anthropic` with the bare
+    // id. `extractionModel` itself stays bare — it IS the `llm:call` payload.
+    async () => ({ agent: { model: `anthropic/${extractionModel}` } }),
   );
   // The REAL extraction round-trip, metered.
   bus.registerService<LlmCallInput, LlmCallOutput>(

@@ -6,6 +6,7 @@ import type {
   WorkspaceListInput,
   WorkspaceListOutput,
 } from '@ax/core';
+import { parseModelRef } from '@ax/core';
 import {
   AGENT_TIER_MEMORY_ROOT,
   agentTierAvailable,
@@ -32,6 +33,9 @@ const PLUGIN_NAME = '@ax/memory-strata';
 const PLUGIN_VERSION = '0.0.0';
 
 const DEFAULT_OBSERVER_TIMEOUT_MS = 30_000;
+/** Provider hook for the FIXED-tier internal calls (Stage-B rollup naming). The
+ *  agent-model-derived paths (Observer, map densifier) do NOT use this — they
+ *  route by the `provider/` half of the agent's own `provider/model-id` ref. */
 const DEFAULT_LLM_HOOK = 'llm:call:anthropic';
 const DEFAULT_CONSOLIDATOR_DEBOUNCE_MS = 5_000;
 const DEFAULT_CONSOLIDATOR_TIMEOUT_MS = 60_000;
@@ -48,10 +52,15 @@ const DEFAULT_ROLLUP_STAGE_B_TIMEOUT_MS = 30_000;
 
 export interface MemoryStrataConfig {
   /**
-   * Bus hook to call for the Observer's LLM round-trip. Default
-   * `llm:call:anthropic` matches the only registered host-side LLM
-   * provider today. A future preset that registers `llm:call:openai`
-   * (or `llm:call:proxy`) overrides this.
+   * Bus hook to call for the FIXED-tier internal LLM round-trips (Stage-B
+   * rollup naming). Default `llm:call:anthropic` matches the only registered
+   * host-side LLM provider today. A preset that registers a different provider
+   * for that fixed tier overrides this.
+   *
+   * NOT used by the agent-model-derived paths (Observer, map densifier): those
+   * route to `llm:call:<provider>` where `<provider>` is the first segment of
+   * the agent's own `provider/model-id` ref, so an agent on a non-default
+   * provider reaches its own provider without any config change.
    */
   llmCallHook?: string;
   /**
@@ -310,6 +319,13 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       // `memory:index:upsert`: both are registered by the SAME indexer plugin
       // (sqlite or postgres), so any deployment with an indexer has both. The
       // reindexer's `memory:doc:deleted` branch maps a doc removal to it.
+      // `llmCallHook` is the FIXED-tier provider (Stage-B naming) and stays a
+      // hard dependency. The agent-model-derived paths additionally call
+      // `llm:call:<provider>` for whatever provider the AGENT's model ref names
+      // — not enumerable at manifest-build time (it's per-row data, and the set
+      // of registered providers is preset-dependent), so those calls are gated
+      // at runtime with `bus.hasService` and degrade to a skip + warn, exactly
+      // like an `optionalCalls` entry would.
       calls: ['agents:resolve', llmCallHook, 'memory:index:upsert', 'memory:index:delete', 'tool:register'],
       subscribes: ['chat:start', 'chat:end', 'memory:doc:written', 'memory:doc:deleted'],
     },
@@ -361,7 +377,6 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
         // 30s LLM call. Errors are swallowed + logged; the Observer's
         // own timeout handles the slow-LLM case.
         const observerWork = kickOffObserver(bus, ctx, payload, {
-          llmCallHook,
           observerTimeoutMs,
           nowFn,
         }).catch((err) => {
@@ -522,7 +537,7 @@ async function kickOffObserver(
   bus: HookBus,
   ctx: AgentContext,
   payload: ChatEndPayload,
-  cfg: { llmCallHook: string; observerTimeoutMs: number; nowFn: () => Date },
+  cfg: { observerTimeoutMs: number; nowFn: () => Date },
 ): Promise<void> {
   // Terminated outcomes (chat:start veto, runner crash, timeout) carry no
   // transcript. Skip cleanly.
@@ -532,7 +547,10 @@ async function kickOffObserver(
   const agent = await resolveAgent(bus, ctx);
   if (agent === null) return;
 
-  const llmCall: LlmCallFn = (input) => bus.call(cfg.llmCallHook, ctx, input);
+  // Route by the agent's OWN provider (PR 2): the model ref selects the hook,
+  // and `agent.model` is the bare, provider-native id the hook expects.
+  const llmCall = buildAgentLlmCall(bus, ctx, agent, 'observer');
+  if (llmCall === undefined) return;
 
   // TASK-182: when memory lives in the `/agent` git tier, hydrate the agent's
   // current memory tree into a scratch, run the observer there, and flush the
@@ -637,7 +655,6 @@ async function consolidateRoutedToTier(deps: {
   const densifyMap = await buildMapDensifier({
     bus,
     ctx,
-    llmCallHook,
     enabled: mapDensifyEnabled,
     timeoutMs: mapDensifyTimeoutMs,
   });
@@ -763,15 +780,16 @@ async function reindexTierDocs(bus: HookBus, ctx: AgentContext): Promise<void> {
 async function buildMapDensifier(deps: {
   bus: HookBus;
   ctx: AgentContext;
-  llmCallHook: string;
   enabled: boolean;
   timeoutMs: number;
 }): Promise<MapDensifier | undefined> {
-  const { bus, ctx, llmCallHook, enabled, timeoutMs } = deps;
+  const { bus, ctx, enabled, timeoutMs } = deps;
   if (!enabled) return undefined;
   const agent = await resolveAgent(bus, ctx);
   if (agent === null) return undefined;
-  const llmCall: LlmCallFn = (input) => bus.call(llmCallHook, ctx, input);
+  // Same agent-provider routing as the Observer (PR 2).
+  const llmCall = buildAgentLlmCall(bus, ctx, agent, 'map-densifier');
+  if (llmCall === undefined) return undefined;
   return makeLlmDensifier({ llmCall, model: agent.model, timeoutMs });
 }
 
@@ -800,21 +818,81 @@ function buildStageBNamer(deps: {
   return makeStageBNamer({ llmCall, model, timeoutMs });
 }
 
+/**
+ * The agent's model, split into the two halves that mean different things:
+ * `provider` SELECTS the `llm:call:<provider>` hook, `model` is the bare,
+ * provider-native id that hook's payload carries.
+ */
+interface ResolvedAgentModel {
+  provider: string;
+  model: string;
+}
+
+/**
+ * Build the `llm:call` closure for an agent-model-derived path, or `undefined`
+ * when the agent's provider has no registered hook on this host — the same
+ * graceful-degradation contract as `buildStageBNamer`'s `hasService` gate, so a
+ * CI host with no LLM provider still boots and still runs turns.
+ *
+ * We deliberately do NOT fall back to the configured `llmCallHook`: sending an
+ * agent's model id to a provider it wasn't selected for is worse than skipping
+ * (wrong-vendor id → 404, or worse, a silently different model). The `warn`
+ * makes the skip visible; a misconfigured preset shouldn't kill memory quietly.
+ */
+function buildAgentLlmCall(
+  bus: HookBus,
+  ctx: AgentContext,
+  agent: ResolvedAgentModel,
+  path: string,
+): LlmCallFn | undefined {
+  const hook = `llm:call:${agent.provider}`;
+  if (!bus.hasService(hook)) {
+    ctx.logger.warn('memory_strata_llm_provider_unregistered', {
+      agentId: ctx.agentId,
+      provider: agent.provider,
+      hook,
+      path,
+    });
+    return undefined;
+  }
+  return (input) => bus.call(hook, ctx, input);
+}
+
 async function resolveAgent(
   bus: HookBus,
   ctx: AgentContext,
-): Promise<{ model: string } | null> {
+): Promise<ResolvedAgentModel | null> {
+  let ref: string;
   try {
     const out = await bus.call<{ agentId: string; userId: string }, AgentResolveResponse>(
       'agents:resolve',
       ctx,
       { agentId: ctx.agentId, userId: ctx.userId },
     );
-    return { model: out.agent.model };
+    ref = out.agent.model;
   } catch (err) {
+    // debug, not warn: the common cause is a synthetic ctx with no agent row
+    // (handled + documented at every call site), which is an expected no-op.
     ctx.logger.debug('memory_strata_agent_resolve_failed', {
       err: err instanceof Error ? err : new Error(String(err)),
       agentId: ctx.agentId,
+    });
+    return null;
+  }
+  // `agents_v1_agents.model` is a `provider/model-id` ref (PR 2); the migration
+  // backfills the prefix, so a bare or malformed value here is a real
+  // misconfiguration, NOT an expected state — hence `warn`, in its own catch.
+  // Folding it into the resolve catch above would inherit `debug` and hide
+  // exactly the class of bug this parse exists to prevent (every turn's memory
+  // extraction silently stops).
+  try {
+    const parsed = parseModelRef(ref);
+    return { provider: parsed.provider, model: parsed.modelId };
+  } catch (err) {
+    ctx.logger.warn('memory_strata_agent_model_ref_invalid', {
+      err: err instanceof Error ? err : new Error(String(err)),
+      agentId: ctx.agentId,
+      model: ref,
     });
     return null;
   }

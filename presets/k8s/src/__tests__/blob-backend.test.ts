@@ -21,7 +21,7 @@ const baseConfig: Omit<K8sPresetConfig, 'blob'> = {
   session: { connectionString: 'postgres://stub:5432/stub' },
   workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
-  chat: { runnerBinary: '/tmp/stub-runner.js' },
+  chat: { runnerBinaries: { 'claude-sdk': '/tmp/stub-runner.js' } },
   http: {
     host: '127.0.0.1',
     port: 0,

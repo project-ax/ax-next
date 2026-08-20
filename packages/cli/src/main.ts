@@ -106,17 +106,23 @@ export interface MainOptions {
 }
 
 /**
- * Resolve the runner binary path. Production resolves @ax/agent-claude-sdk-runner;
- * tests override via opts.runnerBinaryOverride (library-mode) or via
+ * Resolve the runner id → binary path map. The CLI ships exactly one runner
+ * today (`'claude-sdk'`); PR 3 adds `'aisdk'` alongside it. Production
+ * resolves @ax/agent-claude-sdk-runner for the `'claude-sdk'` key; tests
+ * override via opts.runnerBinaryOverride (library-mode) or via
  * AX_TEST_RUNNER_BINARY_OVERRIDE env var (binary-mode where the CLI is spawned
- * from a test as a subprocess and MainOptions can't be threaded through).
+ * from a test as a subprocess and MainOptions can't be threaded through). The
+ * override, when present, replaces only the `'claude-sdk'` entry.
  */
-export function resolveRunnerBinary(opts: Pick<MainOptions, 'runnerBinaryOverride'>): string {
-  return (
-    opts.runnerBinaryOverride ??
-    process.env.AX_TEST_RUNNER_BINARY_OVERRIDE ??
-    requireFromCli.resolve('@ax/agent-claude-sdk-runner')
-  );
+export function resolveRunnerBinaries(
+  opts: Pick<MainOptions, 'runnerBinaryOverride'>,
+): Record<string, string> {
+  return {
+    'claude-sdk':
+      opts.runnerBinaryOverride ??
+      process.env.AX_TEST_RUNNER_BINARY_OVERRIDE ??
+      requireFromCli.resolve('@ax/agent-claude-sdk-runner'),
+  };
 }
 
 const DEFAULT_SQLITE_PATH = './ax-next-chat.sqlite';
@@ -198,7 +204,7 @@ export async function main(opts: MainOptions): Promise<number> {
   // proxy:open-session/close-session gate without seeding credentials.
   // The dynamic import keeps production startup cost zero — the test-harness
   // module is never resolved unless the env var is set. Tests using this
-  // path drive the runner via AX_TEST_RUNNER_BINARY_OVERRIDE (see resolveRunnerBinary).
+  // path drive the runner via AX_TEST_RUNNER_BINARY_OVERRIDE (see resolveRunnerBinaries).
   if (process.env.AX_TEST_STUB_PROXY === '1') {
     const encoded = process.env.AX_TEST_STUB_SCRIPT_BASE64;
     if (encoded === undefined || encoded === '') {
@@ -296,7 +302,7 @@ export async function main(opts: MainOptions): Promise<number> {
   plugins.push(createIpcServerPlugin());
   plugins.push(
     createChatOrchestratorPlugin({
-      runnerBinary: resolveRunnerBinary(opts),
+      runnerBinaries: resolveRunnerBinaries(opts),
       chatTimeoutMs: DEFAULT_CHAT_TIMEOUT_MS,
     }),
   );

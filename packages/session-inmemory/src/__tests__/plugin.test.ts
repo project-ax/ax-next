@@ -26,7 +26,8 @@ const OWNER: { userId: string; agentId: string; agentConfig: AgentConfig } = {
     systemPromptAugment: 'be helpful',
     allowedTools: ['file.read'],
     mcpConfigIds: [],
-    model: 'claude-sonnet-4-7',
+    model: 'anthropic/claude-sonnet-4-7',
+    runner: 'claude-sdk',
   },
 };
 
@@ -330,6 +331,43 @@ describe('@ax/session-inmemory plugin', () => {
       agentConfig: OWNER.agentConfig,
       conversationId: null,
     });
+  });
+
+  it('session:create rejects an owner.agentConfig missing runner', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const { runner: _runner, ...agentConfigWithoutRunner } = OWNER.agentConfig;
+    let caught: unknown;
+    try {
+      await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+        'session:create',
+        h.ctx(),
+        {
+          sessionId: 's-no-runner',
+          workspaceRoot: '/tmp/ws',
+          owner: { ...OWNER, agentConfig: agentConfigWithoutRunner as unknown as AgentConfig },
+        },
+      );
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('invalid-payload');
+  });
+
+  it('session:create -> session:get-config round-trips owner.agentConfig.runner (catches a zod strip)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const owner = { ...OWNER, agentConfig: { ...OWNER.agentConfig, runner: 'aisdk' } };
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>(
+      'session:create',
+      h.ctx(),
+      { sessionId: 's-runner-roundtrip', workspaceRoot: '/tmp/ws', owner },
+    );
+    const result = await h.bus.call<SessionGetConfigInput, SessionGetConfigOutput>(
+      'session:get-config',
+      h.ctx({ sessionId: 's-runner-roundtrip' }),
+      {},
+    );
+    expect(result.agentConfig.runner).toBe('aisdk');
   });
 
   it('session:get-config returns conversationId when owner carries one (Task 15)', async () => {

@@ -33,7 +33,9 @@ export interface CompletionInput {
   ctx: AgentContext;
   adminUserId: string;
   apiKey: string;
+  /** Fully-qualified `provider/model-id` ref — stored verbatim at `settings:fast-model`. */
   fastModel: string;
+  /** Fully-qualified `provider/model-id` ref — written verbatim to the Default Agent. */
   defaultModel: string;
   /** Test seam — defaults to global fetch. */
   fetchImpl?: typeof fetch;
@@ -142,14 +144,15 @@ export async function runCompletionTransaction(
   // leave the wizard wedged behind the post-completion 410 gate.
   //
   // Storage value is the canonical `provider/model-id` ref that
-  // @ax/conversation-titles + the admin "Model config" tab both read. The
-  // wizard only supports Anthropic today, so the provider prefix is
-  // hardcoded here; when another provider lands, the wizard step that
-  // picks `fastModel` will need to capture the provider alongside it.
+  // @ax/conversation-titles + the admin "Model config" tab both read.
+  // `fastModel` ARRIVES fully qualified (POST /setup/model validates it with
+  // `isModelRef`), so it is written VERBATIM. It used to be templated as
+  // `anthropic/${fastModel}` back when the wizard sent bare ids — doing that
+  // to an already-qualified ref yields 'anthropic/anthropic/claude-…'.
   try {
     await input.bus.call('storage:set', input.ctx, {
       key: 'settings:fast-model',
-      value: new TextEncoder().encode(`anthropic/${input.fastModel}`),
+      value: new TextEncoder().encode(input.fastModel),
     });
   } catch (err) {
     // Best-effort log; don't propagate. Bootstrap is already committed

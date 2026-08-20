@@ -65,12 +65,19 @@ const sampleAgent = (over: Partial<Record<string, unknown>> = {}) => ({
   allowedTools: ['bash'],
   mcpConfigIds: [],
   connectorAttachments: [],
-  model: 'claude-sonnet-4-6',
+  model: 'anthropic/claude-sonnet-4-6',
   workspaceRef: null,
   createdAt: '2026-01-01T00:00:00.000Z',
   updatedAt: '2026-01-01T00:00:00.000Z',
   ...over,
 });
+
+/** What GET /admin/agents/models serves in these tests — the deployment's
+ *  agents allow-list ∩ the provider plugin's `models:list-supported`. */
+const MODEL_OPTIONS = [
+  { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
+  { id: 'anthropic/claude-opus-4-7', label: 'Claude Opus 4.7', kind: 'default' },
+];
 
 function jsonOk(body: unknown): Response {
   return new Response(JSON.stringify(body), {
@@ -85,7 +92,13 @@ beforeEach(() => {
   // Default: stub all fetches with empty responses.
   fetchMock.mockImplementation(() =>
     Promise.resolve(
-      jsonOk({ providers: [], agents: [], teams: [], connectors: [] }),
+      jsonOk({
+        providers: [],
+        agents: [],
+        teams: [],
+        connectors: [],
+        models: MODEL_OPTIONS,
+      }),
     ),
   );
 });
@@ -121,19 +134,28 @@ describe('AdminSettings — agents tab', () => {
   it('submitting the form POSTs to /admin/agents with camelCase + CSRF header', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
-    // agents list on mount
-    fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
-    // teams + connectors lookup on form open
-    fetchMock.mockResolvedValueOnce(jsonOk({ teams: [] }));
-    fetchMock.mockResolvedValueOnce(jsonOk({ connectors: [] }));
-    // POST response (returns the created agent w/ its id)
-    fetchMock.mockResolvedValueOnce(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
-    // TASK-107 — connector-attachments PATCH after create
-    fetchMock.mockResolvedValueOnce(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
-    // TASK-142 — identity PUT after create
-    fetchMock.mockResolvedValueOnce(jsonOk({ ok: true }));
-    // re-fetch agents after save
-    fetchMock.mockResolvedValueOnce(jsonOk({ agents: [] }));
+    // Route by URL rather than by call order — the form issues several
+    // independent lookups on open (teams, models, connectors) and a fixed
+    // queue makes the test hostage to their ordering.
+    fetchMock.mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const method = init?.method ?? 'GET';
+      if (url === '/admin/agents/models') {
+        return Promise.resolve(jsonOk({ models: MODEL_OPTIONS }));
+      }
+      if (url === '/admin/agents' && method === 'POST') {
+        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
+      }
+      if (/connector-attachments/.test(url)) {
+        return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-x' }) }));
+      }
+      if (/\/identity$/.test(url)) return Promise.resolve(jsonOk({ ok: true }));
+      if (/\/admin\/teams(\?|$)/.test(url)) return Promise.resolve(jsonOk({ teams: [] }));
+      if (/\/admin\/connectors(\?|$)/.test(url)) {
+        return Promise.resolve(jsonOk({ connectors: [] }));
+      }
+      return Promise.resolve(jsonOk({ agents: [] }));
+    });
 
     render(<AgentForm isAdmin />);
     await waitFor(() => screen.getByText(/New agent/i));
@@ -152,6 +174,13 @@ describe('AdminSettings — agents tab', () => {
     fireEvent.change(screen.getByLabelText(/allowed tools/i), {
       target: { value: 'bash' },
     });
+    // The Model picker is populated from GET /admin/agents/models — wait for
+    // that to land before saving, so the POST carries a real model ref.
+    await waitFor(() =>
+      expect((screen.getByLabelText('Model') as HTMLSelectElement).value).toBe(
+        'anthropic/claude-sonnet-4-6',
+      ),
+    );
     fireEvent.click(screen.getByRole('button', { name: /Save/i }));
     await waitFor(() => {
       const calls = fetchMock.mock.calls;
@@ -171,6 +200,9 @@ describe('AdminSettings — agents tab', () => {
       // TASK-107 — connectors no longer ride mcpConfigIds (MCP-only meaning).
       expect(body.mcpConfigIds).toEqual([]);
       expect(body.visibility).toBe('personal');
+      // A fully-qualified `provider/model-id` ref — the agents allow-list
+      // rejects bare ids.
+      expect(body.model).toBe('anthropic/claude-sonnet-4-6');
       const headers = opts.headers as Record<string, string>;
       expect(headers['x-requested-with']).toBe('ax-admin');
     });
@@ -202,6 +234,64 @@ describe('AdminSettings — agents tab', () => {
     });
   });
 
+  it('model options come from GET /admin/agents/models, not a hardcoded list', async () => {
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    // A list nothing in the SPA could have invented.
+    const served = [
+      { id: 'openrouter/x-ai/grok-4.6', label: 'Grok 4.6', kind: 'default' },
+      { id: 'anthropic/claude-haiku-4-5-20251001', label: 'Claude Haiku 4.5', kind: 'fast' },
+    ];
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/admin/agents/models') return Promise.resolve(jsonOk({ models: served }));
+      if (/\/admin\/teams(\?|$)/.test(url)) return Promise.resolve(jsonOk({ teams: [] }));
+      if (/connectors(\?|$)/.test(url)) return Promise.resolve(jsonOk({ connectors: [] }));
+      return Promise.resolve(jsonOk({ agents: [] }));
+    });
+
+    render(<AgentForm isAdmin />);
+    await waitFor(() => screen.getByText(/New agent/i));
+    fireEvent.click(screen.getByText(/New agent/i));
+
+    const select = (await screen.findByLabelText('Model')) as HTMLSelectElement;
+    await waitFor(() =>
+      expect(Array.from(select.options).map((o) => o.value)).toEqual(
+        served.map((m) => m.id),
+      ),
+    );
+    // Rendered with the served LABEL, valued by the served id.
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual([
+      'Grok 4.6',
+      'Claude Haiku 4.5',
+    ]);
+    // First option is preselected for a new agent.
+    expect(select.value).toBe('openrouter/x-ai/grok-4.6');
+  });
+
+  it('an empty model list explains itself instead of rendering an empty picker', async () => {
+    fetchMock.mockReset();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    // What a first-run deployment with no provider plugin returns: 200 + [].
+    fetchMock.mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === '/admin/agents/models') return Promise.resolve(jsonOk({ models: [] }));
+      if (/\/admin\/teams(\?|$)/.test(url)) return Promise.resolve(jsonOk({ teams: [] }));
+      if (/connectors(\?|$)/.test(url)) return Promise.resolve(jsonOk({ connectors: [] }));
+      return Promise.resolve(jsonOk({ agents: [] }));
+    });
+
+    render(<AgentForm isAdmin />);
+    await waitFor(() => screen.getByText(/New agent/i));
+    fireEvent.click(screen.getByText(/New agent/i));
+
+    await waitFor(() =>
+      expect(screen.getByText(/No models are available yet/i)).toBeTruthy(),
+    );
+    // No silently-empty <select> left behind.
+    expect(screen.queryByLabelText('Model')).toBeNull();
+  });
+
   it('TASK-107: saving with a connector checked PATCHes the connector-attachment store with the id', async () => {
     fetchMock.mockReset();
     globalThis.fetch = fetchMock as unknown as typeof fetch;
@@ -225,6 +315,9 @@ describe('AdminSettings — agents tab', () => {
             ],
           }),
         );
+      }
+      if (url === '/admin/agents/models') {
+        return Promise.resolve(jsonOk({ models: MODEL_OPTIONS }));
       }
       if (url === '/admin/agents' && method === 'POST') {
         return Promise.resolve(jsonOk({ agent: sampleAgent({ id: 'agent-y' }) }));

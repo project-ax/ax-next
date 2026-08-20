@@ -19,6 +19,7 @@ vi.mock('@/lib/admin', () => ({
   putAgentIdentity: vi.fn(),
   deleteAgent: vi.fn(),
   listTeams: vi.fn(),
+  listAgentModels: vi.fn(),
 }));
 vi.mock('@/lib/connectors', () => ({
   listConnectors: vi.fn(),
@@ -63,6 +64,7 @@ import {
   createAgent,
   deleteAgent,
   listTeams,
+  listAgentModels,
   patchAgent,
   patchAgentConnectorAttachments,
   getAgentIdentity,
@@ -75,6 +77,13 @@ import type { Connector } from '@/lib/connectors';
 const mockList = vi.mocked(listAdminAgents);
 const mockDelete = vi.mocked(deleteAgent);
 
+/** What GET /admin/agents/models returns for these tests — the deployment's
+ *  allow-list ∩ the provider plugin's supported models. */
+const MODEL_OPTIONS = [
+  { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' as const },
+  { id: 'anthropic/claude-opus-4-7', label: 'Claude Opus 4.7', kind: 'default' as const },
+];
+
 const AGENT: AdminAgent = {
   id: 'agent-1',
   ownerId: 'user-1',
@@ -83,7 +92,7 @@ const AGENT: AdminAgent = {
   displayName: 'Research Bot',
   allowedTools: ['Bash'],
   mcpConfigIds: [],
-  model: 'claude-sonnet-4-6',
+  model: 'anthropic/claude-sonnet-4-6',
   workspaceRef: null,
   skillAttachments: [],
   connectorAttachments: [],
@@ -105,6 +114,7 @@ const BARE_AGENT: AdminAgent = {
 describe('AgentForm — styled delete confirm', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(listAgentModels).mockResolvedValue(MODEL_OPTIONS);
     mockList.mockResolvedValue([AGENT]);
     mockDelete.mockResolvedValue(undefined);
   });
@@ -169,6 +179,7 @@ describe('AgentForm — styled delete confirm', () => {
 describe('AgentForm — non-admin owner-scoped sources', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(listAgentModels).mockResolvedValue(MODEL_OPTIONS);
     mockList.mockResolvedValue([AGENT]);
     vi.mocked(listTeams).mockResolvedValue([]);
     vi.mocked(listConnectors).mockResolvedValue([]);
@@ -198,6 +209,7 @@ describe('AgentForm — non-admin owner-scoped sources', () => {
 describe('AgentForm — file-based identity editor (TASK-142)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(listAgentModels).mockResolvedValue(MODEL_OPTIONS);
     mockList.mockResolvedValue([AGENT]);
     vi.mocked(listTeams).mockResolvedValue([]);
     vi.mocked(listConnectors).mockResolvedValue([]);
@@ -273,6 +285,7 @@ describe('AgentForm — file-based identity editor (TASK-142)', () => {
 describe('AgentForm — identity save decoupled from tools gate (TASK-147)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(listAgentModels).mockResolvedValue(MODEL_OPTIONS);
     vi.mocked(listTeams).mockResolvedValue([]);
     vi.mocked(listConnectors).mockResolvedValue([]);
     vi.mocked(patchAgent).mockResolvedValue(undefined);
@@ -470,6 +483,7 @@ const PERSONAL_AGENT_WITH_APIKEY: AdminAgent = {
 describe('AgentForm — agent-editor OAuth affordances', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(listAgentModels).mockResolvedValue(MODEL_OPTIONS);
     vi.mocked(listTeams).mockResolvedValue([]);
     vi.mocked(patchAgent).mockResolvedValue(undefined);
     vi.mocked(patchAgentConnectorAttachments).mockResolvedValue(AGENT);

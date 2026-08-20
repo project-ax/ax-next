@@ -219,6 +219,9 @@ export const SessionGetConfigOutputSchema = z.object({
     allowedTools: z.array(z.string()),
     mcpConfigIds: z.array(z.string()),
     model: z.string(),
+    // z.string(), not a zod enum — wire is a transport boundary; the
+    // authoritative allow-list (SUPPORTED_RUNNERS) lives in @ax/agents.
+    runner: z.string(),
   }),
   conversationId: z.string().nullable(),
 }) as unknown as ZodType<SessionGetConfigOutput>;
@@ -352,6 +355,7 @@ function validateOwner(
     hookName,
   );
   requireString(cfg.model, 'owner.agentConfig.model', hookName);
+  requireString(cfg.runner, 'owner.agentConfig.runner', hookName);
   if (!Array.isArray(cfg.allowedTools) || !cfg.allowedTools.every((t) => typeof t === 'string')) {
     throw new PluginError({
       code: 'invalid-payload',
@@ -418,6 +422,7 @@ function validateOwner(
       allowedTools: cfg.allowedTools as string[],
       mcpConfigIds: cfg.mcpConfigIds as string[],
       model: cfg.model as string,
+      runner: cfg.runner as string,
     },
     conversationId,
     source,

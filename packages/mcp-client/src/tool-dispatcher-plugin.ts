@@ -83,6 +83,7 @@ interface SessionGetConfigOutput {
     allowedTools: string[];
     mcpConfigIds: string[];
     model: string;
+    runner: string;
   };
 }
 

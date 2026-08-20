@@ -18,7 +18,7 @@ const baseCfg: K8sPresetConfig = {
   workspace: { backend: 'local', repoRoot: '/tmp/preset-k8s-stub' },
   sandbox: { namespace: 'ax-next', image: 'ax-next/agent:stub' },
   ipc: { hostIpcUrl: 'http://ax-next-host.ax-next.svc.cluster.local:80' },
-  chat: { runnerBinary: '/tmp/stub-runner.js' },
+  chat: { runnerBinaries: { 'claude-sdk': '/tmp/stub-runner.js' } },
   http: {
     host: '127.0.0.1',
     port: 0,

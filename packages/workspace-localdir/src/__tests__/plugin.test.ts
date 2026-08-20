@@ -39,6 +39,7 @@ const OWNER = (
     allowedTools: [],
     mcpConfigIds: [],
     model: 'claude',
+    runner: 'claude-sdk',
   },
 });
 

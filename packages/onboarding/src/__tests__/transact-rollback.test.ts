@@ -104,7 +104,7 @@ describe('@ax/onboarding — db:transact cross-plugin rollback (I9)', () => {
               displayName: 'Tx Test Agent',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-6',
+              model: 'anthropic/claude-sonnet-4-6',
               visibility: 'personal',
             },
             tx,

@@ -621,6 +621,13 @@ skills:
 config:
   preset: k8s
   models:
-    default: ["claude-sonnet-4-5"]
+    # NOTE: this value is NOT currently wired to anything. It renders into the
+    # mounted ax.config.yaml ConfigMap, but the agent model allow-list is read
+    # from the AX_AGENT_MODELS_ALLOWED env var (packages/agents/src/store.ts),
+    # which this chart does not set — so the deployment falls back to
+    # @ax/agents' built-in DEFAULT_ALLOWED_MODELS. Editing this list today
+    # changes nothing. Kept (and kept in `provider/model-id` shape, which the
+    # allow-list now requires) so it is correct if it is ever wired through.
+    default: ["anthropic/claude-sonnet-4-6"]
   history:
     maxTurns: 50

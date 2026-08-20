@@ -50,7 +50,7 @@ const stubConfig: K8sPresetConfig = {
   // @ax/agent-claude-sdk-runner has been built. The chat-orchestrator
   // plugin doesn't validate this string at factory time — only at first
   // sandbox:open-session call — so any non-empty string is fine here.
-  chat: { runnerBinary: '/tmp/stub-runner.js' },
+  chat: { runnerBinaries: { 'claude-sdk': '/tmp/stub-runner.js' } },
   http: {
     host: '127.0.0.1',
     // Static-analysis only: createK8sPlugins doesn't actually call .listen()
@@ -1127,7 +1127,7 @@ describe('loadK8sConfigFromEnv', () => {
       }),
     );
     expect(cfg.chat).toEqual({
-      runnerBinary: '/opt/ax-next/runner.js',
+      runnerBinaries: { 'claude-sdk': '/opt/ax-next/runner.js' },
       chatTimeoutMs: 60000,
     });
   });

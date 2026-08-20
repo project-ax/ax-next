@@ -84,9 +84,20 @@ export const KNOWN_PROVIDERS = [
 export type KnownProvider = (typeof KNOWN_PROVIDERS)[number];
 
 export interface ChatOrchestratorConfig {
-  // Absolute path to the runner's dist/main.js. Passed through to
-  // sandbox:open-session — we don't validate here; the sandbox plugin does.
-  runnerBinary: string;
+  /**
+   * Runner id → absolute path to that runner's dist/main.js.
+   *
+   * PR 2 (design doc `2026-08-18-provider-agnostic-runner-design.md` §1): the
+   * agent row carries a runner **id** (`'claude-sdk'`, …), never a path. The
+   * id → path mapping is host config and lives here alone; only the resolved
+   * absolute path crosses `sandbox:open-session`, exactly as before. That
+   * boundary is the point of the change — see the PR's boundary review.
+   *
+   * Not validated here (the sandbox plugin does that). An agent whose runner
+   * id has no entry fails the turn: silently falling back to some other
+   * runner would run the agent on a runner the operator did not select.
+   */
+  runnerBinaries: Readonly<Record<string, string>>;
   // Bounded wait for chat:end. Defaults to 10 min. If the runner crashes or
   // hangs without emitting chat-end, we synthesize a terminated outcome
   // after this elapses.
@@ -285,6 +296,13 @@ interface AgentRecord {
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
+  /**
+   * PR 2 — runner selection. An **id** (`'claude-sdk'`, `'aisdk'`), never a
+   * path or module specifier: the orchestrator maps it to a binary through
+   * `ChatOrchestratorConfig.runnerBinaries`. @ax/agents owns the allow-list;
+   * this side only looks the id up and fails loudly on a miss.
+   */
+  runner: string;
   workspaceRef: string | null;
   /**
    * Phase 2 — egress allowlist. Hostnames the per-session proxy permits the
@@ -733,6 +751,34 @@ function newDeferred<T>(): Deferred<T> {
 
 export const PLUGIN_NAME = '@ax/chat-orchestrator';
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// PR 2 (provider-agnostic runner, design doc §1) — runner id → binary path.
+//
+// The agent row / AgentConfig / IPC wire all carry a runner **id**. The only
+// place that id becomes a filesystem path is here, on the way into
+// `sandbox:open-session`, which already carried an absolute path before this
+// change. An unknown id is a hard error, NEVER a fallback to some default
+// runner: a fallback would quietly run the agent on a runner the operator did
+// not select, which is exactly what the id-based boundary exists to prevent.
+// ---------------------------------------------------------------------------
+function resolveRunnerBinary(
+  runnerBinaries: Readonly<Record<string, string>>,
+  runnerId: string,
+): string {
+  const binary = runnerBinaries[runnerId];
+  if (binary === undefined) {
+    const configured = Object.keys(runnerBinaries);
+    throw new PluginError({
+      code: 'unknown-runner',
+      plugin: PLUGIN_NAME,
+      message:
+        `agent selects runner '${runnerId}', which has no configured binary; ` +
+        `configured runners: ${configured.length > 0 ? configured.join(', ') : '(none)'}`,
+    });
+  }
+  return binary;
+}
 
 // ---------------------------------------------------------------------------
 // JIT smart-defaults (Part II §P4, TASK-51) — the always-on broker host-tools.
@@ -1344,6 +1390,22 @@ export function createOrchestrator(
       allowedTools: withBrokerDefaults(agent.allowedTools, agent.mcpConfigIds),
       mcpConfigIds: agent.mcpConfigIds,
       model: agent.model,
+      // PR 2 — the runner ID rides the wire (the runner-visible contract stays
+      // the id, never the host's binary path; see resolveRunnerBinary above).
+      //
+      // NOTE this copy is NOT what selects the binary — that lookup below uses
+      // `agent.runner` off the freshly-resolved AgentRecord. This is the frozen
+      // SNAPSHOT (Invariant I10: config captured once at session creation), and
+      // it has no runtime reader yet. Its consumer arrives in PR 3: with two
+      // runners, resuming a session has to know which runner produced the
+      // existing transcript, because the transcript formats differ and a
+      // cross-runner resume must demote to a fresh session rather than hand one
+      // runner's transcript to the other (design doc §8, "Documented
+      // non-parity"). Reading the agent row instead would answer "which runner
+      // does this agent use NOW", not "which runner wrote this transcript" —
+      // and those diverge exactly when someone switches an agent's runner
+      // mid-conversation, which is the case the demotion exists for.
+      runner: agent.runner,
     };
 
     // TASK-66 (out-of-git Part B / B1): persist the USER turn into the display
@@ -2257,7 +2319,11 @@ export function createOrchestrator(
       const sandboxInput: OpenSessionInput = {
         sessionId,
         workspaceRoot: ctx.workspace.rootPath,
-        runnerBinary: config.runnerBinary,
+        // PR 2 — resolve the agent's runner ID to a binary path HERE, at the
+        // wire boundary. The wire keeps carrying one resolved absolute path;
+        // the map never leaves the host. A miss throws into the catch below →
+        // the turn terminates with `sandbox-open-failed`.
+        runnerBinary: resolveRunnerBinary(config.runnerBinaries, agent.runner),
         owner: {
           userId: ctx.userId,
           agentId: agent.id,

@@ -197,7 +197,10 @@ describe('@ax/onboarding POST /setup/model', () => {
         },
         body: JSON.stringify({
           apiKey: 'sk-ant-test-key',
-          models: { fast: 'claude-haiku-4-5-20251001', default: 'claude-sonnet-4-6' },
+          models: {
+            fast: 'anthropic/claude-haiku-4-5-20251001',
+            default: 'anthropic/claude-sonnet-4-6',
+          },
         }),
       });
     } finally {
@@ -240,7 +243,7 @@ describe('@ax/onboarding POST /setup/model', () => {
     >('agents:list-for-user', stack.harness.ctx(), { userId: user.id, teamIds: [] });
     expect(agentsOut.agents).toHaveLength(1);
     expect(agentsOut.agents[0]!.displayName).toBe('Default Agent');
-    expect(agentsOut.agents[0]!.model).toBe('claude-sonnet-4-6');
+    expect(agentsOut.agents[0]!.model).toBe('anthropic/claude-sonnet-4-6');
 
     // Verify fast-model setting was written.
     const fastModelBytes = await stack.harness.bus.call<
@@ -248,12 +251,54 @@ describe('@ax/onboarding POST /setup/model', () => {
       { value: Uint8Array | undefined }
     >('storage:get', stack.harness.ctx(), { key: 'settings:fast-model' });
     expect(fastModelBytes.value).toBeDefined();
-    // Stored as `provider/model-id` so @ax/conversation-titles + the admin
-    // "Model config" tab can read the same canonical ref shape; the wizard
-    // hardcodes `anthropic/` since it only supports Anthropic today.
-    expect(new TextDecoder().decode(fastModelBytes.value)).toBe(
-      'anthropic/claude-haiku-4-5-20251001',
+    // Stored VERBATIM as the `provider/model-id` ref the wizard sent, so
+    // @ax/conversation-titles + the admin "Model config" tab read the same
+    // canonical shape. Regression guard: the route used to template
+    // `anthropic/${fastModel}` onto an already-qualified ref, which produced
+    // 'anthropic/anthropic/claude-haiku-...' once the wizard started sending
+    // fully-qualified refs.
+    const storedFastModel = new TextDecoder().decode(fastModelBytes.value);
+    expect(storedFastModel).toBe('anthropic/claude-haiku-4-5-20251001');
+    expect(storedFastModel).not.toContain('anthropic/anthropic/');
+  }, 30_000);
+
+  it('bare (unqualified) model id → 400 invalid-model-ref, nothing persisted', async () => {
+    stack = await bootStack();
+    const { port } = stack;
+
+    const { authCookie } = await walkToModel(port);
+
+    // A bare id is no longer accepted: the agents allow-list and
+    // `settings:fast-model` both speak `provider/model-id`, and the value is
+    // stored verbatim. Reject loudly instead of guessing a provider.
+    const res = await fetch(`http://127.0.0.1:${port}/setup/model`, {
+      method: 'POST',
+      headers: {
+        cookie: authCookie,
+        'content-type': 'application/json',
+        'x-requested-with': 'ax-admin',
+      },
+      body: JSON.stringify({
+        apiKey: 'sk-ant-test-key',
+        models: { fast: 'claude-haiku-4-5-20251001', default: 'anthropic/claude-sonnet-4-6' },
+      }),
+    });
+
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'invalid-model-ref' });
+
+    // Nothing was written — the rejection happens before the transaction.
+    const status = await stack.harness.bus.call<unknown, { status: string }>(
+      'bootstrap:status',
+      stack.harness.ctx(),
+      {},
     );
+    expect(status.status).not.toBe('completed');
+    const fastModelBytes = await stack.harness.bus.call<
+      { key: string },
+      { value: Uint8Array | undefined }
+    >('storage:get', stack.harness.ctx(), { key: 'settings:fast-model' });
+    expect(fastModelBytes.value).toBeUndefined();
   }, 30_000);
 
   it('invalid key → 200 with ok:false + credential-invalid, state unchanged', async () => {

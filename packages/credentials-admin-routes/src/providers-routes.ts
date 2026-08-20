@@ -51,6 +51,13 @@ const STATIC_PROVIDERS: ProviderEntry[] = [
     // (and the wizard's completion-tx writes), or the Provider keys tab
     // shows "Not configured" right after a successful wizard run.
     ref: 'provider:anthropic',
+    // BARE model ids, deliberately. This list feeds the admin "Model config"
+    // tab, which builds the stored `settings:fast-model` value by joining the
+    // provider id and the model id (`${providerId}/${modelId}` — see
+    // channel-web's ModelConfigTab) and strips the prefix again to preselect.
+    // Prefixing them here would produce 'anthropic/anthropic/claude-…' on save
+    // and break the preselect. The provider prefix belongs to the PROVIDER
+    // entry (`id`), not to each model.
     models: [
       'claude-opus-4-7',
       'claude-sonnet-4-6',

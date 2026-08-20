@@ -83,7 +83,7 @@ describe('POST /api/agents/bootstrap', () => {
     expect(input.input.visibility).toBe('personal');
     expect(input.input.allowedTools).toEqual([]);
     expect(input.input.mcpConfigIds).toEqual([]);
-    expect(input.input.model).toBe('claude-sonnet-4-6');
+    expect(input.input.model).toBe('anthropic/claude-sonnet-4-6');
 
     // Seed BOOTSTRAP.md routed to the NEW agent's workspace (parent: null —
     // first apply creates main).
@@ -150,7 +150,7 @@ describe('POST /api/agents/bootstrap', () => {
     const input = created[0]!.input as { input: Record<string, unknown> };
     expect(input.input.allowedTools).toEqual([]);
     expect(input.input.visibility).toBe('personal');
-    expect(input.input.model).toBe('claude-sonnet-4-6');
+    expect(input.input.model).toBe('anthropic/claude-sonnet-4-6');
     // A client-supplied systemPrompt is dropped — bootstrap agents are bare.
     expect(input.input.systemPrompt).toBeUndefined();
   });

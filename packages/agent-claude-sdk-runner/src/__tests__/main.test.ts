@@ -459,7 +459,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -583,6 +584,7 @@ describe('main()', () => {
     expect(queryMock).toHaveBeenCalledTimes(1);
     const queryArg = queryMock.mock.calls[0]?.[0] as {
       options: {
+        model: string;
         allowedTools: string[];
         disallowedTools: string[];
         mcpServers: Record<string, unknown>;
@@ -616,6 +618,11 @@ describe('main()', () => {
     // model invokes a discovered skill.
     expect(queryArg.options.allowedTools).toContain('Skill');
     expect(queryArg.options.mcpServers).toHaveProperty('ax-host-tools');
+    // PR 2 (provider-agnostic model refs): agentConfig.model is a
+    // `provider/model-id` ref (`anthropic/claude-sonnet-4-7` — set in the
+    // fake session.get-config response above). The SDK's own `model` option
+    // wants the raw Anthropic id with the `anthropic/` prefix stripped.
+    expect(queryArg.options.model).toBe('claude-sonnet-4-7');
     // Phase 3: 'user' is the SOLE source — $CLAUDE_CONFIG_DIR/skills/ (host-
     // controlled read-only projection, 0555). 'project' was dropped because
     // .claude/skills/ is agent-writable and not on the validator's veto list,
@@ -698,6 +705,70 @@ describe('main()', () => {
     expect(fakeClient.close).toHaveBeenCalledTimes(1);
   });
 
+  // PR 2 (provider-agnostic model refs, docs/plans/2026-08-18-provider-
+  // agnostic-runner-design.md §6): this runner drives the Claude Agent SDK,
+  // which only ever talks to api.anthropic.com. A non-Anthropic model ref on
+  // agentConfig (e.g. an operator selected an OpenRouter model for an agent
+  // still bound to the claude-sdk runner) must fail the turn loudly rather
+  // than silently running some other model — or silently running the
+  // Anthropic default — under a config that named a different provider.
+  it('non-Anthropic model provider: fails the turn with a clear error, never calls query()', async () => {
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'openrouter/x-ai/grok-4.6',
+            runner: 'claude-sdk',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+
+    // Same fatal-error contract as any other loop.run() throw (e.g. the
+    // "terminated path: SDK throws mid-stream" test above): exit 1,
+    // chat-end outcome.kind='terminated', carrying the error text.
+    expect(rc).toBe(1);
+    expect(queryMock).not.toHaveBeenCalled();
+
+    const chatEnds = fakeClient.event.mock.calls.filter(
+      (c) => c[0] === 'event.chat-end',
+    );
+    expect(chatEnds).toHaveLength(1);
+    const payload = chatEnds[0]?.[1] as {
+      outcome: {
+        kind: string;
+        reason?: string;
+        error?: { name: string; message: string };
+      };
+    };
+    expect(payload.outcome.kind).toBe('terminated');
+    // Specific text, not just "it threw something": names the offending
+    // ref, the unsupported provider, and this runner's Anthropic-only
+    // limitation.
+    expect(payload.outcome.error?.message).toContain(
+      'openrouter/x-ai/grok-4.6',
+    );
+    expect(payload.outcome.error?.message).toContain('openrouter');
+    expect(payload.outcome.error?.message).toContain('Anthropic');
+  });
+
   // HR1 (filestore-user-files design §7.1 / TASK-165): a durable user-files mount
   // (AX_USERFILES_ROOT, e.g. /workspace) must NEVER become an SDK setting/skill-
   // discovery source. It's granted to the file TOOLS via `additionalDirectories`
@@ -719,7 +790,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -821,7 +893,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -928,7 +1001,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -994,7 +1068,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1040,7 +1115,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1094,7 +1170,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1152,7 +1229,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1201,7 +1279,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1248,7 +1327,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1332,7 +1412,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1468,7 +1549,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           // Fresh conversation, no prior runner session bound → first turn.
           conversationId: 'cnv-fresh',
@@ -1558,7 +1640,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1670,7 +1753,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1733,7 +1817,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1857,7 +1942,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1906,7 +1992,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -1984,7 +2071,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -2037,7 +2125,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: 'cnv_fresh',
           runnerSessionId: null,
@@ -2088,7 +2177,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: 'cnv_resume',
           runnerSessionId: 'sdk-sess-resume',
@@ -2138,7 +2228,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: 'cnv_fresh',
           runnerSessionId: null,
@@ -2194,7 +2285,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: 'cnv_resume',
           runnerSessionId: 'sdk-sess-resume',
@@ -2270,7 +2362,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: 'cnv-1',
             runnerSessionId: null,
@@ -2359,7 +2452,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: 'cnv-killed',
             runnerSessionId: null,
@@ -2409,7 +2503,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: null,
             runnerSessionId: null,
@@ -2466,7 +2561,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: 'cnv-2',
             runnerSessionId: null,
@@ -2540,7 +2636,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: 'cnv-3',
             runnerSessionId: null,
@@ -2618,7 +2715,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: 'cnv-conflict',
             runnerSessionId: null,
@@ -2702,7 +2800,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: 'cnv-resume',
             runnerSessionId: 'sdk-sess-resume',
@@ -2774,7 +2873,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: 'cnv-stale',
             runnerSessionId: 'sdk-sess-missing',
@@ -2846,7 +2946,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: 'cnv-ship',
             runnerSessionId: null,
@@ -2916,7 +3017,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: 'cnv-fresh',
             runnerSessionId: null,
@@ -2982,7 +3084,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: 'cnv-empty-rsid',
             runnerSessionId: '', // <- the load-bearing input
@@ -3047,7 +3150,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: null,
             runnerSessionId: null,
@@ -3113,7 +3217,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: null,
             runnerSessionId: null,
@@ -3162,7 +3267,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: null,
             runnerSessionId: null,
@@ -3264,7 +3370,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: null,
             runnerSessionId: null,
@@ -3421,7 +3528,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -3494,7 +3602,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -3587,7 +3696,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -3687,7 +3797,8 @@ describe('main()', () => {
               systemPromptAugment: '',
               allowedTools: [],
               mcpConfigIds: [],
-              model: 'claude-sonnet-4-7',
+              model: 'anthropic/claude-sonnet-4-7',
+              runner: 'claude-sdk',
             },
             conversationId: null,
             runnerSessionId: null,
@@ -3765,7 +3876,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -3874,7 +3986,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -3971,7 +4084,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,
@@ -4043,7 +4157,8 @@ describe('main()', () => {
             systemPromptAugment: '',
             allowedTools: [],
             mcpConfigIds: [],
-            model: 'claude-sonnet-4-7',
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
           },
           conversationId: null,
           runnerSessionId: null,

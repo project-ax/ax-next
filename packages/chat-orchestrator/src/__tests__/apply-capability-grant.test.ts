@@ -30,6 +30,7 @@ function buildMocks(opts: {
         allowedTools: [],
         mcpConfigIds: [],
         model: 'claude-sonnet-4-7',
+        runner: 'claude-sdk',
         workspaceRef: null,
       },
     }),
@@ -90,7 +91,7 @@ function ctx() {
 async function harnessFor(mocks: ReturnType<typeof buildMocks>) {
   return createTestHarness({
     services: mocks.services,
-    plugins: [createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', oneShot: true })],
+    plugins: [createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, oneShot: true })],
   });
 }
 

@@ -29,6 +29,9 @@ export interface AgentConfig {
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
+  /** Runner id (e.g. `'claude-sdk'`) the host resolves to a binary path via
+   * `ChatOrchestratorConfig.runnerBinaries`. Allow-listed at agent creation. */
+  runner: string;
 }
 
 // ---------------------------------------------------------------------------

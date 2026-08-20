@@ -72,7 +72,7 @@ function makeInput(overrides: Partial<AgentInput> = {}): AgentInput {
     displayName: 'My Agent',
     allowedTools: ['bash.run'],
     mcpConfigIds: [],
-    model: 'claude-opus-4-7',
+    model: 'anthropic/claude-opus-4-7',
     visibility: 'personal',
     ...overrides,
   };

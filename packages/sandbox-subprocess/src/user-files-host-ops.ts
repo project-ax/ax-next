@@ -291,6 +291,7 @@ export function ownerFromAgentId(agentId: string, userId: string): Owner {
       allowedTools: [],
       mcpConfigIds: [],
       model: '',
+      runner: '',
     },
   };
 }

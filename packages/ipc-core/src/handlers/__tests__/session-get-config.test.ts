@@ -33,7 +33,8 @@ const OWNER = {
     systemPromptAugment: 'you are a poet',
     allowedTools: ['file.read'],
     mcpConfigIds: ['mcp-1'],
-    model: 'claude-sonnet-4-7',
+    model: 'anthropic/claude-sonnet-4-7',
+    runner: 'claude-sdk',
   },
 };
 

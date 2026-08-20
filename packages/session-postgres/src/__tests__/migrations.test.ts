@@ -187,6 +187,7 @@ describe('runSessionMigration v2', () => {
         allowedTools: ['file.read', 'bash.exec'],
         mcpConfigIds: ['mcp-1', 'mcp-2'],
         model: 'claude-sonnet-4-7',
+        runner: 'claude-sdk',
       };
       await db
         .insertInto('session_postgres_v2_session_agent')

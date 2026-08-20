@@ -78,3 +78,33 @@ When a rollup test seeds docs via `writeNewDoc` with DATED facts (`(2026-…) �
 
 ## 2026-07-08 — e2e bench SILENTLY dropped every question's FINAL-session facts (0ms-debounce race)
 The `@ax/memory-strata` e2e driver (`test/bench/e2e-driver.ts`) set `consolidatorDebounceMs: 0`, thinking "consolidate immediately." But `chat:end` fires TWO independent subscribers — Observer (fire-and-forget, writes inbox) and Consolidator (`debouncer.schedule`). With a 0ms window the pass is `setTimeout(0)` — a macrotask that fires DURING the driver's `await settleObserver` (the Observer's real LLM call is a macrotask that yields), i.e. BEFORE that session's facts are written. So each session's facts get consolidated by the NEXT session's pass; the FINAL session has no next pass → its high-confidence facts strand in the inbox, invisible to `memory_search` → false-refusal on any question whose gold fact is in a late session. Depressed the LongMemEval e2e score across the board (true score is higher than measured). **Tell:** a fact is a well-formed inbox observation (conf ≥0.7) but there's no doc for it and search can't find it; re-running `runConsolidation` on the kept workspace promotes it with zero code change. **Why the existing driver test missed it:** its durable fact was in session 0 (swept up by session 1) AND used an instant stub — no macrotask latency, so the race never triggered. A regression test for a latency-dependent race MUST simulate latency (`await new Promise(r=>setTimeout(r,25))` in the stub) and put the fact in the LAST session. **Fix:** `debounceMs 0 → 10*60_000` so the ingest loop's explicit `flush()` (already after settleObserver) is the sole race-free driver. Full writeup: `docs/plans/2026-07-08-memory-strata-postrollup-e2e-analysis.md`. Production note: the shipped plugin has the same 2-subscriber structure — "ask immediately after telling" may strand the newest turn's facts until the next turn (self-heals); a possible ask-time drain guard is a separate card.
+
+## 2026-08-19 — `pnpm build` does NOT type-check test files, so wire-shape drift only surfaces in the full suite
+PR 2 of the provider-agnostic runner sequence added a required `runner` field to `AgentConfig`
+and turned `ChatOrchestratorConfig.runnerBinary` (a string) into `runnerBinaries` (a map). Nine
+subagents each ran `pnpm build` **and** their own package's suite, all green — and the branch was
+still broken in three packages nobody owned. Every package `tsconfig.json` carries
+`"exclude": ["src/__tests__/**"]`, so `tsc --build` never sees a single test file. A test fixture
+that constructs `agentConfig` without `runner`, or calls `createChatOrchestratorPlugin({ runnerBinary })`
+with the deleted scalar key, compiles clean forever and fails only when that suite actually runs.
+
+Three distinct drift classes surfaced, each in a package that did not change:
+1. **`agentConfig` literals missing `runner`** → `PluginError: 'owner.agentConfig.runner' must be a
+   non-empty string` from `session-inmemory`'s `validateOwner`. Hit `@ax/ipc-server`, `@ax/ipc-core`,
+   `@ax/mcp-client`. 62 literals across 14 files repo-wide.
+2. **A bare model id passed to `agents:create`** → `model 'claude-opus-4-7' is not in the allow-list`,
+   in `@ax/skills`' install canary.
+3. **The stale `runnerBinary` scalar** in `@ax/skills`' orchestrator config — silently ignored, so the
+   agent's runner id resolved against an EMPTY map and every turn came back `terminated` instead of
+   `complete`. The most expensive one to read: the symptom names neither `runner` nor `runnerBinary`.
+
+`pnpm -r run test` is **fail-fast** (`ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL`), so each round exposed only
+the first broken package. Three full-suite rounds were needed. Also: piping it (`pnpm test | tail`)
+swallows the exit code — the first round LOOKED like exit 0 while `@ax/ipc-server` was red. Redirect
+to a file and echo `$?` instead.
+
+**Next time you change a shape that crosses packages:** (a) budget for a full `pnpm test`, not just the
+owning packages' suites — per-package green means nothing here; (b) grep for *structural* consumers in
+`**/__tests__/**` before dispatching, because tsc will not; (c) a shape scan beats a keyword grep — walk
+`agentConfig: {` blocks by brace depth and check for the new key, rather than `grep -L runner` (the word
+"runner" appears in prose in most of these files, so the keyword filter hid `ipc-core` entirely).

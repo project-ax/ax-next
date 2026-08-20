@@ -62,6 +62,7 @@ describe('session return schemas', () => {
         allowedTools: ['bash'],
         mcpConfigIds: ['m1'],
         model: 'claude',
+        runner: 'claude-sdk',
       },
       conversationId: 'c1',
     };

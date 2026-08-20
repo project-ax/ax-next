@@ -25,6 +25,23 @@ export interface SkillAttachment {
   credentialBindings: Record<string /* slot */, string /* credential ref */>;
 }
 
+/**
+ * The runner binaries the host knows how to spawn, by ID. PR 2 of the
+ * provider-agnostic runner sequence
+ * (docs/plans/2026-08-18-provider-agnostic-runner-design.md §1).
+ *
+ * An ID, never a path: the id → binary-path mapping lives in host config
+ * (`ChatOrchestratorConfig.runnerBinaries`) and only reaches the wire on
+ * `sandbox:open-session.runnerBinary`, which already carried an absolute
+ * path. Nothing filesystem-shaped leaks into an agent row or a hook payload
+ * (Invariant I1).
+ *
+ * `'aisdk'` is named here because the type is the vocabulary; it is NOT
+ * accepted by validation until PR 3 ships the binary behind it — see
+ * `SUPPORTED_RUNNERS` in store.ts.
+ */
+export type RunnerId = 'claude-sdk' | 'aisdk';
+
 export interface Agent {
   id: string;
   ownerId: string;
@@ -34,6 +51,8 @@ export interface Agent {
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
+  /** Which runner binary the host spawns for this agent. An id, not a path. */
+  runner: RunnerId;
   workspaceRef: string | null;
   skillAttachments: SkillAttachment[];
   /**
@@ -70,6 +89,13 @@ export interface AgentInput {
   allowedTools: string[];
   mcpConfigIds: string[];
   model: string;
+  /**
+   * Runner id. Optional on create — the store defaults it to `'claude-sdk'`.
+   * Typed `string` (not `RunnerId`) because the value arrives off the HTTP /
+   * IPC wire unnarrowed; `validateRunner` rejects anything not in
+   * `SUPPORTED_RUNNERS`.
+   */
+  runner?: string;
   workspaceRef?: string | null;
   visibility: 'personal' | 'team';
   /**
@@ -135,6 +161,12 @@ const AgentSchema = z.object({
   allowedTools: z.array(z.string()),
   mcpConfigIds: z.array(z.string()),
   model: z.string(),
+  // Declared explicitly: this schema is the `returns` contract on
+  // `agents:resolve` and a zod object STRIPS undeclared keys — omitting
+  // `runner` would silently drop it before the orchestrator ever sees it.
+  // Mirrors the `RunnerId` union (same posture as ownerType / visibility:
+  // a value outside the union is a corrupt row, not a new runner).
+  runner: z.union([z.literal('claude-sdk'), z.literal('aisdk')]),
   workspaceRef: z.string().nullable(),
   skillAttachments: z.array(SkillAttachmentSchema),
   connectorAttachments: z.array(z.string()),

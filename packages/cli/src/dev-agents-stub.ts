@@ -48,10 +48,17 @@ export interface DevAgentsStubConfig {
    */
   mcpConfigIds?: readonly string[];
   /**
-   * LLM model id. Defaults to claude-sonnet-4-7 to match the rest of the
-   * dev defaults; pass the same value the LLM plugin was configured with.
+   * LLM model id, as a `provider/model-id` ref. Defaults to
+   * `anthropic/claude-sonnet-4-6` to match the rest of the dev defaults;
+   * pass the same value the LLM plugin was configured with.
    */
   model?: string;
+  /**
+   * Runner id. Defaults to `'claude-sdk'`, the only runner shipped today;
+   * PR 3 adds `'aisdk'`. Echoed onto the resolved agent so the orchestrator
+   * can look up the matching binary in `ChatOrchestratorConfig.runnerBinaries`.
+   */
+  runner?: string;
   /**
    * Phase 2 — egress allowlist for the per-session credential-proxy.
    * Defaults to ['api.anthropic.com'] so the SDK runner can reach
@@ -90,7 +97,8 @@ export function createDevAgentsStubPlugin(
   // files (or, when it has none, the runner's displayName fallback identity).
   const allowedTools = [...(cfg.allowedTools ?? [])];
   const mcpConfigIds = [...(cfg.mcpConfigIds ?? [])];
-  const model = cfg.model ?? 'claude-sonnet-4-6';
+  const model = cfg.model ?? 'anthropic/claude-sonnet-4-6';
+  const runner = cfg.runner ?? 'claude-sdk';
   // Phase 2 defaults — every CLI canary needs to reach api.anthropic.com
   // and inject ANTHROPIC_API_KEY from the local credentials store.
   const allowedHosts = [...(cfg.allowedHosts ?? ['api.anthropic.com'])];
@@ -125,6 +133,7 @@ export function createDevAgentsStubPlugin(
               allowedTools,
               mcpConfigIds,
               model,
+              runner,
               workspaceRef: null,
               allowedHosts: [...allowedHosts],
               requiredCredentials: { ...requiredCredentials },

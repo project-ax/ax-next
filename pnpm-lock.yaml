@@ -103,6 +103,9 @@ importers:
       '@ax/agent-runner-core':
         specifier: workspace:*
         version: link:../agent-runner-core
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
       '@ax/ipc-protocol':
         specifier: workspace:*
         version: link:../ipc-protocol

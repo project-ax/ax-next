@@ -54,6 +54,7 @@ const TEST_AGENT = {
   allowedTools: ['file.read'],
   mcpConfigIds: [],
   model: 'claude-sonnet-4-7',
+  runner: 'claude-sdk',
   workspaceRef: null,
 };
 
@@ -200,7 +201,7 @@ async function makeHarness(
       // The REAL canonical descriptor validator — the orchestrator's
       // services:validate pass runs against this, not a stub.
       createValidatorServicePlugin(),
-      createChatOrchestratorPlugin({ runnerBinary: '/irrelevant', chatTimeoutMs: 5_000 }),
+      createChatOrchestratorPlugin({ runnerBinaries: { 'claude-sdk': '/irrelevant' }, chatTimeoutMs: 5_000 }),
     ],
   });
   busRef.current = h.bus;

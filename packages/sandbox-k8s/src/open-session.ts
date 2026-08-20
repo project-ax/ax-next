@@ -93,6 +93,7 @@ interface SessionCreateInput {
       allowedTools: string[];
       mcpConfigIds: string[];
       model: string;
+      runner: string;
     };
     conversationId?: string;
     // TASK-181 — host-derived session origin ('routine' | 'user'), forwarded
