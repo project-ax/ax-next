@@ -40,7 +40,7 @@
 # Stage 1: builder — pnpm deploy resolves workspace:* deps into a self-
 # contained directory. We then build the package's TypeScript inside it.
 # -----------------------------------------------------------------------------
-FROM node:20-bookworm-slim AS builder
+FROM node:24-bookworm-slim AS builder
 
 # pnpm via corepack — matches the version pinned in the repo's package.json
 # packageManager field (we don't override here; corepack picks it up from
@@ -67,7 +67,7 @@ RUN pnpm install --frozen-lockfile \
 # -----------------------------------------------------------------------------
 # Stage 2: runtime — slim base + git binary + the deployed package only.
 # -----------------------------------------------------------------------------
-FROM node:20-bookworm-slim AS runtime
+FROM node:24-bookworm-slim AS runtime
 
 # TODO: pin via CI image build (e.g. `git=1:2.39.5-0+deb12u2`). Tag-only for
 # now so local `docker build` keeps working as Debian rolls patches.

@@ -706,13 +706,18 @@ interface WalkState {
 
 /**
  * Recursive descent over the directory tree, matching one pattern segment per
- * level. Deliberately hand-rolled rather than `fs/promises.glob`: that landed
- * in Node 22, and the runner ships inside `container/agent/Dockerfile`'s
- * **Node 20** base image — importing it there is a module-load `SyntaxError`
- * that kills the runner before it can report anything, so every turn on this
- * runner fails as `sandbox-terminated`. The repo's own `engines.node` is >=24,
- * which is why the in-process suite never saw it. See the Node-floor guard in
- * `__tests__/node-floor.test.ts`.
+ * level. Originally hand-rolled because `fs/promises.glob` landed in Node 22
+ * while `container/agent/Dockerfile` still pinned **Node 20**: importing it
+ * there was a module-load `SyntaxError` that killed the runner before it could
+ * report anything, so every turn failed as `sandbox-terminated` while the
+ * in-process suite stayed green on the developer's Node 24.
+ *
+ * The container is on Node 24 now, so `fs.glob` would work — this stays anyway.
+ * It is tested, and its pruning is STRONGER than the `exclude` predicate it
+ * replaced (see below), so swapping back would trade a known-good walker for
+ * churn. The Node-floor guard in `__tests__/node-floor.test.ts` reads the
+ * pinned major straight out of the Dockerfile, so it follows the base image
+ * rather than needing this comment to stay true.
  *
  * Semantics kept identical to the `fs.glob` call this replaces:
  *

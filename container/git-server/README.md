@@ -17,7 +17,7 @@ its own.
 
 ## What's in the box
 
-- `node:20-bookworm-slim` base (multi-stage; final stage is the same slim
+- `node:24-bookworm-slim` base (multi-stage; final stage is the same slim
   base with `git` installed via apt + the deployed package).
 - A non-root `axgit` user (UID/GID `1000:1000`, `nologin` shell).
 - The package's compiled output + production-only `node_modules`, resolved
@@ -82,8 +82,8 @@ removed in a follow-up PR.
 - **Pin the `git` apt package.** Today we install unpinned `git`; CI image
   builds will pin a specific Debian-stable version (`git=1:2.39.x-y`) once
   the build pipeline is in place.
-- **Pin the base image by digest.** `node:20-bookworm-slim` is tag-only
-  here. CI promotes it to `node:20-bookworm-slim@sha256:...`.
+- **Pin the base image by digest.** `node:24-bookworm-slim` is tag-only
+  here. CI promotes it to `node:24-bookworm-slim@sha256:...`.
 - **No `HEALTHCHECK` directive.** Kubernetes liveness/readiness probes own
   this; an in-image `HEALTHCHECK` would just be redundant noise in the pod
   state.
