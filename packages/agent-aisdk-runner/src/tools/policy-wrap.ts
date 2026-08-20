@@ -147,6 +147,50 @@ function asRecord(input: unknown): Record<string, unknown> {
 }
 
 /**
+ * Merge the tool groups into the one object `ToolLoopAgent` receives, refusing
+ * to let a later group SHADOW an earlier one.
+ *
+ * The SDK runner cannot have this problem: it exposes catalog tools through two
+ * in-process MCP servers, so the SDK renames them `mcp__<server>__<tool>` and a
+ * catalog tool can never occupy the name `Bash`. This runner drops the shims
+ * (design §3), so every name lives in ONE flat namespace and a plain object
+ * spread would resolve a collision silently, in favour of whichever group was
+ * spread last. A host tool named `Read` would then quietly replace the
+ * in-sandbox `Read` — same name, same schema shape, completely different
+ * machine doing the reading. Nothing would fail; the file operations would just
+ * happen somewhere else.
+ *
+ * Not reachable from untrusted input today: `@ax/mcp-client` namespaces every
+ * third-party tool as `mcp.<serverId>.<tool>` (see its `tool-names.ts`), so a
+ * malicious MCP server cannot claim `Bash`. The exposure is a FIRST-PARTY
+ * registration mistake — which is exactly the kind of thing that should fail at
+ * boot with the offending name in the message rather than change where the
+ * agent's file writes land.
+ */
+export function mergeToolSets(
+  groups: ReadonlyArray<{ label: string; tools: Record<string, unknown> }>,
+): Record<string, never> {
+  const merged: Record<string, unknown> = {};
+  const owner = new Map<string, string>();
+  for (const group of groups) {
+    for (const [name, impl] of Object.entries(group.tools)) {
+      const previous = owner.get(name);
+      if (previous !== undefined) {
+        throw new Error(
+          `agent-aisdk-runner: tool name '${name}' is claimed by both ` +
+            `${previous} and ${group.label}. This runner has ONE flat tool ` +
+            `namespace (no mcp__ prefixes), so the collision would silently ` +
+            `route calls to whichever was registered last. Rename one.`,
+        );
+      }
+      owner.set(name, group.label);
+      merged[name] = impl;
+    }
+  }
+  return merged as Record<string, never>;
+}
+
+/**
  * Every entry of a `ToolSet` must carry a policy-wrapped `execute`. Called on
  * the fully-assembled tool set at loop construction, so a tool registered on a
  * bypass path is a BOOT failure, not a silent hole in the gate.

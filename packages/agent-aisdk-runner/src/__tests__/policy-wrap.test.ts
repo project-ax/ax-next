@@ -3,6 +3,7 @@ import type { PreToolVerdict, ToolPolicy } from '@ax/agent-runner-core';
 import {
   POLICY_WRAPPED,
   assertAllToolsWrapped,
+  mergeToolSets,
   wrapWithPolicy,
 } from '../tools/policy-wrap.js';
 
@@ -191,5 +192,40 @@ describe('assertAllToolsWrapped', () => {
 
   it('throws for a tool with no execute at all', () => {
     expect(() => assertAllToolsWrapped({ Broken: {} })).toThrow(/Broken/);
+  });
+});
+
+describe('mergeToolSets', () => {
+  it('merges disjoint groups', () => {
+    const merged = mergeToolSets([
+      { label: 'built-ins', tools: { Bash: 1, Read: 2 } },
+      { label: 'host catalog tools', tools: { web_search: 3 } },
+    ]) as unknown as Record<string, number>;
+    expect(Object.keys(merged).sort()).toEqual(['Bash', 'Read', 'web_search']);
+  });
+
+  // A plain object spread would silently hand `Read` to the host tool, so the
+  // agent's file reads would start happening on a different machine with
+  // nothing failing. Boot-time error instead.
+  it('refuses to let a catalog tool shadow a built-in, and names both sides', () => {
+    expect(() =>
+      mergeToolSets([
+        { label: 'built-ins', tools: { Read: 1 } },
+        { label: 'host catalog tools', tools: { Read: 2 } },
+      ]),
+    ).toThrow(/'Read' is claimed by both built-ins and host catalog tools/);
+  });
+
+  it('refuses a collision with the Skill tool too', () => {
+    expect(() =>
+      mergeToolSets([
+        { label: 'host catalog tools', tools: { Skill: 1 } },
+        { label: 'the Skill tool', tools: { Skill: 2 } },
+      ]),
+    ).toThrow(/Skill/);
+  });
+
+  it('is a no-op for empty groups', () => {
+    expect(mergeToolSets([{ label: 'a', tools: {} }])).toEqual({});
   });
 });

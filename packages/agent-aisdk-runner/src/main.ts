@@ -21,7 +21,7 @@ import { resolveModel } from './provider.js';
 import { discoverInstalledSkills, buildSkillsPromptSection } from './skills-index.js';
 import { buildBuiltinTools } from './tools/builtins.js';
 import { buildHostTools } from './tools/host-tools.js';
-import { assertAllToolsWrapped } from './tools/policy-wrap.js';
+import { assertAllToolsWrapped, mergeToolSets } from './tools/policy-wrap.js';
 import { buildSandboxTools } from './tools/sandbox-tools.js';
 import { buildSkillTool } from './tools/skill-tool.js';
 import { toTurnBlocks } from './turn-blocks.js';
@@ -185,17 +185,25 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       // with a loud log, not a dead session.
       const skills = await discoverInstalledSkills();
 
-      const tools: Record<string, Tool> = {
-        ...buildBuiltinTools({ policy, homeDir, env: bashEnv }),
-        ...buildHostTools({
-          policy,
-          client,
-          tools: catalog,
-          flushWorkspace: flushWorkspaceForHostTool,
-        }),
-        ...buildSandboxTools({ policy, dispatcher: localDispatcher, tools: catalog }),
-        ...buildSkillTool({ policy, skills }),
-      };
+      // Merged rather than spread: one flat namespace means a collision must be
+      // an error, not a last-write-wins coin flip. See mergeToolSets.
+      const tools = mergeToolSets([
+        { label: 'built-ins', tools: buildBuiltinTools({ policy, homeDir, env: bashEnv }) },
+        {
+          label: 'host catalog tools',
+          tools: buildHostTools({
+            policy,
+            client,
+            tools: catalog,
+            flushWorkspace: flushWorkspaceForHostTool,
+          }),
+        },
+        {
+          label: 'sandbox catalog tools',
+          tools: buildSandboxTools({ policy, dispatcher: localDispatcher, tools: catalog }),
+        },
+        { label: 'the Skill tool', tools: buildSkillTool({ policy, skills }) },
+      ]) as unknown as Record<string, Tool>;
       // I₁, enforced rather than asserted in prose. `WebFetch`/`WebSearch`/
       // `Task`/`AskUserQuestion`/`TodoWrite` are absent by construction here —
       // on this runner "disabled" means "never registered", so there is no
