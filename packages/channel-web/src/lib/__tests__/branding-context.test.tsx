@@ -28,7 +28,12 @@ describe('BrandingProvider', () => {
     await waitFor(() =>
       expect(screen.getByText('loaded:Canopy AI:true')).toBeTruthy(),
     );
-    expect(document.title).toBe('Canopy AI');
+    // `document.title` is written by a SEPARATE effect from the state this
+    // component renders (branding-context.tsx: the title effect keys off
+    // `branding`, while the probe text keys off `branding` + `loaded`). So the
+    // text can be on screen a tick before the title effect has flushed, and
+    // asserting it bare raced — rarely locally, reliably on a loaded CI worker.
+    await waitFor(() => expect(document.title).toBe('Canopy AI'));
   });
 
   it('falls back to the default branding when the fetch fails', async () => {
@@ -41,6 +46,6 @@ describe('BrandingProvider', () => {
       </BrandingProvider>,
     );
     await waitFor(() => expect(screen.getByText('loaded:ax:false')).toBeTruthy());
-    expect(document.title).toBe('ax');
+    await waitFor(() => expect(document.title).toBe('ax'));
   });
 });

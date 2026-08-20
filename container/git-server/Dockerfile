@@ -47,6 +47,20 @@ FROM node:24-bookworm-slim AS builder
 # the on-disk package.json once it's copied in).
 RUN corepack enable
 
+# Native-addon toolchain — BUILDER ONLY.
+#
+# This image doesn't use sqlite, but `pnpm install --frozen-lockfile` below
+# installs the whole WORKSPACE (pnpm needs every manifest to resolve
+# workspace:* edges), so it still builds better-sqlite3. That package ships a
+# `binding.gyp` and no `install` script, so pnpm falls back to npm's default
+# "compile with node-gyp", which needs python3 and a C++ toolchain.
+#
+# Deliberately NOT in the runtime stage below — that one copies the deployed
+# tree and stays compiler-free.
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends python3 make g++ \
+ && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /workspace
 
 # Copy the whole repo. Heavy-but-honest: pnpm needs the lockfile and every
