@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { userModelMessageSchema, type ModelMessage } from 'ai';
 import { toUserModelMessage } from '../user-message.js';
 import { toTurnBlocks } from '../turn-blocks.js';
+import { composeInstructions } from '../main.js';
 
 // ---------------------------------------------------------------------------
 // The two translation edges between the host's vocabulary and the AI SDK's.
@@ -187,5 +188,27 @@ describe('toTurnBlocks (outbound)', () => {
     ]);
     expect(contentBlocks).toEqual([]);
     expect(toolResultBlocks).toEqual([]);
+  });
+});
+
+describe('composeInstructions', () => {
+  // buildSystemPrompt ends mid-sentence with no trailing newline, and the
+  // skills section starts with `## Available skills`. A bare `+` produces
+  // `...reasonably can.## Available skills`, which the model reads as prose —
+  // silently defeating the section.
+  it('separates the prompt and the skills section with a blank line', () => {
+    expect(composeInstructions('be helpful.', '## Available skills\n\n- a — b')).toBe(
+      'be helpful.\n\n## Available skills\n\n- a — b',
+    );
+  });
+
+  it('does not double up when the prompt already ends in whitespace', () => {
+    expect(composeInstructions('be helpful.\n\n', '## Available skills')).toBe(
+      'be helpful.\n\n## Available skills',
+    );
+  });
+
+  it('adds no trailing separator when there is no section', () => {
+    expect(composeInstructions('be helpful.', '')).toBe('be helpful.');
   });
 });

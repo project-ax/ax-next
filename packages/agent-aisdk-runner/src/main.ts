@@ -216,7 +216,10 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
           modelRef: agentConfig.model,
           anthropicEnv: proxyStartup.anthropicEnv,
         }),
-        instructions: systemPrompt + buildSkillsPromptSection(skills),
+        instructions: composeInstructions(
+          systemPrompt,
+          buildSkillsPromptSection(skills),
+        ),
         tools,
         stopWhen: stepCountIs(MAX_STEPS_PER_TURN),
       });
@@ -321,6 +324,21 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       }
     },
   };
+}
+
+/**
+ * Join the composed system prompt and the skills index.
+ *
+ * A bare `+` is wrong here: `buildSystemPrompt` does NOT end with a newline
+ * (its last operational note ends mid-sentence), and the skills section STARTS
+ * with a markdown heading — so concatenating them directly yields
+ * `...reasonably can.## Available skills`, a heading the model reads as prose.
+ * That silently degrades the one thing the section exists to do. Separate with a
+ * blank line, and skip the separator entirely when there is no section.
+ */
+export function composeInstructions(prompt: string, section: string): string {
+  if (section.length === 0) return prompt;
+  return `${prompt.replace(/\s+$/, '')}\n\n${section}`;
 }
 
 /**
