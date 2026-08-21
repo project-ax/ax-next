@@ -224,6 +224,34 @@ describe('resolveModel — provider gating', () => {
       resolveModel({ modelRef: 'claude-sonnet-4-6', providerEnv: env() }),
     ).toThrowError();
   });
+
+  // Regression: the provider lookup used to be a bare `PROVIDERS[provider]`,
+  // which walks the prototype chain — `PROVIDERS['constructor']` is the Object
+  // constructor, so `entry === undefined` never fired and the caller fell
+  // through to the CREDENTIAL check and got an error about an env var named
+  // `undefined`. It failed closed, but by accident of ordering, and it named
+  // the wrong thing. Each of these must be rejected AS AN UNKNOWN PROVIDER.
+  it.each(['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty'])(
+    'rejects the inherited Object.prototype key %s as an unknown provider',
+    (inherited) => {
+      let thrown: unknown;
+      try {
+        resolveModel({
+          modelRef: `${inherited}/some-model`,
+          providerEnv: env(),
+        });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      const message = String((thrown as Error).message);
+      // Names the provider the operator actually wrote…
+      expect(message).toContain(inherited);
+      // …and is the unknown-provider error, not the credential-shape one.
+      expect(message).not.toMatch(/ax-cred/);
+      expect(message).not.toMatch(/undefined/);
+    },
+  );
 });
 
 describe('resolveModel — what actually reaches the wire', () => {

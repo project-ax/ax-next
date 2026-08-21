@@ -184,6 +184,29 @@ const PROVIDERS: Record<string, ProviderEntry> = {
 const PROVIDER_ROADMAP = 'PR 5 (Vertex) of the runner sequence';
 
 /**
+ * Own-property lookup into `PROVIDERS`.
+ *
+ * A plain `PROVIDERS[provider]` walks the prototype chain, so the provider
+ * halves `constructor`, `__proto__`, `toString`, `valueOf` and friends all
+ * return something that is NOT `undefined` — `PROVIDERS['constructor']` is the
+ * `Object` constructor. Every `entry === undefined` guard downstream would then
+ * miss, and the caller would get an error about a credential env var instead of
+ * about the provider it actually named.
+ *
+ * `agentConfig.model` is admin-controlled and allow-list-validated, so this is
+ * defence in depth rather than a reachable exploit — but "the guard only works
+ * for keys that happen not to be on Object.prototype" is not a property worth
+ * relying on, and the fail-closed behaviour here is currently an accident of
+ * ordering rather than a decision. `@ax/core`'s `providerEndpointFor` guards its
+ * own table the same way.
+ */
+function providerEntryFor(providerId: string): ProviderEntry | undefined {
+  return Object.prototype.hasOwnProperty.call(PROVIDERS, providerId)
+    ? PROVIDERS[providerId]
+    : undefined;
+}
+
+/**
  * Read the credential-proxy's MITM root CA PEM, if the sandbox delivered one.
  *
  * Missing or unreadable is NOT fatal: CA delivery differs per sandbox (hostPath
@@ -319,7 +342,7 @@ export function resolveModel(opts: ResolveModelOptions): LanguageModel {
   // `provider/model-id`, which includes a bare `claude-sonnet-4-6`.
   const { provider, modelId } = parseModelRef(modelRef);
 
-  const entry = PROVIDERS[provider];
+  const entry = providerEntryFor(provider);
   if (entry === undefined) {
     throw new Error(
       `agent-aisdk-runner: agentConfig.model "${modelRef}" targets provider ` +
@@ -385,7 +408,7 @@ export function messagesForProvider(opts: {
   providerId: string;
   messages: ModelMessage[];
 }): ModelMessage[] {
-  const entry = PROVIDERS[opts.providerId];
+  const entry = providerEntryFor(opts.providerId);
   if (entry === undefined || entry.acceptsPriorReasoning) return opts.messages;
   return pruneMessages({
     messages: opts.messages,
