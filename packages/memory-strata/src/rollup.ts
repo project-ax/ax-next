@@ -605,15 +605,29 @@ async function detectAllClasses(
  * - classes with fewer than K verified members are discarded.
  * The model never supplies a path or body — the surviving classes carry the REAL
  * `DocFile`s, and `buildRollup` renders the doc from those, not from model text.
+ *
+ * Returns `sensitiveDropped` alongside `classes` — the count of proposed labels
+ * dropped by the raw-label sensitive-content gate (TASK-217), below. This is
+ * DATA, not a log line: the function stays a pure `(proposed, residue, config)`
+ * verifier with no logger (TASK-221 decision — see decisions.md), and every
+ * other validation-drop reason here (blank label, overlong slug, duplicate
+ * slug, sub-K membership, unknown member id) stays uncounted and silent, same
+ * as before. Only the sensitive-content reason gets a count, because it is the
+ * one plausible prompt-injection signal among the six: a model emitting a
+ * credential-shaped CLASS LABEL is a different kind of event than a model
+ * proposing a class with a typo'd doc id. The caller (`makeStageBNamer`) turns
+ * a non-zero count into ONE aggregate log line per pass — never per item, and
+ * never the label itself.
  */
 export function verifyStageBClasses(
   proposed: ProposedClass[],
   residue: DocFile[],
   config: RollupConfig,
-): DetectedClass[] {
+): { classes: DetectedClass[]; sensitiveDropped: number } {
   const byId = new Map(residue.map((d) => [d.frontmatter.id, d]));
   const seenSlug = new Set<string>();
   const out: DetectedClass[] = [];
+  let sensitiveDropped = 0;
 
   for (const p of proposed) {
     if (p === null || typeof p !== 'object') continue;
@@ -645,12 +659,25 @@ export function verifyStageBClasses(
     // untrusted at every hop — a label that "looks like a short class name" is
     // no more trustworthy than the `subject` field TASK-216 already gated.
     //
-    // Dropped silently, like every other validation failure in this loop
-    // (blank label, overlong slug, duplicate slug, sub-K membership) — this
-    // function is a pure verifier with no logger, and singling out one drop
-    // reason for a log line while the other five stay silent would be
-    // incoherent.
-    if (!filterSensitive(label).kept) continue;
+    // Dropped silently PER ITEM, like every other validation failure in this
+    // loop (blank label, overlong slug, duplicate slug, sub-K membership) —
+    // this function stays a pure verifier with no logger, and singling out one
+    // drop reason for a log line here while the other five stay silent would
+    // be incoherent (TASK-221 decision, decisions.md).
+    //
+    // What DOES change (TASK-221): this one reason is COUNTED, via
+    // `sensitiveDropped` in the return value below. A model emitting a
+    // credential-shaped class LABEL is a plausible prompt-injection signal —
+    // the sibling gate in map.ts already logs its analog (a gated densifier
+    // output) — and we had zero telemetry for this hop. The caller
+    // (`makeStageBNamer`) turns the count into ONE aggregate line per pass,
+    // count-only, only when non-zero. That is pass-level observability, not
+    // per-item logging, so it does not reopen the incoherence this function
+    // avoids by staying silent internally.
+    if (!filterSensitive(label).kept) {
+      sensitiveDropped += 1;
+      continue;
+    }
     const slug = slugify(label);
     // Bound the slug LENGTH too, not just its charset: `slugify` sanitizes for
     // traversal but never caps length, and the slug becomes a real filename
@@ -682,7 +709,7 @@ export function verifyStageBClasses(
       members: memberDocs,
     });
   }
-  return out.sort((a, b) => a.slug.localeCompare(b.slug));
+  return { classes: out.sort((a, b) => a.slug.localeCompare(b.slug)), sensitiveDropped };
 }
 
 const STAGE_B_MAX_TOKENS = 1024;
@@ -750,6 +777,17 @@ function parseProposedClasses(text: string): ProposedClass[] | null {
  * `verifyStageBClasses`. Best-effort — timeout / parse-error / call failure all
  * return `[]` so the deterministic Stage-A rollups still ship. `model` is the
  * fixed in-stack extraction tier (no new egress). Mirrors `makeLlmDensifier`.
+ *
+ * This closure is the ONLY production caller of `verifyStageBClasses` — the
+ * only place raw, untrusted LLM output reaches it — and it is invoked at most
+ * once per rollup pass (`detectAllClasses` calls the namer once, not per
+ * class). That makes it the right home for the TASK-221 aggregate telemetry:
+ * when `verifyStageBClasses` reports `sensitiveDropped > 0`, this closure logs
+ * ONE line naming the count (never the label) via the `log` threaded down from
+ * `runRollupPass`. Kept here rather than in `runRollupPass` itself so the
+ * count doesn't have to round-trip through the `StageBNamer` return contract
+ * (`Promise<DetectedClass[]>`), which every hand-rolled test namer and both
+ * production callers (`consolidator.ts`, `plugin.ts`) already depend on.
  */
 export function makeStageBNamer(deps: {
   llmCall: LlmCallFn;
@@ -797,8 +835,19 @@ export function makeStageBNamer(deps: {
     const verified = verifyStageBClasses(proposed, shown, config);
     log.info('memory_strata_rollup_stage_b_named', {
       proposed: proposed.length,
-      verified: verified.length,
+      verified: verified.classes.length,
     });
-    return verified;
+    // TASK-221: ONE aggregate line for this pass's sensitive-label drops, only
+    // when non-zero — count only, never the label or an excerpt (same
+    // discipline as `memory_strata_map_densify_sensitive` in map.ts). This is
+    // the sole production round-trip from untrusted model output through
+    // `filterSensitive`, so it is the one place a credential-shaped class
+    // label is worth flagging as a plausible prompt-injection signal.
+    if (verified.sensitiveDropped > 0) {
+      log.warn('memory_strata_rollup_stage_b_sensitive_dropped', {
+        dropped: verified.sensitiveDropped,
+      });
+    }
+    return verified.classes;
   };
 }

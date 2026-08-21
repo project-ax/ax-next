@@ -13,10 +13,10 @@
 //      are already gated, but the map must not widen the trust boundary).
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { regenerateMap, makeLlmDensifier, type MapDensifier } from '../map.js';
+import { regenerateMap, makeLlmDensifier, MAP_DENSIFY_SENSITIVE_RETRY_CAP, type MapDensifier } from '../map.js';
 import { writeNewDoc } from '../doc-store.js';
 import { mapFile, mapCacheFile } from '../paths.js';
 import type { LlmCallInput, LlmCallOutput } from '@ax/core';
@@ -256,7 +256,12 @@ describe('sensitive gate on the densifier OUTPUT (TASK-217)', () => {
     expect(content).not.toContain('hunter2');
   });
 
-  it('does NOT cache the rejected output — a later pass retries instead of serving it forever', async () => {
+  it('does NOT cache the rejected TEXT — it parks a distinct sentinel (fallback + gatedAttempts) instead', async () => {
+    // TASK-221: the entry is no longer simply absent — a single gated pass now
+    // writes a "parked" sentinel keyed by this fact-hash, so a REPEAT offender
+    // against the same facts can be recognized and eventually capped (see the
+    // bounded-retry tests below). The credential-shaped model output itself is
+    // still never cached or served — only the fallback + an attempt count are.
     await seedDoc({
       category: 'preference',
       slug: 'cars',
@@ -268,8 +273,143 @@ describe('sensitive gate on the densifier OUTPUT (TASK-217)', () => {
     await regenerateMap({ workspaceRoot, now: NOW, densify });
 
     const cacheRaw = await readFile(join(workspaceRoot, mapCacheFile()), 'utf8').catch(() => '{}');
-    const cache = JSON.parse(cacheRaw) as Record<string, unknown>;
-    expect(cache['preference/cars']).toBeUndefined();
+    const cache = JSON.parse(cacheRaw) as Record<string, { hash: string; summary: string; gatedAttempts?: number }>;
+    const entry = cache['preference/cars'];
+    expect(entry).toBeDefined();
+    expect(entry!.gatedAttempts).toBe(1);
+    expect(entry!.summary).toBe('User prefers dogs over cats'); // fallback — never the credential
+  });
+
+  it('a malformed gatedAttempts in the sidecar degrades to "not gated" instead of retrying forever', async () => {
+    // Regression for a review finding on this change: `loadCache` originally
+    // accepted any `number`, so a NEGATIVE count (corrupted or hand-edited
+    // sidecar) would never reach the cap comparison — `-1000000 >= 3` is
+    // false — and the doc would re-pay a real LLM call every pass forever
+    // while the counter crawled upward. That is precisely the unbounded cost
+    // this cap exists to prevent, reintroduced by one bad value.
+    //
+    // A malformed count must load as "not gated": a normal entry serving its
+    // (already-gated, trusted) fallback summary.
+    await seedDoc({
+      category: 'preference',
+      slug: 'cars',
+      summary: 'User prefers dogs over cats',
+      facts: ['User prefers dogs over cats'],
+    });
+
+    // First pass with a CLEAN densifier, to write a well-formed entry we can
+    // then corrupt (this also pins the correct fact-hash for us).
+    await regenerateMap({
+      workspaceRoot,
+      now: NOW,
+      densify: async () => 'Prefers dogs',
+    });
+    const cachePath = join(workspaceRoot, mapCacheFile());
+    const cache = JSON.parse(await readFile(cachePath, 'utf8')) as Record<
+      string,
+      { hash: string; summary: string; gatedAttempts?: number }
+    >;
+    const entry = cache['preference/cars']!;
+
+    for (const bogus of [-1000000, -1, 2.5]) {
+      await writeFile(
+        cachePath,
+        JSON.stringify({ 'preference/cars': { ...entry, gatedAttempts: bogus } }),
+        'utf8',
+      );
+      let calls = 0;
+      await regenerateMap({
+        workspaceRoot,
+        now: NOW,
+        densify: async () => {
+          calls += 1;
+          return 'Prefers dogs';
+        },
+      });
+      // Treated as a normal (un-gated) entry for an unchanged fact-hash, so
+      // the cached line is served and the densifier is never called. The
+      // bogus count is dropped rather than carried forward.
+      expect(calls, `bogus gatedAttempts ${bogus} should load as "not gated"`).toBe(0);
+      const after = JSON.parse(await readFile(cachePath, 'utf8')) as Record<
+        string,
+        { gatedAttempts?: number }
+      >;
+      expect(after['preference/cars']!.gatedAttempts).toBeUndefined();
+    }
+  });
+
+  it('a repeat offender against the SAME facts is retried on the next pass, below the cap (attempt count increments)', async () => {
+    // The point of a two-pass test: a single gated pass proves nothing about a
+    // REPEAT offender. This drives the same doc through two consecutive
+    // `regenerateMap` passes with a densifier that deterministically returns a
+    // gated line, and asserts the densifier is called AGAIN (retry, not a
+    // silent freeze after attempt 1) and the parked attempt count advances.
+    await seedDoc({
+      category: 'preference',
+      slug: 'cars',
+      summary: 'User prefers dogs over cats',
+      facts: ['User prefers dogs over cats'],
+    });
+    let calls = 0;
+    const densify: MapDensifier = async () => {
+      calls += 1;
+      return 'password: hunter2';
+    };
+
+    await regenerateMap({ workspaceRoot, now: NOW, densify });
+    expect(calls).toBe(1);
+    const cache1 = JSON.parse(
+      await readFile(join(workspaceRoot, mapCacheFile()), 'utf8'),
+    ) as Record<string, { gatedAttempts?: number }>;
+    expect(cache1['preference/cars']?.gatedAttempts).toBe(1);
+
+    await regenerateMap({ workspaceRoot, now: NOW, densify });
+    expect(calls).toBe(2); // retried — not frozen after the first gated attempt
+    const cache2 = JSON.parse(
+      await readFile(join(workspaceRoot, mapCacheFile()), 'utf8'),
+    ) as Record<string, { gatedAttempts?: number }>;
+    expect(cache2['preference/cars']?.gatedAttempts).toBe(2);
+  });
+
+  it('bounds the cost: once the retry cap is reached, the densifier stops being called for the same offending facts', async () => {
+    await seedDoc({
+      category: 'preference',
+      slug: 'cars',
+      summary: 'User prefers dogs over cats',
+      facts: ['User prefers dogs over cats'],
+    });
+    let calls = 0;
+    const densify: MapDensifier = async () => {
+      calls += 1;
+      return 'password: hunter2';
+    };
+    const events: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const logger = { warn: (event: string, fields: Record<string, unknown>) => events.push({ event, fields }) };
+
+    for (let i = 0; i < MAP_DENSIFY_SENSITIVE_RETRY_CAP; i++) {
+      await regenerateMap({ workspaceRoot, now: NOW, densify, logger });
+    }
+    expect(calls).toBe(MAP_DENSIFY_SENSITIVE_RETRY_CAP);
+
+    // One more pass, same deterministic offender, past the cap: the densifier
+    // must NOT be invoked again — that's the whole point (bounded LLM cost).
+    const result = await regenerateMap({ workspaceRoot, now: NOW, densify, logger });
+    expect(calls).toBe(MAP_DENSIFY_SENSITIVE_RETRY_CAP); // unchanged — capped
+
+    const cache = JSON.parse(
+      await readFile(join(workspaceRoot, mapCacheFile()), 'utf8'),
+    ) as Record<string, { gatedAttempts?: number }>;
+    expect(cache['preference/cars']?.gatedAttempts).toBe(MAP_DENSIFY_SENSITIVE_RETRY_CAP);
+
+    // The capped pass still surfaces — count only — via a distinct event, and
+    // the map itself still degrades cleanly to the fallback.
+    const capped = events.find((e) => e.event === 'memory_strata_map_densify_sensitive_capped');
+    expect(capped).toBeDefined();
+    expect(capped!.fields.docId).toBe('preference/cars');
+    expect(capped!.fields.attempts).toBe(MAP_DENSIFY_SENSITIVE_RETRY_CAP);
+    const content = await readFile(join(workspaceRoot, result.path), 'utf8');
+    expect(content).toContain('User prefers dogs over cats');
+    expect(content).not.toContain('hunter2');
   });
 
   it('logs a warn with the docId + rejection kinds, never the credential or the summary text', async () => {

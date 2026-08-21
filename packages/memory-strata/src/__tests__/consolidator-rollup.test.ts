@@ -152,7 +152,7 @@ describe('consolidator Stage-B rollup wiring (TASK-201)', () => {
       verifyStageBClasses(
         [{ class: 'furniture', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] }],
         residue, config,
-      );
+      ).classes;
     const result = await runConsolidation({ workspaceRoot: root, now: NOW, rollupStageB: stageB });
     expect(result.rollupsWritten).toBe(1);
     const doc = await readDoc({ workspaceRoot: root, category: 'rollup', slug: 'furniture' });

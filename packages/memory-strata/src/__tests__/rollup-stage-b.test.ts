@@ -85,7 +85,7 @@ describe('verifyStageBClasses (deterministic bound)', () => {
     const proposed: ProposedClass[] = [
       { class: 'furniture', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
     ];
-    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG).classes;
     expect(out).toHaveLength(1);
     expect(out[0]!.slug).toBe('furniture');
     expect(out[0]!.members.map((m) => m.frontmatter.id).sort()).toEqual([
@@ -98,7 +98,7 @@ describe('verifyStageBClasses (deterministic bound)', () => {
       // 2 real + 1 invented → 2 verified < K=3 → discarded.
       { class: 'furniture', members: ['episode/couch', 'episode/dining-table', 'episode/ghost-doc'] },
     ];
-    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG).classes;
     expect(out).toHaveLength(0);
   });
 
@@ -106,14 +106,14 @@ describe('verifyStageBClasses (deterministic bound)', () => {
     const proposed: ProposedClass[] = [
       { class: 'furniture', members: ['episode/couch', 'episode/dining-table'] },
     ];
-    expect(verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG)).toHaveLength(0);
+    expect(verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG).classes).toHaveLength(0);
   });
 
   it('members are deduped by docId (a repeated id does not inflate the count)', () => {
     const proposed: ProposedClass[] = [
       { class: 'furniture', members: ['episode/couch', 'episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
     ];
-    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG).classes;
     expect(out).toHaveLength(1);
     expect(out[0]!.members).toHaveLength(3);
   });
@@ -123,14 +123,14 @@ describe('verifyStageBClasses (deterministic bound)', () => {
       { class: '   ', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
       { members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
     ] as unknown as ProposedClass[];
-    expect(verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG)).toHaveLength(0);
+    expect(verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG).classes).toHaveLength(0);
   });
 
   it('a non-empty garbage label collapses to slugify\'s traversal-safe fallback (no arbitrary path)', () => {
     const proposed: ProposedClass[] = [
       { class: '!!!', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
     ];
-    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG).classes;
     expect(out).toHaveLength(1);
     expect(out[0]!.slug).toBe('general'); // slugify FALLBACK — never a raw model path
   });
@@ -141,7 +141,7 @@ describe('verifyStageBClasses (deterministic bound)', () => {
     const proposed: ProposedClass[] = [
       { class: 'a'.repeat(500), members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
     ];
-    expect(verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG)).toHaveLength(0);
+    expect(verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG).classes).toHaveLength(0);
   });
 
   it('a duplicate class label is ignored (first wins)', () => {
@@ -149,7 +149,7 @@ describe('verifyStageBClasses (deterministic bound)', () => {
       { class: 'furniture', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
       { class: 'Furniture', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
     ];
-    expect(verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG)).toHaveLength(1);
+    expect(verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG).classes).toHaveLength(1);
   });
 
   it('malformed proposal entries (non-object, missing fields, non-string ids) are tolerated', () => {
@@ -161,7 +161,7 @@ describe('verifyStageBClasses (deterministic bound)', () => {
       { class: 'furniture', members: [1, 2, 3] }, // non-string ids
       { class: 'furniture', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
     ] as unknown as ProposedClass[];
-    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG).classes;
     expect(out).toHaveLength(1);
     expect(out[0]!.slug).toBe('furniture');
   });
@@ -184,10 +184,11 @@ describe('sensitive gate on the Stage-B class label (TASK-217)', () => {
       { class: 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
       { class: 'furniture', members: ['episode/bookshelf', 'episode/ottoman', 'episode/armchair'] },
     ];
-    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
-    expect(out.some((c) => c.slug.includes('sk-ant'))).toBe(false);
-    expect(out).toHaveLength(1);
-    expect(out[0]!.slug).toBe('furniture');
+    const verified = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    expect(verified.classes.some((c) => c.slug.includes('sk-ant'))).toBe(false);
+    expect(verified.classes).toHaveLength(1);
+    expect(verified.classes[0]!.slug).toBe('furniture');
+    expect(verified.sensitiveDropped).toBe(1); // TASK-221: counted, not just dropped
   });
 
   it('the key test: a label carrying an email — a credential slugify WOULD neutralize — is ALSO dropped', () => {
@@ -201,20 +202,32 @@ describe('sensitive gate on the Stage-B class label (TASK-217)', () => {
       { class: label, members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
       { class: 'furniture', members: ['episode/bookshelf', 'episode/ottoman', 'episode/armchair'] },
     ];
-    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
-    expect(out.some((c) => c.slug === slugify(label))).toBe(false);
-    expect(out).toHaveLength(1);
-    expect(out[0]!.slug).toBe('furniture');
+    const verified = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    expect(verified.classes.some((c) => c.slug === slugify(label))).toBe(false);
+    expect(verified.classes).toHaveLength(1);
+    expect(verified.classes[0]!.slug).toBe('furniture');
+    expect(verified.sensitiveDropped).toBe(1);
   });
 
   it('a clean label with valid members is still returned unchanged (guards against an over-broad fix)', () => {
     const proposed: ProposedClass[] = [
       { class: 'furniture', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
     ];
-    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
-    expect(out).toHaveLength(1);
-    expect(out[0]!.slug).toBe('furniture');
-    expect(out[0]!.members).toHaveLength(3);
+    const verified = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    expect(verified.classes).toHaveLength(1);
+    expect(verified.classes[0]!.slug).toBe('furniture');
+    expect(verified.classes[0]!.members).toHaveLength(3);
+    expect(verified.sensitiveDropped).toBe(0); // nothing sensitive in this proposal
+  });
+
+  it('multiple sensitive labels in one call are all counted (aggregate, not first-only)', () => {
+    const proposed: ProposedClass[] = [
+      { class: 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
+      { class: 'alice@example.com', members: ['episode/bookshelf', 'episode/ottoman', 'episode/armchair'] },
+    ];
+    const verified = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    expect(verified.classes).toHaveLength(0);
+    expect(verified.sensitiveDropped).toBe(2);
   });
 });
 
@@ -334,6 +347,78 @@ describe('makeStageBNamer (stubbed LLM)', () => {
     expect(out).toEqual([]);
     expect(called).toBe(false);
   });
+
+  // TASK-221 — aggregate telemetry for sensitive Stage-B label drops. The
+  // per-item drop inside `verifyStageBClasses` stays silent (asserted below);
+  // this is the ONE pass-level line `makeStageBNamer` adds on top of it.
+  describe('sensitive-label-drop aggregate log (TASK-221)', () => {
+    // 6 docs so two disjoint K=3 classes can both qualify — one proposed under
+    // a sensitive label, one clean — mirroring the "sensitive gate" residue.
+    const sixDocs: DocFile[] = [
+      mkDoc('episode', 'couch', { summary: 'bought a leather couch' }),
+      mkDoc('episode', 'dining-table', { summary: 'oak dining table' }),
+      mkDoc('episode', 'standing-desk', { summary: 'a standing desk' }),
+      mkDoc('episode', 'bookshelf', { summary: 'built a bookshelf' }),
+      mkDoc('episode', 'ottoman', { summary: 'bought an ottoman' }),
+      mkDoc('episode', 'armchair', { summary: 'reupholstered an armchair' }),
+    ];
+
+    it('a pass dropping sensitive Stage-B label(s) emits exactly ONE aggregate line naming the count', async () => {
+      const namer = makeStageBNamer({
+        llmCall: stubLlm(JSON.stringify([
+          { class: 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
+          { class: 'furniture', members: ['episode/bookshelf', 'episode/ottoman', 'episode/armchair'] },
+        ])),
+        model: 'claude-haiku-4-5',
+        timeoutMs: 1000,
+      });
+      const { log, events } = collectLog();
+      const out = await namer(sixDocs, DEFAULT_ROLLUP_CONFIG, log);
+
+      // The clean class still ships — this is additive observability, not a
+      // wider gate.
+      expect(out).toHaveLength(1);
+      expect(out[0]!.slug).toBe('furniture');
+
+      const dropped = events.filter((e) => e.event === 'memory_strata_rollup_stage_b_sensitive_dropped');
+      expect(dropped).toHaveLength(1); // exactly ONE aggregate line, not one per class
+      expect(dropped[0]!.fields).toEqual({ dropped: 1 }); // count only — no label, no excerpt
+      const serialized = JSON.stringify(dropped[0]!.fields);
+      expect(serialized).not.toContain('sk-ant');
+    });
+
+    it('a pass dropping NO sensitive Stage-B label emits NOTHING for it', async () => {
+      const namer = makeStageBNamer({
+        llmCall: stubLlm(JSON.stringify([
+          { class: 'furniture', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
+        ])),
+        model: 'claude-haiku-4-5',
+        timeoutMs: 1000,
+      });
+      const { log, events } = collectLog();
+      await namer(sixDocs, DEFAULT_ROLLUP_CONFIG, log);
+      expect(events.some((e) => e.event === 'memory_strata_rollup_stage_b_sensitive_dropped')).toBe(false);
+    });
+
+    it('the per-class drop inside verifyStageBClasses stays silent — no per-item log, only the pass-level aggregate', async () => {
+      // Two sensitive classes in one call: if drops were logged per item
+      // there would be 2 lines; TASK-221 asserts exactly 1 (the aggregate).
+      const namer = makeStageBNamer({
+        llmCall: stubLlm(JSON.stringify([
+          { class: 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
+          { class: 'alice@example.com', members: ['episode/bookshelf', 'episode/ottoman', 'episode/armchair'] },
+        ])),
+        model: 'claude-haiku-4-5',
+        timeoutMs: 1000,
+      });
+      const { log, events } = collectLog();
+      const out = await namer(sixDocs, DEFAULT_ROLLUP_CONFIG, log);
+      expect(out).toEqual([]); // both classes dropped
+      const dropped = events.filter((e) => e.event === 'memory_strata_rollup_stage_b_sensitive_dropped');
+      expect(dropped).toHaveLength(1); // ONE line for the pass, not one per dropped class
+      expect(dropped[0]!.fields).toEqual({ dropped: 2 });
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -389,7 +474,7 @@ describe('runRollupPass with Stage B', () => {
   function stubStageB(slug: string, memberIds: string[], seen: { residue: DocFile[] }): StageBNamer {
     return async (residue, config) => {
       seen.residue = residue;
-      return verifyStageBClasses([{ class: slug, members: memberIds }], residue, config);
+      return verifyStageBClasses([{ class: slug, members: memberIds }], residue, config).classes;
     };
   }
 
@@ -511,7 +596,7 @@ describe('Stage-B rollup surfaces via memory_search', () => {
     const seen = { residue: [] as DocFile[] };
     const stageB: StageBNamer = async (residue, config) => {
       seen.residue = residue;
-      return verifyStageBClasses([{ class: 'furniture', members: residue.map((d) => d.frontmatter.id) }], residue, config);
+      return verifyStageBClasses([{ class: 'furniture', members: residue.map((d) => d.frontmatter.id) }], residue, config).classes;
     };
     await runRollupPass({ workspaceRoot: root, now: NOW, log: collectLog().log, stageB });
     const doc = await readDoc({ workspaceRoot: root, category: 'rollup', slug: 'furniture' });
