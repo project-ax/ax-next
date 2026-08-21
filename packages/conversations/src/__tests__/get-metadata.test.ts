@@ -26,6 +26,7 @@ import type {
 interface MockAgent {
   id: string;
   workspaceRef: string | null;
+  runner?: string;
 }
 
 interface MockResolveCall {
@@ -130,7 +131,7 @@ describe('conversations:get-metadata', () => {
   it('returns the metadata projection (no turns)', async () => {
     const { h } = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: 'wsp_demo' }],
+        ['agt_demo', { id: 'agt_demo', workspaceRef: 'wsp_demo', runner: 'claude-sdk' }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(

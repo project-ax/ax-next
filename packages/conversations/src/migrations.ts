@@ -60,9 +60,19 @@ export async function runConversationsMigration<DB>(
   // in-place ALTER" rule — which existed to protect production data — does
   // not apply. We ALTER v1 in place forever.
   //
-  //   runner_type:        which runner plugin owns the transcript. Frozen
-  //                       at create-time from
-  //                       ConversationsConfig.defaultRunnerType (I10).
+  //   runner_type:        which runner LAST served this conversation — i.e.
+  //                       whose format the stored transcript is in. Written
+  //                       on every session bind, NOT frozen at create.
+  //                       (It WAS frozen, from a host-wide
+  //                       ConversationsConfig.defaultRunnerType, back when
+  //                       one host meant one runner. PR #399 made the runner
+  //                       a per-AGENT choice and an agent's runner can be
+  //                       switched at any time — which demotes the next turn
+  //                       to a fresh session and REPLACES the stored
+  //                       transcript with the new runner's format. A value
+  //                       frozen at create is therefore wrong in exactly the
+  //                       case you would consult it.) NULL = no runner has
+  //                       served this conversation yet.
   //   runner_session_id:  the runner's native session id. Bound once on
   //                       the first turn via
   //                       conversations:store-runner-session.

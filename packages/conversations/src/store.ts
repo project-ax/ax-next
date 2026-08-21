@@ -181,11 +181,14 @@ export interface ConversationStoreCreateArgs {
   agentId: string;
   title: string | null;
   /**
-   * Phase B (2026-04-29). Frozen runner-type for this conversation. The
-   * plugin layer reads it from `ConversationsConfig.defaultRunnerType`
-   * (which defaults to 'claude-sdk'). Optional here so existing tests
-   * that pre-date Phase B continue to compile — those rows persist as
-   * runner_type = NULL, the pre-Phase-B-row case.
+   * The runner that will serve this conversation's first turn — the plugin
+   * layer seeds it from the resolved agent's `runner`. NOT frozen: every
+   * `conversations:bind-session` refreshes it, because an agent's runner can
+   * be switched at any time and that switch replaces the stored transcript
+   * with the new runner's format.
+   *
+   * Optional, and `null` is a legitimate value meaning "no runner has served
+   * this yet" — which is also how pre-Phase-B rows read.
    */
   runnerType?: string | null;
   /**
@@ -290,6 +293,12 @@ export interface ConversationStore {
     userId: string;
     sessionId: string;
     reqId: string;
+    /**
+     * The runner about to serve this turn. Written on every bind, NOT frozen
+     * at create — see the `runner_type` note on `ConversationRow`. Omitted
+     * leaves the column untouched (callers that genuinely don't know).
+     */
+    runnerType?: string | null;
   }): Promise<boolean>;
   /**
    * Clear `active_session_id` + `active_req_id` on the row matching
@@ -570,7 +579,13 @@ export function createConversationStore(
       return Number(result.numUpdatedRows ?? 0n) > 0;
     },
 
-    async setActiveSession({ conversationId, userId, sessionId, reqId }) {
+    async setActiveSession({
+      conversationId,
+      userId,
+      sessionId,
+      reqId,
+      runnerType,
+    }) {
       // Filter by user_id alongside conversation_id so a foreign caller
       // can never bind a row they don't own. Non-existence + foreign-user
       // both look identical from the caller's perspective: numUpdatedRows
@@ -580,6 +595,12 @@ export function createConversationStore(
         .set({
           active_session_id: sessionId,
           active_req_id: reqId,
+          // `undefined` means "caller didn't say" and must leave the column
+          // alone; `null` is a real value meaning "unknown runner". Spreading
+          // a conditional key is the only way to express that difference to
+          // kysely — `.set({ runner_type: undefined })` would still emit the
+          // column in some builders.
+          ...(runnerType !== undefined ? { runner_type: runnerType } : {}),
           updated_at: new Date(),
         })
         .where('conversation_id', '=', conversationId)
