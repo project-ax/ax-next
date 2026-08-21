@@ -9,13 +9,12 @@
  *
  *   2. There is no "Done" filter. Done was a third renderer over the same event
  *      stream that Activity already owns; the reassurance it carried lives in
- *      the sub-line instead, and the footer links to the real feed. The filter
- *      pod also now counts one kind of thing per segment rather than mixing
- *      decisions, agents, and events.
+ *      the sub-line instead, and the footer links to the real feed. The two
+ *      remaining segments (owned by the page header) also count one kind of
+ *      thing each, rather than mixing decisions, agents, and events.
  */
 import { AlertTriangle, ArrowRight, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { DecisionRow } from './DecisionRow';
 import { Elapsed, StateDot } from './bits';
@@ -33,7 +32,6 @@ interface Props {
   decisions: Decision[];
   agents: WorkspaceAgent[];
   filter: 'needs' | 'working';
-  onFilter: (f: 'needs' | 'working') => void;
   expandedId: string | null;
   onExpand: (id: string | null) => void;
   onOpenAgent: (id: string) => void;
@@ -48,7 +46,6 @@ export function TodayView({
   decisions,
   agents,
   filter,
-  onFilter,
   expandedId,
   onExpand,
   onOpenAgent,
@@ -105,22 +102,6 @@ export function TodayView({
             </span>
           </div>
         )}
-      </div>
-
-      <div className="mb-4 flex items-center gap-2">
-        <ToggleGroup
-          type="single"
-          value={filter}
-          onValueChange={(v) => v && onFilter(v as 'needs' | 'working')}
-          className="rounded-lg bg-muted p-[3px]"
-        >
-          <ToggleGroupItem value="needs" className="h-7 px-3 text-[12px]">
-            Needs you {needsCount}
-          </ToggleGroupItem>
-          <ToggleGroupItem value="working" className="h-7 px-3 text-[12px]">
-            Working {working.length}
-          </ToggleGroupItem>
-        </ToggleGroup>
       </div>
 
       <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">

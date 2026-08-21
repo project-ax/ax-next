@@ -116,6 +116,15 @@ export const workspaceApi = {
       body: { name, body },
     }),
 
+  /** Auto-routing: proposes an agent for a free-text request. Never dispatches. */
+  route: (text: string) =>
+    req<{ agentId: string; agentName: string; why: string; confident: boolean }>(
+      '/route',
+      { method: 'POST', body: { text } },
+    ),
+  createAgent: (brief: string) =>
+    req<{ agentId: string }>('/agents', { method: 'POST', body: { brief } }),
+
   stopAll: (stopped: boolean) =>
     req<{ stoppedAll: boolean }>('/stop-all', {
       method: 'POST',

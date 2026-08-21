@@ -44,14 +44,30 @@ export function AgentRail({ detail, openPastId, onOpenPast }: Props) {
 
       <SectionLabel>What it may do alone</SectionLabel>
       <div className="flex flex-col">
-        {permissions.map((p) => (
-          <PermissionLine key={p.sentence} row={p} />
-        ))}
+        {/*
+          An empty list here must SAY it is empty. Rendering nothing reads as
+          "there is nothing to know", when the fact is "it has been granted
+          nothing yet" — the same understate-the-reach failure the unmapped-rule
+          row exists to prevent, just at the other end of the range.
+        */}
+        {permissions.length === 0 ? (
+          <p className="text-[13px] leading-relaxed text-muted-foreground">
+            Nothing yet — it can talk to you and nothing else. It will ask before
+            it does anything for the first time.
+          </p>
+        ) : (
+          permissions.map((p) => <PermissionLine key={p.sentence} row={p} />)
+        )}
       </div>
 
       <SectionLabel>This week</SectionLabel>
       <Card className="shadow-sm">
         <CardContent className="flex flex-col gap-2 p-3.5">
+          {stats.length === 0 && (
+            <span className="text-[13px] text-muted-foreground">
+              Nothing yet — it has not run.
+            </span>
+          )}
           {stats.map((s) => (
             <div
               key={s.label}

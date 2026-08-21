@@ -254,6 +254,78 @@ export function workspaceMiddleware(): (
       return json(res, 200, { agent: a });
     }
 
+    // ---- Auto routing -------------------------------------------------------
+    // Keyword scoring, not a model. The point of the prototype here is the
+    // INTERACTION — Auto proposes and the human confirms — not the classifier.
+    // The real one is a small model over each agent's role; the failure mode it
+    // has to survive is the same either way (wrong agent picked), which is
+    // exactly why the UI confirms before dispatching rather than after.
+    if (method === 'POST' && rest === '/route') {
+      const body = await readBody(req);
+      const text = String(body.text ?? '').toLowerCase();
+      const rules: Array<[string, string, string[]]> = [
+        ['scheduler', 'it is about your calendar', ['calendar', 'meeting', 'schedule', 'minutes with', 'clash', '1:1', 'book', 'invite', 'free', 'reschedule', 'move my']],
+        ['inbox', 'it is about your email', ['email', 'mail', 'inbox', 'reply', 'draft', 'wrote to', 'unread']],
+        ['slack', 'it is about Slack', ['slack', 'channel', 'thread', 'mentioned', 'digest', '#']],
+        ['followups', 'it is about chasing someone', ['chase', 'nudge', 'follow up', 'follow-up', 'owes', 'owe me', 'waiting on', 'remind them']],
+        ['travel', 'it is about a trip', ['flight', 'trip', 'travel', 'hotel', 'expense', 'fly']],
+      ];
+      let best: { agentId: string; why: string; score: number } | null = null;
+      for (const [agentId, why, words] of rules) {
+        const score = words.filter((w) => text.includes(w)).length;
+        if (score > 0 && (best === null || score > best.score)) {
+          best = { agentId, why, score };
+        }
+      }
+      const chosen = best ?? {
+        agentId: state.agents[0]?.id ?? 'inbox',
+        why: 'nothing in it pointed anywhere in particular',
+        score: 0,
+      };
+      const a = agent(chosen.agentId);
+      return json(res, 200, {
+        agentId: chosen.agentId,
+        agentName: a?.name ?? chosen.agentId,
+        why: chosen.why,
+        confident: chosen.score > 0,
+      });
+    }
+
+    // ---- create an agent ----------------------------------------------------
+    if (method === 'POST' && rest === '/agents') {
+      const body = await readBody(req);
+      const brief = String(body.brief ?? '').trim();
+      if (!brief) return json(res, 400, { error: 'empty brief' });
+      const id = `custom-${state.agents.length}`;
+      state.agents = [
+        ...state.agents,
+        {
+          id,
+          name: 'New agent',
+          role: brief,
+          icon: 'sparkles',
+          state: 'resting',
+          channel: 'web',
+          now: 'Getting set up with you',
+          counter: null,
+          startedAt: null,
+          stoppedReason: null,
+          paused: false,
+          footer: 'Created just now. Nothing has run yet.',
+        },
+      ];
+      state.threads[id] = [
+        { kind: 'user', id: `n-brief-${id}`, text: brief },
+        {
+          kind: 'agent',
+          id: `n-hello-${id}`,
+          text: 'Got it. Two things before I start, and then I will leave you alone: what should I call you when I write on your behalf, and what am I never allowed to do without asking?',
+          time: 'just now',
+        },
+      ];
+      return json(res, 200, { agentId: id });
+    }
+
     return json(res, 404, { error: 'unknown workspace route' });
   };
 }

@@ -12,7 +12,7 @@
  * underneath a decision, or when an agent halts itself at 9am.
  */
 import { useEffect, useState } from 'react';
-import { Moon, Sun, OctagonX } from 'lucide-react';
+import { OctagonX } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { workspaceApi, type DemoScenario } from '@/lib/workspace-api';
@@ -20,13 +20,29 @@ import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme, setTheme, useResolvedTheme } from '@/lib/theme';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentView, type AgentTab } from './AgentView';
+import { HomeComposer } from './HomeComposer';
+import { NewAgentView } from './NewAgentView';
 import { TodayView } from './TodayView';
+import { Segmented, WorkspaceHeader } from './WorkspaceHeader';
 import { WorkspaceSidebar } from './WorkspaceSidebar';
 
 type Route =
   | { kind: 'today' }
   | { kind: 'activity' }
+  | { kind: 'new' }
   | { kind: 'agent'; id: string; tab: AgentTab };
+
+/**
+ * "Friday, 21 August" — the date the queue is describing. Day-then-month, to
+ * match the rest of the surface's voice ("summarised", "organised").
+ */
+function today(): string {
+  return new Date().toLocaleDateString('en-GB', {
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+  });
+}
 
 export function WorkspaceShell() {
   return (
@@ -73,6 +89,9 @@ function Inner() {
     (d) => d.status === 'pending' || d.status === 'stale',
   ).length;
   const stopped = board.agents.filter((a) => a.state === 'stopped').length;
+  const workingCount = board.agents.filter(
+    (a) => a.state === 'working' && !a.paused,
+  ).length;
 
   const openAgent = (id: string) =>
     setRoute({ kind: 'agent', id, tab: 'chat' });
@@ -97,7 +116,6 @@ function Inner() {
       <DemoStrip
         scenario={board.scenario}
         stoppedAll={board.stoppedAll}
-        dark={theme === 'dark'}
         onScenario={async (s) => {
           await setScenario(s);
           setRoute({ kind: 'today' });
@@ -108,7 +126,6 @@ function Inner() {
           await stopAll(v);
           bump();
         }}
-        onTheme={(d) => setTheme(d ? 'dark' : 'light')}
       />
 
       <div className="flex min-h-0 flex-1">
@@ -122,45 +139,96 @@ function Inner() {
           onToday={() => setRoute({ kind: 'today' })}
           onActivity={() => setRoute({ kind: 'activity' })}
           onAgent={openAgent}
+          onNewAgent={() => setRoute({ kind: 'new' })}
         />
 
         <main className="flex min-w-0 flex-1 flex-col overflow-hidden">
           {route.kind === 'today' && (
-            <div className="flex-1 overflow-y-auto">
-              <TodayView
-                decisions={board.decisions}
+            <>
+              <WorkspaceHeader
+                title="Today"
+                subtitle={today()}
+                dark={theme === 'dark'}
+                onTheme={(d) => setTheme(d ? 'dark' : 'light')}
+              >
+                <Segmented
+                  value={filter}
+                  onValueChange={setFilter}
+                  options={[
+                    { value: 'needs', label: 'Needs you', count: pending + stopped },
+                    { value: 'working', label: 'Working', count: workingCount },
+                  ]}
+                />
+              </WorkspaceHeader>
+              <div className="flex-1 overflow-y-auto">
+                <TodayView
+                  decisions={board.decisions}
+                  agents={board.agents}
+                  filter={filter}
+                  expandedId={expandedId}
+                  onExpand={setExpandedId}
+                  onOpenAgent={openAgent}
+                  onApprove={act.approve}
+                  onDismiss={act.dismiss}
+                  onUndo={act.undo}
+                  onRestart={async (id) => {
+                    await workspaceApi.restart(id);
+                    await refresh();
+                    bump();
+                  }}
+                  onSeeActivity={() => setRoute({ kind: 'activity' })}
+                />
+              </div>
+              <HomeComposer
                 agents={board.agents}
-                filter={filter}
-                onFilter={setFilter}
-                expandedId={expandedId}
-                onExpand={setExpandedId}
-                onOpenAgent={openAgent}
-                onApprove={act.approve}
-                onDismiss={act.dismiss}
-                onUndo={act.undo}
-                onRestart={async (id) => {
-                  await workspaceApi.restart(id);
-                  await refresh();
+                onSend={async (agentId, text) => {
+                  await workspaceApi.send(agentId, text);
+                  setRoute({ kind: 'agent', id: agentId, tab: 'chat' });
                   bump();
                 }}
-                onSeeActivity={() => setRoute({ kind: 'activity' })}
               />
-            </div>
+            </>
           )}
 
           {route.kind === 'activity' && (
-            <div className="flex-1 overflow-y-auto">
-              <div className="mx-auto w-full max-w-[900px] px-6 py-6">
-                <h1 className="mb-5 text-[21px] font-medium tracking-[-0.02em]">
-                  Activity
-                </h1>
-                <ActivityFeed
-                  events={board.activity}
-                  agents={board.agents}
-                  onOpenAgent={openAgent}
+            <>
+              <WorkspaceHeader
+                title="Activity"
+                subtitle={`${board.activity.length} entries`}
+                dark={theme === 'dark'}
+                onTheme={(d) => setTheme(d ? 'dark' : 'light')}
+              />
+              <div className="flex-1 overflow-y-auto">
+                <div className="mx-auto w-full max-w-[900px] px-6 pb-6">
+                  <ActivityFeed
+                    events={board.activity}
+                    agents={board.agents}
+                    onOpenAgent={openAgent}
+                  />
+                </div>
+              </div>
+            </>
+          )}
+
+          {route.kind === 'new' && (
+            <>
+              <WorkspaceHeader
+                title="New agent"
+                dark={theme === 'dark'}
+                onTheme={(d) => setTheme(d ? 'dark' : 'light')}
+              />
+              <div className="flex-1 overflow-y-auto">
+                <NewAgentView
+                  onBack={() => setRoute({ kind: 'today' })}
+                  onCreate={async (brief) => {
+                    const { agentId } = await workspaceApi.createAgent(brief);
+                    await refresh();
+                    setRoute({ kind: 'agent', id: agentId, tab: 'chat' });
+                    bump();
+                  }}
                 />
               </div>
-            </div>
+            </>
           )}
 
           {route.kind === 'agent' && (
@@ -197,17 +265,13 @@ const SCENARIOS: Array<[DemoScenario, string]> = [
 function DemoStrip({
   scenario,
   stoppedAll,
-  dark,
   onScenario,
   onStopAll,
-  onTheme,
 }: {
   scenario: DemoScenario;
   stoppedAll: boolean;
-  dark: boolean;
   onScenario: (s: DemoScenario) => void;
   onStopAll: (v: boolean) => void;
-  onTheme: (dark: boolean) => void;
 }) {
   return (
     <div className="flex h-11 shrink-0 items-center gap-3 border-b border-border bg-muted/50 px-4">
@@ -241,15 +305,6 @@ function DemoStrip({
         >
           <OctagonX size={12} />
           {stoppedAll ? 'Everything is stopped — resume' : 'Stop everything'}
-        </Button>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-7 w-7"
-          aria-label="Toggle theme"
-          onClick={() => onTheme(!dark)}
-        >
-          {dark ? <Sun size={13} /> : <Moon size={13} />}
         </Button>
       </div>
     </div>

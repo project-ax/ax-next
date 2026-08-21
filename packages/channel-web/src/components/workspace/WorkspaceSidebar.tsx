@@ -5,7 +5,7 @@
  * agent they belong to, which is the structural change the whole refresh is
  * about. The roster is the navigation now.
  */
-import { ChevronDown, ChevronUp, Inbox, Bot, Activity } from 'lucide-react';
+import { Activity, Bot, ChevronDown, ChevronUp, Inbox, Plus } from 'lucide-react';
 import { BrandMark } from '@/components/BrandMark';
 import { AvatarTile } from '@/components/AvatarTile';
 import { Badge } from '@/components/ui/badge';
@@ -15,7 +15,7 @@ import { StateDot } from './bits';
 
 interface Props {
   agents: WorkspaceAgent[];
-  route: 'today' | 'agent' | 'activity';
+  route: 'today' | 'agent' | 'activity' | 'new';
   activeAgentId: string | null;
   pendingCount: number;
   rosterOpen: boolean;
@@ -23,6 +23,7 @@ interface Props {
   onToday: () => void;
   onActivity: () => void;
   onAgent: (id: string) => void;
+  onNewAgent: () => void;
 }
 
 export function WorkspaceSidebar({
@@ -35,6 +36,7 @@ export function WorkspaceSidebar({
   onToday,
   onActivity,
   onAgent,
+  onNewAgent,
 }: Props) {
   const row = (active: boolean) =>
     cn(
@@ -102,6 +104,15 @@ export function WorkspaceSidebar({
               <span className="truncate">{a.name}</span>
             </button>
           ))}
+
+        <button
+          type="button"
+          onClick={onNewAgent}
+          className="mt-0.5 flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] text-primary hover:bg-muted/60"
+        >
+          <Plus size={13} className="shrink-0" />
+          New agent
+        </button>
       </nav>
 
       <div className="flex items-center gap-2.5 border-t border-border px-4 py-3">
