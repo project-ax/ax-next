@@ -87,18 +87,34 @@ One row, three renderers: the in-thread card, the Today queue, and (later) Slack
 
 Attendance is a property of the **channel that opened the conversation**, plus a park budget. It is not a synonym for "was this a routine".
 
-| | Attended (web, Slack) | Unattended (tick, webhook) |
+| | Attended (web) | Unattended (tick, webhook) |
 |---|---|---|
 | `tool.pre-call` returns | `hold`, immediately | `hold`, immediately |
 | Decision row written | yes | yes |
 | Runner then | parks on `session.next-message` | ends the turn; sandbox reaped |
 | On approval | the decision arrives as the next message; **the agent executes its own call** | the host replays `decision.call` through `tool.execute-host` |
 | Staleness risk | seconds — not a concern | hours — §3.4 applies |
-| Nobody answers | reaper ends the turn; **the row stays in Today** | n/a |
-
-Park budgets: web short (a browser tab is either there or it isn't), **Slack long** (buttons resolve through `session.next-message` exactly like a web click, and conversational continuity in Slack is worth the warm sandbox), tick and webhook zero.
+| Nobody answers | idle floor expires, turn ends; **the row stays in Today** | n/a |
 
 The last row of that table is the point. An abandoned attended approval *is* an unattended one — same row, later. No special case is written anywhere for "the user walked away mid-approval".
+
+#### Correction: there is no Slack
+
+An earlier draft of this section listed Slack as attended with a long park budget. `packages/` contains exactly one channel — `channel-web`. Slack is not a thing this design can be built against, so **attendance in v1 is `web | routine`**, and the long-park variant is a third value to add when a Slack channel plugin exists, not a case to build for now.
+
+The question that decision turned on still stands for whenever that day comes: holding a warm sandbox against Slack's reply latency buys conversational continuity in Slack, and the idle floor below bounds the cost. Nothing about the v1 shape forecloses it.
+
+#### The parking mechanism already exists
+
+This was the part of the design expected to be expensive, and it is largely built. `packages/agent-runner-core/src/inbox-loop.ts` already:
+
+- long-polls `session.next-message` with a cursor, and **transparently swallows the 30 s ceiling** (`IPC_TIMEOUTS_MS['session.next-message']`) by re-polling on the same cursor — the cursor advances only on a real delivery, never on a timeout;
+- carries a **cumulative idle floor** per `next()` call (`idleTimeoutMs`, default 15 min) that returns `{ type: 'idle-timeout' }` when nothing real arrives;
+- is deliberately set longer than the host's own idle window, so the host-side reaper normally wins and this is the host-crash fallback.
+
+So "park" is not new machinery: **the park budget IS `idleTimeoutMs`, and the degradation-to-queue IS `idle-timeout`.** What has to be added is delivery — a fourth variant alongside `user-message` / `cancel` / `timeout` in `SessionNextMessageResponseSchema` (`ipc-protocol/src/actions.ts:899`), carrying the resolved decision.
+
+Size the work accordingly. A card estimated from the pre-correction text would be sized for a mechanism that is already there.
 
 ### 3.4 The freshness guard
 
@@ -353,7 +369,7 @@ Stated plainly so nobody mistakes the sketch for the thing:
 | "Right now" phrases are fixtures | §4.2 — T0/T1/T2 with T1 as the shipping floor |
 | Freshness predicates are two hardcoded tokens | §3.4 — produced by the tool |
 | Approve executes nothing | §3.3 — agent-executes or `tool.execute-host` replay |
-| Attendance is a fixture field | Derived from the channel that opened the conversation |
+| Attendance is a fixture field | Derived from the channel that opened the conversation (`web \| routine` — §3.3) |
 | No staleness timeout on the status line | §4.2.2 |
 | Counters are static | Reported by the tool per step |
 
@@ -368,7 +384,7 @@ Each phase is independently shippable and honest on its own.
 | **P1** | Agent-centric navigation over existing chat | `channel-web` only; no backend |
 | **P2** | Activity feed from `FireRow` + audit-log | read-only, no new semantics |
 | **P3** | Rail: permissions from real policy, counters from real events | §4.3, §4.4 — forces the `capability` field |
-| **P4** | **Approvals substrate** — `hold`, Decision row, attendance, replay, guard | §3. The one that matters |
+| **P4** | **Approvals substrate** — `hold`, Decision row, attendance, replay, guard | §3. The one that matters — but see §3.3: parking is already built, so the new work is the verdict, the row, the delivery variant, and the guard |
 | **P5** | Scheduled background runs, digest rollup, `AgentActivity` T0/T1 | routines are most of the way there |
 
 P4 is the load-bearing one; everything above it is decoration without it. P3 before P4 is deliberate — authoring `capability` clauses for the existing policy is useful on its own and surfaces how many rules currently have no describable meaning.
