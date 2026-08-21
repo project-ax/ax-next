@@ -139,7 +139,16 @@ type MapCache = Record<string, MapCacheEntry>;
 
 /**
  * Small cap on consecutive same-hash passes a densifier's output may be gated
- * before `densifyOne` stops retrying and just serves the fallback. Bounds the
+ * before `densifyOne` stops retrying and just serves the fallback.
+ *
+ * Note "deterministic offender" is a heuristic, not a proof: the densifier
+ * runs at a non-zero temperature, so a doc that trips the gate CAP passes
+ * running might still have densified cleanly on a later attempt. Capping it
+ * pins that doc to its (trusted) fallback until its facts change, which
+ * happens naturally as observations merge in. We take that trade knowingly —
+ * a slightly worse map line is cheaper than an unbounded LLM spend. If a real
+ * doc ever wedges, the fix is a periodic re-probe (decay the counter every N
+ * passes), not a bigger cap. Bounds the
  * cost drip from a doc that deterministically provokes a gated output (the
  * TASK-221 gap: previously this retried — and re-paid the LLM — on EVERY pass
  * forever). Small on purpose: this is "stop wasting money on a doc that isn't
@@ -457,13 +466,27 @@ async function loadCache(workspaceRoot: string): Promise<MapCache> {
         typeof (v as MapCacheEntry).summary === 'string'
       ) {
         const entry: MapCacheEntry = { hash: (v as MapCacheEntry).hash, summary: (v as MapCacheEntry).summary };
-        // `gatedAttempts` is TASK-221 — only set it when present AND numeric,
-        // so a sidecar written by a pre-TASK-221 build (the field absent
-        // entirely) loads exactly as a normal entry, and a malformed value
-        // (wrong type, hand-edited) degrades to "not gated" rather than
-        // throwing out of the whole cache load.
+        // `gatedAttempts` is TASK-221 — only set it when present AND a
+        // sane count, so a sidecar written by a pre-TASK-221 build (the
+        // field absent entirely) loads exactly as a normal entry, and a
+        // malformed value degrades to "not gated" rather than throwing out
+        // of the whole cache load.
+        //
+        // The non-negative integer check is load-bearing, not defensive
+        // noise: a NEGATIVE count would never reach the cap comparison
+        // (`-1000000 >= 3` is false), so the doc would retry the densifier
+        // on every pass forever while the counter crawled upward — exactly
+        // the unbounded cost this cap exists to prevent, reintroduced by a
+        // single bad value. NaN/Infinity self-neutralize (JSON.stringify
+        // writes them as null, which fails the typeof check) and a huge
+        // positive value simply caps immediately, so negatives were the one
+        // malformed shape that degraded UNSAFELY.
         const gatedAttempts = (v as MapCacheEntry).gatedAttempts;
-        if (typeof gatedAttempts === 'number') {
+        if (
+          typeof gatedAttempts === 'number' &&
+          Number.isInteger(gatedAttempts) &&
+          gatedAttempts >= 0
+        ) {
           entry.gatedAttempts = gatedAttempts;
         }
         out[k] = entry;

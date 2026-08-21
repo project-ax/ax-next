@@ -13,7 +13,7 @@
 //      are already gated, but the map must not widen the trust boundary).
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { regenerateMap, makeLlmDensifier, MAP_DENSIFY_SENSITIVE_RETRY_CAP, type MapDensifier } from '../map.js';
@@ -278,6 +278,64 @@ describe('sensitive gate on the densifier OUTPUT (TASK-217)', () => {
     expect(entry).toBeDefined();
     expect(entry!.gatedAttempts).toBe(1);
     expect(entry!.summary).toBe('User prefers dogs over cats'); // fallback — never the credential
+  });
+
+  it('a malformed gatedAttempts in the sidecar degrades to "not gated" instead of retrying forever', async () => {
+    // Regression for a review finding on this change: `loadCache` originally
+    // accepted any `number`, so a NEGATIVE count (corrupted or hand-edited
+    // sidecar) would never reach the cap comparison — `-1000000 >= 3` is
+    // false — and the doc would re-pay a real LLM call every pass forever
+    // while the counter crawled upward. That is precisely the unbounded cost
+    // this cap exists to prevent, reintroduced by one bad value.
+    //
+    // A malformed count must load as "not gated": a normal entry serving its
+    // (already-gated, trusted) fallback summary.
+    await seedDoc({
+      category: 'preference',
+      slug: 'cars',
+      summary: 'User prefers dogs over cats',
+      facts: ['User prefers dogs over cats'],
+    });
+
+    // First pass with a CLEAN densifier, to write a well-formed entry we can
+    // then corrupt (this also pins the correct fact-hash for us).
+    await regenerateMap({
+      workspaceRoot,
+      now: NOW,
+      densify: async () => 'Prefers dogs',
+    });
+    const cachePath = join(workspaceRoot, mapCacheFile());
+    const cache = JSON.parse(await readFile(cachePath, 'utf8')) as Record<
+      string,
+      { hash: string; summary: string; gatedAttempts?: number }
+    >;
+    const entry = cache['preference/cars']!;
+
+    for (const bogus of [-1000000, -1, 2.5]) {
+      await writeFile(
+        cachePath,
+        JSON.stringify({ 'preference/cars': { ...entry, gatedAttempts: bogus } }),
+        'utf8',
+      );
+      let calls = 0;
+      await regenerateMap({
+        workspaceRoot,
+        now: NOW,
+        densify: async () => {
+          calls += 1;
+          return 'Prefers dogs';
+        },
+      });
+      // Treated as a normal (un-gated) entry for an unchanged fact-hash, so
+      // the cached line is served and the densifier is never called. The
+      // bogus count is dropped rather than carried forward.
+      expect(calls, `bogus gatedAttempts ${bogus} should load as "not gated"`).toBe(0);
+      const after = JSON.parse(await readFile(cachePath, 'utf8')) as Record<
+        string,
+        { gatedAttempts?: number }
+      >;
+      expect(after['preference/cars']!.gatedAttempts).toBeUndefined();
+    }
   });
 
   it('a repeat offender against the SAME facts is retried on the next pass, below the cap (attempt count increments)', async () => {

@@ -401,8 +401,8 @@ describe('makeStageBNamer (stubbed LLM)', () => {
     });
 
     it('the per-class drop inside verifyStageBClasses stays silent — no per-item log, only the pass-level aggregate', async () => {
-      // Three sensitive classes in one call: if drops were logged per item
-      // there would be 3 lines; TASK-221 asserts exactly 1 (the aggregate).
+      // Two sensitive classes in one call: if drops were logged per item
+      // there would be 2 lines; TASK-221 asserts exactly 1 (the aggregate).
       const namer = makeStageBNamer({
         llmCall: stubLlm(JSON.stringify([
           { class: 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
