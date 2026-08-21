@@ -119,8 +119,9 @@ export async function runConversationsMigration<DB>(
 
   // TASK-66 (out-of-git Part B / B1, 2026-05-30): the display event log —
   // the redisplay source of truth. Append-only, keyed (conversation_id, seq)
-  // with a per-conversation monotonic seq (single writer per conversation:
-  // the host — contention-free, NOT a CAS). Persists the exact ordered
+  // with a per-conversation monotonic seq. Appends to one conversation are
+  // serialized by the store with a transaction-scoped advisory lock (TASK-220)
+  // — see ConversationStore.appendEvent. Persists the exact ordered
   // display frames the host already emits over SSE so reload == live by
   // construction: `turn` rows carry the model/tool content (the folded
   // terminal ContentBlock[] the runner sends at the result boundary);
@@ -130,7 +131,10 @@ export async function runConversationsMigration<DB>(
   //   seq:        per-conversation monotonic int (1-based). The PK is the
   //               composite (conversation_id, seq) so ordering + dedup are
   //               free. Minted by the store inside the same statement that
-  //               inserts (SELECT COALESCE(MAX)+1) — single writer, no CAS.
+  //               inserts (SELECT COALESCE(MAX)+1), under a per-conversation
+  //               advisory lock so concurrent appends queue instead of
+  //               colliding. The PK is the last-resort integrity backstop —
+  //               a violation means a writer skipped the lock.
   //   event_kind: display-semantic enum — 'turn' | 'permission-card' |
   //               'turn-error'. CHECK-constrained so a malformed kind can't
   //               land. Storage-agnostic (I1): no backend vocabulary.
