@@ -446,11 +446,11 @@ The acceptance suite asserts the *degradation*, not the capability: a skill decl
 | # | PR | Gate |
 |---|---|---|
 | 1 | ✅ **Merged 2026-08-19 (#395).** `@ax/agent-runner-core` extraction | Gate met: no behaviour change; suites + canary green. `main.ts` 1,839 → 770 lines. Two follow-up fixes landed after merge — #397 (the `--require` bootstrap artifact was produced by a `postbuild` hook that fires on no build path that ships) and a CodeQL ReDoS hardening. |
-| 2 | Host-side runner + model selection (`agents.runner`, orchestrator map, `AgentConfig`, migration) | Model picker drives a real value on the SDK runner |
-| 3 | `@ax/agent-aisdk-runner` — loop, tools, policy wiring, transcript | Canary green on both runners; loaded in CLI + k8s preset |
-| 4 | Provider layer — OpenRouter credential path + `models:list-supported` | grok-4.6 / kimi-k3 drive a real conversation on the cluster |
-| 5 | Vertex — credential kind, token minter, rotation | Gemini on Vertex, no ADC reachable from the sandbox |
-| 6 | Compaction rungs 1–2 + ceiling error | Long session degrades cleanly |
+| 2 | ✅ **Merged 2026-08-19 (#399, `e64abdd6`).** Host-side runner + model selection (`agents.runner`, orchestrator map, `AgentConfig`, migration) | Gate met: the model picker drives a real value on the SDK runner. Model ids are `/`-prefixed refs; an unmapped runner id fails at session-open rather than falling back. |
+| 3 | ✅ **Merged 2026-08-19 (#400, `d07c6186`).** `@ax/agent-aisdk-runner` — loop, tools, policy wiring, transcript | Gate met: canary green on both runners, loaded in the CLI + k8s presets. §8's manual walks (`chat-qa-sweep` + `k8s-acceptance-loop` against an `aisdk`-pinned agent) were run separately and passed. |
+| 4 | ✅ **Merged 2026-08-20 (#409, `1ef2b6d4`).** Provider layer — OpenRouter credential path + `models:list-supported` | Code gate met. The CLUSTER gate — grok-4.6 / kimi-k3 driving a real conversation — needs a live OpenRouter key and is carried by the acceptance walk, not by CI. |
+| 5 | ⏭️ **Skipped for now** (deliberate, 2026-08-21). Vertex — credential kind, token minter, rotation | Gemini on Vertex, no ADC reachable from the sandbox. Independent of 6–7: nothing in the compaction work assumes a provider set, so this is still one `PROVIDERS` entry plus a credential kind whenever it is picked up. |
+| 6 | ✅ **Merged 2026-08-21 (#411, `f2a883e2`).** Compaction rungs 1–2 + ceiling error | Gate met: a long session degrades cleanly. `prepareStep` masks stale tool outputs, then prunes old tool call/result pairs; a conversation that cannot fit even fully compacted ends with a `ContextWindowExceededError` rather than the provider's opaque one. SEND-SITE ONLY — the transcript is never rewritten. Note the §7 deviation: a fallback token ESTIMATOR ships, because `usage.inputTokens` does not exist at step 0 of a turn and that is the request a resumed long session dies on. |
 | 7 | Compaction rung 3 (summarize) + eval suite | Post-compaction answerability holds |
 
 ## Open risks
