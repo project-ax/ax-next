@@ -26,10 +26,10 @@ let container: StartedPostgreSqlContainer;
 let connectionString: string;
 const opened: Kysely<ConversationDatabase>[] = [];
 
-function makeKysely(): Kysely<ConversationDatabase> {
+function makeKysely(poolMax = 4): Kysely<ConversationDatabase> {
   const k = new Kysely<ConversationDatabase>({
     dialect: new PostgresDialect({
-      pool: new pg.Pool({ connectionString, max: 4 }),
+      pool: new pg.Pool({ connectionString, max: poolMax }),
     }),
   });
   opened.push(k);
@@ -180,10 +180,12 @@ describe('ConversationStore.appendEvent / listEvents', () => {
     await runConversationsMigration(db);
     const store = createConversationStore(db);
 
-    // Fire many appends concurrently for ONE conversation. The MAX(seq)+1
-    // allocation races; the unique-violation retry must let every append land
-    // with a distinct seq (none dropped, none overwritten). This is the
-    // permission-card-racing-turn-end case from the review.
+    // Fire many appends concurrently for ONE conversation. Without
+    // serialization the MAX(seq)+1 allocation races on the
+    // (conversation_id, seq) PK; the store's per-conversation advisory lock
+    // must let every append land with a distinct seq (none dropped, none
+    // overwritten). This is the permission-card-racing-turn-end case from the
+    // review.
     const N = 20;
     const seqs = await Promise.all(
       Array.from({ length: N }, (_, i) =>
@@ -205,7 +207,76 @@ describe('ConversationStore.appendEvent / listEvents', () => {
     );
     // Every payload survived (no overwrite).
     expect(new Set(events.map((e) => (e.payload as { i: number }).i)).size).toBe(N);
-  });
+  }, 60_000);
+
+  // TASK-220 regression. The old implementation minted seq with an unlocked
+  // INSERT ... SELECT MAX(seq)+1 and swallowed the resulting PK collisions
+  // with a fixed budget of 8 retries. With k contenders a single append can
+  // lose the race up to k-1 times, so beyond ~8-way concurrency the unique
+  // violation escaped to the caller and the event was DROPPED — a silent
+  // correctness cliff on the redisplay source of truth. N is deliberately far
+  // above that old ceiling, on a pool wide enough for genuine DB-level
+  // contention, so this fails loudly if the serialization ever regresses.
+  it('holds the no-drop guarantee far above the old 8-retry ceiling (N=50)', async () => {
+    const db = makeKysely(16);
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+
+    const N = 50;
+    const seqs = await Promise.all(
+      Array.from({ length: N }, (_, i) =>
+        store.appendEvent({
+          conversationId: 'c-race-50',
+          kind: 'turn',
+          role: 'assistant',
+          payload: { i },
+        }),
+      ),
+    );
+    expect(new Set(seqs).size).toBe(N);
+
+    const events = await store.listEvents('c-race-50');
+    expect(events).toHaveLength(N);
+    // Gapless + contiguous 1..N: nothing dropped, nothing overwritten.
+    expect(events.map((e) => e.seq)).toEqual(
+      Array.from({ length: N }, (_, i) => i + 1),
+    );
+    expect(new Set(events.map((e) => (e.payload as { i: number }).i)).size).toBe(N);
+    // 50 SERIALIZED round-trip transactions against a testcontainer, run in
+    // parallel with 23 other Postgres-backed files, comfortably outruns
+    // vitest's 5s default on a loaded machine. Generous, not load-bearing —
+    // the assertions above are what this test is for.
+  }, 60_000);
+
+  it('keeps seq per-conversation under interleaved concurrent appends', async () => {
+    // The lock is keyed per conversation, so two conversations appended to
+    // concurrently each get their own independent, contiguous 1..N sequence
+    // (each conversation gets its own gapless run (NOTE: this proves correctness, not that the two do not serialize against each other — a mistakenly GLOBAL lock would also pass. A timing assertion would be flaky; the N=50 test is the real guard)).
+    const db = makeKysely(8);
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+
+    const N = 10;
+    await Promise.all(
+      Array.from({ length: N }, (_, i) => i).flatMap((i) =>
+        ['c-a', 'c-b'].map((conversationId) =>
+          store.appendEvent({
+            conversationId,
+            kind: 'turn',
+            role: 'assistant',
+            payload: { i },
+          }),
+        ),
+      ),
+    );
+
+    for (const id of ['c-a', 'c-b']) {
+      const events = await store.listEvents(id);
+      expect(events.map((e) => e.seq)).toEqual(
+        Array.from({ length: N }, (_, i) => i + 1),
+      );
+    }
+  }, 60_000);
 
   it('stores the payload opaquely (special chars, nested objects round-trip)', async () => {
     const db = makeKysely();
