@@ -1,6 +1,6 @@
 import type { AgentMessage, LlmCallInput, LlmCallOutput } from '@ax/core';
 import { writeInboxObservation } from './inbox-store.js';
-import { filterSensitive, type RejectionKind } from './sensitive-gate.js';
+import { filterSensitiveMulti, type RejectionKind } from './sensitive-gate.js';
 import { raceTimeout, TimeoutError } from './timeout.js';
 import type { Observation } from './types.js';
 
@@ -181,20 +181,12 @@ export async function runObserver(input: RunObserverInput): Promise<RunObserverR
     // channel this gate exists to close. Per CLAUDE.md invariant 5, untrusted
     // content stays untrusted at every hop; mirrors the same fix already
     // applied to the agent-authored path in tools/memory-note.ts (I20).
-    const factGate = filterSensitive(obs.fact);
-    const subjectGate = filterSensitive(obs.subject);
-    if (!factGate.kept || !subjectGate.kept) {
-      // Merge + dedupe kinds across both gates, first-seen order (fact first)
-      // — a caller sees each distinct kind once, never which field it came from.
-      const seen = new Set<string>();
-      const kinds: RejectionKind[] = [];
-      for (const r of [...factGate.rejections, ...subjectGate.rejections]) {
-        if (!seen.has(r.kind)) {
-          seen.add(r.kind);
-          kinds.push(r.kind);
-        }
-      }
-      rejected.push({ observation: obs, kinds });
+    // TASK-219: filterSensitiveMulti scans fact and subject INDEPENDENTLY
+    // and merges + dedupes the kinds, first-seen order (fact first) — a
+    // caller sees each distinct kind once, never which field it came from.
+    const gate = filterSensitiveMulti([obs.fact, obs.subject]);
+    if (!gate.kept) {
+      rejected.push({ observation: obs, kinds: gate.kinds });
       continue;
     }
     const path = await writeInboxObservation(

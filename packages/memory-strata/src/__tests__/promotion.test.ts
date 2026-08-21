@@ -227,4 +227,26 @@ describe('sensitive gate covers the LLM-chosen subject (I11)', () => {
     const result = decidePromotion(file);
     expect(result).toEqual({ promote: true });
   });
+
+  // TASK-219: decidePromotion used to build one haystack — `subject + '\n' +
+  // summary + '\n' + body` — and scan it as a single string. Because `\s`
+  // in the secret-assignment pattern matches a newline, a `subject` ending
+  // in "secret" followed by a `summary` starting ": ..." would cross-match
+  // secret-assignment ACROSS the field boundary, even though neither field
+  // alone contains a secret assignment. The extraction to
+  // filterSensitiveMulti scans each field independently, which removes
+  // that seam — this is a deliberate improvement (it can only ever reduce
+  // false positives, never let a true hit through, since every field is
+  // still scanned in full). Before this change this fixture would have
+  // been rejected as 'sensitive'; now it promotes.
+  it('no longer false-positives on a subject/summary seam (TASK-219: per-field scan removes the concatenation seam)', () => {
+    const file = makeInboxFile({
+      confidence: 0.85,
+      subject: 'The rollout plan is still secret',
+      summary: ': rotation policy TBD',
+      body: 'No credential here',
+    });
+    const result = decidePromotion(file);
+    expect(result).toEqual({ promote: true });
+  });
 });

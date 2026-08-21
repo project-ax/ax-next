@@ -121,3 +121,48 @@ function redactExcerpt(raw: string): string {
   if (raw.length <= EXCERPT_PREFIX_LEN) return '…';
   return `${raw.slice(0, EXCERPT_PREFIX_LEN)}…`;
 }
+
+export interface MultiFilterResult {
+  /** True iff every field came back clean. */
+  kept: boolean;
+  /** Distinct rejection kinds across all fields, first-seen order. */
+  kinds: RejectionKind[];
+}
+
+/**
+ * Run `filterSensitive` over several fields and merge the result into one
+ * deduplicated list of rejection kinds, in first-seen order (field order,
+ * then pattern-declaration order within a field — the order `filterSensitive`
+ * already returns for a single string).
+ *
+ * TASK-219: this is the third time "scan a few fields, merge + dedupe the
+ * kinds" got written by hand (observer.ts's I7 gate, tools/memory-note.ts's
+ * I20 gate, and promotion.ts's I11 gate) — extracted once so the next
+ * pattern/ordering/disclosure change only has to move here.
+ *
+ * IMPORTANT: this scans each field INDEPENDENTLY. Do not "simplify" this by
+ * joining the fields with `\n` (or any other separator) and calling
+ * `filterSensitive` once on the join — `\s` in several of the PATTERNS
+ * (password-assignment, secret-assignment) matches a newline, so a field
+ * ending in `password`/`secret` followed by a field starting with `:`/`=`
+ * can cross-match ACROSS the seam between two unrelated fields. Concrete
+ * repro: the two-field input `["...secret", ": rotation policy..."]` trips
+ * `secret-assignment` when concatenated with `\n`, even though neither
+ * field alone contains a `secret:`/`secret=` assignment. Per-field scanning
+ * has no seam to cross, so it can only ever REDUCE false positives relative
+ * to concatenation — every field is still scanned in full — never let a
+ * true hit through that concatenation would have caught.
+ */
+export function filterSensitiveMulti(fields: string[]): MultiFilterResult {
+  const seen = new Set<RejectionKind>();
+  const kinds: RejectionKind[] = [];
+  for (const field of fields) {
+    const { rejections } = filterSensitive(field);
+    for (const { kind } of rejections) {
+      if (seen.has(kind)) continue;
+      seen.add(kind);
+      kinds.push(kind);
+    }
+  }
+  return { kept: kinds.length === 0, kinds };
+}

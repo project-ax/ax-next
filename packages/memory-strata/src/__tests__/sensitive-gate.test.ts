@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { filterSensitive } from '../sensitive-gate.js';
+import { filterSensitive, filterSensitiveMulti } from '../sensitive-gate.js';
 
 describe('filterSensitive', () => {
   it('rejects a fake Anthropic API key', () => {
@@ -92,5 +92,61 @@ describe('filterSensitive', () => {
     const kinds = result.rejections.map((r) => r.kind).sort();
     expect(kinds).toContain('email');
     expect(kinds).toContain('phone');
+  });
+});
+
+describe('filterSensitiveMulti', () => {
+  // TASK-219: extracted from the three hand-written "scan a few fields,
+  // merge + dedupe kinds" blocks in observer.ts, tools/memory-note.ts, and
+  // promotion.ts. These tests pin the contract those call sites rely on.
+
+  it('reports a hit found in a later field', () => {
+    const result = filterSensitiveMulti(['nothing here', 'AKIAIOSFODNN7EXAMPLE was rotated']);
+    expect(result.kept).toBe(false);
+    expect(result.kinds).toEqual(['aws-access-key']);
+  });
+
+  it('dedupes a kind that fires in two different fields to one entry', () => {
+    const result = filterSensitiveMulti([
+      'key sk-ant-XXXXXXXXXXXXXXXXXXXXX one',
+      'key sk-ant-XXXXXXXXXXXXXXXXXXXXX two',
+    ]);
+    expect(result.kept).toBe(false);
+    expect(result.kinds).toEqual(['anthropic-api-key']);
+  });
+
+  it('orders distinct kinds first-seen: field order, then pattern order within a field', () => {
+    // Field 0 trips 'secret-assignment' (pattern index 6) and
+    // 'anthropic-api-key' (pattern index 0) — within-field order must be
+    // pattern-declaration order (anthropic first), THEN field 1's
+    // 'email' (a kind not seen yet) appended after.
+    const result = filterSensitiveMulti([
+      'secret=shh and the key is sk-ant-XXXXXXXXXXXXXXXXXXXXX',
+      'contact bob@example.com',
+    ]);
+    expect(result.kept).toBe(false);
+    expect(result.kinds).toEqual(['anthropic-api-key', 'secret-assignment', 'email']);
+  });
+
+  it('returns kept:true with empty kinds when every field is clean', () => {
+    const result = filterSensitiveMulti(['User prefers React.', 'Meeting is on Friday.']);
+    expect(result).toEqual({ kept: true, kinds: [] });
+  });
+
+  it('returns kept:true for an empty field list', () => {
+    expect(filterSensitiveMulti([])).toEqual({ kept: true, kinds: [] });
+  });
+
+  it('returns kept:true for a list of empty strings', () => {
+    expect(filterSensitiveMulti(['', '', ''])).toEqual({ kept: true, kinds: [] });
+  });
+
+  it('does not let a field-boundary seam produce a false positive (no concatenation)', () => {
+    // The historical bug this extraction removes from promotion.ts: joining
+    // fields with '\n' let a field ending in "secret" and the next field
+    // starting ": ..." cross-match secret-assignment. Per-field scanning has
+    // no seam to cross.
+    const result = filterSensitiveMulti(['the plan is still secret', ': rotation policy TBD']);
+    expect(result).toEqual({ kept: true, kinds: [] });
   });
 });
