@@ -25,7 +25,7 @@
 // Confidence check comes first (cheap exit). Sensitive check comes second
 // (covers the I11 regression scenario).
 
-import { filterSensitive, type RejectionKind } from './sensitive-gate.js';
+import { filterSensitiveMulti, type RejectionKind } from './sensitive-gate.js';
 import type { InboxFile } from './inbox-store.js';
 
 /** Minimum observer confidence for an inbox observation to be promoted. */
@@ -76,13 +76,24 @@ export function decidePromotion(file: InboxFile): PromotionDecision {
   // always-injected `system/recent.md` (both the "Active Projects" line and
   // the doc `id` derived from it). Skipping it would leave exactly the kind
   // of untrusted-field gap I11 exists to close.
-  const haystack = `${file.frontmatter.subject ?? ''}\n${file.frontmatter.summary ?? ''}\n${file.body}`;
-  const gate = filterSensitive(haystack);
+  //
+  // TASK-219: scan the three fields INDEPENDENTLY via filterSensitiveMulti
+  // rather than joining them with `\n` and scanning the join (as this used
+  // to do). `\s` in password-assignment/secret-assignment matches a
+  // newline, so a `subject` ending in "...secret" followed by a `summary`
+  // starting ": rotation policy" used to trip `secret-assignment` across
+  // the seam between two unrelated fields — a false positive that per-field
+  // scanning can't produce, since every field is still scanned in full.
+  const gate = filterSensitiveMulti([
+    file.frontmatter.subject ?? '',
+    file.frontmatter.summary ?? '',
+    file.body,
+  ]);
   if (!gate.kept) {
     return {
       promote: false,
       reason: 'sensitive',
-      kinds: [...new Set(gate.rejections.map((r) => r.kind))],
+      kinds: gate.kinds,
     };
   }
 

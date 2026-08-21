@@ -2,7 +2,7 @@ import { makeAgentContext } from '@ax/core';
 import type { AgentContext, HookBus, ToolDescriptor } from '@ax/core';
 import { agentTierAvailable, flushAgentTier, hydrateAgentTier } from '../agent-tier-sync.js';
 import { writeInboxObservation } from '../inbox-store.js';
-import { filterSensitive } from '../sensitive-gate.js';
+import { filterSensitiveMulti } from '../sensitive-gate.js';
 import type { Observation } from '../types.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
@@ -101,22 +101,14 @@ export async function registerMemoryNote(bus: HookBus): Promise<void> {
       // (I20). Subject is also persisted as part of the Observation
       // frontmatter, so a credential placed there would still hit disk +
       // get indexed. CLAUDE.md invariant 5: untrusted content at every hop.
-      const subjectGate = filterSensitive(subject);
-      const contentGate = filterSensitive(content);
-      if (!subjectGate.kept || !contentGate.kept) {
-        // Deduplicate kinds across both gates in first-seen order. Each
-        // pattern can fire multiple times per input; the merged list lets
-        // the caller see every distinct kind that triggered without
-        // disclosing the matched substring.
-        const seen = new Set<string>();
-        const kinds: string[] = [];
-        for (const r of [...subjectGate.rejections, ...contentGate.rejections]) {
-          if (!seen.has(r.kind)) {
-            seen.add(r.kind);
-            kinds.push(r.kind);
-          }
-        }
-        return { rejected: true, reason: 'sensitive', kinds };
+      // TASK-219: filterSensitiveMulti scans subject and content
+      // INDEPENDENTLY and merges + dedupes kinds in first-seen order
+      // (subject first). Each pattern can fire multiple times per input;
+      // the merged list lets the caller see every distinct kind that
+      // triggered without disclosing the matched substring.
+      const gate = filterSensitiveMulti([subject, content]);
+      if (!gate.kept) {
+        return { rejected: true, reason: 'sensitive', kinds: gate.kinds };
       }
 
       const obs: Observation = { fact: content, subject, factType, confidence };
