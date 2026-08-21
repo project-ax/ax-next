@@ -251,7 +251,7 @@ describe('ConversationStore.appendEvent / listEvents', () => {
   it('keeps seq per-conversation under interleaved concurrent appends', async () => {
     // The lock is keyed per conversation, so two conversations appended to
     // concurrently each get their own independent, contiguous 1..N sequence
-    // (the lock scopes serialization, it does not globalize it).
+    // (each conversation gets its own gapless run (NOTE: this proves correctness, not that the two do not serialize against each other — a mistakenly GLOBAL lock would also pass. A timing assertion would be flaky; the N=50 test is the real guard)).
     const db = makeKysely(8);
     await runConversationsMigration(db);
     const store = createConversationStore(db);

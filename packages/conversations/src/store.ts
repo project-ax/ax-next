@@ -836,6 +836,37 @@ export function createConversationStore(
       // The PK stays as the last-resort integrity backstop. A 23505 now means
       // a writer reached this table WITHOUT taking the lock — a real bug — so
       // it propagates instead of being retried away.
+      //
+      // TWO STANDING ASSUMPTIONS, both currently true, neither enforced by a
+      // test — if you change either, this method stops being correct:
+      //
+      //  1. READ COMMITTED. Correctness needs the MAX(seq) read to happen
+      //     AFTER the lock is granted, on a snapshot that includes every
+      //     committed predecessor. Under REPEATABLE READ or SERIALIZABLE the
+      //     snapshot pins at the transaction's FIRST statement — the
+      //     pg_advisory_xact_lock call, whose snapshot registers BEFORE the
+      //     lock is granted — so a predecessor that commits while we block on
+      //     the lock would be invisible, we'd mint its seq, and hit the PK.
+      //     With the retry loop gone that now THROWS, and the persist callers
+      //     log-and-swallow, so the event drops again (noisily this time).
+      //     Postgres defaults to READ COMMITTED and nothing here overrides it.
+      //     Do not raise the isolation default without revisiting this.
+      //
+      //  2. Never called from inside an outer transaction on the shared pool.
+      //     This opens its OWN transaction and holds a pooled connection while
+      //     waiting on the lock. The old single-statement version was safe to
+      //     nest; this is not. If a caller ever wraps append-event in an outer
+      //     db.transaction(), a burst can deadlock on pool exhaustion — outer
+      //     transactions holding every connection, each awaiting an append
+      //     that cannot get one. All four current callers are single awaited
+      //     calls outside any transaction.
+      //
+      // Advisory-lock keyspace note: pg_advisory_xact_lock(hashtext(...)) is a
+      // SINGLE global bigint space, shared here with @ax/attachments' per-user
+      // quota gate and @ax/routines' tick lock. A cross-subsystem hashtext
+      // collision is ~2^-32 per pair and costs only brief spurious
+      // serialization — never correctness, and never deadlock, since each of
+      // those transactions takes exactly one lock.
       return db.transaction().execute(async (trx) => {
         await sql`SELECT pg_advisory_xact_lock(hashtext(${conversationId}))`.execute(
           trx,
