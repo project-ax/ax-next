@@ -12,6 +12,7 @@ import {
 } from './admin/connectors';
 import { adminTeamsMiddleware } from './admin/teams';
 import { brandingMiddleware } from './branding';
+import { workspaceMiddleware } from './workspace';
 
 export function createMockHandler(dataDir?: string): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
   const dir = dataDir ?? resolve(process.cwd(), '.mock-data');
@@ -19,6 +20,7 @@ export function createMockHandler(dataDir?: string): (req: IncomingMessage, res:
   store.seed();
   const handlers = [
     brandingMiddleware(),
+    workspaceMiddleware(),
     authMiddleware(store),
     chatMiddleware(store),
     agentsMiddleware(store),

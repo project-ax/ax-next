@@ -44,6 +44,8 @@ import { useHydrateAgents } from './components/AgentChip';
 import { FirstRunAutoCreate } from './components/onboard/FirstRunAutoCreate';
 import { NewAgentDialog } from './components/onboard/NewAgentDialog';
 import { LoginPage } from './components/LoginPage';
+import { WorkspaceShell } from './components/workspace/WorkspaceShell';
+import { AGENT_WORKSPACE_PREVIEW } from './lib/features';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
@@ -65,8 +67,20 @@ function isSetupPath(): boolean {
   return p === '/setup' || p.startsWith('/setup/');
 }
 
+/**
+ * The agent-workspace prototype lives outside the auth/bootstrap gate on
+ * purpose: it is a dev-only design surface with its own mock backend, and
+ * routing it through the first-run agent gate would mean the prototype's
+ * behaviour depended on whatever the real agent list happened to contain.
+ */
+function isWorkspacePath(): boolean {
+  const p = window.location.pathname;
+  return p === '/workspace' || p.startsWith('/workspace/');
+}
+
 export const App = () => {
   const [mode, setMode] = useState<AppMode>({ kind: 'loading' });
+  const workspacePreview = AGENT_WORKSPACE_PREVIEW && isWorkspacePath();
 
   // Full-page OAuth return fallback (Task 12). Runs once on mount. The popup
   // case is already handled by the bridge in main.tsx before React mounts, so
@@ -96,6 +110,11 @@ export const App = () => {
   }, []);
 
   useEffect(() => {
+    // The prototype route renders below without consulting `mode`, so skip the
+    // bootstrap + session round-trips entirely rather than firing an /admin/me
+    // that is guaranteed to 401 and clutter the console.
+    if (workspacePreview) return;
+
     let cancelled = false;
     void (async () => {
       // Defensive: lib/bootstrap-status.ts already swallows network and
@@ -144,7 +163,14 @@ export const App = () => {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [workspacePreview]);
+
+  // Checked after the hooks (rules-of-hooks) but before every gate: the
+  // prototype supplies its own data and must not be routed through bootstrap,
+  // sign-in, or the first-run agent flow.
+  if (workspacePreview) {
+    return <WorkspaceShell />;
+  }
 
   if (mode.kind === 'loading') {
     return (
