@@ -208,4 +208,117 @@ describe('runRunner', () => {
       outcome: { kind: 'terminated', reason: 'Error: sdk exploded' },
     });
   });
+  // ---- ctx.replaceTranscript (design §5 / §7 rung 3) --------------------
+  //
+  // The shell's only "the loop rewrote its own transcript" path. It exists
+  // because compaction's summarize rung shortens the message list on purpose,
+  // and the delta protocol's `resync-required` fallback is for rewrites nobody
+  // announced.
+  describe('replaceTranscript', () => {
+    /** A client whose session HAS a conversation, plus a source with bytes. */
+    function conversationalRun(source: TranscriptSource) {
+      const original = fakeClient.call.getMockImplementation()!;
+      fakeClient.call.mockImplementation(async (action: string, ...rest: unknown[]) => {
+        if (action === 'session.get-config') {
+          const cfg = (await original(action, ...rest)) as Record<string, unknown>;
+          return { ...cfg, conversationId: 'conv-1' };
+        }
+        if (action === 'conversation.store-runner-session') return {};
+        return original(action, ...rest);
+      });
+      return {
+        ...seams(fakeEnv),
+        createTranscriptSource: () => source,
+      } satisfies RunnerSeams;
+    }
+
+    it('replaces the host copy with the source bytes, then ships only the delta after that', async () => {
+      const callBinaryUpload = vi.fn(async (action: string) =>
+        action === 'session.replace-transcript'
+          ? { maxSeq: 2 }
+          : { outcome: 'appended', maxSeq: 3 },
+      );
+      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload =
+        callBinaryUpload;
+
+      // Shrinks on `replace`, then grows by one line — a compacted turn.
+      let body = 'header\nsummary\n';
+      const source: TranscriptSource = {
+        read: vi.fn(async () => Buffer.from(body, 'utf8')),
+        write: vi.fn().mockResolvedValue('accepted'),
+      };
+
+      const loop: Loop = {
+        run: vi.fn(async (ctx) => {
+          ctx.setTranscriptSessionId('sess-x');
+          await ctx.replaceTranscript();
+          body += 'reply\n';
+          await ctx.endTurn({
+            contentBlocks: [],
+            toolResultBlocks: [],
+            readTurnId: async () => undefined,
+          });
+          return 0;
+        }),
+      };
+
+      expect(await runRunner(() => loop, conversationalRun(source))).toBe(0);
+
+      const actions = callBinaryUpload.mock.calls.map((c) => c[0]);
+      expect(actions[0]).toBe('session.replace-transcript');
+      expect((callBinaryUpload.mock.calls[0]![1] as Buffer).toString('utf8')).toBe(
+        'header\nsummary\n',
+      );
+      // The state advanced, so the following turn ships a DELTA — only the new
+      // line — and its prefix hash is over the REPLACED bytes. If replace had
+      // not reset the state, this would have re-shipped everything.
+      const append = callBinaryUpload.mock.calls.find(
+        (c) => c[0] === 'session.append-transcript',
+      )!;
+      expect((append[1] as Buffer).toString('utf8')).toBe('reply\n');
+      expect((append[2] as { fromSeq: string }).fromSeq).toBe('2');
+    });
+
+    it('does not fail the turn when the replace call errors', async () => {
+      // Best-effort by contract: the next delta's prefix hash cannot match, so
+      // the existing resync path re-ships the whole thing anyway. Ending the
+      // turn over a bookkeeping call with its own fallback would be the wrong
+      // trade.
+      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload = vi.fn(
+        async (action: string) => {
+          if (action === 'session.replace-transcript') throw new Error('host is down');
+          return { outcome: 'appended', maxSeq: 1 };
+        },
+      );
+      const source: TranscriptSource = {
+        read: vi.fn(async () => Buffer.from('header\nsummary\n', 'utf8')),
+        write: vi.fn().mockResolvedValue('accepted'),
+      };
+      const loop: Loop = {
+        run: vi.fn(async (ctx) => {
+          ctx.setTranscriptSessionId('sess-x');
+          await ctx.replaceTranscript();
+          return 0;
+        }),
+      };
+
+      expect(await runRunner(() => loop, conversationalRun(source))).toBe(0);
+    });
+
+    it('is a noop on a session with no conversation', async () => {
+      // Nothing to replace: a non-conversation session has no host transcript.
+      const callBinaryUpload = vi.fn();
+      (fakeClient as unknown as { callBinaryUpload: unknown }).callBinaryUpload =
+        callBinaryUpload;
+      const loop: Loop = {
+        run: vi.fn(async (ctx) => {
+          ctx.setTranscriptSessionId('sess-x');
+          await ctx.replaceTranscript();
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      expect(callBinaryUpload).not.toHaveBeenCalled();
+    });
+  });
 });

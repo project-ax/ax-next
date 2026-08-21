@@ -12,7 +12,13 @@ import {
   type LoopContext,
   type RunnerDeps,
 } from '@ax/agent-runner-core';
-import { ToolLoopAgent, stepCountIs, type ModelMessage, type Tool } from 'ai';
+import {
+  ToolLoopAgent,
+  generateText,
+  stepCountIs,
+  type ModelMessage,
+  type Tool,
+} from 'ai';
 import {
   createCompactor,
   findContextWindowExceeded,
@@ -80,6 +86,18 @@ export const RUNNER_ID = 'aisdk';
  * has its own trigger (`compaction/compactor.ts`).
  */
 const MAX_STEPS_PER_TURN = 100;
+
+/**
+ * Ceiling on the rung-3 summarizer call (design §7).
+ *
+ * The call happens at the top of a turn with the user already waiting and
+ * nothing on screen, so a hung summarizer reads as a hung agent. On timeout the
+ * ladder's failure path takes over: the turn proceeds uncompacted on rungs 1-2,
+ * which is a worse turn but a turn. Generous rather than tight — the input is
+ * most of a context window, and giving up on a slow-but-working summarizer
+ * costs the whole conversation.
+ */
+const SUMMARY_TIMEOUT_MS = 120_000;
 
 export interface AiSdkLoopDeps extends RunnerDeps {
   /**
@@ -236,17 +254,37 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       // SEND-SITE ONLY, like the reasoning prune above it: `transcript` keeps
       // every message, and each step recomputes the compaction from what it is
       // handed. Nothing here reaches the host's stored bytes.
+      //
+      // Rung 3 (summarize) is the exception to "send-site only" and rides
+      // `turn()` below, not `prepareStep`. It costs a model call, so it is the
+      // one rung whose result is written back to `transcript` and published to
+      // the host.
+      const model = resolveModel({
+        modelRef: agentConfig.model,
+        providerEnv: proxyStartup.providerEnv,
+      });
       const compactor = createCompactor({
         modelRef: agentConfig.model,
         instructions,
         toolCount: Object.keys(tools).length,
+        // The agent's OWN model summarizes (design §7). A dedicated summarizer
+        // model would mean a second entry in the per-agent allow-list and a
+        // second credential to resolve, to save money on a call that happens
+        // once per several dozen turns. `tools` is deliberately not passed:
+        // this call reads, it does not act.
+        summarizeText: async ({ instructions: summaryInstructions, prompt }) => {
+          const { text } = await generateText({
+            model,
+            instructions: summaryInstructions,
+            prompt,
+            abortSignal: AbortSignal.timeout(SUMMARY_TIMEOUT_MS),
+          });
+          return text;
+        },
       });
 
       const agent = new ToolLoopAgent({
-        model: resolveModel({
-          modelRef: agentConfig.model,
-          providerEnv: proxyStartup.providerEnv,
-        }),
+        model,
         instructions,
         tools,
         stopWhen: stepCountIs(MAX_STEPS_PER_TURN),
@@ -268,6 +306,25 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         if (next === null) return 0;
 
         transcript.append([toUserModelMessage(next.content)]);
+
+        // Rung 3 of the compaction ladder (design §7), at the only point in the
+        // turn where it is safe: the message list is quiescent — every tool call
+        // has its result, no signed thinking block is mid-flight — and the
+        // rewrite can be made durable before a single token of this turn is
+        // spent. `turn()` decides; it declines unless rungs 1-2 would leave the
+        // conversation over the threshold anyway, and it never throws.
+        //
+        // Unlike rungs 1-2 this DOES rewrite the transcript, because a model
+        // call cannot be recomputed for free the way a mask or a prune can. The
+        // two writes belong together: adopting the shorter list without
+        // publishing it would leave the host's stored copy long, and the next
+        // resume would silently undo the compaction and buy the summarizer call
+        // again.
+        const compacted = await compactor.turn({ messages: transcript.messages() });
+        if (compacted.summarized) {
+          transcript.replace(compacted.messages);
+          await ctx.replaceTranscript();
+        }
 
         // Send-site only. `messagesForProvider` prunes prior-turn reasoning for
         // providers that reject a replay of it (design §6) — the transcript

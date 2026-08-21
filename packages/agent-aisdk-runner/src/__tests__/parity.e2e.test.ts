@@ -114,7 +114,7 @@ vi.mock('../provider.js', async (importOriginal) => ({
 
 const { main } = await import('../main.js');
 const { MockLanguageModelV4, simulateReadableStream } = await import('ai/test');
-const { decodeTranscript } = await import('../transcript-codec.js');
+const { decodeTranscript, headerLine } = await import('../transcript-codec.js');
 
 // ---------------------------------------------------------------------------
 // Scripting the model
@@ -169,6 +169,49 @@ function modelReplaying(steps: Chunk[][]): unknown {
       return { stream: simulateReadableStream({ chunks: chunks as never }) };
     },
   });
+}
+
+/**
+ * `modelReplaying`, plus the `doGenerate` half that compaction's rung-3
+ * summarizer calls.
+ *
+ * The two halves are genuinely separate call paths: the turn loop streams
+ * (`doStream`), the summarizer does not (`generateText` -> `doGenerate`). A
+ * model with only the streaming half would fail the summarizer call, which the
+ * ladder would then report as `model-call-failed` and swallow — the row would
+ * pass for the wrong reason.
+ */
+function modelReplayingWithSummarizer(
+  steps: Chunk[][],
+  summary: string,
+): unknown {
+  let i = 0;
+  return new MockLanguageModelV4({
+    doStream: async ({ prompt }) => {
+      sentPrompts.push(prompt);
+      const chunks = steps[i++];
+      if (chunks === undefined) throw new Error('model script exhausted');
+      return { stream: simulateReadableStream({ chunks: chunks as never }) };
+    },
+    doGenerate: async ({ prompt }) => {
+      summarizerPrompts.push(prompt);
+      return {
+        content: [{ type: 'text', text: summary }],
+        finishReason: 'stop',
+        usage: { inputTokens: 1, outputTokens: 1, totalTokens: 2 },
+        warnings: [],
+      };
+    },
+  });
+}
+
+/** Prompts the SUMMARIZER saw, kept apart from the turn loop's. */
+let summarizerPrompts: unknown[];
+
+/** Lines in a jsonl body — what the host's store would report as `maxSeq`. */
+function countLines(body: Buffer): number {
+  const text = body.toString('utf8');
+  return text.length === 0 ? 0 : text.split('\n').length - 1;
 }
 
 /** A model whose very first call fails — the provider-error parity row. */
@@ -228,6 +271,7 @@ beforeEach(async () => {
   uploadedFiles = [];
   blobBytes = new Map();
   sentPrompts = [];
+  summarizerPrompts = [];
   sessionConfig = {
     userId: 'u-1',
     agentId: 'a-1',
@@ -314,6 +358,15 @@ beforeEach(async () => {
     }),
     callBinaryUpload: vi.fn(async (action: string, body: Buffer) => {
       calls.push({ action, payload: undefined });
+      // The store's two writers behave differently and the fake has to as well:
+      // an append EXTENDS what the host holds, a replace REPLACES it. Modelling
+      // replace as one more append would make a compacted transcript look like
+      // the long one with a summary stuck on the end — the exact thing the
+      // compaction row asserts against.
+      if (action === 'session.replace-transcript') {
+        shippedTranscript = [Buffer.from(body)];
+        return { maxSeq: countLines(body) };
+      }
       shippedTranscript.push(Buffer.from(body));
       return { outcome: 'appended', maxSeq: 1 };
     }),
@@ -693,6 +746,80 @@ describe('aisdk runner — parity', () => {
       'user',
       'assistant',
     ]);
+  });
+
+  // Design §7 rung 3, end to end. The other compaction rungs never leave the
+  // send site, so they have no host-visible behaviour to assert here; this one
+  // rewrites the stored transcript, which makes it a transcript-contract row.
+  it('summarizes a long resumed conversation and REPLACES the stored transcript', async () => {
+    // A conversation that is already too big to continue: 40 turns of prose,
+    // which is the shape neither masking nor pruning can shrink (they only
+    // reclaim tool output). ~0.75 of the 200k window.
+    const needle = 'the deploy key lives at /etc/ax/deploy.pem';
+    const entries: string[] = [headerLine()];
+    for (let i = 0; i < 40; i++) {
+      entries.push(
+        JSON.stringify({
+          role: 'user',
+          uuid: `u-${i}`,
+          message: { role: 'user', content: [{ type: 'text', text: `question ${i}` }] },
+        }),
+        JSON.stringify({
+          role: 'assistant',
+          uuid: `a-${i}`,
+          message: {
+            role: 'assistant',
+            content: [
+              {
+                type: 'text',
+                // The needle rides in the middle, where it will be summarized
+                // away rather than preserved verbatim by the head/tail anchors.
+                text: i === 5 ? needle : `answer ${i} `.padEnd(16_000, 'x'),
+              },
+            ],
+          },
+        }),
+      );
+    }
+    storedTranscript = Buffer.from(`${entries.join('\n')}\n`, 'utf8');
+    sessionConfig.runnerSessionId = 'sess-long';
+    shippedTranscript = [storedTranscript];
+
+    scriptedModel.mockReturnValue(
+      modelReplayingWithSummarizer(
+        [textStep('sure')],
+        `The user is deploying a service. ${needle}.`,
+      ),
+    );
+    inboxEntries = [userMessage('where was that key again?')];
+
+    await expect(main()).resolves.toBe(0);
+
+    // 1. The summarizer ran, and it was handed the MIDDLE of the conversation.
+    expect(summarizerPrompts).toHaveLength(1);
+    expect(JSON.stringify(summarizerPrompts[0])).toContain('question 20');
+
+    // 2. The rewrite was ANNOUNCED (design §5) rather than left for the delta
+    //    ship to discover through `resync-required`.
+    const writes = calls
+      .map((c) => c.action)
+      .filter(
+        (a) =>
+          a === 'session.replace-transcript' || a === 'session.append-transcript',
+      );
+    expect(writes[0]).toBe('session.replace-transcript');
+
+    // 3. The host's stored transcript is now the SHORT one: anchor, summary,
+    //    the preserved tail, and this turn.
+    const roles = shippedEntries().map((e) => e.role);
+    expect(roles.length).toBeLessThan(40);
+    const stored = JSON.stringify(shippedEntries());
+    expect(stored).toContain('question 0'); // the head anchor survived
+    expect(stored).toContain(needle); // ...carried by the summary
+    expect(stored).not.toContain('question 20'); // ...and the middle did not
+
+    // 4. The turn still ran on top of it.
+    expect(chatEnd()).toMatchObject({ outcome: { kind: 'complete' } });
   });
 
   // Design §5: cross-runner translation is explicitly out of scope, so a

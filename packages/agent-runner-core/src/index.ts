@@ -53,6 +53,7 @@ export { resolveGovernedPaths, resolveAttachmentPaths } from './governed-paths.j
 export { buildEgressBlockNote } from './egress-note.js';
 export {
   shipTranscriptDelta,
+  replaceWholeTranscript,
   restoreTranscriptForResume,
   splitCompleteLines,
   hashBytes,

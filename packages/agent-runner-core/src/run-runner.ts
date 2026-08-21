@@ -43,6 +43,7 @@ import { setupProxy, type ProxyStartup } from './proxy-startup.js';
 import { scaffoldPythonVenv } from './python-venv.js';
 import { createSkillProposeExecutor } from './skill-propose-executor.js';
 import {
+  replaceWholeTranscript,
   restoreTranscriptForResume,
   shipTranscriptDelta,
   type TranscriptShipState,
@@ -194,6 +195,24 @@ export interface LoopContext {
   emitChunk(chunk: StreamChunk): Promise<void>;
   /** Close a turn: ships the transcript delta, commits, emits turn-end. */
   endTurn(input: EndTurnInput): Promise<void>;
+  /**
+   * Publish a transcript the loop deliberately REWROTE, replacing the host's
+   * stored copy with what the source holds now.
+   *
+   * For loops whose transcript only ever grows this never gets called; the
+   * per-turn delta is the whole protocol. The caller today is the aisdk
+   * runner's rung-3 compaction, which summarizes the middle of a long
+   * conversation and hands back a shorter list (design §7). Call it right
+   * after adopting such a rewrite and before the next model call, so the
+   * shortened transcript is what a resume would find.
+   *
+   * BEST-EFFORT BY CONTRACT: it does not throw. A failed replace leaves the
+   * host holding the pre-rewrite transcript, and the next `endTurn` delta
+   * cannot match its prefix hash — so the resync path re-ships the whole thing
+   * anyway. Failing the turn over a bookkeeping call whose own fallback is
+   * already in place would be the wrong trade.
+   */
+  replaceTranscript(): Promise<void>;
   /** Record assistant text for the final `event.chat-end` outcome. */
   recordAssistantText(text: string): void;
   /** The transcript session id in effect (resume id, or the loop's own). */
@@ -1012,6 +1031,45 @@ async function runRunnerInner(
   //
   // Failures here MUST NOT terminate the chat — `event.turn-end`
   // is still the heartbeat the host keys off.
+  /**
+   * `LoopContext.replaceTranscript` — see its doc comment for the contract.
+   *
+   * Deliberately does NOT bind the runner session (`bindRunnerSessionIfNeeded`)
+   * even though it, like `endTurn`, makes the transcript durable. A rewrite can
+   * only happen to a conversation that already has turns in it, which means the
+   * bind already happened; calling it here would add a second, subtler path to
+   * a piece of state whose whole point is that one path owns it.
+   */
+  async function replaceTranscript(): Promise<void> {
+    if (transcriptSessionId === null || conversationId === null) return;
+    try {
+      const shipped = await replaceWholeTranscript({
+        client,
+        source: transcriptSource,
+        sessionId: transcriptSessionId,
+      });
+      if (shipped.outcome === 'no-transcript') return;
+      transcriptShipState = {
+        sentOffset: shipped.sentOffset,
+        sentSeq: shipped.sentSeq,
+      };
+      commitTrace(
+        `[commit-trace] replaceTranscript → ${shipped.outcome} sentSeq=${shipped.sentSeq} sentOffset=${shipped.sentOffset}\n`,
+      );
+    } catch (err) {
+      // Loud but not fatal. The state is left UNADVANCED on purpose: the next
+      // `endTurn` then ships a delta whose `prefixHash` is computed over bytes
+      // the source no longer has, the host disagrees, and the existing
+      // resync-required path replaces the whole transcript. The safety net
+      // catches the explicit path's failure, which is the whole reason it is
+      // still there.
+      process.stderr.write(
+        `runner: transcript replace failed (${err instanceof Error ? err.message : String(err)}); ` +
+          `the next turn's delta will resync\n`,
+      );
+    }
+  }
+
   async function endTurn(input: EndTurnInput): Promise<void> {
     try {
       commitTrace(
@@ -1201,6 +1259,7 @@ async function runRunnerInner(
         });
     },
     endTurn,
+    replaceTranscript,
     recordAssistantText: (text: string): void => {
       chatEndHistory.push({ role: 'assistant', content: text });
     },
