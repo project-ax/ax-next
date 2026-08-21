@@ -335,6 +335,32 @@ describe('createProxyFetch', () => {
     );
   });
 
+  // The proxy URL carries the per-session token as Basic userinfo
+  // (`http://ax:<32-hex>@host:port`). The happy path strips it, but the strip
+  // runs AFTER `new URL()` succeeds — so the throw path used to interpolate the
+  // raw string, token and all, into an error that the runner writes to stderr
+  // and the host logs. Attribution-only and host-misconfiguration-only, but a
+  // secret in a log line is a secret in a log line.
+  it('redacts the session token from the malformed-proxy-URL error', () => {
+    // Userinfo present, but the host half is unparseable, so `new URL` rejects
+    // it and we take the throw path with the token still in the string.
+    const malformed = `http://ax:${PROXY_TOKEN}@:::not-a-host`;
+    let thrown: unknown;
+    try {
+      createProxyFetch(env({ HTTPS_PROXY: malformed }));
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = String((thrown as Error).message);
+    // Still says which var is wrong and still refuses to degrade…
+    expect(message).toMatch(/HTTPS_PROXY/);
+    expect(message).toMatch(/Refusing to fall back/);
+    // …but the token is gone, and so is the userinfo that carried it.
+    expect(message).not.toContain(PROXY_TOKEN);
+    expect(message).not.toContain('ax:');
+  });
+
   it('routes the request through the proxy and carries the Basic session token', async () => {
     const proxy = await startTunnelProxy();
     try {

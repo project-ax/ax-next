@@ -245,6 +245,23 @@ export function readProxyCaPem(
  * (it would also send the placeholder key upstream unsubstituted, which fails
  * anyway — just much later and with a confusing message).
  */
+/**
+ * Blank the `user:password@` half of a proxy URL for use in an error message.
+ *
+ * `setupProxy` embeds the per-session proxy token as Basic userinfo, and the
+ * happy path strips it — but only AFTER `new URL()` has succeeded. The failure
+ * path has no parsed URL to strip, so it needs a textual redaction, which is
+ * what this is. The token is attribution-only and cannot widen egress, but the
+ * error is written to the runner's stderr and from there to the host log, and a
+ * secret in a log line is a secret in a log line.
+ *
+ * Deliberately greedy up to the LAST `@` before the first `/`: a password may
+ * itself contain an `@`, and under-redacting is the failure that matters here.
+ */
+function redactUserinfo(rawUrl: string): string {
+  return rawUrl.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i, '$1<redacted>@');
+}
+
 export function createProxyFetch(
   providerEnv: Record<string, string>,
 ): typeof fetch | undefined {
@@ -258,9 +275,10 @@ export function createProxyFetch(
     url = new URL(rawProxy);
   } catch {
     throw new Error(
-      `agent-aisdk-runner: HTTPS_PROXY is not a valid URL (got: ${rawProxy}). ` +
-        `Refusing to fall back to a direct connection — that would bypass the ` +
-        `credential proxy and send the ax-cred placeholder upstream.`,
+      `agent-aisdk-runner: HTTPS_PROXY is not a valid URL ` +
+        `(got: ${redactUserinfo(rawProxy)}). Refusing to fall back to a direct ` +
+        `connection — that would bypass the credential proxy and send the ` +
+        `ax-cred placeholder upstream.`,
     );
   }
 
