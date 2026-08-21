@@ -574,6 +574,12 @@ interface ConversationsBindSessionInput {
   conversationId: string;
   sessionId: string;
   reqId: string;
+  /**
+   * `agents.runner` — recorded onto the conversation so the row says whose
+   * format the stored transcript is in. Optional on the wire: a caller that
+   * does not know must leave the stored value alone rather than clear it.
+   */
+  runnerType?: string;
 }
 type ConversationsBindSessionOutput = void;
 
@@ -1582,6 +1588,13 @@ export function createOrchestrator(
           conversationId: ctx.conversationId!,
           sessionId,
           reqId: ctx.reqId,
+          // Record WHICH runner is about to serve this turn. The row's
+          // `runner_type` is refreshed on every bind rather than frozen at
+          // create, because an agent's runner can be switched at any time and
+          // that switch demotes the next turn to a fresh session, REPLACING
+          // the stored transcript with the new runner's format. A frozen
+          // value would be wrong exactly when someone looked at it.
+          runnerType: agent.runner,
         });
       } catch (err) {
         // bind-session failures shouldn't be fatal — the row may have
@@ -2577,6 +2590,13 @@ export function createOrchestrator(
           conversationId: ctx.conversationId,
           sessionId,
           reqId: ctx.reqId,
+          // Record WHICH runner is about to serve this turn. The row's
+          // `runner_type` is refreshed on every bind rather than frozen at
+          // create, because an agent's runner can be switched at any time and
+          // that switch demotes the next turn to a fresh session, REPLACING
+          // the stored transcript with the new runner's format. A frozen
+          // value would be wrong exactly when someone looked at it.
+          runnerType: agent.runner,
         });
       } catch (err) {
         ctx.logger.warn('conversation_bind_failed_fresh', {

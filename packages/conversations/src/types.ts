@@ -59,9 +59,20 @@ export interface Conversation {
   /** Nullable; the in-flight reqId, if any (Invariant J7). */
   activeReqId: string | null;
   /**
-   * Phase B (2026-04-29). Frozen at create-time from
-   * `ConversationsConfig.defaultRunnerType`. Mirrors I10 (immutable for
-   * the conversation's lifetime). Nullable for pre-Phase-B rows.
+   * Which runner LAST served this conversation — equivalently, whose format
+   * the stored transcript is in. Written on every `conversations:bind-session`.
+   *
+   * NOT frozen, despite what this field's original Phase-B contract said. It
+   * used to be frozen at create from a host-wide
+   * `ConversationsConfig.defaultRunnerType`, which was correct while one host
+   * meant one runner. PR #399 made the runner a per-AGENT choice, and an
+   * agent's runner can be switched at any time; that switch demotes the next
+   * turn to a fresh session and REPLACES the stored transcript with the new
+   * runner's format. So a value frozen at create is wrong in precisely the
+   * case that would make anyone look at it.
+   *
+   * `null` = no runner has served this conversation yet (freshly created, or
+   * a pre-Phase-B row).
    */
   runnerType: string | null;
   /**
@@ -352,6 +363,20 @@ export interface BindSessionInput {
   conversationId: string;
   sessionId: string;
   reqId: string;
+  /**
+   * The runner about to serve this turn (`agents.runner` — `'aisdk'`,
+   * `'claude-sdk'`). Recorded onto `runner_type` so the row says whose
+   * format the stored transcript is in.
+   *
+   * A runner ID, deliberately: it is domain vocabulary the hook surface
+   * already speaks (`agents.runner`), not storage or transport vocabulary,
+   * so it carries no backend assumption for a subscriber to key off.
+   *
+   * Optional. Omitted leaves the column untouched — a caller that does not
+   * know which runner is about to run must not overwrite a value that was
+   * correct.
+   */
+  runnerType?: string;
 }
 export type BindSessionOutput = void;
 
@@ -603,17 +628,10 @@ export interface TitleUpdatedEvent {
  * Plugin config knobs. Postgres + kysely come from the
  * @ax/database-postgres service via the bus, not from this config.
  */
-export interface ConversationsConfig {
-  /**
-   * Phase B (2026-04-29). The runner-plugin name to freeze onto every new
-   * conversation row's `runner_type` column. Single-runner-per-host MVP
-   * (design D5), so this is a constant the host preset declares — the
-   * conversations plugin inherits it. Same string the runner plugin
-   * itself reports; keep them in lockstep when a new runner ships. (When
-   * the future `@ax/runner-router` plugin lands, dispatch moves there
-   * and this knob becomes a default-not-required.)
-   *
-   * Validation regex `^[a-z0-9-]+$`, max 64 chars. Default `'claude-sdk'`.
-   */
-  defaultRunnerType?: string;
-}
+// `ConversationsConfig` is gone. It held exactly one knob, `defaultRunnerType`
+// — a host-wide constant frozen onto every conversation's `runner_type` at
+// create, from the era when one host meant one runner (design D5). PR #399 made
+// the runner a per-AGENT choice, so the honest value comes from the agent:
+// seeded at create, refreshed on every `conversations:bind-session`. A host-wide
+// default could only ever disagree with that, so the knob is deleted rather than
+// deprecated — `createConversationsPlugin()` now takes no arguments.

@@ -45,7 +45,6 @@ import type {
   ReplaceTranscriptInput,
   ReplaceTranscriptOutput,
   ConversationDisplayEvent,
-  ConversationsConfig,
   CreateInput,
   CreateOutput,
   DeleteInput,
@@ -98,34 +97,7 @@ const PLUGIN_NAME = '@ax/conversations';
 //   - We DO NOT add `bind-session` / `unbind-session` hooks here — Task 14.
 // ---------------------------------------------------------------------------
 
-/**
- * Phase B (2026-04-29). Resolved config — narrows
- * `defaultRunnerType?: string` to a non-empty validated string. Defaults
- * to 'claude-sdk' (the single-runner-per-host MVP, design D5).
- */
-interface ResolvedConversationsConfig {
-  defaultRunnerType: string;
-}
-
-function resolveConfig(
-  input: ConversationsConfig,
-): ResolvedConversationsConfig {
-  const raw = input.defaultRunnerType ?? 'claude-sdk';
-  const validated = validateRunnerType(raw);
-  if (validated === null) {
-    // Validator returns null for null/undefined input; the `?? 'claude-sdk'`
-    // above means the only path here is an explicitly-null user override.
-    throw new Error(
-      "ConversationsConfig.defaultRunnerType must be a non-empty string (matches /^[a-z0-9-]+$/, ≤ 64 chars)",
-    );
-  }
-  return { defaultRunnerType: validated };
-}
-
-export function createConversationsPlugin(
-  config: ConversationsConfig = {},
-): Plugin {
-  const resolvedConfig = resolveConfig(config);
+export function createConversationsPlugin(): Plugin {
   let db: Kysely<ConversationDatabase> | undefined;
   let _store: ConversationStore | undefined;
 
@@ -234,7 +206,7 @@ export function createConversationsPlugin(
         'conversations:create',
         PLUGIN_NAME,
         async (ctx, input) =>
-          createConversation(localStore, bus, ctx, input, resolvedConfig),
+          createConversation(localStore, bus, ctx, input),
       );
 
       bus.registerService<GetInput, GetOutput>(
@@ -345,7 +317,7 @@ export function createConversationsPlugin(
       bus.registerService<FindOrCreateInput, FindOrCreateOutput>(
         'conversations:find-or-create',
         PLUGIN_NAME,
-        async (ctx, input) => findOrCreateConversation(localStore, bus, ctx, input, resolvedConfig),
+        async (ctx, input) => findOrCreateConversation(localStore, bus, ctx, input),
       );
 
       // TASK-66 (out-of-git Part B / B1): host-internal append to the display
@@ -890,6 +862,17 @@ interface ResolvedAgentShape {
   agent: {
     id?: string;
     workspaceRef?: string | null;
+    /**
+     * `agents.runner` — which runner will serve this agent's turns. Seeds
+     * `runner_type` at create so the row is truthful from its first turn
+     * rather than from a host-wide guess; `conversations:bind-session`
+     * keeps it current afterwards.
+     *
+     * Duck-typed here, like `workspaceRef` above, rather than imported from
+     * @ax/agents (I2 — the hook bus is the contract). Optional because this
+     * shape describes only the fields we read.
+     */
+    runner?: string;
   };
 }
 
@@ -935,7 +918,6 @@ async function createConversation(
   bus: HookBus,
   ctx: AgentContext,
   input: CreateInput,
-  cfg: ResolvedConversationsConfig,
 ): Promise<CreateOutput> {
   const title = validateTitle(input.title ?? null);
   // J1: ACL gate BEFORE persisting. The agent must be reachable to the
@@ -961,7 +943,7 @@ async function createConversation(
     userId: input.userId,
     agentId: input.agentId,
     title,
-    runnerType: cfg.defaultRunnerType,
+    runnerType: validateRunnerType(agent.runner ?? null),
     workspaceRef,
     hidden,
   });
@@ -1436,11 +1418,18 @@ async function bindSession(
   const sessionId = requireBoundedString(input.sessionId, 'sessionId', hookName);
   const reqId = requireBoundedString(input.reqId, 'reqId', hookName);
   const userId = requireBoundedString(ctx.userId, 'ctx.userId', hookName);
+  // `undefined` (caller said nothing) must leave the column alone; anything
+  // else goes through the same shape validator the create path uses.
+  const runnerType =
+    input.runnerType === undefined
+      ? undefined
+      : validateRunnerType(input.runnerType);
   const updated = await store.setActiveSession({
     conversationId,
     userId,
     sessionId,
     reqId,
+    ...(runnerType !== undefined ? { runnerType } : {}),
   });
   if (!updated) {
     throw new PluginError({
@@ -1548,7 +1537,6 @@ async function findOrCreateConversation(
   bus: HookBus,
   ctx: AgentContext,
   input: FindOrCreateInput,
-  cfg: ResolvedConversationsConfig,
 ): Promise<FindOrCreateOutput> {
   const hookName = 'conversations:find-or-create';
   // J1: ACL gate BEFORE any SELECT. Existence-leak prevention —
@@ -1568,7 +1556,7 @@ async function findOrCreateConversation(
       userId: input.userId,
       agentId: input.agentId,
       title,
-      runnerType: cfg.defaultRunnerType,
+      runnerType: validateRunnerType(agent.runner ?? null),
       workspaceRef,
       hidden,
     },

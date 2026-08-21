@@ -22,7 +22,7 @@ async function makeHarness({ resolveOk = true }: { resolveOk?: boolean } = {}): 
           throw new PluginError({ code: 'forbidden', plugin: 'agents', message: 'denied' });
         }
         const call = input as { agentId: string };
-        return { agent: { id: call.agentId, visibility: 'personal' } };
+        return { agent: { id: call.agentId, visibility: 'personal', runner: 'claude-sdk' } };
       },
       'workspace:list': async () => ({ paths: [] as string[] }),
       'workspace:read': async () => ({ found: false }) as const,
@@ -59,7 +59,7 @@ afterAll(async () => {
 });
 
 describe('conversations:find-or-create (Phase A routines foundation)', () => {
-  it('creates new on first call — created=true, externalKey set, hidden=false, runnerType=claude-sdk', async () => {
+  it('creates new on first call — created=true, externalKey set, hidden=false, runnerType follows the agent', async () => {
     const h = await makeHarness();
     const result = await h.bus.call<FindOrCreateInput, FindOrCreateOutput>(
       'conversations:find-or-create',
@@ -74,6 +74,7 @@ describe('conversations:find-or-create (Phase A routines foundation)', () => {
     expect(result.created).toBe(true);
     expect(result.conversation.externalKey).toBe('routines/daily-digest');
     expect(result.conversation.hidden).toBe(false);
+    // Seeded from the RESOLVED AGENT's runner, not from a host-wide default.
     expect(result.conversation.runnerType).toBe('claude-sdk');
     expect(result.conversation.userId).toBe('u1');
     expect(result.conversation.agentId).toBe('agt_a');

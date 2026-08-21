@@ -10,15 +10,22 @@ import { createConversationsPlugin } from '../plugin.js';
 import type { CreateInput, CreateOutput } from '../types.js';
 
 // ---------------------------------------------------------------------------
-// Phase B (2026-04-29) — `conversations:create` freezes runner_type
-// (from ConversationsConfig.defaultRunnerType) and workspace_ref (from
-// the resolved agent's workspaceRef) onto the new row. Both fields are
-// frozen-at-create (mirrors I10) — never updated.
+// `conversations:create` seeds runner_type and workspace_ref from the RESOLVED
+// AGENT.
+//
+// `workspace_ref` is frozen at create (I10). `runner_type` is not, and that is
+// the correction this suite encodes: it used to be frozen from a host-wide
+// `ConversationsConfig.defaultRunnerType`, which was right while one host meant
+// one runner. PR #399 made the runner a per-AGENT choice, and an agent's runner
+// can be switched at any time — so create seeds it from the agent, and
+// `conversations:bind-session` refreshes it every turn (see
+// bind-session-runner-type.test.ts).
 // ---------------------------------------------------------------------------
 
 interface MockAgent {
   id: string;
   workspaceRef: string | null;
+  runner?: string;
 }
 
 let container: StartedPostgreSqlContainer;
@@ -27,7 +34,6 @@ const harnesses: TestHarness[] = [];
 
 async function makeHarness(args: {
   agents: ReadonlyMap<string, MockAgent>;
-  defaultRunnerType?: string;
 }): Promise<TestHarness> {
   const h = await createTestHarness({
     services: {
@@ -53,11 +59,7 @@ async function makeHarness(args: {
     },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
-      createConversationsPlugin(
-        args.defaultRunnerType === undefined
-          ? {}
-          : { defaultRunnerType: args.defaultRunnerType },
-      ),
+      createConversationsPlugin(),
     ],
   });
   harnesses.push(h);
@@ -90,29 +92,29 @@ afterAll(async () => {
   if (container) await stopPostgresContainer(container);
 });
 
-describe('conversations:create — Phase B freezing', () => {
-  it('freezes runner_type from config + workspace_ref from the resolved agent', async () => {
+describe('conversations:create — seeding from the resolved agent', () => {
+  it('seeds runner_type from the AGENT, not from a host-wide default', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_demo', { id: 'agt_demo', workspaceRef: 'wsp_demo' }],
+        ['agt_demo', { id: 'agt_demo', workspaceRef: 'wsp_demo', runner: 'aisdk' }],
       ]),
-      defaultRunnerType: 'claude-sdk',
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
       'conversations:create',
       h.ctx({ userId: 'userA' }),
       { userId: 'userA', agentId: 'agt_demo' },
     );
-    expect(conv.runnerType).toBe('claude-sdk');
+    // The regression this pins: this used to be 'claude-sdk' for EVERY
+    // conversation, including ones an aisdk agent went on to serve.
+    expect(conv.runnerType).toBe('aisdk');
     expect(conv.workspaceRef).toBe('wsp_demo');
   });
 
   it('freezes workspace_ref = null when the agent had no workspaceRef', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_no_ws', { id: 'agt_no_ws', workspaceRef: null }],
+        ['agt_no_ws', { id: 'agt_no_ws', workspaceRef: null, runner: 'claude-sdk' }],
       ]),
-      defaultRunnerType: 'claude-sdk',
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
       'conversations:create',
@@ -123,33 +125,21 @@ describe('conversations:create — Phase B freezing', () => {
     expect(conv.runnerType).toBe('claude-sdk');
   });
 
-  it('defaults runner_type to "claude-sdk" when the config knob is omitted', async () => {
+  it('records runner_type = null when the agent reports no runner', async () => {
+    // Null means "no runner has served this conversation yet" — an honest
+    // unknown. The old code guessed 'claude-sdk' here, which is how a wrong
+    // value got onto every row in the first place.
     const h = await makeHarness({
       agents: new Map([
-        ['agt_no_ws', { id: 'agt_no_ws', workspaceRef: null }],
+        ['agt_bare', { id: 'agt_bare', workspaceRef: null }],
       ]),
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
       'conversations:create',
       h.ctx({ userId: 'userA' }),
-      { userId: 'userA', agentId: 'agt_no_ws' },
+      { userId: 'userA', agentId: 'agt_bare' },
     );
-    expect(conv.runnerType).toBe('claude-sdk');
-  });
-
-  it('uses a custom defaultRunnerType when configured', async () => {
-    const h = await makeHarness({
-      agents: new Map([
-        ['agt_no_ws', { id: 'agt_no_ws', workspaceRef: null }],
-      ]),
-      defaultRunnerType: 'codex-cli',
-    });
-    const conv = await h.bus.call<CreateInput, CreateOutput>(
-      'conversations:create',
-      h.ctx({ userId: 'userA' }),
-      { userId: 'userA', agentId: 'agt_no_ws' },
-    );
-    expect(conv.runnerType).toBe('codex-cli');
+    expect(conv.runnerType).toBeNull();
   });
 
   // Phase D (2026-05-17): routines pass `hidden: true` for per-fire
@@ -157,9 +147,8 @@ describe('conversations:create — Phase B freezing', () => {
   it('conversations:create respects optional hidden flag', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_a', { id: 'agt_a', workspaceRef: 'wsp_demo' }],
+        ['agt_a', { id: 'agt_a', workspaceRef: 'wsp_demo', runner: 'claude-sdk' }],
       ]),
-      defaultRunnerType: 'claude-sdk',
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
       'conversations:create',
@@ -177,9 +166,8 @@ describe('conversations:create — Phase B freezing', () => {
   it('conversations:create defaults hidden to false when omitted', async () => {
     const h = await makeHarness({
       agents: new Map([
-        ['agt_a', { id: 'agt_a', workspaceRef: 'wsp_demo' }],
+        ['agt_a', { id: 'agt_a', workspaceRef: 'wsp_demo', runner: 'claude-sdk' }],
       ]),
-      defaultRunnerType: 'claude-sdk',
     });
     const conv = await h.bus.call<CreateInput, CreateOutput>(
       'conversations:create',
