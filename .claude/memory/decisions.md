@@ -2,6 +2,14 @@
 
 Architectural / process decisions. Never deleted — strikethrough if reversed.
 
+## 2026-08-20 — TASK-216 sensitive gates scan the LLM-chosen `subject` at both hops
+
+| Date | Decision | Rationale | Alternatives |
+|---|---|---|---|
+| 2026-08-20 | On a sensitive `subject`, **reject the whole observation** at BOTH hops (I7 drops it pre-inbox; I11 quarantines the inbox file) — do NOT neutralize `subject` to `'general'` and keep the fact. | Three reasons. (1) It matches the package's own stated posture (`sensitive-gate.ts` header: "False positives drop a useful fact; false negatives leak a credential. We err toward false positives every time."). (2) It matches the closest existing precedent verbatim — `tools/memory-note.ts` (I20) already gates `subject` AND `content` and rejects the whole note if EITHER trips. (3) Neutralizing is actively harmful: `cluster.ts` buckets by `slugify(subject)` and `slugify('general') === 'general'`, so every neutralized observation collapses into ONE `docs/<category>/general.md`, merging unrelated topics and defeating the per-subject clustering that Active Projects, Recent Changes, `memory_search`, and `findNearDupSlug` all depend on. Rejecting changes NOTHING about how surviving observations route. | (a) Neutralize `subject`→`'general'`, keep the fact (the card's own suggestion) — REJECTED for reason (3): silent topic-collapse is a worse failure mode than dropping one over-broad-matched fact, and it would make I7 and I11 asymmetric (I11 cannot neutralize — the subject is already baked into the inbox file's frontmatter and the cluster slug, so its only sane action is the quarantine it already does). (b) Gate only at I11 — REJECTED: I7 is the write-time floor; leaving it open means a credential-shaped subject still lands on disk in `inbox/` and is rendered into Open Threads. |
+| 2026-08-20 | I7 merges the `fact` and `subject` rejection kinds into ONE deduplicated `kinds` list (first-seen order) on the existing `RejectedObservation`, rather than adding a `field: 'fact' \| 'subject'` discriminator. | Copies `memory-note.ts`'s existing merge block exactly (one source of truth for the shape of a two-field sensitive rejection). The audit log wants "which patterns fired", not "which field"; naming the field would tell an operator reading the log where in the observation the credential sat, which is marginally more disclosure for no operational gain. No type change ⇒ no consumer churn in `plugin.ts`'s observer audit log. | A `field` discriminator on `RejectedObservation` — REJECTED: type churn + more disclosure, no caller needs it. |
+| 2026-08-20 | No boundary review required. | Zero hook signatures or payloads change; `filterSensitive` is already exported from `index.ts`. This is purely an internal widening of two existing in-plugin gates. | — |
+
 ## 2026-07-07 — TASK-200 deterministic (Stage A) write-time rollups
 
 | Date | Decision | Rationale | Alternatives |

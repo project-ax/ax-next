@@ -12,7 +12,15 @@
 // Running the sensitive-gate a second time here (I11) closes that window.
 // Even if Phase 1's gate is entirely bypassed — e.g., a direct write to
 // inbox/ by a test fixture or a future code path that forgets to gate —
-// no credential can graduate to docs/ without passing this check.
+// no credential can graduate to docs/ without passing this check. The scan
+// covers `summary`, `body`, AND `subject` — `subject` is chosen by the
+// extraction LLM (not validated against the source text), is carried onto
+// the promoted doc unchanged, and is rendered RAW into `system/recent.md`,
+// which `inject.ts` splices into the system prompt on every turn with no
+// retrieval gate. A credential that only reached `subject` would otherwise
+// sail through this defense-in-depth check untouched. Per CLAUDE.md
+// invariant 5, LLM-chosen content is untrusted at every hop, and `subject`
+// is no exception just because it looks like a short label.
 //
 // Confidence check comes first (cheap exit). Sensitive check comes second
 // (covers the I11 regression scenario).
@@ -62,8 +70,13 @@ export function decidePromotion(file: InboxFile): PromotionDecision {
   // at promotion-time (Phase 2A, I11). If a regression in the Phase 1
   // gate ever lets a credential into inbox/, this catches it before the
   // fact graduates to docs/, where it would be cached and re-loaded into
-  // the agent's context next turn.
-  const haystack = `${file.frontmatter.summary ?? ''}\n${file.body}`;
+  // the agent's context next turn. `subject` is included alongside
+  // `summary`/`body` because it's LLM-chosen, not just author-chosen text —
+  // it graduates onto the promoted doc unchanged and renders RAW into the
+  // always-injected `system/recent.md` (both the "Active Projects" line and
+  // the doc `id` derived from it). Skipping it would leave exactly the kind
+  // of untrusted-field gap I11 exists to close.
+  const haystack = `${file.frontmatter.subject ?? ''}\n${file.frontmatter.summary ?? ''}\n${file.body}`;
   const gate = filterSensitive(haystack);
   if (!gate.kept) {
     return {

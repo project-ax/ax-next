@@ -18,6 +18,7 @@ function makeInboxFile(overrides: {
   body?: string;
   summary?: string;
   factType?: string;
+  subject?: string;
 }): InboxFile {
   return {
     path: 'permanent/memory/inbox/2026-05-10T00:00:00.000Z.md',
@@ -29,6 +30,7 @@ function makeInboxFile(overrides: {
       pinned: false,
       summary: overrides.summary ?? '',
       ...(overrides.factType !== undefined ? { factType: overrides.factType } : {}),
+      ...(overrides.subject !== undefined ? { subject: overrides.subject } : {}),
     },
     body: overrides.body ?? '',
   };
@@ -161,5 +163,68 @@ describe('decidePromotion', () => {
     expect(decision.promote).toBe(false);
     if (decision.promote) throw new Error('unreachable');
     expect(decision.reason).toBe('sensitive');
+  });
+});
+
+describe('sensitive gate covers the LLM-chosen subject (I11)', () => {
+  // Core case: a direct inbox write (or any path that bypasses the Phase 1
+  // write-time gate) can put a credential in `subject` even when the
+  // extraction LLM kept `summary`/`body` clean. `subject` rides unchanged
+  // onto the promoted doc and is rendered RAW into system/recent.md, which
+  // is spliced into the system prompt on every turn with no retrieval gate
+  // — so it must be scanned like any other untrusted field.
+  it('rejects with sensitive when subject carries a credential but summary/body are clean', () => {
+    const file = makeInboxFile({
+      confidence: 0.9,
+      subject: 'API key sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA rotation',
+      summary: 'User rotated a key',
+      body: 'Nothing sensitive here',
+    });
+    const result = decidePromotion(file);
+    expect(result).toMatchObject({ promote: false, reason: 'sensitive' });
+    if (!result.promote && result.reason === 'sensitive') {
+      expect(result.kinds).toContain('anthropic-api-key');
+    }
+  });
+
+  // Confidence check still short-circuits before the subject scan.
+  it('rejects with low-confidence (not sensitive) when confidence is below threshold even with a sensitive subject', () => {
+    const file = makeInboxFile({
+      confidence: 0.4,
+      subject: 'AKIAIOSFODNN7EXAMPLE was rotated',
+      summary: 'clean',
+      body: 'clean',
+    });
+    const result = decidePromotion(file);
+    expect(result).toEqual({ promote: false, reason: 'low-confidence' });
+  });
+
+  // Dedup: the same pattern firing on subject AND summary collapses to one kind.
+  it('deduplicates kinds when the same pattern fires on subject AND summary', () => {
+    const file = makeInboxFile({
+      confidence: 0.85,
+      subject: 'Token: sk-ant-XXXXXXXXXXXXXXXXXXXXX',
+      summary: 'Same token again: sk-ant-XXXXXXXXXXXXXXXXXXXXX',
+      body: 'clean',
+    });
+    const decision = decidePromotion(file);
+    if (decision.promote === false && decision.reason === 'sensitive') {
+      expect(decision.kinds).toEqual(['anthropic-api-key']);
+    } else {
+      throw new Error(`expected sensitive rejection, got ${JSON.stringify(decision)}`);
+    }
+  });
+
+  // Guard against an over-broad fix: a clean subject alongside clean
+  // summary/body must still promote.
+  it('promotes when subject, summary, and body are all clean', () => {
+    const file = makeInboxFile({
+      confidence: 0.85,
+      subject: 'User prefers dark mode',
+      summary: 'User asked for dark mode',
+      body: 'No credential here',
+    });
+    const result = decidePromotion(file);
+    expect(result).toEqual({ promote: true });
   });
 });
