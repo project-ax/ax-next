@@ -277,6 +277,21 @@ describe('resolveAllowedModels', () => {
     expect(out).toContain('anthropic/claude-opus-4-7');
   });
 
+  // PR 4 — the two OpenRouter models the provider-layer gate names ship in
+  // DEFAULT_ALLOWED_MODELS, so the gate is reachable with no config edit.
+  // Their ids carry a SECOND slash (`openrouter/x-ai/grok-4.6`); this pins
+  // that the ref validator accepts them (it splits on the FIRST `/`) rather
+  // than rejecting the vendor slug.
+  it('defaults include the OpenRouter gate models, and they validate as refs', () => {
+    delete process.env.AX_AGENT_MODELS_ALLOWED;
+    const out = resolveAllowedModels(undefined);
+    expect(out).toContain('openrouter/x-ai/grok-4.6');
+    expect(out).toContain('openrouter/moonshotai/kimi-k3');
+    // Round-trip the defaults back through the same validator the configured
+    // path uses — a default the operator could not have typed would be a bug.
+    expect(resolveAllowedModels([...out])).toEqual(out);
+  });
+
   // PR 2 — fail fast on operator misconfiguration. A bare id in the
   // allow-list would make every agent that selects it unroutable at
   // runtime (there is no provider to route to), so reject it at boot.

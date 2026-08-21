@@ -48,6 +48,7 @@
     "@ax/http-server": "workspace:*",
     "@ax/ipc-http": "workspace:*",
     "@ax/llm-anthropic": "workspace:*",
+    "@ax/llm-openrouter": "workspace:*",
     "@ax/mcp-client": "workspace:*",
     "@ax/mcp-oauth": "workspace:*",
     "@ax/memory-strata": "workspace:*",

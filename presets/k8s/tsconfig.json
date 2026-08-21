@@ -29,6 +29,7 @@
     { "path": "../../packages/blob-store-fs" },
     { "path": "../../packages/blob-store-s3" },
     { "path": "../../packages/llm-anthropic" },
+    { "path": "../../packages/llm-openrouter" },
     { "path": "../../packages/mcp-client" },
     { "path": "../../packages/mcp-oauth" },
     { "path": "../../packages/memory-strata" },

@@ -734,6 +734,9 @@ importers:
       '@ax/llm-anthropic':
         specifier: workspace:*
         version: link:../llm-anthropic
+      '@ax/llm-openrouter':
+        specifier: workspace:*
+        version: link:../llm-openrouter
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../mcp-client
@@ -2530,6 +2533,9 @@ importers:
       '@ax/llm-anthropic':
         specifier: workspace:*
         version: link:../../packages/llm-anthropic
+      '@ax/llm-openrouter':
+        specifier: workspace:*
+        version: link:../../packages/llm-openrouter
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../../packages/mcp-client

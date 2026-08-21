@@ -507,6 +507,15 @@ describe('@ax/agents admin routes', () => {
           label: 'anthropic/claude-haiku-4-5-20251001',
           kind: 'either',
         },
+        // PR 4 (T8) added the two OpenRouter gate models to
+        // DEFAULT_ALLOWED_MODELS. With no registrant they behave like every
+        // other unlabelled entry — present, `label === id`.
+        { id: 'openrouter/x-ai/grok-4.6', label: 'openrouter/x-ai/grok-4.6', kind: 'either' },
+        {
+          id: 'openrouter/moonshotai/kimi-k3',
+          label: 'openrouter/moonshotai/kimi-k3',
+          kind: 'either',
+        },
       ],
     });
   });
@@ -514,13 +523,14 @@ describe('@ax/agents admin routes', () => {
   it('GET /admin/agents/models returns only models in BOTH models:list-supported:anthropic and the allow-list', async () => {
     // Rebuild the stack with a models:list-supported:anthropic stub. The
     // default agents allow-list (no `allowedModels` override passed to
-    // createAgentsPlugin()) is exactly the three DEFAULT_ALLOWED_MODELS ids
-    // — 'anthropic/claude-opus-4-7', 'anthropic/claude-sonnet-4-6',
-    // 'anthropic/claude-haiku-4-5-20251001'. The stub reports one of those
-    // PLUS one model that is deliberately NOT in the allow-list
-    // ('anthropic/claude-secret-internal') — the fixture that proves an id
-    // outside the allow-list is DROPPED, never emitted. The two allow-listed
-    // refs the stub does not cover fall back to `label === id`.
+    // createAgentsPlugin()) is exactly DEFAULT_ALLOWED_MODELS — three
+    // `anthropic/` ids plus, since PR 4 (T8), the two `openrouter/` gate
+    // models. The stub reports one of the anthropic ids PLUS one model that is
+    // deliberately NOT in the allow-list ('anthropic/claude-secret-internal')
+    // — the fixture that proves an id outside the allow-list is DROPPED, never
+    // emitted. Every allow-listed ref the stub does not cover (including both
+    // openrouter ones, whose provider has no registrant loaded here) falls
+    // back to `label === id`.
     await stack.harness.close({ onError: () => {} });
     stack = await bootStack({
       'models:list-supported:anthropic': async () => ({
@@ -542,6 +552,12 @@ describe('@ax/agents admin routes', () => {
       {
         id: 'anthropic/claude-haiku-4-5-20251001',
         label: 'anthropic/claude-haiku-4-5-20251001',
+        kind: 'either',
+      },
+      { id: 'openrouter/x-ai/grok-4.6', label: 'openrouter/x-ai/grok-4.6', kind: 'either' },
+      {
+        id: 'openrouter/moonshotai/kimi-k3',
+        label: 'openrouter/moonshotai/kimi-k3',
         kind: 'either',
       },
     ]);

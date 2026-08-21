@@ -41,6 +41,13 @@ const DEFAULT_ALLOWED_MODELS: readonly string[] = [
   'anthropic/claude-opus-4-7',
   'anthropic/claude-sonnet-4-6',
   'anthropic/claude-haiku-4-5-20251001',
+  // PR 4 — the two OpenRouter models the provider-layer acceptance gate
+  // names. Defaulting them in means a deployment that stores an OpenRouter
+  // key can select them straight away, with no `allowedModels` edit. The
+  // second `/` is part of the model id: `parseModelRef` splits on the FIRST
+  // one, so the provider is `openrouter` and the vendor slug survives intact.
+  'openrouter/x-ai/grok-4.6',
+  'openrouter/moonshotai/kimi-k3',
 ];
 
 /**

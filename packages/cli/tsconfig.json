@@ -30,6 +30,7 @@
     { "path": "../mcp-client" },
     { "path": "../tool-artifact-publish" },
     { "path": "../llm-anthropic" },
+    { "path": "../llm-openrouter" },
     { "path": "../memory-strata" },
     { "path": "../memory-strata-index-sqlite" },
     { "path": "../web-tools" },
