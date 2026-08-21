@@ -171,9 +171,30 @@ export async function runObserver(input: RunObserverInput): Promise<RunObserverR
 
   for (let i = 0; i < candidates.length; i++) {
     const obs = candidates[i]!;
-    const gate = filterSensitive(obs.fact);
-    if (!gate.kept) {
-      rejected.push({ observation: obs, kinds: gate.rejections.map((r) => r.kind) });
+    // Gate BOTH fact and subject through the sensitive-content filter (I7).
+    // `subject` is LLM-chosen — unvalidated model output, same trust level as
+    // `fact` — and it doesn't stay quarantined in the inbox: it's written
+    // verbatim into the frontmatter, carried onto the promoted doc, and
+    // rendered into system/recent.md, which gets injected into every future
+    // turn. A credential-shaped subject that only the `fact` gate covered
+    // would round-trip straight back into context — the exact automatic-exfil
+    // channel this gate exists to close. Per CLAUDE.md invariant 5, untrusted
+    // content stays untrusted at every hop; mirrors the same fix already
+    // applied to the agent-authored path in tools/memory-note.ts (I20).
+    const factGate = filterSensitive(obs.fact);
+    const subjectGate = filterSensitive(obs.subject);
+    if (!factGate.kept || !subjectGate.kept) {
+      // Merge + dedupe kinds across both gates, first-seen order (fact first)
+      // — a caller sees each distinct kind once, never which field it came from.
+      const seen = new Set<string>();
+      const kinds: RejectionKind[] = [];
+      for (const r of [...factGate.rejections, ...subjectGate.rejections]) {
+        if (!seen.has(r.kind)) {
+          seen.add(r.kind);
+          kinds.push(r.kind);
+        }
+      }
+      rejected.push({ observation: obs, kinds });
       continue;
     }
     const path = await writeInboxObservation(

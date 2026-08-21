@@ -421,6 +421,119 @@ describe('sensitive gate covers assistant-authored facts (I7)', () => {
   });
 });
 
+describe('sensitive gate covers the LLM-chosen subject (I7)', () => {
+  it('rejects a candidate with a clean fact but a credential-shaped subject', async () => {
+    const CREDENTIAL_SUBJECT = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(
+        JSON.stringify([
+          {
+            fact: 'User prefers React over Vue.',
+            subject: CREDENTIAL_SUBJECT,
+            factType: 'preference',
+            confidence: 0.9,
+          },
+        ]),
+      ),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    if (result.kind !== 'written') throw new Error('unreachable');
+    expect(result.written).toHaveLength(0);
+    expect(result.rejected).toHaveLength(1);
+    expect(result.rejected[0]?.kinds).toContain('anthropic-api-key');
+
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files).toHaveLength(0);
+    const rawFiles = await Promise.all(
+      (await listInbox(workspaceRoot)).map((name) => readFile(join(workspaceRoot, INBOX_DIR, name), 'utf8')),
+    );
+    expect(rawFiles.join('')).not.toContain('sk-ant');
+  });
+
+  it('gates per-observation, not per-batch — a clean sibling in the same batch still writes', async () => {
+    const CREDENTIAL_SUBJECT = 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(
+        JSON.stringify([
+          {
+            fact: 'User prefers React over Vue.',
+            subject: CREDENTIAL_SUBJECT,
+            factType: 'preference',
+            confidence: 0.9,
+          },
+          {
+            fact: 'The project ships next Friday.',
+            subject: 'project',
+            factType: 'episode',
+            confidence: 0.85,
+          },
+        ]),
+      ),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    if (result.kind !== 'written') throw new Error('unreachable');
+    expect(result.written).toHaveLength(1);
+    expect(result.rejected).toHaveLength(1);
+    const files = await readInboxFiles(workspaceRoot);
+    expect(files).toHaveLength(1);
+    expect(files[0]?.body).toContain('Friday');
+  });
+
+  it('merges + dedupes kinds when fact and subject trip different (or the same) patterns', async () => {
+    const result = await runObserver({
+      messages: TRANSCRIPT,
+      llmCall: llmReturning(
+        JSON.stringify([
+          {
+            // fact trips 'email', subject trips 'aws-access-key' — distinct kinds.
+            fact: 'Contact is a@b.com for the rollout.',
+            subject: 'AKIAIOSFODNN7EXAMPLE',
+            factType: 'general',
+            confidence: 0.9,
+          },
+          {
+            // fact and subject both trip 'email' with the SAME address — the
+            // merged list must still report 'email' only once.
+            fact: 'Reach the on-call at a@b.com.',
+            subject: 'a@b.com',
+            factType: 'general',
+            confidence: 0.9,
+          },
+        ]),
+      ),
+      workspaceRoot,
+      now: new Date('2026-07-29T12:00:00.000Z'),
+      timeoutMs: 1000,
+      model: 'test-model',
+    });
+
+    expect(result.kind).toBe('written');
+    if (result.kind !== 'written') throw new Error('unreachable');
+    expect(result.written).toHaveLength(0);
+    expect(result.rejected).toHaveLength(2);
+
+    const distinctPatternKinds = result.rejected[0]?.kinds ?? [];
+    expect(distinctPatternKinds).toContain('email');
+    expect(distinctPatternKinds).toContain('aws-access-key');
+    expect(distinctPatternKinds).toHaveLength(2);
+
+    const samePatternKinds = result.rejected[1]?.kinds ?? [];
+    expect(samePatternKinds).toEqual(['email']);
+  });
+});
+
 describe('EXTRACTION_PROMPT_SYSTEM — assistant-content contract', () => {
   it('instructs capture of assistant-provided content with attribution', () => {
     // Guard against a future prompt edit silently reverting the lever. The
