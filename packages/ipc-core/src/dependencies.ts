@@ -191,6 +191,13 @@ export const DISPATCHER_DEPENDENCIES: DispatcherDependencies = {
       degradation:
         'POST /session.get-transcript returns 500 — the runner cannot rebuild the resume jsonl from the store; unreachable in single-session deployments.',
     },
+    {
+      // Cross-runner history reconstruction. Same conversation-scoped-only
+      // reasoning as the transcript hooks above.
+      hook: 'conversations:get',
+      degradation:
+        'POST /session.get-display-history returns 500 — a runner handed another runner\'s transcript cannot rebuild the conversational thread and starts blank instead (the behaviour that predates the action). Unreachable in single-session deployments that never load @ax/conversations.',
+    },
   ],
   dynamicCallPatterns: [
     // tool.execute-host — `tool:execute:${call.name}`, probed via

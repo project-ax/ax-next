@@ -92,6 +92,13 @@ export const IPC_TIMEOUTS_MS = Object.freeze({
   // a temp file, same path as materialize). Scales with transcript size; shares
   // the 120 s ceiling.
   'session.get-transcript': 120_000,
+  // `session.get-display-history` — cross-runner history reconstruction. One
+  // indexed read of the display log plus a host-side filter, and the RESPONSE is
+  // bounded by construction (newest-N turns inside a character budget), so this
+  // is a small, fast JSON call rather than a transcript-sized stream. It is also
+  // strictly best-effort: on timeout the runner starts fresh, exactly as it did
+  // before the action existed, so a tight bound costs nothing.
+  'session.get-display-history': 15_000,
   // TASK-74 (out-of-git Part D): `skill.propose` — the runner posts a structurally
   // validated skill bundle (manifest + body + ≤512 KiB of extra files) as a small
   // JSON envelope; the host gates + stores it (DB row + blob). Bounded payload, a

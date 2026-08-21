@@ -432,7 +432,10 @@ Beyond the automated suite: a `chat-qa-sweep` run against an agent pinned to the
 `k8s-acceptance-loop` walk, since the pod path is where runner spawn differences surface.
 
 **Documented non-parity** (in the PR description and the runner README): `TodoWrite` absent;
-cross-runner resume demotes to fresh; SDK-specific setting sources do not exist;
+cross-runner resume does not inherit the transcript — it rebuilds a text-only thread from the
+display log instead, one-directionally (see
+`docs/plans/2026-08-21-cross-runner-history-reconstruction.md`); SDK-specific setting sources do
+not exist;
 **skill-declared in-sandbox MCP servers are unsupported** and degrade with an agent-visible
 note (§3). Connector-backed MCP servers are unaffected — they are host-side.
 

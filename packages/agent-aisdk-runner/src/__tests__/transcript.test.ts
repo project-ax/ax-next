@@ -294,3 +294,70 @@ describe('memory transcript source', () => {
     expect(src.messages()).toEqual([USER]);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Cross-runner history reconstruction (design:
+// docs/plans/2026-08-21-cross-runner-history-reconstruction.md).
+//
+// When `write` answers 'unusable' the shell asks the host for the display log
+// and hands it here. Without this the agent starts blank while the user still
+// has the whole conversation on screen — measured on kind, 2026-08-21: after a
+// runner switch it answered NO-HISTORY about its own first turn.
+// ---------------------------------------------------------------------------
+describe('seedFromHistory', () => {
+  const history = [
+    { role: 'user' as const, content: 'what did we call the token?' },
+    { role: 'assistant' as const, content: 'WALK-WS-TOKEN-7719' },
+  ];
+
+  it('rebuilds prior turns as messages, preserving each role', () => {
+    const src = createMemoryTranscriptSource({ idGen: seq() });
+    void src.seedFromHistory!({ sessionId: 's1', messages: history, truncated: false });
+
+    const msgs = src.messages();
+    // A leading note, then the history verbatim, in order.
+    expect(msgs).toHaveLength(3);
+    expect(msgs[0]!.role).toBe('user');
+    expect(JSON.stringify(msgs[0])).toContain('different agent runner');
+    expect(msgs[1]!.role).toBe('user');
+    expect(JSON.stringify(msgs[1])).toContain('what did we call the token?');
+    // The assistant turn stays an ASSISTANT turn — remapping authorship inside
+    // the model's own context would be a lie it then reasons from.
+    expect(msgs[2]!.role).toBe('assistant');
+    expect(JSON.stringify(msgs[2])).toContain('WALK-WS-TOKEN-7719');
+  });
+
+  it('tells the model the tool detail is gone, so its gaps are explained', () => {
+    const src = createMemoryTranscriptSource({ idGen: seq() });
+    void src.seedFromHistory!({ sessionId: 's1', messages: history, truncated: false });
+    const note = JSON.stringify(src.messages()[0]);
+    expect(note).toContain('tool calls and their results');
+  });
+
+  it('says so when the host had to trim older turns', () => {
+    const src = createMemoryTranscriptSource({ idGen: seq() });
+    void src.seedFromHistory!({ sessionId: 's1', messages: history, truncated: true });
+    expect(JSON.stringify(src.messages()[0])).toContain('trimmed');
+  });
+
+  it('does nothing at all for an empty history', () => {
+    // No history is not the same as "explain the missing history" — a brand new
+    // conversation must not open with a note about turns that never existed.
+    const src = createMemoryTranscriptSource({ idGen: seq() });
+    void src.seedFromHistory!({ sessionId: 's1', messages: [], truncated: false });
+    expect(src.messages()).toEqual([]);
+    expect(src.size()).toBe(0);
+  });
+
+  it('leaves the seeded turns shippable as this runner\'s own transcript', async () => {
+    // They are context, not a prefix the host already holds: the source must
+    // serialize them in THIS runner's format so the normal delta ship sends
+    // them as its own.
+    const src = createMemoryTranscriptSource({ idGen: seq() });
+    void src.seedFromHistory!({ sessionId: 's1', messages: history, truncated: false });
+    const bytes = await src.read('s1');
+    expect(bytes).not.toBeNull();
+    const firstLine = bytes!.toString('utf8').split('\n')[0]!;
+    expect(JSON.parse(firstLine)).toEqual({ v: 1, runner: 'aisdk' });
+  });
+});

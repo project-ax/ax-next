@@ -632,7 +632,7 @@ describe('timeouts', () => {
     expect(Object.isFrozen(IPC_TIMEOUTS_MS)).toBe(true);
   });
 
-  it('IPC_TIMEOUTS_MS has the nineteen expected keys (TASK-68 adds blob.*; TASK-67 adds the resume-transcript callers; TASK-74 adds skill.propose; egress-note adds proxy.drain-egress-blocks)', () => {
+  it('IPC_TIMEOUTS_MS has the twenty expected keys (TASK-68 adds blob.*; TASK-67 adds the resume-transcript callers; TASK-74 adds skill.propose; egress-note adds proxy.drain-egress-blocks; cross-runner reconstruction adds session.get-display-history)', () => {
     const expected = [
       'tool.pre-call',
       'tool.execute-host',
@@ -658,6 +658,9 @@ describe('timeouts', () => {
       // Agent-visible egress-block note: runner drains its session's
       // allowlist-blocked hosts at PostToolUse.
       'proxy.drain-egress-blocks',
+      // Cross-runner history reconstruction: a runner handed another runner's
+      // transcript rebuilds the thread from the runner-neutral display log.
+      'session.get-display-history',
     ].sort();
     expect(Object.keys(IPC_TIMEOUTS_MS).sort()).toEqual(expected);
   });
