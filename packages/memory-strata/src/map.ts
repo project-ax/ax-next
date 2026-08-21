@@ -33,6 +33,14 @@
 //     produced; densification only improves its content. A densifier that
 //     throws on one doc degrades that doc to its raw summary and continues —
 //     we never abort the whole pass for one bad call.
+//   - Bounded retry on a gated output (TASK-221): if the densifier's OWN
+//     output trips the sensitive-content gate (see `densifyOne`), the doc
+//     degrades to its fallback summary and the sidecar records a "parked"
+//     entry for that fact-hash. A doc whose facts deterministically provoke a
+//     gated line retries a small, fixed number of times before `densifyOne`
+//     stops re-sending it to the LLM at all — otherwise a repeat offender
+//     would re-pay a real LLM call every pass, forever, for a line we already
+//     know gets thrown away.
 
 import { createHash } from 'node:crypto';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -106,10 +114,39 @@ export interface RegenerateMapInput {
 interface MapCacheEntry {
   /** Hash of the doc's source facts; a mismatch means the doc changed. */
   hash: string;
-  /** The cached densified one-liner. */
+  /** The cached densified one-liner (or, when `gatedAttempts` is set — see
+   *  below — the doc's fallback summary; a gated line is never cached). */
   summary: string;
+  /**
+   * TASK-221: present ONLY on an entry parked by the output-side sensitive
+   * gate in `densifyOne` (the densifier's own output tripped `filterSensitive`
+   * for this `hash`). Counts consecutive passes this exact `hash` has been
+   * gated. Once it reaches {@link MAP_DENSIFY_SENSITIVE_RETRY_CAP},
+   * `densifyOne` stops re-sending the doc to the LLM at all — a deterministic
+   * offender (same facts, same gated output) would otherwise re-pay a real
+   * LLM call every single pass, forever, for a result we already know gets
+   * thrown away. A doc's facts changing (new `hash`) resets the count.
+   *
+   * Absent on every normal successful entry, and absent on any entry written
+   * before TASK-221 — `loadCache` only sets it when the field is present and
+   * numeric, so an older sidecar loads exactly as it did before (no crash, no
+   * forced re-densify beyond the doc's own hash check) and simply starts
+   * counting from 0 the first time (if ever) this doc's output gets gated.
+   */
+  gatedAttempts?: number;
 }
 type MapCache = Record<string, MapCacheEntry>;
+
+/**
+ * Small cap on consecutive same-hash passes a densifier's output may be gated
+ * before `densifyOne` stops retrying and just serves the fallback. Bounds the
+ * cost drip from a doc that deterministically provokes a gated output (the
+ * TASK-221 gap: previously this retried — and re-paid the LLM — on EVERY pass
+ * forever). Small on purpose: this is "stop wasting money on a doc that isn't
+ * going to start behaving differently", not a debounce window — a genuine
+ * transient (model had an off pass) clears well within a couple of retries.
+ */
+export const MAP_DENSIFY_SENSITIVE_RETRY_CAP = 3;
 
 /**
  * Regenerate `system/map.md` from the current docs tree. Returns the
@@ -212,9 +249,30 @@ async function densifyOne(args: {
   const hash = hashFacts(facts);
   const cached = cache[docId];
   if (cached !== undefined && cached.hash === hash) {
-    // Unchanged doc — serve the densified one-liner from cache, free.
-    nextCache[docId] = cached;
-    return cached.summary;
+    if (cached.gatedAttempts === undefined) {
+      // Unchanged doc, previously densified cleanly — serve the cached
+      // one-liner from cache, free.
+      nextCache[docId] = cached;
+      return cached.summary;
+    }
+    if (cached.gatedAttempts >= MAP_DENSIFY_SENSITIVE_RETRY_CAP) {
+      // TASK-221: same facts as a doc whose densifier output has been gated
+      // MAP_DENSIFY_SENSITIVE_RETRY_CAP passes running for this exact hash —
+      // a deterministic offender. Retrying would re-pay a real LLM call for a
+      // result we already know gets thrown away. Stop calling the LLM; carry
+      // the parked entry forward and serve the (already-gated) fallback.
+      // Still logged every pass — cheap, since no LLM call happens here — so
+      // a capped, recurring offender stays visible rather than going silent.
+      nextCache[docId] = cached;
+      log?.warn('memory_strata_map_densify_sensitive_capped', {
+        docId,
+        attempts: cached.gatedAttempts,
+      });
+      return fallbackSummary;
+    }
+    // Below the cap: same facts as last pass's gated attempt. Fall through
+    // and retry the densifier — `cached.gatedAttempts` seeds the increment
+    // below if this pass is gated again too.
   }
 
   // Defence in depth: docs are already sensitive-gated at observation time, but
@@ -234,8 +292,11 @@ async function densifyOne(args: {
     // An empty densification is an ACCEPTED result, not a failure: the model
     // had nothing better to say than the summary we already had. It falls
     // through to the cache write below, unlike the failure/sensitive paths,
-    // which return early precisely so the next pass retries. That asymmetry is
-    // deliberate — cache "no improvement", retry "couldn't get an answer".
+    // which return early so a later pass retries (unconditionally, for a
+    // transient LLM failure below; up to MAP_DENSIFY_SENSITIVE_RETRY_CAP
+    // times, for the sensitive-output gate further down — see there). That
+    // asymmetry is deliberate — cache "no improvement", retry "couldn't get
+    // an answer".
     if (summary.length === 0) summary = fallbackSummary;
   } catch (err) {
     // A single doc's densification failure degrades to its raw summary; the
@@ -265,9 +326,18 @@ async function densifyOne(args: {
   // plugged hole — but the map is the one place we don't get to find out the
   // hard way, so we check anyway.
   //
-  // On a hit, degrade exactly like the catch block above: fall back to the
-  // (already-gated) frontmatter summary and skip the cache write, so the next
-  // pass retries the densifier rather than serving the rejected line forever.
+  // On a hit, degrade like the catch block above: fall back to the
+  // (already-gated) frontmatter summary. UNLIKE the catch block, this DOES
+  // write a cache entry (TASK-221) — a distinct "parked" sentinel keyed by
+  // this `hash`, carrying a `gatedAttempts` count rather than a served
+  // summary. The rejected `summary` text itself is never cached (never
+  // served) — only the fact that this hash was gated, and how many times
+  // running. That is what lets the fast-path check above recognize a REPEAT
+  // offender against the same facts and, once `gatedAttempts` reaches
+  // MAP_DENSIFY_SENSITIVE_RETRY_CAP, stop re-sending it to the LLM — a
+  // doc whose facts deterministically provoke a gated output would otherwise
+  // retry (and re-pay the LLM) on every single pass, forever, for a line we
+  // already know gets thrown away.
   //
   // Note this check is only ever MEANINGFUL for fresh densifier output. If the
   // empty-output branch above already swapped in `fallbackSummary`, we end up
@@ -278,10 +348,17 @@ async function densifyOne(args: {
   // isn't — the fallback is the module's trusted floor. Not worth branching on.
   const outputGate = filterSensitive(summary);
   if (!outputGate.kept) {
+    const priorAttempts = cached !== undefined && cached.hash === hash ? (cached.gatedAttempts ?? 0) : 0;
+    const attempts = priorAttempts + 1;
     log?.warn('memory_strata_map_densify_sensitive', {
       docId,
       kinds: [...new Set(outputGate.rejections.map((r) => r.kind))],
+      attempts,
     });
+    // Park, don't serve: `summary` is the fallback frontmatter summary, never
+    // the rejected model output. See the retry-cap check near the top of this
+    // function for how `gatedAttempts` is consumed on the next pass.
+    nextCache[docId] = { hash, summary: fallbackSummary, gatedAttempts: attempts };
     return fallbackSummary;
   }
 
@@ -379,7 +456,17 @@ async function loadCache(workspaceRoot: string): Promise<MapCache> {
         typeof (v as MapCacheEntry).hash === 'string' &&
         typeof (v as MapCacheEntry).summary === 'string'
       ) {
-        out[k] = { hash: (v as MapCacheEntry).hash, summary: (v as MapCacheEntry).summary };
+        const entry: MapCacheEntry = { hash: (v as MapCacheEntry).hash, summary: (v as MapCacheEntry).summary };
+        // `gatedAttempts` is TASK-221 — only set it when present AND numeric,
+        // so a sidecar written by a pre-TASK-221 build (the field absent
+        // entirely) loads exactly as a normal entry, and a malformed value
+        // (wrong type, hand-edited) degrades to "not gated" rather than
+        // throwing out of the whole cache load.
+        const gatedAttempts = (v as MapCacheEntry).gatedAttempts;
+        if (typeof gatedAttempts === 'number') {
+          entry.gatedAttempts = gatedAttempts;
+        }
+        out[k] = entry;
       }
     }
     return out;
