@@ -180,6 +180,19 @@ function modelThatFails(message: string): unknown {
   });
 }
 
+/** Replays `steps`, then fails — a mid-turn provider failure. */
+function modelFailingAfter(steps: Chunk[][], message: string): unknown {
+  let i = 0;
+  return new MockLanguageModelV4({
+    doStream: async ({ prompt }) => {
+      sentPrompts.push(prompt);
+      const chunks = steps[i++];
+      if (chunks === undefined) throw new Error(message);
+      return { stream: simulateReadableStream({ chunks: chunks as never }) };
+    },
+  });
+}
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
@@ -713,6 +726,28 @@ describe('aisdk runner — parity', () => {
     const outcome = chatEnd()?.outcome as { kind: string; reason: string };
     expect(outcome.kind).toBe('terminated');
     expect(outcome.reason).toContain('provider exploded');
+  });
+
+  // The same row, one step later — and it is a genuinely different code path.
+  // A step that fails AFTER a successful one leaves `result.steps` RESOLVED
+  // (the SDK only raises `NoOutputGeneratedError` when nothing was produced at
+  // all), so the turn loop's catch never fires. Before PR 6 this exited 0 with
+  // the partial content committed and the failure dropped on the floor: no
+  // chat:turn-error, no retry card, no log line.
+  it('terminates when a LATER step fails, after an earlier one succeeded', async () => {
+    scriptedModel.mockReturnValue(
+      modelFailingAfter(
+        [toolStep('Bash', { command: 'echo hi' })],
+        'provider exploded mid-turn',
+      ),
+    );
+    inboxEntries = [userMessage('run something')];
+
+    await expect(main()).resolves.toBe(1);
+
+    const outcome = chatEnd()?.outcome as { kind: string; reason: string };
+    expect(outcome.kind).toBe('terminated');
+    expect(outcome.reason).toContain('provider exploded mid-turn');
   });
 
   // The runner is spawned by id out of `ChatOrchestratorConfig.runnerBinaries`.

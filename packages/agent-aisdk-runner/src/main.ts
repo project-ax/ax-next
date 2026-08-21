@@ -14,6 +14,10 @@ import {
 } from '@ax/agent-runner-core';
 import { ToolLoopAgent, stepCountIs, type ModelMessage, type Tool } from 'ai';
 import {
+  createCompactor,
+  findContextWindowExceeded,
+} from './compaction/compactor.js';
+import {
   createMemoryTranscriptSource,
   type MemoryTranscriptSource,
 } from './memory-transcript-source.js';
@@ -72,8 +76,8 @@ export const RUNNER_ID = 'aisdk';
  * Ceiling on tool-calling steps within ONE user turn. `ai@7` defaults to 20;
  * agentic file work routinely needs more, and the real bound on a runaway turn
  * is the orchestrator's `chatTimeoutMs` plus the sandbox reaper, not this.
- * Deliberately NOT a context-window guard — compaction is PR 6/7, and a long
- * session degrading is a documented non-parity today.
+ * Deliberately NOT a context-window guard — that is compaction's job, and it
+ * has its own trigger (`compaction/compactor.ts`).
  */
 const MAX_STEPS_PER_TURN = 100;
 
@@ -220,17 +224,33 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       // message policy, so the turn loop never re-derives "is this Anthropic?".
       const providerId = providerIdForModelRef(agentConfig.model);
 
+      const instructions = composeInstructions(
+        systemPrompt,
+        buildSkillsPromptSection(skills),
+      );
+
+      // Compaction (design §7). `prepareStep` is the only hook that can rewrite
+      // the message list per step AND have the rewrite carry forward to the
+      // rest of the turn, which is what makes a long tool loop survivable.
+      //
+      // SEND-SITE ONLY, like the reasoning prune above it: `transcript` keeps
+      // every message, and each step recomputes the compaction from what it is
+      // handed. Nothing here reaches the host's stored bytes.
+      const compactor = createCompactor({
+        modelRef: agentConfig.model,
+        instructions,
+        toolCount: Object.keys(tools).length,
+      });
+
       const agent = new ToolLoopAgent({
         model: resolveModel({
           modelRef: agentConfig.model,
           providerEnv: proxyStartup.providerEnv,
         }),
-        instructions: composeInstructions(
-          systemPrompt,
-          buildSkillsPromptSection(skills),
-        ),
+        instructions,
         tools,
         stopWhen: stepCountIs(MAX_STEPS_PER_TURN),
+        prepareStep: ({ steps, messages }) => compactor.step({ steps, messages }),
       });
 
       // The transcript session id. On resume the shell already seeded it (and
@@ -310,6 +330,20 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
           // bookkeeping the host does not need.
         }
 
+        // A step that fails AFTER an earlier one succeeded closes the stream
+        // with an `error` part and leaves `result.steps` RESOLVED, carrying the
+        // steps that did work (verified against ai@7.0.70: the step loop's
+        // `catch` enqueues the error and closes; `NoOutputGeneratedError` only
+        // fires when NOTHING was produced). So the catch below never runs for
+        // that case, and without this line the turn would end as a SUCCESS with
+        // partial content and the failure silently dropped — no
+        // `chat:turn-error`, no retry card, nothing in the log.
+        //
+        // Any `error` part means the turn failed: tool failures arrive as
+        // `tool-error` (handled above, loop continues) and cancellation arrives
+        // as `abort`, so this branch is not stealing either of them.
+        if (streamError !== undefined) throw modelCallError(undefined, streamError);
+
         // EVERY step's messages, not `result.response.messages` — that carries
         // only the LAST step's, which on a tool-using turn silently drops every
         // tool call and tool result from both the transcript and the persisted
@@ -375,6 +409,14 @@ export function composeInstructions(prompt: string, section: string): string {
  * otherwise see in the retry card. The original is kept as `cause`.
  */
 function modelCallError(wrapped: unknown, streamError: unknown): Error {
+  // The compaction ceiling is not a model failure and its message is written
+  // for the person reading the retry card, so it is re-raised as itself rather
+  // than wrapped in `model call failed: …`. It reaches us buried in the SDK's
+  // own error, which is why this searches the cause chain.
+  const ceiling =
+    findContextWindowExceeded(streamError) ?? findContextWindowExceeded(wrapped);
+  if (ceiling !== undefined) return ceiling;
+
   const inner = streamError ?? wrapped;
   const detail =
     inner instanceof Error ? `${inner.name}: ${inner.message}` : String(inner);
