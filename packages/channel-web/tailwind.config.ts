@@ -43,6 +43,11 @@ const config: Config = {
           foreground: 'hsl(var(--destructive-foreground))',
           soft: 'hsl(var(--destructive-soft))',
         },
+        warning: {
+          DEFAULT: 'hsl(var(--warning))',
+          foreground: 'hsl(var(--warning-foreground))',
+          soft: 'hsl(var(--warning-soft))',
+        },
         muted: {
           DEFAULT: 'hsl(var(--muted))',
           foreground: 'hsl(var(--muted-foreground))',

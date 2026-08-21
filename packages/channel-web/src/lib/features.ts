@@ -12,3 +12,12 @@
  *     Off until we have an embedding store and a search hook.
  */
 export const SEMANTIC_SEARCH = false;
+
+/**
+ * `AGENT_WORKSPACE_PREVIEW` — the agent-centric workspace prototype at
+ * `/workspace`. Dev-only: it stands on the Vite mock backend
+ * (`mock/workspace.ts`), so in a production build the route falls through to
+ * the normal chat shell rather than rendering a surface with no data behind it.
+ * Not a half-wired feature — a design artifact with an explicit gate.
+ */
+export const AGENT_WORKSPACE_PREVIEW = import.meta.env.DEV;

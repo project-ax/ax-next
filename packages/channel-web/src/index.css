@@ -22,6 +22,11 @@
     --destructive: 0 60% 55%;
     --destructive-foreground: 0 0% 100%;
     --destructive-soft: 0 60% 96%;
+    /* Held-for-you. A third semantic state the surface genuinely needs:
+       "waiting on a human" is neither an error nor business as usual. */
+    --warning: 32 81% 36%;
+    --warning-foreground: 0 0% 100%;
+    --warning-soft: 45 93% 93%;
     --border: 240 6% 91%;
     --input: 240 6% 91%;
     --ring: 211 100% 44%;
@@ -52,6 +57,9 @@
       --destructive: 4 86% 62%;
       --destructive-foreground: 0 0% 100%;
       --destructive-soft: 4 60% 16%;
+      --warning: 43 96% 58%;
+      --warning-foreground: 240 6% 10%;
+      --warning-soft: 38 60% 14%;
       --border: 240 4% 17%;
       --input: 240 4% 17%;
       --ring: 211 100% 52%;
@@ -79,6 +87,9 @@
     --destructive: 4 86% 62%;
     --destructive-foreground: 0 0% 100%;
     --destructive-soft: 4 60% 16%;
+    --warning: 43 96% 58%;
+    --warning-foreground: 240 6% 10%;
+    --warning-soft: 38 60% 14%;
     --border: 240 4% 17%;
     --input: 240 4% 17%;
     --ring: 211 100% 52%;
