@@ -276,6 +276,37 @@ describe('rung 1 — masking stale tool outputs', () => {
     // Truncated JSON labelled as JSON would invite the model to parse it.
     expect(part.output.type).toBe('text');
   });
+
+  it('keeps a failed tool call looking failed', () => {
+    // The provider renders the error flag (Anthropic's `is_error`). Masking an
+    // `error-text` down to plain `text` would quietly turn an old failed
+    // command into one the model reads as having succeeded.
+    const messages: ModelMessage[] = [
+      userMsg('go'),
+      assistantToolCall('c1'),
+      {
+        role: 'tool',
+        content: [
+          {
+            type: 'tool-result',
+            toolCallId: 'c1',
+            toolName: 'Bash',
+            output: { type: 'error-text', value: `boom: ${'e'.repeat(4000)}` },
+          },
+        ],
+      },
+      userMsg('and again'),
+      assistantToolCall('c2'),
+      toolResult('c2', 'small'),
+    ];
+    const out = maskStaleToolOutputs(messages);
+    const first = out[2];
+    if (first === undefined || typeof first.content === 'string') throw new Error('shape');
+    const part = first.content[0];
+    if (part === undefined || part.type !== 'tool-result') throw new Error('shape');
+    expect(part.output.type).toBe('error-text');
+    expect(JSON.stringify(part.output)).toContain('were dropped');
+  });
 });
 
 // ---- rung 2: prune ---------------------------------------------------------

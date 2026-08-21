@@ -94,9 +94,9 @@ export function preservedMessageCount(messageCount: number): number {
 /**
  * Rung 1 — collapse tool outputs older than the preserved window.
  *
- * Idempotent: a masked output is already under the budget, so a second pass
- * leaves it alone. That matters because `prepareStep`'s returned messages carry
- * forward to later steps, so this runs over its own output every step.
+ * Idempotent by way of the `MASK_NOTE_END` sentinel, which matters because
+ * `prepareStep`'s returned messages carry forward to later steps: this runs
+ * over its own output every step.
  */
 export function maskStaleToolOutputs(
   messages: readonly ModelMessage[],
@@ -129,23 +129,28 @@ export function maskStaleToolOutputs(
 
 /**
  * The masked replacement for one tool output, or `null` when the output is
- * already small enough to leave alone.
+ * already small enough — or already masked — to leave alone.
  *
- * Non-text outputs (`json`, `error-json`, `content`) come back as `text`. That
- * is a deliberate shape change: what is left is prose about an elision, not the
- * structured value, and labelling truncated JSON as JSON would invite the model
- * to parse it.
+ * A JSON output (`json` / `error-json`) comes back as its text counterpart.
+ * That is a deliberate shape change: what is left is prose about an elision,
+ * not the structured value, and labelling truncated JSON as JSON would invite
+ * the model to parse it.
+ *
+ * ERROR-NESS SURVIVES. An `error-text`/`error-json` output masks to
+ * `error-text`, never to plain `text` — the provider renders that flag
+ * (Anthropic's `is_error`), so collapsing it would quietly turn an old failed
+ * command into one the model reads as having succeeded.
  */
 function maskOutput(
   output: unknown,
-): { type: 'text'; value: string } | null {
+): { type: 'text' | 'error-text'; value: string } | null {
   const rendered = renderOutput(output);
-  if (rendered === null || rendered.length <= MASK_BUDGET_CHARS) return null;
-  if (rendered.endsWith(MASK_NOTE_END)) return null;
-  const head = rendered.slice(0, MASK_BUDGET_CHARS);
-  const elided = rendered.length - MASK_BUDGET_CHARS;
+  if (rendered === null || rendered.text.length <= MASK_BUDGET_CHARS) return null;
+  if (rendered.text.endsWith(MASK_NOTE_END)) return null;
+  const head = rendered.text.slice(0, MASK_BUDGET_CHARS);
+  const elided = rendered.text.length - MASK_BUDGET_CHARS;
   return {
-    type: 'text',
+    type: rendered.isError ? 'error-text' : 'text',
     value:
       `${head}\n\n[${elided.toLocaleString('en-US')} more characters were dropped to ` +
       `make room in the context window. ${MASK_NOTE_END}`,
@@ -160,15 +165,19 @@ function maskOutput(
  * carrying files is mostly binary parts, which masking cannot shrink (and
  * whose text parts are not worth splitting the shape over).
  */
-function renderOutput(output: unknown): string | null {
+function renderOutput(
+  output: unknown,
+): { text: string; isError: boolean } | null {
   if (output === null || typeof output !== 'object') return null;
   const o = output as { type?: unknown; value?: unknown };
+  const isError = o.type === 'error-text' || o.type === 'error-json';
   if (o.type === 'text' || o.type === 'error-text') {
-    return typeof o.value === 'string' ? o.value : null;
+    return typeof o.value === 'string' ? { text: o.value, isError } : null;
   }
   if (o.type === 'json' || o.type === 'error-json') {
     try {
-      return JSON.stringify(o.value) ?? null;
+      const text = JSON.stringify(o.value);
+      return text === undefined ? null : { text, isError };
     } catch {
       return null;
     }
