@@ -24,6 +24,8 @@ import {
 } from '../rollup.js';
 import { writeNewDoc, readDoc } from '../doc-store.js';
 import { docFile } from '../paths.js';
+import { filterSensitive } from '../sensitive-gate.js';
+import { slugify } from '../slugify.js';
 import { registerMemorySearch } from '../tools/memory-search.js';
 import type { DocFile } from '../types.js';
 import type { RetrievalResult } from '../retriever.js';
@@ -162,6 +164,57 @@ describe('verifyStageBClasses (deterministic bound)', () => {
     const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
     expect(out).toHaveLength(1);
     expect(out[0]!.slug).toBe('furniture');
+  });
+});
+
+describe('sensitive gate on the Stage-B class label (TASK-217)', () => {
+  const residue: DocFile[] = [
+    mkDoc('episode', 'couch', { summary: 'bought a new leather couch' }),
+    mkDoc('episode', 'dining-table', { summary: 'refinished the oak dining table' }),
+    mkDoc('episode', 'standing-desk', { summary: 'assembled a standing desk' }),
+    mkDoc('episode', 'bookshelf', { summary: 'built a bookshelf' }),
+    mkDoc('episode', 'ottoman', { summary: 'bought an ottoman' }),
+    mkDoc('episode', 'armchair', { summary: 'reupholstered an armchair' }),
+  ];
+
+  it('a label carrying a credential that SURVIVES slugify is dropped; a clean sibling class in the same call is returned', () => {
+    const proposed: ProposedClass[] = [
+      // sk-ant-... survives slugify's charset squashing intact — this is the
+      // case a slug-level gate would also have caught.
+      { class: 'sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAA', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
+      { class: 'furniture', members: ['episode/bookshelf', 'episode/ottoman', 'episode/armchair'] },
+    ];
+    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    expect(out.some((c) => c.slug.includes('sk-ant'))).toBe(false);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.slug).toBe('furniture');
+  });
+
+  it('the key test: a label carrying an email — a credential slugify WOULD neutralize — is ALSO dropped', () => {
+    // Document the premise: slugify neutralizes the email pattern, so a
+    // slug-level gate would NOT catch this. The raw-label gate must.
+    const label = 'alice@example.com';
+    expect(filterSensitive(slugify(label)).kept).toBe(true); // slug alone looks clean
+    expect(filterSensitive(label).kept).toBe(false); // the raw label does not
+
+    const proposed: ProposedClass[] = [
+      { class: label, members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
+      { class: 'furniture', members: ['episode/bookshelf', 'episode/ottoman', 'episode/armchair'] },
+    ];
+    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    expect(out.some((c) => c.slug === slugify(label))).toBe(false);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.slug).toBe('furniture');
+  });
+
+  it('a clean label with valid members is still returned unchanged (guards against an over-broad fix)', () => {
+    const proposed: ProposedClass[] = [
+      { class: 'furniture', members: ['episode/couch', 'episode/dining-table', 'episode/standing-desk'] },
+    ];
+    const out = verifyStageBClasses(proposed, residue, DEFAULT_ROLLUP_CONFIG);
+    expect(out).toHaveLength(1);
+    expect(out[0]!.slug).toBe('furniture');
+    expect(out[0]!.members).toHaveLength(3);
   });
 });
 

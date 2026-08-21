@@ -236,6 +236,86 @@ describe('regenerateMap', () => {
   });
 });
 
+describe('sensitive gate on the densifier OUTPUT (TASK-217)', () => {
+  it('a credential-shaped densifier output is dropped; map.md gets the fallback summary instead', async () => {
+    await seedDoc({
+      category: 'preference',
+      slug: 'cars',
+      summary: 'User prefers dogs over cats',
+      facts: ['User prefers dogs over cats'],
+    });
+    // Otherwise-clean input facts; the densifier free-generates a
+    // credential-shaped line anyway (matches sensitive-gate.ts's
+    // password-assignment pattern).
+    const densify: MapDensifier = async () => 'password: hunter2';
+
+    const result = await regenerateMap({ workspaceRoot, now: NOW, densify });
+    const content = await readFile(join(workspaceRoot, result.path), 'utf8');
+
+    expect(content).toContain('User prefers dogs over cats');
+    expect(content).not.toContain('hunter2');
+  });
+
+  it('does NOT cache the rejected output — a later pass retries instead of serving it forever', async () => {
+    await seedDoc({
+      category: 'preference',
+      slug: 'cars',
+      summary: 'User prefers dogs over cats',
+      facts: ['User prefers dogs over cats'],
+    });
+    const densify: MapDensifier = async () => 'password: hunter2';
+
+    await regenerateMap({ workspaceRoot, now: NOW, densify });
+
+    const cacheRaw = await readFile(join(workspaceRoot, mapCacheFile()), 'utf8').catch(() => '{}');
+    const cache = JSON.parse(cacheRaw) as Record<string, unknown>;
+    expect(cache['preference/cars']).toBeUndefined();
+  });
+
+  it('logs a warn with the docId + rejection kinds, never the credential or the summary text', async () => {
+    await seedDoc({
+      category: 'preference',
+      slug: 'cars',
+      summary: 'User prefers dogs over cats',
+      facts: ['User prefers dogs over cats'],
+    });
+    const densify: MapDensifier = async () => 'password: hunter2';
+
+    const calls: Array<{ event: string; fields: Record<string, unknown> }> = [];
+    const logger = { warn: (event: string, fields: Record<string, unknown>) => calls.push({ event, fields }) };
+
+    await regenerateMap({ workspaceRoot, now: NOW, densify, logger });
+
+    const hit = calls.find((c) => c.event === 'memory_strata_map_densify_sensitive');
+    expect(hit).toBeDefined();
+    expect(hit!.fields.docId).toBe('preference/cars');
+    expect(hit!.fields.kinds).toEqual(['password-assignment']);
+
+    const serialized = JSON.stringify(hit!.fields);
+    expect(serialized).not.toContain('hunter2');
+    expect(serialized).not.toContain('password:');
+  });
+
+  it('a clean densifier output is still used verbatim and IS cached (no over-broad fix)', async () => {
+    await seedDoc({
+      category: 'entity',
+      slug: 'employer',
+      summary: 'Works at Canopy',
+      facts: ['Works at Canopy Works'],
+    });
+    const densify: MapDensifier = async (input) => `DENSE: ${input.facts.join('; ')}`;
+
+    const result = await regenerateMap({ workspaceRoot, now: NOW, densify });
+    const content = await readFile(join(workspaceRoot, result.path), 'utf8');
+    expect(content).toContain('DENSE: Works at Canopy Works');
+
+    const cacheRaw = await readFile(join(workspaceRoot, mapCacheFile()), 'utf8');
+    const cache = JSON.parse(cacheRaw) as Record<string, { hash: string; summary: string }>;
+    expect(cache['entity/employer']).toBeDefined();
+    expect(cache['entity/employer']!.summary).toBe('DENSE: Works at Canopy Works');
+  });
+});
+
 describe('makeLlmDensifier', () => {
   function makeLlm(
     fn: (input: LlmCallInput) => Promise<LlmCallOutput>,

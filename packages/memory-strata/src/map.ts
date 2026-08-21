@@ -242,6 +242,36 @@ async function densifyOne(args: {
     return fallbackSummary;
   }
 
+  // Defence in depth, output side (TASK-217). `safeFacts` above gates what
+  // goes IN to the densifier, but a densifier isn't a pure reassembly of its
+  // input — it's a free-generating LLM call, and nothing stops it from
+  // producing text that wasn't in the facts it was handed. Per CLAUDE.md
+  // invariant 5, untrusted content stays untrusted at every hop, and this
+  // `summary` is headed for one of the always-injected hops: it's written
+  // into `system/map.md`, which `inject.ts` splices into the system prompt
+  // on EVERY turn with no retrieval gate in front of it. (`recent.md` is
+  // injected the same way — the always-injected set is user.md + recent.md
+  // + map.md; only `memory_search` results are a retrieval decision away.)
+  //
+  // Candidly: the odds of this branch ever firing are low. The input facts
+  // are already sensitive-gated at observation time, so for the densifier to
+  // produce a credential-shaped line here it would basically have to
+  // hallucinate one out of clean text. This is belt-and-suspenders, not a
+  // plugged hole — but the map is the one place we don't get to find out the
+  // hard way, so we check anyway.
+  //
+  // On a hit, degrade exactly like the catch block above: fall back to the
+  // (already-gated) frontmatter summary and skip the cache write, so the next
+  // pass retries the densifier rather than serving the rejected line forever.
+  const outputGate = filterSensitive(summary);
+  if (!outputGate.kept) {
+    log?.warn('memory_strata_map_densify_sensitive', {
+      docId,
+      kinds: [...new Set(outputGate.rejections.map((r) => r.kind))],
+    });
+    return fallbackSummary;
+  }
+
   nextCache[docId] = { hash, summary };
   return summary;
 }
@@ -290,7 +320,7 @@ function hashFacts(facts: string[]): string {
   const h = createHash('sha256');
   // Facts are already in stable doc order (append order); hash them verbatim
   // with a separator that can't appear inside a single bullet line.
-  h.update(facts.join('\n \n'));
+  h.update(facts.join('\n\u0000\n'));
   return h.digest('hex').slice(0, 16);
 }
 

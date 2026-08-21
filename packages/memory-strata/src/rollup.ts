@@ -36,6 +36,7 @@ import { atomicWriteUtf8, listDocs, readDoc, stripFactDate } from './doc-store.j
 import { buildMarkdownFile } from './frontmatter.js';
 import type { LlmCallFn } from './observer.js';
 import { docFile, type DocCategory } from './paths.js';
+import { filterSensitive } from './sensitive-gate.js';
 import { slugify } from './slugify.js';
 import { raceTimeout, TimeoutError } from './timeout.js';
 import type { DocFile, DocFrontmatter } from './types.js';
@@ -622,6 +623,34 @@ export function verifyStageBClasses(
     // guarantees a traversal-safe slug — no arbitrary path from the model reaches
     // disk (garbage like "!!!" collapses to slugify's `general` fallback).
     if (label.trim().length === 0) continue;
+    // Gate the RAW label through the sensitive-content filter (TASK-217) before
+    // it goes anywhere near `slugify`. `label` is untrusted model output — same
+    // trust level as `subject` in observer.ts and promotion.ts (I7/I11) — and it
+    // survives verification unchanged into `writeRollupDoc`'s subject/summary/
+    // body, and from there into EVERY rollup doc `regenerateMap` lists in
+    // `system/map.md`, which `inject.ts` splices into the system prompt on every
+    // turn with no retrieval gate. That makes this the same automatic-exfil
+    // shape TASK-216 closed for `subject`, one hop over: a credential-shaped
+    // class label round-trips straight back into context.
+    //
+    // The check MUST run on `label`, not on `slug`. `slugify` is lossy in a way
+    // that neutralizes most of sensitive-gate.ts's patterns: an email like
+    // `alice@example.com` slugifies to `alice-example-com` (no longer matches
+    // the email pattern), an AWS key `AKIAIOSFODNN7EXAMPLE` lowercases to
+    // `akiaiosfodnn7example` (no longer matches, since AWS ids are
+    // case-sensitive), while only an Anthropic-shaped key (`sk-ant-...`)
+    // happens to survive slugify's charset-squashing intact. Gating the slug
+    // would catch roughly one of the six pattern classes; gating the raw label
+    // catches all of them. Per CLAUDE.md invariant 5, untrusted content stays
+    // untrusted at every hop — a label that "looks like a short class name" is
+    // no more trustworthy than the `subject` field TASK-216 already gated.
+    //
+    // Dropped silently, like every other validation failure in this loop
+    // (blank label, overlong slug, duplicate slug, sub-K membership) — this
+    // function is a pure verifier with no logger, and singling out one drop
+    // reason for a log line while the other five stay silent would be
+    // incoherent.
+    if (!filterSensitive(label).kept) continue;
     const slug = slugify(label);
     // Bound the slug LENGTH too, not just its charset: `slugify` sanitizes for
     // traversal but never caps length, and the slug becomes a real filename
