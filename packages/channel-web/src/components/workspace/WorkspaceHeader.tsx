@@ -6,23 +6,21 @@
  * filter control was floating above the list with no anchor, and the queue had
  * no date on it at all — which for a surface whose entire subject is "what
  * happened while you were away" is a real omission.
+ *
+ * No theme control here. Theme lives in the user menu at the bottom of the
+ * sidebar, where the shipping app already puts it — a second home for one
+ * setting is how two controls end up disagreeing.
  */
-import { Moon, Sun } from 'lucide-react';
-import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 
 export function WorkspaceHeader({
   title,
   subtitle,
-  dark,
-  onTheme,
   children,
 }: {
   title: string;
   subtitle?: string;
-  dark: boolean;
-  onTheme: (dark: boolean) => void;
-  /** Page-level controls, rendered left of the theme toggle. */
+  /** Page-level controls, rendered at the right end. */
   children?: React.ReactNode;
 }) {
   return (
@@ -31,18 +29,7 @@ export function WorkspaceHeader({
       {subtitle && (
         <span className="text-[13px] text-muted-foreground">{subtitle}</span>
       )}
-      <div className="ml-auto flex items-center gap-2">
-        {children}
-        <Button
-          variant="ghost"
-          size="icon"
-          className="h-8 w-8 text-muted-foreground"
-          aria-label="Toggle theme"
-          onClick={() => onTheme(!dark)}
-        >
-          {dark ? <Sun size={14} /> : <Moon size={14} />}
-        </Button>
-      </div>
+      <div className="ml-auto flex items-center gap-2">{children}</div>
     </header>
   );
 }

@@ -17,7 +17,8 @@ import { Button } from '@/components/ui/button';
 import { ToggleGroup, ToggleGroupItem } from '@/components/ui/toggle-group';
 import { workspaceApi, type DemoScenario } from '@/lib/workspace-api';
 import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
-import { hydrateTheme, setTheme, useResolvedTheme } from '@/lib/theme';
+import { hydrateTheme } from '@/lib/theme';
+import { UserProvider } from '@/lib/user-context';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentView, type AgentTab } from './AgentView';
 import { HomeComposer } from './HomeComposer';
@@ -41,11 +42,25 @@ function today(): string {
   });
 }
 
+/**
+ * The prototype's persona. `UserProvider` is here because the surface reuses the
+ * shipping `<UserMenu />` (which owns the theme control) rather than growing its
+ * own copy — and that component reads the signed-in user from context.
+ */
+const DEMO_USER = {
+  id: 'u-dana',
+  email: 'dana@canopy.example',
+  name: 'Dana Keeler',
+  role: 'user' as const,
+};
+
 export function WorkspaceShell() {
   return (
-    <WorkspaceProvider>
-      <Inner />
-    </WorkspaceProvider>
+    <UserProvider value={DEMO_USER}>
+      <WorkspaceProvider>
+        <Inner />
+      </WorkspaceProvider>
+    </UserProvider>
   );
 }
 
@@ -57,7 +72,6 @@ function Inner() {
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [rosterOpen, setRosterOpen] = useState(true);
   const [version, setVersion] = useState(0);
-  const theme = useResolvedTheme();
 
   useEffect(() => {
     hydrateTheme();
@@ -145,8 +159,6 @@ function Inner() {
               <WorkspaceHeader
                 title="Today"
                 subtitle={today()}
-                dark={theme === 'dark'}
-                onTheme={(d) => setTheme(d ? 'dark' : 'light')}
               >
                 <Segmented
                   value={filter}
@@ -192,8 +204,6 @@ function Inner() {
               <WorkspaceHeader
                 title="Activity"
                 subtitle={`${board.activity.length} entries`}
-                dark={theme === 'dark'}
-                onTheme={(d) => setTheme(d ? 'dark' : 'light')}
               />
               <div className="flex-1 overflow-y-auto">
                 <div className="mx-auto w-full max-w-[900px] px-6 pb-6">
@@ -210,10 +220,7 @@ function Inner() {
           {route.kind === 'new' && (
             <>
               <WorkspaceHeader
-                title="New agent"
-                dark={theme === 'dark'}
-                onTheme={(d) => setTheme(d ? 'dark' : 'light')}
-              />
+                title="New agent" />
               <div className="flex-1 overflow-y-auto">
                 <NewAgentView
                   onBack={() => setRoute({ kind: 'today' })}

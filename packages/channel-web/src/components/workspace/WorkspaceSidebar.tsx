@@ -7,7 +7,7 @@
  */
 import { Activity, Bot, ChevronDown, ChevronUp, Inbox, Plus } from 'lucide-react';
 import { BrandMark } from '@/components/BrandMark';
-import { AvatarTile } from '@/components/AvatarTile';
+import { UserMenu } from '@/components/UserMenu';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 import type { WorkspaceAgent } from '@/lib/workspace-api';
@@ -115,16 +115,14 @@ export function WorkspaceSidebar({
         </button>
       </nav>
 
-      <div className="flex items-center gap-2.5 border-t border-border px-4 py-3">
-        <AvatarTile size={26} shape="round">
-          <span className="text-[10px] font-medium">DK</span>
-        </AvatarTile>
-        <div className="min-w-0 leading-tight">
-          <div className="truncate text-[13px]">Dana Keeler</div>
-          <div className="truncate text-[11.5px] text-muted-foreground">
-            VP Operations
-          </div>
-        </div>
+      {/*
+        The shipping user menu, not a lookalike: it already owns the theme
+        tri-toggle (Light / Dark / System) and the account row, and the whole
+        point of the refresh is that this surface shares the app's chrome rather
+        than growing a parallel copy of it.
+      */}
+      <div className="border-t border-border py-2">
+        <UserMenu />
       </div>
     </aside>
   );
