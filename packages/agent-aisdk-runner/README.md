@@ -45,6 +45,15 @@ poll for bytes to land — the lineage behind TASK-11, PR #163, and the F-1/F-2
 re-sync work. Here durability is a function return. **Do not add a `beforeCommit`
 wait to this runner**; its absence is the point.
 
+**Compaction is a send-site transform, not a rewrite of history.** When a turn
+approaches the model's context window, `prepareStep` masks stale tool outputs and
+then drops old tool call/result pairs (`src/compaction/`). What it never does is
+touch the transcript: those bytes are the host's source of truth, and rewriting
+them to save room in one request would trade a recoverable context problem for an
+unrecoverable history one. The stored conversation keeps growing while the sent
+one does not — the ladder is deterministic, so the same stored messages compact
+the same way on every step and every resume.
+
 **Skills come from one place.** The read-only `0555` projection under
 `$CLAUDE_CONFIG_DIR/skills/` is the sole discovery path. We never read
 `.claude/skills/` from the workspace — that directory is agent-writable, which is
@@ -65,22 +74,22 @@ checked.
 | **Cross-runner resume demotes to fresh** | Switch an agent's runner mid-conversation and the next turn starts a new session instead of inheriting the old transcript. The two formats are different and translating between them would be lossy in both directions, so we don't. The user still sees the whole conversation — display history is structured and runner-neutral. |
 | **No SDK setting sources** | `settingSources`, `.claude/settings.json`, and the SDK's own config discovery have no counterpart here. Skills arrive through the projection above; everything else is runner-owned. |
 | **Skill-declared in-sandbox MCP servers are unsupported** | A skill that ships its own stdio MCP server still installs and still loads, but its servers do not run. The `Skill` response says so explicitly, so the model adapts instead of hallucinating tools that will never exist. **Connector-backed MCP servers are unaffected** — those are host-side in `@ax/mcp-client` and arrive here as ordinary host tools. |
-| **No compaction yet** | A long session can run out of context window. Compaction is PRs 6 and 7 of the runner sequence (`prepareStep` + the mask/prune/summarize ladder). Until then, a very long conversation degrades. |
+| **Compaction is lossier than the SDK's** | Both runners compact, differently. The SDK summarizes; this one masks stale tool output and then drops old tool call/result pairs (rungs 1-2 of design §7). Rung 3 — summarize — is PR 7. Until it lands, a very long session loses old tool output rather than having it condensed, and a conversation that cannot fit even fully compacted ends with a "start a new conversation" error instead of continuing. |
 
 ## Provider scope
 
-Today: **Anthropic only**, driven through the AI SDK. The model ref is a
-`provider/model-id` string (`anthropic/claude-sonnet-4-6`), parsed by
-`parseModelRef` in `@ax/core`. A ref naming any other provider fails at boot with
-a message saying so — it is never silently downgraded to Anthropic, because an
-agent explicitly configured for another model must not quietly get this one.
+Today: **Anthropic and OpenRouter**, driven through the AI SDK. The model ref is
+a `provider/model-id` string (`anthropic/claude-sonnet-4-6`,
+`openrouter/x-ai/grok-4.6`), parsed by `parseModelRef` in `@ax/core`. A ref
+naming any other provider fails at boot with a message saying so — it is never
+silently downgraded to Anthropic, because an agent explicitly configured for
+another model must not quietly get this one.
 
-OpenRouter (PR 4) and Vertex (PR 5) plug into `src/provider.ts` as additional
-entries. The construction is already shaped for that: explicit credential
-injection, a custom `fetch` that routes through the session credential-proxy and
-trusts its MITM CA, and **no provider SDK doing its own auth discovery**. The
-runner never holds a real API key — only the `ax-cred:<hex>` placeholder the
-proxy substitutes mid-flight.
+Vertex (PR 5) plugs into `src/provider.ts` as one more entry. The construction is
+already shaped for that: explicit credential injection, a custom `fetch` that
+routes through the session credential-proxy and trusts its MITM CA, and **no
+provider SDK doing its own auth discovery**. The runner never holds a real API
+key — only the `ax-cred:<hex>` placeholder the proxy substitutes mid-flight.
 
 ## Layout
 
@@ -94,6 +103,7 @@ proxy substitutes mid-flight.
 | `tools/sandbox-tools.ts` | Catalog tools with `executesIn: 'sandbox'` → the local dispatcher |
 | `tools/skill-tool.ts` | `Skill` — progressive load of a skill body |
 | `skills-index.ts` | Discovery over the projection + the prompt index |
+| `compaction/` | The context-window ladder on `prepareStep` (mask → prune → ceiling) |
 | `transcript-codec.ts` | The ndjson format and its header line |
 | `memory-transcript-source.ts` | The in-memory `TranscriptSource` |
 | `user-message.ts` / `turn-blocks.ts` | The two translation edges to/from the host's vocabulary |
