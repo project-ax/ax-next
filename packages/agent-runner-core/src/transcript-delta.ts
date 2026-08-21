@@ -204,6 +204,36 @@ export async function shipTranscriptDelta(input: {
 }
 
 /**
+ * Replace the host's stored transcript with what the source holds NOW, because
+ * the runner deliberately rewrote it.
+ *
+ * The one caller today is the aisdk runner's rung-3 compaction, which
+ * summarizes the middle of a long conversation and shortens the transcript at
+ * the turn boundary. That is a rewrite the runner KNOWS about, and design §5
+ * asks for it to be stated rather than discovered: the delta ship would
+ * eventually notice on its own (the prefix hash of a shortened transcript
+ * cannot match) and self-heal through `resync-required`, but that path exists
+ * for rewrites nobody announced — an SDK compacting its own jsonl behind our
+ * back. Leaving it to catch an intentional rewrite would also delay durability
+ * to the end of the turn, so a crash mid-turn would buy the summarizer call
+ * twice.
+ *
+ * Returns the fresh ship state. A source with nothing for this session is a
+ * `no-transcript` noop — there is nothing to replace with.
+ */
+export async function replaceWholeTranscript(input: {
+  client: IpcClient;
+  source: TranscriptSource;
+  sessionId: string;
+}): Promise<ShipDeltaResult> {
+  const fileBuf = await input.source.read(input.sessionId);
+  if (fileBuf === null) {
+    return { sentOffset: 0, sentSeq: 0, outcome: 'no-transcript' };
+  }
+  return resyncWholeFile(input.client, fileBuf);
+}
+
+/**
  * Re-ship the whole jsonl (the resync path). Splits the file into complete
  * lines, re-joins them `\n`-terminated (byte-identical to the on-disk prefix +
  * matching the host's per-line `\n` hashing), and replaces the store wholesale.

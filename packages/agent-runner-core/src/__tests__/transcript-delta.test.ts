@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import type { IpcClient } from '@ax/ipc-protocol';
 import {
   hashBytes,
+  replaceWholeTranscript,
   restoreTranscriptForResume,
   shipTranscriptDelta,
   splitCompleteLines,
@@ -128,6 +129,61 @@ function uploadRouter(
     action === 'session.append-transcript' ? appendResp : replaceResp,
   );
 }
+
+// ---------------------------------------------------------------------------
+// `replaceWholeTranscript` — the ANNOUNCED rewrite (design §5).
+//
+// The delta ship already self-heals a rewrite it discovers, through
+// `resync-required`. This exists for the rewrite the runner performs on
+// purpose — rung-3 compaction — where waiting to be discovered would delay
+// durability to the end of the turn and re-buy a summarizer call on a crash.
+// ---------------------------------------------------------------------------
+describe('replaceWholeTranscript', () => {
+  it('replaces the store with the source\'s current bytes and resets the ship state', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
+    try {
+      // Shorter than what the host is assumed to hold: the shape a summarized
+      // conversation takes.
+      const body = 'header\nsummary\n';
+      writeJsonl(root, 'sess', body);
+      const callBinaryUpload = uploadRouter({ outcome: 'appended', maxSeq: 9 }, { maxSeq: 2 });
+      const client = fakeClient({ callBinaryUpload: callBinaryUpload as never });
+
+      const res = await replaceWholeTranscript({
+        client,
+        source: fakeSource(root),
+        sessionId: 'sess',
+      });
+
+      expect(res.outcome).toBe('resynced');
+      expect(res.sentSeq).toBe(2);
+      expect(res.sentOffset).toBe(body.length);
+      // ONE call, and it is the replace. No append probe: there is nothing to
+      // probe for — we already know the prefix changed.
+      expect(callBinaryUpload).toHaveBeenCalledTimes(1);
+      expect(callBinaryUpload.mock.calls[0]![0]).toBe('session.replace-transcript');
+      expect((callBinaryUpload.mock.calls[0]![1] as Buffer).toString('utf8')).toBe(body);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('is a noop when the source has nothing for the session', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
+    try {
+      const callBinaryUpload = uploadRouter({ outcome: 'appended', maxSeq: 0 });
+      const res = await replaceWholeTranscript({
+        client: fakeClient({ callBinaryUpload: callBinaryUpload as never }),
+        source: fakeSource(root),
+        sessionId: 'missing',
+      });
+      expect(res).toEqual({ sentOffset: 0, sentSeq: 0, outcome: 'no-transcript' });
+      expect(callBinaryUpload).not.toHaveBeenCalled();
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+});
 
 describe('shipTranscriptDelta', () => {
   it('ships the new complete lines over the binary channel (not the capped JSON call) and advances state', async () => {

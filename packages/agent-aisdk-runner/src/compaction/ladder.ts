@@ -9,9 +9,11 @@
 //            same region, which is what makes it the next rung rather than an
 //            alternative to it.
 //
-// Rung 3 (summarize) is PR 7 and is deliberately absent: it needs an LLM call,
-// a persisted result, and an eval, and rungs 1-2 buy the headroom to ship
-// without it.
+// Rung 3 (summarize) lives in summarize.ts, not here, and runs at the TURN
+// BOUNDARY rather than per step: it needs an LLM call and a persisted result,
+// neither of which has a safe moment inside a tool loop. What it shares with
+// these two is `preservedMessageCount` below — all three rungs treat the same
+// newest-30% region, and a second window constant would let them drift.
 //
 // TWO RULES BOTH RUNGS OBEY.
 //

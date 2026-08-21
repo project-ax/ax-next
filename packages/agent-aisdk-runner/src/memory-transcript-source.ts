@@ -37,6 +37,24 @@ export interface MemoryTranscriptSource extends TranscriptSource {
   messages(): ModelMessage[];
   /** Append messages produced this turn. Returns the entries created. */
   append(messages: readonly ModelMessage[]): TranscriptEntry[];
+  /**
+   * Replace the whole message list — compaction's rung 3 (design §7), and the
+   * only writer that shortens this array.
+   *
+   * ENTRY IDENTITY SURVIVES WHERE THE MESSAGE DOES. A message that is the same
+   * OBJECT as one already held keeps its existing uuid; only genuinely new
+   * messages (the synthetic summary) mint one. That is not cosmetic: the uuid
+   * is what `lastUuidOfRole` reports as the host's `turnId`, so re-minting
+   * uuids for messages that did not change would orphan the turn ids the
+   * display log and `conversations:drop-turn` already refer to. Rung 3 passes
+   * preserved messages through by reference precisely so this holds.
+   *
+   * The caller is responsible for persisting the rewrite
+   * (`LoopContext.replaceTranscript`). This function only changes what is in
+   * memory — if it were left there, the host's stored transcript would still
+   * carry the long version and the next resume would undo the compaction.
+   */
+  replace(messages: readonly ModelMessage[]): void;
   /** The uuid of the LAST entry with `role`, or undefined. Backs `turnId`. */
   lastUuidOfRole(role: TranscriptRole): string | undefined;
   /** How many entries are held. Test/diagnostic seam. */
@@ -78,6 +96,25 @@ export function createMemoryTranscriptSource(
     messages: () => entries.map((e) => e.message),
 
     append,
+
+    replace(messages) {
+      // Keyed by the message OBJECT, so identity is what carries a uuid across
+      // the rewrite. A structural comparison would be both slower and wrong:
+      // two turns that say the same thing are two turns.
+      const existing = new Map<ModelMessage, TranscriptEntry>();
+      for (const entry of entries) existing.set(entry.message, entry);
+
+      const next = messages.map<TranscriptEntry>(
+        (message) =>
+          existing.get(message) ?? {
+            uuid: idGen(),
+            role: roleOf(message),
+            message,
+          },
+      );
+      entries.length = 0;
+      entries.push(...next);
+    },
 
     lastUuidOfRole(role) {
       for (let i = entries.length - 1; i >= 0; i--) {

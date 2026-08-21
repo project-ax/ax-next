@@ -18,9 +18,11 @@
     "dist"
   ],
   "scripts": {
+    "bench": "tsx test/bench/cli.ts",
     "build": "tsc --build",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit -p tsconfig.bench.json"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.40",

@@ -198,6 +198,46 @@ describe('memory transcript source', () => {
     expect(decoded.ok && decoded.entries).toHaveLength(2);
   });
 
+  describe('replace() — the rung-3 rewrite', () => {
+    it('shortens the array and re-serializes to the shorter transcript', async () => {
+      const src = createMemoryTranscriptSource({ idGen: seq() });
+      src.append([USER, ASSISTANT, TOOL, { role: 'assistant', content: 'done' }]);
+      const summary: ModelMessage = { role: 'user', content: 'summary of the above' };
+
+      src.replace([USER, summary]);
+
+      expect(src.messages()).toEqual([USER, summary]);
+      expect(src.size()).toBe(2);
+      const decoded = decodeTranscript((await src.read('s1'))!);
+      expect(decoded.ok && decoded.entries.map((e) => e.message)).toEqual([USER, summary]);
+    });
+
+    it('keeps the entry uuid of every message that survived, by IDENTITY', () => {
+      // The uuid is what `lastUuidOfRole` reports as the host's turnId. Minting
+      // a new one for a message that did not change would orphan the turn ids
+      // the display log and `conversations:drop-turn` already point at.
+      const src = createMemoryTranscriptSource({ idGen: seq() });
+      src.append([USER, ASSISTANT, TOOL]);
+      const before = src.lastUuidOfRole('user');
+
+      src.replace([USER, { role: 'user', content: 'the summary' }, TOOL]);
+
+      expect(before).toBe('id-1');
+      expect(src.lastUuidOfRole('tool')).toBe('id-3');
+      // Only the genuinely new message drew from the generator.
+      expect(src.lastUuidOfRole('user')).toBe('id-4');
+    });
+
+    it('does not reuse a uuid for a structurally equal but different message', () => {
+      // Identity, not deep equality: two turns that say the same thing are two
+      // turns, and collapsing them would make two rows share one id.
+      const src = createMemoryTranscriptSource({ idGen: seq() });
+      src.append([USER]);
+      src.replace([{ ...USER }]);
+      expect(src.lastUuidOfRole('user')).toBe('id-2');
+    });
+  });
+
   it('lastUuidOfRole backs the turn-end turnId without touching disk', () => {
     const src = createMemoryTranscriptSource({ idGen: seq() });
     src.append([USER, ASSISTANT, TOOL, { role: 'assistant', content: 'done' }]);

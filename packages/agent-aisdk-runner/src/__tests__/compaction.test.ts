@@ -19,6 +19,7 @@ import {
   createCompactor,
   findContextWindowExceeded,
 } from '../compaction/compactor.js';
+import type { SummarizeText } from '../compaction/summarize.js';
 
 // ---------------------------------------------------------------------------
 // Compaction — rungs 1 and 2 plus the ceiling (design §7).
@@ -397,6 +398,12 @@ function compactorFor(log = vi.fn()) {
 
 const stepsWith = (inputTokens: number | undefined) => [{ usage: { inputTokens } }];
 
+/** The fixed overhead `compactorFor`'s compactors charge. */
+const OVERHEAD = estimatePromptOverheadTokens({
+  instructions: 'be helpful',
+  toolCount: 10,
+});
+
 describe('the compaction policy', () => {
   it('sizes itself from the model ref', () => {
     expect(
@@ -553,3 +560,236 @@ describe('findContextWindowExceeded', () => {
     expect(findContextWindowExceeded(a)).toBeUndefined();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Rung 3 at the turn boundary (design §7, PR 7).
+//
+// `turn()` is where the ladder's cheapest-first ordering is enforced ACROSS the
+// two entry points: it must decline whenever rungs 1-2 would have carried the
+// turn on their own, because the alternative is paying for a model call to
+// solve a problem two pure functions already solved.
+// ---------------------------------------------------------------------------
+
+/** A compactor with rung 3 armed. `summarizeText` records what it was sent. */
+function summarizingCompactorFor(
+  summarizeText: SummarizeText = async () => 'a short summary',
+  log = vi.fn(),
+) {
+  return {
+    compactor: createCompactor({
+      modelRef: UNKNOWN_MODEL,
+      instructions: 'be helpful',
+      toolCount: 10,
+      summarizeText,
+      log,
+    }),
+    log,
+  };
+}
+
+/**
+ * A conversation of `turns` user→tool→result→answer exchanges with `chars` of
+ * tool output each — the shape rung 3 exists for (growth across turns), as
+ * opposed to `bigConversation`'s single runaway turn.
+ */
+function longChat(turns: number, chars: number): ModelMessage[] {
+  const out: ModelMessage[] = [];
+  for (let i = 0; i < turns; i++) {
+    out.push(
+      userMsg(`ask ${i}`),
+      assistantToolCall(`t${i}`),
+      toolResult(`t${i}`, `${i}:`.padEnd(chars, 'x')),
+      { role: 'assistant', content: [{ type: 'text', text: `answer ${i}` }] },
+    );
+  }
+  return out;
+}
+
+describe('rung 3 at the turn boundary', () => {
+  it('declines while the conversation is small', async () => {
+    const summarizeText = vi.fn<SummarizeText>(async () => 'summary');
+    const { compactor } = summarizingCompactorFor(summarizeText);
+
+    const result = await compactor.turn({ messages: longChat(4, 1_000) });
+
+    expect(result).toEqual({ summarized: false, reason: 'below-threshold' });
+    expect(summarizeText).not.toHaveBeenCalled();
+  });
+
+  it('declines when masking and pruning would carry the turn on their own', async () => {
+    // The ladder is cheapest-first. This conversation is over the rung-3
+    // threshold as stored, but its bulk is one turn's tool output — exactly
+    // what rungs 1-2 reclaim for free at the send site.
+    const summarizeText = vi.fn<SummarizeText>(async () => 'summary');
+    const { compactor } = summarizingCompactorFor(summarizeText);
+    const messages = bigConversation(20); // ~400k chars, all in tool results
+
+    const asStored = estimateMessageTokens(messages);
+    expect(asStored).toBeGreaterThan(0.75 * 128_000);
+
+    expect(await compactor.turn({ messages })).toEqual({
+      summarized: false,
+      reason: 'below-threshold',
+    });
+    expect(summarizeText).not.toHaveBeenCalled();
+  });
+
+  it('summarizes when even a masked-and-pruned conversation is too big', async () => {
+    const summarizeText = vi.fn<SummarizeText>(async () => 'the user wants X');
+    const { compactor, log } = summarizingCompactorFor(summarizeText);
+    // Bulk in the PROSE of many turns, which neither mask nor prune touches.
+    const messages = longChat(60, 40).map((m) =>
+      m.role === 'assistant' && typeof m.content !== 'string' && m.content[0]?.type === 'text'
+        ? ({
+            role: 'assistant',
+            content: [{ type: 'text', text: 'x'.repeat(9_000) }],
+          } as ModelMessage)
+        : m,
+    );
+
+    const result = await compactor.turn({ messages });
+
+    expect(result.summarized).toBe(true);
+    if (!result.summarized) return;
+    expect(result.messages.length).toBeLessThan(messages.length);
+    expect(summarizeText).toHaveBeenCalledTimes(1);
+    expect(String(log.mock.calls.at(-1)?.[0])).toContain('compaction: summarize');
+  });
+
+  it('is disabled, not broken, when no summarizer is supplied', async () => {
+    // Rungs 1-2 plus the ceiling are a complete compactor on their own; a
+    // caller with no model to spend gets that, not a crash.
+    const { compactor } = compactorFor();
+    expect(await compactor.turn({ messages: longChat(60, 9_000) })).toEqual({
+      summarized: false,
+      reason: 'below-threshold',
+    });
+  });
+
+  it('falls through when the summarizer fails, and says so loudly', async () => {
+    const { compactor, log } = summarizingCompactorFor(async () => {
+      throw new Error('provider exploded');
+    });
+
+    const result = await compactor.turn({ messages: proseHeavyChat() });
+
+    expect(result).toEqual({ summarized: false, reason: 'model-call-failed' });
+    expect(String(log.mock.calls.at(-1)?.[0])).toContain('summarize FAILED');
+  });
+
+  it('does not re-attempt after a failure until the conversation has grown', async () => {
+    // §7's no-thrashing rule in its cross-turn form: a deterministic failure
+    // must not buy a model call at the top of every remaining turn.
+    const summarizeText = vi.fn<SummarizeText>(async () => '');
+    const { compactor } = summarizingCompactorFor(summarizeText);
+    const messages = proseHeavyChat();
+
+    expect(await compactor.turn({ messages })).toEqual({
+      summarized: false,
+      reason: 'empty-summary',
+    });
+    expect(await compactor.turn({ messages })).toEqual({
+      summarized: false,
+      reason: 'backoff',
+    });
+    expect(summarizeText).toHaveBeenCalledTimes(1);
+
+    // Grown by more than 25%: the input is materially different now, so trying
+    // again is a new attempt rather than a retry.
+    const grown = [...messages, ...proseHeavyChat().slice(0, messages.length)];
+    await compactor.turn({ messages: grown });
+    expect(summarizeText).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-arms after a success, so one bad turn does not disable rung 3', async () => {
+    let calls = 0;
+    const summarizeText = vi.fn<SummarizeText>(async () => {
+      calls++;
+      return calls === 1 ? '' : 'a real summary';
+    });
+    const { compactor } = summarizingCompactorFor(summarizeText);
+    const first = proseHeavyChat();
+
+    expect((await compactor.turn({ messages: first })).summarized).toBe(false);
+    const grown = [...first, ...proseHeavyChat()];
+    expect((await compactor.turn({ messages: grown })).summarized).toBe(true);
+    // Back to zero: the next oversized turn tries immediately.
+    expect((await compactor.turn({ messages: grown })).summarized).toBe(true);
+  });
+
+  it('calibrates the turn-boundary estimate against reported usage', async () => {
+    // The turn boundary has no previous step to read usage from, so the
+    // estimator stands in — scaled by how wrong it last proved to be. Here the
+    // provider says the request was a QUARTER of what the estimator thought, so
+    // a conversation the raw estimate would summarize is left alone.
+    const summarizeText = vi.fn<SummarizeText>(async () => 'summary');
+    const { compactor } = summarizingCompactorFor(summarizeText);
+    const messages = proseHeavyChat();
+    const raw = estimateMessageTokens(messages) + OVERHEAD;
+
+    // Two steps, because that is how the pairing works: the first hands off a
+    // request and remembers its estimate, the second carries the provider's
+    // count OF that request.
+    compactor.step({ steps: stepsWith(undefined), messages });
+    compactor.step({ steps: stepsWith(Math.round(raw / 4)), messages });
+
+    expect(await compactor.turn({ messages })).toEqual({
+      summarized: false,
+      reason: 'below-threshold',
+    });
+    expect(summarizeText).not.toHaveBeenCalled();
+  });
+
+  it('pairs a report with the request it counted, not with the next one', async () => {
+    // The subtle one. `reported` arrives one step AFTER the request it measures,
+    // and by then `messages` has grown by that step's response — which on a step
+    // whose tool printed 200 KB is most of the list. Dividing the report by the
+    // BIGGER list understates the scale factor, and understating it is invisible
+    // (rung 3 just fires later than it should).
+    const summarizeText = vi.fn<SummarizeText>(async () => 'summary');
+    const { compactor } = summarizingCompactorFor(summarizeText);
+
+    // Half-size, so that doubling the reported figure lands above the 0.75
+    // rung-3 threshold but below the 0.9 ceiling — the band this test needs.
+    const sent = proseHeavyChat(20);
+    const sentEstimate = estimateMessageTokens(sent) + OVERHEAD;
+    compactor.step({ steps: stepsWith(undefined), messages: sent });
+
+    // A 200 KB tool result lands, and the provider reports 2x the estimate for
+    // the request it actually counted.
+    const grown = [...sent, toolResult('big', 'x'.repeat(200_000))];
+    compactor.step({ steps: stepsWith(sentEstimate * 2), messages: grown });
+
+    // Calibration must be 2, so the turn-boundary read of `sent` is 2x its raw
+    // estimate — comfortably over the 0.75 threshold, and rung 3 fires. Paired
+    // against `grown` it would have been well under 2 and this would decline.
+    const result = await compactor.turn({ messages: sent });
+    expect(result.summarized).toBe(true);
+    expect(summarizeText).toHaveBeenCalledTimes(1);
+  });
+
+  it('never lets the estimate alone end a conversation', async () => {
+    // The ceiling is the one decision an estimate may not make (compactor.ts).
+    // Rung 3 is allowed to spend a model call on an estimate; it is not allowed
+    // to throw, and a failing summarizer must not become a turn-ending error.
+    const { compactor } = summarizingCompactorFor(async () => {
+      throw new Error('nope');
+    });
+    await expect(compactor.turn({ messages: proseHeavyChat() })).resolves.toEqual({
+      summarized: false,
+      reason: 'model-call-failed',
+    });
+  });
+});
+
+/** A conversation whose bulk is prose — the shape mask and prune cannot shrink. */
+function proseHeavyChat(turns = 40): ModelMessage[] {
+  const out: ModelMessage[] = [];
+  for (let i = 0; i < turns; i++) {
+    out.push(
+      userMsg(`ask ${i}`),
+      { role: 'assistant', content: [{ type: 'text', text: `${i}:`.padEnd(9_000, 'x') }] },
+    );
+  }
+  return out;
+}

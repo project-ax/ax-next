@@ -393,6 +393,24 @@ re-sending (`pruneMessages({ reasoning: 'before-last-message' })`), per OpenRout
 3. **Summarize** — preserve the newest ~30% verbatim plus the first user message, summarize the
    rest, splice in a synthetic message, persist via `session.replace-transcript`.
 
+   **As built (PR 7), rung 3 fires at the TURN BOUNDARY, not in `prepareStep`.** `prepareStep`
+   may return a promise, so an LLM call there is mechanically possible — it is still the wrong
+   place. Mid-tool-loop the newest messages are a live `tool_use`/`tool_result` pair plus, on
+   Anthropic, a signed thinking block that must be replayed in position; splicing a synthetic
+   message into that region is a 400, not a degraded answer. And there is no quiescent moment to
+   persist: `session.replace-transcript` mid-step would publish a transcript whose newest half is
+   a half-finished step. So rung 3 runs after the user's message is appended and before
+   `agent.stream()`, where every tool call has its result and the rewrite can be made durable
+   before a token of the new turn is spent. Rungs 1-2 keep running per step on top of it, and the
+   0.9 ceiling stays the backstop for the one case this does not cover — a single turn that blows
+   the window on its own.
+
+   Its trigger is the ladder's cheapest-first rule made explicit across the two entry points: it
+   declines unless the conversation is over 0.75 of the window *after* a hypothetical rung 1 + 2,
+   i.e. unless the growth is in the CONVERSATION rather than in one turn's tool output. The tail
+   seam snaps BACKWARD to the nearest `user` message — the one role that never carries a tool
+   result — so pairing is preserved by construction rather than repaired.
+
 **Failure handling.** Gemini CLI (Apache-2.0) names the traps and we adopt them: summary larger
 than what it replaced, empty summary, token-count error. On any of these: **do not retry in a
 loop** — mark the attempt failed, fall through, and if the ceiling is genuinely reached, fail the
@@ -411,10 +429,18 @@ be used. `ai`'s `pruneMessages` (Apache-2.0) is the dependency; Gemini CLI is a 
 not a dependency.
 
 **Scope:** v1 ships rungs 1–2 plus a clean ceiling error; rung 3 follows immediately. With grok at
-500k and kimi at 1M context, this is not launch-blocking.
+500k and kimi at 1M context, this is not launch-blocking. (Both have now shipped — rungs 1–2 in
+PR 6, rung 3 in PR 7.)
 
 **Eval:** reuse the memory-strata bench discipline — long sessions where a question must still be
 answerable *after* compaction fires. The risk is quality, not code.
+
+As built: `packages/agent-aisdk-runner/test/bench/`. A generated conversation of plausible agent
+work with facts planted at controlled depths inside the summarized region, questions written for
+each, and an LLM judge. Two arms: `compacted` and a **`verbatim` control**. The gate is the delta
+between them — a needle the model cannot answer from the FULL transcript was never a compaction
+failure, and scoring it as one would make the gate a measure of the filler's difficulty. Some
+questions are deliberately unanswerable, because recall alone rewards confident confabulation.
 
 ## §8 — Parity acceptance bar
 
@@ -454,7 +480,7 @@ The acceptance suite asserts the *degradation*, not the capability: a skill decl
 | 4 | ✅ **Merged 2026-08-20 (#409, `1ef2b6d4`).** Provider layer — OpenRouter credential path + `models:list-supported` | Code gate met. The CLUSTER gate — grok-4.6 / kimi-k3 driving a real conversation — needs a live OpenRouter key and is carried by the acceptance walk, not by CI. |
 | 5 | ⏭️ **Skipped for now** (deliberate, 2026-08-21). Vertex — credential kind, token minter, rotation | Gemini on Vertex, no ADC reachable from the sandbox. Independent of 6–7: nothing in the compaction work assumes a provider set, so this is still one `PROVIDERS` entry plus a credential kind whenever it is picked up. |
 | 6 | ✅ **Merged 2026-08-21 (#411, `f2a883e2`).** Compaction rungs 1–2 + ceiling error | Gate met: a long session degrades cleanly. `prepareStep` masks stale tool outputs, then prunes old tool call/result pairs; a conversation that cannot fit even fully compacted ends with a `ContextWindowExceededError` rather than the provider's opaque one. SEND-SITE ONLY — the transcript is never rewritten. Note the §7 deviation: a fallback token ESTIMATOR ships, because `usage.inputTokens` does not exist at step 0 of a turn and that is the request a resumed long session dies on. |
-| 7 | Compaction rung 3 (summarize) + eval suite | Post-compaction answerability holds |
+| 7 | Compaction rung 3 (summarize) + eval suite | Post-compaction answerability holds. Rung 3 fires at the TURN BOUNDARY (see §7) and is the one rung that rewrites the transcript — it costs a model call, which cannot be recomputed for free the way a mask or a prune can. The rewrite is published through a new `LoopContext.replaceTranscript` over the existing `session.replace-transcript` action, per §5, rather than being left for the delta ship's `resync-required` path to discover. The eval is `pnpm --filter @ax/agent-aisdk-runner bench` — a needle corpus with a **verbatim control arm**, so the gate is the recall the summary COST rather than an absolute the filler's difficulty would dominate. Its harness is unit-tested in CI; the model half is opt-in on a real key. |
 
 ## Open risks
 
