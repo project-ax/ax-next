@@ -206,3 +206,36 @@ owning packages' suites — per-package green means nothing here; (b) grep for *
   variant, not the `Statement` one), fix the bench's real leak, and raise `teardownTimeout` where a native-module
   worker overran vitest's 10s default — that message only LOGS, the stop is still awaited, and the log is what
   reddens an otherwise all-passing run.
+
+- `2026-08-20` — **`pnpm test` at the repo root reported exit code 0 after running 7 of ~75 packages, and I nearly took that as a green gate.**
+  The root script is `pnpm -r run test`, which **bails at the first failing package**
+  (`ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL`) and leaves every package after it in the topological
+  order simply *unrun*. There is no "skipped" line and no count — the output just ends, and the
+  summary of whichever packages did run looks entirely healthy. A `| tail` on the output also
+  masks the real exit status (see the older note in
+  `project_local_suite_preexisting_failures.md` about `pipestatus`).
+  **What it looked like:** seven packages, all green, a plausible-looking tail. **What it was:**
+  ~9% of the suite, with the packages this branch actually changed mostly unexecuted.
+  **Guard:** for a pre-PR gate always run `pnpm -r --no-bail run test`, and *count* the
+  `Test Files` lines against the number of packages with a `test` script
+  (`grep -l '"test"' packages/*/package.json presets/*/package.json deploy/charts/*/package.json | wc -l`).
+  If those two numbers disagree, the gate did not run — regardless of the exit code.
+  This is the cousin of [[feedback_run_tsc_alongside_vitest]]: there, a green vitest hid what only
+  tsc catches; here, a green-looking run hid the packages that never ran at all.
+
+- `2026-08-20` — **A guard that reads `MAP[userControlledKey]` and then checks `=== undefined` does not
+  guard anything for ~8 keys.** In PR 4 the aisdk runner resolved its provider with a bare
+  `PROVIDERS[provider]`, where `provider` is the first segment of `agentConfig.model`. Plain-object
+  index access walks the prototype chain, so `constructor`, `__proto__`, `toString`, `valueOf`,
+  `hasOwnProperty`, `isPrototypeOf`, `propertyIsEnumerable` and `toLocaleString` all return
+  something non-`undefined` — `PROVIDERS['constructor']` is the `Object` constructor. The
+  `entry === undefined` branch never fired, execution fell through to the *credential* check, and
+  the operator got an error about an env var named `undefined` instead of about the provider they
+  actually typed.
+  It failed closed, but only because the credential check happened to run before `entry.create`
+  was dereferenced — reorder those two and `Object.create` is a real callable.
+  **Found by the security-checklist walk, not by 244 passing tests**, because every test used a
+  realistic provider name. **Guard:** any lookup keyed by outside input goes through an
+  own-property check (`Object.prototype.hasOwnProperty.call`), and its test table includes the
+  Object.prototype key names — not just a nonsense string like `'notaprovider'`, which *does*
+  return undefined and therefore proves nothing.
