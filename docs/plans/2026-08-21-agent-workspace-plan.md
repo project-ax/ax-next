@@ -3012,35 +3012,59 @@ Named so a reviewer can tell an omission from an oversight.
 
 ## Board cards
 
-Paste-ready. Titles carry the stable `[AW-n]`; "Depends on" is space-separated Task IDs, or `none`.
+**Seeded on the "TO DO" board (org `project-ax`, project #1) on 2026-08-21 as TASK-222…TASK-237.**
 
-| Title | Depends on | Lane |
-|---|---|---|
-| `[AW-1] Inventory the enforced policy conditions` | `none` | To Do |
-| `[AW-2] hold — a third pre-call verdict that stops the turn` | `none` | To Do |
-| `[AW-3] @ax/tool-policy — rules that carry their own sentence` | `AW-1 AW-2` | Backlog |
-| `[AW-4] @ax/decisions — the row, the store, the pre-call subscriber` | `AW-3` | Backlog |
-| `[AW-5] Execute on approve — host replay, idempotency, expiry` | `AW-4` | Backlog |
-| `[AW-6] Attendance and the decision-resolved delivery` | `AW-5` | Backlog |
-| `[AW-7] The freshness guard and two real predicate producers` | `AW-5` | Backlog |
-| `[AW-8] activityPhrase / countable and the Right Now line (T0/T1)` | `none` | To Do |
-| `[AW-9] The agent-centric shell on real data` | `none` | To Do |
-| `[AW-10] One Activity feed over one collection` | `AW-9` | Backlog |
-| `[AW-11] The Today queue on real decisions` | `AW-4 AW-5 AW-9` | Backlog |
-| `[AW-12] The Files and What-it-did tabs` | `AW-9 AW-10` | Backlog |
-| `[AW-13] A human-owned memory tier the rollup may not touch` | `AW-9` | Backlog |
-| `[AW-14] The rail on real policy, counters and activity` | `AW-3 AW-8 AW-9 AW-11` | Backlog |
+The plan's task headings stay `AW-n` — the card bodies point at them by that name. The
+board ids are `TASK-n` because auto-ship's triage gate matches
+`^\[(ARCH|CLI|SYNC|FAULTA|TASK)-[0-9]+\] ` and **renames** anything else to the next
+`[TASK-n]`. Dependency review then prunes any referenced id "whose card no longer exists
+(it was deleted/**renamed**)" — so an `AW-` prefixed board would have had its entire
+dependency DAG silently stripped, making all fourteen cards ready at once and dispatching
+`@ax/decisions` before `@ax/tool-policy` existed. It fails as a success. Hence the mapping.
 
-Four cards start in **To Do**; the rest go to **Backlog** and move to To Do as their deps close, per the board policy in CLAUDE.md.
+| Plan | Card | Title | Depends on | Lane |
+|---|---|---|---|---|
+| AW-1 | `TASK-222` | Inventory the enforced policy conditions | `none` | To Do |
+| AW-2 | `TASK-223` | hold — a third pre-call verdict that stops the turn | `none` | To Do |
+| AW-3 | `TASK-224` | @ax/tool-policy — rules that carry their own sentence | `TASK-222 TASK-223` | To Do |
+| AW-4 | `TASK-225` | @ax/decisions — the row, the store, the pre-call subscriber | `TASK-224` | To Do |
+| AW-5 | `TASK-226` | Execute on approve — host replay, idempotency, expiry | `TASK-225` | To Do |
+| AW-6 | `TASK-227` | Attendance and the decision-resolved delivery | `TASK-226` | To Do |
+| AW-7 | `TASK-228` | The freshness guard and two real predicate producers | `TASK-226` | To Do |
+| AW-8 | `TASK-229` | activityPhrase / countable and the Right Now line (T0/T1) | `none` | To Do |
+| AW-9 | `TASK-230` | The agent-centric shell on real data | `none` | To Do |
+| AW-10 | `TASK-231` | One Activity feed over one collection | `TASK-230` | To Do |
+| AW-11 | `TASK-232` | The Today queue on real decisions | `TASK-225 TASK-226 TASK-230` | To Do |
+| AW-12 | `TASK-233` | The Files and What-it-did tabs | `TASK-230 TASK-231` | To Do |
+| AW-13 | `TASK-234` | A human-owned memory tier the rollup may not touch | `TASK-230` | To Do |
+| AW-14 | `TASK-235` | The rail on real policy, counters and activity | `TASK-224 TASK-229 TASK-230 TASK-232` | To Do |
+| AW-W1 | `TASK-236` | (walk) Hold a real tool call on kind and see it in Today | `TASK-225 TASK-232` | Backlog |
+| AW-W2 | `TASK-237` | (walk) Approve an unattended decision and watch the host replay it | `TASK-226 TASK-228` | Backlog |
 
-Two walks are worth carding separately once the substrate is up, both `(walk)`-tagged and gated only on cluster reachability:
+**Why the dependents are in To Do, not Backlog.** The orchestrator never pulls from
+Backlog, so a card parked there waits for a human to promote it. Readiness is derived
+from the `Depends on` field, not from the lane — a To Do card with an unmet dep simply
+is not in the ready set. Cards therefore land in To Do and the DAG sequences them, which
+is the same pattern auto-ship's own design-intake mode uses.
 
-| Title | Depends on |
-|---|---|
-| `[AW-W1] (walk) Hold a real tool call on kind and see it in Today` | `AW-4 AW-11` |
-| `[AW-W2] (walk) Approve an unattended decision and watch the host replay it` | `AW-5 AW-6` |
+The two `(walk)` cards are the exception: `(walk)`-titled cards are never `yolo-ship`ped,
+so they wait in Backlog and move to To Do once their deps are Done, draining through the
+serialized walk lane (`k8s-acceptance-loop` against the cluster).
 
-For AW-W1/AW-W2, note the runner gotcha: **Docker build cache hides runner fixes.** Either build `--no-cache` or grep the compiled `main.js` inside the image before concluding a runner change did not work.
+**Ready set on the first pass:** `TASK-222`, `TASK-223`, `TASK-229`, `TASK-230`. With the
+default cap of 3 in flight, three of those four dispatch immediately. The substrate is
+then a chain — 224 → 225 → 226 → {227, 228} — so expect roughly seven waves rather than
+fourteen parallel PRs. That is the design's shape, not a board problem.
+
+To drain: `/auto-ship --dry-run` first (one review pass, prints the plan, no writes, no
+dispatch), then `/auto-ship`. Note that the four unrelated cards already sitting in To Do
+(stop-button cancel, `conversations.runner_type` staleness, code-line panning,
+chat-qa-sweep Phase 0) will drain alongside these and compete for the same slots — move
+them to Backlog first if this epic should go first.
+
+For the walks, note the runner gotcha: **Docker build cache hides runner fixes.** Either
+build `--no-cache` or grep the compiled `main.js` inside the image before concluding a
+runner change did not work.
 
 ---
 
