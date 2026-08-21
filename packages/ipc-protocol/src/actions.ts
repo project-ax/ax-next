@@ -740,6 +740,59 @@ export type SessionGetTranscriptRequest = z.infer<
 >;
 
 // ---------------------------------------------------------------------------
+// session.get-display-history — cross-runner history reconstruction.
+// See docs/plans/2026-08-21-cross-runner-history-reconstruction.md.
+//
+// The runner-neutral display log, as messages a runner can seed its own
+// transcript from. Called on exactly one path: a runner that was handed a
+// transcript written by a DIFFERENT runner (`write()` answered `'unusable'`)
+// and would otherwise start blank, losing a conversation the user can still
+// see on screen.
+//
+// SECURITY, same shape as the transcript actions above: the request carries NO
+// ids. The conversation is resolved host-side from the runner's own session row
+// (bearer token → ctx.sessionId → `session:get-config` → conversationId), so a
+// runner cannot ask about a conversation that is not its own. That is the whole
+// reason this takes an empty body rather than a conversationId.
+//
+// FILTERING IS HOST-SIDE, deliberately. The host returns user/assistant TEXT
+// only — no `tool_use`, no `tool_result`, no `thinking`. Two reasons, and
+// neither is tidiness:
+//
+//   - A `tool_use` without its matching `tool_result` is a 400 from the
+//     provider, and the display log splits the pair across turns. Not sending
+//     them is what makes reconstruction safe without a re-pairing pass.
+//   - Anthropic's thinking blocks are SIGNED. A reconstructed one cannot be
+//     re-signed and must never be replayed.
+//
+// Doing it host-side means every runner inherits the guarantee instead of each
+// being trusted to re-derive it.
+// ---------------------------------------------------------------------------
+
+export const SessionGetDisplayHistoryRequestSchema = z.object({}).strict();
+export type SessionGetDisplayHistoryRequest = z.infer<
+  typeof SessionGetDisplayHistoryRequestSchema
+>;
+
+export const SessionGetDisplayHistoryResponseSchema = z.object({
+  /**
+   * Prior turns oldest-first, ready to seed a transcript. `role` is faithful to
+   * the original turn — a tool result is never relabelled as a user message,
+   * which would let tool output impersonate the user.
+   */
+  messages: z.array(AgentMessageSchema),
+  /**
+   * True when older turns were dropped to stay inside the bounds below, so the
+   * runner can tell the model its history is partial rather than letting it
+   * infer a clean start.
+   */
+  truncated: z.boolean(),
+});
+export type SessionGetDisplayHistoryResponse = z.infer<
+  typeof SessionGetDisplayHistoryResponseSchema
+>;
+
+// ---------------------------------------------------------------------------
 // skill.propose — TASK-74 (out-of-git Part D / §D1–D2). The runner-side skill
 // authoring chokepoint.
 //

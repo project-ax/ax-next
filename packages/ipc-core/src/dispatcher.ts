@@ -43,6 +43,7 @@ import {
   sessionGetTranscriptHandler,
   sessionReplaceTranscriptHandler,
 } from './handlers/session-transcript.js';
+import { sessionGetDisplayHistoryHandler } from './handlers/session-display-history.js';
 import {
   validateEventToolPostCall,
   fireEventToolPostCall,
@@ -122,6 +123,13 @@ ACTIONS.set('/proxy.drain-egress-blocks', { method: 'POST', handler: proxyDrainE
 // REQUEST body → they're BINARY_ACTIONS below (a single turn that Reads a large
 // attachment can push even the per-turn delta past the 4 MiB JSON cap).
 ACTIONS.set('/session.get-transcript', { method: 'POST', handler: sessionGetTranscriptHandler });
+// Cross-runner history reconstruction — reached only when a runner was handed a
+// transcript another runner wrote. JSON both ways (bounded, text-only), so it is
+// an ordinary ACTION rather than one of the binary transcript channels above.
+ACTIONS.set('/session.get-display-history', {
+  method: 'POST',
+  handler: sessionGetDisplayHistoryHandler,
+});
 
 // Maximum inbound blob body for the raw-body REQUEST-direction channel
 // (blob.put). Matches the artifact_publish executor's 100 MiB size cap so the
