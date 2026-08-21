@@ -71,7 +71,7 @@ checked.
 | Difference | What it means in practice |
 |---|---|
 | **`TodoWrite` is absent** | An SDK built-in with no host-side consumer. Nothing reads it today; trivial to add if long-task behaviour turns out to want it. |
-| **Cross-runner resume demotes to fresh** | Switch an agent's runner mid-conversation and the next turn starts a new session instead of inheriting the old transcript. The two formats are different and translating between them would be lossy in both directions, so we don't. The user still sees the whole conversation — display history is structured and runner-neutral. |
+| **Cross-runner resume rebuilds context, it does not inherit the transcript** | Switch an agent's runner mid-conversation and the next turn starts a new session — the two transcript formats are different and translating between them would be lossy in both directions, so we don't. What this runner *does* do is rebuild the conversational thread from the runner-neutral display log (`session.get-display-history`), so the agent keeps the thread even though it lost the runner-native transcript. It is text-only: the tool calls and results from those turns are gone, and the reconstruction says so in a note the model can read. **This is one-directional** — switching *away* to `claude-sdk` still starts blank, because that runner's transcript is an SDK-owned file and seeding it would mean hand-forging the SDK's private format. |
 | **No SDK setting sources** | `settingSources`, `.claude/settings.json`, and the SDK's own config discovery have no counterpart here. Skills arrive through the projection above; everything else is runner-owned. |
 | **Skill-declared in-sandbox MCP servers are unsupported** | A skill that ships its own stdio MCP server still installs and still loads, but its servers do not run. The `Skill` response says so explicitly, so the model adapts instead of hallucinating tools that will never exist. **Connector-backed MCP servers are unaffected** — those are host-side in `@ax/mcp-client` and arrive here as ordinary host tools. |
 | **Compaction is lossier than the SDK's** | Both runners compact, differently. The SDK summarizes; this one masks stale tool output and then drops old tool call/result pairs (rungs 1-2 of design §7). Rung 3 — summarize — is PR 7. Until it lands, a very long session loses old tool output rather than having it condensed, and a conversation that cannot fit even fully compacted ends with a "start a new conversation" error instead of continuing. |
@@ -104,6 +104,7 @@ key — only the `ax-cred:<hex>` placeholder the proxy substitutes mid-flight.
 | `tools/skill-tool.ts` | `Skill` — progressive load of a skill body |
 | `skills-index.ts` | Discovery over the projection + the prompt index |
 | `compaction/` | The context-window ladder on `prepareStep` (mask → prune → ceiling) |
+| `memory-transcript-source.ts` | The in-memory `TranscriptSource`, plus `seedFromHistory` (cross-runner rebuild) |
 | `transcript-codec.ts` | The ndjson format and its header line |
 | `memory-transcript-source.ts` | The in-memory `TranscriptSource` |
 | `user-message.ts` / `turn-blocks.ts` | The two translation edges to/from the host's vocabulary |

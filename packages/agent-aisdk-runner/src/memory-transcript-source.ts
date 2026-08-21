@@ -58,6 +58,17 @@ export function createMemoryTranscriptSource(
     opts.warn ?? ((line: string): void => void process.stderr.write(line));
 
   const entries: TranscriptEntry[] = [];
+
+  /** Shared by the public `append` and by `seedFromHistory`. */
+  function append(messages: readonly ModelMessage[]): TranscriptEntry[] {
+    const created = messages.map<TranscriptEntry>((message) => ({
+      uuid: idGen(),
+      role: roleOf(message),
+      message,
+    }));
+    entries.push(...created);
+    return created;
+  }
   // The header the resumed transcript was stored with, re-emitted verbatim so
   // the shipped prefix stays byte-identical to the host's stored bytes. A
   // fresh session emits the current header.
@@ -66,15 +77,7 @@ export function createMemoryTranscriptSource(
   return {
     messages: () => entries.map((e) => e.message),
 
-    append(messages) {
-      const created = messages.map<TranscriptEntry>((message) => ({
-        uuid: idGen(),
-        role: roleOf(message),
-        message,
-      }));
-      entries.push(...created);
-      return created;
-    },
+    append,
 
     lastUuidOfRole(role) {
       for (let i = entries.length - 1; i >= 0; i--) {
@@ -93,6 +96,52 @@ export function createMemoryTranscriptSource(
       // and make an empty session look resumable.
       if (entries.length === 0) return null;
       return encodeTranscript(entries, headerRaw);
+    },
+
+    // ---- cross-runner history reconstruction --------------------------
+    //
+    // Reached only after `write` answered `'unusable'` — the stored transcript
+    // was written by the OTHER runner. Without this the agent starts blank
+    // while the user still has the whole conversation on screen; measured on
+    // kind (2026-08-21), it answered `NO-HISTORY` to a question about its own
+    // first turn.
+    //
+    // The messages arrive text-only and bounded (the host filters and caps
+    // them — see `session.get-display-history`), so there is no tool pairing to
+    // repair and no signed reasoning to replay here.
+    //
+    // Two things this deliberately does NOT do:
+    //
+    //   - It does not fake the missing turns as if this runner had produced
+    //     them. A leading `user` note states plainly that the tool-by-tool
+    //     detail is gone, so the model's "I don't recall running that" is
+    //     accurate rather than a contradiction the user has to puzzle over.
+    //   - It does not mark these entries as shipped. They are context, not a
+    //     transcript prefix the host already has; `restoreTranscriptForResume`
+    //     returns `written: false` so the normal delta ship re-sends them as
+    //     this runner's own (correctly formatted) transcript.
+    async seedFromHistory({ messages, truncated }): Promise<void> {
+      if (messages.length === 0) return;
+      const note =
+        `[Context note: this conversation continues from turns handled by a ` +
+        `different agent runner. The conversation text below was recovered, ` +
+        `but the tool calls and their results from those turns were not — if ` +
+        `you need that detail, re-run the tool or ask. ` +
+        `${truncated ? 'Older turns beyond this point were trimmed. ' : ''}` +
+        `Everything after this note is the live session.]`;
+
+      const seeded: ModelMessage[] = [
+        { role: 'user', content: [{ type: 'text', text: note }] },
+        ...messages.map<ModelMessage>((m) =>
+          // Roles are preserved exactly as the host reported them. Relabelling
+          // an assistant turn as `user` (or the reverse) would misattribute
+          // authorship inside the model's own context.
+          m.role === 'assistant'
+            ? { role: 'assistant', content: [{ type: 'text', text: m.content }] }
+            : { role: 'user', content: [{ type: 'text', text: m.content }] },
+        ),
+      ];
+      append(seeded);
     },
 
     async write(sessionId, bytes): Promise<TranscriptWriteOutcome> {

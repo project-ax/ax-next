@@ -421,4 +421,116 @@ describe('restoreTranscriptForResume', () => {
       rmSync(root, { recursive: true, force: true });
     }
   });
+
+  // --- cross-runner history reconstruction -------------------------------
+  //
+  // On the SAME 'unusable' branch, a source that can be seeded gets offered the
+  // runner-neutral display log first. Everything here is best-effort by
+  // contract: the fallback is the demote-to-fresh behaviour that predates it,
+  // so nothing in this path may fail a turn.
+
+  async function restoreForeignWith(
+    root: string,
+    over: Partial<IpcClient>,
+    seed?: TranscriptSource['seedFromHistory'],
+  ) {
+    const foreign = '{"some":"other-runners-format"}\n';
+    const tmpFile = join(tmpdir(), `ax-restore-seed-${Math.random()}.bin`);
+    await writeFile(tmpFile, foreign);
+    const client = fakeClient({
+      callBinary: vi.fn(async () => ({ path: tmpFile, bytes: foreign.length })) as never,
+      ...over,
+    });
+    const source = fakeSource(root, 'unusable');
+    if (seed !== undefined) source.seedFromHistory = seed;
+    const res = await restoreTranscriptForResume({
+      client,
+      source,
+      sessionId: 'sess-foreign',
+    });
+    return { res, client, source };
+  }
+
+  it('offers the display history to a source that can be seeded', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
+    try {
+      const messages = [{ role: 'user' as const, content: 'earlier turn' }];
+      const seen: unknown[] = [];
+      const { res } = await restoreForeignWith(
+        root,
+        { call: vi.fn(async () => ({ messages, truncated: false })) as never },
+        async (input) => void seen.push(input),
+      );
+
+      expect(seen).toEqual([
+        { sessionId: 'sess-foreign', messages, truncated: false },
+      ]);
+      // Seeded context is NOT a shipped prefix — the ship state still resets,
+      // so the delta ship re-sends it as this runner's own transcript.
+      expect(res).toEqual({ written: false, state: { sentOffset: 0, sentSeq: 0 } });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not call the host at all when the source cannot be seeded', async () => {
+    // The SDK-file-backed source is this case: there is nothing to seed, so the
+    // host should not be asked for history nobody can use.
+    const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
+    try {
+      const call = vi.fn();
+      const { res } = await restoreForeignWith(root, { call: call as never });
+      expect(call).not.toHaveBeenCalled();
+      expect(res.written).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('still demotes cleanly when the host cannot answer', async () => {
+    // An older host with no such action, or a non-conversation session (409).
+    const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
+    try {
+      let seeded = false;
+      const { res } = await restoreForeignWith(
+        root,
+        { call: vi.fn(async () => { throw new Error('unknown action'); }) as never },
+        async () => void (seeded = true),
+      );
+      expect(seeded).toBe(false);
+      expect(res).toEqual({ written: false, state: { sentOffset: 0, sentSeq: 0 } });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('survives a source whose seeding throws', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
+    try {
+      const { res } = await restoreForeignWith(
+        root,
+        { call: vi.fn(async () => ({ messages: [{ role: 'user', content: 'x' }], truncated: false })) as never },
+        async () => { throw new Error('seeding blew up'); },
+      );
+      // A courtesy that can kill the turn is worse than no courtesy.
+      expect(res).toEqual({ written: false, state: { sentOffset: 0, sentSeq: 0 } });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('skips seeding when the conversation has no replayable history', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'ax-tx-'));
+    try {
+      let seeded = false;
+      await restoreForeignWith(
+        root,
+        { call: vi.fn(async () => ({ messages: [], truncated: false })) as never },
+        async () => void (seeded = true),
+      );
+      expect(seeded).toBe(false);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });

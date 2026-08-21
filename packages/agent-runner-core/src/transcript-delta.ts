@@ -68,6 +68,30 @@ export interface TranscriptSource {
    * exactly the runner-private layout this seam exists to hide.
    */
   write(sessionId: string, bytes: Buffer): Promise<TranscriptWriteOutcome>;
+  /**
+   * Seed the source from the runner-neutral display log, after `write` answered
+   * `'unusable'` — i.e. the stored transcript was written by a DIFFERENT runner
+   * and this one is about to start blank while the user still has the whole
+   * conversation on screen.
+   *
+   * OPTIONAL, and its absence is a real answer rather than a gap: a source
+   * whose transcript is an SDK-owned file cannot be seeded with a synthetic
+   * prior session without hand-forging that SDK's private format, which is
+   * precisely the coupling this seam exists to prevent. Such a source simply
+   * does not implement it and keeps the demote-to-fresh behaviour.
+   *
+   * `messages` are text-only user/assistant turns, already filtered and bounded
+   * host-side (see `session.get-display-history`) — no tool calls to re-pair
+   * and no signed reasoning to replay.
+   *
+   * Best-effort by contract: a throw here must not fail the turn, because a
+   * partially-remembered conversation is strictly better than a dead one.
+   */
+  seedFromHistory?(input: {
+    sessionId: string;
+    messages: readonly { role: 'user' | 'assistant'; content: string }[];
+    truncated: boolean;
+  }): Promise<void>;
 }
 
 /**
@@ -250,9 +274,15 @@ export async function restoreTranscriptForResume(input: {
   const outcome = await source.write(sessionId, buf);
   if (outcome === 'unusable') {
     // The source could not adopt these bytes (e.g. they were serialized by a
-    // different runner). Report "no resumable transcript" so the caller takes
-    // the SAME demote-to-fresh path the F2a guard already implements — there
-    // is deliberately no second branch for this in runRunner.
+    // different runner). Before demoting, give it the chance to rebuild what it
+    // can from the runner-neutral display log — the user is still looking at
+    // this conversation on screen, so starting blank is a worse answer than an
+    // imperfect one. A source that cannot be seeded doesn't implement the hook.
+    await seedFromDisplayHistory({ client, source, sessionId });
+    // Either way, report "no resumable transcript" so the caller takes the SAME
+    // demote-to-fresh path the F2a guard already implements — the seeded
+    // messages are context, NOT a resumable transcript prefix, and must not be
+    // treated as bytes we have already shipped to the host.
     return { written: false, state: { sentOffset: 0, sentSeq: 0 } };
   }
 
@@ -268,4 +298,45 @@ export async function restoreTranscriptForResume(input: {
     written: true,
     state: { sentOffset: consumed, sentSeq: lines.length },
   };
+}
+
+
+/**
+ * Ask the host for the display log and hand it to the source.
+ *
+ * ENTIRELY BEST-EFFORT. Every failure mode here — the host is old and has no
+ * such action, the session isn't conversation-scoped (409), the source can't be
+ * seeded, the call throws — resolves to "carry on with a blank transcript",
+ * which is exactly the behaviour that existed before this function. A courtesy
+ * that can fail the turn is worse than no courtesy.
+ */
+async function seedFromDisplayHistory(input: {
+  client: IpcClient;
+  source: TranscriptSource;
+  sessionId: string;
+}): Promise<void> {
+  const { client, source, sessionId } = input;
+  if (source.seedFromHistory === undefined) return;
+  try {
+    const res = (await client.call('session.get-display-history', {})) as {
+      messages?: readonly { role: 'user' | 'assistant'; content: string }[];
+      truncated?: boolean;
+    };
+    const messages = res.messages ?? [];
+    if (messages.length === 0) return;
+    await source.seedFromHistory({
+      sessionId,
+      messages,
+      truncated: res.truncated === true,
+    });
+    process.stderr.write(
+      `runner: rebuilt ${messages.length} message(s) of context from the ` +
+        `display history (the stored transcript was written by another runner)\n`,
+    );
+  } catch (err) {
+    process.stderr.write(
+      `runner: could not rebuild context from display history: ` +
+        `${err instanceof Error ? err.message : String(err)}; starting fresh\n`,
+    );
+  }
 }

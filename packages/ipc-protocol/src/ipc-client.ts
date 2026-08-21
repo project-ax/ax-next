@@ -12,6 +12,7 @@ import {
   IPC_TIMEOUTS_MS,
   IpcErrorEnvelopeSchema,
   ProxyDrainEgressBlocksResponseSchema,
+  SessionGetDisplayHistoryResponseSchema,
   SkillProposeResponseSchema,
   SessionAppendTranscriptResponseSchema,
   SessionReplaceTranscriptResponseSchema,
@@ -125,6 +126,9 @@ const RESPONSE_SCHEMAS: Partial<Record<IpcActionName, z.ZodTypeAny>> = {
   'skill.propose': SkillProposeResponseSchema,
   // Agent-visible egress-block note: small JSON response `{ hosts: string[] }`.
   'proxy.drain-egress-blocks': ProxyDrainEgressBlocksResponseSchema,
+  // Cross-runner history reconstruction: bounded, text-only prior turns, used
+  // to seed a runner that was handed another runner's transcript.
+  'session.get-display-history': SessionGetDisplayHistoryResponseSchema,
 };
 
 export interface IpcClientOptions {
