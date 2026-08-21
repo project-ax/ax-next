@@ -11,19 +11,10 @@
  * explicitly sends straight away) and turns a silent misroute into a visible
  * one. It also gives the routing a place to show its reasoning, which is the
  * only way a user ever learns to trust or distrust it.
- *
- * But a check that is right the tenth time is friction by the hundredth, so it
- * is a DEFAULT rather than a law: `autoDispatchWhenConfident` sends straight
- * through when the router is sure. Note what the setting deliberately does NOT
- * do — a low-confidence route still confirms, always. The setting removes the
- * question where the answer was obvious, not the question where it was not, and
- * that asymmetry is the whole reason it is safe to offer.
  */
 import { useState } from 'react';
 import { ArrowUp, ChevronDown, MessageSquare, Zap } from 'lucide-react';
 import { Button } from '@/components/ui/button';
-import { Checkbox } from '@/components/ui/checkbox';
-import { Label } from '@/components/ui/label';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,13 +35,9 @@ interface Proposal {
 
 export function HomeComposer({
   agents,
-  autoDispatchWhenConfident,
-  onSetAutoDispatch,
   onSend,
 }: {
   agents: WorkspaceAgent[];
-  autoDispatchWhenConfident: boolean;
-  onSetAutoDispatch: (v: boolean) => void;
   onSend: (agentId: string, text: string) => void;
 }) {
   const [draft, setDraft] = useState('');
@@ -73,13 +60,6 @@ export function HomeComposer({
     setRouting(true);
     try {
       const r = await workspaceApi.route(text);
-      // Confident + opted in → straight through. Unsure always asks, whatever
-      // the setting says.
-      if (r.confident && autoDispatchWhenConfident) {
-        setDraft('');
-        onSend(r.agentId, text);
-        return;
-      }
       setProposal({ ...r, text });
     } finally {
       setRouting(false);
@@ -139,27 +119,6 @@ export function HomeComposer({
             >
               Cancel
             </Button>
-          </div>
-
-          {/*
-            Full width beneath, so the label can be precise. "Don't ask me
-            again" alone would be a lie — we will still ask when the router is
-            unsure, and a user who discovered that the hard way would trust the
-            setting less, not more.
-          */}
-          <div className="flex w-full items-center gap-2 border-t border-rule-soft pt-2.5">
-            <Checkbox
-              id="auto-dispatch"
-              checked={autoDispatchWhenConfident}
-              onCheckedChange={(v) => onSetAutoDispatch(v === true)}
-            />
-            <Label
-              htmlFor="auto-dispatch"
-              className="cursor-pointer text-[12.5px] font-normal text-muted-foreground"
-            >
-              Don't ask me again when Auto is sure — it will still check with you
-              when it isn't
-            </Label>
           </div>
         </div>
       )}

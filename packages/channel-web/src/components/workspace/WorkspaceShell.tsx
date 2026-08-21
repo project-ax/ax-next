@@ -22,7 +22,6 @@ import { ActivityFeed } from './ActivityFeed';
 import { AgentView, type AgentTab } from './AgentView';
 import { HomeComposer } from './HomeComposer';
 import { NewAgentView } from './NewAgentView';
-import { SettingsMenu } from './SettingsMenu';
 import { TodayView } from './TodayView';
 import { Segmented, WorkspaceHeader } from './WorkspaceHeader';
 import { WorkspaceSidebar } from './WorkspaceSidebar';
@@ -51,17 +50,8 @@ export function WorkspaceShell() {
 }
 
 function Inner() {
-  const {
-    board,
-    error,
-    refresh,
-    approve,
-    dismiss,
-    undo,
-    stopAll,
-    setScenario,
-    setPrefs,
-  } = useWorkspace();
+  const { board, error, refresh, approve, dismiss, undo, stopAll, setScenario } =
+    useWorkspace();
   const [route, setRoute] = useState<Route>({ kind: 'today' });
   const [filter, setFilter] = useState<'needs' | 'working'>('needs');
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -166,7 +156,6 @@ function Inner() {
                     { value: 'working', label: 'Working', count: workingCount },
                   ]}
                 />
-                <SettingsMenu prefs={board.prefs} onChange={setPrefs} />
               </WorkspaceHeader>
               <div className="flex-1 overflow-y-auto">
                 <TodayView
@@ -189,10 +178,6 @@ function Inner() {
               </div>
               <HomeComposer
                 agents={board.agents}
-                autoDispatchWhenConfident={board.prefs.autoDispatchWhenConfident}
-                onSetAutoDispatch={(v) =>
-                  void setPrefs({ autoDispatchWhenConfident: v })
-                }
                 onSend={async (agentId, text) => {
                   await workspaceApi.send(agentId, text);
                   setRoute({ kind: 'agent', id: agentId, tab: 'chat' });
@@ -209,9 +194,7 @@ function Inner() {
                 subtitle={`${board.activity.length} entries`}
                 dark={theme === 'dark'}
                 onTheme={(d) => setTheme(d ? 'dark' : 'light')}
-              >
-                <SettingsMenu prefs={board.prefs} onChange={setPrefs} />
-              </WorkspaceHeader>
+              />
               <div className="flex-1 overflow-y-auto">
                 <div className="mx-auto w-full max-w-[900px] px-6 pb-6">
                   <ActivityFeed

@@ -29,23 +29,12 @@ export type {
   WorkspaceFile,
 };
 
-export interface WorkspacePrefs {
-  /**
-   * Send an Auto-routed request straight to the agent when the router is
-   * confident, instead of confirming first. A low-confidence route still asks —
-   * the setting removes the friction where the answer was obvious, not the
-   * check where it was not.
-   */
-  autoDispatchWhenConfident: boolean;
-}
-
 export interface BoardState {
   scenario: DemoScenario;
   agents: WorkspaceAgent[];
   decisions: Decision[];
   activity: ActivityEvent[];
   stoppedAll: boolean;
-  prefs: WorkspacePrefs;
 }
 
 export interface AgentDetail {
@@ -133,8 +122,6 @@ export const workspaceApi = {
       '/route',
       { method: 'POST', body: { text } },
     ),
-  setPrefs: (patch: Partial<WorkspacePrefs>) =>
-    req<{ prefs: WorkspacePrefs }>('/prefs', { method: 'POST', body: patch }),
   createAgent: (brief: string) =>
     req<{ agentId: string }>('/agents', { method: 'POST', body: { brief } }),
 

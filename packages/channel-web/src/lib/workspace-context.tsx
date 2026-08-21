@@ -21,7 +21,6 @@ import {
   type ApproveResponse,
   type BoardState,
   type DemoScenario,
-  type WorkspacePrefs,
 } from './workspace-api';
 
 interface WorkspaceContextValue {
@@ -33,7 +32,6 @@ interface WorkspaceContextValue {
   undo: (id: string) => Promise<boolean>;
   stopAll: (stopped: boolean) => Promise<void>;
   setScenario: (s: DemoScenario) => Promise<void>;
-  setPrefs: (patch: Partial<WorkspacePrefs>) => Promise<void>;
 }
 
 const Ctx = createContext<WorkspaceContextValue | null>(null);
@@ -85,10 +83,6 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       },
       setScenario: async (s) => {
         await workspaceApi.setScenario(s);
-        await refresh();
-      },
-      setPrefs: async (patch) => {
-        await workspaceApi.setPrefs(patch);
         await refresh();
       },
     }),

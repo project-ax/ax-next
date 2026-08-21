@@ -29,18 +29,10 @@ const agents: WorkspaceAgent[] = [
   },
 ];
 
-function setup(autoDispatch: boolean) {
+function setup() {
   const onSend = vi.fn();
-  const onSetAutoDispatch = vi.fn();
-  render(
-    <HomeComposer
-      agents={agents}
-      autoDispatchWhenConfident={autoDispatch}
-      onSetAutoDispatch={onSetAutoDispatch}
-      onSend={onSend}
-    />,
-  );
-  return { onSend, onSetAutoDispatch };
+  render(<HomeComposer agents={agents} onSend={onSend} />);
+  return { onSend };
 }
 
 /**
@@ -62,15 +54,17 @@ beforeEach(() => {
   routeMock.mockReset();
 });
 
-describe('Auto routing — the confirm is a default, not a law', () => {
-  it('confirms a confident route when the preference is off', async () => {
+describe('Auto routing', () => {
+  it('confirms before dispatching, however confident the route is', async () => {
+    // No opt-out: a confident route is still a routing decision the human gets
+    // to see before an agent starts acting on their request.
     routeMock.mockResolvedValue({
       agentId: 'scheduler',
       agentName: 'Scheduler',
       why: 'it is about your calendar',
       confident: true,
     });
-    const { onSend } = setup(false);
+    const { onSend } = setup();
 
     ask('find me 30 minutes with Marcus');
 
@@ -78,38 +72,14 @@ describe('Auto routing — the confirm is a default, not a law', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
-  it('dispatches a confident route straight through when the preference is on', async () => {
-    routeMock.mockResolvedValue({
-      agentId: 'scheduler',
-      agentName: 'Scheduler',
-      why: 'it is about your calendar',
-      confident: true,
-    });
-    const { onSend } = setup(true);
-
-    ask('find me 30 minutes with Marcus');
-
-    await waitFor(() =>
-      expect(onSend).toHaveBeenCalledWith(
-        'scheduler',
-        'find me 30 minutes with Marcus',
-      ),
-    );
-    expect(screen.queryByText(/Auto picked/)).toBeNull();
-  });
-
-  it('STILL confirms an unsure route with the preference on', async () => {
-    // The asymmetry is the whole reason the setting is safe to offer: it
-    // removes the question where the answer was obvious, never the question
-    // where it was not. If this test ever goes green the other way, the
-    // checkbox's label has become a lie.
+  it('says so plainly when it cannot tell', async () => {
     routeMock.mockResolvedValue({
       agentId: 'scheduler',
       agentName: 'Scheduler',
       why: 'nothing in it pointed anywhere in particular',
       confident: false,
     });
-    const { onSend } = setup(true);
+    const { onSend } = setup();
 
     ask('can you look into that thing from yesterday');
 
@@ -117,8 +87,26 @@ describe('Auto routing — the confirm is a default, not a law', () => {
     expect(onSend).not.toHaveBeenCalled();
   });
 
+  it('dispatches on confirmation', async () => {
+    routeMock.mockResolvedValue({
+      agentId: 'scheduler',
+      agentName: 'Scheduler',
+      why: 'it is about your calendar',
+      confident: true,
+    });
+    const { onSend } = setup();
+
+    ask('find me 30 minutes with Marcus');
+    fireEvent.click(await screen.findByRole('button', { name: /Send to Scheduler/ }));
+
+    expect(onSend).toHaveBeenCalledWith(
+      'scheduler',
+      'find me 30 minutes with Marcus',
+    );
+  });
+
   it('never routes at all when an agent was picked explicitly', async () => {
-    const { onSend } = setup(false);
+    const { onSend } = setup();
 
     openMenu(screen.getByRole('button', { name: /Auto/ }));
     fireEvent.click(await screen.findByRole('menuitem', { name: /Scheduler/ }));
@@ -128,20 +116,5 @@ describe('Auto routing — the confirm is a default, not a law', () => {
       expect(onSend).toHaveBeenCalledWith('scheduler', 'keep Thursdays clear'),
     );
     expect(routeMock).not.toHaveBeenCalled();
-  });
-
-  it('the checkbox turns the preference on from the confirmation', async () => {
-    routeMock.mockResolvedValue({
-      agentId: 'scheduler',
-      agentName: 'Scheduler',
-      why: 'it is about your calendar',
-      confident: true,
-    });
-    const { onSetAutoDispatch } = setup(false);
-
-    ask('find me 30 minutes with Marcus');
-    fireEvent.click(await screen.findByLabelText(/Don't ask me again/));
-
-    expect(onSetAutoDispatch).toHaveBeenCalledWith(true);
   });
 });
