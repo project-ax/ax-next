@@ -1,0 +1,6 @@
+# Source is always text. Without this, a file that USED to contain a raw NUL
+# byte diffs as "Bin N -> M bytes" and the actual change is unreviewable.
+*.ts diff
+*.tsx diff
+*.js diff
+*.mjs diff
