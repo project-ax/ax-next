@@ -56,6 +56,13 @@ export function workspaceMiddleware(): (
   res: ServerResponse,
 ) => Promise<boolean> {
   let state: WorkspaceState = seedWorkspace('unattended');
+  /**
+   * User preferences. Deliberately server-side rather than localStorage: this is
+   * a real per-user setting that changes what the product DOES with a request,
+   * so it belongs where the rest of the user's configuration lives, not in one
+   * browser's storage.
+   */
+  let prefs = { autoDispatchWhenConfident: false };
   // Per-agent memory edits, so a save survives navigation within a session.
   let memoryEdits: Record<string, Record<string, string>> = {};
 
@@ -75,7 +82,16 @@ export function workspaceMiddleware(): (
         decisions: state.decisions,
         activity: state.activity,
         stoppedAll: state.stoppedAll,
+        prefs,
       });
+    }
+
+    if (method === 'POST' && rest === '/prefs') {
+      const body = await readBody(req);
+      if (typeof body.autoDispatchWhenConfident === 'boolean') {
+        prefs = { ...prefs, autoDispatchWhenConfident: body.autoDispatchWhenConfident };
+      }
+      return json(res, 200, { prefs });
     }
 
     // ---- scenario switch (dev control) ------------------------------------
@@ -84,6 +100,8 @@ export function workspaceMiddleware(): (
       const next = String(body.scenario ?? 'unattended') as DemoScenario;
       state = seedWorkspace(next);
       memoryEdits = {};
+      // `prefs` deliberately survives a scenario switch — it is the user's
+      // setting, not part of the fixture being demonstrated.
       return json(res, 200, { scenario: state.scenario });
     }
 
