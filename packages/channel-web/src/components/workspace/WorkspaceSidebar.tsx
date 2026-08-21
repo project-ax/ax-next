@@ -120,10 +120,11 @@ export function WorkspaceSidebar({
         tri-toggle (Light / Dark / System) and the account row, and the whole
         point of the refresh is that this surface shares the app's chrome rather
         than growing a parallel copy of it.
+
+        Rendered bare — it brings its own `border-t` and padding, so a wrapper
+        adding either draws a second rule above it.
       */}
-      <div className="border-t border-border py-2">
-        <UserMenu />
-      </div>
+      <UserMenu />
     </aside>
   );
 }
