@@ -32,12 +32,9 @@ type Route =
   | { kind: 'new' }
   | { kind: 'agent'; id: string; tab: AgentTab };
 
-/**
- * "Friday, 21 August" — the date the queue is describing. Day-then-month, to
- * match the rest of the surface's voice ("summarised", "organised").
- */
+/** "Friday, August 21" — the date the queue is describing. */
 function today(): string {
-  return new Date().toLocaleDateString('en-GB', {
+  return new Date().toLocaleDateString('en-US', {
     weekday: 'long',
     day: 'numeric',
     month: 'long',
