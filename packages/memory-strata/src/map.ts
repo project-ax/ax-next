@@ -231,6 +231,11 @@ async function densifyOne(args: {
   try {
     const raw = await densify({ docId, category, facts: safeFacts, fallbackSummary });
     summary = cleanSummary(raw, summaryMax);
+    // An empty densification is an ACCEPTED result, not a failure: the model
+    // had nothing better to say than the summary we already had. It falls
+    // through to the cache write below, unlike the failure/sensitive paths,
+    // which return early precisely so the next pass retries. That asymmetry is
+    // deliberate — cache "no improvement", retry "couldn't get an answer".
     if (summary.length === 0) summary = fallbackSummary;
   } catch (err) {
     // A single doc's densification failure degrades to its raw summary; the
@@ -263,6 +268,14 @@ async function densifyOne(args: {
   // On a hit, degrade exactly like the catch block above: fall back to the
   // (already-gated) frontmatter summary and skip the cache write, so the next
   // pass retries the densifier rather than serving the rejected line forever.
+  //
+  // Note this check is only ever MEANINGFUL for fresh densifier output. If the
+  // empty-output branch above already swapped in `fallbackSummary`, we end up
+  // re-inspecting a string the doc store gated on the way in, and a hit would
+  // hand back the very value it just rejected. That's unreachable today (both
+  // inbox writers gate `fact` before it becomes the frontmatter summary, and
+  // truncation can't turn a clean string sensitive) and harmless if it ever
+  // isn't — the fallback is the module's trusted floor. Not worth branching on.
   const outputGate = filterSensitive(summary);
   if (!outputGate.kept) {
     log?.warn('memory_strata_map_densify_sensitive', {
