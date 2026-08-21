@@ -24,6 +24,7 @@
   },
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.40",
+    "@ai-sdk/openai-compatible": "3.0.33",
     "@ax/agent-runner-core": "workspace:*",
     "@ax/core": "workspace:*",
     "@ax/ipc-protocol": "workspace:*",

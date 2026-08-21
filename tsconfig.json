@@ -49,6 +49,7 @@
     { "path": "packages/credential-proxy" },
     { "path": "packages/credential-proxy-bridge" },
     { "path": "packages/llm-anthropic" },
+    { "path": "packages/llm-openrouter" },
     { "path": "presets/k8s" },
     { "path": "packages/onboarding" },
     { "path": "packages/memory-strata-index-contract" },
