@@ -1,4 +1,10 @@
-import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
+import {
+  makeAgentContext,
+  providerEndpointFor,
+  type AgentContext,
+  type HookBus,
+  type ProviderEndpoint,
+} from '@ax/core';
 import { z } from 'zod';
 import {
   parseRequestBody,
@@ -19,9 +25,10 @@ import { validateProviderKey } from './provider-validator.js';
 // Bus services registered:
 //   credentials:list-providers  → ProviderEntry[]
 //
-// MVP static list: Anthropic only. The service hook is the extension point
-// for future multi-provider support — call `credentials:list-providers` to
-// get the list rather than hardcoding it anywhere else.
+// Static list, seeded from @ax/core's PROVIDER_ENDPOINTS. The service hook
+// is the extension point for future multi-provider support — call
+// `credentials:list-providers` to get the list rather than hardcoding it
+// anywhere else.
 //
 // Key safety invariant: raw key bytes are NEVER logged or returned to the
 // client. The validate handler accepts a base64-encoded key, decodes it to
@@ -43,14 +50,32 @@ export interface ProviderEntry {
   models: string[];
 }
 
+/**
+ * Pull one endpoint out of @ax/core's frozen table. `providerEndpointFor`
+ * returns `undefined` for an id it doesn't know; the ids below are literal
+ * keys of that table, so the throw is a narrowing aid that fires only if
+ * someone deletes a provider out from under this file.
+ */
+function endpointOrThrow(id: string): ProviderEndpoint {
+  const endpoint = providerEndpointFor(id);
+  if (endpoint === undefined) {
+    throw new Error(`no PROVIDER_ENDPOINTS entry for '${id}'`);
+  }
+  return endpoint;
+}
+
+const ANTHROPIC = endpointOrThrow('anthropic');
+const OPENROUTER = endpointOrThrow('openrouter');
+
 const STATIC_PROVIDERS: ProviderEntry[] = [
   {
-    id: 'anthropic',
-    name: 'Anthropic',
+    id: ANTHROPIC.id,
+    name: ANTHROPIC.name,
     // Must match the ref the chat-orchestrator looks up at proxy:open-session
     // (and the wizard's completion-tx writes), or the Provider keys tab
-    // shows "Not configured" right after a successful wizard run.
-    ref: 'provider:anthropic',
+    // shows "Not configured" right after a successful wizard run. Sourcing it
+    // from PROVIDER_ENDPOINTS is what makes that guaranteed rather than hoped.
+    ref: ANTHROPIC.credentialRef,
     // BARE model ids, deliberately. This list feeds the admin "Model config"
     // tab, which builds the stored `settings:fast-model` value by joining the
     // provider id and the model id (`${providerId}/${modelId}` — see
@@ -63,6 +88,21 @@ const STATIC_PROVIDERS: ProviderEntry[] = [
       'claude-sonnet-4-6',
       'claude-haiku-4-5-20251001',
     ],
+  },
+  {
+    id: OPENROUTER.id,
+    name: OPENROUTER.name,
+    ref: OPENROUTER.credentialRef,
+    // Also BARE, same rule as above — no `openrouter/` prefix. Note that an
+    // OpenRouter slug is itself `vendor/model`, so these ids legitimately
+    // contain a `/`. That's fine: the Model config tab joins on the provider
+    // id and strips back on the FIRST `/`, so `openrouter/x-ai/grok-4.6`
+    // round-trips to `x-ai/grok-4.6`. The vendor segment belongs to the model
+    // id; only the leading segment is the provider.
+    //
+    // A curated seed, not a gate — OpenRouter offers hundreds of models and
+    // this list only supplies labels for the picker.
+    models: ['x-ai/grok-4.6', 'moonshotai/kimi-k3', 'google/gemini-3.7-flash'],
   },
 ];
 

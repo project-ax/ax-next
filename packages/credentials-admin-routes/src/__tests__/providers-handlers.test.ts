@@ -144,6 +144,50 @@ describe('providers handlers', () => {
     }
   });
 
+  it('lists openrouter under the ref the orchestrator and runner look up', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createProviderHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+
+    await handlers.list(mkReq({}), res);
+
+    expect(statusOf()).toBe(200);
+    const body = bodyOf() as {
+      providers: Array<{ id: string; name: string; ref: string; configured: boolean }>;
+    };
+    const openrouter = body.providers.find((p) => p.id === 'openrouter');
+    expect(openrouter).toBeDefined();
+    // Sourced from PROVIDER_ENDPOINTS.openrouter in @ax/core — the same
+    // table the host reads to mint the ax-cred placeholder.
+    expect(openrouter?.ref).toBe('provider:openrouter');
+    expect(openrouter?.name).toBe('OpenRouter');
+    expect(openrouter?.configured).toBe(false);
+  });
+
+  it('openrouter model ids carry no provider prefix, even though the slug itself has a /', async () => {
+    // OpenRouter slugs are `vendor/model`, so "bare" here means "no
+    // `openrouter/` prefix" — not "no slash at all". The Model config tab
+    // joins `${provider.id}/${modelId}` and strips back on the FIRST `/`,
+    // so a nested slug round-trips; a self-prefixed id would not.
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createProviderHandlers({ bus });
+    const { res, bodyOf } = mkRes();
+
+    await handlers.list(mkReq({}), res);
+
+    const body = bodyOf() as {
+      providers: Array<{ id: string; models: string[] }>;
+    };
+    const openrouter = body.providers.find((p) => p.id === 'openrouter');
+    expect(openrouter?.models.length).toBeGreaterThan(0);
+    for (const m of openrouter!.models) {
+      expect(m.startsWith('openrouter/')).toBe(false);
+      // Join + strip-on-first-slash round-trips back to the same id.
+      const ref = `openrouter/${m}`;
+      expect(ref.slice(ref.indexOf('/') + 1)).toBe(m);
+    }
+  });
+
   it('returns configured=true after a key has been saved', async () => {
     const bus = await makeBus({ id: 'admin', isAdmin: true });
     // Pre-seed a global anthropic credential.

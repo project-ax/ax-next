@@ -4,10 +4,11 @@ import type Anthropic from '@anthropic-ai/sdk';
 import { createLlmAnthropicPlugin, type ModelsListSupportedOutput } from '../plugin.js';
 
 // ---------------------------------------------------------------------------
-// models:list-supported service hook — Task 2.7 Step 1b
+// models:list-supported:anthropic service hook — Task 2.7 Step 1b
 //
 // Boots the plugin with a mock clientFactory (llm-anthropic still requires
-// a valid apiKey at init time) and calls models:list-supported directly.
+// a valid apiKey at init time) and calls models:list-supported:anthropic
+// directly.
 // ---------------------------------------------------------------------------
 
 function makeStubClient(): Anthropic {
@@ -20,7 +21,7 @@ function makeStubClient(): Anthropic {
   } as unknown as Anthropic;
 }
 
-describe('@ax/llm-anthropic models:list-supported', () => {
+describe('@ax/llm-anthropic models:list-supported:anthropic', () => {
   it('registers the service and returns a non-empty list', async () => {
     const plugin = createLlmAnthropicPlugin({
       apiKey: 'test-key',
@@ -29,11 +30,11 @@ describe('@ax/llm-anthropic models:list-supported', () => {
     const bus = new HookBus();
     await plugin.init({ bus, config: {} });
 
-    expect(bus.hasService('models:list-supported')).toBe(true);
+    expect(bus.hasService('models:list-supported:anthropic')).toBe(true);
 
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
     const out = await bus.call<unknown, ModelsListSupportedOutput>(
-      'models:list-supported',
+      'models:list-supported:anthropic',
       ctx,
       {},
     );
@@ -54,7 +55,7 @@ describe('@ax/llm-anthropic models:list-supported', () => {
 
     const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
     const out = await bus.call<unknown, ModelsListSupportedOutput>(
-      'models:list-supported',
+      'models:list-supported:anthropic',
       ctx,
       {},
     );
@@ -69,8 +70,8 @@ describe('@ax/llm-anthropic models:list-supported', () => {
     }
   });
 
-  it('manifest declares models:list-supported in registers', () => {
+  it('manifest declares models:list-supported:anthropic in registers', () => {
     const plugin = createLlmAnthropicPlugin({ apiKey: 'test-key' });
-    expect(plugin.manifest.registers).toContain('models:list-supported');
+    expect(plugin.manifest.registers).toContain('models:list-supported:anthropic');
   });
 });

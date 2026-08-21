@@ -43,7 +43,7 @@ export interface PythonVenvEnvInput {
 
 /**
  * Env overrides that activate the venv for the SDK subprocess. Spread AFTER
- * `proxyStartup.anthropicEnv` in the `query()` env literal so PATH/VIRTUAL_ENV
+ * `proxyStartup.providerEnv` in the `query()` env literal so PATH/VIRTUAL_ENV
  * win. Returns {} when no ephemeral root (or when the caller signals the venv
  * isn't ready by passing `ephemeralRoot: undefined`).
  */

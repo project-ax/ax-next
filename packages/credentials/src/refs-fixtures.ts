@@ -25,6 +25,14 @@ export const KNOWN_DESTINATION_FIXTURES: ReadonlyArray<DestinationFixture> = [
     expectedRef: 'provider:anthropic',
   },
   {
+    // A second provider proves the `provider` case is generic over
+    // `dest.provider` in all three copies — nothing keys off 'anthropic'.
+    // The id matches PROVIDER_ENDPOINTS.openrouter.credentialRef in @ax/core,
+    // which is what the orchestrator and the runner look the key up by.
+    destination: { kind: 'provider', provider: 'openrouter' },
+    expectedRef: 'provider:openrouter',
+  },
+  {
     destination: {
       kind: 'skill-slot',
       skillId: 'linear-tracker',

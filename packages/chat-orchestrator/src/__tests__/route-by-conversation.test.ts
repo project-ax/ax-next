@@ -43,7 +43,7 @@ const TEST_AGENT = {
   displayName: 'Test',
   allowedTools: ['file.read'],
   mcpConfigIds: [],
-  model: 'claude-sonnet-4-7',
+  model: 'anthropic/claude-sonnet-4-7',
   runner: 'claude-sdk',
   workspaceRef: null,
 };

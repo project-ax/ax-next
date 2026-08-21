@@ -7,7 +7,6 @@ import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { proxyBootstrapPath, setupProxy, withProxyToken } from '../proxy-startup.js';
 import type { RunnerEnv } from '../env.js';
-import { MissingEnvError } from '../env.js';
 
 // Snapshot a few env vars setupProxy mutates so the test suite stays
 // deterministic — tests run sequentially in vitest by default but
@@ -16,6 +15,7 @@ const ENV_KEYS_TO_SAVE = [
   'HTTP_PROXY',
   'HTTPS_PROXY',
   'ANTHROPIC_API_KEY',
+  'OPENROUTER_API_KEY',
   'AX_AUTH_TOKEN',
   'AX_RUNNER_ENDPOINT',
   'AX_SESSION_ID',
@@ -177,17 +177,17 @@ describe('setupProxy', () => {
     // the SDK subprocess routes its outbound fetch through the bridge
     // (see proxy-bootstrap.cjs). Pin the credential placeholder here;
     // the proxy + bootstrap details are covered by their own assertions.
-    expect(out.anthropicEnv.ANTHROPIC_API_KEY).toBe(
+    expect(out.providerEnv.ANTHROPIC_API_KEY).toBe(
       'ax-cred:0123456789abcdef0123456789abcdef',
     );
-    expect(out.anthropicEnv.HTTPS_PROXY).toBe('http://127.0.0.1:54321');
-    expect(out.anthropicEnv.HTTP_PROXY).toBe('http://127.0.0.1:54321');
+    expect(out.providerEnv.HTTPS_PROXY).toBe('http://127.0.0.1:54321');
+    expect(out.providerEnv.HTTP_PROXY).toBe('http://127.0.0.1:54321');
     // The bootstrap path is JSON.stringify-quoted so install paths with
     // spaces don't split NODE_OPTIONS at the whitespace boundary.
-    expect(out.anthropicEnv.NODE_OPTIONS).toMatch(
+    expect(out.providerEnv.NODE_OPTIONS).toMatch(
       /--require="[^"]*proxy-bootstrap\.cjs"/,
     );
-    expect(out.anthropicEnv.ANTHROPIC_BASE_URL).toBeUndefined();
+    expect(out.providerEnv.ANTHROPIC_BASE_URL).toBeUndefined();
     expect(out.stop).toBeUndefined();
     // Direct mode: sandbox-subprocess set HTTPS_PROXY in the child env at
     // spawn time. setupProxy MUST NOT clobber that. We didn't set it in
@@ -212,8 +212,8 @@ describe('setupProxy', () => {
     // Basic userinfo, curl/undici/python all auto-send
     // `Proxy-Authorization: Basic ax:<token>` so the listener can attribute
     // their egress (incl. blocks) to this session.
-    expect(out.anthropicEnv.HTTPS_PROXY).toBe(`http://ax:${token}@127.0.0.1:9000`);
-    expect(out.anthropicEnv.HTTP_PROXY).toBe(`http://ax:${token}@127.0.0.1:9000`);
+    expect(out.providerEnv.HTTPS_PROXY).toBe(`http://ax:${token}@127.0.0.1:9000`);
+    expect(out.providerEnv.HTTP_PROXY).toBe(`http://ax:${token}@127.0.0.1:9000`);
   });
 
   it('direct mode: leaves the proxy URL untouched when no token is present (back-compat)', async () => {
@@ -226,11 +226,21 @@ describe('setupProxy', () => {
       proxyEndpoint: 'http://127.0.0.1:9000',
     };
     const out = await setupProxy(env);
-    expect(out.anthropicEnv.HTTPS_PROXY).toBe('http://127.0.0.1:9000');
-    expect(out.anthropicEnv.HTTP_PROXY).toBe('http://127.0.0.1:9000');
+    expect(out.providerEnv.HTTPS_PROXY).toBe('http://127.0.0.1:9000');
+    expect(out.providerEnv.HTTP_PROXY).toBe('http://127.0.0.1:9000');
   });
 
-  it('direct mode: throws if ANTHROPIC_API_KEY placeholder is missing', async () => {
+  // PR 4 (provider layer): setupProxy() runs BEFORE `session.get-config`, so
+  // it cannot know which provider the agent targets and must not require any
+  // particular vendor's key. It used to hard-require ANTHROPIC_API_KEY, which
+  // meant an OpenRouter-only session died at boot before it could dial
+  // anything. That assert now lives in @ax/agent-claude-sdk-runner, which
+  // genuinely only ever talks to api.anthropic.com.
+  it('direct mode: an OpenRouter-only session (no ANTHROPIC_API_KEY anywhere) boots and forwards OPENROUTER_API_KEY', async () => {
+    // beforeEach deleted ANTHROPIC_API_KEY; assert that explicitly so the
+    // test can't quietly start passing because some other key was present.
+    expect(process.env.ANTHROPIC_API_KEY).toBeUndefined();
+    process.env.OPENROUTER_API_KEY = 'ax-cred:0123456789abcdef0123456789abcdef';
     const env: RunnerEnv = {
       runnerEndpoint: 'unix:///tmp/x.sock',
       sessionId: 's',
@@ -238,14 +248,25 @@ describe('setupProxy', () => {
       workspaceRoot: '/ws',
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
-    await expect(setupProxy(env)).rejects.toBeInstanceOf(MissingEnvError);
+    const out = await setupProxy(env);
+    // The generic value-shape forward (any `ax-cred:<32-hex>`-valued env var)
+    // carries the OpenRouter placeholder through — no per-vendor special case.
+    expect(out.providerEnv.OPENROUTER_API_KEY).toBe(
+      'ax-cred:0123456789abcdef0123456789abcdef',
+    );
+    expect(out.providerEnv.ANTHROPIC_API_KEY).toBeUndefined();
+    // Still a fully-formed startup: proxy + bootstrap wired as usual.
+    expect(out.providerEnv.HTTPS_PROXY).toBe('http://127.0.0.1:54321');
+    expect(out.providerEnv.NODE_OPTIONS).toMatch(
+      /--require="[^"]*proxy-bootstrap\.cjs"/,
+    );
   });
 
-  it('direct mode: rejects ANTHROPIC_API_KEY that is not the ax-cred:<32-hex> placeholder', async () => {
+  it('direct mode: an ANTHROPIC_API_KEY that is not the ax-cred:<32-hex> placeholder is NOT forwarded', async () => {
     // I1 defense: a regressed wiring that lands a real `sk-ant-...` key (or
-    // any non-placeholder string) in the runner's env must fail loud, not
-    // forward upstream. The runner enforces the exact format minted by
-    // @ax/credential-proxy's registry.
+    // any non-placeholder string) in the runner's env must never reach the
+    // provider-facing env. The value-shape forward is the filter — only the
+    // exact format minted by @ax/credential-proxy's registry passes.
     const env: RunnerEnv = {
       runnerEndpoint: 'unix:///tmp/x.sock',
       sessionId: 's',
@@ -263,7 +284,8 @@ describe('setupProxy', () => {
     ];
     for (const k of realLookingKeys) {
       process.env.ANTHROPIC_API_KEY = k;
-      await expect(setupProxy(env)).rejects.toBeInstanceOf(MissingEnvError);
+      const out = await setupProxy(env);
+      expect(out.providerEnv.ANTHROPIC_API_KEY).toBeUndefined();
     }
   });
 
@@ -292,11 +314,11 @@ describe('setupProxy', () => {
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
-    expect(out.anthropicEnv.AX_AUTH_TOKEN).toBeUndefined();
-    expect(out.anthropicEnv.AX_RUNNER_ENDPOINT).toBeUndefined();
-    expect(out.anthropicEnv.AX_SESSION_ID).toBeUndefined();
+    expect(out.providerEnv.AX_AUTH_TOKEN).toBeUndefined();
+    expect(out.providerEnv.AX_RUNNER_ENDPOINT).toBeUndefined();
+    expect(out.providerEnv.AX_SESSION_ID).toBeUndefined();
     // Sanity: PATH (allow-listed) IS forwarded so the Bash tool works.
-    expect(out.anthropicEnv.PATH).toBe(process.env.PATH);
+    expect(out.providerEnv.PATH).toBe(process.env.PATH);
   });
 
   it('direct mode: does NOT forward AX_INSTALLED_SKILLS_JSON into the SDK subprocess (I-P1-3)', async () => {
@@ -321,7 +343,7 @@ describe('setupProxy', () => {
         proxyEndpoint: 'http://127.0.0.1:54321',
       };
       const out = await setupProxy(env);
-      expect(out.anthropicEnv['AX_INSTALLED_SKILLS_JSON']).toBeUndefined();
+      expect(out.providerEnv['AX_INSTALLED_SKILLS_JSON']).toBeUndefined();
     } finally {
       if (savedSkills === undefined) {
         delete process.env['AX_INSTALLED_SKILLS_JSON'];
@@ -354,15 +376,15 @@ describe('setupProxy', () => {
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
-    expect(out.anthropicEnv.GITHUB_TOKEN).toBe(
+    expect(out.providerEnv.GITHUB_TOKEN).toBe(
       'ax-cred:fedcba9876543210fedcba9876543210',
     );
-    expect(out.anthropicEnv.SOME_REAL_SECRET).toBeUndefined();
+    expect(out.providerEnv.SOME_REAL_SECRET).toBeUndefined();
   });
 
   it('forwards GIT_SSL_CAINFO into the SDK subprocess env so the Bash tool git trusts the proxy MITM cert (TASK-12)', async () => {
     // TASK-12: the model's `git clone` runs inside the SDK subprocess via
-    // the Bash tool. That subprocess's env is built from anthropicEnv, NOT
+    // the Bash tool. That subprocess's env is built from providerEnv, NOT
     // the runner's process.env. git (libcurl/OpenSSL) verifies the proxy
     // MITM cert against GIT_SSL_CAINFO — NODE_EXTRA_CA_CERTS / SSL_CERT_FILE
     // only steer Node's TLS. The sandbox stamps GIT_SSL_CAINFO onto the
@@ -380,13 +402,13 @@ describe('setupProxy', () => {
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
-    expect(out.anthropicEnv.GIT_SSL_CAINFO).toBe('/var/run/ax/proxy-ca/ca.crt');
+    expect(out.providerEnv.GIT_SSL_CAINFO).toBe('/var/run/ax/proxy-ca/ca.crt');
   });
 
   it('forwards DENO_CERT into the SDK subprocess env so Deno-compiled CLIs trust the proxy MITM cert (TASK-62)', async () => {
     // TASK-62: a Deno-compiled CLI (e.g. `npx @schpet/linear-cli`) the model
     // runs via the Bash tool inherits the SDK subprocess env, which is built
-    // from anthropicEnv — NOT the runner's process.env. Deno uses rustls with
+    // from providerEnv — NOT the runner's process.env. Deno uses rustls with
     // a bundled Mozilla root store and ignores NODE_EXTRA_CA_CERTS /
     // SSL_CERT_FILE; only DENO_CERT (a PEM path added to its trust anchors)
     // makes it accept the proxy's MITM leaf cert. DENO_CERT is not covered by
@@ -403,7 +425,7 @@ describe('setupProxy', () => {
       proxyEndpoint: 'http://127.0.0.1:54321',
     };
     const out = await setupProxy(env);
-    expect(out.anthropicEnv.DENO_CERT).toBe('/var/run/ax/proxy-ca/ca.crt');
+    expect(out.providerEnv.DENO_CERT).toBe('/var/run/ax/proxy-ca/ca.crt');
   });
 
   it('throws when both proxyEndpoint and proxyUnixSocket are set (mutually exclusive)', async () => {
@@ -429,6 +451,15 @@ describe('setupProxy', () => {
     // teardown that re-read process.env dialed a dead port. Both
     // contracts are pinned below.
     //
+    // PR 4 moved that ANTHROPIC_API_KEY check out to the claude-sdk runner,
+    // so nothing after the bridge start throws on its own any more. The
+    // contract under test is "if ANY later step throws", though — so we make
+    // one throw: the env-forwarding loop enumerates process.env, and a
+    // throwing getter on one enumerable key blows it up at exactly the point
+    // the old assert did. Substituting process.env wholesale (rather than
+    // defineProperty on the real one, which Node's env object rejects for
+    // accessors) keeps the blast radius inside this test.
+    //
     // We capture the bridge port BEFORE the rejection by reading
     // process.env.HTTPS_PROXY synchronously after setupProxy() throws but
     // before the env-restore runs — i.e., we install sentinel values up
@@ -447,6 +478,17 @@ describe('setupProxy', () => {
     // we can verify the "delete vs assign" branch too.
     process.env.HTTP_PROXY = 'http://sentinel.pre-setup.invalid/';
 
+    const realProcessEnv = process.env;
+    const explodingEnv: NodeJS.ProcessEnv = { ...realProcessEnv };
+    Object.defineProperty(explodingEnv, 'AX_TEST_EXPLODING_ENV_VAR', {
+      enumerable: true,
+      configurable: true,
+      get(): string {
+        throw new Error('synthetic downstream failure');
+      },
+    });
+    process.env = explodingEnv;
+
     try {
       const env: RunnerEnv = {
         runnerEndpoint: 'unix:///tmp/x.sock',
@@ -455,10 +497,11 @@ describe('setupProxy', () => {
         workspaceRoot: '/ws',
         proxyUnixSocket: sockPath,
       };
-      // ANTHROPIC_API_KEY intentionally NOT set in process.env (beforeEach
-      // already deleted it). setupProxy starts the bridge, then throws on
-      // the placeholder check.
-      await expect(setupProxy(env)).rejects.toBeInstanceOf(MissingEnvError);
+      // setupProxy starts the bridge, then throws while building the
+      // provider-facing env.
+      await expect(setupProxy(env)).rejects.toThrow(
+        /synthetic downstream failure/,
+      );
 
       // Env-restore contract: HTTP_PROXY was sentinel before the call →
       // must be that sentinel afterwards. HTTPS_PROXY was undefined →
@@ -475,6 +518,8 @@ describe('setupProxy', () => {
       const second = await startWebProxyBridge(sockPath);
       second.stop();
     } finally {
+      // Put the real env back BEFORE afterEach's per-key restore runs.
+      process.env = realProcessEnv;
       await new Promise<void>((resolve) => upstream.close(() => resolve()));
       await fs.rm(sockDir, { recursive: true, force: true });
     }
@@ -510,18 +555,18 @@ describe('setupProxy', () => {
           /^http:\/\/127\.0\.0\.1:\d+$/,
         );
         expect(process.env.HTTPS_PROXY).toBe(process.env.HTTP_PROXY);
-        // anthropicEnv carries the placeholder; no ANTHROPIC_BASE_URL.
+        // providerEnv carries the placeholder; no ANTHROPIC_BASE_URL.
         // Plus the proxy + NODE_OPTIONS bootstrap so the SDK subprocess
         // routes its outbound fetch through the bridge.
-        expect(out.anthropicEnv.ANTHROPIC_API_KEY).toBe(
+        expect(out.providerEnv.ANTHROPIC_API_KEY).toBe(
           'ax-cred:fedcba9876543210fedcba9876543210',
         );
-        expect(out.anthropicEnv.HTTPS_PROXY).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
-        expect(out.anthropicEnv.HTTP_PROXY).toBe(out.anthropicEnv.HTTPS_PROXY);
-        expect(out.anthropicEnv.NODE_OPTIONS).toMatch(
+        expect(out.providerEnv.HTTPS_PROXY).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+        expect(out.providerEnv.HTTP_PROXY).toBe(out.providerEnv.HTTPS_PROXY);
+        expect(out.providerEnv.NODE_OPTIONS).toMatch(
           /--require="[^"]*proxy-bootstrap\.cjs"/,
         );
-        expect(out.anthropicEnv.ANTHROPIC_BASE_URL).toBeUndefined();
+        expect(out.providerEnv.ANTHROPIC_BASE_URL).toBeUndefined();
       } finally {
         out.stop?.();
       }
@@ -556,8 +601,8 @@ describe('setupProxy', () => {
         // dispatcher use now carries the token as Basic userinfo, so
         // Proxy-Authorization rides on every request through the bridge.
         const expected = new RegExp(`^http://ax:${token}@127\\.0\\.0\\.1:\\d+$`);
-        expect(out.anthropicEnv.HTTPS_PROXY).toMatch(expected);
-        expect(out.anthropicEnv.HTTP_PROXY).toBe(out.anthropicEnv.HTTPS_PROXY);
+        expect(out.providerEnv.HTTPS_PROXY).toMatch(expected);
+        expect(out.providerEnv.HTTP_PROXY).toBe(out.providerEnv.HTTPS_PROXY);
         // process.env (the runner's own dispatcher reads this) carries the
         // token-bearing URL too.
         expect(process.env.HTTP_PROXY).toMatch(expected);

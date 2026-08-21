@@ -28,7 +28,7 @@ describe('buildTtyHintEnv', () => {
 
   it('returns plain string values (so a later env spread can override them)', () => {
     // The values are a default floor, not a clamp: main.ts spreads
-    // buildTtyHintEnv() FIRST, then ...proxyStartup.anthropicEnv, so a real
+    // buildTtyHintEnv() FIRST, then ...proxyStartup.providerEnv, so a real
     // forwarded TERM/COLUMNS wins. That only works if these are ordinary
     // string entries a subsequent spread replaces — guard that contract here.
     const hints = buildTtyHintEnv();

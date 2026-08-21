@@ -9,7 +9,7 @@
 //      is exactly the provider-side auth discovery the design forbids
 //      (docs/plans/2026-08-18-provider-agnostic-runner-design.md §6: "No
 //      provider SDK may perform its own auth discovery"). We always pass
-//      `apiKey` explicitly, from the `anthropicEnv` map `setupProxy()` handed
+//      `apiKey` explicitly, from the `providerEnv` map `setupProxy()` handed
 //      us, and we assert its `ax-cred:<32-hex>` placeholder shape first. That
 //      assertion is defense in depth — `setupProxy()` makes the same check on
 //      the way IN — but a real `sk-ant-…` key reaching this process is a
@@ -26,7 +26,7 @@
 //      subprocess sandbox) it installs nothing, and the model call would go
 //      straight to api.anthropic.com carrying a placeholder key that nobody
 //      substitutes. So we build our own dispatcher here, from the same
-//      `anthropicEnv` — never from `process.env` — and never depend on a global.
+//      `providerEnv` — never from `process.env` — and never depend on a global.
 //
 // On the MITM: the credential-proxy terminates TLS and presents its own leaf
 // for api.anthropic.com, so the dispatcher has to trust the proxy's root CA
@@ -73,7 +73,7 @@ const ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
 
 interface ProviderEntry {
   /**
-   * Key in `anthropicEnv` holding this provider's `ax-cred:<32-hex>`
+   * Key in `providerEnv` holding this provider's `ax-cred:<32-hex>`
    * placeholder. Anthropic's is `ANTHROPIC_API_KEY`; OpenRouter's will be
    * `OPENROUTER_API_KEY` (the credential mechanism is keyed by env name, not by
    * vendor — see design §6).
@@ -121,9 +121,9 @@ const PROVIDER_ROADMAP = 'PR 4 (OpenRouter) / PR 5 (Vertex) of the runner sequen
  * kill a runner that would have worked fine.
  */
 export function readProxyCaPem(
-  anthropicEnv: Record<string, string>,
+  providerEnv: Record<string, string>,
 ): string | undefined {
-  const caPath = anthropicEnv.NODE_EXTRA_CA_CERTS ?? anthropicEnv.SSL_CERT_FILE;
+  const caPath = providerEnv.NODE_EXTRA_CA_CERTS ?? providerEnv.SSL_CERT_FILE;
   if (caPath === undefined || caPath.length === 0) return undefined;
   try {
     return fs.readFileSync(caPath, 'utf8');
@@ -150,11 +150,11 @@ export function readProxyCaPem(
  * anyway — just much later and with a confusing message).
  */
 export function createProxyFetch(
-  anthropicEnv: Record<string, string>,
+  providerEnv: Record<string, string>,
 ): typeof fetch | undefined {
   // Both are set to the same value by `setupProxy`; HTTPS first because every
   // model endpoint we speak to is https.
-  const rawProxy = anthropicEnv.HTTPS_PROXY ?? anthropicEnv.HTTP_PROXY;
+  const rawProxy = providerEnv.HTTPS_PROXY ?? providerEnv.HTTP_PROXY;
   if (rawProxy === undefined || rawProxy.length === 0) return undefined;
 
   let url: URL;
@@ -181,7 +181,7 @@ export function createProxyFetch(
   url.password = '';
   const uri = url.toString().replace(/\/$/, '');
 
-  const ca = readProxyCaPem(anthropicEnv);
+  const ca = readProxyCaPem(providerEnv);
   const dispatcher = new ProxyAgent({
     uri,
     ...(password.length > 0
@@ -221,11 +221,11 @@ export function createProxyFetch(
 export interface ResolveModelOptions {
   /** `agentConfig.model` — a `provider/model-id` ref. */
   modelRef: string;
-  /** `ProxyStartup.anthropicEnv` from `setupProxy()`. */
-  anthropicEnv: Record<string, string>;
+  /** `ProxyStartup.providerEnv` from `setupProxy()`. */
+  providerEnv: Record<string, string>;
   /**
    * Override for the fetch the provider uses. Defaults to
-   * `createProxyFetch(anthropicEnv)`. Exists so tests can capture what would go
+   * `createProxyFetch(providerEnv)`. Exists so tests can capture what would go
    * on the wire without a network; production callers omit it.
    */
   fetchImpl?: typeof fetch | undefined;
@@ -241,7 +241,7 @@ export interface ResolveModelOptions {
  * grok must not quietly get Claude (design §6).
  */
 export function resolveModel(opts: ResolveModelOptions): LanguageModel {
-  const { modelRef, anthropicEnv } = opts;
+  const { modelRef, providerEnv } = opts;
   // Throws `PluginError({ code: 'invalid-payload' })` on anything that is not
   // `provider/model-id`, which includes a bare `claude-sonnet-4-6`.
   const { provider, modelId } = parseModelRef(modelRef);
@@ -257,7 +257,7 @@ export function resolveModel(opts: ResolveModelOptions): LanguageModel {
     );
   }
 
-  const apiKey = anthropicEnv[entry.credentialEnvVar];
+  const apiKey = providerEnv[entry.credentialEnvVar];
   if (typeof apiKey !== 'string' || !PLACEHOLDER_RE.test(apiKey)) {
     throw new Error(
       `agent-aisdk-runner: ${entry.credentialEnvVar} must be the ` +
@@ -270,6 +270,6 @@ export function resolveModel(opts: ResolveModelOptions): LanguageModel {
   }
 
   const fetchImpl =
-    opts.fetchImpl !== undefined ? opts.fetchImpl : createProxyFetch(anthropicEnv);
+    opts.fetchImpl !== undefined ? opts.fetchImpl : createProxyFetch(providerEnv);
   return entry.create({ apiKey, fetchImpl })(modelId);
 }

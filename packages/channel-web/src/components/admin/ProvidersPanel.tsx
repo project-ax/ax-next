@@ -1,14 +1,26 @@
 import { CredentialSlotRow } from '../credentials/CredentialSlotRow';
 
-// Mirrors the canonical list in @ax/chat-orchestrator's KNOWN_PROVIDERS.
-// Duplicated here because cross-plugin runtime imports are forbidden
-// (CLAUDE.md invariant 2). Keep in sync when adding providers.
+// Mirrors the canonical PROVIDER_ENDPOINTS table in @ax/core (`name`,
+// `credentialEnvVar`, `description`), which @ax/chat-orchestrator's
+// KNOWN_PROVIDERS also derives from.
+//
+// Deliberately a hand-kept copy rather than an import: nothing under
+// `components/` pulls in the kernel today, and dragging @ax/core into the
+// browser bundle to save a handful of lines is the worse trade. The cost is
+// this comment — when a provider is added to PROVIDER_ENDPOINTS, add its row
+// here too, and the ProvidersPanel test will tell you if the two disagree.
 const KNOWN_PROVIDERS = [
   {
     provider: 'anthropic' as const,
     name: 'Anthropic',
     slot: 'ANTHROPIC_API_KEY' as const,
     description: 'API key from console.anthropic.com.',
+  },
+  {
+    provider: 'openrouter' as const,
+    name: 'OpenRouter',
+    slot: 'OPENROUTER_API_KEY' as const,
+    description: 'API key from openrouter.ai/keys — one key, dozens of models.',
   },
 ] as const;
 

@@ -133,7 +133,7 @@ async function startTunnelProxy(): Promise<FakeProxy> {
 describe('resolveModel — credential placeholder validation', () => {
   it('accepts the ax-cred:<32-hex> placeholder', () => {
     expect(() =>
-      resolveModel({ modelRef: 'anthropic/claude-sonnet-4-6', anthropicEnv: env() }),
+      resolveModel({ modelRef: 'anthropic/claude-sonnet-4-6', providerEnv: env() }),
     ).not.toThrow();
   });
 
@@ -141,14 +141,14 @@ describe('resolveModel — credential placeholder validation', () => {
     expect(() =>
       resolveModel({
         modelRef: 'anthropic/claude-sonnet-4-6',
-        anthropicEnv: env({ ANTHROPIC_API_KEY: 'sk-ant-api03-totally-real-key' }),
+        providerEnv: env({ ANTHROPIC_API_KEY: 'sk-ant-api03-totally-real-key' }),
       }),
     ).toThrowError(/ax-cred:<32-hex>/);
   });
 
   it('rejects a missing placeholder', () => {
     expect(() =>
-      resolveModel({ modelRef: 'anthropic/claude-sonnet-4-6', anthropicEnv: {} }),
+      resolveModel({ modelRef: 'anthropic/claude-sonnet-4-6', providerEnv: {} }),
     ).toThrowError(/ANTHROPIC_API_KEY/);
   });
 
@@ -156,7 +156,7 @@ describe('resolveModel — credential placeholder validation', () => {
     expect(() =>
       resolveModel({
         modelRef: 'anthropic/claude-sonnet-4-6',
-        anthropicEnv: env({ ANTHROPIC_API_KEY: '' }),
+        providerEnv: env({ ANTHROPIC_API_KEY: '' }),
       }),
     ).toThrowError(/ANTHROPIC_API_KEY/);
   });
@@ -165,7 +165,7 @@ describe('resolveModel — credential placeholder validation', () => {
     expect(() =>
       resolveModel({
         modelRef: 'anthropic/claude-sonnet-4-6',
-        anthropicEnv: env({ ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef' }),
+        providerEnv: env({ ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef' }),
       }),
     ).toThrowError(/ax-cred:<32-hex>/);
   });
@@ -175,7 +175,7 @@ describe('resolveModel — provider gating', () => {
   it('rejects a non-anthropic ref by name and points at the PR that adds it', () => {
     let message = '';
     try {
-      resolveModel({ modelRef: 'openrouter/x-ai/grok-4.6', anthropicEnv: env() });
+      resolveModel({ modelRef: 'openrouter/x-ai/grok-4.6', providerEnv: env() });
       throw new Error('expected resolveModel to throw');
     } catch (err) {
       message = (err as Error).message;
@@ -189,13 +189,13 @@ describe('resolveModel — provider gating', () => {
 
   it('rejects a vertex ref too (the guard is an allow-list, not a deny-list)', () => {
     expect(() =>
-      resolveModel({ modelRef: 'vertex/gemini-3-pro', anthropicEnv: env() }),
+      resolveModel({ modelRef: 'vertex/gemini-3-pro', providerEnv: env() }),
     ).toThrowError(/vertex/);
   });
 
   it('rejects a bare model id with no provider prefix (no implicit anthropic)', () => {
     expect(() =>
-      resolveModel({ modelRef: 'claude-sonnet-4-6', anthropicEnv: env() }),
+      resolveModel({ modelRef: 'claude-sonnet-4-6', providerEnv: env() }),
     ).toThrowError();
   });
 });
@@ -220,11 +220,11 @@ describe('resolveModel — what actually reaches the wire', () => {
     else process.env.ANTHROPIC_BASE_URL = priorBaseUrl;
   });
 
-  it('sends the placeholder from anthropicEnv, never the one in process.env', async () => {
+  it('sends the placeholder from providerEnv, never the one in process.env', async () => {
     const captured: CapturedRequest[] = [];
     const model = resolveModel({
       modelRef: 'anthropic/claude-sonnet-4-6',
-      anthropicEnv: env(),
+      providerEnv: env(),
       fetchImpl: capturingFetch(captured),
     });
 
@@ -242,7 +242,7 @@ describe('resolveModel — what actually reaches the wire', () => {
     const captured: CapturedRequest[] = [];
     const model = resolveModel({
       modelRef: 'anthropic/claude-sonnet-4-6',
-      anthropicEnv: env(),
+      providerEnv: env(),
       fetchImpl: capturingFetch(captured),
     });
 
@@ -255,7 +255,7 @@ describe('resolveModel — what actually reaches the wire', () => {
     const captured: CapturedRequest[] = [];
     const model = resolveModel({
       modelRef: 'anthropic/claude-sonnet-4-6',
-      anthropicEnv: env(),
+      providerEnv: env(),
       fetchImpl: capturingFetch(captured),
     });
 
@@ -399,7 +399,7 @@ describe('no gateway, no auth discovery', () => {
   it('resolves to a provider model OBJECT, never a bare model-id string', () => {
     const model = resolveModel({
       modelRef: 'anthropic/claude-sonnet-4-6',
-      anthropicEnv: env({}),
+      providerEnv: env({}),
       fetchImpl: (async () => new Response('{}')) as unknown as typeof fetch,
     });
 

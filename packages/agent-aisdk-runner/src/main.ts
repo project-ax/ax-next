@@ -141,20 +141,20 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       //                  an injected `$HOME/bin/git` shadow the trusted binary.
       const pythonVenvEnv = buildPythonVenvEnv({
         ephemeralRoot: pythonVenvReady ? env.ephemeralRoot : undefined,
-        currentPath: proxyStartup.anthropicEnv.PATH,
+        currentPath: proxyStartup.providerEnv.PATH,
         caCertFile:
-          proxyStartup.anthropicEnv.SSL_CERT_FILE ??
-          proxyStartup.anthropicEnv.NODE_EXTRA_CA_CERTS,
+          proxyStartup.providerEnv.SSL_CERT_FILE ??
+          proxyStartup.providerEnv.NODE_EXTRA_CA_CERTS,
       });
       const bashEnv: Record<string, string> = {
         ...buildTtyHintEnv(),
-        ...proxyStartup.anthropicEnv,
+        ...proxyStartup.providerEnv,
         HOME: homeDir,
         ...buildToolCacheEnv(env.ephemeralRoot),
         ...pythonVenvEnv,
         ...buildHomeBinEnv(
           homeDir,
-          pythonVenvEnv.PATH ?? proxyStartup.anthropicEnv.PATH,
+          pythonVenvEnv.PATH ?? proxyStartup.providerEnv.PATH,
         ),
       };
 
@@ -214,7 +214,7 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       const agent = new ToolLoopAgent({
         model: resolveModel({
           modelRef: agentConfig.model,
-          anthropicEnv: proxyStartup.anthropicEnv,
+          providerEnv: proxyStartup.providerEnv,
         }),
         instructions: composeInstructions(
           systemPrompt,

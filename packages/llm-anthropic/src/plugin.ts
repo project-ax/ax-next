@@ -23,11 +23,12 @@ export interface ModelsListSupportedOutput {
   }>;
 }
 
-// Runtime `returns` contract for `models:list-supported` (ARCH-13). The hook is
-// IPC-adjacent (the admin/settings model-picker reads it), so a malformed entry
-// flowing out would corrupt the UI's selectable set. `LlmCallOutputSchema` for
-// the sibling `llm:call:anthropic` hook lives in @ax/core (its type does too);
-// this one is registrant-local because `ModelsListSupportedOutput` is.
+// Runtime `returns` contract for `models:list-supported:anthropic` (ARCH-13).
+// The hook is IPC-adjacent (the admin/settings model-picker reads it), so a
+// malformed entry flowing out would corrupt the UI's selectable set.
+// `LlmCallOutputSchema` for the sibling `llm:call:anthropic` hook lives in
+// @ax/core (its type does too); this one is registrant-local because
+// `ModelsListSupportedOutput` is.
 export const ModelsListSupportedOutputSchema = z.object({
   models: z.array(
     z.object({
@@ -116,7 +117,7 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
   const manifest: Plugin['manifest'] = {
     name: PLUGIN_NAME,
     version: PLUGIN_VERSION,
-    registers: ['llm:call:anthropic', 'models:list-supported'],
+    registers: ['llm:call:anthropic', 'models:list-supported:anthropic'],
     calls: [],
     subscribes: [],
     // `credentials:get` is OPTIONAL: present only in credentialResolution mode,
@@ -194,8 +195,17 @@ export function createLlmAnthropicPlugin(cfg: LlmAnthropicConfig = {}): Plugin {
       // allow-list matches against the same `provider/model-id` shape. No
       // bare ids: there is deliberately no runtime "no slash means
       // anthropic" fallback (Global constraints).
+      //
+      // The `:anthropic` suffix mirrors the `llm:call:<provider>` routing
+      // precedent this same plugin registers above, and for the same
+      // mechanical reason: `registerService` is SINGLE-OWNER (a second
+      // registrant throws `duplicate-service`, and `bootstrap`'s
+      // `checkDuplicateRegisters` rejects it even earlier from the
+      // manifest). A per-provider catalog therefore needs a per-provider
+      // hook name. Aggregation across providers happens in the one caller,
+      // `GET /admin/agents/models` in @ax/agents.
       bus.registerService<unknown, ModelsListSupportedOutput>(
-        'models:list-supported',
+        'models:list-supported:anthropic',
         PLUGIN_NAME,
         async () => ({
           models: [

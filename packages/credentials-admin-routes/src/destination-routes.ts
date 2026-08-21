@@ -1,4 +1,10 @@
-import { makeAgentContext, PluginError, type AgentContext, type HookBus } from '@ax/core';
+import {
+  makeAgentContext,
+  PluginError,
+  PROVIDER_ENDPOINTS,
+  type AgentContext,
+  type HookBus,
+} from '@ax/core';
 import type { Destination } from '@ax/credentials';
 import { z } from 'zod';
 import {
@@ -95,8 +101,25 @@ export function refForDestination(dest: Destination): string {
 // layer rather than silently ignored.
 // ---------------------------------------------------------------------------
 
+// Provider ids come straight off @ax/core's PROVIDER_ENDPOINTS — the one
+// table the host, the runner and the admin surfaces all read — so adding a
+// provider there needs no edit here.
+//
+// Deliberately a zod ENUM and not `z.string()`. Two reasons an unknown id
+// must stay a 400: it would otherwise land a credential at a ref nothing
+// ever reads (a key the operator believes is stored and isn't), and
+// `providerId` is interpolated into a `credentials:validate:<id>` hook name
+// in provider-validator.ts. Bounding the set here keeps that lookup over a
+// closed vocabulary rather than caller-supplied text.
+const PROVIDER_IDS = Object.keys(PROVIDER_ENDPOINTS);
+const PROVIDER_ID_ENUM = z.enum(
+  // z.enum needs a non-empty tuple; PROVIDER_ENDPOINTS is a frozen literal
+  // with at least `anthropic` in it, so this cast can't misdescribe reality.
+  PROVIDER_IDS as [string, ...string[]],
+);
+
 const DestinationSchema = z.discriminatedUnion('kind', [
-  z.object({ kind: z.literal('provider'), provider: z.literal('anthropic') }).strict(),
+  z.object({ kind: z.literal('provider'), provider: PROVIDER_ID_ENUM }).strict(),
   z
     .object({
       kind: z.literal('skill-slot'),

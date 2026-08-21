@@ -1,4 +1,13 @@
-import { PluginError, type AgentContext, type AgentMessage, type AgentOutcome, type HookBus } from '@ax/core';
+import {
+  PluginError,
+  PROVIDER_ENDPOINTS,
+  parseModelRef,
+  providerEndpointFor,
+  type AgentContext,
+  type AgentMessage,
+  type AgentOutcome,
+  type HookBus,
+} from '@ax/core';
 // Shared `sandbox:open-session` contract. The orchestrator CONSTRUCTS the
 // payload (it doesn't validate — trust comes from skills:resolve / agents:resolve
 // having parsed upstream), so it imports the inferred TYPES only. Type-only
@@ -72,16 +81,43 @@ import {
 //        sandbox-subprocess / ipc-server's jobs.
 // ---------------------------------------------------------------------------
 
-export const KNOWN_PROVIDERS = [
-  {
-    provider: 'anthropic' as const,
-    name: 'Anthropic',
-    slot: 'ANTHROPIC_API_KEY' as const,
-    description: 'API key from console.anthropic.com.',
-  },
-] as const;
+/**
+ * One row of the admin "Providers" panel: which model provider exists, what to
+ * call it, and which credential slot holds its API key.
+ *
+ * NOTE — `packages/channel-web/src/components/admin/ProvidersPanel.tsx` keeps a
+ * HAND-WRITTEN MIRROR of this list (invariant 2 forbids the cross-plugin
+ * import, and @ax/core is server-side-only in channel-web today). Adding a
+ * provider to `PROVIDER_ENDPOINTS` therefore means adding the matching row
+ * there too — the field names below are the mirror's contract.
+ */
+export interface KnownProvider {
+  /** Provider id — the first segment of a `provider/model-id` ref. */
+  provider: string;
+  /** Human label for admin surfaces. */
+  name: string;
+  /** Credential slot (env var) that carries this provider's API key. */
+  slot: string;
+  /** One line of help text under the row. */
+  description: string;
+}
 
-export type KnownProvider = (typeof KNOWN_PROVIDERS)[number];
+/**
+ * Derived from @ax/core's `PROVIDER_ENDPOINTS` — the single table both sides of
+ * the sandbox boundary read (see `packages/core/src/providers.ts`). Deriving it
+ * rather than restating it means a new provider can't be reachable-but-invisible
+ * (or visible-but-unreachable) in the admin UI.
+ */
+export const KNOWN_PROVIDERS: readonly KnownProvider[] = Object.freeze(
+  Object.values(PROVIDER_ENDPOINTS).map((ep) =>
+    Object.freeze({
+      provider: ep.id,
+      name: ep.name,
+      slot: ep.credentialEnvVar,
+      description: ep.description,
+    }),
+  ),
+);
 
 export interface ChatOrchestratorConfig {
   /**
@@ -1742,19 +1778,23 @@ export function createOrchestrator(
     let proxyConfig: ProxyConfig;
     let proxyOpened = false;
     let proxyCloseDeferredToHandle = false;
-    // Default to the api.anthropic.com allowlist + the canonical
-    // ANTHROPIC_API_KEY → 'provider:anthropic' credential ref when the agent
-    // record carries no explicit per-row entries. The production agents
-    // plugin (`@ax/agents`) doesn't yet persist these fields; without a
+    // Default the egress allowlist + credential slot from the agent's OWN
+    // model ref when the agent record carries no explicit per-row entries.
+    // The production agents plugin (`@ax/agents`) doesn't yet persist these
+    // fields, so this branch is the live path for every real turn; without a
     // default the runner boots without an API key and crashes at
-    // proxy-startup with `missing ANTHROPIC_API_KEY`.
+    // proxy-startup with `missing <PROVIDER>_API_KEY`.
     //
-    // Coupled defaults (all-or-nothing): a partially-populated agent
-    // record (e.g. allowedHosts:['api.openai.com'] but no
+    // PR 4 changed only the CONTENT of that default — it used to be hardcoded
+    // to the Anthropic pair, and is now derived from `PROVIDER_ENDPOINTS` via
+    // `parseModelRef(agent.model).provider`. See the lookup a few lines below.
+    //
+    // Coupled defaults (all-or-nothing) — UNCHANGED by PR 4: a partially-
+    // populated agent record (e.g. allowedHosts:['api.openai.com'] but no
     // requiredCredentials) used to mix and match — the OpenAI allowlist
     // would land alongside the Anthropic credential ref, either
     // over-permitting egress or breaking the agent's real provider.
-    // We fall back to the Anthropic pair only when BOTH fields are
+    // We fall back to the derived pair only when BOTH fields are
     // missing; a partial config raises loud at agent:invoke time as
     // a structured outcome rather than at proxy-startup with a stale
     // credential map.
@@ -1771,7 +1811,55 @@ export function createOrchestrator(
       await bus.fire('chat:end', ctx, { outcome });
       return outcome;
     }
-    const useAnthropicDefaults = allowedHostsMissing; // and therefore both
+    const useProviderDefaults = allowedHostsMissing; // and therefore both
+
+    // PR 4 — the model-derived default pair. `agent.model` is a
+    // `provider/model-id` ref (@ax/agents validates the shape at write time);
+    // its provider segment picks the row in @ax/core's PROVIDER_ENDPOINTS,
+    // which is the SAME table the in-sandbox runner reads to choose a base
+    // URL. Host and runner therefore can't drift about which host this turn
+    // needs to reach.
+    //
+    // A miss — unregistered provider, or a `model` that predates the
+    // `provider/` convention and won't parse — TERMINATES the turn. It must
+    // never fall back to Anthropic: that would silently run the agent against
+    // a provider the operator did not select AND hand the sandbox an
+    // `api.anthropic.com` egress grant plus a real Anthropic key it was never
+    // configured for. Fail loud, at the same point in the sequence as the
+    // agent-proxy-config-incomplete return above — before any proxy or sandbox
+    // session exists, so there is nothing to close.
+    let providerDefaults:
+      | { allowlist: string[]; credentials: Record<string, { ref: string; kind: string }> }
+      | undefined;
+    if (useProviderDefaults) {
+      let endpoint;
+      try {
+        endpoint = providerEndpointFor(parseModelRef(agent.model).provider);
+      } catch {
+        // parseModelRef rejects empty / whitespace-bearing / slash-less refs.
+        // Same outcome as an unknown provider — we have no endpoint either way.
+        endpoint = undefined;
+      }
+      if (endpoint === undefined) {
+        const outcome: AgentOutcome = {
+          kind: 'terminated',
+          reason: 'agent-model-provider-unknown',
+        };
+        // TASK-22 — pre-waiter early-return: surface on the SSE so the client
+        // doesn't hang (see the proxy-hooks-misconfigured note above). Coarse
+        // reason only; the offending model ref stays in host logs.
+        ctx.logger.warn('agent_model_provider_unknown', { model: agent.model });
+        await fireTurnError(ctx, ctx.reqId, outcome.reason);
+        await bus.fire('chat:end', ctx, { outcome });
+        return outcome;
+      }
+      providerDefaults = {
+        allowlist: [endpoint.egressHost],
+        credentials: {
+          [endpoint.credentialEnvVar]: { ref: endpoint.credentialRef, kind: 'api-key' },
+        },
+      };
+    }
 
     // Phase 1 (skill-install): resolve installed skills attached to this agent
     // and union their declared allowedHosts + credentialBindings into the
@@ -1860,11 +1948,14 @@ export function createOrchestrator(
     }
 
     // Build the union allowlist + credentials, starting from agent defaults.
-    const baseAllowSet = useAnthropicDefaults
-      ? new Set<string>(['api.anthropic.com'])
+    // PR 4 — `providerDefaults` is set iff `useProviderDefaults` (both agent-row
+    // fields absent); the unknown-provider return above guarantees it is
+    // populated by the time we get here.
+    const baseAllowSet = providerDefaults
+      ? new Set<string>(providerDefaults.allowlist)
       : new Set<string>(agent.allowedHosts ?? []);
-    const baseCreds: Record<string, { ref: string; kind: string }> = useAnthropicDefaults
-      ? { ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' } }
+    const baseCreds: Record<string, { ref: string; kind: string }> = providerDefaults
+      ? { ...providerDefaults.credentials }
       : { ...(agent.requiredCredentials ?? {}) };
 
     // TASK-86 — the bare env-var names a TRUSTED source owns (agent defaults).
