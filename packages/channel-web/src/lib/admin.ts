@@ -109,11 +109,13 @@ export async function putAgentIdentity(
   }
 }
 
-/** One selectable model, as reported by `GET /admin/agents/models`. The route
- *  intersects the provider plugin's `models:list-supported` output with this
- *  deployment's agents allow-list, so every id here is a valid agent `model`
- *  (`provider/model-id`). An empty list means no provider plugin is loaded /
- *  configured — the caller must say so rather than render an empty picker. */
+/** One selectable model, as reported by `GET /admin/agents/models`. The list
+ *  IS this deployment's agents allow-list — every id here is a valid agent
+ *  `model` (`provider/model-id`) — decorated with the label and kind reported
+ *  by whichever `models:list-supported:<provider>` registrants are loaded (an
+ *  id no registrant covers falls back to `label === id`). An empty list means
+ *  an empty allow-list — the caller must say so rather than render an empty
+ *  picker. */
 export interface AgentModelOption {
   id: string;
   label: string;

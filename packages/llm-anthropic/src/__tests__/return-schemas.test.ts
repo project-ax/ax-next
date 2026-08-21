@@ -4,8 +4,8 @@ import {
   type ModelsListSupportedOutput,
 } from '../plugin.js';
 
-// ARCH-13 drift guard for the `models:list-supported` returns schema. A
-// fully-populated value (one entry per `kind`) must round-trip without losing
+// ARCH-13 drift guard for the `models:list-supported:anthropic` returns schema.
+// A fully-populated value (one entry per `kind`) must round-trip without losing
 // a field.
 
 describe('ModelsListSupportedOutputSchema', () => {

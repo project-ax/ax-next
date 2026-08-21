@@ -68,6 +68,16 @@ import { createJsonlTranscriptSource } from './jsonl-transcript-source.js';
 //   2 — fatal during bootstrap (missing env, initial tool.list failure).
 // ---------------------------------------------------------------------------
 
+/**
+ * The credential-proxy registry's placeholder shape
+ * (`packages/credential-proxy/src/registry.ts`). Deliberately duplicated from
+ * `proxy-startup.ts` rather than exported across the package boundary: the
+ * point of a defense-in-depth check is that it is an INDEPENDENT check. If the
+ * format ever changes, both copies fail loudly instead of one silently
+ * inheriting the other's mistake.
+ */
+const PLACEHOLDER_RE = /^ax-cred:[0-9a-f]{32}$/;
+
 export {
   createArtifactPublishExecutor,
   createSkillProposeExecutor,
@@ -194,10 +204,10 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
       // to buildHomeBinEnv. See python-venv.ts / home-bin-env.ts.
       const pythonVenvEnv = buildPythonVenvEnv({
         ephemeralRoot: pythonVenvReady ? env.ephemeralRoot : undefined,
-        currentPath: proxyStartup.anthropicEnv.PATH,
+        currentPath: proxyStartup.providerEnv.PATH,
         caCertFile:
-          proxyStartup.anthropicEnv.SSL_CERT_FILE ??
-          proxyStartup.anthropicEnv.NODE_EXTRA_CA_CERTS,
+          proxyStartup.providerEnv.SSL_CERT_FILE ??
+          proxyStartup.providerEnv.NODE_EXTRA_CA_CERTS,
       });
 
       // Provider-agnostic model refs (PR 2): `agentConfig.model` is a
@@ -220,6 +230,40 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             `Anthropic Claude Agent SDK only. Select a runner that supports ` +
             `"${modelProvider}", or set the agent's model to an ` +
             `"anthropic/<model-id>" ref.`,
+        );
+      }
+
+      // ...and because this runner is Anthropic-only, the Anthropic
+      // credential placeholder is genuinely ITS requirement. It used to be
+      // asserted in @ax/agent-runner-core's setupProxy(), but that runs
+      // before `session.get-config` — core cannot know the agent's provider
+      // at that point, and an unconditional ANTHROPIC_API_KEY requirement
+      // killed every non-Anthropic session at boot. Here `agentConfig` is in
+      // scope and the provider is pinned to `anthropic` one line up, so the
+      // assert is exactly as strict as before without constraining any other
+      // runner.
+      //
+      // I1: read the placeholder from the proxy-startup env map (the value
+      // this process will actually hand the SDK), never from process.env —
+      // asserting one value and forwarding another is how a real key sneaks
+      // through. The shape is the `ax-cred:<32-hex>` the credential-proxy
+      // registry mints; a non-empty check would let a regressed wiring
+      // forward a real `sk-ant-...` key upstream silently.
+      const apiKeyPlaceholder = proxyStartup.providerEnv.ANTHROPIC_API_KEY;
+      if (
+        typeof apiKeyPlaceholder !== 'string' ||
+        !PLACEHOLDER_RE.test(apiKeyPlaceholder)
+      ) {
+        throw new Error(
+          `agent-claude-sdk-runner: ANTHROPIC_API_KEY must be the ` +
+            `ax-cred:<32-hex> placeholder minted by proxy:open-session ` +
+            `(got ${
+              apiKeyPlaceholder === undefined || apiKeyPlaceholder.length === 0
+                ? 'nothing'
+                : 'a value of another shape'
+            }). A real provider key reaching the sandbox is a capability ` +
+            `leak, not a convenience — the credential proxy substitutes the ` +
+            `real value mid-flight and this process must never hold it.`,
         );
       }
 
@@ -257,7 +301,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //     setting sources indistinguishable and rendering the host-
           //     installed-skills surface unreachable. The forward itself
           //     lives in proxy-startup.ts (ENV_ALLOWLIST) so the value
-          //     arrives via `...proxyStartup.anthropicEnv` below.
+          //     arrives via `...proxyStartup.providerEnv` below.
           //
           // (a)/(b) interact via the SDK's per-session jsonl path. The
           // SDK derives `$CLAUDE_CONFIG_DIR/projects/<encoded-cwd>/
@@ -291,8 +335,8 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //     filter in workspace:pre-apply doesn't subscribe validators
           //     to them, and we can split with a symlink/copy step in a
           //     follow-up if needed.
-          //   - HOME is spread AFTER ...proxyStartup.anthropicEnv so this
-          //     value wins on conflict. anthropicEnv currently doesn't set
+          //   - HOME is spread AFTER ...proxyStartup.providerEnv so this
+          //     value wins on conflict. providerEnv currently doesn't set
           //     HOME, but defensive ordering matches the intent: we
           //     explicitly redirect HOME for the SDK subprocess.
           //   - filestore-user-files Phase 2 (TASK-164): HOME is `sdkHome` — the
@@ -307,7 +351,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //     is slug-agnostic). The SDK aux files (`.claude.json`, backups) now
           //     land on /workspace instead — acceptable (never validated/bundled).
           //   - We DO NOT override CLAUDE_CONFIG_DIR here — the sandbox
-          //     plugin's value (carried through proxyStartup.anthropicEnv)
+          //     plugin's value (carried through proxyStartup.providerEnv)
           //     is the source of truth for the (b) split above. If a future
           //     refactor adds CLAUDE_CONFIG_DIR after the spread it would
           //     break I-P0-1.
@@ -319,14 +363,14 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // terminal; these inert hint strings flip the common detectors so
             // they emit output. Spread FIRST so they're a default FLOOR: a
             // genuinely-forwarded TERM/COLUMNS/LINES from the host (carried in
-            // proxyStartup.anthropicEnv, if the host ever has a real TTY) wins
+            // proxyStartup.providerEnv, if the host ever has a real TTY) wins
             // via the later last-write spread. NOT a pseudo-TTY (capability
             // minimization, I5 — see tty-hint-env.ts / SECURITY.md).
             ...buildTtyHintEnv(),
-            ...proxyStartup.anthropicEnv,
+            ...proxyStartup.providerEnv,
             // TASK-55: kill the SDK CLI's telemetry / error-reporting phone-home
             // (notably the datadoghq.com egress that otherwise raised a phantom
-            // reactive-wall card every JIT session). Spread AFTER anthropicEnv so
+            // reactive-wall card every JIT session). Spread AFTER providerEnv so
             // these are a non-negotiable security FLOOR that wins on any conflict
             // — unlike the tty-hints above, which are overridable defaults. See
             // telemetry-env.ts for the verified gate chain and ordering contract.
@@ -341,7 +385,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // Activate the session Python venv (PATH + VIRTUAL_ENV + pip CA
             // trust) so `pip install` reaches the venv and trusts the proxy
             // MITM CA. Gated on the scaffold actually succeeding (pythonVenvReady).
-            // Spread AFTER anthropicEnv so PATH/VIRTUAL_ENV win. caCertFile is the
+            // Spread AFTER providerEnv so PATH/VIRTUAL_ENV win. caCertFile is the
             // same proxy CA PEM the Node/uv tools already trust (SSL_CERT_FILE /
             // NODE_EXTRA_CA_CERTS, forwarded by proxy-startup). See python-venv.ts.
             // Computed up front (above the query() literal) so the $HOME/bin
@@ -365,7 +409,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // wherever it points, so no Dockerfile change is needed here).
             ...buildHomeBinEnv(
               sdkHome,
-              pythonVenvEnv.PATH ?? proxyStartup.anthropicEnv.PATH,
+              pythonVenvEnv.PATH ?? proxyStartup.providerEnv.PATH,
             ),
           },
           // filestore-user-files Phase 2 (TASK-164): cwd is the agent's working

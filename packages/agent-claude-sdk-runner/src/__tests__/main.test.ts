@@ -691,7 +691,7 @@ describe('main()', () => {
     // TASK-55: the runner MUST spawn the SDK with telemetry / error-reporting
     // disabled so the vendored claude CLI never phones home to datadoghq.com
     // (which otherwise raised a phantom reactive egress-wall card every JIT
-    // session). These flags are spread AFTER ...proxyStartup.anthropicEnv as a
+    // session). These flags are spread AFTER ...proxyStartup.providerEnv as a
     // non-negotiable security floor; none are in proxy-startup's ENV_ALLOWLIST,
     // so a forwarded value can't override them — assert the exact '1'. A
     // regression that drops the buildTelemetryEnv() spread (re-enabling the
@@ -768,6 +768,69 @@ describe('main()', () => {
     expect(payload.outcome.error?.message).toContain('openrouter');
     expect(payload.outcome.error?.message).toContain('Anthropic');
   });
+
+  // PR 4 (provider layer): the ANTHROPIC_API_KEY placeholder assert MOVED
+  // here from @ax/agent-runner-core's setupProxy(), which runs before
+  // `session.get-config` and so cannot know the agent's provider — an
+  // unconditional requirement there killed every OpenRouter-only session at
+  // boot. It did not VANISH: this runner drives the Claude Agent SDK and
+  // always talks to api.anthropic.com, so a missing or real-looking key is
+  // still a hard turn failure. Table-driven over the same shapes the old
+  // core test covered.
+  const badAnthropicKeys: Array<[label: string, value: string | undefined]> = [
+    ['missing entirely', undefined],
+    ['a real-looking sk-ant- key', 'sk-ant-real-looking-key'],
+    ['a truncated placeholder', 'ax-cred:short'],
+    ['a non-hex placeholder', 'ax-cred:0123456789abcdef0123456789abcdeg'],
+    ['an uppercase-hex placeholder', 'ax-cred:0123456789ABCDEF0123456789ABCDEF'],
+    ['a wrong-case prefix', 'AX-CRED:0123456789abcdef0123456789abcdef'],
+  ];
+  for (const [label, value] of badAnthropicKeys) {
+    it(`ANTHROPIC_API_KEY ${label}: fails the turn naming the var and the ax-cred:<32-hex> shape, never calls query()`, async () => {
+      setEnv({ ...COMPLETE_ENV, ANTHROPIC_API_KEY: value });
+      fakeClient = buildFakeClient();
+      fakeClient.call.mockImplementation(async (action: string) => {
+        if (action === 'session.get-config') {
+          return {
+            userId: 'u-test',
+            agentId: 'a-test',
+            agentConfig: {
+              displayName: 'Test Agent',
+              systemPromptAugment: '',
+              allowedTools: [],
+              mcpConfigIds: [],
+              model: 'anthropic/claude-sonnet-4-6',
+              runner: 'claude-sdk',
+            },
+            conversationId: null,
+            runnerSessionId: null,
+          };
+        }
+        if (action === 'workspace.materialize') return { bundleBytes: '' };
+        if (action === 'tool.list') return { tools: [] };
+        throw new Error(`unexpected call: ${action}`);
+      });
+      fakeInbox = buildFakeInbox([userEntry('hi'), cancelEntry]);
+
+      const { main } = await import('../main.js');
+      const rc = await main();
+
+      expect(rc).toBe(1);
+      // I1: the SDK is never constructed with a key of the wrong shape.
+      expect(queryMock).not.toHaveBeenCalled();
+
+      const chatEnds = fakeClient.event.mock.calls.filter(
+        (c) => c[0] === 'event.chat-end',
+      );
+      expect(chatEnds).toHaveLength(1);
+      const payload = chatEnds[0]?.[1] as {
+        outcome: { kind: string; error?: { name: string; message: string } };
+      };
+      expect(payload.outcome.kind).toBe('terminated');
+      expect(payload.outcome.error?.message).toContain('ANTHROPIC_API_KEY');
+      expect(payload.outcome.error?.message).toContain('ax-cred:<32-hex>');
+    });
+  }
 
   // HR1 (filestore-user-files design §7.1 / TASK-165): a durable user-files mount
   // (AX_USERFILES_ROOT, e.g. /workspace) must NEVER become an SDK setting/skill-
@@ -3192,7 +3255,7 @@ describe('main()', () => {
       // collapse onto this HOME path.
       expect(queryArg.options.env.HOME).toBe('/tmp/workspace');
       // ANTHROPIC_API_KEY is preserved through the spread — the
-      // proxyStartup.anthropicEnv merge intent is documented here so
+      // proxyStartup.providerEnv merge intent is documented here so
       // a future refactor that drops the spread still trips this test.
       expect(queryArg.options.env.ANTHROPIC_API_KEY).toBe(
         COMPLETE_ENV.ANTHROPIC_API_KEY,

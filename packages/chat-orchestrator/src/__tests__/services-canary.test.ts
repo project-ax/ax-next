@@ -53,7 +53,7 @@ const TEST_AGENT = {
   displayName: 'Services Canary',
   allowedTools: ['file.read'],
   mcpConfigIds: [],
-  model: 'claude-sonnet-4-7',
+  model: 'anthropic/claude-sonnet-4-7',
   runner: 'claude-sdk',
   workspaceRef: null,
 };

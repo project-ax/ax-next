@@ -41,6 +41,7 @@ import { createStaticFilesPlugin } from '@ax/static-files';
 import { createConversationsPlugin } from '@ax/conversations';
 import { createConnectorsPlugin } from '@ax/connectors';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
+import { createLlmOpenRouterPlugin } from '@ax/llm-openrouter';
 import {
   createConversationTitlesPlugin,
   DEFAULT_TITLE_MODEL,
@@ -118,6 +119,14 @@ function defaultRunnerBinaries(): Record<string, string> {
 }
 
 const DEFAULT_CHAT_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Prefix of the per-provider LLM hook (`llm:call:<provider>`). Used to read
+ * the provider ids back out of an LLM plugin's manifest, so the titles-model
+ * guard below is derived from the plugins this preset actually pushes rather
+ * than from a hand-kept list that can drift.
+ */
+const LLM_CALL_PREFIX = 'llm:call:';
 
 /**
  * Fallback public origin used when no `AX_PUBLIC_BASE_URL` is configured (so
@@ -359,16 +368,18 @@ export interface K8sPresetConfig {
     oneShot?: boolean;
   };
   /**
-   * Auto-titling model override. @ax/llm-anthropic + @ax/conversation-titles
-   * load UNCONDITIONALLY (llm-anthropic resolves the Anthropic key from the
-   * credential store at call time, so titles don't need a boot-time host key);
+   * Auto-titling model override. @ax/llm-anthropic, @ax/llm-openrouter and
+   * @ax/conversation-titles load UNCONDITIONALLY (each provider plugin
+   * resolves its key from the credential store at call time, so titles don't
+   * need a boot-time host key);
    * conversations get a one-line title after the first assistant turn
    * (`ifNull: true`, never clobbers a user rename). When no credential resolves
    * at all the title call errors and the best-effort subscriber skips, leaving
    * the title null.
    *
    * `model` uses the `<provider>/<model-id>` convention; the titles plugin
-   * splits on the first `/` and dispatches `llm:call:${provider}`. Default:
+   * splits on the first `/` and dispatches `llm:call:${provider}`; the preset
+   * rejects at construction any provider it has no registrant for. Default:
    * `'anthropic/claude-haiku-4-5-20251001'`. `loadK8sConfigFromEnv` always sets
    * this (default or `AX_TITLE_MODEL`); when the whole field is omitted the
    * preset falls back to the default model.
@@ -1135,18 +1146,38 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // all, `llm:call:anthropic` errors per-call and the best-effort title
   // subscriber skips quietly — same end state as before (title stays null).
   //
-  // This preset only ships @ax/llm-anthropic. A non-anthropic title model
-  // would leave `llm:call:<provider>` unregistered; we catch that at
-  // construction with a readable message rather than an opaque topo-sort error.
+  // PR 4 adds a SECOND provider: @ax/llm-openrouter, loaded on the same terms
+  // (unconditional + `credentialResolution: true`) so the operator's stored
+  // `provider:openrouter` key drives the picker and titles too. Neither plugin
+  // is env-gated here on purpose — the key lives in the DB, not the boot env.
+  //
+  // A title model naming a provider this preset has NO `llm:call:<provider>`
+  // registrant for would leave the titles plugin calling an unregistered hook;
+  // we catch that at construction with a readable message rather than an
+  // opaque topo-sort error (or a silent per-call failure at the first title).
+  // The accepted set is DERIVED from the manifests of the LLM plugins we are
+  // about to push, so it can never drift from what actually loads — and an
+  // unregistered provider still fails loudly, which is the point.
+  const llmProviderPlugins = [
+    createLlmAnthropicPlugin({ credentialResolution: true }),
+    createLlmOpenRouterPlugin({ credentialResolution: true }),
+  ];
+  const titleProviders = llmProviderPlugins.flatMap((p) =>
+    (p.manifest.registers ?? [])
+      .filter((hook) => hook.startsWith(LLM_CALL_PREFIX))
+      .map((hook) => hook.slice(LLM_CALL_PREFIX.length)),
+  );
   const titleModel = config.titles?.model ?? DEFAULT_TITLE_MODEL;
-  if (!titleModel.startsWith('anthropic/')) {
+  if (!titleProviders.some((provider) => titleModel.startsWith(`${provider}/`))) {
     throw new PluginError({
       code: 'invalid-config',
       plugin: '@ax/preset-k8s',
-      message: `titles.model='${titleModel}' — this preset only supports 'anthropic/<model-id>' (no other provider plugins are loaded)`,
+      message: `titles.model='${titleModel}' — this preset only supports ${titleProviders
+        .map((provider) => `'${provider}/<model-id>'`)
+        .join(' or ')} (no other provider plugins are loaded)`,
     });
   }
-  plugins.push(createLlmAnthropicPlugin({ credentialResolution: true }));
+  plugins.push(...llmProviderPlugins);
   plugins.push(createConversationTitlesPlugin({ model: titleModel }));
 
   // Host-side LLM TOOLS bundle (@ax/web-tools + @ax/memory-strata + its

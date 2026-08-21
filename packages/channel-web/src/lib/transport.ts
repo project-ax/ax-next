@@ -133,6 +133,12 @@ const ERROR_LABELS: Record<string, string> = {
   // specifics (which service, which path) ride the optional `detail` field and
   // are appended below; this is the headline.
   'dev-service-failed': 'A dev service failed to start.',
+  // PR 4 — the agent's model names a provider (the bit before the first `/`)
+  // that this deployment has no configuration for, so there is nowhere to send
+  // the turn. An operator fixes it by picking a different model for the agent,
+  // or by adding that provider's key on the Model config tab.
+  'agent-model-provider-unknown':
+    'This agent’s model comes from a provider we don’t have set up here. Pick a different model for the agent, or add that provider’s key in Model config.',
 };
 
 /** Max chars of the untrusted `detail` line we render (defense-in-depth — it's

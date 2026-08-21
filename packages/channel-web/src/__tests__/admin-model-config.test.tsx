@@ -51,6 +51,19 @@ const unconfiguredProvider = {
 };
 
 /**
+ * OpenRouter model ids are themselves `vendor/model` slugs. They must
+ * survive the `${providerId}/${modelId}` join and the strip-on-first-slash
+ * preselect without losing the vendor segment.
+ */
+const openrouterProvider = {
+  id: 'openrouter',
+  name: 'OpenRouter',
+  ref: 'provider:openrouter',
+  models: ['x-ai/grok-4.6', 'google/gemini-3.7-flash'],
+  configured: true,
+};
+
+/**
  * Default fetch script: providers list + an empty setting (no current
  * selection). Override before render() when a test wants other shapes.
  */
@@ -162,6 +175,68 @@ describe('ModelConfigTab', () => {
     await waitFor(() => {
       expect(screen.getAllByText('claude-opus-4-7').length).toBeGreaterThan(0);
     });
+  });
+
+  it('saves a nested OpenRouter slug as openrouter/<vendor>/<model>', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/admin/credentials/providers' && (init?.method ?? 'GET') === 'GET') {
+        return jsonOk({ providers: [openrouterProvider] });
+      }
+      if (url === '/admin/settings/fast-model' && (init?.method ?? 'GET') === 'GET') {
+        return jsonOk({ value: null });
+      }
+      if (url === '/admin/settings/fast-model' && init?.method === 'PUT') {
+        return new Response(null, { status: 204 });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    render(<ModelConfigTab />);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalled());
+
+    const combobox = screen.getByRole('combobox');
+    await selectModel(combobox, 'x-ai/grok-4.6');
+
+    fireEvent.click(screen.getByRole('button', { name: /Save changes/i }));
+
+    await waitFor(() => {
+      const putCalls = fetchMock.mock.calls.filter(
+        ([url, opts]) =>
+          url === '/admin/settings/fast-model' &&
+          (opts as RequestInit | undefined)?.method === 'PUT',
+      );
+      expect(putCalls).toHaveLength(1);
+      const body = JSON.parse((putCalls[0]![1] as RequestInit).body as string) as Record<
+        string,
+        unknown
+      >;
+      // Three segments: provider, vendor, model. The vendor segment is
+      // part of the model id, not a second provider.
+      expect(body.value).toBe('openrouter/x-ai/grok-4.6');
+    });
+  });
+
+  it('preselects a nested OpenRouter slug without eating the vendor segment', async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input.toString();
+      if (url === '/admin/credentials/providers') {
+        return jsonOk({ providers: [openrouterProvider] });
+      }
+      if (url === '/admin/settings/fast-model') {
+        return jsonOk({ value: 'openrouter/x-ai/grok-4.6' });
+      }
+      return new Response(null, { status: 404 });
+    });
+
+    render(<ModelConfigTab />);
+
+    // Strip on the FIRST '/' only — a naive split would preselect 'x-ai'
+    // and silently fail to match any offered model id.
+    await waitFor(() => {
+      expect(screen.getAllByText('x-ai/grok-4.6').length).toBeGreaterThan(0);
+    });
+    expect(screen.queryByText('grok-4.6')).toBeNull();
   });
 
   it('save error is shown near the button', async () => {

@@ -19,15 +19,16 @@
 //          before spawn; we don't need to do anything else here. The
 //          SDK's calls flow through that proxy directly.
 //
-// In both modes the SDK calls api.anthropic.com (no ANTHROPIC_BASE_URL).
+// In both modes the runner dials its provider's API host directly (for the
+// Claude Agent SDK that is api.anthropic.com, with no ANTHROPIC_BASE_URL).
 // The credential-proxy intercepts the request, substitutes the
-// `ax-cred:<hex>` placeholder for the real Anthropic key (held only on
-// the host), and forwards. The runner never sees the real key — that's I1.
+// `ax-cred:<hex>` placeholder for the real provider key (held only on the
+// host), and forwards. The runner never sees the real key — that's I1.
 // ---------------------------------------------------------------------------
 
 import * as path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { MissingEnvError, type RunnerEnv } from './env.js';
+import type { RunnerEnv } from './env.js';
 
 // Path to the CJS bootstrap that the SDK subprocess loads via
 // NODE_OPTIONS=--require. Resolved relative to THIS file (proxy-startup.js
@@ -143,10 +144,13 @@ const ENV_ALLOWLIST = new Set<string>([
 //   - LC_*  — locale categories (LC_CTYPE, LC_COLLATE, etc.).
 const ENV_ALLOWLIST_PREFIXES = ['GIT_', 'LC_'] as const;
 
-// `ax-cred:<32-hex>` is the credential-proxy registry's placeholder
-// shape. Both ENV_ALLOWLIST's ANTHROPIC_API_KEY guard below and the
-// value-forwarding loop in setupProxy() share this regex so a future
-// change to the placeholder format surfaces in one place.
+// `ax-cred:<32-hex>` is the credential-proxy registry's placeholder shape.
+// The value-forwarding loop in setupProxy() matches on it so a credential
+// placeholder — for any provider or skill slot — rides through into the
+// provider-facing env while real secrets (which never legitimately hold that
+// pattern) do not. Each runner re-asserts the same shape on the specific var
+// its provider needs; keeping the regex in one place per side means a future
+// format change surfaces as a loud failure rather than a silent leak.
 const PLACEHOLDER_RE = /^ax-cred:[0-9a-f]{32}$/;
 
 function isEnvAllowed(key: string): boolean {
@@ -159,11 +163,20 @@ function isEnvAllowed(key: string): boolean {
 
 export interface ProxyStartup {
   /**
-   * Env to pass into the SDK's `query({ options: { env } })`. Always
-   * includes `ANTHROPIC_API_KEY` (the `ax-cred:<hex>` placeholder the
-   * credential-proxy substitutes mid-flight).
+   * The runner's provider-facing env — what a runner passes into the model
+   * SDK it drives (e.g. the Claude Agent SDK's
+   * `query({ options: { env } })`).
+   *
+   * Provider-agnostic by construction: it carries whichever credential env
+   * vars arrived from `proxy:open-session` holding an `ax-cred:<32-hex>`
+   * placeholder (the credential-proxy substitutes the real value
+   * mid-flight). For an Anthropic agent that is `ANTHROPIC_API_KEY`; for an
+   * OpenRouter agent it is `OPENROUTER_API_KEY` and there is no Anthropic
+   * key at all. `setupProxy()` runs before the runner has read
+   * `session.get-config`, so it cannot — and must not — assume which one is
+   * present; the runner that owns the requirement asserts it.
    */
-  anthropicEnv: Record<string, string>;
+  providerEnv: Record<string, string>;
   /**
    * Bridge stop. Set only in bridge mode. The runner's exit path MUST
    * call this so the bridge releases its TCP port + active sockets.
@@ -258,10 +271,10 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
     // out of the SDK subprocess. The Bash tool can spawn arbitrary
     // commands the model requests, and `echo $AX_AUTH_TOKEN` would land
     // the bearer in tool output → model context → assistant reply.
-    const anthropicEnv: Record<string, string> = {};
+    const providerEnv: Record<string, string> = {};
     for (const [k, v] of Object.entries(process.env)) {
       if (typeof v !== 'string') continue;
-      if (isEnvAllowed(k)) anthropicEnv[k] = v;
+      if (isEnvAllowed(k)) providerEnv[k] = v;
       // Phase 1 (skill-install): forward credential placeholders into the
       // SDK subprocess env so the model's Bash tool can reference slot
       // env vars (e.g. `curl -H "Authorization: Bearer $GITHUB_TOKEN"`).
@@ -269,29 +282,30 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
       // the credential-proxy registry mints — value-shape matching keeps
       // real env contents (which never legitimately hold that pattern)
       // out of the SDK subprocess.
-      else if (PLACEHOLDER_RE.test(v)) anthropicEnv[k] = v;
+      else if (PLACEHOLDER_RE.test(v)) providerEnv[k] = v;
     }
-    // sandbox-subprocess injected the envMap from proxy:open-session into
-    // the child env, so process.env.ANTHROPIC_API_KEY already holds the
-    // `ax-cred:<hex>` placeholder. We forward that through options.env so
-    // the SDK's outbound x-api-key header carries the placeholder verbatim
-    // — the credential-proxy substitutes the real value mid-flight.
+    // The provider credential rides through on that same value-shape rule.
+    // sandbox-subprocess injected the envMap from proxy:open-session into the
+    // child env, so the provider's key var — `ANTHROPIC_API_KEY` for an
+    // Anthropic agent, `OPENROUTER_API_KEY` for an OpenRouter one — already
+    // holds the `ax-cred:<hex>` placeholder, and the loop above copied it
+    // verbatim. The credential-proxy substitutes the real value mid-flight.
     //
-    // I1: the IPC bearer (env.authToken) is NEVER sent to api.anthropic.com.
-    // Defense-in-depth: enforce the exact `ax-cred:<32-hex>` shape produced
-    // by @ax/credential-proxy's registry. A non-empty check would let a
-    // regressed wiring (e.g., a real `sk-ant-...` key landing in
-    // ANTHROPIC_API_KEY) flow upstream silently. The format is asserted at
-    // both ends — generator and consumer — so a future format change has
-    // to update both, surfacing as a loud test failure rather than a
-    // silent capability leak.
-    const placeholder = process.env.ANTHROPIC_API_KEY;
-    if (typeof placeholder !== 'string' || !PLACEHOLDER_RE.test(placeholder)) {
-      throw new MissingEnvError(
-        'ANTHROPIC_API_KEY (expected ax-cred:<32-hex> placeholder from proxy:open-session)',
-      );
-    }
-    anthropicEnv.ANTHROPIC_API_KEY = placeholder;
+    // There is deliberately NO per-vendor assert here. setupProxy() runs from
+    // run-runner.ts BEFORE `session.get-config`, so core does not yet know
+    // which provider this agent targets and must not guess: requiring
+    // ANTHROPIC_API_KEY unconditionally killed an OpenRouter-only session at
+    // boot, and guessing a default would be exactly the silent
+    // provider-fallback the design forbids. The runner that owns the
+    // requirement asserts it once it has the agent config —
+    // @ax/agent-claude-sdk-runner (Claude Agent SDK, Anthropic-only) right
+    // after its provider guard, @ax/agent-aisdk-runner inside `resolveModel`
+    // for whichever provider the model ref names.
+    //
+    // I1 still holds at this seam: the value-shape filter is what keeps a
+    // real `sk-ant-...` key (or any non-placeholder string) out of the
+    // provider-facing env entirely, and the IPC bearer (env.authToken) is
+    // never forwarded at all.
 
     // Forward the proxy + NODE_OPTIONS=--require=<bootstrap> into the
     // SDK subprocess so its undici dispatcher routes through the bridge
@@ -312,8 +326,8 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
           ? withProxyToken(env.proxyEndpoint, env.proxyToken)
           : process.env.HTTPS_PROXY;
       if (proxyUrl !== undefined) {
-        anthropicEnv.HTTPS_PROXY = proxyUrl;
-        anthropicEnv.HTTP_PROXY = proxyUrl;
+        providerEnv.HTTPS_PROXY = proxyUrl;
+        providerEnv.HTTP_PROXY = proxyUrl;
       }
       // Forward NODE_EXTRA_CA_CERTS / SSL_CERT_FILE so the subprocess
       // trusts the credential-proxy's MITM root CA. Without these the
@@ -321,13 +335,13 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
       // cert during MITM) fails with `SSL certificate verification
       // failed` — sandbox-k8s/pod-spec stamps these on the runner pod
       // env but the SDK builds the subprocess env from `o6` (our
-      // anthropicEnv), NOT from the runner's process.env. Have to
+      // providerEnv), NOT from the runner's process.env. Have to
       // copy them explicitly.
       if (process.env.NODE_EXTRA_CA_CERTS !== undefined) {
-        anthropicEnv.NODE_EXTRA_CA_CERTS = process.env.NODE_EXTRA_CA_CERTS;
+        providerEnv.NODE_EXTRA_CA_CERTS = process.env.NODE_EXTRA_CA_CERTS;
       }
       if (process.env.SSL_CERT_FILE !== undefined) {
-        anthropicEnv.SSL_CERT_FILE = process.env.SSL_CERT_FILE;
+        providerEnv.SSL_CERT_FILE = process.env.SSL_CERT_FILE;
       }
       // TASK-62: forward DENO_CERT so a Deno-compiled CLI the model runs via
       // the Bash tool (e.g. `npx @schpet/linear-cli`) trusts the credential-
@@ -336,10 +350,10 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
       // adds a PEM to its trust anchors. DENO_CERT is not covered by an
       // ENV_ALLOWLIST prefix (unlike GIT_*), so it needs an explicit forward
       // here — the sandbox stamps it on the runner pod env, but the SDK builds
-      // the subprocess env from anthropicEnv, not process.env. Without it the
+      // the subprocess env from providerEnv, not process.env. Without it the
       // CLI's HTTPS call dies with `invalid peer certificate: UnknownIssuer`.
       if (process.env.DENO_CERT !== undefined) {
-        anthropicEnv.DENO_CERT = process.env.DENO_CERT;
+        providerEnv.DENO_CERT = process.env.DENO_CERT;
       }
       // Append our --require to any caller-supplied NODE_OPTIONS so
       // operators can still set their own (e.g. --max-old-space-size).
@@ -350,12 +364,12 @@ export async function setupProxy(env: RunnerEnv): Promise<ProxyStartup> {
       // and the SDK subprocess would fail at startup before our hook ran.
       const existing = process.env.NODE_OPTIONS ?? '';
       const requireFlag = `--require=${JSON.stringify(proxyBootstrapPath())}`;
-      anthropicEnv.NODE_OPTIONS = existing.length > 0
+      providerEnv.NODE_OPTIONS = existing.length > 0
         ? `${existing} ${requireFlag}`
         : requireFlag;
     }
 
-    return stop !== undefined ? { anthropicEnv, stop } : { anthropicEnv };
+    return stop !== undefined ? { providerEnv, stop } : { providerEnv };
   } catch (err) {
     // Stop the bridge before re-raising so a failed boot doesn't leave a
     // stranded TCP listener bound on 127.0.0.1.

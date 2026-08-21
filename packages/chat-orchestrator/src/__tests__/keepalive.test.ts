@@ -9,7 +9,7 @@ import { createChatOrchestratorPlugin } from '../index.js';
 const TEST_AGENT = {
   id: 'test-agent', ownerId: 'test-user', ownerType: 'user' as const,
   visibility: 'personal' as const, displayName: 'Test',
-  allowedTools: ['file.read'], mcpConfigIds: [], model: 'claude-sonnet-4-7',
+  allowedTools: ['file.read'], mcpConfigIds: [], model: 'anthropic/claude-sonnet-4-7',
   runner: 'claude-sdk', workspaceRef: null,
 };
 

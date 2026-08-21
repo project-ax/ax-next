@@ -29,6 +29,7 @@ import { createChatOrchestratorPlugin } from '@ax/chat-orchestrator';
 import { createToolDispatcherPlugin, createMcpClientPlugin } from '@ax/mcp-client';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createLlmAnthropicPlugin } from '@ax/llm-anthropic';
+import { createLlmOpenRouterPlugin } from '@ax/llm-openrouter';
 import { createMemoryStrataPlugin, makeXaiOrchestratorClient } from '@ax/memory-strata';
 import { createMemoryStrataIndexSqlitePlugin } from '@ax/memory-strata-index-sqlite';
 import { createWebToolsPlugin } from '@ax/web-tools';
@@ -403,6 +404,19 @@ export async function main(opts: MainOptions): Promise<number> {
     // indexer shares the same DB file as storage-sqlite; each plugin owns its
     // own table (kv vs memory_strata_index_v1_docs) — no collision.
     plugins.push(createMemoryStrataIndexSqlitePlugin({ databasePath: opts.sqlitePath ?? DEFAULT_SQLITE_PATH }));
+  }
+
+  // @ax/llm-openrouter (PR 4) — the second provider. Registers
+  // `llm:call:openrouter` + `models:list-supported:openrouter`, so with the
+  // key present a CLI user can point an agent at `openrouter/...`, gets the
+  // OpenRouter models in the picker, and gets titles for those conversations.
+  // Gated on OPENROUTER_API_KEY exactly like @ax/llm-anthropic is gated on
+  // ANTHROPIC_API_KEY above: both load in STATIC mode here (one key fixed at
+  // init), so pushing the plugin without the var would fail the boot outright.
+  // Without the var a CLI user simply has one host-side provider instead of
+  // two — the Anthropic path is untouched.
+  if (process.env.OPENROUTER_API_KEY !== undefined && process.env.OPENROUTER_API_KEY.length > 0) {
+    plugins.push(createLlmOpenRouterPlugin());
   }
 
   // Library-mode test-only: extra plugins appended last so they can add

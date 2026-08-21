@@ -34,7 +34,7 @@
 //     PRESENT) output writer when CI is set, instead of suppressing output.
 //
 // Ordering contract: main.ts spreads buildTtyHintEnv() FIRST in the env literal
-// (before ...proxyStartup.anthropicEnv), so these are a default FLOOR, not a
+// (before ...proxyStartup.providerEnv), so these are a default FLOOR, not a
 // clamp — a genuinely-forwarded TERM/COLUMNS/LINES from the host (if it ever has
 // a real TTY) overrides them via last-write-wins object spread.
 // ---------------------------------------------------------------------------

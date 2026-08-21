@@ -277,6 +277,24 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect(errorChunk!.errorText).toContain('writablePaths');
   });
 
+  // PR 4 — the orchestrator terminates a turn with
+  // `agent-model-provider-unknown` when the agent's model names a provider the
+  // deployment has no `llm:call:<provider>` registrant for. Without a label the
+  // operator would see the generic DEFAULT_TURN_ERROR and have nothing to act on.
+  test('server error frame: agent-model-provider-unknown renders an actionable label', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body = `data: {"reqId":"r1","error":"agent-model-provider-unknown"}\n\n`;
+    const chunks = (await drain(asProcess(transport)(sseStream(body)))) as Array<{
+      type: string;
+      errorText?: string;
+    }>;
+    const errorChunk = chunks.find((c) => c.type === 'error');
+    expect(errorChunk).toBeDefined();
+    expect(errorChunk!.errorText).not.toBe(DEFAULT_TURN_ERROR);
+    expect(errorChunk!.errorText).toContain('provider');
+    expect(errorChunk!.errorText).toContain('Model config');
+  });
+
   // An error frame WITHOUT a detail behaves exactly as before — the bare label,
   // no trailing newline/detail.
   test('server error frame: unknown reason with no detail falls back to DEFAULT_TURN_ERROR', async () => {

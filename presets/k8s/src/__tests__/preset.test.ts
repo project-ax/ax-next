@@ -198,6 +198,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/http-server',
         '@ax/ipc-http',
         '@ax/llm-anthropic',
+        '@ax/llm-openrouter',
         '@ax/mcp-client',
         '@ax/mcp-oauth',
         '@ax/onboarding',
@@ -1230,24 +1231,31 @@ describe('loadK8sConfigFromEnv', () => {
 });
 
 describe('createK8sPlugins — title + host-LLM-tools plugins', () => {
-  it('ALWAYS loads @ax/llm-anthropic + @ax/conversation-titles (even with no titles/hostLlmTools config)', () => {
+  it('ALWAYS loads @ax/llm-anthropic + @ax/llm-openrouter + @ax/conversation-titles (even with no titles/hostLlmTools config)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const names = plugins.map((p) => p.manifest.name);
     expect(names).toContain('@ax/llm-anthropic');
+    // PR 4 (invariant 3 — no half-wired plugins): the OpenRouter provider
+    // loads on the SAME terms as Anthropic here, so the model picker, the
+    // titles path and the orchestrator's egress derivation all see it.
+    expect(names).toContain('@ax/llm-openrouter');
     expect(names).toContain('@ax/conversation-titles');
     // The host-LLM-tools bundle stays OFF without cfg.hostLlmTools.
     expect(names).not.toContain('@ax/web-tools');
     expect(names).not.toContain('@ax/memory-strata');
   });
 
-  it('loads @ax/llm-anthropic in credentialResolution mode (declares credentials:get as an optionalCall)', () => {
-    const plugins = createK8sPlugins(stubConfig);
-    const llm = plugins.find((p) => p.manifest.name === '@ax/llm-anthropic');
-    expect(llm).toBeDefined();
-    expect(llm!.manifest.optionalCalls).toEqual([
-      expect.objectContaining({ hook: 'credentials:get' }),
-    ]);
-  });
+  it.each(['@ax/llm-anthropic', '@ax/llm-openrouter'])(
+    'loads %s in credentialResolution mode (declares credentials:get as an optionalCall)',
+    (name) => {
+      const plugins = createK8sPlugins(stubConfig);
+      const llm = plugins.find((p) => p.manifest.name === name);
+      expect(llm).toBeDefined();
+      expect(llm!.manifest.optionalCalls).toEqual([
+        expect.objectContaining({ hook: 'credentials:get' }),
+      ]);
+    },
+  );
 
   it('loads the host-LLM-tools bundle (web-tools + memory-strata) when cfg.hostLlmTools is set', () => {
     const plugins = createK8sPlugins({
@@ -1273,18 +1281,37 @@ describe('createK8sPlugins — title + host-LLM-tools plugins', () => {
     expect(titlesPlugin!.manifest.calls).toContain('llm:call:anthropic');
   });
 
-  it('throws invalid-config when titles.model uses a non-anthropic provider', () => {
-    // The preset only ships @ax/llm-anthropic. A non-anthropic provider
-    // would leave `llm:call:<provider>` unregistered and the kernel's
-    // topo-sort would fail at bootstrap with an opaque error. We catch
-    // it here at construction time with a message that names the
-    // offending value.
-    expect(() =>
-      createK8sPlugins({
-        ...stubConfig,
-        titles: { model: 'openai/gpt-4' },
-      }),
-    ).toThrowError(/openai\/gpt-4/);
+  it('accepts an openrouter titles.model now that the preset ships that registrant', () => {
+    // PR 4 widened the guard from `startsWith('anthropic/')` to the set of
+    // providers the preset actually pushes an `llm:call:<provider>`
+    // registrant for. `openrouter/` is now in that set.
+    const plugins = createK8sPlugins({
+      ...stubConfig,
+      titles: { model: 'openrouter/x-ai/grok-4.6' },
+    });
+    const titlesPlugin = plugins.find(
+      (p) => p.manifest.name === '@ax/conversation-titles',
+    );
+    expect(titlesPlugin).toBeDefined();
+    expect(titlesPlugin!.manifest.calls).toContain('llm:call:openrouter');
+  });
+
+  it('throws invalid-config when titles.model names a provider with no registrant', () => {
+    // The guard must stay LOUD for a provider the preset does not load: an
+    // unregistered `llm:call:<provider>` would otherwise surface as an opaque
+    // topo-sort failure at bootstrap (or a silent per-call miss at the first
+    // title). The message names the offending value AND the accepted set.
+    let err: unknown;
+    try {
+      createK8sPlugins({ ...stubConfig, titles: { model: 'openai/gpt-4' } });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(Error);
+    const message = (err as Error).message;
+    expect(message).toMatch(/openai\/gpt-4/);
+    expect(message).toMatch(/'anthropic\/<model-id>'/);
+    expect(message).toMatch(/'openrouter\/<model-id>'/);
   });
 });
 

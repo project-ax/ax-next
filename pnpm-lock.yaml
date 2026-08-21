@@ -100,6 +100,9 @@ importers:
       '@ai-sdk/anthropic':
         specifier: 4.0.40
         version: 4.0.40(zod@4.4.3)
+      '@ai-sdk/openai-compatible':
+        specifier: 3.0.33
+        version: 3.0.33(zod@4.4.3)
       '@ax/agent-runner-core':
         specifier: workspace:*
         version: link:../agent-runner-core
@@ -731,6 +734,9 @@ importers:
       '@ax/llm-anthropic':
         specifier: workspace:*
         version: link:../llm-anthropic
+      '@ax/llm-openrouter':
+        specifier: workspace:*
+        version: link:../llm-openrouter
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../mcp-client
@@ -1311,6 +1317,25 @@ importers:
       '@anthropic-ai/sdk':
         specifier: ^0.91.1
         version: 0.91.1(zod@3.25.76)
+      '@ax/core':
+        specifier: workspace:*
+        version: link:../core
+      zod:
+        specifier: ^3.23.8
+        version: 3.25.76
+    devDependencies:
+      '@types/node':
+        specifier: ^25.6.0
+        version: 25.6.0
+      typescript:
+        specifier: ^6.0.3
+        version: 6.0.3
+      vitest:
+        specifier: ^4.1.4
+        version: 4.1.5(@opentelemetry/api@1.9.0)(@types/node@25.6.0)(jsdom@26.1.0)(vite@8.2.1(@types/node@25.6.0)(esbuild@0.28.1)(jiti@1.21.7)(tsx@4.21.0)(yaml@2.8.3))
+
+  packages/llm-openrouter:
+    dependencies:
       '@ax/core':
         specifier: workspace:*
         version: link:../core
@@ -2508,6 +2533,9 @@ importers:
       '@ax/llm-anthropic':
         specifier: workspace:*
         version: link:../../packages/llm-anthropic
+      '@ax/llm-openrouter':
+        specifier: workspace:*
+        version: link:../../packages/llm-openrouter
       '@ax/mcp-client':
         specifier: workspace:*
         version: link:../../packages/mcp-client
@@ -2655,6 +2683,12 @@ packages:
 
   '@ai-sdk/gateway@4.0.56':
     resolution: {integrity: sha512-fc7tq+v7WrzCV+aXegbq/EOs68tFDJYLEwnCOnVYcB/Y5ZTjUIHzyJlrqdoJUlMTkc/qmKsXb1ovVvdUYPmxIA==}
+    engines: {node: '>=22'}
+    peerDependencies:
+      zod: ^3.25.76 || ^4.1.8
+
+  '@ai-sdk/openai-compatible@3.0.33':
+    resolution: {integrity: sha512-ipWv2UzTQOCE9h42pUP9r70wx12+zDhNlEHlYbATtyV9L/b1QRnlP2lBW0OBAtM7a6JB/A1g42AnVmlCmsa0Fw==}
     engines: {node: '>=22'}
     peerDependencies:
       zod: ^3.25.76 || ^4.1.8
@@ -8477,6 +8511,12 @@ snapshots:
       '@ai-sdk/provider': 4.0.7
       '@ai-sdk/provider-utils': 5.0.28(zod@4.4.3)
       '@vercel/oidc': 3.2.0
+      zod: 4.4.3
+
+  '@ai-sdk/openai-compatible@3.0.33(zod@4.4.3)':
+    dependencies:
+      '@ai-sdk/provider': 4.0.7
+      '@ai-sdk/provider-utils': 5.0.28(zod@4.4.3)
       zod: 4.4.3
 
   '@ai-sdk/provider-utils@4.0.23(zod@3.25.76)':

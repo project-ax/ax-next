@@ -17,7 +17,11 @@ import {
   createMemoryTranscriptSource,
   type MemoryTranscriptSource,
 } from './memory-transcript-source.js';
-import { resolveModel } from './provider.js';
+import {
+  messagesForProvider,
+  providerIdForModelRef,
+  resolveModel,
+} from './provider.js';
 import { discoverInstalledSkills, buildSkillsPromptSection } from './skills-index.js';
 import { buildBuiltinTools } from './tools/builtins.js';
 import { buildHostTools } from './tools/host-tools.js';
@@ -141,20 +145,20 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       //                  an injected `$HOME/bin/git` shadow the trusted binary.
       const pythonVenvEnv = buildPythonVenvEnv({
         ephemeralRoot: pythonVenvReady ? env.ephemeralRoot : undefined,
-        currentPath: proxyStartup.anthropicEnv.PATH,
+        currentPath: proxyStartup.providerEnv.PATH,
         caCertFile:
-          proxyStartup.anthropicEnv.SSL_CERT_FILE ??
-          proxyStartup.anthropicEnv.NODE_EXTRA_CA_CERTS,
+          proxyStartup.providerEnv.SSL_CERT_FILE ??
+          proxyStartup.providerEnv.NODE_EXTRA_CA_CERTS,
       });
       const bashEnv: Record<string, string> = {
         ...buildTtyHintEnv(),
-        ...proxyStartup.anthropicEnv,
+        ...proxyStartup.providerEnv,
         HOME: homeDir,
         ...buildToolCacheEnv(env.ephemeralRoot),
         ...pythonVenvEnv,
         ...buildHomeBinEnv(
           homeDir,
-          pythonVenvEnv.PATH ?? proxyStartup.anthropicEnv.PATH,
+          pythonVenvEnv.PATH ?? proxyStartup.providerEnv.PATH,
         ),
       };
 
@@ -211,10 +215,15 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       // supplies web_search/web_extract as ordinary host tools above.)
       assertAllToolsWrapped(tools);
 
+      // One parse, one opinion about which provider this is: `provider.ts`
+      // owns both the model construction and the per-provider send-site
+      // message policy, so the turn loop never re-derives "is this Anthropic?".
+      const providerId = providerIdForModelRef(agentConfig.model);
+
       const agent = new ToolLoopAgent({
         model: resolveModel({
           modelRef: agentConfig.model,
-          anthropicEnv: proxyStartup.anthropicEnv,
+          providerEnv: proxyStartup.providerEnv,
         }),
         instructions: composeInstructions(
           systemPrompt,
@@ -240,7 +249,17 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
 
         transcript.append([toUserModelMessage(next.content)]);
 
-        const result = await agent.stream({ messages: transcript.messages() });
+        // Send-site only. `messagesForProvider` prunes prior-turn reasoning for
+        // providers that reject a replay of it (design §6) — the transcript
+        // itself is untouched, because its persisted bytes are the host's
+        // source of truth and rewriting them would break `prefixHash` and force
+        // a full resync on every resume.
+        const result = await agent.stream({
+          messages: messagesForProvider({
+            providerId,
+            messages: transcript.messages(),
+          }),
+        });
 
         // Live streaming. Per-delta so the SSE fan-out feels like typing; the
         // canonical record comes from the response messages below, never from

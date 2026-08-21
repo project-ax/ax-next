@@ -73,7 +73,8 @@ const sampleAgent = (over: Partial<Record<string, unknown>> = {}) => ({
 });
 
 /** What GET /admin/agents/models serves in these tests — the deployment's
- *  agents allow-list ∩ the provider plugin's `models:list-supported`. */
+ *  agents allow-list, labelled by whichever `models:list-supported:<provider>`
+ *  registrants are loaded. */
 const MODEL_OPTIONS = [
   { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
   { id: 'anthropic/claude-opus-4-7', label: 'Claude Opus 4.7', kind: 'default' },

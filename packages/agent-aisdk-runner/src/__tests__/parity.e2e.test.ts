@@ -102,7 +102,12 @@ vi.mock('@ax/agent-runner-core/internal/inbox-loop.js', async (importOriginal) =
 // need a network and a credential). `resolveModel` has its own suite; here we
 // script the model so the loop's behaviour is deterministic.
 const scriptedModel = vi.fn();
-vi.mock('../provider.js', () => ({
+// Partial mock: only the two functions that would touch a credential or the
+// network are replaced. `providerIdForModelRef` and `messagesForProvider` stay
+// REAL, so this e2e still exercises the send-site message policy the turn loop
+// applies — a stub there would hide a change in what actually gets sent.
+vi.mock('../provider.js', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../provider.js')>()),
   resolveModel: () => scriptedModel(),
   createProxyFetch: () => undefined,
 }));

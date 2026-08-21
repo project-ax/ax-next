@@ -142,6 +142,126 @@ describe('destination credential handlers', () => {
     expect(stored?.ownerId).toBeNull();
   });
 
+  it('POST /admin: computes deterministic ref for an openrouter provider destination', async () => {
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    // In production @ax/llm-openrouter registers this; stub it so the
+    // pre-save validation gate passes without a real network call.
+    bus.registerService(
+      'credentials:validate:openrouter',
+      'test',
+      async (_ctx, _input: { key: Uint8Array }) => ({ ok: true }),
+    );
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'provider' },
+        body: {
+          destination: { kind: 'provider', provider: 'openrouter' },
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('sk-or-test').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(204);
+
+    const out = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string; scope: string; ownerId: string | null }> }
+    >(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    const stored = out.credentials.find((c) => c.ref === 'provider:openrouter');
+    expect(stored).toBeDefined();
+    expect(stored?.scope).toBe('global');
+    expect(stored?.ownerId).toBeNull();
+  });
+
+  it('POST /admin: refuses to store an openrouter key when no validator plugin is loaded', async () => {
+    // The pre-save gate dispatches to `credentials:validate:<providerId>`.
+    // Until @ax/llm-openrouter registers `credentials:validate:openrouter`,
+    // there is nothing to validate against — and we'd rather say so than
+    // quietly store a key that might be junk. 422, nothing persisted.
+    const bus = await makeBus({ id: 'admin', isAdmin: true }, {
+      registerAnthropicValidator: 'skip',
+    });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf, bodyOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'provider' },
+        body: {
+          destination: { kind: 'provider', provider: 'openrouter' },
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('sk-or-test').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(422);
+    expect((bodyOf() as { error: string }).error).toBe(
+      'validation not supported for this provider',
+    );
+
+    const out = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string }> }
+    >(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    expect(
+      out.credentials.find((c) => c.ref === 'provider:openrouter'),
+    ).toBeUndefined();
+  });
+
+  it('POST /admin: rejects an unknown provider id with 400', async () => {
+    // Widening the schema from z.literal('anthropic') to an enum over
+    // PROVIDER_ENDPOINTS must NOT widen it to z.string() — an id we have
+    // no endpoint for is still a 400, before any credential is written.
+    const bus = await makeBus({ id: 'admin', isAdmin: true });
+    const handlers = createDestinationHandlers({ bus });
+    const { res, statusOf } = mkRes();
+
+    await handlers.create(
+      mkReq({
+        params: { destinationKind: 'provider' },
+        body: {
+          destination: { kind: 'provider', provider: 'nope' },
+          scope: 'global',
+          ownerId: null,
+          kind: 'api-key',
+          payloadB64: Buffer.from('whatever').toString('base64'),
+        },
+      }),
+      res,
+    );
+
+    expect(statusOf()).toBe(400);
+
+    const out = await bus.call<
+      Record<string, never>,
+      { credentials: Array<{ ref: string }> }
+    >(
+      'credentials:list',
+      makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'admin' }),
+      {},
+    );
+    expect(out.credentials.find((c) => c.ref === 'provider:nope')).toBeUndefined();
+  });
+
   it('POST /admin: computes deterministic ref for skill-slot destination', async () => {
     const bus = await makeBus({ id: 'admin', isAdmin: true });
     const handlers = createDestinationHandlers({ bus });

@@ -80,6 +80,7 @@ async function dropAllTables(): Promise<void> {
 
 async function bootStack(
   extraServices: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>> = {},
+  allowedModels?: readonly string[],
 ): Promise<BootedStack> {
   await dropAllTables();
   process.env.AX_HTTP_ALLOW_NO_ORIGINS = '1';
@@ -154,7 +155,7 @@ async function bootStack(
       createDatabasePostgresPlugin({ connectionString }),
       http,
       createAuthBetterPlugin(),
-      createAgentsPlugin(),
+      createAgentsPlugin(allowedModels ? { allowedModels } : {}),
     ],
   });
   return { harness, http, port: http.boundPort() };
@@ -487,31 +488,55 @@ describe('@ax/agents admin routes', () => {
     expect(r.status).toBe(401);
   });
 
-  it('GET /admin/agents/models with no models:list-supported registrant → 200 + empty list', async () => {
-    // The default bootStack() (used by beforeEach) never registers
-    // models:list-supported — no @ax/llm-anthropic in the plugin list — so
-    // this exercises the hasService degrade path directly.
+  it('GET /admin/agents/models with NO registrant at all → 200 + the whole allow-list, each label === id', async () => {
+    // REPLACES the former '→ 200 + empty list' expectation. PR 4 makes the
+    // operator's allow-list authoritative and demotes registrants to a
+    // metadata source (label + kind), so a deployment that loads no provider
+    // plugin still gets a usable picker — every allow-listed ref, labelled
+    // with its own id. The default bootStack() registers no
+    // models:list-supported:* service, so this exercises that path directly.
     const cookie = await signIn(stack);
     const r = await http(stack.port, 'GET', '/admin/agents/models', { cookie });
     expect(r.status).toBe(200);
-    expect(r.body).toEqual({ models: [] });
+    expect(r.body).toEqual({
+      models: [
+        { id: 'anthropic/claude-opus-4-7', label: 'anthropic/claude-opus-4-7', kind: 'either' },
+        { id: 'anthropic/claude-sonnet-4-6', label: 'anthropic/claude-sonnet-4-6', kind: 'either' },
+        {
+          id: 'anthropic/claude-haiku-4-5-20251001',
+          label: 'anthropic/claude-haiku-4-5-20251001',
+          kind: 'either',
+        },
+        // PR 4 (T8) added the two OpenRouter gate models to
+        // DEFAULT_ALLOWED_MODELS. With no registrant they behave like every
+        // other unlabelled entry — present, `label === id`.
+        { id: 'openrouter/x-ai/grok-4.6', label: 'openrouter/x-ai/grok-4.6', kind: 'either' },
+        {
+          id: 'openrouter/moonshotai/kimi-k3',
+          label: 'openrouter/moonshotai/kimi-k3',
+          kind: 'either',
+        },
+      ],
+    });
   });
 
-  it('GET /admin/agents/models returns only models in BOTH models:list-supported and the allow-list', async () => {
-    // Rebuild the stack with a models:list-supported stub. The default
-    // agents allow-list (no `allowedModels` override passed to
-    // createAgentsPlugin()) is exactly the three DEFAULT_ALLOWED_MODELS ids
-    // — 'anthropic/claude-opus-4-7', 'anthropic/claude-sonnet-4-6',
-    // 'anthropic/claude-haiku-4-5-20251001'. The stub reports one of those
-    // PLUS one model that is deliberately NOT in the allow-list
-    // ('openrouter/x-ai/grok-4.6') — the fixture that proves the
-    // intersection filter, not just a pass-through.
+  it('GET /admin/agents/models returns only models in BOTH models:list-supported:anthropic and the allow-list', async () => {
+    // Rebuild the stack with a models:list-supported:anthropic stub. The
+    // default agents allow-list (no `allowedModels` override passed to
+    // createAgentsPlugin()) is exactly DEFAULT_ALLOWED_MODELS — three
+    // `anthropic/` ids plus, since PR 4 (T8), the two `openrouter/` gate
+    // models. The stub reports one of the anthropic ids PLUS one model that is
+    // deliberately NOT in the allow-list ('anthropic/claude-secret-internal')
+    // — the fixture that proves an id outside the allow-list is DROPPED, never
+    // emitted. Every allow-listed ref the stub does not cover (including both
+    // openrouter ones, whose provider has no registrant loaded here) falls
+    // back to `label === id`.
     await stack.harness.close({ onError: () => {} });
     stack = await bootStack({
-      'models:list-supported': async () => ({
+      'models:list-supported:anthropic': async () => ({
         models: [
           { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
-          { id: 'openrouter/x-ai/grok-4.6', label: 'Grok 4.6', kind: 'default' },
+          { id: 'anthropic/claude-secret-internal', label: 'Secret', kind: 'default' },
         ],
       }),
     });
@@ -522,9 +547,142 @@ describe('@ax/agents admin routes', () => {
       models: Array<{ id: string; label: string; kind: string }>;
     };
     expect(models).toEqual([
+      { id: 'anthropic/claude-opus-4-7', label: 'anthropic/claude-opus-4-7', kind: 'either' },
       { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
+      {
+        id: 'anthropic/claude-haiku-4-5-20251001',
+        label: 'anthropic/claude-haiku-4-5-20251001',
+        kind: 'either',
+      },
+      { id: 'openrouter/x-ai/grok-4.6', label: 'openrouter/x-ai/grok-4.6', kind: 'either' },
+      {
+        id: 'openrouter/moonshotai/kimi-k3',
+        label: 'openrouter/moonshotai/kimi-k3',
+        kind: 'either',
+      },
     ]);
-    expect(models.some((m) => m.id === 'openrouter/x-ai/grok-4.6')).toBe(false);
+    expect(models.some((m) => m.id === 'anthropic/claude-secret-internal')).toBe(false);
+  });
+
+  it('GET /admin/agents/models merges TWO provider registrants, filtered to the allow-list', async () => {
+    // The aggregation this PR exists for: `registerService` is single-owner,
+    // so each provider registers `models:list-supported:<provider>` and the
+    // route unions them over the provider set named by the allow-list.
+    await stack.harness.close({ onError: () => {} });
+    stack = await bootStack(
+      {
+        'models:list-supported:anthropic': async () => ({
+          models: [
+            { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
+          ],
+        }),
+        'models:list-supported:openrouter': async () => ({
+          models: [
+            { id: 'openrouter/x-ai/grok-4.6', label: 'Grok 4.6', kind: 'default' },
+            { id: 'openrouter/moonshotai/kimi-k3', label: 'Kimi K3', kind: 'fast' },
+          ],
+        }),
+      },
+      ['anthropic/claude-sonnet-4-6', 'openrouter/x-ai/grok-4.6'],
+    );
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'GET', '/admin/agents/models', { cookie });
+    expect(r.status).toBe(200);
+    expect(r.body).toEqual({
+      models: [
+        { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
+        { id: 'openrouter/x-ai/grok-4.6', label: 'Grok 4.6', kind: 'default' },
+      ],
+    });
+  });
+
+  it('GET /admin/agents/models emits an allow-listed ref NO registrant covers, with label === id and kind either', async () => {
+    // OpenRouter serves hundreds of churning model slugs; a curated catalog
+    // can never cover the allow-list. The operator's list wins.
+    await stack.harness.close({ onError: () => {} });
+    stack = await bootStack(
+      {
+        'models:list-supported:openrouter': async () => ({
+          models: [{ id: 'openrouter/x-ai/grok-4.6', label: 'Grok 4.6', kind: 'default' }],
+        }),
+      },
+      ['openrouter/x-ai/grok-4.6', 'openrouter/qwen/qwen3-max'],
+    );
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'GET', '/admin/agents/models', { cookie });
+    expect(r.status).toBe(200);
+    const { models } = r.body as {
+      models: Array<{ id: string; label: string; kind: string }>;
+    };
+    const uncovered = models.find((m) => m.id === 'openrouter/qwen/qwen3-max');
+    expect(uncovered).toEqual({
+      id: 'openrouter/qwen/qwen3-max',
+      label: 'openrouter/qwen/qwen3-max',
+      kind: 'either',
+    });
+  });
+
+  it('GET /admin/agents/models never calls a registrant whose provider is absent from the allow-list', async () => {
+    let openrouterCalls = 0;
+    await stack.harness.close({ onError: () => {} });
+    stack = await bootStack(
+      {
+        'models:list-supported:anthropic': async () => ({
+          models: [
+            { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
+          ],
+        }),
+        'models:list-supported:openrouter': async () => {
+          openrouterCalls += 1;
+          return {
+            models: [{ id: 'openrouter/x-ai/grok-4.6', label: 'Grok 4.6', kind: 'default' }],
+          };
+        },
+      },
+      ['anthropic/claude-sonnet-4-6'],
+    );
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'GET', '/admin/agents/models', { cookie });
+    expect(r.status).toBe(200);
+    expect(openrouterCalls).toBe(0);
+    expect(r.body).toEqual({
+      models: [
+        { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
+      ],
+    });
+  });
+
+  it('GET /admin/agents/models returns models in ALLOW-LIST order, not registrant order', async () => {
+    await stack.harness.close({ onError: () => {} });
+    stack = await bootStack(
+      {
+        'models:list-supported:anthropic': async () => ({
+          models: [
+            { id: 'anthropic/claude-sonnet-4-6', label: 'Claude Sonnet 4.6', kind: 'either' },
+            { id: 'anthropic/claude-opus-4-7', label: 'Claude Opus 4.7', kind: 'default' },
+          ],
+        }),
+        'models:list-supported:openrouter': async () => ({
+          models: [{ id: 'openrouter/x-ai/grok-4.6', label: 'Grok 4.6', kind: 'default' }],
+        }),
+      },
+      // Deliberately interleaved and reversed relative to both registrants'
+      // own ordering.
+      [
+        'openrouter/x-ai/grok-4.6',
+        'anthropic/claude-opus-4-7',
+        'anthropic/claude-sonnet-4-6',
+      ],
+    );
+    const cookie = await signIn(stack);
+    const r = await http(stack.port, 'GET', '/admin/agents/models', { cookie });
+    expect(r.status).toBe(200);
+    const { models } = r.body as { models: Array<{ id: string }> };
+    expect(models.map((m) => m.id)).toEqual([
+      'openrouter/x-ai/grok-4.6',
+      'anthropic/claude-opus-4-7',
+      'anthropic/claude-sonnet-4-6',
+    ]);
   });
 
   it('GET /admin/agents from a DIFFERENT user → empty', async () => {

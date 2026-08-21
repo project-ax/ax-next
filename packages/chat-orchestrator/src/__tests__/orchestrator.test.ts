@@ -24,7 +24,7 @@ const TEST_AGENT = {
   displayName: 'Test',
   allowedTools: ['file.read'],
   mcpConfigIds: [],
-  model: 'claude-sonnet-4-7',
+  model: 'anthropic/claude-sonnet-4-7',
   runner: 'claude-sdk',
   workspaceRef: null,
 };
@@ -984,7 +984,7 @@ describe('chat-orchestrator', () => {
           id: 'a-resolved',
           allowedTools: ['file.read', 'bash.exec'],
           mcpConfigIds: ['mcp-1'],
-          model: 'claude-opus-4-7',
+          model: 'anthropic/claude-opus-4-7',
         },
       }),
     });
@@ -1072,7 +1072,7 @@ describe('chat-orchestrator', () => {
         'connector_propose',
       ],
       mcpConfigIds: ['mcp-1'],
-      model: 'claude-opus-4-7',
+      model: 'anthropic/claude-opus-4-7',
       // PR 2 — the agent's runner ID is frozen onto the config and rides the
       // wire. TEST_AGENT is a 'claude-sdk' agent.
       runner: 'claude-sdk',
@@ -1787,6 +1787,215 @@ describe('chat-orchestrator', () => {
     expect((outcome as { reason: string }).reason).toBe(
       'agent-proxy-config-incomplete',
     );
+    expect(proxy.state.openCalls).toBe(0);
+  });
+
+  // -------------------------------------------------------------------------
+  // T5 — model-derived proxy defaults (PR 4).
+  //
+  // When an agent row carries NEITHER `allowedHosts` NOR `requiredCredentials`
+  // (production today — @ax/agents persists neither), the default pair is
+  // derived from the agent's own `model` ref via @ax/core's PROVIDER_ENDPOINTS
+  // table, not hardcoded to Anthropic. Getting this wrong is a security bug in
+  // both directions: an OpenRouter agent handed an `api.anthropic.com` egress
+  // grant, or an Anthropic key wired into a session the operator pointed at a
+  // different provider.
+  // -------------------------------------------------------------------------
+
+  /**
+   * A `sandbox:open-session` mock that behaves like a real runner: it fires
+   * `chat:end` for the freshly minted session so `agent:invoke` resolves
+   * instead of hanging on its waiter.
+   */
+  function completingOpenSession(getBus: () => HookBus): ServiceHandler {
+    return async (ctx, input: unknown) => {
+      const sessionId = (input as { sessionId: string }).sessionId;
+      const originatingReqId = ctx.reqId;
+      setImmediate(() => {
+        void getBus().fire(
+          'chat:end',
+          makeAgentContext({
+            sessionId,
+            agentId: 'a',
+            userId: 'u',
+            reqId: originatingReqId,
+            logger: createLogger({ reqId: originatingReqId, writer: () => undefined }),
+          }),
+          { outcome: { kind: 'complete', messages: [] } },
+        );
+      });
+      return {
+        runnerEndpoint: 'unix:///tmp/x.sock',
+        handle: {
+          kill: async () => undefined,
+          exited: new Promise(() => undefined),
+        },
+      };
+    };
+  }
+
+  it('derives the default proxy allowlist + credential from an openrouter model ref', async () => {
+    const proxy = buildProxyHooks();
+    let busRef: HookBus | null = null;
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        // No allowedHosts / requiredCredentials — the production shape.
+        agent: { ...TEST_AGENT, model: 'openrouter/x-ai/grok-4.6' },
+      }),
+      openSession: async (ctx, input) => completingOpenSession(() => busRef!)(ctx, input),
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('openrouter-defaults-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+    expect(proxy.state.openCalls).toBe(1);
+
+    const openIn = proxy.state.lastOpenInput as {
+      allowlist: string[];
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    expect(openIn.allowlist).toEqual(['openrouter.ai']);
+    expect(openIn.credentials.OPENROUTER_API_KEY).toEqual({
+      ref: 'provider:openrouter',
+      kind: 'api-key',
+    });
+    // The Anthropic slot must NOT ride along: an unused ANTHROPIC_API_KEY here
+    // would mint a real Anthropic credential into a session that never asked
+    // for one.
+    expect(openIn.credentials).not.toHaveProperty('ANTHROPIC_API_KEY');
+    expect(openIn.allowlist).not.toContain('api.anthropic.com');
+  });
+
+  it('keeps the anthropic default pair byte-identical for an anthropic model ref', async () => {
+    // Regression guard on the pre-existing path: the model-derived lookup must
+    // reproduce exactly what the hardcoded pair produced.
+    const proxy = buildProxyHooks();
+    let busRef: HookBus | null = null;
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: { ...TEST_AGENT, model: 'anthropic/claude-sonnet-4-6' },
+      }),
+      openSession: async (ctx, input) => completingOpenSession(() => busRef!)(ctx, input),
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    busRef = h.bus;
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('anthropic-defaults-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('complete');
+
+    const openIn = proxy.state.lastOpenInput as {
+      allowlist: string[];
+      credentials: Record<string, { ref: string; kind: string }>;
+    };
+    expect(openIn.allowlist).toEqual(['api.anthropic.com']);
+    expect(openIn.credentials).toEqual({
+      ANTHROPIC_API_KEY: { ref: 'provider:anthropic', kind: 'api-key' },
+    });
+  });
+
+  it('terminates with agent-model-provider-unknown for an unregistered provider', async () => {
+    // NEVER fall back to Anthropic: that would run the agent against a
+    // provider the operator did not select AND hand the sandbox an
+    // api.anthropic.com egress grant it was never configured for.
+    const proxy = buildProxyHooks();
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: { ...TEST_AGENT, model: 'mistral/large' },
+      }),
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    const seen: Array<{ reqId: string; reason: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      seen.push(p as { reqId: string; reason: string });
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('unknown-provider-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe(
+      'agent-model-provider-unknown',
+    );
+    // TASK-22 — pre-waiter early-return must surface on the SSE, else the
+    // client hangs on "Thinking…" forever.
+    expect(seen.map((e) => e.reason)).toContain('agent-model-provider-unknown');
+    // Loud: no session was ever opened for the unknown provider.
+    expect(proxy.state.openCalls).toBe(0);
+  });
+
+  it('terminates with agent-model-provider-unknown for a malformed model ref', async () => {
+    // A bare id (no `provider/`) makes parseModelRef throw. That must land on
+    // the same structured terminate path, not escape runAgentInvoke as an
+    // uncaught rejection (which would hang the SSE — the TASK-22 failure mode).
+    const proxy = buildProxyHooks();
+    const mocks = buildMocks({
+      agentsResolve: async () => ({
+        agent: { ...TEST_AGENT, model: 'claude-sonnet-4-7' },
+      }),
+    });
+    Object.assign(mocks.services, proxy.services);
+    const h = await createTestHarness({
+      services: mocks.services,
+      plugins: [
+        createChatOrchestratorPlugin({
+          runnerBinaries: { 'claude-sdk': '/irrelevant' },
+          chatTimeoutMs: 5_000,
+        }),
+      ],
+    });
+    const seen: Array<{ reqId: string; reason: string }> = [];
+    h.bus.subscribe('chat:turn-error', 'obs', async (_ctx, p: unknown) => {
+      seen.push(p as { reqId: string; reason: string });
+    });
+
+    const outcome = await h.bus.call<unknown, AgentOutcome>(
+      'agent:invoke',
+      silentCtx('malformed-model-session'),
+      { message: { role: 'user', content: 'hi' } },
+    );
+    expect(outcome.kind).toBe('terminated');
+    expect((outcome as { reason: string }).reason).toBe(
+      'agent-model-provider-unknown',
+    );
+    expect(seen.map((e) => e.reason)).toContain('agent-model-provider-unknown');
     expect(proxy.state.openCalls).toBe(0);
   });
 

@@ -47,10 +47,24 @@ describe('AI SDK dependency pinning', () => {
   // (`@anthropic-ai/claude-agent-sdk: "0.2.119"`). The model client is the one
   // dependency where an unattended minor bump changes agent behaviour, so it
   // gets the same treatment here.
-  it.each(['ai', '@ai-sdk/anthropic'])('pins %s to an exact version', (name) => {
-    const range = deps[name];
-    expect(range, `${name} must be a direct dependency`).toBeDefined();
-    expect(range).toMatch(/^\d+\.\d+\.\d+$/);
+  it.each(['ai', '@ai-sdk/anthropic', '@ai-sdk/openai-compatible'])(
+    'pins %s to an exact version',
+    (name) => {
+      const range = deps[name];
+      expect(range, `${name} must be a direct dependency`).toBeDefined();
+      expect(range).toMatch(/^\d+\.\d+\.\d+$/);
+    },
+  );
+
+  // Supply chain: the OpenRouter provider is a Vercel-maintained package that
+  // resolves the same `@ai-sdk/provider*` tree `@ai-sdk/anthropic` already
+  // pulls. Assert the INSTALLED version is the pinned one — a pin that the
+  // lockfile silently disagrees with buys nothing.
+  it('resolves @ai-sdk/openai-compatible at exactly the pinned version', () => {
+    const pinned = deps['@ai-sdk/openai-compatible']!;
+    const resolved = requireFromPkg('@ai-sdk/openai-compatible/package.json')
+      .version as string;
+    expect(resolved).toBe(pinned);
   });
 
   it('is on ai v7 (the major that ships ToolLoopAgent)', () => {

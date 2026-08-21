@@ -1,6 +1,7 @@
 import {
   isRejection,
   makeAgentContext,
+  parseModelRef,
   PluginError,
   type AgentContext,
   type HookBus,
@@ -502,12 +503,14 @@ async function listTeamIdsForUser(
 export interface AdminRouteDeps {
   bus: HookBus;
   /** The agents allow-list (`provider/model-id` refs) — GET /admin/agents/models
-   *  intersects this with `models:list-supported`'s output. */
+   *  emits exactly these ids, decorated with whatever metadata the matching
+   *  `models:list-supported:<provider>` registrants supply. */
   allowedModels: readonly string[];
 }
 
-/** Local shape of `@ax/llm-anthropic`'s `models:list-supported` output
- *  (Invariant I2 — no cross-plugin import; the hook bus is the contract). */
+/** Local shape of a provider plugin's `models:list-supported:<provider>`
+ *  output (Invariant I2 — no cross-plugin import; the hook bus is the
+ *  contract). */
 interface ModelsListSupportedOutput {
   models: Array<{ id: string; label: string; kind: 'fast' | 'default' | 'either' }>;
 }
@@ -579,18 +582,33 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
     /**
      * GET /admin/agents/models
      *
-     * Backs the admin model picker (Task 3). Returns the intersection of
-     * what `models:list-supported` reports and this deployment's agents
-     * allow-list — the set the picker may actually offer, not merely the
-     * set a provider registrant knows how to serve. `models:list-supported`
-     * is a SOFT dependency: it is registered by `@ax/llm-anthropic` (and,
-     * per the design doc's Sequencing table, other provider plugins from PR
-     * 4 on), but a preset can run with none of them loaded. Rather than add
-     * it to the manifest's `calls` (which `verifyCalls` enforces as HARD
-     * presence, forcing every deployment to load a provider plugin), we
-     * gate with `bus.hasService` and degrade to an empty list at 200 — the
-     * same graceful-degrade pattern this plugin already uses for
-     * `teams:list-for-user` above.
+     * Backs the admin model picker. The response is the deployment's agents
+     * ALLOW-LIST, in allow-list order, decorated with metadata (`label`,
+     * `kind`) from whichever provider registrants can supply it.
+     *
+     * The allow-list — not the registrants' catalogs — is authoritative.
+     * That is a deliberate change from the original strict intersection:
+     * an aggregator like OpenRouter serves hundreds of model slugs and
+     * churns them weekly, so intersecting with a curated catalog would make
+     * every allow-listed model we had not hardcoded unselectable — exactly
+     * the models an operator adds an aggregator to reach. Registrants now
+     * only make an entry prettier, never make it available; an allow-listed
+     * ref nobody covers is still offered, labelled with its own id.
+     * Conversely an id a registrant reports that is NOT allow-listed is
+     * dropped — the picker can never offer something the write path would
+     * reject.
+     *
+     * `models:list-supported:<provider>` is per-provider because
+     * `registerService` is single-owner (a second registrant of one name
+     * throws `duplicate-service`), mirroring the `llm:call:<provider>`
+     * precedent. Each is a SOFT dependency: they are registered by provider
+     * plugins (`@ax/llm-anthropic`, `@ax/llm-openrouter`, …) but a preset
+     * can run with none of them loaded. Rather than add them to the
+     * manifest's `calls` (which `verifyCalls` enforces as HARD presence,
+     * forcing every deployment to load a provider plugin), we gate with
+     * `bus.hasService` — the same graceful-degrade pattern this plugin
+     * already uses for `teams:list-for-user` above. With no registrant at
+     * all the route still answers 200, with the bare allow-list.
      *
      * Route ordering: this exact path is matched BEFORE the `:id` pattern
      * route below (`packages/http-server/src/router.ts` checks static
@@ -600,17 +618,38 @@ export function createAdminAgentRouteHandlers(deps: AdminRouteDeps) {
     async listModels(req: RouteRequest, res: RouteResponse): Promise<void> {
       const actor = await requireUser(deps.bus, ctx, req, res);
       if (actor === null) return;
-      if (!deps.bus.hasService('models:list-supported')) {
-        res.status(200).json({ models: [] });
-        return;
+
+      // Providers named by the allow-list, in first-appearance order. An
+      // unparseable entry is skipped rather than rejected: `resolveAllowedModels`
+      // already refuses to boot on a non-ref, so this is defence in depth, not a
+      // second policy — and a read route is the wrong place to re-litigate a
+      // boot-time decision.
+      const providers: string[] = [];
+      for (const ref of deps.allowedModels) {
+        let provider: string;
+        try {
+          provider = parseModelRef(ref).provider;
+        } catch {
+          continue;
+        }
+        if (!providers.includes(provider)) providers.push(provider);
       }
-      const out = await deps.bus.call<unknown, ModelsListSupportedOutput>(
-        'models:list-supported',
-        ctx,
-        {},
+
+      // First registrant to report an id wins, so a stray duplicate across
+      // two providers' catalogs cannot produce two rows for one selection.
+      const metadata = new Map<string, ModelsListSupportedOutput['models'][number]>();
+      for (const provider of providers) {
+        const hook = `models:list-supported:${provider}`;
+        if (!deps.bus.hasService(hook)) continue;
+        const out = await deps.bus.call<unknown, ModelsListSupportedOutput>(hook, ctx, {});
+        for (const model of out.models) {
+          if (!metadata.has(model.id)) metadata.set(model.id, model);
+        }
+      }
+
+      const models = deps.allowedModels.map(
+        (ref) => metadata.get(ref) ?? { id: ref, label: ref, kind: 'either' as const },
       );
-      const allowed = new Set(deps.allowedModels);
-      const models = out.models.filter((m) => allowed.has(m.id));
       res.status(200).json({ models });
     },
 

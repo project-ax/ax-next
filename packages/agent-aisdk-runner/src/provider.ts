@@ -9,7 +9,7 @@
 //      is exactly the provider-side auth discovery the design forbids
 //      (docs/plans/2026-08-18-provider-agnostic-runner-design.md §6: "No
 //      provider SDK may perform its own auth discovery"). We always pass
-//      `apiKey` explicitly, from the `anthropicEnv` map `setupProxy()` handed
+//      `apiKey` explicitly, from the `providerEnv` map `setupProxy()` handed
 //      us, and we assert its `ax-cred:<32-hex>` placeholder shape first. That
 //      assertion is defense in depth — `setupProxy()` makes the same check on
 //      the way IN — but a real `sk-ant-…` key reaching this process is a
@@ -26,7 +26,7 @@
 //      subprocess sandbox) it installs nothing, and the model call would go
 //      straight to api.anthropic.com carrying a placeholder key that nobody
 //      substitutes. So we build our own dispatcher here, from the same
-//      `anthropicEnv` — never from `process.env` — and never depend on a global.
+//      `providerEnv` — never from `process.env` — and never depend on a global.
 //
 // On the MITM: the credential-proxy terminates TLS and presents its own leaf
 // for api.anthropic.com, so the dispatcher has to trust the proxy's root CA
@@ -35,21 +35,32 @@
 // it from env in some sandboxes), so relying on the process-level trust store
 // is not enough — we read the PEM ourselves.
 //
-// Extension point: `PROVIDERS` below is a map keyed by provider name with
-// exactly one entry today. Adding OpenRouter (PR 4) or Vertex (PR 5) is a new
-// entry plus its credential env var — not a refactor of this file. We use a
-// plain map rather than `ai`'s `createProviderRegistry` because we need
-// `parseModelRef` anyway (the registry's own `NoSuchProviderError` says nothing
-// about which PR ships the missing provider, and it splits the ref a second
-// time), and because the per-provider credential env var has to live somewhere
-// the registry has no slot for.
+// Extension point: `PROVIDERS` below is a map keyed by provider name, one entry
+// per provider we can drive (Anthropic and OpenRouter today; Vertex is PR 5).
+// Adding one is a new entry — not a refactor of this file. We use a plain map
+// rather than `ai`'s `createProviderRegistry` because we need `parseModelRef`
+// anyway (the registry's own `NoSuchProviderError` says nothing about which PR
+// ships the missing provider, and it splits the ref a second time), and because
+// the per-provider credential env var and reasoning policy have to live
+// somewhere the registry has no slot for.
+//
+// The endpoint FACTS — base URL and credential env var — are not written here.
+// They come from `@ax/core`'s `PROVIDER_ENDPOINTS`, the one table the HOST also
+// reads when it allow-lists the egress host and mints the placeholder. Two
+// tables would be free to drift, and the drift would surface as a MITM proxy
+// 403 in the middle of a model call. One table, no drift class.
 // ---------------------------------------------------------------------------
 
 import * as fs from 'node:fs';
 import { ProxyAgent, fetch as undiciFetch } from 'undici';
 import { createAnthropic } from '@ai-sdk/anthropic';
-import type { LanguageModel } from 'ai';
-import { parseModelRef } from '@ax/core';
+import { createOpenAICompatible } from '@ai-sdk/openai-compatible';
+import { pruneMessages, type LanguageModel, type ModelMessage } from 'ai';
+import {
+  parseModelRef,
+  providerEndpointFor,
+  type ProviderEndpoint,
+} from '@ax/core';
 
 /**
  * The credential-proxy registry's placeholder shape
@@ -62,23 +73,59 @@ import { parseModelRef } from '@ax/core';
 const PLACEHOLDER_RE = /^ax-cred:[0-9a-f]{32}$/;
 
 /**
- * Pinned rather than left to the SDK's default, which resolves
- * `ANTHROPIC_BASE_URL` from `process.env`. Nothing legitimate sets that var in
- * the sandbox, and if something did, the placeholder credential would be sent
- * to whatever host it named — a small but free hole to close. PR 4/5 providers
- * that genuinely need a configurable base URL should take it from their
- * registry entry, not from ambient env.
+ * The endpoint facts for one provider, from `@ax/core`'s shared table.
+ *
+ * Throws — at module load, so a mismatch is a boot failure and not a
+ * first-token failure — when the table has no entry for a provider `PROVIDERS`
+ * claims to support. That can only happen if someone deletes a row the runner
+ * depends on, and it should be loud.
  */
-const ANTHROPIC_BASE_URL = 'https://api.anthropic.com/v1';
+function endpointOrThrow(providerId: string): ProviderEndpoint {
+  // `providerEndpointFor` is `| undefined` by design (its argument is
+  // user-controllable elsewhere); no non-null assertion here, because the
+  // whole point is that the failure is explained rather than dereferenced.
+  const endpoint = providerEndpointFor(providerId);
+  if (endpoint === undefined) {
+    throw new Error(
+      `agent-aisdk-runner: @ax/core PROVIDER_ENDPOINTS has no "${providerId}" ` +
+        `entry, but this runner ships a provider for it. The two must agree — ` +
+        `the host allow-lists the egress host and mints the credential ` +
+        `placeholder from that same table.`,
+    );
+  }
+  return endpoint;
+}
+
+/**
+ * Base URLs are PINNED from the table rather than left to each SDK's default,
+ * which resolves `ANTHROPIC_BASE_URL` (and friends) from `process.env`. Nothing
+ * legitimate sets those vars in the sandbox, and if something did, the
+ * placeholder credential would be sent to whatever host it named — a small but
+ * free hole to close. The value now has exactly one home, shared with the host
+ * that authorized the egress; the pinning rationale is unchanged.
+ */
+const ANTHROPIC = endpointOrThrow('anthropic');
+const OPENROUTER = endpointOrThrow('openrouter');
 
 interface ProviderEntry {
   /**
-   * Key in `anthropicEnv` holding this provider's `ax-cred:<32-hex>`
-   * placeholder. Anthropic's is `ANTHROPIC_API_KEY`; OpenRouter's will be
-   * `OPENROUTER_API_KEY` (the credential mechanism is keyed by env name, not by
-   * vendor — see design §6).
+   * Key in `providerEnv` holding this provider's `ax-cred:<32-hex>`
+   * placeholder — from the shared table, because the host mints the
+   * placeholder under that same name (the credential mechanism is keyed by env
+   * name, not by vendor — see design §6).
    */
   credentialEnvVar: string;
+  /**
+   * Whether prior-turn reasoning blocks may be re-sent to this provider
+   * verbatim.
+   *
+   * Anthropic: yes, and in fact it MUST be — its thinking blocks are signed and
+   * the signature covers the block, so dropping or editing them breaks the next
+   * call. OpenRouter: no — replayed reasoning is rejected or mangled depending
+   * on which upstream model is behind the slug (openrouter issues #418 / #423).
+   * See `messagesForProvider`.
+   */
+  acceptsPriorReasoning: boolean;
   /** Builds a model for the already-parsed, provider-prefix-stripped id. */
   create(opts: { apiKey: string; fetchImpl: typeof fetch | undefined }): (
     modelId: string,
@@ -87,13 +134,14 @@ interface ProviderEntry {
 
 const PROVIDERS: Record<string, ProviderEntry> = {
   anthropic: {
-    credentialEnvVar: 'ANTHROPIC_API_KEY',
+    credentialEnvVar: ANTHROPIC.credentialEnvVar,
+    acceptsPriorReasoning: true,
     create: ({ apiKey, fetchImpl }) => {
       const provider = createAnthropic({
         // Explicit, always. See the header comment — omitting this is the
         // auth-discovery bug, not a shortcut.
         apiKey,
-        baseURL: ANTHROPIC_BASE_URL,
+        baseURL: ANTHROPIC.baseUrl,
         // `exactOptionalPropertyTypes` — `{ fetch: undefined }` is not the same
         // as an absent key, and the SDK branches on absence.
         ...(fetchImpl !== undefined ? { fetch: fetchImpl } : {}),
@@ -101,14 +149,62 @@ const PROVIDERS: Record<string, ProviderEntry> = {
       return (modelId) => provider(modelId);
     },
   },
+  openrouter: {
+    credentialEnvVar: OPENROUTER.credentialEnvVar,
+    acceptsPriorReasoning: false,
+    create: ({ apiKey, fetchImpl }) => {
+      const provider = createOpenAICompatible({
+        // `name` only labels the model (`provider: 'openrouter.chat'`) and
+        // namespaces provider options; it is not a lookup key, so nothing about
+        // it reaches the network.
+        name: 'openrouter',
+        // Explicit, always — same rule as Anthropic. `createOpenAICompatible`
+        // turns `apiKey` straight into an `Authorization: Bearer …` header and
+        // has no env fallback of its own today; passing it explicitly is what
+        // keeps a future upstream fallback from ever being reachable.
+        apiKey,
+        baseURL: OPENROUTER.baseUrl,
+        // Same `exactOptionalPropertyTypes` care as above.
+        ...(fetchImpl !== undefined ? { fetch: fetchImpl } : {}),
+      });
+      // OpenRouter model ids carry their own vendor slug (`x-ai/grok-4.6`) and
+      // sometimes a variant suffix (`…:free`, `…:batch`). `parseModelRef`
+      // strips only OUR provider prefix, so the rest arrives here intact and is
+      // passed through untouched.
+      return (modelId) => provider(modelId);
+    },
+  },
 };
 
 /**
- * The PRs that add the providers we do not support yet. Named in the boot error
- * so an operator who set `agents.model` to an OpenRouter ref learns when it will
- * work instead of just that it does not.
+ * The PR that adds the provider we do not support yet. Named in the boot error
+ * so an operator who set `agents.model` to a Vertex ref learns when it will work
+ * instead of just that it does not.
  */
-const PROVIDER_ROADMAP = 'PR 4 (OpenRouter) / PR 5 (Vertex) of the runner sequence';
+const PROVIDER_ROADMAP = 'PR 5 (Vertex) of the runner sequence';
+
+/**
+ * Own-property lookup into `PROVIDERS`.
+ *
+ * A plain `PROVIDERS[provider]` walks the prototype chain, so the provider
+ * halves `constructor`, `__proto__`, `toString`, `valueOf` and friends all
+ * return something that is NOT `undefined` — `PROVIDERS['constructor']` is the
+ * `Object` constructor. Every `entry === undefined` guard downstream would then
+ * miss, and the caller would get an error about a credential env var instead of
+ * about the provider it actually named.
+ *
+ * `agentConfig.model` is admin-controlled and allow-list-validated, so this is
+ * defence in depth rather than a reachable exploit — but "the guard only works
+ * for keys that happen not to be on Object.prototype" is not a property worth
+ * relying on, and the fail-closed behaviour here is currently an accident of
+ * ordering rather than a decision. `@ax/core`'s `providerEndpointFor` guards its
+ * own table the same way.
+ */
+function providerEntryFor(providerId: string): ProviderEntry | undefined {
+  return Object.prototype.hasOwnProperty.call(PROVIDERS, providerId)
+    ? PROVIDERS[providerId]
+    : undefined;
+}
 
 /**
  * Read the credential-proxy's MITM root CA PEM, if the sandbox delivered one.
@@ -121,9 +217,9 @@ const PROVIDER_ROADMAP = 'PR 4 (OpenRouter) / PR 5 (Vertex) of the runner sequen
  * kill a runner that would have worked fine.
  */
 export function readProxyCaPem(
-  anthropicEnv: Record<string, string>,
+  providerEnv: Record<string, string>,
 ): string | undefined {
-  const caPath = anthropicEnv.NODE_EXTRA_CA_CERTS ?? anthropicEnv.SSL_CERT_FILE;
+  const caPath = providerEnv.NODE_EXTRA_CA_CERTS ?? providerEnv.SSL_CERT_FILE;
   if (caPath === undefined || caPath.length === 0) return undefined;
   try {
     return fs.readFileSync(caPath, 'utf8');
@@ -149,12 +245,29 @@ export function readProxyCaPem(
  * (it would also send the placeholder key upstream unsubstituted, which fails
  * anyway — just much later and with a confusing message).
  */
+/**
+ * Blank the `user:password@` half of a proxy URL for use in an error message.
+ *
+ * `setupProxy` embeds the per-session proxy token as Basic userinfo, and the
+ * happy path strips it — but only AFTER `new URL()` has succeeded. The failure
+ * path has no parsed URL to strip, so it needs a textual redaction, which is
+ * what this is. The token is attribution-only and cannot widen egress, but the
+ * error is written to the runner's stderr and from there to the host log, and a
+ * secret in a log line is a secret in a log line.
+ *
+ * Deliberately greedy up to the LAST `@` before the first `/`: a password may
+ * itself contain an `@`, and under-redacting is the failure that matters here.
+ */
+function redactUserinfo(rawUrl: string): string {
+  return rawUrl.replace(/^([a-z][a-z0-9+.-]*:\/\/)[^/]*@/i, '$1<redacted>@');
+}
+
 export function createProxyFetch(
-  anthropicEnv: Record<string, string>,
+  providerEnv: Record<string, string>,
 ): typeof fetch | undefined {
   // Both are set to the same value by `setupProxy`; HTTPS first because every
   // model endpoint we speak to is https.
-  const rawProxy = anthropicEnv.HTTPS_PROXY ?? anthropicEnv.HTTP_PROXY;
+  const rawProxy = providerEnv.HTTPS_PROXY ?? providerEnv.HTTP_PROXY;
   if (rawProxy === undefined || rawProxy.length === 0) return undefined;
 
   let url: URL;
@@ -162,9 +275,10 @@ export function createProxyFetch(
     url = new URL(rawProxy);
   } catch {
     throw new Error(
-      `agent-aisdk-runner: HTTPS_PROXY is not a valid URL (got: ${rawProxy}). ` +
-        `Refusing to fall back to a direct connection — that would bypass the ` +
-        `credential proxy and send the ax-cred placeholder upstream.`,
+      `agent-aisdk-runner: HTTPS_PROXY is not a valid URL ` +
+        `(got: ${redactUserinfo(rawProxy)}). Refusing to fall back to a direct ` +
+        `connection — that would bypass the credential proxy and send the ` +
+        `ax-cred placeholder upstream.`,
     );
   }
 
@@ -181,7 +295,7 @@ export function createProxyFetch(
   url.password = '';
   const uri = url.toString().replace(/\/$/, '');
 
-  const ca = readProxyCaPem(anthropicEnv);
+  const ca = readProxyCaPem(providerEnv);
   const dispatcher = new ProxyAgent({
     uri,
     ...(password.length > 0
@@ -221,11 +335,11 @@ export function createProxyFetch(
 export interface ResolveModelOptions {
   /** `agentConfig.model` — a `provider/model-id` ref. */
   modelRef: string;
-  /** `ProxyStartup.anthropicEnv` from `setupProxy()`. */
-  anthropicEnv: Record<string, string>;
+  /** `ProxyStartup.providerEnv` from `setupProxy()`. */
+  providerEnv: Record<string, string>;
   /**
    * Override for the fetch the provider uses. Defaults to
-   * `createProxyFetch(anthropicEnv)`. Exists so tests can capture what would go
+   * `createProxyFetch(providerEnv)`. Exists so tests can capture what would go
    * on the wire without a network; production callers omit it.
    */
   fetchImpl?: typeof fetch | undefined;
@@ -241,23 +355,24 @@ export interface ResolveModelOptions {
  * grok must not quietly get Claude (design §6).
  */
 export function resolveModel(opts: ResolveModelOptions): LanguageModel {
-  const { modelRef, anthropicEnv } = opts;
+  const { modelRef, providerEnv } = opts;
   // Throws `PluginError({ code: 'invalid-payload' })` on anything that is not
   // `provider/model-id`, which includes a bare `claude-sonnet-4-6`.
   const { provider, modelId } = parseModelRef(modelRef);
 
-  const entry = PROVIDERS[provider];
+  const entry = providerEntryFor(provider);
   if (entry === undefined) {
     throw new Error(
       `agent-aisdk-runner: agentConfig.model "${modelRef}" targets provider ` +
-        `"${provider}", but this runner ships Anthropic support only today. ` +
-        `Multi-provider support arrives in ${PROVIDER_ROADMAP}. Set the agent's ` +
-        `model to an "anthropic/<model-id>" ref, or select a runner that ` +
-        `supports "${provider}".`,
+        `"${provider}", which this runner cannot drive. It ships ` +
+        `${Object.keys(PROVIDERS).join(' and ')} support today; Vertex arrives ` +
+        `in ${PROVIDER_ROADMAP}. Set the agent's model to a supported ` +
+        `"<provider>/<model-id>" ref, or select a runner that supports ` +
+        `"${provider}".`,
     );
   }
 
-  const apiKey = anthropicEnv[entry.credentialEnvVar];
+  const apiKey = providerEnv[entry.credentialEnvVar];
   if (typeof apiKey !== 'string' || !PLACEHOLDER_RE.test(apiKey)) {
     throw new Error(
       `agent-aisdk-runner: ${entry.credentialEnvVar} must be the ` +
@@ -270,6 +385,51 @@ export function resolveModel(opts: ResolveModelOptions): LanguageModel {
   }
 
   const fetchImpl =
-    opts.fetchImpl !== undefined ? opts.fetchImpl : createProxyFetch(anthropicEnv);
+    opts.fetchImpl !== undefined ? opts.fetchImpl : createProxyFetch(providerEnv);
   return entry.create({ apiKey, fetchImpl })(modelId);
+}
+
+/**
+ * The provider id of a model ref — the single place anything in this runner
+ * asks "which provider is this?".
+ *
+ * `resolveModel` already parses the ref; this exists so the turn loop can make
+ * the same decision without parsing it a second time with its own opinion about
+ * what counts as "not Anthropic". Throws on an unparseable ref, exactly as
+ * `resolveModel` does.
+ */
+export function providerIdForModelRef(modelRef: string): string {
+  return parseModelRef(modelRef).provider;
+}
+
+/**
+ * The messages to SEND this turn, for a given provider.
+ *
+ * Today the only transform is reasoning pruning (design §6): providers whose
+ * `acceptsPriorReasoning` is false get prior turns' reasoning parts stripped
+ * before the request goes out, because replaying them is rejected or mangled
+ * upstream. The LAST message keeps its reasoning — that is the block the model
+ * is still mid-thought on.
+ *
+ * This is a SEND-SITE transform and nothing else. The persisted transcript is
+ * the host's source of truth and is re-emitted verbatim; rewriting it here
+ * would change its bytes, break the host's `prefixHash`, and force a whole-file
+ * resync on every resume (`.claude/memory/decisions.md`, 2026-08-19).
+ * `pruneMessages` builds new arrays and objects rather than editing in place,
+ * but the no-mutation contract is ours, so the tests assert it.
+ *
+ * An unknown provider is passed through unchanged rather than pruned: it can
+ * only be reached from a ref `resolveModel` would already have rejected, and
+ * silently dropping content is the worse of the two failures.
+ */
+export function messagesForProvider(opts: {
+  providerId: string;
+  messages: ModelMessage[];
+}): ModelMessage[] {
+  const entry = providerEntryFor(opts.providerId);
+  if (entry === undefined || entry.acceptsPriorReasoning) return opts.messages;
+  return pruneMessages({
+    messages: opts.messages,
+    reasoning: 'before-last-message',
+  });
 }

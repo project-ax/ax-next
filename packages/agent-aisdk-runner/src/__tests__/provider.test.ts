@@ -4,10 +4,18 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 import { once } from 'node:events';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { generateText } from 'ai';
-import { createProxyFetch, readProxyCaPem, resolveModel } from '../provider.js';
+import { generateText, type ModelMessage } from 'ai';
+import {
+  createProxyFetch,
+  messagesForProvider,
+  providerIdForModelRef,
+  readProxyCaPem,
+  resolveModel,
+} from '../provider.js';
 
 const PLACEHOLDER = 'ax-cred:0123456789abcdef0123456789abcdef';
+/** A DIFFERENT placeholder, so an openrouter assertion can't pass on the anthropic one. */
+const OR_PLACEHOLDER = 'ax-cred:abcdef0123456789abcdef0123456789';
 const PROXY_TOKEN = 'facefeedfacefeedfacefeedfacefeed';
 
 function env(over: Record<string, string> = {}): Record<string, string> {
@@ -29,6 +37,22 @@ const CANNED_RESPONSE = {
   usage: { input_tokens: 3, output_tokens: 1 },
 };
 
+/**
+ * Minimal non-streaming OpenAI-compatible `/chat/completions` response — the
+ * shape OpenRouter answers with. Same job as `CANNED_RESPONSE`: let
+ * `generateText` finish so the assertions can be about the REQUEST.
+ */
+const CANNED_OPENAI_RESPONSE = {
+  id: 'gen_test',
+  object: 'chat.completion',
+  created: 1_700_000_000,
+  model: 'x-ai/grok-4.6',
+  choices: [
+    { index: 0, message: { role: 'assistant', content: 'ok' }, finish_reason: 'stop' },
+  ],
+  usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 },
+};
+
 interface CapturedRequest {
   url: string;
   headers: Record<string, string>;
@@ -41,7 +65,10 @@ interface CapturedRequest {
  * assertion in this file reads from `captured`, not from what we passed in —
  * asserting on the input would prove nothing about the outgoing header.
  */
-function capturingFetch(captured: CapturedRequest[]): typeof fetch {
+function capturingFetch(
+  captured: CapturedRequest[],
+  response: unknown = CANNED_RESPONSE,
+): typeof fetch {
   return (async (input: unknown, init?: RequestInit) => {
     const url =
       typeof input === 'string'
@@ -67,7 +94,7 @@ function capturingFetch(captured: CapturedRequest[]): typeof fetch {
       headers,
       body: JSON.parse(String(init?.body ?? '{}')) as Record<string, unknown>,
     });
-    return new Response(JSON.stringify(CANNED_RESPONSE), {
+    return new Response(JSON.stringify(response), {
       status: 200,
       headers: { 'content-type': 'application/json' },
     });
@@ -133,7 +160,7 @@ async function startTunnelProxy(): Promise<FakeProxy> {
 describe('resolveModel — credential placeholder validation', () => {
   it('accepts the ax-cred:<32-hex> placeholder', () => {
     expect(() =>
-      resolveModel({ modelRef: 'anthropic/claude-sonnet-4-6', anthropicEnv: env() }),
+      resolveModel({ modelRef: 'anthropic/claude-sonnet-4-6', providerEnv: env() }),
     ).not.toThrow();
   });
 
@@ -141,14 +168,14 @@ describe('resolveModel — credential placeholder validation', () => {
     expect(() =>
       resolveModel({
         modelRef: 'anthropic/claude-sonnet-4-6',
-        anthropicEnv: env({ ANTHROPIC_API_KEY: 'sk-ant-api03-totally-real-key' }),
+        providerEnv: env({ ANTHROPIC_API_KEY: 'sk-ant-api03-totally-real-key' }),
       }),
     ).toThrowError(/ax-cred:<32-hex>/);
   });
 
   it('rejects a missing placeholder', () => {
     expect(() =>
-      resolveModel({ modelRef: 'anthropic/claude-sonnet-4-6', anthropicEnv: {} }),
+      resolveModel({ modelRef: 'anthropic/claude-sonnet-4-6', providerEnv: {} }),
     ).toThrowError(/ANTHROPIC_API_KEY/);
   });
 
@@ -156,7 +183,7 @@ describe('resolveModel — credential placeholder validation', () => {
     expect(() =>
       resolveModel({
         modelRef: 'anthropic/claude-sonnet-4-6',
-        anthropicEnv: env({ ANTHROPIC_API_KEY: '' }),
+        providerEnv: env({ ANTHROPIC_API_KEY: '' }),
       }),
     ).toThrowError(/ANTHROPIC_API_KEY/);
   });
@@ -165,39 +192,66 @@ describe('resolveModel — credential placeholder validation', () => {
     expect(() =>
       resolveModel({
         modelRef: 'anthropic/claude-sonnet-4-6',
-        anthropicEnv: env({ ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef' }),
+        providerEnv: env({ ANTHROPIC_API_KEY: 'ax-cred:0123456789abcdef' }),
       }),
     ).toThrowError(/ax-cred:<32-hex>/);
   });
 });
 
 describe('resolveModel — provider gating', () => {
-  it('rejects a non-anthropic ref by name and points at the PR that adds it', () => {
+  it('rejects a vertex ref by name and points at the PR that adds it', () => {
     let message = '';
     try {
-      resolveModel({ modelRef: 'openrouter/x-ai/grok-4.6', anthropicEnv: env() });
+      resolveModel({ modelRef: 'vertex/gemini-3-pro', providerEnv: env() });
       throw new Error('expected resolveModel to throw');
     } catch (err) {
       message = (err as Error).message;
     }
-    expect(message).toContain('openrouter');
-    expect(message).toContain('PR 4');
+    expect(message).toContain('vertex');
     expect(message).toContain('PR 5');
     // The whole point of the guard: it must NOT quietly become an Anthropic call.
     expect(message).not.toMatch(/falling back|defaulting/i);
   });
 
-  it('rejects a vertex ref too (the guard is an allow-list, not a deny-list)', () => {
+  it('rejects an unknown provider too (the guard is an allow-list, not a deny-list)', () => {
     expect(() =>
-      resolveModel({ modelRef: 'vertex/gemini-3-pro', anthropicEnv: env() }),
-    ).toThrowError(/vertex/);
+      resolveModel({ modelRef: 'notaprovider/some-model', providerEnv: env() }),
+    ).toThrowError(/notaprovider/);
   });
 
   it('rejects a bare model id with no provider prefix (no implicit anthropic)', () => {
     expect(() =>
-      resolveModel({ modelRef: 'claude-sonnet-4-6', anthropicEnv: env() }),
+      resolveModel({ modelRef: 'claude-sonnet-4-6', providerEnv: env() }),
     ).toThrowError();
   });
+
+  // Regression: the provider lookup used to be a bare `PROVIDERS[provider]`,
+  // which walks the prototype chain — `PROVIDERS['constructor']` is the Object
+  // constructor, so `entry === undefined` never fired and the caller fell
+  // through to the CREDENTIAL check and got an error about an env var named
+  // `undefined`. It failed closed, but by accident of ordering, and it named
+  // the wrong thing. Each of these must be rejected AS AN UNKNOWN PROVIDER.
+  it.each(['constructor', '__proto__', 'toString', 'valueOf', 'hasOwnProperty'])(
+    'rejects the inherited Object.prototype key %s as an unknown provider',
+    (inherited) => {
+      let thrown: unknown;
+      try {
+        resolveModel({
+          modelRef: `${inherited}/some-model`,
+          providerEnv: env(),
+        });
+      } catch (err) {
+        thrown = err;
+      }
+      expect(thrown).toBeInstanceOf(Error);
+      const message = String((thrown as Error).message);
+      // Names the provider the operator actually wrote…
+      expect(message).toContain(inherited);
+      // …and is the unknown-provider error, not the credential-shape one.
+      expect(message).not.toMatch(/ax-cred/);
+      expect(message).not.toMatch(/undefined/);
+    },
+  );
 });
 
 describe('resolveModel — what actually reaches the wire', () => {
@@ -220,11 +274,11 @@ describe('resolveModel — what actually reaches the wire', () => {
     else process.env.ANTHROPIC_BASE_URL = priorBaseUrl;
   });
 
-  it('sends the placeholder from anthropicEnv, never the one in process.env', async () => {
+  it('sends the placeholder from providerEnv, never the one in process.env', async () => {
     const captured: CapturedRequest[] = [];
     const model = resolveModel({
       modelRef: 'anthropic/claude-sonnet-4-6',
-      anthropicEnv: env(),
+      providerEnv: env(),
       fetchImpl: capturingFetch(captured),
     });
 
@@ -242,7 +296,7 @@ describe('resolveModel — what actually reaches the wire', () => {
     const captured: CapturedRequest[] = [];
     const model = resolveModel({
       modelRef: 'anthropic/claude-sonnet-4-6',
-      anthropicEnv: env(),
+      providerEnv: env(),
       fetchImpl: capturingFetch(captured),
     });
 
@@ -255,7 +309,7 @@ describe('resolveModel — what actually reaches the wire', () => {
     const captured: CapturedRequest[] = [];
     const model = resolveModel({
       modelRef: 'anthropic/claude-sonnet-4-6',
-      anthropicEnv: env(),
+      providerEnv: env(),
       fetchImpl: capturingFetch(captured),
     });
 
@@ -279,6 +333,32 @@ describe('createProxyFetch', () => {
     expect(() => createProxyFetch(env({ HTTPS_PROXY: 'not a url' }))).toThrowError(
       /HTTPS_PROXY/,
     );
+  });
+
+  // The proxy URL carries the per-session token as Basic userinfo
+  // (`http://ax:<32-hex>@host:port`). The happy path strips it, but the strip
+  // runs AFTER `new URL()` succeeds — so the throw path used to interpolate the
+  // raw string, token and all, into an error that the runner writes to stderr
+  // and the host logs. Attribution-only and host-misconfiguration-only, but a
+  // secret in a log line is a secret in a log line.
+  it('redacts the session token from the malformed-proxy-URL error', () => {
+    // Userinfo present, but the host half is unparseable, so `new URL` rejects
+    // it and we take the throw path with the token still in the string.
+    const malformed = `http://ax:${PROXY_TOKEN}@:::not-a-host`;
+    let thrown: unknown;
+    try {
+      createProxyFetch(env({ HTTPS_PROXY: malformed }));
+    } catch (err) {
+      thrown = err;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    const message = String((thrown as Error).message);
+    // Still says which var is wrong and still refuses to degrade…
+    expect(message).toMatch(/HTTPS_PROXY/);
+    expect(message).toMatch(/Refusing to fall back/);
+    // …but the token is gone, and so is the userinfo that carried it.
+    expect(message).not.toContain(PROXY_TOKEN);
+    expect(message).not.toContain('ax:');
   });
 
   it('routes the request through the proxy and carries the Basic session token', async () => {
@@ -399,7 +479,7 @@ describe('no gateway, no auth discovery', () => {
   it('resolves to a provider model OBJECT, never a bare model-id string', () => {
     const model = resolveModel({
       modelRef: 'anthropic/claude-sonnet-4-6',
-      anthropicEnv: env({}),
+      providerEnv: env({}),
       fetchImpl: (async () => new Response('{}')) as unknown as typeof fetch,
     });
 
@@ -410,5 +490,232 @@ describe('no gateway, no auth discovery', () => {
     });
     // And it is the Anthropic provider, not the gateway.
     expect(String((model as { provider?: unknown }).provider)).toMatch(/anthropic/i);
+  });
+
+  it('resolves an OpenRouter ref to a provider model OBJECT too', () => {
+    const model = resolveModel({
+      modelRef: 'openrouter/x-ai/grok-4.6',
+      providerEnv: env({ OPENROUTER_API_KEY: OR_PLACEHOLDER }),
+      fetchImpl: (async () => new Response('{}')) as unknown as typeof fetch,
+    });
+
+    expect(typeof model).not.toBe('string');
+    expect(model).toMatchObject({
+      specificationVersion: expect.stringMatching(/^v\d+$/),
+      modelId: 'x-ai/grok-4.6',
+    });
+    // The openai-compatible provider we named, not the AI SDK gateway.
+    expect(String((model as { provider?: unknown }).provider)).toMatch(/openrouter/i);
+    expect(String((model as { provider?: unknown }).provider)).not.toMatch(/gateway/i);
+  });
+});
+
+describe('resolveModel — OpenRouter model ids', () => {
+  const or = (over: Record<string, string> = {}) =>
+    env({ OPENROUTER_API_KEY: OR_PLACEHOLDER, ...over });
+
+  it('keeps the nested vendor slug intact (only the provider prefix is stripped)', () => {
+    const model = resolveModel({
+      modelRef: 'openrouter/x-ai/grok-4.6',
+      providerEnv: or(),
+      fetchImpl: (async () => new Response('{}')) as unknown as typeof fetch,
+    });
+    expect((model as { modelId: string }).modelId).toBe('x-ai/grok-4.6');
+  });
+
+  it('keeps a variant suffix intact (`:batch`, `:free`, …)', () => {
+    const model = resolveModel({
+      modelRef: 'openrouter/google/gemini-3.7-flash:batch',
+      providerEnv: or(),
+      fetchImpl: (async () => new Response('{}')) as unknown as typeof fetch,
+    });
+    expect((model as { modelId: string }).modelId).toBe('google/gemini-3.7-flash:batch');
+  });
+
+  it('rejects a missing OPENROUTER_API_KEY by name', () => {
+    expect(() =>
+      resolveModel({ modelRef: 'openrouter/x-ai/grok-4.6', providerEnv: env() }),
+    ).toThrowError(/OPENROUTER_API_KEY/);
+  });
+
+  it('rejects a real-looking OpenRouter key', () => {
+    expect(() =>
+      resolveModel({
+        modelRef: 'openrouter/x-ai/grok-4.6',
+        providerEnv: or({ OPENROUTER_API_KEY: 'sk-or-v1-totally-real-key' }),
+      }),
+    ).toThrowError(/ax-cred:<32-hex>/);
+  });
+});
+
+describe('resolveModel — what actually reaches the OpenRouter wire', () => {
+  const priorKey = process.env.OPENROUTER_API_KEY;
+  const priorBaseUrl = process.env.OPENROUTER_BASE_URL;
+  const priorOpenAiKey = process.env.OPENAI_API_KEY;
+  const priorOpenAiBase = process.env.OPENAI_BASE_URL;
+
+  beforeEach(() => {
+    // The decoys. `createOpenAICompatible` has no env fallback today — these
+    // assertions are the guard that keeps it that way, and that keep a future
+    // `apiKey` omission from silently picking something up.
+    process.env.OPENROUTER_API_KEY = 'sk-or-decoy-from-process-env';
+    process.env.OPENROUTER_BASE_URL = 'https://decoy.invalid/api/v1';
+    process.env.OPENAI_API_KEY = 'sk-openai-decoy-from-process-env';
+    process.env.OPENAI_BASE_URL = 'https://decoy.invalid/v1';
+  });
+
+  afterEach(() => {
+    const restore = (name: string, prior: string | undefined) => {
+      if (prior === undefined) delete process.env[name];
+      else process.env[name] = prior;
+    };
+    restore('OPENROUTER_API_KEY', priorKey);
+    restore('OPENROUTER_BASE_URL', priorBaseUrl);
+    restore('OPENAI_API_KEY', priorOpenAiKey);
+    restore('OPENAI_BASE_URL', priorOpenAiBase);
+  });
+
+  it('sends the placeholder from providerEnv as a Bearer token, never the one in process.env', async () => {
+    const captured: CapturedRequest[] = [];
+    const model = resolveModel({
+      modelRef: 'openrouter/x-ai/grok-4.6',
+      providerEnv: env({ OPENROUTER_API_KEY: OR_PLACEHOLDER }),
+      fetchImpl: capturingFetch(captured, CANNED_OPENAI_RESPONSE),
+    });
+
+    await generateText({ model, prompt: 'hi' });
+
+    expect(captured).toHaveLength(1);
+    const req = captured[0]!;
+    // Value-based substitution in the credential proxy's request framer keys
+    // off the `ax-cred:` value, not the header name — so this is the header the
+    // proxy rewrites.
+    expect(req.headers.authorization).toBe(`Bearer ${OR_PLACEHOLDER}`);
+    expect(req.headers.authorization).not.toContain('decoy');
+    // Nor the anthropic placeholder that also sits in providerEnv.
+    expect(req.headers.authorization).not.toContain(PLACEHOLDER);
+    expect(req.headers['x-api-key']).toBeUndefined();
+  });
+
+  it('pins the base URL to openrouter.ai, ignoring any ambient base-URL env var', async () => {
+    const captured: CapturedRequest[] = [];
+    const model = resolveModel({
+      modelRef: 'openrouter/x-ai/grok-4.6',
+      providerEnv: env({ OPENROUTER_API_KEY: OR_PLACEHOLDER }),
+      fetchImpl: capturingFetch(captured, CANNED_OPENAI_RESPONSE),
+    });
+
+    await generateText({ model, prompt: 'hi' });
+
+    expect(captured[0]!.url).toBe('https://openrouter.ai/api/v1/chat/completions');
+    expect(captured[0]!.url).not.toContain('decoy.invalid');
+  });
+
+  it('sends the model id with the provider prefix stripped and the slug intact', async () => {
+    const captured: CapturedRequest[] = [];
+    const model = resolveModel({
+      modelRef: 'openrouter/x-ai/grok-4.6',
+      providerEnv: env({ OPENROUTER_API_KEY: OR_PLACEHOLDER }),
+      fetchImpl: capturingFetch(captured, CANNED_OPENAI_RESPONSE),
+    });
+
+    await generateText({ model, prompt: 'hi' });
+
+    expect(captured[0]!.body.model).toBe('x-ai/grok-4.6');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reasoning pruning (design §6).
+//
+// OpenRouter rejects (or mangles) reasoning blocks replayed from prior turns —
+// upstream issues #418 / #423. Anthropic is the opposite: its signed thinking
+// blocks must come back verbatim. So the transform is per-provider, and it is a
+// SEND-SITE transform only: the persisted transcript is the host's source of
+// truth and re-serializing it would break the host's `prefixHash`.
+// ---------------------------------------------------------------------------
+describe('messagesForProvider — reasoning pruning', () => {
+  function transcript(): ModelMessage[] {
+    return [
+      { role: 'user', content: 'first question' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'old private thinking' },
+          { type: 'text', text: 'first answer' },
+        ],
+      },
+      { role: 'user', content: 'second question' },
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'latest thinking' },
+          { type: 'text', text: 'second answer' },
+        ],
+      },
+    ];
+  }
+
+  function reasoningTexts(messages: ModelMessage[]): string[] {
+    return messages.flatMap((m) =>
+      Array.isArray(m.content)
+        ? m.content
+            .filter((part): part is { type: 'reasoning'; text: string } =>
+              (part as { type: string }).type === 'reasoning',
+            )
+            .map((part) => part.text)
+        : [],
+    );
+  }
+
+  it('strips prior-turn reasoning for openrouter, keeping the last message intact', () => {
+    const sent = messagesForProvider({
+      providerId: 'openrouter',
+      messages: transcript(),
+    });
+
+    expect(reasoningTexts(sent)).toEqual(['latest thinking']);
+    // Nothing else is lost.
+    expect(sent).toHaveLength(4);
+    expect(sent[1]).toMatchObject({
+      role: 'assistant',
+      content: [{ type: 'text', text: 'first answer' }],
+    });
+  });
+
+  it('passes messages through unchanged for anthropic (signed thinking must be verbatim)', () => {
+    const messages = transcript();
+    const sent = messagesForProvider({ providerId: 'anthropic', messages });
+
+    expect(sent).toEqual(messages);
+    expect(reasoningTexts(sent)).toEqual(['old private thinking', 'latest thinking']);
+  });
+
+  it('never mutates the caller\'s array (the persisted transcript is the host\'s source of truth)', () => {
+    const messages = transcript();
+    const before = structuredClone(messages);
+
+    const sent = messagesForProvider({ providerId: 'openrouter', messages });
+
+    expect(messages).toEqual(before);
+    expect(reasoningTexts(messages)).toEqual([
+      'old private thinking',
+      'latest thinking',
+    ]);
+    // A new array, so the caller's copy cannot be aliased into.
+    expect(sent).not.toBe(messages);
+  });
+});
+
+describe('providerIdForModelRef', () => {
+  // One place decides "is this Anthropic?" — main.ts must not parse the ref a
+  // second time with its own opinion.
+  it('returns the provider segment of a ref', () => {
+    expect(providerIdForModelRef('anthropic/claude-sonnet-4-6')).toBe('anthropic');
+    expect(providerIdForModelRef('openrouter/x-ai/grok-4.6')).toBe('openrouter');
+  });
+
+  it('throws on a bare model id, exactly as resolveModel does', () => {
+    expect(() => providerIdForModelRef('claude-sonnet-4-6')).toThrowError();
   });
 });

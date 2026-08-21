@@ -199,9 +199,11 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
   const [teams, setTeams] = useState<Team[] | null>(null);
   const [connectors, setConnectors] = useState<ConnectorSummary[]>([]);
   // The selectable models for this deployment, from GET /admin/agents/models
-  // (the agents allow-list ∩ the provider plugin's `models:list-supported`).
-  // `null` = not loaded yet, `[]` = loaded and genuinely empty (no provider
-  // plugin), which the form calls out instead of showing a blank picker.
+  // — the operator's agents allow-list, labelled by whichever
+  // `models:list-supported:<provider>` registrants are loaded (an allow-listed
+  // ref whose provider has no registrant still appears, labelled with its own
+  // id). `null` = not loaded yet, `[]` = loaded and genuinely empty (an empty
+  // allow-list), which the form calls out instead of showing a blank picker.
   const [models, setModels] = useState<AgentModelOption[] | null>(null);
   const [modelsError, setModelsError] = useState<string | null>(null);
   const [editing, setEditing] = useState<AdminAgent | 'new' | null>(null);
@@ -733,10 +735,11 @@ export function AgentForm({ isAdmin }: { isAdmin: boolean }) {
             </div>
           )}
 
-          {/* Model — the options are whatever THIS deployment can serve
-              (GET /admin/agents/models = the agents allow-list ∩ the loaded
-              provider plugin's `models:list-supported`), never a list baked
-              into the SPA. Values are `provider/model-id` refs. */}
+          {/* Model — the options are whatever THIS deployment allows
+              (GET /admin/agents/models = the operator's agents allow-list,
+              with labels from whichever `models:list-supported:<provider>`
+              registrants are loaded), never a list baked into the SPA.
+              Values are `provider/model-id` refs. */}
           <div className="flex flex-col gap-2">
             <Label htmlFor="agent-model">Model</Label>
             {models !== null && modelOptions.length === 0 ? (

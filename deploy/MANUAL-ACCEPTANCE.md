@@ -1781,7 +1781,7 @@ cookie is a live admin session.
       (`/agent`, re-materialized from the workspace).
 
 Note: `printenv AX_EPHEMERAL_ROOT` is **unset** in the agent's shell — that's
-correct, not a bug. The SDK subprocess gets a curated env (`{...anthropicEnv,
+correct, not a bug. The SDK subprocess gets a curated env (`{...providerEnv,
 HOME}`); `AX_EPHEMERAL_ROOT` is host→runner plumbing and the agent learns the
 path from the prompt, not the env.
 

@@ -44,7 +44,8 @@ const DEFAULT_MAP_DENSIFY_TIMEOUT_MS = 30_000;
  *  NOT the agent's model — so the pass stays O(1 cheap call)/dirty pass with no
  *  new egress (design §D2). The DATED id is the one actually in the stack: it is
  *  `@ax/llm-anthropic`'s `translate.DEFAULT_MODEL` and the SOLE entry in its
- *  `models:list-supported` advertisement — the bare `claude-haiku-4-5` alias
+ *  `models:list-supported:anthropic` advertisement — the bare
+ *  `claude-haiku-4-5` alias
  *  appears nowhere else and could 400 behind a supported-models allowlist,
  *  silently killing Stage B (400 → caught → []). Match the sibling callers. */
 const DEFAULT_ROLLUP_STAGE_B_MODEL = 'claude-haiku-4-5-20251001';

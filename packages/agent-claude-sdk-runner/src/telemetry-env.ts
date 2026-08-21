@@ -43,10 +43,10 @@
 // the credential proxy.
 //
 // Ordering contract: main.ts spreads buildTelemetryEnv() AFTER
-// ...proxyStartup.anthropicEnv in the query() env literal, so these flags are a
+// ...proxyStartup.providerEnv in the query() env literal, so these flags are a
 // non-negotiable security FLOOR that wins on any conflict — UNLIKE the tty-hints
 // (buildTtyHintEnv), which are spread first as overridable defaults. None of
-// these three vars is in proxy-startup's ENV_ALLOWLIST today, so anthropicEnv
+// these three vars is in proxy-startup's ENV_ALLOWLIST today, so providerEnv
 // can't carry them anyway; the after-spread is defense-in-depth against a future
 // allowlist change accidentally forwarding (and thereby clobbering) one of them.
 // ---------------------------------------------------------------------------
@@ -54,7 +54,7 @@
 /**
  * Env vars that disable the SDK CLI's telemetry / error-reporting phone-home
  * (notably the datadoghq.com egress). Pure + constant — takes no input, returns
- * a fresh object each call. Spread AFTER `...proxyStartup.anthropicEnv` in the
+ * a fresh object each call. Spread AFTER `...proxyStartup.providerEnv` in the
  * main.ts SDK `query()` env literal so the flags can't be overridden (security
  * floor, not an overridable default).
  */

@@ -29,7 +29,7 @@ function buildMocks(opts: {
         displayName: 'A',
         allowedTools: [],
         mcpConfigIds: [],
-        model: 'claude-sonnet-4-7',
+        model: 'anthropic/claude-sonnet-4-7',
         runner: 'claude-sdk',
         workspaceRef: null,
       },

@@ -36,7 +36,7 @@ vi.mock('../proxy-ca-from-env.js', () => ({
   writeProxyCaFromEnv: vi.fn().mockResolvedValue('skipped'),
 }));
 vi.mock('../proxy-startup.js', () => ({
-  setupProxy: vi.fn().mockResolvedValue({ anthropicEnv: {} }),
+  setupProxy: vi.fn().mockResolvedValue({ providerEnv: {} }),
 }));
 vi.mock('../installed-skills.js', () => ({
   materializeInstalledSkillsFromEnv: vi.fn().mockResolvedValue(undefined),
