@@ -66,9 +66,10 @@
  * is the exception: every route in it mounts unconditionally, because a held
  * call reaches the default `/` chat surface whether or not the preview is on,
  * and gating the routes would gate only the remedy (TASK-261/TASK-259). See
- * `registerWorkspaceRoutes` below for the full accounting. `/api/features` always mounts and needs no
- * auth — it echoes a build-time flag and nothing else, exactly like `GET
- * /api/branding`.
+ * `registerWorkspaceRoutes` below for the full accounting.
+ *
+ * `/api/features` always mounts and needs no auth — it echoes a build-time
+ * flag and nothing else, exactly like `GET /api/branding`.
  */
 import {
   PluginError,

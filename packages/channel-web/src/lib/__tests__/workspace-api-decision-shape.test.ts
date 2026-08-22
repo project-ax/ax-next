@@ -45,6 +45,16 @@ describe('the decisions list read', () => {
     );
   });
 
+  it('rejects a page containing a null row', async () => {
+    // Every ELEMENT, not just the array: one bad row crashes render the same
+    // way a missing array does — `undoSecondsLeft(d)` and `d.conversationId`
+    // both dereference it.
+    respondWith({ decisions: [null] });
+    await expect(workspaceApi.decisions()).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
   it('accepts an honestly empty page', async () => {
     // The one body that IS allowed to mean "nothing is waiting on you".
     respondWith({ decisions: [] });
@@ -67,13 +77,31 @@ describe('the single-decision re-read (the undo-window poll)', () => {
     );
   });
 
-  it('accepts an explicit null row — the decision is gone, which is news', async () => {
-    // `decision: null` is a legitimate answer and must NOT be treated as a
-    // broken response: the poll's caller handles it, and conflating the two
-    // would turn "this row no longer exists" into "the server is broken".
+  /*
+    The regression an earlier version of this file LAUNDERED as covered.
+
+    It asserted that `{decision: null}` resolves, on the theory that a null row
+    means "it is gone, which is news". That was false twice over. The server
+    404s for a missing row rather than sending it — `resolvedOrGone` says so in
+    its own comment: "404, never a 200 carrying `decision: null` … the client
+    would apply it over the row the person is looking at". And the poll's only
+    consumer hands the result straight to `applyPolledRow`, typed
+    `(row: Decision)`, which reads `row.id` inside a `setDecisions` updater — so
+    the null threw during render rather than being "handled".
+
+    A green test asserting the wrong contract is worse than no test: it stops
+    the next person looking.
+  */
+  it('rejects a null row rather than handing it to the poll to dereference', async () => {
     respondWith({ decision: null });
-    await expect(workspaceApi.decision('d1')).resolves.toEqual({
-      decision: null,
-    });
+    await expect(workspaceApi.decision('d1')).rejects.toBeInstanceOf(
+      WorkspaceShapeError,
+    );
+  });
+
+  it('accepts a real row', async () => {
+    const decision = { id: 'd1', status: 'executed' };
+    respondWith({ decision });
+    await expect(workspaceApi.decision('d1')).resolves.toEqual({ decision });
   });
 });

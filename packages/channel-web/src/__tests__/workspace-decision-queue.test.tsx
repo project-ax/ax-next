@@ -230,4 +230,34 @@ describe('useDecisionQueue — the undo window is closed by the server, not the 
     expect(result.current.decisions[0]).toEqual(takenBack);
     expect(result.current.decisions[0]!.undoable).toBe(false);
   });
+
+  /*
+    A poll that comes back malformed must degrade, not take the surface down.
+
+    `applyPolledRow` is typed `(row: Decision)` and reads `row.id` inside a
+    `setDecisions` updater — during React's render phase, where the poll's own
+    `.catch` cannot see a throw. There is no ErrorBoundary in this SPA, so a
+    null row there unmounts the entire chat. That was survivable while only the
+    flag-gated /workspace mounted this queue; TASK-261 puts it on the default
+    surface, where the poll runs once a second for anyone mid-undo-window.
+
+    The guard is at the API boundary, so this rejects and lands in the `.catch`
+    that already exists for a failed poll: the row is left exactly as the server
+    last described it, and nobody is told anything, because nobody clicked.
+  */
+  it('survives a malformed poll response and leaves the row untouched', async () => {
+    const resolved = resolvedFixture('executed');
+    const { result } = await mountWith([resolved]);
+    const before = result.current.decisions[0];
+
+    // What a proxy or a host at a different version can produce: a 200 whose
+    // body is not a decision read.
+    readDecision.mockRejectedValue(new Error('200 with a body we could not read'));
+    await tick(POLL_MS);
+
+    // Still mounted, still honest.
+    expect(result.current.decisions[0]).toEqual(before);
+    expect(result.current.error).toBeNull();
+    expect(result.current.notices.size).toBe(0);
+  });
 });

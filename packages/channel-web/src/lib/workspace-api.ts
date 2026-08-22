@@ -349,8 +349,13 @@ export const workspaceApi = {
    */
   decisions: async () => {
     const body = await req<unknown>('/decisions');
-    return checkedRead<DecisionsPage>('/decisions', body, (b) =>
-      isRecord(b) && Array.isArray(b.decisions),
+    // Every ELEMENT too, not just the array. `undoSecondsLeft(d)` and
+    // `d.conversationId` are read during render, so one null row in an
+    // otherwise valid page crashes the same way a missing array does.
+    return checkedRead<DecisionsPage>(
+      '/decisions',
+      body,
+      (b) => isRecord(b) && Array.isArray(b.decisions) && b.decisions.every(isRecord),
     );
   },
 
@@ -362,10 +367,27 @@ export const workspaceApi = {
   decision: async (id: string) => {
     const path = `/decisions/${encodeURIComponent(id)}`;
     const body = await req<unknown>(path);
-    // `decision: null` is a legitimate answer (the row is gone); a body with no
-    // `decision` key at all is not. The poll's caller must be able to tell those
-    // apart, because one is news and the other is a broken response.
-    return checkedRead<DecisionRead>(path, body, (b) => isRecord(b) && 'decision' in b);
+    /*
+      The ROW has to be there, not merely the key.
+
+      An earlier version of this let `{decision: null}` through, on the theory
+      that a null row means "it's gone, which is news". It is not: `resolvedOrGone`
+      on the server 404s for a missing row and says so in its own comment —
+      "404, never a 200 carrying `decision: null` … the client would apply it
+      over the row the person is looking at". `DecisionRead.decision` is
+      non-nullable to match, so TypeScript could not have caught the null either.
+
+      The only consumer is the undo-window poll, which hands the result straight
+      to `applyPolledRow` — typed `(row: Decision)`, reading `row.id` inside a
+      `setDecisions` updater. A null there throws during render, and with no
+      ErrorBoundary in this SPA that unmounts the whole chat surface: exactly
+      the failure this guard exists to stop, just moved one route over.
+    */
+    return checkedRead<DecisionRead>(
+      path,
+      body,
+      (b) => isRecord(b) && isRecord(b.decision),
+    );
   },
 
   /**
