@@ -42,10 +42,17 @@ tool call — or the workspace write / network reach a tool call produces. That 
 than "vetoes a tool call", deliberately: a rail that only described the tool-call gate
 would understate reach, and understating reach is the direction H4 forbids.
 
-**Two corrections to the plan's Step-1 list:**
+**Three corrections to the plan's Step-1 list:**
 
 - `authored-caps.ts` lives at **`packages/agents/src/authored-caps.ts`**, not
   `packages/skills/src/`. (The design cites it correctly; the plan's file list does not.)
+- The list's `validator-{skill,routine,identity,service}/` is wrong about **`validator-service`**:
+  it is **not** a workspace-write veto. `packages/validator-service/src/plugin.ts:111`
+  declares `subscribes: []`; it registers a *service* hook, `services:validate` (`:114`),
+  whose only production caller is `packages/chat-orchestrator/src/orchestrator.ts:2157`
+  **at session open**, over the folded connector/skill service list. It never sees a
+  `FileChange`. There are exactly **three** production `workspace:pre-apply` subscribers —
+  `validator-skill:126`, `validator-identity:138`, `validator-routine:28`.
 - The list omits the **JIT approval-card path** (`chat:permission-request`) and the
   **propose-tool chokepoints** (`skill_propose`, `connector_propose`), which are the
   closest things the repo has to a `hold` today. They are inventoried below as E15–E20.
@@ -62,7 +69,7 @@ mechanical row instead. See the notes under the table.
 |---|---|---|---|---|---|---|
 | **E1** Governed-path re-rooting | `packages/agent-runner-core/src/governed-paths.ts:211` (`resolveGovernedPaths`), mutation loop `:239` | Nothing is stopped. Rewrites path arguments so a write to `.ax/**` / `.claude/**` lands on the git-backed tier instead of ungoverned NFS | Tool input keys `file_path` / `path` / `notebook_path` only (`:30`); `POLICY_PREFIXES` + `POLICY_EXACT_PATHS` from `packages/core/src/workspace-policy.ts:57` | **no** — pure implementation detail; no reason string, no user signal | — | *(alter only — no verdict)* |
 | **E2** Pre-call fail-closed deny | `packages/agent-runner-core/src/tool-policy.ts:70` | Denies the call when the `tool.pre-call` IPC round-trip throws or fails schema validation | A caught `Error`; its raw `.message` becomes the model-visible reason | **no** — an infrastructure failure wearing a policy costume | — | `deny` |
-| **E3** Host-verdict interpretation | `packages/agent-runner-core/src/tool-policy.ts:77-94` | The seam that applies whatever the host decided. Sole reader of `parsed.verdict` in the repo | `ToolPreCallResponse` (`packages/ipc-protocol/src/actions.ts:89-98`) — a union of `allow` / `reject` only | **no** — a seam, not a condition | — | `allow` \| `deny` |
+| **E3** Host-verdict interpretation | `packages/agent-runner-core/src/tool-policy.ts:77-94` | The seam that applies whatever the host decided. Sole **production** reader of `parsed.verdict` (`test-harness/src/stub-runner.ts:104` also reads it) | `ToolPreCallResponse` (`packages/ipc-protocol/src/actions.ts:89-98`) — a union of `allow` / `reject` only | **no** — a seam, not a condition | — | `allow` \| `deny` |
 | **E4** The `tool:pre-call` subscriber chain | fired at `packages/ipc-core/src/handlers/tool-pre-call.ts:35` | The one chokepoint designed to hold rules. **Zero production subscribers** — always answers `allow` with the unmodified call | `ToolCall {id, name, input}` | *n/a — empty today* | — | `allow` (unconditionally) |
 | **E5** aisdk policy wrapper | `packages/agent-aisdk-runner/src/tools/policy-wrap.ts:74`, deny branch `:85` | Every aisdk tool `execute`. Boot-time guards `mergeToolSets` `:170` and `assertAllToolsWrapped` `:198` make bypass unrepresentable | The `PreToolVerdict` from E3 | **no** — a seam. Its `denialText` `:139` is the repo's most user-visible enforcement string, but it is addressed to the model | — | `allow` \| `deny` |
 | **E6** claude-sdk pre-tool adapter | `packages/agent-claude-sdk-runner/src/pre-tool-use.ts:57-63`; `can-use-tool.ts:44` | Same seam on the other runner. Maps deny → `permissionDecision:'deny'`. The SDK's native `'ask'` exists and is never emitted | The `PreToolVerdict` from E3 | **no** — a seam | — | `allow` \| `deny` |
@@ -70,16 +77,16 @@ mechanical row instead. See the notes under the table.
 | **E8** Egress allowlist / CONNECT gate | `packages/credential-proxy/src/listener.ts:248` (`findAllowingSession`), rejects `:521`, `:935` | Whether one outbound request or CONNECT tunnel leaves the host at all | **Hostname only.** No tool name, no user, no agent, no path | **yes**† — but only ever "reach `<host>`"; the layer has no idea a tool call is in flight. §4.3.4 grant row | — | `deny` |
 | **E9** SSRF / private-IP gate | `packages/credential-proxy/src/private-ip.ts:86-106`; call sites `listener.ts:546`, `:973` | Connections to RFC1918 / loopback / link-local / cloud-metadata addresses, including via DNS rebinding | Resolved IP + the session's `allowedIPs` escape hatch | **no** — a security floor, not a capability. Belongs in a security note, not the rail | — | `deny` |
 | **E10** Canary exfil tripwire | `packages/credential-proxy/src/request-framer.ts:8`; enforced `listener.ts:810-819`, `blockCanary` `:786` | Tears down an in-flight TLS tunnel whose decrypted bytes carry a session canary token | Decrypted request bytes | **no** — no tool or operation context is available at that layer | — | `deny` |
-| **E11** Credential substitution | `packages/credential-proxy/src/registry.ts:129` (`replaceAll`); applied `listener.ts:815`, `:848` | Nothing. Rewrites `ax-cred:<hex>` placeholders into real secrets on the way out. The only *alter* in the network layer | Outbound bytes | **no** | — | *(alter only)* |
+| **E11** Credential substitution | `packages/credential-proxy/src/registry.ts:139` (`replaceAllBuffer`, used at `listener.ts:848`; `:815` goes through `framer.process`) | Nothing. Rewrites `ax-cred:<hex>` placeholders into real secrets on the way out. The only *alter* in the network layer | Outbound bytes | **no** | — | *(alter only)* |
 | **E12** Host grants (always-allow) | `packages/host-grants/src/store.ts:40`; becomes reach at `packages/chat-orchestrator/src/orchestrator.ts:2218-2229` | Pre-authorizes hostnames into the proxy allowlist **at session open**. Never consulted during a turn | `(owner_user_id, agent_id, host)` — four columns, no expiry, no scope, no reason (`migrations.ts:17-24`) | **yes**† — but only ever "reach `<host>`". §4.3.4 grant row, mechanically derived | — | `allow` |
-| **E13** `connectors:resolve` scoping | `packages/connectors/src/plugin.ts:497` → `store.getByIdNotDeleted`, `store.ts:229-238`; reject `:498-505` | Turns a connector id into real sandbox reach. **Pending authored drafts live in a different table and are simply never read** — zero reach is structural, not a check | `(userId, connectorId)`. No agent, no session, no operation | **yes**† — at connector granularity only ("this connection isn't set up"). §4.3.4 grant row | — | `allow` \| `deny` (`not-found`) |
+| **E13** `connectors:resolve` scoping | `packages/connectors/src/plugin.ts:497` → `store.getByIdNotDeleted`, `store.ts:229-238`; reject `:498-505` | Turns a connector id into real sandbox reach. **Pending authored drafts live in a different table (`connectors_v1_authored`) that `connectors:resolve` never reads** — they *are* read, by `connectors:list-authored` (`plugin.ts:674`) to build the approval card in E19 — zero reach is structural, not a check | `(userId, connectorId)`. No agent, no session, no operation | **yes**† — at connector granularity only ("this connection isn't set up"). §4.3.4 grant row | — | `allow` \| `deny` (`not-found`) |
 | **E14** Approved-caps store | `packages/skills/src/approved-caps-store.ts:126` (`list`), subject split `:68-76`; `mcp` kind hard-rejected at `packages/skills/src/plugin.ts:993-1007` | Records what a human approved at the capability wall, per `(owner, agent, {skillId\|connectorId}, kind, value)`. **`skills:approved-caps-list` has no production caller** — rows are written, never read to gate | `kind ∈ {host, slot, npm, pypi, mcp}` + `value` | **yes**† — a second §4.3.4 grant source the design does not mention | — | `allow` (the `mcp` kind rejection is a real `deny`) |
 | **E15** Authored-skill zero-reach projection | `packages/agents/src/authored-caps.ts:35`; enforced upstream at `packages/skills-parser/src/manifest.ts:179-192` | Nothing directly. A skill manifest carrying `capabilities:` (or any of `allowedHosts`/`credentials`/`mcpServers`/`packages`) is a hard **parse failure** — so an authored skill is always zero-reach instruction text | `manifestYaml` | **no** — structural. Correctly produces *no rail row at all* | — | *(no verdict)* |
 | **E16** MCP agent-scope filter | `packages/mcp-client/src/scope.ts:50-83` (`filterByAgentScope`); assembly at `tool-dispatcher-plugin.ts:125-163` | Which MCP-sourced tool descriptors appear in the catalog handed to the model, per session | `mcp.<configId>.` name prefix vs the session's frozen `agentConfig.mcpConfigIds`. Wildcard escape hatch at `scope.ts:56` | **only as a tool name** — the vendor's `description` flows in verbatim (`connection.ts:270` → `tool-names.ts:196`, "no editorializing") and is untrusted (H5) | — | §4.3.3 mechanical row |
 | **E17** Skill safety scan → quarantine | scan `packages/validator-skill/src/plugin.ts:184`; gate `packages/skills/src/propose-gate.ts:29-34`; persist `packages/skills/src/plugin.ts:1129` | A proposed skill whose text trips the injection/exfil scan is persisted but **never projected** to the model | Full bundle text (`manifestYaml + bodyMd + files`), not paths. Scanner outage degrades to *clean* (`plugin.ts:1112-1119`) | **yes** — "held back because its instructions look like they try to override your agent" | — | `deny` (post-hoc; the tool call itself succeeds) |
-| **E18** Workspace-write vetoes (4 validators) | skill `packages/validator-skill/src/plugin.ts:132`; routine `packages/validator-routine/src/plugin.ts:42,48,66`; identity `packages/validator-identity/src/plugin.ts:183,207,221`; service `packages/validator-service/src/plugin.ts:60,75,88` | Agent writes to protected paths — `.claude/settings*.json`, `.claude/agents/**`, `CLAUDE.md`, `.ax/routines/*.md`, `.ax/{BOOTSTRAP,IDENTITY,SOUL,AGENTS}.md` | `workspace:pre-apply` change set: `FileChange.path` + `kind`, and for identity/routine the byte content | **yes** — e.g. "agents aren't allowed to edit their own settings files" | — | `deny` — **but not a tool-call verdict**; fires at turn-end commit. A veto triggers `git reset --hard` (`commit-notify-resync.ts:186`) and the reason reaches **stderr only** |
-| **E19** JIT approval cards | `request_capability` → `packages/skill-broker/src/tools/request-capability.ts:307`; egress wall → `packages/chat-orchestrator/src/orchestrator.ts:1222`; connector → `:1043` | **Nothing.** `chat:permission-request` is a fire-and-forget subscriber hook. The turn runs to completion; the card is UI | skill's resolved connectors / `(sessionId, host)` / pending draft row | **yes** — all card copy is authored in-repo (`PermissionCard.tsx:352-433`) | see seed rules | `allow` today — the tool executes |
-| **E20** Propose-tool chokepoints | `connector_propose` → `packages/tool-connector-propose/src/plugin.ts:185` → `packages/connectors/src/plugin.ts:671`; `skill_propose` → `packages/skills/src/plugin.ts:1123` | `connector_propose` persists a **pending, zero-reach draft** — the strongest real gate in the repo. `skill_propose` on the self-authored path goes straight to `active` with **no card and no human** (`propose-gate.ts:31-33`) | model-supplied draft; scope is host-derived from `toolCtx`, never the model (`plugin.ts:166-169`) | **yes** | see seed rules | `allow` today — both tools execute |
+| **E18** Workspace-write vetoes (**3** validators) | skill `packages/validator-skill/src/plugin.ts:132`; identity `packages/validator-identity/src/plugin.ts:183,207,221`; routine `packages/validator-routine/src/plugin.ts:42,48,66` | **Two different things.** skill + identity gate writes to *protected paths* (`.claude/settings*.json`, `.claude/agents/**`, `CLAUDE.md`, `.ax/{BOOTSTRAP,IDENTITY,SOUL,AGENTS}.md`). routine does **not** protect a path — routine writes are allowed; it rejects malformed frontmatter (`:42`), a duplicate webhook `trigger.path` (`:48`), and a non-canonical `hmac.secretRef` (`:66`) | `workspace:pre-apply` change set: `FileChange.path` + `kind`, and for identity/routine the byte content | **yes** — e.g. "agents aren't allowed to edit their own settings files" | — | `deny` — **but not a tool-call verdict**; fires at turn-end commit. Rollback at `commit-notify-resync.ts:192-193` is `--mixed` unless `recoverable === false` — which `packages/ipc-core/src/handlers/workspace-commit-notify.ts:294` hard-codes for **every** pre-apply rejection, so a veto is always a `git reset --hard`. The reason reaches **stderr only** (`commit-notify-resync.ts:186`) |
+| **E19** JIT approval cards | `request_capability` → `packages/skill-broker/src/tools/request-capability.ts:307`; egress wall → `packages/chat-orchestrator/src/orchestrator.ts:1222`; connector → `:1043` | **Nothing.** `chat:permission-request` is a fire-and-forget subscriber hook. The turn runs to completion; the card is UI | skill's resolved connectors / `(sessionId, host)` / pending draft row | **yes** — the card *frame* is authored in-repo (`PermissionCard.tsx:352-433`), but on the authored path it interpolates model-supplied values (`Connect {request.name}` `:352`; hosts/slots via `renderReach` `:363`,`:436` come from the agent's own draft) — so it is source 1 wrapping source 3, not pure source 1 | see seed rules | `allow` today — the tool executes |
+| **E20** Propose-tool chokepoints | `connector_propose` → `packages/tool-connector-propose/src/plugin.ts:185` → `packages/connectors/src/plugin.ts:671`; `skill_propose` → `packages/skills/src/plugin.ts:1123` | `connector_propose` persists a **pending, zero-reach draft** — the strongest real gate in the repo. `skill_propose` on the self-authored path goes straight to `active` with **no card and no human** (`propose-gate.ts:35`) | model-supplied draft; scope is host-derived from `toolCtx`, never the model (`plugin.ts:166-169`) | **yes** | see seed rules | `allow` today — both tools execute |
 
 ### Notes on the table
 
@@ -141,14 +148,17 @@ The ones that do **not** have a describable meaning, and why:
 **So: yes, "almost none."** The card anticipated this outcome and named its consequence
 correctly — AW-3's rule table starts nearly empty, and the rail is mostly §4.3.3
 mechanical rows and §4.3.4 grant rows. That is a materially different surface from the
-prototype, which shows twenty-two hand-written `allow`/`hold`/`deny` rows across five
-agents and exactly one unmapped row.
+prototype, which shows nineteen hand-written `allow`/`hold`/`deny` rows across five
+agents (`workspace-seed.ts:497-523`) and exactly one unmapped row.
 
-**A further finding the design did not anticipate: not one enforced condition keys on a
-predicate over tool input.** Every describable condition in the table matches on the tool
-*name* alone. §4.3.1's `match: { tool: string; when?: PredicateSpec }` therefore has
-**zero day-one users**. AW-3 should ship `match: { tool: string }` and add `when` when the
-first rule needs it — per the plan's own YAGNI rule. The prototype's fixture sources
+**A further finding the design did not anticipate: not one enforcement point *on the
+tool-call path* keys on a predicate over tool input.** Every such condition matches on the
+tool *name* alone. (The points that key on richer input — E8 on a hostname, E12/E13 on
+grant tuples, E17 on bundle text, E18 on a file path and its bytes — are the ones that sit
+*off* the tool-call path, which is why none of them can back a `PolicyRule` either way.)
+§4.3.1's `match: { tool: string; when?: PredicateSpec }` therefore has **zero day-one
+users**. AW-3 should ship `match: { tool: string }` and add `when` when the first rule
+needs it — per the plan's own YAGNI rule. The prototype's fixture sources
 (`gmail.send · intent=scheduling`, `calendar.move_event · attendees>1`) are precisely the
 predicate-shaped rules that do not exist.
 
@@ -158,8 +168,21 @@ predicate-shaped rules that do not exist.
 real catalog is eleven tools: `memory_search`, `memory_read_section`, `memory_note`,
 `search_catalog`, `request_capability`, `web_search`, `web_extract`, `artifact_publish`,
 `skill_propose`, `connector_propose`, and namespaced `mcp.<serverId>.<tool>` — plus the
-SDK builtins `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Skill`. AW-14 must re-skin
-the prototype against *that* list, not reproduce the fixture.
+runner's own builtins. Those differ by runner, and the difference matters for the rail:
+
+- **aisdk** registers a closed set of seven — `Bash`, `Read`, `Write`, `Edit`, `Glob`,
+  `Grep`, `Skill` (`agent-aisdk-runner/src/tools/builtins.ts:160,189,219,243,278,303` +
+  `skill-tool.ts`).
+- **claude-sdk** passes `allowedTools: ['Skill', ...agentConfig.allowedTools]` with
+  `agentConfig.allowedTools` **empty by orchestrator default**, which the SDK reads as
+  *no per-agent restriction* (`main.ts:474-480`). Its live catalog is therefore the SDK's
+  own default set minus `disallowedTools` — so it also includes `NotebookEdit`, `LS`,
+  `MultiEdit`, `TodoWrite` and others (named at `governed-paths.ts:26`,
+  `git-workspace.ts:367`).
+
+AW-14 must re-skin the prototype against *that* list, not reproduce the fixture — and must
+not present the aisdk seven as if they were the whole catalog, which would understate reach
+on the runner most sessions actually use (H4).
 
 ---
 
@@ -189,8 +212,13 @@ one:
   discovered from the server at runtime.
 - `CapabilitySlot.description` (`capabilities.ts:12-22`) is per **credential slot**
   ("what this API key is for"), not per operation.
-- The zod mirrors are `.strict()` (`connectors/src/types.ts:100`, `:151`), so a clause
-  cannot even be smuggled through today.
+- Neither `Capabilities` zod mirror is `.strict()` — `packages/connectors/src/types.ts:169-177`
+  and `packages/skills-parser/src/capabilities.ts:115-121` are both plain `z.object`. So an
+  added `capability` key is **silently stripped on read**, not rejected. That is worse than a
+  gate, not better: a clause an operator wrote would vanish with no error. (`.strict()` *is*
+  used elsewhere in that file — `OAuthSlotSchema:111`, `ServiceDescriptorSchema:167` — and
+  `:89-90` notes the api-key variant deliberately opts out. The capability path is simply not
+  one of them.)
 
 **Recommendation for AW-14:** render connectors as §4.3.4 grant rows derived from the
 connector record (`name` + `allowedHosts`), sourced by connector id. Adding a
@@ -297,6 +325,16 @@ sent as `call.name` at `:64`).
 These four are the only rules in this table that describe a condition enforced in the repo
 today (E7). Today all four share the string `'tool disabled by policy'`; each has a
 distinct, documented cause (`tool-names.ts:18-46`).
+
+> **These four rules will never fire in the evaluator, and that is expected.** They are
+> **rail rows, not enforcement.** `classifySdkToolName` returns `{ kind: 'disabled' }` with
+> **no `axName`** (`tool-names.ts:66-72`), and `pre-tool-use.ts:35-44` returns `deny` before
+> `policy.preToolUse` is ever called — so a disabled builtin never reaches `tool:pre-call`
+> to be matched. On the aisdk runner the four are not registered at all. AW-3 must not
+> "verify" them with an evaluator test that asserts a `deny` verdict from a live call; test
+> them as table rows whose rendering is correct, and keep `DISABLED_BUILTINS` as the
+> enforcement. If AW-3 wants one source of truth, the right move is to *derive* these four
+> rows from `DISABLED_BUILTINS` rather than hand-copy the names into `rules.ts`.
 
 ```ts
 {
@@ -428,8 +466,15 @@ Not fixed here; each wants its own card.
 4. **`skills:approved-caps-list` has no production caller** (E14) — grants are recorded
    and never read. Either the rail becomes its reader (AW-14) or the store is dead code.
 5. **A self-authored, clean-scanning skill installs with no card and no human**
-   (`propose-gate.ts:31-33`). Deliberate post-TASK-100, but it means "install a skill it
+   (`propose-gate.ts:35`). Deliberate post-TASK-100, but it means "install a skill it
    wrote for itself" is currently unattended.
 6. **Connector manifests need a per-operation capability field** if §4.3.3 is ever to work
    as written — schema change across `skills-parser` + `connectors`, an operator editor,
-   and a reader that does not yet exist.
+   and a reader that does not yet exist. Note neither `Capabilities` mirror is `.strict()`,
+   so a field added to one and not the other would be silently dropped, not caught.
+7. **A stale comment claims a single pre-apply rejecter.**
+   `packages/ipc-core/src/handlers/workspace-commit-notify.ts:289-290` says "Today the ONLY
+   pre-apply rejecter is @ax/validator-skill's SDK-config veto". `validator-identity` and
+   `validator-routine` also reject. The adjacent `recoverable: false as const` (`:294`) is
+   what makes every veto a hard reset, so the comment matters more than a comment usually
+   does.
