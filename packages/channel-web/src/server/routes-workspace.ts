@@ -790,6 +790,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     return names;
   }
 
+  /**
    * The owner-routed context for one agent's memory.
    *
    * `memory:rules:write` reaches `workspace:apply`, which routes by
