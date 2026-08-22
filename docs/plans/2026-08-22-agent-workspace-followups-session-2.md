@@ -101,7 +101,31 @@ All 13 are in **Backlog**, deps `none` unless noted, **none dispatched**.
 | TASK-278 | MED | The post-approval **continuation turn never renders live** — the client polls the decision row but opens no `/api/chat/stream/<reqId>`, so it runs with no SSE consumer while the copy promises "we can carry straight on". |
 | TASK-280 | design | **Undo is refused once `replayedAt` is set**, so only `approved-pending-agent` rows are ever undoable and a reversible *host* tool's undo window is unreachable. Interacts with TASK-259. Needs a human ruling: is that intended? |
 
-**TASK-236** is re-gated on `TASK-277 TASK-278`; **TASK-237** on `TASK-279`.
+**TASK-236** is re-gated on `TASK-277`; **TASK-237** on `TASK-279`.
+
+### Only TWO of these thirteen block anything
+
+Checked against the walk cards' actual acceptance criteria, not assumed:
+
+| Card | Blocks? | Why |
+|---|---|---|
+| **TASK-277** | **Yes** — gates TASK-236 | Fails *"approving re-issues the call and it executes exactly once"* — in the idle-expired case it does not execute at all |
+| **TASK-279** | **Yes** — gates TASK-237 | Fails *"an undone execution removes its Activity receipt"* — no receipt is ever created |
+| TASK-278 | **No** | Not among TASK-236's acceptance criteria. It was briefly gated there in error; corrected. A real bug on the same surface, not a walk gate. |
+| The other 10 | No | Ordinary backlog. No wave depends on them. |
+
+**Shortest path to an acceptance-complete epic: TASK-277 → re-walk TASK-236 →
+TASK-279 → re-walk TASK-237.** Two code cards and two walks.
+
+Three worth knowing even though they block nothing:
+
+- **TASK-268** has the most leverage of the thirteen — it makes every future review pass
+  reliable, and pays for itself over the remaining five waves. Cheap.
+- **TASK-273** blocks nothing *today* because the workspace surface is flag-gated, but
+  flipping that flag ON (Wave 6) with no ErrorBoundary anywhere means any render-phase
+  throw blanks the chat for every user. Treat it as a Wave 6 gate — a judgement call, not
+  a discovered dependency.
+- **TASK-275** and **TASK-280** are questions for a human, not work.
 
 ### From the code cards
 
@@ -123,9 +147,11 @@ All 13 are in **Backlog**, deps `none` unless noted, **none dispatched**.
 
 Wave 1 is **done**. Suggested order now:
 
-**Wave 1.5 (new, do first)** — TASK-277, TASK-279, TASK-278 → then re-run walks
-TASK-236 and TASK-237. TASK-277 is a silent failure on the control that authorises real
-actions; TASK-237 already proved its fix has a sound target.
+**Wave 1.5 (new, do first)** — **TASK-277 → re-walk TASK-236 → TASK-279 → re-walk
+TASK-237.** Those are the only two cards blocking the epic's acceptance (see §3).
+TASK-277 is a silent failure on the control that authorises real actions, and TASK-237
+already proved its fix has a sound target. **TASK-278 is not a blocker** — schedule it
+with Wave 3, whose defect family it belongs to.
 
 **Wave 2 — correctness on the approvals path:** TASK-253, TASK-254, TASK-265, TASK-267,
 TASK-264.
