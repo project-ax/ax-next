@@ -166,6 +166,38 @@ describe('useDecisionQueue — the undo window is closed by the server, not the 
     expect(result.current.error).toBeNull();
   });
 
+  it('leaves a trace once a run of re-reads has failed, and not before', async () => {
+    /*
+      The poll is silent to a PERSON on purpose. But a route that is genuinely
+      broken produces exactly the symptom this card exists to fix — Undo
+      lingering the full ten seconds — with nothing anywhere saying why. So a
+      run of failures on one row is noted for whoever is looking, once.
+    */
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {});
+    try {
+      const resolved = resolvedFixture('executed');
+      await mountWith([resolved]);
+      readDecision.mockRejectedValue(new Error('offline'));
+
+      // One blip is not a story.
+      await tick(POLL_MS);
+      expect(debug).not.toHaveBeenCalled();
+      await tick(POLL_MS);
+      expect(debug).not.toHaveBeenCalled();
+
+      // Three in a row is.
+      await tick(POLL_MS);
+      expect(debug).toHaveBeenCalledTimes(1);
+      expect(String(debug.mock.calls[0]![0])).toContain(resolved.id);
+
+      // And it says it once, not once a second.
+      await tick(POLL_MS * 3);
+      expect(debug).toHaveBeenCalledTimes(1);
+    } finally {
+      debug.mockRestore();
+    }
+  });
+
   it('refuses to let an in-flight poll un-do an undo', async () => {
     const resolved = resolvedFixture('executed');
     const { result } = await mountWith([resolved]);

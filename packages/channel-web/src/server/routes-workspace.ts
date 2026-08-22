@@ -3079,6 +3079,31 @@ export async function registerWorkspaceRoutes(
       path: '/api/features',
       handler: handlers.features as unknown as RouteHandler,
     },
+    {
+      /*
+        DELIBERATELY NOT BEHIND `agentWorkspacePreview`, and the only decision
+        route that isn't (yet).
+
+        This is the re-read that closes the undo window early — the one way
+        `undoable: false` ever reaches a browser (TASK-259). The approval card,
+        undo window and all, is being put on the DEFAULT `/` chat surface
+        unflagged by TASK-261, which ungates the four sibling routes. If this
+        one were left inside the flag it would be the fifth route nobody
+        remembered, and the symptom would be invisible: the poll 404s forever,
+        every Undo lingers the full ten seconds on a call that has already gone
+        out, and a failed poll says nothing by design. That is precisely the
+        bug this card exists to fix, reintroduced by a merge order.
+
+        So it leads rather than follows. Mounting it early costs nothing: it is
+        authenticated, owner-scoped through `loadOwnedDecision`, read-only, and
+        answers 404 for any id that is not the caller's — the same posture it
+        has with the flag on. `plugin.test.ts` pins that it stays reachable
+        with the preview off.
+      */
+      method: 'GET',
+      path: '/api/workspace/decisions/:decisionId',
+      handler: handlers.decision as unknown as RouteHandler,
+    },
   ];
   if (opts.agentWorkspacePreview) {
     routes.push(
@@ -3137,11 +3162,6 @@ export async function registerWorkspaceRoutes(
         method: 'GET',
         path: '/api/workspace/decisions',
         handler: handlers.decisions as unknown as RouteHandler,
-      },
-      {
-        method: 'GET',
-        path: '/api/workspace/decisions/:decisionId',
-        handler: handlers.decision as unknown as RouteHandler,
       },
       {
         method: 'POST',

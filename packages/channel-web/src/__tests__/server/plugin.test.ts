@@ -1010,9 +1010,50 @@ describe('@ax/channel-web server plugin (integration)', () => {
       );
       expect(oneFile.status).toBe(404);
 
+      /*
+        "Unmounted" now has exactly ONE exception, pinned by the test below:
+        `GET /api/workspace/decisions/:decisionId`. Read that one before adding
+        a second — the bar is a safety affordance that fails silently, not a
+        feature that would be handy to have early.
+      */
+
       const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
       expect(features.status).toBe(200);
       expect(await features.json()).toEqual({ agentWorkspacePreview: false });
+    });
+
+    it('KEEPS the single-decision re-read mounted when the preview is off', async () => {
+      /*
+        The one deliberate exception to the test above, and it is a safety
+        affordance rather than a feature.
+
+        `GET /api/workspace/decisions/:decisionId` is how `undoable: false`
+        reaches a browser: the queue polls it while a row is inside its undo
+        window, so the Undo control disappears when the agent actually consumes
+        the authorisation instead of when the ten seconds run out (TASK-259).
+        The approval card is going onto the default `/` surface unflagged, so a
+        route left behind the preview flag would 404 that poll forever — and a
+        failed poll is silent by design, so nothing would say so. Undo would sit
+        there for ten seconds on a call that had already gone out.
+
+        401, not 404, is the assertion: `user: null` means the handler ran and
+        `authOr401` refused it. A 404 would mean the route was never registered
+        — which is the regression this pins.
+      */
+      const booted = await boot({ user: null });
+      harness = booted.harness;
+
+      const oneDecision = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/decisions/d1`,
+      );
+      expect(oneDecision.status).toBe(401);
+
+      // And the collection it re-reads a row OUT of is still gated, so this
+      // exception really is one route wide.
+      const queue = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/decisions`,
+      );
+      expect(queue.status).toBe(404);
     });
   });
 

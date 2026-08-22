@@ -54,6 +54,15 @@ import {
  */
 const UNDO_POLL_MS = 1000;
 
+/**
+ * How many failures in a row on ONE row before the re-read leaves a trace.
+ *
+ * Three, so a single blip stays quiet — the poll is deliberately silent to a
+ * person and this does not change that — but a genuinely broken route says so
+ * to a developer instead of looking exactly like the bug it was added to fix.
+ */
+const POLL_FAILURES_BEFORE_NOTE = 3;
+
 export interface DecisionQueue {
   decisions: Decision[];
   loading: boolean;
@@ -252,6 +261,13 @@ export function useDecisionQueue(): DecisionQueue {
   busyIdsRef.current = busyIds;
 
   /**
+   * Consecutive re-read failures per row. A ref and not state: nothing on
+   * screen is allowed to change because a poll failed, so re-rendering over it
+   * would be the opposite of the point.
+   */
+  const pollFailures = useRef(new Map<string, number>());
+
+  /**
    * The set of rows currently inside their own undo window, as a STABLE
    * string key — sorted ids, joined. Using the ids (not the `Decision`
    * objects, which are replaced wholesale on every apply) means the effect
@@ -279,12 +295,34 @@ export function useDecisionQueue(): DecisionQueue {
         if (busyIdsRef.current.has(d.id)) continue;
         void workspaceApi
           .decision(d.id)
-          .then((out) => applyPolledRow(out.decision))
+          .then((out) => {
+            pollFailures.current.delete(d.id);
+            applyPolledRow(out.decision);
+          })
           // A FAILED poll changes nothing and sets no notice. The row keeps
           // saying what the server last told us: a transient network blip
           // must never blank or alter a receipt, and nobody clicked anything
-          // here, so nobody is owed an answer for it.
-          .catch(() => {});
+          // here, so nobody is owed an answer for it. Undo also stays honest
+          // whatever happens here — the server refuses a late one and the row
+          // says so — so a blip costs punctuality, never correctness.
+          //
+          // But SILENT and INVISIBLE are different things. If this route were
+          // actually broken, every symptom above is by design: no notice, no
+          // changed row, just Undo lingering the full ten seconds again. So a
+          // run of failures on one row leaves a trace for whoever is looking.
+          // Dev-only and once per run, because this is a developer's signal,
+          // not a user's: a person watching a countdown is owed nothing, and a
+          // console line per second would bury the one that matters.
+          .catch(() => {
+            const runs = (pollFailures.current.get(d.id) ?? 0) + 1;
+            pollFailures.current.set(d.id, runs);
+            if (runs === POLL_FAILURES_BEFORE_NOTE && import.meta.env.DEV) {
+              console.debug(
+                `[decisions] the undo re-read has failed ${runs}x for ${d.id}; ` +
+                  'the Undo control may be showing a window the server has already closed',
+              );
+            }
+          });
       }
     }, UNDO_POLL_MS);
     return () => clearInterval(id);
