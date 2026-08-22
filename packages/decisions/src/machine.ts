@@ -5,7 +5,10 @@
  * #425), which was real logic behind a prototype rather than layout. Two edits
  * and only two, both named in the plan: `ActivityEvent` loses `day`/`time` and
  * gains an ISO `at`, and `ApproveResult.path` stays but nothing reads it until
- * AW-5. The logic is unchanged and its tests came across with it.
+ * AW-5. The logic is unchanged and its tests came across with it. (`path` is
+ * still read by nothing outside this file's tests: AW-5's server decides the
+ * path itself, and since TASK-277 it decides it from a LIVE session read that
+ * a pure function has no way to make. See rule 4.)
  *
  * Pure and time-injected: every entry point takes `now` explicitly so the same
  * functions drive the service hooks, the client's optimistic transition, and
@@ -28,10 +31,18 @@
  *      "You took over from Inbox — sent your reply to Priya" for a reply that
  *      was never sent.)
  *
- *   4. ATTENDANCE PICKS THE PATH. An attended decision resolves while the agent
- *      is still warm, so the agent executes the call itself. An unattended one
- *      resolves after the turn ended, so the host replays the recorded call —
- *      verbatim, which is what lets the approval card promise WYSIWYG.
+ *   4. ATTENDANCE PICKS THE PATH — AS A GUESS. An attended decision was raised
+ *      on a channel where an agent may still be warm, in which case the agent
+ *      executes the call itself. An unattended one was raised after the turn
+ *      ended, so the host replays the recorded call — verbatim, which is what
+ *      lets the approval card promise WYSIWYG.
+ *
+ *      The `path` this file returns is OPTIMISTIC and nothing consumes it as a
+ *      verdict. `decisions:approve` re-decides with a live session read at
+ *      approve time (TASK-277), because a stored `attended` outlives the agent
+ *      it refers to and routing on it alone stranded approvals that nobody
+ *      would ever run. This function is pure — it can only compare what it is
+ *      handed — so the guess stays here and the server owns the answer.
  */
 import {
   AUTHORISING_STATUSES,
@@ -151,7 +162,11 @@ export function approveDecision(d: Decision, world: ApproveWorld): ApproveResult
     }
   }
 
-  // Rule 4 — attended means the agent is still alive to run its own call.
+  // Rule 4 — attended means an agent MIGHT still be alive to run its own call.
+  // An optimistic guess from the stored channel, and deliberately not the last
+  // word: `decisions:approve` re-decides against a live session read and may
+  // send this to the host instead (TASK-277). Nothing outside this file's own
+  // tests reads the value.
   const path: ExecutionPath =
     d.attendance === 'attended' ? 'agent-executes' : 'host-replays';
 

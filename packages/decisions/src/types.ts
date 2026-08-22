@@ -2,9 +2,13 @@
  * @ax/decisions — the Decision row.
  *
  * One row, three renderers (the in-thread card, the Today queue, and later
- * Slack's interactive message). There is no separate "live approval" concept;
- * that is what makes an abandoned attended approval degrade into the queue for
- * free (design §3.3).
+ * Slack's interactive message). There is no separate "live approval" concept —
+ * an approval abandoned by its agent is the same row as any other, which is
+ * what lets `decisions:approve` re-route it to the host replay on the spot.
+ *
+ * It does NOT, however, degrade into the queue for free, and this file used to
+ * claim it did. The row cannot tell you the agent left; only a live read can.
+ * So approve-time asks (TASK-277) — see `Attendance` below.
  *
  * These shapes mirror `packages/channel-web/mock/workspace-types.ts`, which was
  * drawn against what the host would persist. A divergence between the two is a
@@ -25,14 +29,23 @@ import { z } from 'zod';
 export type { ToolCall };
 
 /**
- * Where the conversation that produced this decision is being watched, which
- * decides the execution path on approval (design §3.3).
+ * Which CHANNEL opened the conversation that produced this decision. Captured
+ * at hold time and never revisited.
  *
- *   - `attended`   — a live channel with a human expected to answer inside the
- *                    keepalive budget. The agent is still warm and re-issues
- *                    its own call.
- *   - `unattended` — routine tick or webhook. The turn ended; the host replays
- *                    the recorded call (AW-5).
+ *   - `attended`   — a live channel (today: web) with a human expected to
+ *                    answer inside the keepalive budget, so an agent MAY still
+ *                    be warm when they do.
+ *   - `unattended` — routine tick or webhook. Nothing was ever waiting on the
+ *                    answer; the host replays the recorded call (AW-5).
+ *
+ * IT DOES NOT PICK THE EXECUTION PATH ON ITS OWN, and reading it as though it
+ * did is the bug TASK-277 fixed. `attended` says an agent COULD be there and
+ * goes on saying it for the life of the row — a web conversation is still
+ * `attended` hours after its runner was reaped. Whether one IS there is a
+ * question only the present can answer, so `decisions:approve` re-reads the
+ * conversation's live session at approve time and routes on both together. A
+ * decision held on a web thread the person came back to a day later is
+ * `attended` and runs host-side.
  *
  * Deliberately NOT `web`/`routine`: a Slack channel plugin would add a
  * *channel*, not a new attendance value.
@@ -41,7 +54,10 @@ export type Attendance = 'attended' | 'unattended';
 
 export type DecisionKind = 'action' | 'grant';
 
-/** Which side runs the call once a human says yes — a consequence of `Attendance`. */
+/**
+ * Which side runs the call once a human says yes. Decided at approve time from
+ * `Attendance` AND a live session read, never from the stored field alone.
+ */
 export type ExecutionPath = 'agent-executes' | 'host-replays';
 
 /**

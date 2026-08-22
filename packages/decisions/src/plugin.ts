@@ -178,9 +178,12 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         {
           hook: SESSION_QUEUE_HOOK,
           degradation:
-            'A resolved attended decision is not delivered to the warm agent. The ' +
-            'standing authorisation still stands on the row, so the agent performs ' +
-            'the call the next time it runs.',
+            'A resolved attended decision is not delivered to the warm agent, so it ' +
+            'is never told a person answered. An approval then falls back to the ' +
+            'host replay and the call is made host-side; only a call the host ' +
+            'cannot replay at all is left standing on the row for the agent to ' +
+            'perform on its next run. A dismissal loses its narration and nothing ' +
+            'else — there is no authorisation behind it.',
         },
       ],
       subscribes: ['tool:pre-call'],
@@ -639,6 +642,17 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           //
           // `settled.attendance`, not `current`: same row, but read the value
           // we are actually reporting.
+          //
+          // AND DELIBERATELY NOT THE APPROVE PATH'S TREATMENT (TASK-277). This
+          // routes on the STORED attendance with no live session read, and it
+          // discards `deliverResolution`'s return — the two things approve just
+          // stopped doing. It is benign here for one reason, and it is the whole
+          // reason: a dismissal creates no standing authorisation and schedules
+          // no replay, so a delivery that never lands costs the agent its
+          // narration and nothing else. There is no call waiting to be made, so
+          // there is nothing for a fallback to run and nothing to be silently
+          // consumed. Adding a liveness read would buy an extra round-trip to
+          // reach the same `deliverResolution` no-op it already reaches.
           if (saved !== null && settled.attendance === 'attended') {
             await deliverResolution({ bus, ctx, decision: settled, outcome: 'dismissed' });
           }

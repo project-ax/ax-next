@@ -145,8 +145,14 @@ describe('approveDecision — the freshness guard', () => {
   });
 });
 
-describe('approveDecision — attendance decides the execution path', () => {
-  it('an attended decision is executed by the still-warm agent', () => {
+/**
+ * What the PURE machine guesses from the stored channel — not what actually
+ * happens. `decisions:approve` re-decides against a live session read and may
+ * route an `attended` decision to the host anyway (TASK-277); the canary owns
+ * that, and these cases stay honest about their scope.
+ */
+describe('approveDecision — attendance guesses the execution path', () => {
+  it('an attended decision is guessed to run on the still-warm agent', () => {
     const r = approveDecision(decision({ attendance: 'attended' }), {
       now: T_SOON,
       freshness: { 'thread-head': 'msg-8841' },

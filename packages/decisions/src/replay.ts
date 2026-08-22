@@ -189,8 +189,18 @@ export async function settleReplay(args: {
   }
 
   if (outcome.status === 'approved-pending-agent') {
-    // Only reachable here when the executor went away between the approval and
-    // the deferred replay; the approve path picks this status before it claims.
+    // Two ways to land here, and neither is the ordinary one — the approve path
+    // normally picks this status BEFORE it claims, so the row is already parked
+    // by the time anything runs:
+    //
+    //   * a deferred replay whose executor went away between the approval and
+    //     the moment the undo window closed;
+    //   * an ATTENDED approval for a sandbox-only tool whose delivery failed,
+    //     so `decisions:approve` fell back to the replay (TASK-277). Here the
+    //     executor never existed at all rather than going away — the attended
+    //     branch had no reason to check for one, because it was not expecting
+    //     to make the call itself.
+    //
     // Either way the approval stands and the agent will perform it.
     warnIfLost(ctx, decision, 'parkForAgent', await store.parkForAgent(decision.id));
     await emitExecuted(bus, ctx, decision, 'pending-agent', PENDING_AGENT_RECEIPT);
