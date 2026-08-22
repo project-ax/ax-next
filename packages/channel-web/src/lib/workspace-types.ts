@@ -214,6 +214,11 @@ export type ThreadMessage =
    * moment compaction records a count this is where it lands — but until then
    * the honest number of folded turns is "unknown", not zero, which is why the
    * prototype's `0 messages folded` marker was deleted rather than defaulted.
+   *
+   * The same "kept for a real future producer" reasoning covers `approval`
+   * (AW-11) and `status` (AW-8): the route emits only `user` and `agent`
+   * today. A renderer with no producer shows nothing; a renderer with a
+   * PLACEHOLDER producer shows a lie, and that is the line this card draws.
    */
   | { kind: 'fold'; id: string; text: string };
 

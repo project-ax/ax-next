@@ -686,6 +686,44 @@ describe('channel-web agent-workspace BFF', () => {
     expect(captured.body).toMatchObject({ agentId: 'a1', confident: false });
   });
 
+  it('does not claim recency when the conversation read failed', async () => {
+    // The swallow-then-claim shape: the list read degrades to empty (one
+    // agent's hiccup must not 404 the whole picker), the pick collapses to
+    // alphabetical, and saying "you used it most recently" would be a claim
+    // built on a failure nobody was told about.
+    bus = new HookBus();
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agents:list-for-user', 'agents', async () => ({
+      agents: [
+        { id: 'a1', displayName: 'Inbox', visibility: 'personal' },
+        { id: 'a2', displayName: 'Research', visibility: 'personal' },
+      ],
+    }));
+    bus.registerService('conversations:list', 'conversations', async () => {
+      throw new Error('connection terminated unexpectedly');
+    });
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.route(mkReq({}, {}), res);
+
+    expect(captured.statusCode).toBe(200);
+    const body = captured.body as { why: string; confident: boolean };
+    expect(body.why).not.toMatch(/most recently/);
+    expect(body.why).toMatch(/couldn't tell/);
+    expect(body.confident).toBe(false);
+  });
+
+  it('does not claim recency when nobody has a conversation yet', async () => {
+    // Same sentence, different cause: every agent is genuinely brand new, so
+    // the pick is alphabetical and there is no "most recently" to report.
+    registerAuth({ id: 'u1', isAdmin: false });
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.route(mkReq({}, {}), res);
+    expect((captured.body as { why: string }).why).not.toMatch(/most recently/);
+  });
+
   it('404s when the caller has no agents at all', async () => {
     bus = new HookBus();
     registerAuth({ id: 'u1', isAdmin: false });

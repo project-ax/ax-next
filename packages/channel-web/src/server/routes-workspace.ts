@@ -356,9 +356,12 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   async function listConversations(
     userId: string,
     agentId: string,
-    opts: { strict?: boolean } = {},
+    opts: { strict?: boolean; onUnreadable?: () => void } = {},
   ): Promise<ConversationRow[]> {
-    if (!bus.hasService('conversations:list')) return [];
+    if (!bus.hasService('conversations:list')) {
+      opts.onUnreadable?.();
+      return [];
+    }
     try {
       const rows = await bus.call<ConversationsListInput, ConversationsListOutput>(
         'conversations:list',
@@ -368,6 +371,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       return [...rows].sort(byRecencyDesc);
     } catch (err) {
       if (opts.strict === true && !isBenignConversationRead(err)) throw err;
+      // A non-strict caller degrades to "no conversations" — but it is TOLD,
+      // so it can tell an empty list from an unreadable one before it builds a
+      // sentence on top of the difference.
+      opts.onUnreadable?.();
       initCtx.logger.warn('workspace_conversations_list_failed', {
         agentId,
         error: err instanceof Error ? err.message : String(err),
@@ -613,28 +620,45 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
 
-      // Most recently active wins. An agent with no conversations sorts last
-      // (stamp 0), and ties break on displayName so the same input always
-      // produces the same answer.
+      /*
+        Most recently active wins. An agent with no conversations sorts last
+        (stamp 0), and ties break on displayName so the same input always
+        produces the same answer.
+
+        `ranked` is what makes the REASON honest. The list read here is
+        non-strict — one agent's hiccup must not 404 the whole picker — but a
+        swallowed read makes that agent look brand new, and if every read fails
+        the pick collapses to alphabetical order. Saying "you used it most
+        recently" then would be a claim built on a failure nobody was told
+        about. So the sentence follows what we actually managed to read.
+      */
       const scored = await Promise.all(
         agents.map(async (a) => {
-          const convs = await listConversations(userId, a.id);
+          let readable = true;
+          const convs = await listConversations(userId, a.id, {
+            onUnreadable: () => {
+              readable = false;
+            },
+          });
           const latest = convs.reduce(
             (max, c) => Math.max(max, activityStamp(c)),
             0,
           );
-          return { agent: a, latest };
+          return { agent: a, latest, readable };
         }),
       );
       scored.sort(
         (x, y) =>
           y.latest - x.latest || x.agent.displayName.localeCompare(y.agent.displayName),
       );
-      const pick = scored[0]!.agent;
+      const top = scored[0]!;
+      const ranked = top.readable && top.latest > 0;
       res.status(200).json({
-        agentId: pick.id,
-        agentName: pick.displayName,
-        why: 'it is the agent you used most recently',
+        agentId: top.agent.id,
+        agentName: top.agent.displayName,
+        why: ranked
+          ? 'it is the agent you used most recently'
+          : "we couldn't tell which you used last, so this is just the first one",
         confident: false,
       } satisfies RouteResult);
     },

@@ -186,9 +186,22 @@ function Inner() {
 
           {route.kind === 'activity' && (
             <>
+              {/*
+                No "0 entries" subtitle. Nothing produces the activity feed
+                yet, so a count here would be a measurement of a thing we are
+                not measuring — the same reason Today drops its counts line and
+                the rail has no "This week" panel. The feed's own empty state
+                says what is actually true.
+              */}
               <WorkspaceHeader
                 title="Activity"
-                subtitle={`${board.activity.length} entries`}
+                {...(board.activity.length > 0
+                  ? {
+                      subtitle: `${board.activity.length} ${
+                        board.activity.length === 1 ? 'entry' : 'entries'
+                      }`,
+                    }
+                  : {})}
               />
               <div className="flex-1 overflow-y-auto">
                 <div className="mx-auto w-full max-w-[900px] px-6 pb-6">
