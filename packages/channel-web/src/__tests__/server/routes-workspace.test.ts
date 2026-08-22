@@ -11,6 +11,8 @@ import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/c
 import {
   ACTIVITY_AGENT_ID_QUERY_KEY,
   ACTIVITY_BEFORE_QUERY_KEY,
+  ACTIVITY_DETAIL_MAX_CHARS,
+  ACTIVITY_LABEL_MAX_CHARS,
   ACTIVITY_LIMIT_QUERY_KEY,
   ACTIVITY_MAX_LIMIT,
   CONVERSATION_ID_QUERY_KEY,
@@ -1250,5 +1252,97 @@ describe('channel-web agent-workspace BFF', () => {
     // which is itself a claim about WHEN something happened. There is no
     // honest rendering of it, so there is no row.
     expect(fireToActivityEvent(broken, new Map())).toBeNull();
+  });
+
+  // --- the fence on agent-authored text ------------------------------------
+  //
+  // A routine's `name` is authored in a file in the agent's own workspace and
+  // validated for non-emptiness and nothing else, and a fire's `error` is
+  // whatever the failure happened to say. Both land on a feed row that speaks
+  // in OUR voice. React escapes markup, so this was never XSS — the failure is
+  // a label that reorders or hides what the reader sees, and an unbounded
+  // string on the wire. The fence lives here, at the trust boundary, not in
+  // the renderer.
+
+  /** Everything the fence exists to keep off a row. */
+  const REWRITES_THE_SURFACE =
+    /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/;
+
+  const at = '2026-08-20T12:00:00.000Z';
+  const rowFor = (name: string) =>
+    fireToActivityEvent(fire({ id: 1, firedAt: at }), new Map([['daily.md', name]]))!;
+
+  it.each([
+    ['a right-to-left override', '\u202EMorning digest'],
+    ['an unterminated isolate', '\u2066Morning digest'],
+    ['a zero-width space', 'Morning\u200Bdigest'],
+    ['a zero-width joiner', 'Morning\u200Ddigest'],
+    ['a byte-order mark', '\uFEFFMorning digest'],
+    ['a C0 control character', 'Morning\u0007digest'],
+  ])(
+    'neutralises %s in an authored routine name — a label must not rewrite what a reader sees',
+    (_what, name) => {
+      const { text } = rowFor(name);
+      expect(text).not.toMatch(REWRITES_THE_SURFACE);
+      expect(text).toBe('Morning digest');
+    },
+  );
+
+  it('caps an over-long name on CODE POINTS, never splitting a surrogate pair', () => {
+    // 58 plain characters then astral ones, so a UTF-16 slice at 59 would cut
+    // a pair in half and put a lone high surrogate on the wire.
+    const { text } = rowFor(`${'M'.repeat(58)}\u{1F600}\u{1F600}\u{1F600}`);
+    expect([...text]).toHaveLength(ACTIVITY_LABEL_MAX_CHARS);
+    expect(text.endsWith('…')).toBe(true);
+    // Iterating a string yields whole code points, so a surviving LONE
+    // surrogate shows up as a single unit in the surrogate range. `String`'s
+    // own `isWellFormed` says this in one call but needs an ES2024 lib.
+    const lone = [...text].filter((c) => {
+      const cp = c.codePointAt(0)!;
+      return cp >= 0xd800 && cp <= 0xdfff;
+    });
+    expect(lone).toEqual([]);
+  });
+
+  it('marks the truncation rather than silently shortening the name', () => {
+    const { text } = rowFor('M'.repeat(500));
+    expect(text).toHaveLength(ACTIVITY_LABEL_MAX_CHARS);
+    expect(text.endsWith('…')).toBe(true);
+  });
+
+  it('leaves a name that already fits completely alone', () => {
+    const exact = 'M'.repeat(ACTIVITY_LABEL_MAX_CHARS);
+    expect(rowFor(exact).text).toBe(exact);
+  });
+
+  it('fences the recorded error on a stopped row too, and bounds it', () => {
+    const ev = fireToActivityEvent(
+      fire({
+        id: 1,
+        firedAt: at,
+        status: 'error',
+        error: `\u202Ednuof ton\u0000 ${'e'.repeat(500)}`,
+      }),
+      new Map(),
+    )!;
+    expect(ev.detail).not.toMatch(REWRITES_THE_SURFACE);
+    expect([...ev.detail!]).toHaveLength(ACTIVITY_DETAIL_MAX_CHARS);
+  });
+
+  it('lands an error made only of invisible characters on the "no reason" sentence', () => {
+    // Whitespace already fell through to that sentence. A string of nothing
+    // but control and bidi characters is the SAME absence wearing a costume —
+    // fencing it must not produce an empty second line under "it stopped".
+    const ev = fireToActivityEvent(
+      fire({ id: 1, firedAt: at, status: 'error', error: '\u200B\u202E\u0007\u2066' }),
+      new Map(),
+    )!;
+    expect(ev.detail).toBe('It failed, and no reason was recorded.');
+  });
+
+  it('falls through to the path when a name fences down to nothing', () => {
+    // Same fall-through an absent name gets: the path is the truest thing still
+    // known about the row, and the row is never dropped.
+    expect(rowFor('\u200B\u202E').text).toBe('daily.md');
   });
 });

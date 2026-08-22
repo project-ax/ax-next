@@ -361,6 +361,63 @@ function sortableStamp(firedAt: Date | string): number {
 }
 
 /**
+ * How much of an authored line this feed will carry.
+ *
+ * The subject line is a LABEL — one truncating row in the DOM — so it gets the
+ * same 60 the rest of the workspace gives a label. The second line is a
+ * recorded error, which is a sentence and legitimately longer, so it gets more
+ * room; it is still bounded, because "however long the agent felt like" is not
+ * a size.
+ */
+export const ACTIVITY_LABEL_MAX_CHARS = 60;
+export const ACTIVITY_DETAIL_MAX_CHARS = 200;
+
+/**
+ * Characters that rewrite the surface rather than appear on it: C0/C1 controls,
+ * the zero-width family, and the bidi marks, embeddings, overrides and isolates.
+ *
+ * The bidi half is the Trojan-source problem (CVE-2021-42574) pointed at a feed
+ * row. A lone U+202E reverses the visual order of everything after it, so a
+ * routine name authored with one in front of `"gnp.dorp-eteled"` renders as a
+ * completely different filename; an unterminated isolate leaks that reordering
+ * into whatever the renderer draws next, which here is the row's own timestamp
+ * and the row below it. React escapes markup, so this was never XSS — it is the
+ * quieter failure where the feed says, in our voice, something other than what
+ * is on the wire.
+ *
+ * They become spaces rather than vanishing, so a name that leaned on one to
+ * separate two words still reads as two words.
+ */
+const REWRITES_THE_SURFACE =
+  /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]+/g;
+
+/**
+ * One line, plain text, bounded — or `null` when nothing legible survives.
+ *
+ * A routine's `name` is authored in a file in the agent's own workspace and
+ * validated only for non-emptiness, so it is untrusted text arriving from
+ * across a trust boundary; the recorded `error` on a fire is the same. This is
+ * the trust boundary — fencing here bounds what goes on the wire, not just what
+ * a particular renderer happens to do with it.
+ *
+ * Deliberately a local twin of `@ax/agent-activity`'s `fencePhrase` rather than
+ * an import: plugins talk through the hook bus, never through each other's
+ * modules (invariant 2).
+ *
+ * The cap counts CODE POINTS, not UTF-16 units, so truncation can never split a
+ * surrogate pair and leave a lone half behind — ill-formed UTF-16 out of a
+ * function whose whole job is "plain text" would be a poor joke.
+ */
+function fenceLine(value: string | null | undefined, maxChars: number): string | null {
+  if (typeof value !== 'string') return null;
+  const flattened = value.replace(REWRITES_THE_SURFACE, ' ').replace(/\s+/g, ' ').trim();
+  if (flattened.length === 0) return null;
+  const points = [...flattened];
+  if (points.length <= maxChars) return flattened;
+  return `${points.slice(0, maxChars - 1).join('').trimEnd()}\u2026`;
+}
+
+/**
  * One fire → one feed row, or `null` for a fire that produced nothing.
  *
  * `silenced` maps to `null` and that is the whole point of this function. A
@@ -383,9 +440,19 @@ export function fireToActivityEvent(
   const stamp = fireStamp(fire.firedAt);
   if (Number.isNaN(stamp)) return null; // An undateable row cannot be filed.
   const at = new Date(stamp).toISOString();
-  const text = nameByPath.get(fire.path) ?? fire.path;
+  // Both the authored name and the path are the agent's own words, so both go
+  // through the fence. A name fenced down to nothing falls through to the path
+  // exactly as an absent one does, and a row whose every candidate label is
+  // unprintable still gets a row — dropping it would claim the agent did
+  // nothing, which is the bigger lie.
+  const text =
+    fenceLine(nameByPath.get(fire.path), ACTIVITY_LABEL_MAX_CHARS) ??
+    fenceLine(fire.path, ACTIVITY_LABEL_MAX_CHARS) ??
+    'A routine with no readable name';
   return {
     // Composite, and stable across pages. Never the fire's BIGSERIAL id.
+    // Deliberately the RAW path: this is a key, not a label — it is never
+    // rendered, and fencing it could collapse two distinct paths onto one id.
     id: `${fire.agentId}|${fire.path}|${at}`,
     agentId: fire.agentId,
     at,
@@ -397,10 +464,12 @@ export function fireToActivityEvent(
           // why" is a true sentence; a plausible reason would not be. A
           // recorded error that is blank or all whitespace is the same absence
           // as a null one — passing it through would render a row that says
-          // something went wrong with nothing at all underneath it.
-          (fire.error !== null && fire.error.trim().length > 0
-            ? fire.error
-            : 'It failed, and no reason was recorded.')
+          // something went wrong with nothing at all underneath it. An error
+          // made only of control or bidi characters is that same absence
+          // wearing a costume, so the fence runs FIRST and its `null` lands on
+          // the same sentence.
+          (fenceLine(fire.error, ACTIVITY_DETAIL_MAX_CHARS) ??
+          'It failed, and no reason was recorded.')
         : null,
     tag: TRIGGER_LABEL[fire.triggerSource] ?? null,
     // Decision receipts join this collection with `decisions:executed`, which
