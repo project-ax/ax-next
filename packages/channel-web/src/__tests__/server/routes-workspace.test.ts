@@ -453,7 +453,7 @@ describe('channel-web agent-workspace BFF', () => {
       });
       expect(agentId).toBe(ctx.agentId);
       state.rules = body;
-      return { written: true };
+      return { written: true, body };
     });
   }
 
@@ -534,7 +534,9 @@ describe('channel-web agent-workspace BFF', () => {
     await h.saveRules(mkReq({ agentId: 'a1' }, { body: '- Always cc Priya' }), res);
 
     expect(captured.statusCode).toBe(200);
-    expect(captured.body).toEqual({ saved: true });
+    // The stored text rides back so the editor can adopt it instead of
+    // guessing at the writer's normalization.
+    expect(captured.body).toEqual({ saved: true, body: '- Always cc Priya' });
     expect(state.rules).toBe('- Always cc Priya');
     expect(state.calls).toEqual([{ hook: 'write', agentId: 'a1', userId: 'u1' }]);
   });

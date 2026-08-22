@@ -198,6 +198,8 @@ interface MemoryRulesWriteInput {
 }
 interface MemoryRulesWriteOutput {
   written: boolean;
+  /** What is stored now, normalized by the writer. See `SaveRulesResult`. */
+  body: string;
 }
 interface MemoryLearnedReadOutput {
   docs: Array<{ name: string; body: string }>;
@@ -291,6 +293,14 @@ export const RULES_DOC_NAME = 'Your rules';
 /** `PUT /api/workspace/agents/:agentId/memory/rules` — the human tier saved. */
 export interface SaveRulesResult {
   saved: true;
+  /**
+   * What is stored now. The editor adopts THIS rather than the text it sent,
+   * because the writer normalizes (trailing whitespace → one newline) and an
+   * editor comparing its own text against a normalized store shows "unsaved
+   * changes" forever. Returning it keeps one source of truth for the stored
+   * form instead of asking the client to reimplement the rule.
+   */
+  body: string;
 }
 
 /** `POST /api/workspace/route` — which agent should hear this. */
@@ -1160,12 +1170,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         return;
       }
 
+      let stored: string;
       try {
-        await bus.call<MemoryRulesWriteInput, MemoryRulesWriteOutput>(
-          'memory:rules:write',
-          agentMemoryCtx(agentId, userId),
-          { agentId, body },
-        );
+        stored = (
+          await bus.call<MemoryRulesWriteInput, MemoryRulesWriteOutput>(
+            'memory:rules:write',
+            agentMemoryCtx(agentId, userId),
+            { agentId, body },
+          )
+        ).body;
       } catch (err) {
         // A rejected payload is the caller's fault (too long, malformed);
         // anything else is ours. Either way the user is TOLD — a Save that
@@ -1177,7 +1190,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         throw err;
       }
 
-      res.status(200).json({ saved: true } satisfies SaveRulesResult);
+      res.status(200).json({ saved: true, body: stored } satisfies SaveRulesResult);
     },
 
     /**

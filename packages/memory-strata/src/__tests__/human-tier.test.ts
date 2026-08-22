@@ -182,10 +182,34 @@ describe('every automatic writer excludes the human tier', () => {
   });
 
   it('registers every module in this package that mutates the memory tree', async () => {
-    // THE CANARY. Scan the package's own source for filesystem mutations and
-    // for `workspace:apply` deltas; each module that performs one must be on
-    // the list — and therefore must have gone past `guardAutomaticWrite`.
-    const MUTATORS = /\b(?:writeFile|unlink|rename)\s*\(|kind:\s*'(?:put|delete)'/u;
+    /*
+      THE CANARY. Scan the package's own source for filesystem mutations and
+      for `workspace:apply` deltas; each module that performs one must be on
+      the list — and therefore must have gone past `guardAutomaticWrite`.
+
+      The alternation is deliberately WIDE. A narrow one (`writeFile|unlink|
+      rename` only) lets a new module delete the human tier with `rm(...)`,
+      `writeFileSync(...)`, `appendFile(...)`, or a `kind: "delete"` written
+      with double quotes, and stay green. Extra noise here costs one line in
+      AUTOMATIC_WRITERS; a miss costs a user their rules.
+
+      It is still a source scan, so it is still evadable — an aliased import
+      (`import { rm as nuke }`), a computed `kind`, a dynamic `fs[op]()`. The
+      canary is the REVIEW net. `guardAutomaticWrite` is the enforcement, and
+      the second canary below checks every listed module actually calls it.
+    */
+    const MUTATORS = new RegExp(
+      [
+        // fs mutation calls, sync and async, however the module imported them
+        String.raw`\b(?:writeFile|writeFileSync|appendFile|appendFileSync`,
+        String.raw`|unlink|unlinkSync|rename|renameSync|rm|rmSync|rmdir|rmdirSync`,
+        String.raw`|copyFile|copyFileSync|cp|cpSync|truncate|truncateSync`,
+        String.raw`|createWriteStream|mkdtemp)\s*\(`,
+        // a workspace:apply delta, whatever quoting style built it
+        String.raw`|kind:\s*['"\u0060]?(?:put|delete)`,
+      ].join(''),
+      'u',
+    );
     const registered = new Set(AUTOMATIC_WRITERS.map((w) => w.module));
     // The sanctioned human write path and the guard itself are, by definition,
     // not automatic writers. Every other mutating module must register.

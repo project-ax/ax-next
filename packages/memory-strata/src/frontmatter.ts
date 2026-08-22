@@ -22,3 +22,35 @@ export function buildMarkdownFile(
   const trimmedBody = body.endsWith('\n') ? body : `${body}\n`;
   return `${FENCE}\n${yaml}\n${FENCE}\n${trimmedBody}`;
 }
+
+/**
+ * Strip the leading YAML frontmatter fence (`---\n...\n---\n`) from a markdown
+ * file. Returns the body text that follows, trimmed of leading and trailing
+ * blank lines. If no frontmatter fence is present, returns the full text as-is.
+ *
+ * The inverse of {@link buildMarkdownFile}, and it lives beside it so the two
+ * readers that need it — the prompt builder (`inject.ts`) and the Memory tab
+ * (`rules-store.ts`) — share ONE answer to "what does the agent actually read".
+ * Two strippers would be two different agents.
+ *
+ * NOTE the one file this must never be pointed at: the human tier
+ * (`system/rules.md`) carries no frontmatter by design, so a user whose first
+ * line is a markdown horizontal rule would lose the top of their own text.
+ * `readRules` reads it raw for exactly that reason.
+ */
+export function stripFrontmatter(text: string): string {
+  const FENCE = '---';
+  // Must start with '---' (possibly after a BOM or leading whitespace stripped)
+  const trimmed = text.trimStart();
+  if (!trimmed.startsWith(FENCE)) return text.trim();
+
+  // Find the closing fence. Start searching after the opening fence line.
+  const afterOpen = trimmed.indexOf('\n') + 1;
+  const closeIdx = trimmed.indexOf(`\n${FENCE}`, afterOpen);
+  if (closeIdx === -1) return text.trim();
+
+  // Body starts after the closing fence line (skip the '\n---' + newline).
+  const bodyStart = closeIdx + `\n${FENCE}`.length;
+  const body = trimmed.slice(bodyStart);
+  return body.trim();
+}

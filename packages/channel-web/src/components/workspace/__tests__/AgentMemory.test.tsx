@@ -62,7 +62,7 @@ describe('AgentMemory', () => {
   });
 
   it('saves what the user typed, through the caller\'s write path', async () => {
-    const onSaveRules = vi.fn().mockResolvedValue(undefined);
+    const onSaveRules = vi.fn().mockImplementation(async (b: string) => `${b}\n`);
     render(<AgentMemory agentName="Quill" docs={[rulesDoc()]} onSaveRules={onSaveRules} />);
 
     fireEvent.change(screen.getByLabelText('Rules you gave me'), {
@@ -75,6 +75,42 @@ describe('AgentMemory', () => {
     await waitFor(() => {
       expect(onSaveRules).toHaveBeenCalledWith('- cc Priya');
     });
+  });
+
+  it('settles to "Saved." even though the writer normalizes the text', async () => {
+    /*
+      The bug this pins: the store keeps `"- cc Priya\n"` for a textarea holding
+      `"- cc Priya"`, so an editor that compared its own text against the
+      re-read body stayed dirty forever — Save re-enabled, "Saved." never
+      shown, every save reporting as not-saved on the one tab whose whole job
+      is persistence confidence. The editor adopts the STORED text instead.
+    */
+    const onSaveRules = vi.fn().mockImplementation(async (b: string) => `${b}\n`);
+    const { rerender } = render(
+      <AgentMemory agentName="Quill" docs={[rulesDoc()]} onSaveRules={onSaveRules} />,
+    );
+
+    fireEvent.change(screen.getByLabelText('Rules you gave me'), {
+      target: { value: '- cc Priya' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    await waitFor(() => {
+      expect(screen.getByText('Saved.')).toBeInTheDocument();
+    });
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
+
+    // ...and the re-read that follows the save delivers the normalized body.
+    // It must not knock the editor back into "Unsaved changes."
+    rerender(
+      <AgentMemory
+        agentName="Quill"
+        docs={[rulesDoc('- cc Priya\n')]}
+        onSaveRules={onSaveRules}
+      />,
+    );
+    expect(screen.queryByText('Unsaved changes.')).toBeNull();
+    expect(screen.getByText('Saved.')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Save' })).toBeDisabled();
   });
 
   it('says so when the save fails instead of implying it stuck', async () => {

@@ -28,6 +28,7 @@ import type {
 } from '@ax/core';
 import { agentTierAvailable, AGENT_TIER_MEMORY_ROOT } from './agent-tier-sync.js';
 import { systemFile, recentFile, mapFile } from './paths.js';
+import { stripFrontmatter } from './frontmatter.js';
 import { retrieve } from './retriever.js';
 import { readRules } from './rules-store.js';
 
@@ -269,28 +270,6 @@ async function readTierSystemBody(
   }
 }
 
-/**
- * Strip the leading YAML frontmatter fence (`---\n...\n---\n`) from a
- * markdown file. Returns the body text that follows, trimmed of leading
- * and trailing blank lines, with a single trailing newline.
- * If no frontmatter fence is present, returns the full text as-is.
- */
-function stripFrontmatter(text: string): string {
-  const FENCE = '---';
-  // Must start with '---' (possibly after a BOM or leading whitespace stripped)
-  const trimmed = text.trimStart();
-  if (!trimmed.startsWith(FENCE)) return text.trim();
-
-  // Find the closing fence. Start searching after the opening fence line.
-  const afterOpen = trimmed.indexOf('\n') + 1;
-  const closeIdx = trimmed.indexOf(`\n${FENCE}`, afterOpen);
-  if (closeIdx === -1) return text.trim();
-
-  // Body starts after the closing fence line (skip the '\n---' + newline).
-  const bodyStart = closeIdx + `\n${FENCE}`.length;
-  const body = trimmed.slice(bodyStart);
-  return body.trim();
-}
 
 interface AssembleInput {
   /** The human tier (TASK-234). Rendered first, truncated last. */

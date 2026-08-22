@@ -377,7 +377,7 @@ function memoryMockPlugin(state: {
         });
         if (state.failWrite !== undefined) throw state.failWrite;
         state.rules = body;
-        return { written: true };
+        return { written: true, body };
       });
       bus.registerService('memory:learned:read', 'mock-memory', async () => ({
         docs: state.learned,
@@ -846,7 +846,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         body: JSON.stringify({ body: '- Always cc Priya' }),
       });
       expect(put.status).toBe(200);
-      expect(await put.json()).toEqual({ saved: true });
+      expect(await put.json()).toEqual({ saved: true, body: '- Always cc Priya' });
 
       // The write was routed to the agent the caller named, on the
       // authenticated user's identity — not on `initCtx`'s system identity.

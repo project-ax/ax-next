@@ -28,7 +28,7 @@ import { buildMemoryBlock } from '../inject.js';
 import { HUMAN_TIER_TIER_PATHS } from '../human-tier.js';
 import { buildMarkdownFile } from '../frontmatter.js';
 import { mapFile, recentFile, rulesFile, systemFile } from '../paths.js';
-import { registerRulesHooks, MAX_RULES_BYTES } from '../rules-hooks.js';
+import { registerRulesHooks, MAX_RULES_CHARS } from '../rules-hooks.js';
 import type {
   MemoryLearnedReadOutput,
   MemoryRulesReadInput,
@@ -143,6 +143,9 @@ describe('memory:rules:write — the git-tier path', () => {
     const out = await write(bus, ctx, { agentId: 'atlas', body: '- Always cc Priya' });
 
     expect(out.written).toBe(true);
+    // The caller gets the STORED text back, so an editor never has to guess at
+    // our normalization — guessing leaves it one newline from "saved" forever.
+    expect(out.body).toBe('- Always cc Priya\n');
     expect(applied).toHaveLength(1);
     expect(applied[0]!.reason).toBe('memory:rules:write');
     expect(applied[0]!.changes).toEqual([
@@ -160,6 +163,20 @@ describe('memory:rules:write — the git-tier path', () => {
     expect(new TextDecoder().decode(files.get(HUMAN_TIER_TIER_PATHS[0]!)!)).toBe(
       '- Always cc Priya\n',
     );
+  });
+
+  it('reports a no-op save without writing anything', async () => {
+    const { bus, applied } = tierBus();
+    const ctx = makeCtx();
+    await write(bus, ctx, { agentId: 'atlas', body: '- Always cc Priya' });
+    expect(applied).toHaveLength(1);
+
+    // Same text again — including the un-normalized form the editor would send.
+    const second = await write(bus, ctx, { agentId: 'atlas', body: '- Always cc Priya  ' });
+    expect(second.written).toBe(false);
+    expect(second.body).toBe('- Always cc Priya\n');
+    // A Save button must not produce an empty commit on every click.
+    expect(applied).toHaveLength(1);
   });
 
   it('round-trips through memory:rules:read', async () => {
@@ -213,7 +230,7 @@ describe('the hooks refuse a ctx that routes somewhere else', () => {
     const ctx = makeCtx();
     await expect(write(bus, ctx, { agentId: '', body: 'x' })).rejects.toThrow(PluginError);
     await expect(
-      write(bus, ctx, { agentId: 'atlas', body: 'x'.repeat(MAX_RULES_BYTES + 1) }),
+      write(bus, ctx, { agentId: 'atlas', body: 'x'.repeat(MAX_RULES_CHARS + 1) }),
     ).rejects.toThrow(/characters or fewer/u);
     expect(applied).toEqual([]);
   });
@@ -238,6 +255,11 @@ describe('memory:learned:read', () => {
       'Index of everything it remembers',
     ]);
     expect(out.docs[0]!.body).toContain('Likes oat milk.');
+    // Frontmatter stripped: the tab shows what the PROMPT sees, and the prompt
+    // never sees `id:`/`confidence:`/timestamps. Showing them would describe a
+    // different agent than the one running.
+    expect(out.docs[0]!.body).not.toContain('confidence:');
+    expect(out.docs[0]!.body.startsWith('---')).toBe(false);
   });
 
   it('does not surface the human tier under the agent\'s own heading', async () => {

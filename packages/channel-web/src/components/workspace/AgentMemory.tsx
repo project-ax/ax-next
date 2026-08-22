@@ -39,10 +39,19 @@ export function AgentMemory({
   docs: MemoryDoc[];
   agentName: string;
   /**
-   * Save the human tier. Optional only so a caller with no write path can
-   * still render the split read-only; the shell always passes it.
+   * Save the human tier, resolving to what is STORED afterwards.
+   *
+   * It returns the stored text rather than nothing because the writer
+   * normalizes (trailing whitespace collapses to a single newline). An editor
+   * that kept showing the text it SENT, while the store held a normalized
+   * variant, would compare the two on the next re-read and report "unsaved
+   * changes" forever — on the one tab whose entire job is persistence
+   * confidence. Adopting the server's answer keeps one source of truth.
+   *
+   * Optional only so a caller with no write path can still render the split
+   * read-only; the shell always passes it.
    */
-  onSaveRules?: (body: string) => Promise<void>;
+  onSaveRules?: (body: string) => Promise<string>;
 }) {
   const rules = docs.find((d) => d.scope === 'rules');
   const learned = docs.filter((d) => d.scope === 'learned');
@@ -100,12 +109,22 @@ function RulesEditor({
 }: {
   agentName: string;
   initial: string;
-  onSave?: (body: string) => Promise<void>;
+  onSave?: (body: string) => Promise<string>;
 }) {
   const [text, setText] = useState(initial);
   const [state, setState] = useState<'idle' | 'saving' | 'saved'>('idle');
   const [error, setError] = useState<string | null>(null);
-  const lastServerText = useRef(initial);
+  /*
+    The last text we know the SERVER holds — seeded from the first read, then
+    replaced by whatever a successful save reports back. Two things read it:
+
+      - the re-read effect below, to tell an unsaved edit from a stale render;
+      - `dirty`, so the Save button and the "Saved." line agree with storage
+        rather than with the exact keystrokes. The writer normalizes trailing
+        whitespace, so comparing against what we SENT would leave the editor
+        permanently one newline away from clean.
+  */
+  const stored = useRef(initial);
 
   /*
     A re-read from the server replaces what we are showing — but ONLY when the
@@ -114,20 +133,23 @@ function RulesEditor({
     progress always wins over a fresh read.
   */
   useEffect(() => {
-    if (initial === lastServerText.current) return;
-    const hadUnsavedEdits = text !== lastServerText.current;
-    lastServerText.current = initial;
+    if (initial === stored.current) return;
+    const hadUnsavedEdits = text !== stored.current;
+    stored.current = initial;
     if (!hadUnsavedEdits) setText(initial);
   }, [initial, text]);
 
-  const dirty = text !== initial;
+  const dirty = text !== stored.current;
 
   async function save(): Promise<void> {
     if (onSave === undefined) return;
     setState('saving');
     setError(null);
     try {
-      await onSave(text);
+      // Adopt what the server says it stored, not what we sent.
+      const saved = await onSave(text);
+      stored.current = saved;
+      setText(saved);
       setState('saved');
     } catch (err) {
       // Say so. A Save that failed quietly is how a hand-written rule goes

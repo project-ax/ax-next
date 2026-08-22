@@ -24,6 +24,7 @@ import type {
 } from '@ax/core';
 import { agentTierAvailable, applyTierChanges } from './agent-tier-sync.js';
 import { HUMAN_TIER_TIER_PATHS, normalizeRulesBody } from './human-tier.js';
+import { stripFrontmatter } from './frontmatter.js';
 import {
   AGENT_TIER_MEMORY_ROOT,
   MEMORY_ROOT,
@@ -87,6 +88,17 @@ export async function readRules(
 /**
  * Write the human tier. The ONLY writer of `rules.md` in the codebase.
  *
+ * Returns what is now STORED — the caller's text after {@link normalizeRulesBody}
+ * — plus whether anything actually changed. The stored form matters to the
+ * caller: an editor that keeps showing the text it sent, while the store holds
+ * a normalized variant of it, reports "unsaved changes" forever. Handing back
+ * the stored bytes means the UI never has to guess at our normalization, which
+ * would be a second source of truth for it.
+ *
+ * A no-op save (the text is byte-identical to what is there) returns
+ * `changed: false` and writes nothing. Under a git tier that is the difference
+ * between a Save button and an empty commit every time someone clicks it.
+ *
  * Under a git tier the bytes go out through `workspace:apply` — this function
  * does not touch the file itself, because `/agent` is canonical and a host-FS
  * write would land in a shared directory no runner ever reads.
@@ -110,42 +122,59 @@ export async function writeRules(
   ctx: AgentContext,
   workspaceRoot: string,
   body: string,
-): Promise<void> {
-  const bytes = new TextEncoder().encode(normalizeRulesBody(body));
+): Promise<{ stored: string; changed: boolean }> {
+  const stored = normalizeRulesBody(body);
+  const bytes = new TextEncoder().encode(stored);
 
   if (agentTierAvailable(bus)) {
     const tierPath = HUMAN_TIER_TIER_PATHS[0]!;
     // CAS parent: the version we last saw for this file. A never-written file
     // reads back as a miss, which the apply contract takes as "no parent yet".
     let parent: WorkspaceVersion | null = null;
+    let current: string | null = null;
     try {
       const out = await bus.call<WorkspaceReadInput, WorkspaceReadOutput>(
         'workspace:read',
         ctx,
         { path: tierPath },
       );
-      if (out.found && out.version !== undefined) parent = out.version;
+      if (out.found) {
+        current = new TextDecoder('utf-8').decode(out.bytes);
+        if (out.version !== undefined) parent = out.version;
+      }
     } catch {
       // No readable head. Apply against null and let applyTierChanges's
       // rebase-on-mismatch retry reconcile against the tier's actual parent.
+      // `current` stays null, so we do not mistake an unreadable file for an
+      // unchanged one and skip a write the user asked for.
     }
+    if (current === stored) return { stored, changed: false };
     const changes: FileChange[] = [{ path: tierPath, kind: 'put', content: bytes }];
     await applyTierChanges(bus, ctx, changes, parent, 'memory:rules:write');
-    return;
+    return { stored, changed: true };
   }
 
   // CLI preset: no workspace backend is loaded, so the agent's own localdir
   // workspace root IS canonical — the same place every other memory file goes.
   const abs = join(workspaceRoot, rulesFile());
+  if ((await readRules(bus, ctx, workspaceRoot)) === stored) {
+    return { stored, changed: false };
+  }
   await mkdir(dirname(abs), { recursive: true });
   await writeFile(abs, bytes);
+  return { stored, changed: true };
 }
 
 /** One of the agent's own always-injected working docs. */
 export interface LearnedDoc {
   /** Stable, human-meaningful name. Not a path — see the boundary review. */
   name: string;
-  /** The file's text, frontmatter included. Untrusted: it is model output. */
+  /**
+   * The doc's BODY, frontmatter stripped — exactly what the system prompt is
+   * built from. Showing the raw file would put `id:`/`confidence:`/timestamps
+   * on screen that the model never sees, which is a different agent than the
+   * one running. Untrusted: it is model output.
+   */
   body: string;
 }
 
@@ -169,7 +198,9 @@ export async function readLearnedDocs(
   ];
   const out: LearnedDoc[] = [];
   for (const w of wanted) {
-    const body = await readMemoryText(bus, ctx, workspaceRoot, w.rel);
+    // Frontmatter stripped, for the reason on `LearnedDoc.body`: the tab shows
+    // what the PROMPT sees, and the prompt never sees the frontmatter.
+    const body = stripFrontmatter(await readMemoryText(bus, ctx, workspaceRoot, w.rel));
     if (body.trim().length === 0) continue;
     out.push({ name: w.name, body });
   }

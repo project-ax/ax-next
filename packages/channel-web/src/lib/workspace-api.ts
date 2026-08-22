@@ -191,10 +191,10 @@ export const workspaceApi = {
    * word for word" something we are allowed to say.
    */
   saveRules: (agentId: string, body: string) =>
-    req<{ saved: true }>(`/agents/${encodeURIComponent(agentId)}/memory/rules`, {
-      method: 'PUT',
-      body: { body },
-    }),
+    req<{ saved: true; body: string }>(
+      `/agents/${encodeURIComponent(agentId)}/memory/rules`,
+      { method: 'PUT', body: { body } },
+    ),
 
   /**
    * Auto-routing: proposes an agent for a free-text request. Never dispatches.

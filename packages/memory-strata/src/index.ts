@@ -40,7 +40,7 @@ export {
   normalizeRulesBody,
 } from './human-tier.js';
 export type { AutomaticWriter } from './human-tier.js';
-export { MAX_RULES_BYTES } from './rules-hooks.js';
+export { MAX_RULES_CHARS } from './rules-hooks.js';
 export type {
   MemoryRulesReadInput,
   MemoryRulesReadOutput,

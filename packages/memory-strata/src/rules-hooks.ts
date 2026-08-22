@@ -51,8 +51,21 @@ export interface MemoryRulesWriteInput {
 
 /** `memory:rules:write` output. */
 export interface MemoryRulesWriteOutput {
-  /** True once the bytes are durable. A failed write throws; it never reports false. */
+  /**
+   * Did anything actually change? `false` means the text was already exactly
+   * what was stored, so nothing was written — a Save button should not produce
+   * an empty commit on every click. A FAILED write throws; it never reports
+   * false, so this is "no-op", not "problem".
+   */
   written: boolean;
+  /**
+   * What is stored now — the caller's text, normalized (trailing whitespace
+   * collapsed to one newline). The caller gets it back so an editor never has
+   * to guess at our normalization: guessing means the editor's idea of "saved"
+   * and the store's differ by a newline, and it reports unsaved changes
+   * forever. Returning it keeps one source of truth for the stored form.
+   */
+  body: string;
 }
 
 /** `memory:learned:read` output — the agent's own always-injected working docs. */
@@ -113,7 +126,7 @@ export function registerRulesHooks(bus: HookBus): void {
           message: 'body must be a string',
         });
       }
-      if (input.body.length > MAX_RULES_BYTES) {
+      if (input.body.length > MAX_RULES_CHARS) {
         // The whole file is injected into every system prompt, so an unbounded
         // one is a bill, not a feature. Refusing beats silently truncating
         // something the user was promised is kept word for word.
@@ -121,11 +134,16 @@ export function registerRulesHooks(bus: HookBus): void {
           code: 'invalid-payload',
           plugin: PLUGIN_NAME,
           hookName: 'memory:rules:write',
-          message: `rules must be ${MAX_RULES_BYTES} characters or fewer`,
+          message: `rules must be ${MAX_RULES_CHARS} characters or fewer`,
         });
       }
-      await writeRules(bus, ctx, ctx.workspace.rootPath, input.body);
-      return { written: true };
+      const { stored, changed } = await writeRules(
+        bus,
+        ctx,
+        ctx.workspace.rootPath,
+        input.body,
+      );
+      return { written: changed, body: stored };
     },
   );
 
@@ -140,9 +158,14 @@ export function registerRulesHooks(bus: HookBus): void {
 }
 
 /**
- * Cap on the human tier, in characters. ~16k characters is about 4k tokens —
- * larger than the entire memory block's default budget, so anyone who hits
- * this is not writing rules any more. Generous on purpose: the point of this
- * tier is that we keep what the user wrote.
+ * Cap on the human tier, in JavaScript string length (UTF-16 code units) —
+ * which is what `String.length` counts, so the name matches the check. ~16k is
+ * about 4k tokens, larger than the entire memory block's default budget, so
+ * anyone who hits this is not writing rules any more. Generous on purpose: the
+ * point of this tier is that we keep what the user wrote.
+ *
+ * The hard stop is upstream anyway — `@ax/http-server`'s 1 MiB body cap 413s
+ * long before this is reached over the wire. This one exists so a bus caller
+ * that never touches HTTP is bounded too.
  */
-export const MAX_RULES_BYTES = 16_384;
+export const MAX_RULES_CHARS = 16_384;
