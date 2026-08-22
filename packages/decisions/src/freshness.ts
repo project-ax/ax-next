@@ -114,6 +114,61 @@ export const UNREADABLE_SENTENCE =
  */
 const KIND_GRAMMAR = /^[a-z][a-z0-9-]{0,63}$/;
 
+/**
+ * How long a producer gets, enforced HERE rather than left to the bus.
+ *
+ * THE HOLE THIS CLOSES. `HookBus`'s default service timeout is 120 s, and a
+ * service's timeout is set by whoever REGISTERED it — a caller cannot cap it.
+ * `tool.pre-call` has a 10 s IPC ceiling (`IPC_TIMEOUTS_MS['tool.pre-call']`),
+ * and the runner turns a blown ceiling into a DENY. So a producer that hangs
+ * would do exactly what asymmetry 1 exists to prevent: take the approval
+ * surface down for its tool, from the outside, without ever throwing.
+ *
+ * Both producers AW-7 ships also declare their own `timeoutMs`, which is the
+ * tidier half — the bus stops waiting rather than us walking away from a call
+ * still in flight. This budget is the half that holds for a producer we do not
+ * own, and it is the one that makes the guarantee unconditional.
+ *
+ * CAPTURE's budget is well inside the pre-call ceiling, which it shares with a
+ * policy call, an attendance read and a row write. CHECK runs on an approval
+ * request, where the only deadline is a human watching a button, so it gets
+ * more room.
+ */
+const CAPTURE_BUDGET_MS = 3_000;
+const CHECK_BUDGET_MS = 10_000;
+
+const TIMED_OUT = Symbol('freshness-budget-exceeded');
+
+/**
+ * Run `work`, but never wait longer than `ms`.
+ *
+ * The settle-then-race shape is deliberate: racing the raw promise leaves an
+ * UNHANDLED REJECTION behind whenever the loser rejects after the budget has
+ * already won, and an unhandled rejection in a host process is a crash on some
+ * Node configurations. Folding the outcome into a value first means the loser
+ * can never reject at all.
+ */
+async function withBudget<T>(
+  work: Promise<T>,
+  ms: number,
+): Promise<{ ok: true; value: T } | { ok: false; err: unknown } | typeof TIMED_OUT> {
+  const settled = work.then(
+    (value) => ({ ok: true as const, value }),
+    (err: unknown) => ({ ok: false as const, err }),
+  );
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const budget = new Promise<typeof TIMED_OUT>((resolve) => {
+    timer = setTimeout(() => resolve(TIMED_OUT), ms);
+    // Never hold the process open for a producer that is not coming back.
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([settled, budget]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 const VALUE_MAX_CHARS = 512;
 const LABEL_MAX_CHARS = 120;
 const CHANGED_MAX_CHARS = 200;
@@ -210,31 +265,42 @@ export async function captureFreshness(
   // an unguarded row for one of them is the designed outcome, not a gap.
   if (!bus.hasService(hook)) return null;
 
-  try {
-    const out = await bus.call<FreshnessCaptureInput, FreshnessCaptureOutput>(hook, ctx, {
-      call,
+  const outcome = await withBudget(
+    bus.call<FreshnessCaptureInput, FreshnessCaptureOutput>(hook, ctx, { call }),
+    CAPTURE_BUDGET_MS,
+  );
+
+  if (outcome === TIMED_OUT) {
+    ctx.logger.error('decision_freshness_capture_timeout', {
+      plugin: FRESHNESS_LOG_PLUGIN,
+      tool: call.name,
+      budgetMs: CAPTURE_BUDGET_MS,
     });
-    const raw = out?.predicate;
-    const predicate = normalizePredicate(raw);
-    if (predicate === null && raw !== null && raw !== undefined) {
-      // The producer answered, and we could not read the answer. Distinct from
-      // "this call has nothing to guard", and worth saying so.
-      ctx.logger.error('decision_freshness_capture_unreadable', {
-        plugin: FRESHNESS_LOG_PLUGIN,
-        tool: call.name,
-      });
-    }
-    return predicate;
-  } catch (err) {
+    return null;
+  }
+
+  if (!outcome.ok) {
     ctx.logger.error('decision_freshness_capture_failed', {
       plugin: FRESHNESS_LOG_PLUGIN,
       tool: call.name,
-      err: err instanceof Error ? err : new Error(String(err)),
+      err: outcome.err instanceof Error ? outcome.err : new Error(String(outcome.err)),
     });
     // Fails OPEN, on purpose, and the row then says nothing about freshness
     // rather than claiming a guard it does not have. See asymmetry 1.
     return null;
   }
+
+  const raw = outcome.value?.predicate;
+  const predicate = normalizePredicate(raw);
+  if (predicate === null && raw !== null && raw !== undefined) {
+    // The producer answered, and we could not read the answer. Distinct from
+    // "this call has nothing to guard", and worth saying so.
+    ctx.logger.error('decision_freshness_capture_unreadable', {
+      plugin: FRESHNESS_LOG_PLUGIN,
+      tool: call.name,
+    });
+  }
+  return predicate;
 }
 
 /**
@@ -269,28 +335,40 @@ export async function checkFreshness(
     return unreadable();
   }
 
-  try {
-    const out = await bus.call<FreshnessCheckInput, FreshnessCheckOutput>(hook, ctx, {
-      predicate,
-    });
-    const value = normalizeValue(out?.value);
-    if (value === null) {
-      ctx.logger.error('decision_freshness_check_unreadable', {
-        plugin: FRESHNESS_LOG_PLUGIN,
-        tool: toolName,
-      });
-      return unreadable();
-    }
-    const changed = fenceLine(out?.changed, CHANGED_MAX_CHARS);
-    return changed === null ? { value } : { value, changed };
-  } catch (err) {
-    ctx.logger.error('decision_freshness_check_failed', {
+  const outcome = await withBudget(
+    bus.call<FreshnessCheckInput, FreshnessCheckOutput>(hook, ctx, { predicate }),
+    CHECK_BUDGET_MS,
+  );
+
+  if (outcome === TIMED_OUT) {
+    // A world we ran out of time to read is a world we did not read.
+    ctx.logger.error('decision_freshness_check_timeout', {
       plugin: FRESHNESS_LOG_PLUGIN,
       tool: toolName,
-      err: err instanceof Error ? err : new Error(String(err)),
+      budgetMs: CHECK_BUDGET_MS,
     });
     return unreadable();
   }
+
+  if (!outcome.ok) {
+    ctx.logger.error('decision_freshness_check_failed', {
+      plugin: FRESHNESS_LOG_PLUGIN,
+      tool: toolName,
+      err: outcome.err instanceof Error ? outcome.err : new Error(String(outcome.err)),
+    });
+    return unreadable();
+  }
+
+  const value = normalizeValue(outcome.value?.value);
+  if (value === null) {
+    ctx.logger.error('decision_freshness_check_unreadable', {
+      plugin: FRESHNESS_LOG_PLUGIN,
+      tool: toolName,
+    });
+    return unreadable();
+  }
+  const changed = fenceLine(outcome.value?.changed, CHANGED_MAX_CHARS);
+  return changed === null ? { value } : { value, changed };
 }
 
 /**

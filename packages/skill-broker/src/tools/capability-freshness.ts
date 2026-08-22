@@ -196,6 +196,12 @@ export function registerCapabilityFreshness(bus: HookBus): void {
         },
       };
     },
+    // Inside `tool.pre-call`'s 10 s IPC ceiling, which this shares with a
+    // policy call, an attendance read and a row write. The bus's own default
+    // is 120 s, and a caller cannot cap a service it did not register — so
+    // the bound has to be declared here. @ax/decisions ALSO budgets the call
+    // on its side, for producers nobody in this repo wrote.
+    { timeoutMs: 3_000 },
   );
 
   bus.registerService<CheckInput, { value: string; changed?: string }>(
@@ -224,5 +230,9 @@ export function registerCapabilityFreshness(bus: HookBus): void {
         ? { value: after }
         : { value: after, changed: changedSentence(before, after, skillId) };
     },
+    // The approval request's only deadline is a human watching a button, so
+    // this gets more room than capture — but still a bound, because a check
+    // that never returns leaves the decision unresolvable rather than stale.
+    { timeoutMs: 10_000 },
   );
 }

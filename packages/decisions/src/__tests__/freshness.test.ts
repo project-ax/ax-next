@@ -109,6 +109,22 @@ describe('captureFreshness — fails OPEN', () => {
     expect(lines[0]!.level).toBe('error');
   });
 
+  it('walks away from a producer that HANGS, inside the pre-call budget', async () => {
+    // The hole a per-registration timeout cannot close: the bus's default
+    // service timeout is 120 s and a caller cannot cap a service it did not
+    // register, while `tool.pre-call` has a 10 s IPC ceiling the runner turns
+    // into a DENY. A hanging producer would therefore do from the outside
+    // exactly what fail-open exists to prevent.
+    const bus = busWith({
+      [freshnessCaptureHook(TOOL)]: () => new Promise(() => {}),
+    });
+    const { ctx, lines } = ctxWithLog();
+    const started = Date.now();
+    expect(await captureFreshness(bus, ctx, CALL)).toBeNull();
+    expect(Date.now() - started).toBeLessThan(9_000);
+    expect(messages(lines)).toContain('decision_freshness_capture_timeout');
+  }, 20_000);
+
   it('drops a predicate whose kind is not a printable token, and says so', async () => {
     const bus = busWith({
       // `kind` is RENDERED — the machine builds its fallback staleReason by
@@ -220,6 +236,17 @@ describe('checkFreshness — fails CLOSED', () => {
     expect(out.changed).toBe(UNREADABLE_SENTENCE);
     expect(messages(lines)).toContain('decision_freshness_check_failed');
   });
+
+  it('treats a producer that HANGS as changed, rather than waiting on it forever', async () => {
+    const bus = busWith({
+      [freshnessCheckHook(TOOL)]: () => new Promise(() => {}),
+    });
+    const { ctx, lines } = ctxWithLog();
+    const out = await checkFreshness(bus, ctx, TOOL, PREDICATE);
+    expect(out.value).toBe(UNREADABLE_VALUE);
+    expect(out.value).not.toBe(PREDICATE.value);
+    expect(messages(lines)).toContain('decision_freshness_check_timeout');
+  }, 30_000);
 
   it('treats a missing check hook as changed', async () => {
     const { ctx, lines } = ctxWithLog();
