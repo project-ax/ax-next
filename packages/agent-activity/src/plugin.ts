@@ -231,7 +231,10 @@ export function createAgentActivityPlugin(cfg: AgentActivityConfig = {}): Plugin
     // Two tool calls can be in flight on one agent, and the catalog lookup is
     // async — so the one that RESOLVES last need not be the one that STARTED
     // last. Publish only if no newer step has landed while we were away, so the
-    // line follows call order rather than resolution order.
+    // line follows call order rather than resolution order. To millisecond
+    // resolution: two calls inside the same millisecond fall back to
+    // last-resolved, which is fine — they have no well-defined order and either
+    // is a tool the agent is genuinely running.
     if (record.lastStepAt === at) record.tool = tool;
   }
 

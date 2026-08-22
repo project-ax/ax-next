@@ -201,6 +201,31 @@ describe('deriveActivity — the line is one line', () => {
       expect(a.phrase).not.toMatch(/[\u0000-\u001F\u007F-\u009F]/);
   });
 
+  it.each([
+    ['a right-to-left override', '\u202EMorning email pass'],
+    ['an unterminated isolate', '\u2066Morning email pass'],
+    ['a zero-width space', 'Morning\u200Bemail pass'],
+    ['a zero-width joiner', 'Morning\u200Demail pass'],
+    ['a byte-order mark', '\uFEFFMorning email pass'],
+    ['an Arabic letter mark', '\u061CMorning email pass'],
+  ])('neutralises %s — a label must not be able to reorder what a reader sees', (_what, trigger) => {
+    const { phrase } = deriveActivity(input({ trigger }));
+    expect(phrase).not.toMatch(
+      /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/,
+    );
+    expect(phrase).toBe('Morning email pass');
+  });
+
+  it('truncates on code points, never leaving half a surrogate pair behind', () => {
+    // 59 plain characters then an astral one, so a UTF-16 slice at 59 would cut
+    // the pair in half and emit a lone high surrogate.
+    const label = `${'M'.repeat(58)}\u{1F600}\u{1F600}\u{1F600}`;
+    const { phrase } = deriveActivity(input({ trigger: label }));
+    expect([...phrase]).toHaveLength(MAX_PHRASE_CHARS);
+    expect(phrase.endsWith('…')).toBe(true);
+    expect(phrase.isWellFormed()).toBe(true);
+  });
+
   it('truncates an over-long label and MARKS that it truncated', () => {
     const a = deriveActivity(input({ trigger: 'M'.repeat(200) }));
     expect(a.phrase).toHaveLength(MAX_PHRASE_CHARS);
@@ -278,6 +303,13 @@ describe('deriveActivity — the things this surface must never say', () => {
       input(),
       input({ trigger: 'Morning email pass' }),
       input({ tool: { phrase: 'Reading email' } }),
+      // Inputs that WOULD say it, so this test guards the guard rather than
+      // only re-checking our own hardcoded strings.
+      input({ trigger: 'Inbox — 40 left' }),
+      input({ tool: { phrase: '80% through the inbox' }, trigger: 'ETA sweep' }),
+      input({
+        tool: { phrase: 'Reading email', countable: '% done', reported: { done: 1, total: 2 } },
+      }),
       input({
         tool: { phrase: 'Reading email', countable: 'messages', reported: { done: 29, total: 41 } },
       }),

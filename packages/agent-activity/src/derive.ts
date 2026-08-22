@@ -119,14 +119,6 @@ function counterFrom(tool: DeriveToolInput | null | undefined): ActivityCounter 
   return { done, total, unit };
 }
 
-/**
- * One line, plain text, bounded — or nothing at all.
- *
- * Control characters and line breaks are collapsed rather than rejected: a
- * routine named over two lines is a formatting accident, not an attack, and
- * dropping the label over it would cost a user their own words. What must not
- * survive is anything that lets a string reshape the surface it lands on.
- */
 const EPOCH_ISO = new Date(0).toISOString();
 
 /**
@@ -152,12 +144,44 @@ function usablePhrase(value: string | null | undefined): string | null {
   return PROGRESS_VOCABULARY.test(fenced) ? null : fenced;
 }
 
+/**
+ * Characters that let a string reshape the surface it lands on rather than just
+ * sit on it: C0 and C1 controls, the zero-width family, and the bidirectional
+ * marks, embeddings, overrides and isolates.
+ *
+ * The bidi half is the Trojan-source problem (CVE-2021-42574) pointed at a
+ * status line. A lone U+202E reverses the visual order of everything after it,
+ * and an unterminated isolate leaks that reordering into whatever the renderer
+ * draws next. This line carries a routine name out of the agent's own
+ * workspace and says it in our voice — so a label that can rewrite what the
+ * reader sees is the same failure as a label that lies, arriving by a different
+ * door.
+ *
+ * They become spaces rather than vanishing, so a name that leaned on one to
+ * separate two words still reads as two words.
+ */
+const REWRITES_THE_SURFACE =
+  /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]+/g;
+
+/**
+ * One line, plain text, bounded — or nothing at all.
+ *
+ * Line breaks and layout characters are collapsed rather than rejected: a
+ * routine named over two lines is a formatting accident, not an attack, and
+ * dropping the label over it would cost a user their own words.
+ *
+ * The cap counts CODE POINTS, not UTF-16 units, so truncation can never split a
+ * surrogate pair and leave a lone half behind — ill-formed UTF-16 out of a
+ * function whose whole job is "plain text" would be a poor joke. It does not
+ * count grapheme clusters: sixty stacked combining marks are sixty code points
+ * and fit. Keeping that inside its box is the renderer's job, not this one's —
+ * a text function cannot know how tall a line is allowed to be.
+ */
 function fencePhrase(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null;
-  // Control characters (C0 and C1) become spaces, then every run of
-  // whitespace collapses to one.
-  const flattened = value.replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const flattened = value.replace(REWRITES_THE_SURFACE, ' ').replace(/\s+/g, ' ').trim();
   if (flattened.length === 0) return null;
-  if (flattened.length <= MAX_PHRASE_CHARS) return flattened;
-  return `${flattened.slice(0, MAX_PHRASE_CHARS - 1).trimEnd()}\u2026`;
+  const points = [...flattened];
+  if (points.length <= MAX_PHRASE_CHARS) return flattened;
+  return `${points.slice(0, MAX_PHRASE_CHARS - 1).join('').trimEnd()}\u2026`;
 }
