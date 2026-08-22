@@ -180,7 +180,8 @@ export async function settleReplay(args: {
     // here means the ROW IS GONE, not that we lost a race. Say so out loud: a
     // receipt about to be emitted for a decision that no longer exists is worth
     // finding in a log.
-    warnIfLost(ctx, decision, 'markReplayed', await store.markReplayed(decision.id, now().toISOString()));
+    const stamped = await store.markReplayed(decision.id, now().toISOString());
+    warnIfLost(ctx, decision, 'markReplayed', stamped);
     // The authored line written when the human was asked — and the only one of
     // the four that claims the thing happened.
     await emitExecuted(bus, ctx, decision, 'executed', decision.approvedText);
