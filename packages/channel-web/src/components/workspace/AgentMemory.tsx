@@ -1,45 +1,46 @@
 /**
  * Memory — split by WHO OWNS IT, which is the whole point.
  *
- * "Rules you gave me" is the human's: verbatim, always injected, safe to
- * hand-edit, never touched by rollup. "What it worked out" is the agent's:
- * inspectable and editable, but subject to the same compaction and GC as the
- * rest of the strata, so a hand-edit there can be rewritten later.
+ * "Rules you gave me" is the human's: verbatim, always injected, never touched
+ * by rollup. "What it worked out" is the agent's: inspectable, but subject to
+ * the same compaction and GC as the rest of the strata.
  *
- * The design this came from put both in one editor under the promise "anything
- * you write here sticks". For half the files that promise is false, and finding
- * that out by having your note eaten is the kind of thing a user never forgives.
+ * READ-ONLY in this task. There is no route that saves a memory doc, and an
+ * editor with a Save button that posts nowhere makes exactly the promise this
+ * split exists to avoid — "anything you write here sticks" — and then breaks
+ * it. AW-13 brings the write path and the editor back together.
  */
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { FileText, Lock, Sparkles } from 'lucide-react';
-import { Button } from '@/components/ui/button';
-import { Textarea } from '@/components/ui/textarea';
 import type { MemoryDoc } from '@/lib/workspace-api';
 import { SectionLabel } from './bits';
 
 export function AgentMemory({
   docs,
   agentName,
-  onSave,
 }: {
   docs: MemoryDoc[];
   agentName: string;
-  onSave: (name: string, body: string) => void;
 }) {
-  const [name, setName] = useState(docs[0]?.name ?? '');
+  // Picking which doc to READ is navigation, not authoring — it survives the
+  // editor's removal.
+  const [name, setName] = useState('');
   const doc = docs.find((d) => d.name === name) ?? docs[0];
-  const [text, setText] = useState(doc?.body ?? '');
-  const [saved, setSaved] = useState(true);
 
-  useEffect(() => {
-    setText(doc?.body ?? '');
-    setSaved(true);
-  }, [doc?.name, doc?.body]);
-
+  /*
+    Empty is the only thing this tab shows today — nothing reads the strata
+    into `memory` yet (AW-13).
+  */
   if (!doc) {
     return (
-      <div className="px-6 py-10 text-center text-[13.5px] text-muted-foreground">
-        {agentName} has no memory yet.
+      <div className="flex flex-col gap-1.5 px-6 py-10 text-center">
+        <p className="text-[13.5px] text-muted-foreground">
+          Nothing has been written down yet.
+        </p>
+        <p className="mx-auto max-w-[420px] text-[12.5px] leading-relaxed text-muted-foreground">
+          This is where the rules we give {agentName} and the things it works
+          out for itself will live, each kept separately.
+        </p>
       </div>
     );
   }
@@ -78,7 +79,7 @@ export function AgentMemory({
         <p className="mt-5 rounded-lg bg-muted px-3 py-2.5 text-[11.5px] leading-relaxed text-muted-foreground">
           {doc.scope === 'rules'
             ? `Your rules are kept word for word. ${agentName} reads them before every run and never rewrites them.`
-            : `${agentName} wrote this itself. You can edit it, but it may be rewritten as it learns more.`}
+            : `${agentName} wrote this itself, and may rewrite it as it learns more.`}
         </p>
       </div>
 
@@ -86,33 +87,13 @@ export function AgentMemory({
         <div className="flex items-center gap-3 border-b border-border px-5 py-3">
           <FileText size={13} className="text-muted-foreground" />
           <span className="font-mono text-[13px]">memory/{doc.name}</span>
-          <span className="text-[12px] text-muted-foreground">
-            {saved ? 'Saved' : 'Unsaved changes'}
-          </span>
-          <Button
-            size="sm"
-            className="ml-auto"
-            disabled={saved}
-            onClick={() => {
-              onSave(doc.name, text);
-              setSaved(true);
-            }}
-          >
-            Save
-          </Button>
+          <span className="text-[12px] text-muted-foreground">Read-only</span>
         </div>
-        <Textarea
-          value={text}
-          spellCheck={false}
-          onChange={(e) => {
-            setText(e.target.value);
-            setSaved(false);
-          }}
-          className="flex-1 resize-none rounded-none border-0 px-5 py-4 font-mono text-[12.5px] leading-relaxed focus-visible:ring-0"
-        />
+        <pre className="flex-1 overflow-auto whitespace-pre-wrap px-5 py-4 font-mono text-[12.5px] leading-relaxed">
+          {doc.body}
+        </pre>
         <div className="border-t border-border px-5 py-2.5 text-[11.5px] text-muted-foreground">
-          Markdown · {text.length} characters · {agentName} reads this before its
-          next run
+          We can read this here, but we cannot change it yet.
         </div>
       </div>
     </div>

@@ -5,9 +5,19 @@
  * The agent is the object you navigate to, and the conversation is one of its
  * properties. That inversion is the whole point of the refresh: chat stops
  * being the noun.
+ *
+ * There is no Pause/Resume control. Pausing an agent has no backend, and a
+ * button wired to a route that answers 501 is half-wired code with a friendly
+ * face on it. It arrives with the halted/paused state itself (AW-12).
+ *
+ * Sending goes to the SHIPPED chat wire (`workspaceApi.sendMessage` →
+ * `streamReply`), not to a workspace route of its own — starting a turn has one
+ * source of truth. While the reply streams we show a transient bubble; when the
+ * turn ends we re-read the detail so the server's durable thread replaces it.
  */
-import { useCallback, useEffect, useState } from 'react';
-import { Archive, ArrowRight, ChevronLeft, Pause, Play } from 'lucide-react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Archive, ArrowRight, ChevronLeft } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { workspaceApi, type AgentDetail, type Decision } from '@/lib/workspace-api';
@@ -17,7 +27,11 @@ import { AgentFiles } from './AgentFiles';
 import { AgentMemory } from './AgentMemory';
 import { AgentRail } from './AgentRail';
 import { AgentStateLabel, AgentTile } from './bits';
-import type { ActivityEvent, WorkspaceAgent } from '@/lib/workspace-api';
+import type {
+  ActivityEvent,
+  ThreadMessage,
+  WorkspaceAgent,
+} from '@/lib/workspace-api';
 
 export type AgentTab = 'chat' | 'did' | 'files' | 'memory';
 
@@ -29,12 +43,23 @@ interface Props {
   activity: ActivityEvent[];
   agents: WorkspaceAgent[];
   onBack: () => void;
-  onApprove: (id: string) => void;
-  onDismiss: (id: string) => void;
-  onUndo: (id: string) => void;
+  /**
+   * The three ways out of a decision. Optional for the same reason they are on
+   * `TodayView`: nothing serves approve/dismiss/undo yet, and the shell passes
+   * none. AW-11 supplies them with the decisions themselves.
+   */
+  onApprove?: (id: string) => void;
+  onDismiss?: (id: string) => void;
+  onUndo?: (id: string) => void;
   /** Bumped by the shell whenever the board changes, to re-pull detail. */
   version: number;
   onChanged: () => void;
+  /**
+   * A message the shell already sent on this agent's behalf (the home
+   * composer). We stream its reply as soon as we mount.
+   */
+  pendingReply?: { reqId: string; text: string } | null;
+  onPendingReplyConsumed?: () => void;
 }
 
 export function AgentView({
@@ -50,32 +75,231 @@ export function AgentView({
   onUndo,
   version,
   onChanged,
+  pendingReply = null,
+  onPendingReplyConsumed,
 }: Props) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const [pastId, setPastId] = useState<string | null>(null);
+  /**
+   * The excerpt for the past conversation the rail has open, fetched on demand
+   * and kept SEPARATE from `detail` so the current conversation's id — the one
+   * a send lands in — is never overwritten by a read-only view.
+   */
+  const [pastDetail, setPastDetail] = useState<AgentDetail | null>(null);
+  const [pastError, setPastError] = useState<string | null>(null);
+
+  /** The turn in flight: what we sent, what has streamed back, how it ended. */
+  const [sent, setSent] = useState<string | null>(null);
+  const [streamed, setStreamed] = useState('');
+  const [streaming, setStreaming] = useState(false);
+  const [turnError, setTurnError] = useState<string | null>(null);
+  /** Set by a send before the re-read lands, so a follow-up hits the same row. */
+  const conversationRef = useRef<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const load = useCallback(async () => {
-    setDetail(await workspaceApi.agent(agentId));
+    try {
+      const next = await workspaceApi.agent(agentId);
+      setDetail(next);
+      conversationRef.current = next.conversationId;
+      setLoadError(null);
+    } catch (e) {
+      setDetail(null);
+      setLoadError(e instanceof Error ? e.message : String(e));
+    }
   }, [agentId]);
 
   useEffect(() => {
     void load();
   }, [load, version]);
 
+  /*
+    Open one of the rail's past conversations. The excerpt is a real re-read
+    (`?conversationId=`), not something the roster response carried: `past`
+    rows used to ship `msgs: []` and a `folded: 0`, which the pane rendered as
+    "Earlier turns were summarised into memory · 0 messages folded" above an
+    empty transcript. Nothing had been summarised and nothing had been read.
+  */
+  useEffect(() => {
+    if (pastId === null) {
+      setPastDetail(null);
+      setPastError(null);
+      return;
+    }
+    let cancelled = false;
+    setPastDetail(null);
+    setPastError(null);
+    void (async () => {
+      try {
+        const excerpt = await workspaceApi.agent(agentId, pastId);
+        if (!cancelled) setPastDetail(excerpt);
+      } catch (e) {
+        if (!cancelled) {
+          setPastError(e instanceof Error ? e.message : String(e));
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId, pastId]);
+
   useEffect(() => {
     setPastId(null);
+    setSent(null);
+    setStreamed('');
+    setStreaming(false);
+    setTurnError(null);
   }, [agentId]);
+
+  // Abort any live stream when we unmount or switch agents — a reader left
+  // running would keep writing into a component nobody is looking at.
+  useEffect(() => {
+    return () => abortRef.current?.abort();
+  }, [agentId]);
+
+  const streamFrom = useCallback(
+    async (reqId: string) => {
+      abortRef.current?.abort();
+      const ac = new AbortController();
+      abortRef.current = ac;
+      setStreaming(true);
+      setStreamed('');
+      setTurnError(null);
+      await workspaceApi.streamReply(reqId, {
+        signal: ac.signal,
+        onText: (chunk) => setStreamed((prev) => prev + chunk),
+        onDone: () => {
+          setStreaming(false);
+          setSent(null);
+          setStreamed('');
+          // The durable thread is the source of truth — re-read it rather than
+          // keeping our transient copy around to drift.
+          void load();
+          onChanged();
+        },
+        onError: (message) => {
+          // Never leave the spinner up. A stale answer is a state we can
+          // render; an absence is not (design H7).
+          setStreaming(false);
+          setTurnError(message);
+        },
+      });
+    },
+    [load, onChanged],
+  );
+
+  /*
+    Pick up a turn the home composer already started for this agent. Keyed on
+    the reqId rather than on the prop's identity: the shell rebuilds that object
+    on every render, and re-opening the same stream twice would double the
+    reply.
+  */
+  const consumedReqId = useRef<string | null>(null);
+  useEffect(() => {
+    if (!pendingReply) return;
+    if (consumedReqId.current === pendingReply.reqId) return;
+    consumedReqId.current = pendingReply.reqId;
+    setSent(pendingReply.text);
+    onPendingReplyConsumed?.();
+    void streamFrom(pendingReply.reqId);
+  }, [pendingReply, streamFrom, onPendingReplyConsumed]);
+
+  const send = useCallback(
+    async (text: string) => {
+      setSent(text);
+      setTurnError(null);
+      try {
+        const { conversationId, reqId } = await workspaceApi.sendMessage({
+          agentId,
+          conversationId: conversationRef.current,
+          text,
+        });
+        conversationRef.current = conversationId;
+        await streamFrom(reqId);
+      } catch (e) {
+        setStreaming(false);
+        setTurnError(
+          e instanceof Error
+            ? e.message
+            : 'We could not get that message to the agent.',
+        );
+      }
+    },
+    [agentId, streamFrom],
+  );
+
+  if (loadError !== null) {
+    /*
+      The prose, the way out, and the code — in that order, on separate lines.
+      This used to end with a bare "(workspace /agents/ag_x → 404)" inside the
+      sentence and told the reader to try again with no button to do it. The
+      shell's board-level error (WorkspaceShell) has the same three parts in
+      the same order; a reader who has seen one recognises the other.
+    */
+    return (
+      <div className="flex flex-1 items-start justify-center p-6">
+        <Alert variant="destructive" className="max-w-[520px]">
+          <AlertDescription className="flex flex-col items-start gap-3">
+            <span>
+              We could not load this agent. It may have been removed, or the
+              server may be having a moment. Nothing was lost — its work and
+              its memory are untouched.
+            </span>
+            <Button variant="secondary" size="sm" onClick={() => void load()}>
+              Try again
+            </Button>
+            <span className="font-mono text-[11px] text-muted-foreground">
+              {loadError}
+            </span>
+          </AlertDescription>
+        </Alert>
+      </div>
+    );
+  }
 
   if (!detail) {
     return (
       <div className="flex flex-1 items-center justify-center text-[13px] text-muted-foreground">
-        loading…
+        Loading…
       </div>
     );
   }
 
   const { agent } = detail;
   const past = detail.past.find((p) => p.id === pastId) ?? null;
+
+  /*
+    The transient turn, appended to the durable thread while it is in flight.
+    It disappears on `done`, when the re-read brings back the server's version
+    of the same two messages.
+  */
+  const liveThread: ThreadMessage[] = [...detail.thread];
+  if (sent !== null) {
+    liveThread.push({ kind: 'user', id: 'pending-user', text: sent });
+  }
+  if (streaming || streamed.length > 0) {
+    liveThread.push(
+      streamed.length > 0
+        ? { kind: 'agent', id: 'pending-agent', text: streamed, time: '' }
+        : { kind: 'status', id: 'pending-status', text: 'Thinking…' },
+    );
+  }
+
+  /*
+    The read-only excerpt. While it is in flight the pane says so rather than
+    rendering an empty transcript — an empty thread reads as "this
+    conversation had nothing in it", which is a claim about the content, not
+    about the fetch. On failure the alert above carries the news and the pane
+    stays blank rather than repeating it.
+  */
+  const pastThread: ThreadMessage[] =
+    pastDetail !== null
+      ? pastDetail.thread
+      : pastError !== null
+        ? []
+        : [{ kind: 'status', id: 'past-loading', text: 'Opening…' }];
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -85,28 +309,10 @@ export function AgentView({
             <ChevronLeft size={16} />
           </Button>
           <AgentTile agent={agent} size={30} />
-          <div>
-            <div className="flex items-center gap-2.5">
-              <span className="text-[15px] font-medium">{agent.name}</span>
-              <AgentStateLabel agent={agent} />
-            </div>
-            <div className="text-[12.5px] text-muted-foreground">
-              {agent.role}
-            </div>
+          <div className="flex items-center gap-2.5">
+            <span className="text-[15px] font-medium">{agent.name}</span>
+            <AgentStateLabel agent={agent} />
           </div>
-          <Button
-            variant="secondary"
-            size="sm"
-            className="ml-auto gap-1.5"
-            onClick={async () => {
-              await workspaceApi.pause(agent.id, !agent.paused);
-              onChanged();
-              await load();
-            }}
-          >
-            {agent.paused ? <Play size={12} /> : <Pause size={12} />}
-            {agent.paused ? 'Resume' : 'Pause'}
-          </Button>
         </div>
 
         <Tabs
@@ -156,30 +362,78 @@ export function AgentView({
                   </Button>
                 </div>
               )}
+              {turnError !== null && !past && (
+                /*
+                  One sentence about one event, then the raw detail, then the
+                  way out.
+
+                  This used to concatenate our prose with whatever string the
+                  transport handed back — "That reply did not finish. We lost
+                  the connection before the reply finished. Send it again to
+                  pick up where we left off. Send it again when you are ready."
+                  — three sentences saying one thing twice, with a raw
+                  `(500)` landing mid-paragraph. Worse, "send it again" meant
+                  RETYPE: the composer clears its draft on send. We still hold
+                  the text in `sent`, so the honest control is a button that
+                  re-fires it.
+                */
+                <div className="px-6 pt-4">
+                  <Alert variant="destructive">
+                    <AlertDescription className="flex flex-col items-start gap-2">
+                      <span>
+                        That reply didn&rsquo;t finish — we may have lost the
+                        connection. Nothing you sent was lost.
+                      </span>
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        {turnError}
+                      </span>
+                      <div className="flex items-center gap-2">
+                        {sent !== null && (
+                          <Button
+                            size="sm"
+                            onClick={() => void send(sent)}
+                            disabled={streaming}
+                          >
+                            Resend
+                          </Button>
+                        )}
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setTurnError(null)}
+                        >
+                          Dismiss
+                        </Button>
+                      </div>
+                    </AlertDescription>
+                  </Alert>
+                </div>
+              )}
+              {past && pastError !== null && (
+                <div className="px-6 pt-4">
+                  <Alert variant="destructive">
+                    <AlertDescription className="flex flex-col items-start gap-2">
+                      <span>
+                        We could not open that conversation. It may have been
+                        deleted since this list was drawn.
+                      </span>
+                      <span className="font-mono text-[11px] text-muted-foreground">
+                        {pastError}
+                      </span>
+                    </AlertDescription>
+                  </Alert>
+                </div>
+              )}
               <AgentConversation
                 agent={agent}
-                thread={
-                  past
-                    ? [
-                        {
-                          kind: 'fold',
-                          id: 'past-fold',
-                          text: `Earlier turns were summarised into memory · ${past.folded} messages folded`,
-                        },
-                        ...past.msgs,
-                      ]
-                    : detail.thread
-                }
+                thread={past ? pastThread : liveThread}
                 decisions={decisions}
-                suggestions={detail.suggestions}
                 readOnly={past !== null}
-                onSend={async (text) => {
-                  await workspaceApi.send(agent.id, text);
-                  await load();
-                }}
-                onApprove={onApprove}
-                onDismiss={onDismiss}
-                onUndo={onUndo}
+                busy={streaming}
+                onSend={(text) => void send(text)}
+                {...(onApprove ? { onApprove } : {})}
+                {...(onDismiss ? { onDismiss } : {})}
+                {...(onUndo ? { onUndo } : {})}
               />
             </>
           )}
@@ -199,14 +453,7 @@ export function AgentView({
           )}
 
           {tab === 'memory' && (
-            <AgentMemory
-              docs={detail.memory}
-              agentName={agent.name}
-              onSave={async (name, body) => {
-                await workspaceApi.saveMemory(agent.id, name, body);
-                await load();
-              }}
-            />
+            <AgentMemory docs={detail.memory} agentName={agent.name} />
           )}
         </div>
 

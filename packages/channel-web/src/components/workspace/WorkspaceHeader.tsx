@@ -62,7 +62,13 @@ export function Segmented<T extends string>({
           className="h-7 rounded-md px-3 text-[12.5px] font-medium text-muted-foreground hover:bg-transparent hover:text-foreground data-[state=on]:bg-background data-[state=on]:text-foreground data-[state=on]:shadow-sm"
         >
           {o.label}
-          {o.count !== undefined && (
+          {/*
+            A badge is a count of things that are there. Zero of them is not a
+            count, it is the absence of one — and "Needs you 0" reads as a
+            measurement we have not made. The tab says "Needs you" until there
+            is something to number.
+          */}
+          {o.count !== undefined && o.count > 0 && (
             <span className="ml-1.5 tabular-nums">{o.count}</span>
           )}
         </ToggleGroupItem>

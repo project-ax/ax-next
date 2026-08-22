@@ -1,7 +1,7 @@
 /**
  * Today — the queue of things waiting on a human, and nothing else.
  *
- * Two deliberate departures from the design this came from:
+ * Three deliberate properties:
  *
  *   1. The headline is TEMPLATED FROM COUNTS, never generated prose. "Nothing
  *      has gone wrong" being wrong once ends the relationship, so the only
@@ -9,11 +9,15 @@
  *
  *   2. There is no "Done" filter. Done was a third renderer over the same event
  *      stream that Activity already owns; the reassurance it carried lives in
- *      the sub-line instead, and the footer links to the real feed. The two
- *      remaining segments (owned by the page header) also count one kind of
- *      thing each, rather than mixing decisions, agents, and events.
+ *      the sub-line instead, and the footer links to the real feed.
+ *
+ *   3. Nothing here is a fixture. The halted-agent row that used to sit at the
+ *      top of the queue is gone: it hardcoded a specific mail-server failure,
+ *      down to the timestamps, and no agent can reach the `stopped` state yet
+ *      anyway. AW-11/AW-2 bring the real halted state and this row back with
+ *      it, written from the record instead of from prose.
  */
-import { AlertTriangle, ArrowRight, CheckCircle2 } from 'lucide-react';
+import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { DecisionRow } from './DecisionRow';
@@ -35,10 +39,17 @@ interface Props {
   expandedId: string | null;
   onExpand: (id: string | null) => void;
   onOpenAgent: (id: string) => void;
-  onApprove: (id: string) => void;
-  onDismiss: (id: string) => void;
-  onUndo: (id: string) => void;
-  onRestart: (agentId: string) => void;
+  /**
+   * The three ways out of a decision. OPTIONAL, and all three must be supplied
+   * before a single `DecisionRow` renders — the shell supplies none today,
+   * because `/api/workspace/state` returns `decisions: []` and there is no
+   * route behind approve/dismiss/undo. AW-11 supplies them along with the
+   * decisions themselves. Deliberately NOT defaulted to no-op handlers: a
+   * button that swallows a click is worse than a button that is not there.
+   */
+  onApprove?: (id: string) => void;
+  onDismiss?: (id: string) => void;
+  onUndo?: (id: string) => void;
   onSeeActivity: () => void;
 }
 
@@ -52,30 +63,62 @@ export function TodayView({
   onApprove,
   onDismiss,
   onUndo,
-  onRestart,
   onSeeActivity,
 }: Props) {
-  const open = decisions.filter(
-    (d) => d.status === 'pending' || d.status === 'stale',
-  );
-  const justResolved = decisions.filter(
-    (d) =>
-      (d.status === 'executed' || d.status === 'dismissed') &&
-      d.resolvedAt !== null &&
-      Date.now() - Date.parse(d.resolvedAt) < 60_000,
-  );
-  const stopped = agents.filter((a) => a.state === 'stopped');
-  const working = agents.filter((a) => a.state === 'working' && !a.paused);
-  const needsCount = open.length + stopped.length;
+  const actionable =
+    onApprove !== undefined && onDismiss !== undefined && onUndo !== undefined;
+
+  const open = actionable
+    ? decisions.filter((d) => d.status === 'pending' || d.status === 'stale')
+    : [];
+  const justResolved = actionable
+    ? decisions.filter(
+        (d) =>
+          (d.status === 'executed' || d.status === 'dismissed') &&
+          d.resolvedAt !== null &&
+          Date.now() - Date.parse(d.resolvedAt) < 60_000,
+      )
+    : [];
+  const working = agents.filter((a) => a.state === 'working');
 
   const headline =
-    stopped.length > 0
-      ? `${stopped[0]!.name} has stopped${open.length ? `, and ${open.length === 1 ? 'one decision is' : `${open.length} decisions are`} waiting` : ' and needs you'}.`
-      : open.length === 0
-        ? 'Nothing is waiting on you.'
-        : `${WORDS[open.length] ?? `${open.length} decisions`} ${open.length === 1 ? 'is' : 'are'} waiting on you.`;
+    open.length === 0
+      ? 'Nothing is waiting on you.'
+      : `${WORDS[open.length] ?? `${open.length} decisions`} ${open.length === 1 ? 'is' : 'are'} waiting on you.`;
 
-  const agentFor = (id: string) => agents.find((a) => a.id === id)!;
+  /*
+    A COUNT IS ONLY RENDERED WHEN IT IS POSITIVE.
+
+    This line used to read "0 agents working · 0 waiting on you" beside a green
+    tick whenever the workspace was quiet — a reassuring report on a system we
+    had not measured. `working` is derived from `session:is-alive`, and when
+    that service is not registered every agent reads `resting`, so the zero is
+    not even "nothing is happening": it is "we did not look". A zero is a
+    claim; an absent line is the truth.
+  */
+  const summary: string[] = [];
+  if (working.length > 0) {
+    summary.push(
+      `${working.length} ${working.length === 1 ? 'agent' : 'agents'} working`,
+    );
+  }
+  if (open.length > 0) summary.push(`${open.length} waiting on you`);
+
+  /*
+    The hint describes an action on a row that exists. Rendered over an empty
+    list it was instructions for furniture that is not there. "Line" also read
+    like a phone line — these are rows.
+  */
+  const hint =
+    filter === 'needs'
+      ? open.length > 0
+        ? 'Open a row to see the detail and act on it.'
+        : null
+      : working.length > 0
+        ? 'Read-only — nothing here asks anything of you.'
+        : null;
+
+  const agentFor = (id: string) => agents.find((a) => a.id === id);
 
   return (
     <div className="mx-auto w-full max-w-[900px] px-6 py-6">
@@ -83,23 +126,10 @@ export function TodayView({
         <h1 className="max-w-[620px] text-[21px] font-medium leading-snug tracking-[-0.02em] text-pretty">
           {headline}
         </h1>
-        {stopped.length > 0 ? (
-          <div className="flex max-w-[620px] items-start gap-2.5 rounded-md bg-destructive-soft px-3.5 py-2.5 text-[13.5px] leading-relaxed">
-            <AlertTriangle
-              size={14}
-              className="mt-[3px] shrink-0 text-destructive"
-            />
-            <span>
-              {stopped[0]!.stoppedReason} Everything else is fine —{' '}
-              {working.length} agents still working.
-            </span>
-          </div>
-        ) : (
+        {summary.length > 0 && (
           <div className="flex items-center gap-2.5 text-[13.5px] text-muted-foreground">
             <CheckCircle2 size={14} className="shrink-0 text-primary" />
-            <span>
-              {working.length} agents working · {open.length} waiting on you
-            </span>
+            <span>{summary.join(' · ')}</span>
           </div>
         )}
       </div>
@@ -107,50 +137,59 @@ export function TodayView({
       <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
         {filter === 'needs' ? (
           <>
-            {stopped.map((a) => (
-              <StoppedAgentRow
-                key={a.id}
-                agent={a}
-                expanded={expandedId === `agent:${a.id}`}
-                onToggle={() =>
-                  onExpand(expandedId === `agent:${a.id}` ? null : `agent:${a.id}`)
-                }
-                onOpenAgent={() => onOpenAgent(a.id)}
-                onRestart={() => onRestart(a.id)}
-              />
-            ))}
-            {open.map((d) => (
-              <DecisionRow
-                key={d.id}
-                decision={d}
-                agent={agentFor(d.agentId)}
-                expanded={expandedId === d.id}
-                onToggle={() => onExpand(expandedId === d.id ? null : d.id)}
-                onOpenAgent={() => onOpenAgent(d.agentId)}
-                onApprove={() => onApprove(d.id)}
-                onDismiss={() => onDismiss(d.id)}
-                onUndo={() => onUndo(d.id)}
-              />
-            ))}
-            {justResolved.map((d) => (
-              <DecisionRow
-                key={d.id}
-                decision={d}
-                agent={agentFor(d.agentId)}
-                expanded={false}
-                onToggle={() => {}}
-                onOpenAgent={() => onOpenAgent(d.agentId)}
-                onApprove={() => {}}
-                onDismiss={() => {}}
-                onUndo={() => onUndo(d.id)}
-              />
-            ))}
-            {needsCount === 0 && justResolved.length === 0 && (
+            {actionable &&
+              open.map((d) => {
+                const agent = agentFor(d.agentId);
+                if (!agent) return null;
+                return (
+                  <DecisionRow
+                    key={d.id}
+                    decision={d}
+                    agent={agent}
+                    expanded={expandedId === d.id}
+                    onToggle={() => onExpand(expandedId === d.id ? null : d.id)}
+                    onOpenAgent={() => onOpenAgent(d.agentId)}
+                    onApprove={() => onApprove(d.id)}
+                    onDismiss={() => onDismiss(d.id)}
+                    onUndo={() => onUndo(d.id)}
+                  />
+                );
+              })}
+            {actionable &&
+              justResolved.map((d) => {
+                const agent = agentFor(d.agentId);
+                if (!agent) return null;
+                return (
+                  <DecisionRow
+                    key={d.id}
+                    decision={d}
+                    agent={agent}
+                    expanded={false}
+                    onToggle={() => {}}
+                    onOpenAgent={() => onOpenAgent(d.agentId)}
+                    onApprove={() => onApprove(d.id)}
+                    onDismiss={() => onDismiss(d.id)}
+                    onUndo={() => onUndo(d.id)}
+                  />
+                );
+              })}
+            {open.length === 0 && justResolved.length === 0 && (
+              /*
+                The headline already said the queue is empty. Saying it again
+                two inches lower tells a first-timer nothing; what they do not
+                know is what this list is FOR, and this is the one moment they
+                have the attention to read it.
+              */
               <div className="px-5 py-10 text-center text-[13.5px] text-muted-foreground">
-                Nothing needs you. Your agents keep working.
+                When an agent hits something it wants your OK on, it&rsquo;ll
+                wait for you here.
               </div>
             )}
           </>
+        ) : working.length === 0 ? (
+          <div className="px-5 py-10 text-center text-[13.5px] text-muted-foreground">
+            Nobody is mid-task right now.
+          </div>
         ) : (
           working.map((a) => (
             <button
@@ -161,8 +200,13 @@ export function TodayView({
             >
               <StateDot state="working" />
               <span className="shrink-0 text-[13px] font-medium">{a.name}</span>
+              {/*
+                `now` is null until something real produces the activity line
+                (AW-8/AW-14). The name and the state dot already say "working";
+                a placeholder phrase here would read as a report.
+              */}
               <span className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground">
-                {a.now}
+                {a.now ?? ''}
               </span>
               <span className="shrink-0 text-[12.5px] text-muted-foreground">
                 {a.counter
@@ -178,11 +222,7 @@ export function TodayView({
       </div>
 
       <div className="flex items-center gap-3 px-1 pt-3.5 text-[12.5px] text-muted-foreground">
-        <span>
-          {filter === 'needs'
-            ? 'Open a line to see the detail and act on it.'
-            : 'Read-only — nothing here asks anything of you.'}
-        </span>
+        {hint !== null && <span>{hint}</span>}
         <Button
           variant="ghost"
           size="sm"
@@ -193,78 +233,6 @@ export function TodayView({
           <ArrowRight size={11} />
         </Button>
       </div>
-    </div>
-  );
-}
-
-/**
- * A halted agent is not a decision — there is no proposed call to approve — but
- * it belongs at the top of the same queue, because from the user's side it is
- * the same question: something stopped and wants an answer.
- */
-function StoppedAgentRow({
-  agent,
-  expanded,
-  onToggle,
-  onOpenAgent,
-  onRestart,
-}: {
-  agent: WorkspaceAgent;
-  expanded: boolean;
-  onToggle: () => void;
-  onOpenAgent: () => void;
-  onRestart: () => void;
-}) {
-  return (
-    <div className="border-b border-rule-soft bg-destructive-soft/50 last:border-b-0">
-      <button
-        type="button"
-        onClick={onToggle}
-        className="flex w-full items-center gap-3 px-5 py-3.5 text-left"
-      >
-        <StateDot state="stopped" />
-        <span className="shrink-0 text-[13px] font-medium">{agent.name}</span>
-        <span className="min-w-0 flex-1 truncate text-[13.5px] text-destructive">
-          Stopped — two nudges were rejected by the mail server
-        </span>
-        <span className="shrink-0 text-[12.5px] text-muted-foreground">
-          9:12 AM
-        </span>
-      </button>
-      {expanded && (
-        <div className="px-5 pb-5 pl-[46px]">
-          <p className="max-w-[660px] text-[13.5px] leading-relaxed text-muted-foreground">
-            I tried to send the nudges to Legal and Sam twice. The mail server
-            refused both times, so I stopped rather than keep retrying. Nothing
-            else in my queue has run since.
-          </p>
-          <div className="mt-3 max-w-[660px] rounded-md bg-muted px-4 py-3.5">
-            <div className="mb-1.5 text-[11.5px] text-muted-foreground">
-              Error returned to {agent.name} · 9:12 AM and 9:14 AM
-            </div>
-            <div className="font-mono text-[12px]">
-              550 5.7.1 Relay access denied — smtp.northwind.co
-            </div>
-          </div>
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={onRestart}>
-              Retry now
-            </Button>
-            <Button size="sm" variant="ghost" onClick={onOpenAgent}>
-              Leave it stopped
-            </Button>
-            <Button
-              size="sm"
-              variant="ghost"
-              onClick={onOpenAgent}
-              className="ml-auto gap-1.5 text-primary"
-            >
-              Open {agent.name}
-              <ArrowRight size={11} />
-            </Button>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

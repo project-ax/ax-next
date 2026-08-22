@@ -14,6 +14,7 @@
  */
 import { useState } from 'react';
 import { ArrowUp, ChevronDown, MessageSquare, Zap } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import {
   DropdownMenu,
@@ -38,29 +39,72 @@ export function HomeComposer({
   onSend,
 }: {
   agents: WorkspaceAgent[];
-  onSend: (agentId: string, text: string) => void;
+  /**
+   * Awaited, and its rejection is the caller's news to hear. Returning `void`
+   * here is what let a failed send reject unhandled while the draft was
+   * already gone — see `dispatch`.
+   */
+  onSend: (agentId: string, text: string) => void | Promise<void>;
 }) {
   const [draft, setDraft] = useState('');
   const [pick, setPick] = useState<string>('auto');
   const [proposal, setProposal] = useState<Proposal | null>(null);
   const [routing, setRouting] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const picked = agents.find((a) => a.id === pick) ?? null;
+  const nameOf = (id: string) =>
+    agents.find((a) => a.id === id)?.name ?? 'that agent';
+
+  /*
+    THE DRAFT IS ONLY CLEARED ONCE THE SEND HAS RESOLVED.
+
+    Both of these used to be un-caught awaits, and the draft was cleared before
+    the handoff. A 503, a 404 or a dropped connection rejected a promise nobody
+    was listening to: nothing rendered, and the sentence the user had just
+    typed was already wiped out of the box. Losing someone's words because a
+    server hiccuped is not an acceptable failure mode at any severity.
+  */
+  const dispatch = async (agentId: string, text: string) => {
+    setSending(true);
+    setError(null);
+    try {
+      await onSend(agentId, text);
+      // On the home surface `onSend` navigates to the agent, so this component
+      // is on its way out by the time these run. React 18 makes a setState on
+      // an unmounted component a no-op rather than a warning, and the clears
+      // still matter on the paths that DON'T navigate — so they stay.
+      setProposal(null);
+      setDraft('');
+    } catch {
+      setProposal(null);
+      setError(
+        `We could not get that to ${nameOf(agentId)}. Nothing was sent, and your message is still here — try again in a moment.`,
+      );
+    } finally {
+      setSending(false);
+    }
+  };
 
   const submit = async () => {
     const text = draft.trim();
-    if (!text || routing) return;
+    if (!text || routing || sending) return;
 
     if (picked) {
-      setDraft('');
-      onSend(picked.id, text);
+      await dispatch(picked.id, text);
       return;
     }
 
     setRouting(true);
+    setError(null);
     try {
       const r = await workspaceApi.route(text);
       setProposal({ ...r, text });
+    } catch {
+      setError(
+        'We could not work out which agent should take this. Your message is still here — pick an agent from the menu, or try again in a moment.',
+      );
     } finally {
       setRouting(false);
     }
@@ -68,14 +112,26 @@ export function HomeComposer({
 
   const confirm = (agentId: string) => {
     if (!proposal) return;
-    const { text } = proposal;
-    setProposal(null);
-    setDraft('');
-    onSend(agentId, text);
+    void dispatch(agentId, proposal.text);
   };
 
   return (
     <div className="mx-auto w-full max-w-[900px] px-6 pb-6">
+      {error !== null && (
+        <Alert variant="destructive" className="mb-2">
+          <AlertDescription className="flex flex-wrap items-center gap-3">
+            <span className="min-w-0">{error}</span>
+            <Button
+              variant="secondary"
+              size="sm"
+              className="ml-auto"
+              onClick={() => setError(null)}
+            >
+              Dismiss
+            </Button>
+          </AlertDescription>
+        </Alert>
+      )}
       {proposal && (
         <div className="mb-2 flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3.5 py-2.5 shadow-sm">
           <Zap size={13} className="shrink-0 text-primary" />
@@ -129,7 +185,17 @@ export function HomeComposer({
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && void submit()}
-          placeholder={'Ask for something — try "find me 30 minutes with Marcus"'}
+          /*
+            Promises nothing. The old placeholder — "try 'find me 30 minutes
+            with Marcus'" — presumed a scheduler agent, a calendar grant and a
+            contact named Marcus, none of which a brand-new agent has. A
+            suggestion the product cannot honour is a claim about reach.
+          */
+          placeholder={
+            picked
+              ? `Ask ${picked.name} to do something — or just say hi to get started`
+              : 'Ask for something — or just say hi to get started'
+          }
           className="h-8 border-0 bg-transparent px-0 shadow-none focus-visible:ring-0"
         />
 
@@ -166,7 +232,7 @@ export function HomeComposer({
           size="icon"
           className="h-8 w-8 shrink-0"
           aria-label="Send"
-          disabled={routing}
+          disabled={routing || sending}
           onClick={() => void submit()}
         >
           <ArrowUp size={14} />

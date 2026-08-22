@@ -1283,9 +1283,17 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // shell reaped mid-turn would reset the per-chunk seq cursor and silently
   // drop output for a connected client (TASK-23 / Codex P2). Sizing hint only;
   // the orchestrator remains the source of truth for the timeout.
+  //
+  // TASK-230 — the agent-centric workspace is a preview, so it stays behind an
+  // env flag until it earns its keep. Off means the /api/workspace/* routes are
+  // never registered at all (not just hidden), which is the cheapest capability
+  // minimization we know how to buy.
   plugins.push(
     createChannelWebServerPlugin({
       chatTimeoutMs: orchestratorCfg.chatTimeoutMs ?? DEFAULT_CHAT_TIMEOUT_MS,
+      agentWorkspacePreview:
+        process.env.AX_AGENT_WORKSPACE_PREVIEW === '1' ||
+        process.env.AX_AGENT_WORKSPACE_PREVIEW === 'true',
     }),
   );
 

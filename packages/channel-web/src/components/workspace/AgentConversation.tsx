@@ -24,20 +24,27 @@ interface Props {
   agent: WorkspaceAgent;
   thread: ThreadMessage[];
   decisions: Decision[];
-  suggestions: string[];
   readOnly: boolean;
+  /** True while a reply is streaming — the composer waits it out. */
+  busy?: boolean;
   onSend: (text: string) => void;
-  onApprove: (id: string) => void;
-  onDismiss: (id: string) => void;
-  onUndo: (id: string) => void;
+  /**
+   * The three ways out of a decision. OPTIONAL, and an inline `ApprovalCard`
+   * renders only when all three are supplied — nothing serves approve/dismiss/
+   * undo yet, and a card whose buttons swallow the click is worse than no card.
+   * AW-11 supplies them along with the decisions themselves.
+   */
+  onApprove?: (id: string) => void;
+  onDismiss?: (id: string) => void;
+  onUndo?: (id: string) => void;
 }
 
 export function AgentConversation({
   agent,
   thread,
   decisions,
-  suggestions,
   readOnly,
+  busy = false,
   onSend,
   onApprove,
   onDismiss,
@@ -47,7 +54,7 @@ export function AgentConversation({
 
   const send = () => {
     const v = draft.trim();
-    if (!v) return;
+    if (!v || busy) return;
     setDraft('');
     onSend(v);
   };
@@ -79,23 +86,17 @@ export function AgentConversation({
               onKeyDown={(e) => e.key === 'Enter' && send()}
               placeholder={`Message ${agent.name}`}
               className="h-10"
+              disabled={busy}
             />
-            <Button size="icon" onClick={send} aria-label="Send">
+            <Button size="icon" onClick={send} aria-label="Send" disabled={busy}>
               <ArrowUp size={15} />
             </Button>
           </div>
-          <div className="mt-2.5 flex max-w-[720px] flex-wrap gap-2">
-            {suggestions.map((s) => (
-              <button
-                key={s}
-                type="button"
-                onClick={() => onSend(s)}
-                className="rounded-full border border-border px-3 py-1 text-[12px] text-muted-foreground hover:border-primary hover:text-primary"
-              >
-                {s}
-              </button>
-            ))}
-          </div>
+          {/*
+            No suggestion chips. They were authored prose in the prototype and
+            the wire never carried them — a chip that puts words in the user's
+            mouth is only worth it when something real proposes them.
+          */}
         </div>
       )}
     </div>
@@ -113,9 +114,9 @@ function Message({
   m: ThreadMessage;
   agent: WorkspaceAgent;
   decisions: Decision[];
-  onApprove: (id: string) => void;
-  onDismiss: (id: string) => void;
-  onUndo: (id: string) => void;
+  onApprove: ((id: string) => void) | undefined;
+  onDismiss: ((id: string) => void) | undefined;
+  onUndo: ((id: string) => void) | undefined;
 }) {
   if (m.kind === 'user') {
     return (
@@ -150,6 +151,7 @@ function Message({
   }
 
   if (m.kind === 'approval') {
+    if (!onApprove || !onDismiss || !onUndo) return null;
     const d = decisions.find((x) => x.id === m.decisionId);
     if (!d) return null;
     return (

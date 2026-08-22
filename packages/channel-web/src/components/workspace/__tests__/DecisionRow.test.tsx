@@ -6,16 +6,11 @@ import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 const agent: WorkspaceAgent = {
   id: 'scheduler',
   name: 'Scheduler',
-  role: 'Guards your calendar',
-  icon: 'calendar-days',
   state: 'waiting',
-  channel: 'routine',
   now: 'Waiting on your decision',
   counter: null,
   startedAt: null,
   stoppedReason: null,
-  paused: false,
-  footer: '',
 };
 
 function decision(over: Partial<Decision> = {}): Decision {

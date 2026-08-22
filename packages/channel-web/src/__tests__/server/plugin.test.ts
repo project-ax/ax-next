@@ -47,11 +47,29 @@ function authMockPlugin(args: {
   };
 }
 
+interface MockConversationRow {
+  conversationId: string;
+  userId: string;
+  agentId: string;
+  title: string | null;
+  activeSessionId: string | null;
+  createdAt: string;
+  lastActivityAt: string | null;
+}
+
 function conversationsMockPlugin(args: {
   byReqId: Map<
     string,
     { conversationId: string; agentId: string; userId: string; activeReqId: string } | null
   >;
+  /**
+   * TASK-230 — the agent-workspace detail route reads these through the REAL
+   * http-server, which is the only place the query-string projection
+   * (`query[k.toLowerCase()]`) is exercised. A handler-level test cannot see
+   * that, so `?conversationId=` needs a row to fetch here.
+   */
+  rows?: MockConversationRow[];
+  turns?: Map<string, Array<Record<string, unknown>>>;
 }): Plugin {
   return {
     manifest: {
@@ -70,6 +88,10 @@ function conversationsMockPlugin(args: {
         'conversations:get',
         'conversations:list',
         'conversations:delete',
+        // TASK-230 — channel-web declares session:is-alive as an OPTIONAL call
+        // (the workspace roster's working/resting probe). Registering it here
+        // keeps the flag-on boot exercising the real path.
+        'session:is-alive',
       ],
       calls: [],
       subscribes: [],
@@ -98,20 +120,45 @@ function conversationsMockPlugin(args: {
           message: 'conversations:create stub (not exercised by this suite)',
         });
       });
-      bus.registerService('conversations:get', 'mock-conversations', async () => {
-        throw new PluginError({
-          code: 'not-implemented',
-          plugin: 'mock-conversations',
-          message: 'conversations:get stub (not exercised by this suite)',
-        });
-      });
-      bus.registerService('conversations:list', 'mock-conversations', async () => {
-        throw new PluginError({
-          code: 'not-implemented',
-          plugin: 'mock-conversations',
-          message: 'conversations:list stub (not exercised by this suite)',
-        });
-      });
+      bus.registerService(
+        'conversations:get',
+        'mock-conversations',
+        async (_ctx, input: unknown) => {
+          const { conversationId, userId } = input as {
+            conversationId: string;
+            userId: string;
+          };
+          const row = (args.rows ?? []).find(
+            (r) => r.conversationId === conversationId && r.userId === userId,
+          );
+          if (row === undefined) {
+            throw new PluginError({
+              code: args.rows === undefined ? 'not-implemented' : 'not-found',
+              plugin: 'mock-conversations',
+              message: 'conversations:get',
+            });
+          }
+          return { conversation: row, turns: args.turns?.get(conversationId) ?? [] };
+        },
+      );
+      bus.registerService(
+        'conversations:list',
+        'mock-conversations',
+        async (_ctx, input: unknown) => {
+          if (args.rows === undefined) {
+            throw new PluginError({
+              code: 'not-implemented',
+              plugin: 'mock-conversations',
+              message: 'conversations:list stub (not exercised by this suite)',
+            });
+          }
+          const { userId, agentId } = input as { userId: string; agentId?: string };
+          return args.rows.filter(
+            (r) =>
+              r.userId === userId && (agentId === undefined || r.agentId === agentId),
+          );
+        },
+      );
       bus.registerService('conversations:delete', 'mock-conversations', async () => {
         throw new PluginError({
           code: 'not-implemented',
@@ -119,6 +166,12 @@ function conversationsMockPlugin(args: {
           message: 'conversations:delete stub (not exercised by this suite)',
         });
       });
+      // TASK-230 — the agent-workspace roster probes session liveness through
+      // this optional hook. Nothing here is alive, which is the honest answer
+      // for a suite that never starts a session.
+      bus.registerService('session:is-alive', 'mock-conversations', async () => ({
+        alive: false,
+      }));
     },
   };
 }
@@ -291,6 +344,11 @@ function skillsMockPlugin(): Plugin {
 
 interface BootArgs {
   user?: { id: string; isAdmin: boolean } | null;
+  /** TASK-230 — mount the /api/workspace/* preview surface. */
+  agentWorkspacePreview?: boolean;
+  /** TASK-230 — conversation rows the workspace detail route can read. */
+  conversationRows?: MockConversationRow[];
+  conversationTurns?: Map<string, Array<Record<string, unknown>>>;
   byReqId?: Map<
     string,
     | { conversationId: string; agentId: string; userId: string; activeReqId: string }
@@ -333,12 +391,24 @@ async function boot(args: BootArgs = {}): Promise<{
     plugins: [
       http,
       authMockPlugin({ user }),
-      conversationsMockPlugin({ byReqId }),
+      conversationsMockPlugin({
+        byReqId,
+        ...(args.conversationRows === undefined
+          ? {}
+          : { rows: args.conversationRows }),
+        ...(args.conversationTurns === undefined
+          ? {}
+          : { turns: args.conversationTurns }),
+      }),
       agentsMockPlugin({ allow: args.agentsAllow ?? true }),
       chatRunMockPlugin(),
       attachmentsMockPlugin(),
       skillsMockPlugin(),
-      createChannelWebServerPlugin({}),
+      createChannelWebServerPlugin(
+        args.agentWorkspacePreview === undefined
+          ? {}
+          : { agentWorkspacePreview: args.agentWorkspacePreview },
+      ),
     ],
   });
   return { harness, port: http.boundPort(), http };
@@ -504,6 +574,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation:
             'the Settings "Allowed sites" Revoke control is a no-op (no persisted grants to remove)',
         },
+        {
+          hook: 'session:is-alive',
+          degradation:
+            'every agent in the workspace roster reads as resting (liveness cannot be probed, and a guess would be worse than a blank)',
+        },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     });
@@ -569,6 +644,128 @@ describe('@ax/channel-web server plugin (integration)', () => {
         },
       );
       expect(r.status).toBe(401);
+    });
+  });
+
+  describe('agent-workspace routes (TASK-230)', () => {
+    it('declares session:is-alive in manifest.optionalCalls', () => {
+      const plugin = createChannelWebServerPlugin();
+      const hooks = (plugin.manifest.optionalCalls ?? []).map((o) => o.hook);
+      expect(hooks).toContain('session:is-alive');
+    });
+
+    it('mounts /api/workspace/* and echoes the flag when the preview is on', async () => {
+      const booted = await boot({ user: null, agentWorkspacePreview: true });
+      harness = booted.harness;
+
+      // user=null → auth throws → 401. A 404 would mean the route is missing,
+      // which is exactly the bug this asserts against.
+      const state = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/state`,
+      );
+      expect(state.status).toBe(401);
+
+      // The flag echo needs no session at all — the SPA reads it before it
+      // knows whether anyone is signed in.
+      const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
+      expect(features.status).toBe(200);
+      expect(await features.json()).toEqual({ agentWorkspacePreview: true });
+    });
+
+    it('honours ?conversationId= through the real http-server query projection', async () => {
+      // The regression this pins: http-server projects the query string with
+      // `query[k.toLowerCase()] = v`, so a handler reading `conversationId`
+      // gets undefined forever and silently serves the CURRENT conversation
+      // under a past row's title — plausible wrong data, no error. A
+      // handler-level test can't see it, because it writes the query object
+      // itself. Only a round trip through the real server can.
+      const rows = [
+        {
+          conversationId: 'cnv_now',
+          userId: 'userA',
+          agentId: 'agt_test',
+          title: 'Today',
+          activeSessionId: null,
+          createdAt: '2026-08-20T10:00:00.000Z',
+          lastActivityAt: '2026-08-20T10:00:00.000Z',
+        },
+        {
+          conversationId: 'cnv_march',
+          userId: 'userA',
+          agentId: 'agt_test',
+          title: 'March',
+          activeSessionId: null,
+          createdAt: '2026-03-01T10:00:00.000Z',
+          lastActivityAt: '2026-03-01T10:00:00.000Z',
+        },
+      ];
+      const turns = new Map<string, Array<Record<string, unknown>>>([
+        [
+          'cnv_now',
+          [
+            {
+              turnId: 't-now',
+              turnIndex: 0,
+              role: 'user',
+              contentBlocks: [{ type: 'text', text: 'happening today' }],
+              createdAt: '2026-08-20T10:00:00.000Z',
+            },
+          ],
+        ],
+        [
+          'cnv_march',
+          [
+            {
+              turnId: 't-march',
+              turnIndex: 0,
+              role: 'user',
+              contentBlocks: [{ type: 'text', text: 'happened in March' }],
+              createdAt: '2026-03-01T10:00:00.000Z',
+            },
+          ],
+        ],
+      ]);
+      const booted = await boot({
+        agentWorkspacePreview: true,
+        conversationRows: rows,
+        conversationTurns: turns,
+      });
+      harness = booted.harness;
+
+      const base = `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test`;
+
+      const current = await fetch(base);
+      expect(current.status).toBe(200);
+      const currentBody = (await current.json()) as {
+        conversationId: string | null;
+        thread: Array<{ text: string }>;
+      };
+      expect(currentBody.conversationId).toBe('cnv_now');
+      expect(currentBody.thread[0]?.text).toBe('happening today');
+
+      const past = await fetch(`${base}?conversationId=cnv_march`);
+      expect(past.status).toBe(200);
+      const pastBody = (await past.json()) as {
+        conversationId: string | null;
+        thread: Array<{ text: string }>;
+      };
+      expect(pastBody.conversationId).toBe('cnv_march');
+      expect(pastBody.thread[0]?.text).toBe('happened in March');
+    });
+
+    it('leaves /api/workspace/* unmounted when the preview is off', async () => {
+      const booted = await boot({ user: null });
+      harness = booted.harness;
+
+      // Not registered at all — the cheapest capability minimization there is.
+      const state = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/state`,
+      );
+      expect(state.status).toBe(404);
+
+      const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
+      expect(features.status).toBe(200);
+      expect(await features.json()).toEqual({ agentWorkspacePreview: false });
     });
   });
 

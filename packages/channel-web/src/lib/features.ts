@@ -1,11 +1,17 @@
 /**
  * Feature flags for channel-web (Task 26).
  *
- * MVP defaults are deliberately conservative — we ship the bare bones and
- * light up advanced affordances only after the underlying behavior is real.
- * Every flag below is `false` for MVP; flipping one without wiring the
- * implementation behind it would be the friction-driven equivalent of
- * "we'll do it later," which the half-wired-code policy disallows.
+ * Two kinds live here:
+ *
+ *  - **Build-time constants** for affordances whose implementation isn't real
+ *    yet. Every one is `false` for MVP; flipping one without wiring the
+ *    behavior behind it would be the friction-driven equivalent of "we'll do
+ *    it later," which the half-wired-code policy disallows.
+ *
+ *  - **Server-provided flags** (`fetchFeatures`) for surfaces that exist but
+ *    are only lit up on deployments that opted in. The server decides — a
+ *    build-time `import.meta.env.DEV` can't, because the same bundle ships
+ *    everywhere.
  *
  *   - `SEMANTIC_SEARCH` — when `true`, `<SearchBar />` reveals a
  *     "try semantic" affordance for embeddings-based message search.
@@ -14,10 +20,57 @@
 export const SEMANTIC_SEARCH = false;
 
 /**
- * `AGENT_WORKSPACE_PREVIEW` — the agent-centric workspace prototype at
- * `/workspace`. Dev-only: it stands on the Vite mock backend
- * (`mock/workspace.ts`), so in a production build the route falls through to
- * the normal chat shell rather than rendering a surface with no data behind it.
- * Not a half-wired feature — a design artifact with an explicit gate.
+ * Server-provided feature flags, from `GET /api/features` (registered by
+ * @ax/channel-web).
+ *
+ *   - `agentWorkspacePreview` — the agent-centric workspace at `/workspace`.
+ *     On only where an operator turned it on.
  */
-export const AGENT_WORKSPACE_PREVIEW = import.meta.env.DEV;
+export interface Features {
+  agentWorkspacePreview: boolean;
+}
+
+/**
+ * What we assume when the server doesn't tell us otherwise: everything off.
+ * Fail closed — a preview surface that appears because a fetch fell over is
+ * worse than one that stays hidden until we can ask again.
+ */
+export const DEFAULT_FEATURES: Features = { agentWorkspacePreview: false };
+
+const FETCH_TIMEOUT_MS = 5_000;
+
+/**
+ * Read the feature flags for this deployment.
+ *
+ * On any fetch error, timeout, non-2xx response, or malformed body we return
+ * `DEFAULT_FEATURES` (everything off). We log every fallback so an operator
+ * debugging a deploy can see why a surface they enabled didn't show up.
+ */
+export async function fetchFeatures(): Promise<Features> {
+  // AbortSignal.timeout() isn't universally available across the older end
+  // of the evergreen-browser matrix yet; pair AbortController with a manual
+  // setTimeout for compatibility. (Same pattern as lib/bootstrap-status.ts.)
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try {
+    const r = await fetch('/api/features', {
+      credentials: 'include',
+      signal: controller.signal,
+    });
+    if (!r.ok) {
+      console.warn('[features] non-2xx, defaulting to all-off', r.status);
+      return DEFAULT_FEATURES;
+    }
+    const body = (await r.json()) as { agentWorkspacePreview?: unknown };
+    if (typeof body?.agentWorkspacePreview !== 'boolean') {
+      console.warn('[features] invalid agentWorkspacePreview field, defaulting to all-off', body);
+      return DEFAULT_FEATURES;
+    }
+    return { agentWorkspacePreview: body.agentWorkspacePreview };
+  } catch (err) {
+    console.warn('[features] fetch failed, defaulting to all-off', err);
+    return DEFAULT_FEATURES;
+  } finally {
+    clearTimeout(timeoutId);
+  }
+}

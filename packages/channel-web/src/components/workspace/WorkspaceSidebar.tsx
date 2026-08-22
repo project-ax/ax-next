@@ -1,11 +1,17 @@
 /**
- * The sidebar. Three destinations and a roster.
+ * The sidebar. Two destinations and a roster.
  *
  * Note what is NOT here: a conversation list. Conversations moved inside the
  * agent they belong to, which is the structural change the whole refresh is
  * about. The roster is the navigation now.
+ *
+ * Also not here: a "New agent" entry. It used to open a prototype-only view
+ * that has been deleted, and the shipped create-an-agent flow is driven from
+ * `App.tsx` state this surface cannot reach. A nav row that does nothing when
+ * clicked is worse than one row fewer, so it is gone until the create flow is
+ * reachable from here.
  */
-import { Activity, Bot, ChevronDown, ChevronUp, Inbox, Plus } from 'lucide-react';
+import { Activity, Bot, ChevronDown, ChevronUp, Inbox } from 'lucide-react';
 import { BrandMark } from '@/components/BrandMark';
 import { UserMenu } from '@/components/UserMenu';
 import { Badge } from '@/components/ui/badge';
@@ -15,7 +21,7 @@ import { StateDot } from './bits';
 
 interface Props {
   agents: WorkspaceAgent[];
-  route: 'today' | 'agent' | 'activity' | 'new';
+  route: 'today' | 'agent' | 'activity';
   activeAgentId: string | null;
   pendingCount: number;
   rosterOpen: boolean;
@@ -23,7 +29,6 @@ interface Props {
   onToday: () => void;
   onActivity: () => void;
   onAgent: (id: string) => void;
-  onNewAgent: () => void;
 }
 
 export function WorkspaceSidebar({
@@ -36,7 +41,6 @@ export function WorkspaceSidebar({
   onToday,
   onActivity,
   onAgent,
-  onNewAgent,
 }: Props) {
   const row = (active: boolean) =>
     cn(
@@ -100,19 +104,16 @@ export function WorkspaceSidebar({
                   : 'text-muted-foreground hover:bg-muted/60',
               )}
             >
-              <StateDot state={a.paused ? 'resting' : a.state} />
+              <StateDot state={a.state} />
               <span className="truncate">{a.name}</span>
             </button>
           ))}
 
-        <button
-          type="button"
-          onClick={onNewAgent}
-          className="mt-0.5 flex h-8 w-full items-center gap-2.5 rounded-md px-2.5 text-left text-[13px] text-primary hover:bg-muted/60"
-        >
-          <Plus size={13} className="shrink-0" />
-          New agent
-        </button>
+        {rosterOpen && agents.length === 0 && (
+          <p className="px-2.5 py-2 text-[12.5px] leading-relaxed text-muted-foreground">
+            No agents yet.
+          </p>
+        )}
       </nav>
 
       {/*
