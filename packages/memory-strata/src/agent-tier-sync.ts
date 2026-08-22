@@ -144,6 +144,11 @@ export async function hydrateAgentTier(
     const scratchRel = tierToScratchRelPath(tierPath);
     const abs = join(scratchRoot, ...scratchRel.split('/'));
     await mkdir(dirname(abs), { recursive: true });
+    // Deliberately NOT `guardAutomaticWrite`d, and this is the one write in the
+    // package where that is correct (TASK-234). This copies the tier's own
+    // bytes into a disposable working copy; the human tier MUST land here, or
+    // the flush's diff would see it missing and try to delete it. The boundary
+    // for this module is enforced on the way OUT, in `flushAgentTier`.
     await writeFile(abs, Buffer.from(read.bytes));
   }
 

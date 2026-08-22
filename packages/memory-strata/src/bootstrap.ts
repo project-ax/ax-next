@@ -93,6 +93,7 @@ export async function bootstrapMemoryTree(
   // SystemFileName), so it's seeded outside the loop above.
   {
     const rel = mapFile();
+    guardAutomaticWrite('bootstrap', rel);
     const abs = join(input.workspaceRoot, rel);
     await mkdir(dirname(abs), { recursive: true });
     const fm: MemoryFrontmatter = {

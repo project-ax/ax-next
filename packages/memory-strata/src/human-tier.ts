@@ -110,8 +110,12 @@ export interface AutomaticWriter {
  */
 export const AUTOMATIC_WRITERS: readonly AutomaticWriter[] = Object.freeze([
   { name: 'bootstrap', module: 'bootstrap.ts', excludes: HUMAN_TIER_PATHS },
-  { name: 'consolidator-decay', module: 'consolidator.ts', excludes: HUMAN_TIER_PATHS },
-  { name: 'promotion', module: 'promotion.ts', excludes: HUMAN_TIER_PATHS },
+  { name: 'consolidator', module: 'consolidator.ts', excludes: HUMAN_TIER_PATHS },
+  // NOT here: `promotion.ts`. It decides whether an observation is promotable
+  // and writes nothing — the promotion's actual write goes through `doc-store`
+  // and `inbox-store` below, both of which are guarded. Listing it would claim
+  // an exclusion nothing enforces, which `human-tier.test.ts`'s second canary
+  // fails on. That is deliberate: an entry here is a promise the code keeps.
   { name: 'doc-store', module: 'doc-store.ts', excludes: HUMAN_TIER_PATHS },
   { name: 'inbox-store', module: 'inbox-store.ts', excludes: HUMAN_TIER_PATHS },
   { name: 'recent', module: 'recent.ts', excludes: HUMAN_TIER_PATHS },

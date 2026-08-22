@@ -501,6 +501,7 @@ async function loadCache(workspaceRoot: string): Promise<MapCache> {
 }
 
 async function writeCache(workspaceRoot: string, cache: MapCache): Promise<void> {
+  guardAutomaticWrite('map-cache', mapCacheFile());
   const abs = join(workspaceRoot, mapCacheFile());
   await mkdir(dirname(abs), { recursive: true });
   // Stable key order so the sidecar is itself deterministic (helps git-tier

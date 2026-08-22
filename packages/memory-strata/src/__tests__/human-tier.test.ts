@@ -214,6 +214,31 @@ describe('every automatic writer excludes the human tier', () => {
         "human's rules.md must stay the one file no machine rewrites.",
     ).toEqual([]);
   });
+
+  it('every registered writer actually reaches the guard', async () => {
+    // The twin of the canary above. Registering a module without calling the
+    // guard from it makes the LIST say something the CODE does not do — and
+    // the list is what the first test checks, so the pair has to be closed
+    // from both ends.
+    //
+    // `agent-tier-sync.ts` satisfies this with `stripHumanTierChanges`: its
+    // mutations are a derived whole-subtree delta, so it filters rather than
+    // throws (see the module header for why that is right THERE and nowhere
+    // else).
+    const unenforced: string[] = [];
+    for (const writer of AUTOMATIC_WRITERS) {
+      const src = await readFile(join(SRC_DIR, writer.module), 'utf8');
+      const enforces =
+        src.includes('guardAutomaticWrite(') || src.includes('stripHumanTierChanges(');
+      if (!enforces) unenforced.push(writer.module);
+    }
+    expect(
+      unenforced,
+      'These modules are listed in AUTOMATIC_WRITERS but never call ' +
+        'guardAutomaticWrite() (or stripHumanTierChanges() for a derived ' +
+        'delta), so their entry claims an exclusion nothing enforces.',
+    ).toEqual([]);
+  });
 });
 
 // ---------------------------------------------------------------------------
