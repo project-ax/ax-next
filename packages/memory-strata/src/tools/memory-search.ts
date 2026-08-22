@@ -38,6 +38,7 @@ export const MEMORY_SEARCH_DESCRIPTOR: ToolDescriptor = {
     'drill into any truncated doc, AND run more searches with instance-specific ' +
     'terms (e.g. for "citrus" also try "lime", "lemon") before answering. Count ' +
     'only distinct instances — ignore near-duplicate lines describing the same event.',
+  activityPhrase: 'Searching memory',
   executesIn: 'host',
   inputSchema: {
     type: 'object',

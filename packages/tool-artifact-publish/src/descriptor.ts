@@ -31,6 +31,7 @@ export const ARTIFACT_PUBLISH_DESCRIPTOR: ToolDescriptor = {
     'committed, and the URL works immediately. Symlinks and files larger than',
     '100 MiB are rejected.',
   ].join('\n'),
+  activityPhrase: 'Publishing a file',
   inputSchema: {
     type: 'object',
     properties: {

@@ -18,6 +18,7 @@ const InputSchema = z.object({
 const descriptor: ToolDescriptor = {
   name: TOOL_NAME,
   description: 'echo the input text back verbatim (test stub)',
+  activityPhrase: 'Echoing test input',
   inputSchema: {
     type: 'object',
     properties: { text: { type: 'string' } },

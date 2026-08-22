@@ -24,4 +24,10 @@ describe('artifact_publish descriptor', () => {
     expect(ARTIFACT_PUBLISH_DESCRIPTOR.description).toMatch(/workspace/);
     expect(ARTIFACT_PUBLISH_DESCRIPTOR.description).toMatch(/artifacts/);
   });
+
+  it('carries a non-empty activityPhrase (<=40 chars)', () => {
+    expect(ARTIFACT_PUBLISH_DESCRIPTOR.activityPhrase).toBeTruthy();
+    expect(ARTIFACT_PUBLISH_DESCRIPTOR.activityPhrase!.length).toBeGreaterThan(0);
+    expect(ARTIFACT_PUBLISH_DESCRIPTOR.activityPhrase!.length).toBeLessThanOrEqual(40);
+  });
 });

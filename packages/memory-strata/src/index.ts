@@ -12,6 +12,10 @@ export type { BootstrapInput } from './bootstrap.js';
 export { runObserver } from './observer.js';
 export type { LlmCallFn, RunObserverInput, RunObserverResult } from './observer.js';
 
+export { MEMORY_SEARCH_DESCRIPTOR } from './tools/memory-search.js';
+export { MEMORY_READ_SECTION_DESCRIPTOR } from './tools/memory-read-section.js';
+export { MEMORY_NOTE_DESCRIPTOR } from './tools/memory-note.js';
+
 export {
   workspaceMemoryRoot,
   systemFile,

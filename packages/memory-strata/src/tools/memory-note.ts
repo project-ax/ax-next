@@ -21,6 +21,7 @@ export const MEMORY_NOTE_DESCRIPTOR: ToolDescriptor = {
     'Save a one-sentence fact you want to remember long-term. Goes into the inbox; ' +
     'the consolidator merges it into the docs/ tree on the next pass. The gate strips ' +
     'observations containing credentials.',
+  activityPhrase: 'Saving a note to memory',
   executesIn: 'host',
   inputSchema: {
     type: 'object',

@@ -9,6 +9,8 @@ import { buildMarkdownFile } from '../frontmatter.js';
 import { docFile, mapFile } from '../paths.js';
 import type { OrchestratorClient } from '../orchestrator.js';
 import { registerMemorySearch, MEMORY_SEARCH_DESCRIPTOR } from '../tools/memory-search.js';
+import { MEMORY_READ_SECTION_DESCRIPTOR } from '../tools/memory-read-section.js';
+import { MEMORY_NOTE_DESCRIPTOR } from '../tools/memory-note.js';
 import type { RetrievalResult } from '../retriever.js';
 import type { MemoryFrontmatter } from '../types.js';
 
@@ -80,6 +82,18 @@ function makeWiredBus(opts: {
 }
 
 describe('tools/memory-search', () => {
+  it('every memory-strata tool descriptor carries a non-empty activityPhrase (<=40 chars)', () => {
+    for (const desc of [
+      MEMORY_SEARCH_DESCRIPTOR,
+      MEMORY_READ_SECTION_DESCRIPTOR,
+      MEMORY_NOTE_DESCRIPTOR,
+    ]) {
+      expect(desc.activityPhrase).toBeTruthy();
+      expect(desc.activityPhrase!.length).toBeGreaterThan(0);
+      expect(desc.activityPhrase!.length).toBeLessThanOrEqual(40);
+    }
+  });
+
   describe('descriptor registration', () => {
     it('registers the MEMORY_SEARCH_DESCRIPTOR via tool:register', async () => {
       const { bus, getRegisteredDescriptor } = makeWiredBus();

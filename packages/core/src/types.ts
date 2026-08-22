@@ -65,6 +65,29 @@ export interface ToolDescriptor {
    * `ToolDescriptorSchema`.
    */
   flushWorkspaceBeforeCall?: boolean;
+  /**
+   * A present-participle clause describing the ACTIVITY this tool performs
+   * while it runs — e.g. `'Reading email'`, never an outcome like `'Read
+   * email'` or `'Sent 3 replies'`. Authored in the tool's manifest, in-repo,
+   * and reviewed in the same diff as the tool — deliberately NOT the
+   * model-facing `description` field, which is written to steer an LLM and,
+   * for an MCP tool, is third-party text. MCP-sourced descriptors never set
+   * this (see `@ax/mcp-client`'s `tool-names.ts`). Max 40 characters.
+   *
+   * Must match @ax/ipc-protocol's ToolDescriptorSchema and @ax/mcp-client's
+   * two descriptor gates.
+   */
+  activityPhrase?: string;
+  /**
+   * The unit this tool iterates over, when it iterates — e.g. `'messages'`.
+   * Paired with a tool-reported `{done,total}` to render a progress counter;
+   * absent when the tool doesn't iterate over a countable set. Max 40
+   * characters.
+   *
+   * Must match @ax/ipc-protocol's ToolDescriptorSchema and @ax/mcp-client's
+   * two descriptor gates.
+   */
+  countable?: string;
 }
 
 export type AgentOutcome =

@@ -228,4 +228,48 @@ describe('tool-dispatcher', () => {
     );
     expect(list.tools[0]).toMatchObject({ name: 'host_thing', executesIn: 'host' });
   });
+
+  // TASK-229 T1: activityPhrase / countable drift guard. This is the BUG-W2
+  // guard — a field present on the registered descriptor but missing from
+  // any of the four sites (core interface, ipc-protocol schema, this local
+  // ToolDescriptorSchema, or catalog.ts's validateDescriptor) is silently
+  // stripped before `tool:list` returns it.
+  it('activityPhrase and countable survive tool:register → tool:list', async () => {
+    const bus = await makeBus();
+    const desc = sampleDescriptor({
+      name: 'read_email',
+      activityPhrase: 'Reading email',
+      countable: 'messages',
+    });
+    await bus.call('tool:register', ctx(), desc);
+    const list = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
+      'tool:list',
+      ctx(),
+      {},
+    );
+    expect(list.tools[0]?.activityPhrase).toBe('Reading email');
+    expect(list.tools[0]?.countable).toBe('messages');
+  });
+
+  it('rejects an activityPhrase longer than 40 characters at tool:register', async () => {
+    const bus = await makeBus();
+    const err = await bus
+      .call('tool:register', ctx(), sampleDescriptor({ activityPhrase: 'a'.repeat(41) }))
+      .catch((e) => e);
+    expect(err).toBeInstanceOf(PluginError);
+    expect(err.code).toBe('invalid-payload');
+    expect(err.message).toMatch(/activityPhrase/);
+  });
+
+  it('rejects a non-string countable at tool:register', async () => {
+    const bus = await makeBus();
+    const bad = {
+      ...sampleDescriptor(),
+      countable: 42,
+    } as unknown as ToolDescriptor;
+    const err = await bus.call('tool:register', ctx(), bad).catch((e) => e);
+    expect(err).toBeInstanceOf(PluginError);
+    expect(err.code).toBe('invalid-payload');
+    expect(err.message).toMatch(/countable/);
+  });
 });

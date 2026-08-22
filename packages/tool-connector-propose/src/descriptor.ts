@@ -55,6 +55,7 @@ export const CONNECTOR_PROPOSE_DESCRIPTOR: ToolDescriptor = {
     'offer to continue once they reply. Do not narrate the approval mechanics or',
     'restate any keys — the card handles that privately.',
   ].join('\n'),
+  activityPhrase: 'Proposing a new connection',
   inputSchema: {
     type: 'object',
     properties: {

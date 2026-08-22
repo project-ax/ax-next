@@ -26,6 +26,7 @@ import { createCredentialsAdminRoutesPlugin } from '@ax/credentials-admin-routes
 import { createAdminSettingsRoutesPlugin } from '@ax/admin-settings-routes';
 import { createBrandingPlugin } from '@ax/branding';
 import { createIpcHttpPlugin } from '@ax/ipc-http';
+import { createAgentActivityPlugin } from '@ax/agent-activity';
 import { createAgentsPlugin } from '@ax/agents';
 import { createSkillsPlugin } from '@ax/skills';
 import { createSkillBrokerPlugin } from '@ax/skill-broker';
@@ -952,6 +953,19 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // up the new edges automatically.
   plugins.push(createToolDispatcherPlugin());
   plugins.push(createMcpClientPlugin({ mountAdminRoutes: true }));
+
+  // ----- 7b. the "Right now" line ----------------------------------------
+  // Observe-only: watches chat:start / tool:pre-call / chat:end and answers
+  // `agent-activity:get` with one short phrase describing what an agent is
+  // doing this second. Reads each tool's in-repo `activityPhrase` from
+  // `tool:list` (optionalCalls — no catalog just means the line falls to its
+  // T0 floor), never a model, never a tool's model-facing description.
+  //
+  // Half-wired window OPEN: nothing renders this yet — the agent rail (AW-14)
+  // is its first production consumer, and closes the window. Until then it is
+  // reachable + asserted through the @ax/agent-activity package canary, the
+  // same posture @ax/host-grants held between TASK-44 and TASK-42.
+  plugins.push(createAgentActivityPlugin());
 
   // ----- 8. agents -------------------------------------------------------
   // Registers `agents:resolve` (the ACL gate the chat-orchestrator hard-

@@ -2,12 +2,21 @@ import { describe, it, expect, vi } from 'vitest';
 import { HookBus, makeAgentContext } from '@ax/core';
 import type { ToolDescriptor } from '@ax/core';
 import { WEB_SEARCH_DESCRIPTOR, registerWebSearch } from '../tools/web-search.js';
+import { WEB_EXTRACT_DESCRIPTOR } from '../tools/web-extract.js';
 
 function ctx() {
   return makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 }
 
 describe('tools/web-search', () => {
+  it('every web-tools descriptor carries a non-empty activityPhrase (<=40 chars)', () => {
+    for (const desc of [WEB_SEARCH_DESCRIPTOR, WEB_EXTRACT_DESCRIPTOR]) {
+      expect(desc.activityPhrase).toBeTruthy();
+      expect(desc.activityPhrase!.length).toBeGreaterThan(0);
+      expect(desc.activityPhrase!.length).toBeLessThanOrEqual(40);
+    }
+  });
+
   it('descriptor is a host tool named web_search requiring query', () => {
     expect(WEB_SEARCH_DESCRIPTOR.name).toBe('web_search');
     expect(WEB_SEARCH_DESCRIPTOR.executesIn).toBe('host');

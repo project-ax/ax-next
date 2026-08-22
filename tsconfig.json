@@ -3,6 +3,7 @@
   "files": [],
   "references": [
     { "path": "packages/core" },
+    { "path": "packages/agent-activity" },
     { "path": "packages/test-harness" },
     { "path": "packages/storage-sqlite" },
     { "path": "packages/eventbus-inprocess" },

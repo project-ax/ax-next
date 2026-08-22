@@ -575,6 +575,59 @@ describe('@ax/mcp-client plugin', () => {
     await serverA.dispose();
   });
 
+  // TASK-229 T1: `activityPhrase` is authored in-repo per tool and reviewed
+  // in the same diff — MCP tool text is third-party and must never reach it.
+  // `McpToolDescriptor` (connection.ts) only declares name/description/
+  // inputSchema, and `namespaceTools` (tool-names.ts) builds the registered
+  // ToolDescriptor by copying exactly those fields plus executesIn — so even
+  // a spec-violating server that stuffs an extra `activityPhrase` key into
+  // its listTools() response cannot get it onto the registered descriptor.
+  // This test proves that end-to-end through the real MCP SDK transport.
+  it('an MCP server advertising activityPhrase cannot get it onto the registered descriptor', async () => {
+    const bus = new HookBus();
+    const serverA = await makeFakeMcpServer({
+      tools: [
+        {
+          name: 'echo',
+          description: 'echoes',
+          inputSchema: { type: 'object', properties: { text: { type: 'string' } } },
+          // Spec-violating extra field — a hostile/careless MCP server
+          // trying to smuggle display text onto the descriptor.
+          activityPhrase: 'Reading email',
+        } as unknown as { name: string; description?: string; inputSchema: object },
+      ],
+    });
+
+    await bootstrap({
+      bus,
+      plugins: [memStoragePlugin(), createCredentialsStoreDbPlugin(), createCredentialsPlugin()],
+      config: {},
+    });
+    await saveConfig(bus, ctx(), {
+      id: 'a',
+      enabled: true,
+      transport: 'stdio',
+      command: 'x',
+      args: [],
+    });
+
+    await createToolDispatcherPlugin().init({ bus, config: undefined });
+    await createMcpClientPlugin({
+      transportFactory: async () => serverA.clientTransport,
+    }).init({ bus, config: undefined });
+
+    const listed = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
+      'tool:list',
+      ctx(),
+      {},
+    );
+    const echo = listed.tools.find((t) => t.name === 'mcp.a.echo');
+    expect(echo).toBeDefined();
+    expect(echo?.activityPhrase).toBeUndefined();
+
+    await serverA.dispose();
+  });
+
   it('manifest declares the expected calls and no static registers', async () => {
     const plugin = createMcpClientPlugin();
     expect(plugin.manifest).toMatchObject({

@@ -1,3 +1,14 @@
+import type { ToolDescriptor } from '@ax/core';
+import {
+  MEMORY_NOTE_DESCRIPTOR,
+  MEMORY_READ_SECTION_DESCRIPTOR,
+  MEMORY_SEARCH_DESCRIPTOR,
+} from '@ax/memory-strata';
+import { REQUEST_CAPABILITY_DESCRIPTOR, SEARCH_CATALOG_DESCRIPTOR } from '@ax/skill-broker';
+import { ARTIFACT_PUBLISH_DESCRIPTOR } from '@ax/tool-artifact-publish';
+import { CONNECTOR_PROPOSE_DESCRIPTOR } from '@ax/tool-connector-propose';
+import { SKILL_PROPOSE_DESCRIPTOR } from '@ax/tool-skill-propose';
+import { WEB_EXTRACT_DESCRIPTOR, WEB_SEARCH_DESCRIPTOR } from '@ax/web-tools';
 import { describe, expect, it, vi } from 'vitest';
 import * as builtinSkillsModule from '../builtin-skills/index.js';
 import {
@@ -178,6 +189,7 @@ describe('@ax/preset-k8s wiring', () => {
     expect(names).toEqual(
       [
         '@ax/admin-settings-routes',
+        '@ax/agent-activity',
         '@ax/agents',
         '@ax/attachments',
         '@ax/audit-log',
@@ -257,6 +269,78 @@ describe('@ax/preset-k8s wiring', () => {
       'host-grants:list-for-user',
       'host-grants:revoke',
     ]);
+  });
+
+  // -------------------------------------------------------------------------
+  // Every built-in tool descriptor that ships in this preset (TASK-229).
+  //
+  // This is the one package that already depends on all six tool packages, so
+  // it is where the roll-call lives. Add a built-in tool, add it here — a tool
+  // with no `activityPhrase` falls silently to the T0 floor, and silence is
+  // exactly what a missing field looks like on a status line.
+  //
+  // MCP tools are deliberately absent and must stay absent: their text comes
+  // from a third party, so they get no phrase and fall to T0 by design.
+  // -------------------------------------------------------------------------
+  const BUILTIN_TOOL_DESCRIPTORS: ToolDescriptor[] = [
+    MEMORY_SEARCH_DESCRIPTOR,
+    MEMORY_READ_SECTION_DESCRIPTOR,
+    MEMORY_NOTE_DESCRIPTOR,
+    SEARCH_CATALOG_DESCRIPTOR,
+    REQUEST_CAPABILITY_DESCRIPTOR,
+    WEB_SEARCH_DESCRIPTOR,
+    WEB_EXTRACT_DESCRIPTOR,
+    ARTIFACT_PUBLISH_DESCRIPTOR,
+    SKILL_PROPOSE_DESCRIPTOR,
+    CONNECTOR_PROPOSE_DESCRIPTOR,
+  ];
+
+  describe('built-in tool descriptors (TASK-229)', () => {
+    it('every one carries an activityPhrase', () => {
+      const missing = BUILTIN_TOOL_DESCRIPTORS.filter(
+        (d) => d.activityPhrase === undefined || d.activityPhrase.trim().length === 0,
+      ).map((d) => d.name);
+      expect(missing).toEqual([]);
+    });
+
+    it('every phrase fits the status line and names an activity, not an outcome', () => {
+      for (const d of BUILTIN_TOOL_DESCRIPTORS) {
+        expect(d.activityPhrase!.length).toBeLessThanOrEqual(40);
+        // One line, no markup, no smuggled newline.
+        expect(d.activityPhrase).toBe(d.activityPhrase!.trim());
+        expect(d.activityPhrase).not.toMatch(/[\r\n<>]/);
+        // The things this surface must never say.
+        expect(d.activityPhrase).not.toMatch(/%|remaining|left|eta/i);
+      }
+    });
+
+    it('no MCP tool is in the roll-call — third-party text gets no phrase', () => {
+      expect(BUILTIN_TOOL_DESCRIPTORS.filter((d) => d.name.startsWith('mcp.'))).toEqual([]);
+    });
+
+    it('claims no counter it cannot back with a real report', () => {
+      // `countable` is the UNIT half of a counter. Nothing in the system
+      // reports tool progress yet, so declaring one here would promise a
+      // count we would then have to invent.
+      expect(BUILTIN_TOOL_DESCRIPTORS.filter((d) => d.countable !== undefined)).toEqual([]);
+    });
+  });
+
+  it('loads @ax/agent-activity, which observes without ever voting (TASK-229)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const activity = plugins.find((p) => p.manifest.name === '@ax/agent-activity');
+    expect(activity).toBeDefined();
+    expect(activity!.manifest.registers).toEqual(['agent-activity:get']);
+    expect(activity!.manifest.subscribes).toEqual([
+      'chat:start',
+      'chat:end',
+      'chat:turn-error',
+      'tool:pre-call',
+    ]);
+    // It reads the tool catalog but must never be a reason a deployment fails
+    // to boot: no catalog means the line falls to its T0 floor.
+    expect(activity!.manifest.calls).toEqual([]);
+    expect(activity!.manifest.optionalCalls?.map((o) => o.hook)).toEqual(['tool:list']);
   });
 
   it('loads @ax/connectors and registers the connectors:* hooks (CRUD TASK-91 + list-defaults TASK-97 + authored lifecycle TASK-94)', () => {

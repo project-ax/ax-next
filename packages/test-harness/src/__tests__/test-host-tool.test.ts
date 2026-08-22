@@ -54,6 +54,19 @@ describe('test-host-echo stub plugin', () => {
     });
   });
 
+  it('descriptor carries a non-empty activityPhrase (<=40 chars)', async () => {
+    const bus = await bootBus();
+    const list = await bus.call<Record<string, never>, { tools: ToolDescriptor[] }>(
+      'tool:list',
+      ctx(),
+      {},
+    );
+    const echo = list.tools.find((t) => t.name === 'test-host-echo');
+    expect(echo?.activityPhrase).toBeTruthy();
+    expect(echo!.activityPhrase!.length).toBeGreaterThan(0);
+    expect(echo!.activityPhrase!.length).toBeLessThanOrEqual(40);
+  });
+
   it('tool:execute:test-host-echo returns { output: text }', async () => {
     const bus = await bootBus();
     const res = await bus.call<{ text: string }, { output: string }>(

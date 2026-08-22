@@ -135,6 +135,39 @@ describe('tool.list', () => {
     });
     expect(r.success).toBe(false);
   });
+
+  // TASK-229 T1: activityPhrase / countable round-trip through the wire schema.
+  it('round-trips activityPhrase and countable', () => {
+    const parsed = ToolDescriptorSchema.parse({
+      name: 'bash',
+      inputSchema: { type: 'object' },
+      executesIn: 'sandbox',
+      activityPhrase: 'Reading email',
+      countable: 'messages',
+    });
+    expect(parsed.activityPhrase).toBe('Reading email');
+    expect(parsed.countable).toBe('messages');
+  });
+
+  it('rejects an activityPhrase longer than 40 characters', () => {
+    const r = ToolDescriptorSchema.safeParse({
+      name: 'bash',
+      inputSchema: { type: 'object' },
+      executesIn: 'sandbox',
+      activityPhrase: 'a'.repeat(41),
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects a countable longer than 40 characters', () => {
+    const r = ToolDescriptorSchema.safeParse({
+      name: 'bash',
+      inputSchema: { type: 'object' },
+      executesIn: 'sandbox',
+      countable: 'a'.repeat(41),
+    });
+    expect(r.success).toBe(false);
+  });
 });
 
 describe('workspace.commit-notify', () => {

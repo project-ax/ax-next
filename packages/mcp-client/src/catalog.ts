@@ -171,6 +171,40 @@ function validateDescriptor(input: unknown): ToolDescriptor {
     });
   }
 
+  if (d.activityPhrase !== undefined && typeof d.activityPhrase !== 'string') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'tool:register',
+      message: `tool '${d.name}': activityPhrase must be a string when provided`,
+    });
+  }
+  if (typeof d.activityPhrase === 'string' && d.activityPhrase.length > 40) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'tool:register',
+      message: `tool '${d.name}': activityPhrase must be at most 40 characters`,
+    });
+  }
+
+  if (d.countable !== undefined && typeof d.countable !== 'string') {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'tool:register',
+      message: `tool '${d.name}': countable must be a string when provided`,
+    });
+  }
+  if (typeof d.countable === 'string' && d.countable.length > 40) {
+    throw new PluginError({
+      code: 'invalid-payload',
+      plugin: PLUGIN_NAME,
+      hookName: 'tool:register',
+      message: `tool '${d.name}': countable must be at most 40 characters`,
+    });
+  }
+
   const descriptor: ToolDescriptor = {
     name: d.name,
     inputSchema: d.inputSchema as Record<string, unknown>,
@@ -183,6 +217,12 @@ function validateDescriptor(input: unknown): ToolDescriptor {
   // missing/false field as "no flush", so we don't store a redundant false.
   if (d.flushWorkspaceBeforeCall === true) {
     descriptor.flushWorkspaceBeforeCall = true;
+  }
+  if (typeof d.activityPhrase === 'string') {
+    descriptor.activityPhrase = d.activityPhrase;
+  }
+  if (typeof d.countable === 'string') {
+    descriptor.countable = d.countable;
   }
   return descriptor;
 }

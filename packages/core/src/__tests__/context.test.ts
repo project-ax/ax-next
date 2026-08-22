@@ -147,4 +147,26 @@ describe('makeAgentContext', () => {
     // `source` should not even be an own property when omitted.
     expect(Object.prototype.hasOwnProperty.call(ctx, 'source')).toBe(false);
   });
+
+  it('carries an explicit triggerLabel through', () => {
+    const ctx = makeAgentContext({
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      userId: 'user-1',
+      triggerLabel: 'Morning email pass',
+    });
+    expect(ctx.triggerLabel).toBe('Morning email pass');
+  });
+
+  it('leaves triggerLabel undefined (and absent) when not supplied', () => {
+    const ctx = makeAgentContext({
+      sessionId: 'sess-1',
+      agentId: 'agent-1',
+      userId: 'user-1',
+    });
+    expect(ctx.triggerLabel).toBeUndefined();
+    // Conditional-spread: the key is never set to a literal `undefined`, so
+    // `triggerLabel` should not even be an own property when omitted.
+    expect(Object.prototype.hasOwnProperty.call(ctx, 'triggerLabel')).toBe(false);
+  });
 });

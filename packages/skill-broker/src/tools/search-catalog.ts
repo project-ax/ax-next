@@ -13,6 +13,7 @@ export const SEARCH_CATALOG_DESCRIPTOR: ToolDescriptor = {
     'and a request to add it is filed for the administrator automatically — tell the user ' +
     'you have asked your admin to add it and that you will be able to help once it is approved. ' +
     'That is the expected outcome, not an error.',
+  activityPhrase: 'Looking for a way to do this',
   executesIn: 'host',
   inputSchema: {
     type: 'object',
