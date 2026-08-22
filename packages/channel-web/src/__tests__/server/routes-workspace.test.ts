@@ -8,7 +8,10 @@
  */
 import { describe, it, expect, beforeEach } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
-import { makeWorkspaceHandlers } from '../../server/routes-workspace.js';
+import {
+  CONVERSATION_ID_QUERY_KEY,
+  makeWorkspaceHandlers,
+} from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
 
 function mkReq(
@@ -457,7 +460,11 @@ describe('channel-web agent-workspace BFF', () => {
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
     const req = mkReq({ agentId: 'a1' });
-    (req.query as Record<string, string>).conversationId = 'back-then';
+    // LOWERCASED on purpose: http-server projects every query key through
+    // `k.toLowerCase()`, so a camelCase key never reaches a handler. Writing
+    // the camelCase key here would make this test agree with a handler that
+    // is broken in production.
+    (req.query as Record<string, string>)[CONVERSATION_ID_QUERY_KEY] = 'back-then';
     await h.agentDetail(req, res);
 
     expect(captured.statusCode).toBe(200);
@@ -492,7 +499,11 @@ describe('channel-web agent-workspace BFF', () => {
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
     const req = mkReq({ agentId: 'a1' });
-    (req.query as Record<string, string>).conversationId = 'theirs';
+    // LOWERCASED on purpose: http-server projects every query key through
+    // `k.toLowerCase()`, so a camelCase key never reaches a handler. Writing
+    // the camelCase key here would make this test agree with a handler that
+    // is broken in production.
+    (req.query as Record<string, string>)[CONVERSATION_ID_QUERY_KEY] = 'theirs';
     await h.agentDetail(req, res);
 
     expect(captured.statusCode).toBe(404);
@@ -506,7 +517,11 @@ describe('channel-web agent-workspace BFF', () => {
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
     const req = mkReq({ agentId: 'a1' });
-    (req.query as Record<string, string>).conversationId = 'never-existed';
+    // LOWERCASED on purpose: http-server projects every query key through
+    // `k.toLowerCase()`, so a camelCase key never reaches a handler. Writing
+    // the camelCase key here would make this test agree with a handler that
+    // is broken in production.
+    (req.query as Record<string, string>)[CONVERSATION_ID_QUERY_KEY] = 'never-existed';
     await h.agentDetail(req, res);
 
     expect(captured.statusCode).toBe(404);
@@ -537,6 +552,50 @@ describe('channel-web agent-workspace BFF', () => {
     const body = captured.body as { conversationId: string | null; thread: unknown[] };
     expect(body.conversationId).toBeNull();
     expect(body.thread).toEqual([]);
+  });
+
+  it('does NOT swallow a real conversations:get fault into an empty thread', async () => {
+    // The benign race above is a PluginError. A DB outage is not, and
+    // rendering it as "this agent has no history" would be a claim we cannot
+    // back on top of a failure nobody was told about. It must propagate.
+    bus = new HookBus();
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agents:list-for-user', 'agents', async () => ({ agents: [] }));
+    bus.registerService('agents:resolve', 'agents', async () => ({
+      agent: { id: 'a1', displayName: 'Inbox', visibility: 'personal' },
+    }));
+    bus.registerService('conversations:list', 'conversations', async () => [
+      conv({ conversationId: 'live', agentId: 'a1' }),
+    ]);
+    bus.registerService('conversations:get', 'conversations', async () => {
+      throw new Error('connection terminated unexpectedly');
+    });
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res } = mkRes();
+    await expect(h.agentDetail(mkReq({ agentId: 'a1' }), res)).rejects.toThrow(
+      /connection terminated/,
+    );
+  });
+
+  it('does NOT swallow a real conversations:list fault into "no history"', async () => {
+    // On the detail panel the conversation list IS the content, so an
+    // unreadable list must not render as an agent that has never been used.
+    bus = new HookBus();
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agents:list-for-user', 'agents', async () => ({ agents: [] }));
+    bus.registerService('agents:resolve', 'agents', async () => ({
+      agent: { id: 'a1', displayName: 'Inbox', visibility: 'personal' },
+    }));
+    bus.registerService('conversations:list', 'conversations', async () => {
+      throw new Error('connection terminated unexpectedly');
+    });
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res } = mkRes();
+    await expect(h.agentDetail(mkReq({ agentId: 'a1' }), res)).rejects.toThrow(
+      /connection terminated/,
+    );
   });
 
   it('404s when the current conversation belongs to a different agent', async () => {

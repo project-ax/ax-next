@@ -206,6 +206,15 @@ export type ThreadMessage =
   | { kind: 'approval'; id: string; decisionId: string }
   | { kind: 'status'; id: string; text: string }
   /** The compaction summarize rung, surfaced. */
+  /**
+   * Compaction's summarize rung, surfaced. NOTHING PRODUCES THIS TODAY: the
+   * rung-3 summarizer rewrites the transcript rather than recording how many
+   * turns it swallowed, so the host has no count to report and the route never
+   * emits a fold. The renderer is kept because the variant is real and the
+   * moment compaction records a count this is where it lands — but until then
+   * the honest number of folded turns is "unknown", not zero, which is why the
+   * prototype's `0 messages folded` marker was deleted rather than defaulted.
+   */
   | { kind: 'fold'; id: string; text: string };
 
 /**

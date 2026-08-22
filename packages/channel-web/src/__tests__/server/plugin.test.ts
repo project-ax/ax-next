@@ -47,11 +47,29 @@ function authMockPlugin(args: {
   };
 }
 
+interface MockConversationRow {
+  conversationId: string;
+  userId: string;
+  agentId: string;
+  title: string | null;
+  activeSessionId: string | null;
+  createdAt: string;
+  lastActivityAt: string | null;
+}
+
 function conversationsMockPlugin(args: {
   byReqId: Map<
     string,
     { conversationId: string; agentId: string; userId: string; activeReqId: string } | null
   >;
+  /**
+   * TASK-230 — the agent-workspace detail route reads these through the REAL
+   * http-server, which is the only place the query-string projection
+   * (`query[k.toLowerCase()]`) is exercised. A handler-level test cannot see
+   * that, so `?conversationId=` needs a row to fetch here.
+   */
+  rows?: MockConversationRow[];
+  turns?: Map<string, Array<Record<string, unknown>>>;
 }): Plugin {
   return {
     manifest: {
@@ -102,20 +120,45 @@ function conversationsMockPlugin(args: {
           message: 'conversations:create stub (not exercised by this suite)',
         });
       });
-      bus.registerService('conversations:get', 'mock-conversations', async () => {
-        throw new PluginError({
-          code: 'not-implemented',
-          plugin: 'mock-conversations',
-          message: 'conversations:get stub (not exercised by this suite)',
-        });
-      });
-      bus.registerService('conversations:list', 'mock-conversations', async () => {
-        throw new PluginError({
-          code: 'not-implemented',
-          plugin: 'mock-conversations',
-          message: 'conversations:list stub (not exercised by this suite)',
-        });
-      });
+      bus.registerService(
+        'conversations:get',
+        'mock-conversations',
+        async (_ctx, input: unknown) => {
+          const { conversationId, userId } = input as {
+            conversationId: string;
+            userId: string;
+          };
+          const row = (args.rows ?? []).find(
+            (r) => r.conversationId === conversationId && r.userId === userId,
+          );
+          if (row === undefined) {
+            throw new PluginError({
+              code: args.rows === undefined ? 'not-implemented' : 'not-found',
+              plugin: 'mock-conversations',
+              message: 'conversations:get',
+            });
+          }
+          return { conversation: row, turns: args.turns?.get(conversationId) ?? [] };
+        },
+      );
+      bus.registerService(
+        'conversations:list',
+        'mock-conversations',
+        async (_ctx, input: unknown) => {
+          if (args.rows === undefined) {
+            throw new PluginError({
+              code: 'not-implemented',
+              plugin: 'mock-conversations',
+              message: 'conversations:list stub (not exercised by this suite)',
+            });
+          }
+          const { userId, agentId } = input as { userId: string; agentId?: string };
+          return args.rows.filter(
+            (r) =>
+              r.userId === userId && (agentId === undefined || r.agentId === agentId),
+          );
+        },
+      );
       bus.registerService('conversations:delete', 'mock-conversations', async () => {
         throw new PluginError({
           code: 'not-implemented',
@@ -303,6 +346,9 @@ interface BootArgs {
   user?: { id: string; isAdmin: boolean } | null;
   /** TASK-230 — mount the /api/workspace/* preview surface. */
   agentWorkspacePreview?: boolean;
+  /** TASK-230 — conversation rows the workspace detail route can read. */
+  conversationRows?: MockConversationRow[];
+  conversationTurns?: Map<string, Array<Record<string, unknown>>>;
   byReqId?: Map<
     string,
     | { conversationId: string; agentId: string; userId: string; activeReqId: string }
@@ -345,7 +391,15 @@ async function boot(args: BootArgs = {}): Promise<{
     plugins: [
       http,
       authMockPlugin({ user }),
-      conversationsMockPlugin({ byReqId }),
+      conversationsMockPlugin({
+        byReqId,
+        ...(args.conversationRows === undefined
+          ? {}
+          : { rows: args.conversationRows }),
+        ...(args.conversationTurns === undefined
+          ? {}
+          : { turns: args.conversationTurns }),
+      }),
       agentsMockPlugin({ allow: args.agentsAllow ?? true }),
       chatRunMockPlugin(),
       attachmentsMockPlugin(),
@@ -616,6 +670,87 @@ describe('@ax/channel-web server plugin (integration)', () => {
       const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
       expect(features.status).toBe(200);
       expect(await features.json()).toEqual({ agentWorkspacePreview: true });
+    });
+
+    it('honours ?conversationId= through the real http-server query projection', async () => {
+      // The regression this pins: http-server projects the query string with
+      // `query[k.toLowerCase()] = v`, so a handler reading `conversationId`
+      // gets undefined forever and silently serves the CURRENT conversation
+      // under a past row's title — plausible wrong data, no error. A
+      // handler-level test can't see it, because it writes the query object
+      // itself. Only a round trip through the real server can.
+      const rows = [
+        {
+          conversationId: 'cnv_now',
+          userId: 'userA',
+          agentId: 'agt_test',
+          title: 'Today',
+          activeSessionId: null,
+          createdAt: '2026-08-20T10:00:00.000Z',
+          lastActivityAt: '2026-08-20T10:00:00.000Z',
+        },
+        {
+          conversationId: 'cnv_march',
+          userId: 'userA',
+          agentId: 'agt_test',
+          title: 'March',
+          activeSessionId: null,
+          createdAt: '2026-03-01T10:00:00.000Z',
+          lastActivityAt: '2026-03-01T10:00:00.000Z',
+        },
+      ];
+      const turns = new Map<string, Array<Record<string, unknown>>>([
+        [
+          'cnv_now',
+          [
+            {
+              turnId: 't-now',
+              turnIndex: 0,
+              role: 'user',
+              contentBlocks: [{ type: 'text', text: 'happening today' }],
+              createdAt: '2026-08-20T10:00:00.000Z',
+            },
+          ],
+        ],
+        [
+          'cnv_march',
+          [
+            {
+              turnId: 't-march',
+              turnIndex: 0,
+              role: 'user',
+              contentBlocks: [{ type: 'text', text: 'happened in March' }],
+              createdAt: '2026-03-01T10:00:00.000Z',
+            },
+          ],
+        ],
+      ]);
+      const booted = await boot({
+        agentWorkspacePreview: true,
+        conversationRows: rows,
+        conversationTurns: turns,
+      });
+      harness = booted.harness;
+
+      const base = `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test`;
+
+      const current = await fetch(base);
+      expect(current.status).toBe(200);
+      const currentBody = (await current.json()) as {
+        conversationId: string | null;
+        thread: Array<{ text: string }>;
+      };
+      expect(currentBody.conversationId).toBe('cnv_now');
+      expect(currentBody.thread[0]?.text).toBe('happening today');
+
+      const past = await fetch(`${base}?conversationId=cnv_march`);
+      expect(past.status).toBe(200);
+      const pastBody = (await past.json()) as {
+        conversationId: string | null;
+        thread: Array<{ text: string }>;
+      };
+      expect(pastBody.conversationId).toBe('cnv_march');
+      expect(pastBody.thread[0]?.text).toBe('happened in March');
     });
 
     it('leaves /api/workspace/* unmounted when the preview is off', async () => {

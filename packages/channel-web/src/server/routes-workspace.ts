@@ -240,6 +240,24 @@ function byRecencyDesc(a: ConversationRow, b: ConversationRow): number {
 }
 
 /**
+ * `?conversationId=` as it actually arrives. `http-server` lowercases every
+ * query key on the way in, so this is the only spelling a handler ever sees.
+ */
+export const CONVERSATION_ID_QUERY_KEY = 'conversationid';
+
+/**
+ * Is this a "the row isn't yours / isn't there" answer, or a real failure?
+ *
+ * Only the first kind may be degraded into an empty thread or a 404. A generic
+ * throw means we don't know what happened, and "we don't know" must never
+ * render as "there is nothing here" (design H7).
+ */
+function isBenignConversationRead(err: unknown): boolean {
+  if (!(err instanceof PluginError)) return false;
+  return err.code === 'not-found' || err.code === 'forbidden';
+}
+
+/**
  * A short, plain relative date — "today", "3 days ago". Deliberately coarse:
  * the past-conversation rows are for orientation, not for forensics, and an
  * exact timestamp there reads like it means something it doesn't.
@@ -325,10 +343,20 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   const { bus, initCtx } = deps;
   const agentWorkspacePreview = deps.agentWorkspacePreview === true;
 
-  /** Every conversation the caller owns under one agent, newest first. */
+  /**
+   * Every conversation the caller owns under one agent, newest first.
+   *
+   * `strict` decides what a failure means. On the agent detail panel this list
+   * IS the content — "no past conversations" is a claim — so a fault has to
+   * surface. On the board it is one cell of a roster, and failing the whole
+   * page because one agent's list hiccuped trades a small wrong for a big one;
+   * there the agent simply reads `resting`, which is what "we don't know"
+   * renders as everywhere else on this surface.
+   */
   async function listConversations(
     userId: string,
     agentId: string,
+    opts: { strict?: boolean } = {},
   ): Promise<ConversationRow[]> {
     if (!bus.hasService('conversations:list')) return [];
     try {
@@ -339,6 +367,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       );
       return [...rows].sort(byRecencyDesc);
     } catch (err) {
+      if (opts.strict === true && !isBenignConversationRead(err)) throw err;
       initCtx.logger.warn('workspace_conversations_list_failed', {
         agentId,
         error: err instanceof Error ? err.message : String(err),
@@ -461,7 +490,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
       if (agent === null) return;
 
-      const convs = await listConversations(userId, agentId);
+      const convs = await listConversations(userId, agentId, { strict: true });
       const current = convs[0] ?? null;
       // A pointer per row, nothing more: the transcript arrives from a second
       // read through `?conversationId=`, and there is no fold count to ship.
@@ -477,8 +506,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         opens one of the `past` rows read-only; without it we serve the
         current one. Either way the ownership check below is the same, and it
         is `conversations:get` — not the list we just read — that decides.
+
+        Read the key LOWERCASED. `http-server` projects the query string with
+        `query[k.toLowerCase()] = v` (plugin.ts), so a camelCase key never
+        arrives camelCase — a handler that reads `req.query.conversationId`
+        gets `undefined` forever and silently serves the CURRENT conversation
+        under a past row's title. The sibling `GetConversationQuery`
+        (`wire/chat.ts`) reads `includethinking` for exactly this reason.
       */
-      const requestedId = (req.query.conversationId ?? '').trim();
+      const requestedId = (req.query[CONVERSATION_ID_QUERY_KEY] ?? '').trim();
       const targetId =
         requestedId.length > 0 ? requestedId : (current?.conversationId ?? null);
 
@@ -493,6 +529,12 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             { conversationId: targetId, userId },
           );
         } catch (err) {
+          // Only the two ACL verdicts are benign here. Anything else — a DB
+          // outage, a throw inside the projection — is a real fault, and
+          // rendering it as "this agent has no history" would be a claim we
+          // cannot back on top of a failure nobody was told about. Same
+          // discrimination `routes-chat.ts` does on this hook.
+          if (!isBenignConversationRead(err)) throw err;
           if (requestedId.length > 0) {
             // The caller named a conversation we cannot read. Answering 200
             // with an empty thread would render "this conversation is empty"

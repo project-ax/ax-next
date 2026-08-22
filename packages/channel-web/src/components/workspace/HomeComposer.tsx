@@ -71,6 +71,10 @@ export function HomeComposer({
     setError(null);
     try {
       await onSend(agentId, text);
+      // On the home surface `onSend` navigates to the agent, so this component
+      // is on its way out by the time these run. React 18 makes a setState on
+      // an unmounted component a no-op rather than a warning, and the clears
+      // still matter on the paths that DON'T navigate — so they stay.
       setProposal(null);
       setDraft('');
     } catch {
