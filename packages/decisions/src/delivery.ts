@@ -22,6 +22,7 @@
 import type { AgentContext, HookBus } from '@ax/core';
 import { conversationChannel } from './attendance.js';
 import { PLUGIN_NAME } from './pre-call.js';
+import { replayContext } from './replay.js';
 import { decisionApprovedNote, decisionDismissedNote } from './templates.js';
 import type { Decision } from './types.js';
 
@@ -43,6 +44,10 @@ export type DeliveryResult =
 
 export interface DeliverResolutionInput {
   bus: HookBus;
+  /**
+   * The APPROVING request's context — used only for its logger. Every bus call
+   * below runs under a context built from the DECISION instead; see the body.
+   */
   ctx: AgentContext;
   decision: Decision;
   outcome: ResolutionOutcome;
@@ -56,9 +61,21 @@ export async function deliverResolution({
 }: DeliverResolutionInput): Promise<DeliveryResult> {
   if (!bus.hasService(SESSION_QUEUE_HOOK)) return { delivered: false, reason: 'no-session-plugin' };
 
+  // Under the DECISION's owner and agent, never the approving request's — the
+  // same rule AW-5's host replay follows, and for a sharper reason here.
+  //
+  // `conversations:get-metadata` pre-filters on `(conversationId, userId)` and
+  // answers `not-found` for a row belonging to anyone else. `decisions:approve`
+  // takes its `userId` from the INPUT, so an approver whose ctx names a
+  // different user than the decision's owner would read nothing back — and
+  // "nothing" is indistinguishable from "the session is gone". The delivery
+  // would be skipped silently on every approval, forever, and every test that
+  // passes the same user for both would still be green.
+  const deliveryCtx = replayContext(decision);
+
   // The SAME single indexed read the attendance lookup used, for the same
   // reason: the answer to "is anyone there" and "who is there" is one row.
-  const channel = await conversationChannel(bus, ctx, decision.conversationId);
+  const channel = await conversationChannel(bus, deliveryCtx, decision.conversationId);
   if (channel === null || channel.activeSessionId === null) {
     ctx.logger.info('decision_delivery_skipped_no_session', {
       plugin: PLUGIN_NAME,
@@ -74,7 +91,7 @@ export async function deliverResolution({
       : decisionDismissedNote(decision.id);
 
   try {
-    await bus.call(SESSION_QUEUE_HOOK, ctx, {
+    await bus.call(SESSION_QUEUE_HOOK, deliveryCtx, {
       sessionId: channel.activeSessionId,
       entry: { type: 'decision-resolved', decisionId: decision.id, outcome, note },
     });

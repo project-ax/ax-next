@@ -245,6 +245,31 @@ describe('deliverResolution', () => {
     expect(entry.note).toMatch(/not look for another way/);
   });
 
+  it('reads the conversation as the DECISION’s owner, not the approver', async () => {
+    // `decisions:approve` takes its `userId` from the INPUT, so the approving
+    // ctx is not guaranteed to name the decision's owner. `get-metadata`
+    // pre-filters on `(conversationId, userId)` and answers `not-found` for
+    // anyone else — so reading under the approver's ctx would return nothing,
+    // which is INDISTINGUISHABLE from "the session is gone". The delivery
+    // would be skipped silently on every approval, forever.
+    const bus = new HookBus();
+    withConversations(bus, {
+      'conv-web': { origin: 'web', activeSessionId: 'sess-1', userId: 'owner-1' },
+    });
+    const queued = withSessionQueue(bus);
+
+    expect(
+      await deliverResolution({
+        bus,
+        // A ctx naming somebody else entirely.
+        ctx: ctx({ userId: 'approver-2', agentId: 'approver-agent', sessionId: 'approve-s' }),
+        decision: decision({ ownerUserId: 'owner-1' }),
+        outcome: 'approved',
+      }),
+    ).toEqual({ delivered: true });
+    expect(queued).toHaveLength(1);
+  });
+
   it('is a no-op when the session is gone', async () => {
     // The degradation the design makes no special case for: the standing
     // authorisation stays on the row and the agent takes it up on its next run.
