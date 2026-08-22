@@ -10,6 +10,7 @@ export const MEMORY_READ_SECTION_DESCRIPTOR: ToolDescriptor = {
   description:
     'Read a specific section of a memory doc by id. Use AFTER memory_search to drill into a fact. ' +
     'If header is omitted, returns the whole body.',
+  activityPhrase: 'Reading a memory note',
   executesIn: 'host',
   inputSchema: {
     type: 'object',

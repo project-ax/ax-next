@@ -10,6 +10,7 @@ export const WEB_EXTRACT_DESCRIPTOR: ToolDescriptor = {
   description:
     'Fetch a specific web page (by URL) and return its readable text content. ' +
     'Use after web_search, or when the user gives you a URL to read. Text pages only (not PDFs/binary).',
+  activityPhrase: 'Reading a web page',
   executesIn: 'host',
   inputSchema: {
     type: 'object',

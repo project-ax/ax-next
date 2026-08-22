@@ -67,6 +67,7 @@ export const SKILL_PROPOSE_DESCRIPTOR: ToolDescriptor = {
     'Only .skill-draft/<id>/ paths under the draft root from your operating notes',
     'are accepted (others rejected).',
   ].join('\n'),
+  activityPhrase: 'Proposing a new skill',
   inputSchema: {
     type: 'object',
     properties: {

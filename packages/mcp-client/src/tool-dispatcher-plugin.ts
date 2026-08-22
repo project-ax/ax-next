@@ -24,14 +24,19 @@ const PLUGIN_NAME = '@ax/tool-dispatcher';
 // omitted here is silently dropped from `tool:list` output BEFORE it reaches
 // the IPC wire — which is exactly how `flushWorkspaceBeforeCall` got dropped
 // (BUG-W2: the runner never saw the flag, so the pre-call workspace flush
-// never fired). When you add a ToolDescriptor field, add it in all three
-// places.
+// never fired). When you add a ToolDescriptor field, add it in all FOUR
+// places: `@ax/core`'s `ToolDescriptor` interface, `@ax/ipc-protocol`'s
+// `ToolDescriptorSchema`, this local schema, and `@ax/mcp-client`'s
+// `catalog.ts` `validateDescriptor` (hand-rolled, not zod — it must also
+// copy the field onto the built descriptor).
 const ToolDescriptorSchema = z.object({
   name: z.string(),
   description: z.string().optional(),
   inputSchema: z.record(z.unknown()),
   executesIn: z.union([z.literal('sandbox'), z.literal('host')]),
   flushWorkspaceBeforeCall: z.boolean().optional(),
+  activityPhrase: z.string().max(40).optional(),
+  countable: z.string().max(40).optional(),
 });
 
 export const ToolRegisterOutputSchema = z.object({

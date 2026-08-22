@@ -9,6 +9,7 @@ export const WEB_SEARCH_DESCRIPTOR: ToolDescriptor = {
   description:
     'Search the live web and get back a list of result hits (title + URL) plus a short summary. ' +
     'Use when you need current information beyond your training data.',
+  activityPhrase: 'Searching the web',
   executesIn: 'host',
   inputSchema: {
     type: 'object',

@@ -119,6 +119,16 @@ function busWithStubs(
   return { bus, registered, setVault, coldStarts };
 }
 
+describe('skill-broker tool descriptors — activityPhrase', () => {
+  it('every skill-broker tool descriptor carries a non-empty activityPhrase (<=40 chars)', () => {
+    for (const desc of [SEARCH_CATALOG_DESCRIPTOR, REQUEST_CAPABILITY_DESCRIPTOR]) {
+      expect(desc.activityPhrase).toBeTruthy();
+      expect(desc.activityPhrase!.length).toBeGreaterThan(0);
+      expect(desc.activityPhrase!.length).toBeLessThanOrEqual(40);
+    }
+  });
+});
+
 describe('createSkillBrokerPlugin — search_catalog', () => {
   it('manifest declares the execute hook + its calls', () => {
     const p = createSkillBrokerPlugin();

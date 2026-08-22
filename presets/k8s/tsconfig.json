@@ -8,6 +8,7 @@
   "exclude": ["src/__tests__/**", "dist", "node_modules"],
   "references": [
     { "path": "../../packages/core" },
+    { "path": "../../packages/agent-activity" },
     { "path": "../../packages/database-postgres" },
     { "path": "../../packages/storage-postgres" },
     { "path": "../../packages/eventbus-postgres" },

@@ -74,6 +74,18 @@ export const ToolDescriptorSchema = z.object({
    * Storage-agnostic: "workspace" is the abstraction, not git/sqlite/k8s.
    */
   flushWorkspaceBeforeCall: z.boolean().optional(),
+  /**
+   * Present-participle activity clause (e.g. `'Reading email'`), never an
+   * outcome. Authored in-repo per tool, not model-facing. MCP-sourced
+   * descriptors never set this. See `@ax/core`'s `ToolDescriptor` for the
+   * full rationale.
+   */
+  activityPhrase: z.string().max(40).optional(),
+  /**
+   * The unit this tool iterates over, when it iterates (e.g. `'messages'`).
+   * See `@ax/core`'s `ToolDescriptor` for the full rationale.
+   */
+  countable: z.string().max(40).optional(),
 });
 export type ToolDescriptor = z.infer<typeof ToolDescriptorSchema>;
 

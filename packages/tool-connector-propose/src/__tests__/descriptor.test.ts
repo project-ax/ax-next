@@ -45,4 +45,10 @@ describe('CONNECTOR_PROPOSE_DESCRIPTOR', () => {
     // turn, not this one) — same posture as skill_propose.
     expect(d).toMatch(/next/i);
   });
+
+  it('carries a non-empty activityPhrase (<=40 chars)', () => {
+    expect(CONNECTOR_PROPOSE_DESCRIPTOR.activityPhrase).toBeTruthy();
+    expect(CONNECTOR_PROPOSE_DESCRIPTOR.activityPhrase!.length).toBeGreaterThan(0);
+    expect(CONNECTOR_PROPOSE_DESCRIPTOR.activityPhrase!.length).toBeLessThanOrEqual(40);
+  });
 });

@@ -18,6 +18,11 @@ const descriptor: ToolDescriptor = {
   // strip — the bus validates tool:list output against ToolListOutputSchema, so
   // a field absent from that schema is dropped before it reaches the wire.
   flushWorkspaceBeforeCall: true,
+  // TASK-229 T1: same drift-guard rationale as flushWorkspaceBeforeCall above —
+  // a field missing from the local ToolDescriptorSchema (tool-dispatcher-plugin.ts)
+  // is silently dropped from tool:list output.
+  activityPhrase: 'Reading email',
+  countable: 'messages',
 };
 
 describe('tool-dispatcher return schemas', () => {

@@ -109,6 +109,12 @@ export function createFireRoutine(deps: FireDeps) {
       // @ax/memory-strata, which skips its chat:end memory extraction so a
       // scheduled fire doesn't pollute the agent's memory. See AgentContext.source.
       source: 'routine',
+      // Human-authored label for a status line ("Right now this agent is…").
+      // Must be set here, at the moment the turn starts: @ax/routines only
+      // writes its fire row (the conversationId→routine join) at
+      // chat:turn-end, i.e. AFTER the turn it would describe, so there is no
+      // way to recover which routine is mid-flight once work has begun.
+      triggerLabel: row.name,
     });
 
     // Phase D: render whenever payload is provided, regardless of source.

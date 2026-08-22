@@ -189,6 +189,12 @@ export function namespaceTools(
 
     // Conditional spread is required under exactOptionalPropertyTypes — passing
     // `description: undefined` would violate `ToolDescriptor`'s optional field.
+    //
+    // Deliberately NO `activityPhrase` here: it's authored in-repo per tool
+    // and reviewed in the same diff, but an MCP server's tool listing is
+    // third-party, untrusted text (invariant I5). `McpToolDescriptor`
+    // (connection.ts) doesn't even carry the field, so there is nothing to
+    // read — MCP-sourced descriptors always fall back to the T0 floor.
     const descriptor: ToolDescriptor = {
       name: finalName,
       inputSchema: c.original.inputSchema,

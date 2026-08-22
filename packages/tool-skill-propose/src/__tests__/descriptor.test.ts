@@ -50,4 +50,10 @@ describe('SKILL_PROPOSE_DESCRIPTOR', () => {
     // It must STEER AWAY from writing a capabilities block (rejected now).
     expect(d).toMatch(/not write a "?capabilities"? block|REJECTED/i);
   });
+
+  it('carries a non-empty activityPhrase (<=40 chars)', () => {
+    expect(SKILL_PROPOSE_DESCRIPTOR.activityPhrase).toBeTruthy();
+    expect(SKILL_PROPOSE_DESCRIPTOR.activityPhrase!.length).toBeGreaterThan(0);
+    expect(SKILL_PROPOSE_DESCRIPTOR.activityPhrase!.length).toBeLessThanOrEqual(40);
+  });
 });
