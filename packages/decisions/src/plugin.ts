@@ -548,14 +548,30 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
               // A window argued safe against one actor is not safe; it is
               // unexamined against every other.
               //
-              // So the flight is taken as one conditional UPDATE off
-              // `status='executed' AND replay_claimed_at IS NULL AND
-              // replayed_at IS NULL`. Null back means undo or another resolver
-              // already won: report the stored outcome and run NOTHING. Only
-              // the host-replay side takes it — the sandbox-park side must
-              // leave `replay_claimed_at` null, because `parkForAgent` hands
-              // the row back to the agent and a flight it never took would
-              // forbid the agent from ever picking it up.
+              // So the flight is taken as one conditional UPDATE off the same
+              // three columns `restore` and `takeApproval` guard — unconsumed,
+              // untaken, un-replayed, on an `executed` row. Null back means
+              // undo, a consuming agent, or another resolver already won:
+              // report the stored outcome and run NOTHING.
+              //
+              // WHY IT IS GATED ON `hasExecutor`. Not because a flight on the
+              // park side would be unrecoverable — `parkForAgent` clears
+              // `replay_claimed_at` unconditionally, so a mis-gate there is
+              // very nearly harmless. The real reason is that `hasExecutor` is
+              // the SAME answer `replayOnApprove` is about to branch on:
+              // `HookBus` has no deregistration, so `hasService` cannot go
+              // stale inside one handler. Gating on it takes the flight in
+              // exactly the case where a send is imminent, and skips it in
+              // exactly the case where the outcome is a park that must stay
+              // undoable. Taking it on the park side would close the row to
+              // undo for the duration of a branch that sends nothing — a
+              // window with no call behind it to justify it.
+              //
+              // The unrecoverable reading is real but SECONDARY: it needs the
+              // process to die between `claimReplayFlight` and `parkForAgent`,
+              // leaving a parked row carrying a flight nothing will ever clear,
+              // which `takeApproval` then refuses forever. Worth avoiding,
+              // not the reason.
               ctx.logger.warn('decision_delivery_fell_back_to_replay', {
                 plugin: PLUGIN_NAME,
                 decisionId,

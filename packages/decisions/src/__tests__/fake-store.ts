@@ -102,13 +102,16 @@ export function createFakeStore(): FakeStore {
       return next;
     },
 
-    // Mirrors the real store's predicates exactly: `executed`, untaken,
-    // un-replayed. Null means undo or another resolver won the row first.
+    // Mirrors the real store's predicates exactly: `executed`, unconsumed,
+    // untaken, un-replayed — the same three columns `restore` and
+    // `takeApproval` guard. Null means undo, a consuming agent, or another
+    // resolver won the row first.
     async claimReplayFlight(decisionId, nowIso) {
       const row = rows.get(decisionId);
       if (
         row === undefined ||
         row.status !== 'executed' ||
+        row.consumedAt !== null ||
         row.replayClaimedAt !== null ||
         row.replayedAt !== null
       ) {
