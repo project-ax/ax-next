@@ -1065,8 +1065,10 @@ describe('decisions canary — attendance and delivery', () => {
     expect(h.delivered[0]!.entry.decisionId).toBe(id);
     expect(h.delivered[0]!.entry.outcome).toBe('approved');
     // HOST-AUTHORED. The recorded call's input is model-authored and never
-    // reaches a line the model reads back as instruction.
-    expect(h.delivered[0]!.entry.note).toContain(id);
+    // reaches a line the model reads back as instruction. Nor does the
+    // decision id — the model never saw it in the hold note either, so it
+    // has no use for it here.
+    expect(h.delivered[0]!.entry.note).not.toContain(id);
     expect(h.delivered[0]!.entry.note).not.toContain('a@b.c');
 
     // And the authorisation the delivery is telling the agent about is real:

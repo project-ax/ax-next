@@ -278,6 +278,65 @@ describe('createAxHistoryAdapter', () => {
     });
   });
 
+  // TASK-260 (reload path). A HELD tool call is published by the runner with
+  // `is_error` OMITTED and a host-authored sentence as the body — the shape a
+  // hold now arrives on. Before the fix the runner forwarded the CLI's
+  // `is_error: true`, so a call that had not run and had not failed came back
+  // out of history as an `output-error` part and rendered red. The paired
+  // live-stream assertion is in `transport.test.ts`; the render-side one is in
+  // `tool-use.test.tsx`.
+  it('a tool_result with is_error ABSENT becomes an output-available part, never output-error', async () => {
+    const heldBody =
+      'Waiting for you to choose. Nothing has happened yet, and nothing will until you do.';
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        conversation: { conversationId: 'conv-1', title: null },
+        turns: [
+          {
+            turnId: 't0',
+            turnIndex: 0,
+            role: 'assistant',
+            contentBlocks: [
+              {
+                type: 'tool_use',
+                id: 'tu_held',
+                name: 'mcp__ax-host-tools__request_capability',
+                input: {},
+              },
+            ],
+            createdAt: '2026-04-01T00:00:00Z',
+          },
+          {
+            turnId: 't1',
+            turnIndex: 1,
+            role: 'tool',
+            // No `is_error` key at all — not `is_error: false`.
+            contentBlocks: [
+              { type: 'tool_result', tool_use_id: 'tu_held', content: heldBody },
+            ],
+            createdAt: '2026-04-01T00:00:01Z',
+          },
+        ],
+      }),
+    });
+    const adapter = createAxHistoryAdapter(() => 'conv-1');
+    const result = await adapter.withFormat!(makeFormatAdapter()).load();
+    const parts = (
+      result.messages[0]!.message.content as { parts: Array<Record<string, unknown>> }
+    ).parts;
+    expect(parts[0]).toMatchObject({
+      type: 'dynamic-tool',
+      // The SDK's `mcp__<server>__` wire name never reaches the renderer.
+      toolName: 'request_capability',
+      toolCallId: 'tu_held',
+      state: 'output-available',
+      output: heldBody,
+    });
+    expect(parts[0]).not.toHaveProperty('errorText');
+    expect(JSON.stringify(parts[0])).not.toMatch(/dec_/);
+  });
+
   it('an empty contentBlocks array still produces a single empty text part', async () => {
     fetchMock.mockResolvedValueOnce({
       ok: true,
@@ -377,5 +436,36 @@ describe('decodeAttachmentPath', () => {
     const parts = contentBlocksToAuiParts(blocks);
     const url = (parts[0] as { data: string }).data;
     expect(decodeAttachmentPath(url)).toBe(path);
+  });
+});
+
+describe('contentBlocksToAuiParts — tool_use MCP wire-name stripping (TASK-260)', () => {
+  it('strips the mcp__<server>__ prefix off an MCP-hosted tool_use name', () => {
+    const blocks = [
+      {
+        type: 'tool_use' as const,
+        id: 'tu_mcp',
+        name: 'mcp__ax-host-tools__request_capability',
+        input: {},
+      },
+    ];
+    const parts = contentBlocksToAuiParts(blocks);
+    expect(parts[0]).toMatchObject({
+      type: 'dynamic-tool',
+      toolName: 'request_capability',
+      toolCallId: 'tu_mcp',
+    });
+  });
+
+  it('passes a bare, unprefixed tool_use name through unchanged', () => {
+    const blocks = [
+      { type: 'tool_use' as const, id: 'tu_bare', name: 'Bash', input: {} },
+    ];
+    const parts = contentBlocksToAuiParts(blocks);
+    expect(parts[0]).toMatchObject({
+      type: 'dynamic-tool',
+      toolName: 'Bash',
+      toolCallId: 'tu_bare',
+    });
   });
 });

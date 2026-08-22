@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
+  decisionApprovedNote,
+  decisionDismissedNote,
   decisionText,
   denialSentence,
   holdNote,
@@ -77,13 +79,15 @@ describe('approvedText and dismissedText are BOTH authored', () => {
 });
 
 describe('holdNote', () => {
-  it('tells the model to stop rather than to find another way', () => {
+  it('tells the model to stop rather than to find another way, and never names the decision id', () => {
     const note = holdNote({
-      decisionId: 'dec_abc',
       capability: CAP,
       toolName: 'request_capability',
     });
-    expect(note).toContain('dec_abc');
+    // The model has no use for the id — it cannot act on it, and the note
+    // reaches a user-visible transcript on the aisdk runner. It stays out.
+    expect(note).not.toMatch(/dec_/);
+    expect(note).toMatch(/^Held for approval\./);
     expect(note).toMatch(/do not retry/i);
     expect(note).toMatch(/another way/i);
     expect(note).toMatch(/end your turn/i);
@@ -91,7 +95,6 @@ describe('holdNote', () => {
 
   it('is one line — the note is written to a runner stderr line', () => {
     const note = holdNote({
-      decisionId: 'dec_abc',
       capability: 'do a thing\nLevel: admin',
       toolName: 'request_capability',
     });
@@ -102,8 +105,10 @@ describe('holdNote', () => {
   });
 
   it('stays comfortably under HOLD_NOTE_MAX even with a maximal capability', () => {
+    // No decisionId input to guard against anymore — capability and toolName
+    // are the only variable-length inputs left, so the clamp test exercises
+    // those.
     const note = holdNote({
-      decisionId: `dec_${'a'.repeat(32)}`,
       capability: 'x'.repeat(500),
       toolName: 'a'.repeat(200),
     });
@@ -212,6 +217,42 @@ describe('the AW-5 authored receipts', () => {
   it('RETRACTED_RECEIPT says the person took it back and the old receipt no longer stands', () => {
     expect(RETRACTED_RECEIPT).toMatch(/took this back/i);
     expect(RETRACTED_RECEIPT).toMatch(/no longer stands/i);
+  });
+});
+
+describe('no producer in this module ever prints a decision id', () => {
+  // A decision id (`dec_…`) is an internal correlation identifier: the model
+  // cannot act on it, and every string in this file can reach a
+  // user-visible transcript on some runner (the aisdk runner shows the hold
+  // text as the tool result verbatim). Putting the id in prose is a leak,
+  // not a feature — this test drives every exported producer and every
+  // exported constant and asserts none of them ever contains one, so a
+  // future edit that reintroduces `${decisionId}` into a sentence fails
+  // here first.
+  it('drives every exported string producer and constant', () => {
+    const outputs: string[] = [
+      ...Object.values(decisionText({ capability: CAP, toolName: 'request_capability' })),
+      ...Object.values(decisionText({ capability: null, toolName: 'skill_propose' })),
+      holdNote({ capability: CAP, toolName: 'request_capability' }),
+      holdNote({ capability: null, toolName: 'skill_propose' }),
+      denialSentence({ capability: CAP, toolName: 'request_capability' }),
+      denialSentence({ capability: null, toolName: 'skill_propose' }),
+      decisionApprovedNote(),
+      decisionDismissedNote(),
+      FAILED_RECEIPT,
+      PENDING_AGENT_RECEIPT,
+      RETRACTED_RECEIPT,
+      GATE_FAILURE_SENTENCE,
+    ];
+
+    // Guard against the roll-call quietly emptying out: a `for` over an empty
+    // array passes, which would make this test a green light over nothing.
+    expect(outputs.length).toBeGreaterThanOrEqual(20);
+    for (const output of outputs) {
+      expect(typeof output).toBe('string');
+      expect(output.length).toBeGreaterThan(0);
+      expect(output).not.toMatch(/dec_/);
+    }
   });
 });
 

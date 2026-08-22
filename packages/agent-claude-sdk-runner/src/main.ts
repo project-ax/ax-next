@@ -27,6 +27,10 @@ import {
   type LoopContext,
   type RunnerDeps,
 } from '@ax/agent-runner-core';
+import {
+  HELD_TOOL_RESULT_TEXT,
+  createHeldCallRegistry,
+} from './held-calls.js';
 import { buildTelemetryEnv } from './telemetry-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
@@ -167,6 +171,11 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
       // aisdk runner, where the latch IS the stop mechanism. Here it only
       // records WHICH decision stopped the turn.
       const holdLatch = createHoldLatch();
+      // Which of this turn's tool calls were held, so the tool_result branch
+      // below can publish the human's line for them instead of the model's
+      // hold note (which the CLI returns flagged `is_error`). Same per-turn
+      // lifetime as the latch, cleared at the same `result` boundary.
+      const heldCalls = createHeldCallRegistry();
       // The uuid of the turn's MOST-RECENT assistant message (SDKAssistantMessage
       // .uuid). The SDK assigns this id to the jsonl line it writes for the
       // message. The per-turn commit waits for THIS uuid to land in the jsonl
@@ -522,6 +531,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                       (r): r is string => r !== undefined,
                     ),
                     holdLatch,
+                    onHold: (id) => heldCalls.record(id),
                   }),
                 ],
               },
@@ -737,12 +747,37 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                     }
                     normalizedContent = narrowed;
                   }
+                  // TASK-260: a held call is not a failed one. When the
+                  // PreToolUse hook holds, the CLI synthesises THIS
+                  // tool_result out of the reason we handed it — the MODEL's
+                  // hold note — and flags it `is_error`. Forwarding that
+                  // verbatim paints a call that is merely waiting on a person
+                  // as FAILED, with the model's own instructions ("do not
+                  // retry…") under an `error` heading on the human's
+                  // transcript. The model keeps that note: it is already in
+                  // the SDK's jsonl, which we do not touch. The person gets a
+                  // sentence written for them, and no error flag at all —
+                  // `is_error` is OMITTED, not set false, because a key set
+                  // false is still a key every downstream renderer has to read
+                  // the right way round.
+                  //
+                  // Both the durable block and the wire chunk below are
+                  // derived from these two locals, so the substitution cannot
+                  // half-apply and leave history and the live stream
+                  // disagreeing about whether this call failed.
+                  const wasHeld = heldCalls.has(tr.tool_use_id);
+                  const publishedContent: string | Array<TextBlock | ImageBlock> =
+                    wasHeld ? HELD_TOOL_RESULT_TEXT : normalizedContent;
+                  const publishedIsError =
+                    !wasHeld && typeof tr.is_error === 'boolean'
+                      ? tr.is_error
+                      : undefined;
                   const normalized: ContentBlock = {
                     type: 'tool_result',
                     tool_use_id: tr.tool_use_id,
-                    content: normalizedContent,
-                    ...(typeof tr.is_error === 'boolean'
-                      ? { is_error: tr.is_error }
+                    content: publishedContent,
+                    ...(publishedIsError !== undefined
+                      ? { is_error: publishedIsError }
                       : {}),
                   };
                   turnToolResultBlocks.push(normalized);
@@ -751,9 +786,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                   // canonical full-fidelity copy still ships via turn-end /
                   // tool_result blocks.
                   const flatOutput =
-                    typeof normalizedContent === 'string'
-                      ? normalizedContent
-                      : normalizedContent
+                    typeof publishedContent === 'string'
+                      ? publishedContent
+                      : publishedContent
                           .filter(
                             (c): c is TextBlock => c.type === 'text',
                           )
@@ -763,8 +798,8 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                     kind: 'tool-result',
                     toolCallId: tr.tool_use_id,
                     output: flatOutput,
-                    ...(typeof tr.is_error === 'boolean'
-                      ? { isError: tr.is_error }
+                    ...(publishedIsError !== undefined
+                      ? { isError: publishedIsError }
                       : {}),
                   });
                 }
@@ -788,6 +823,16 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           // that a human is now the blocker. TASK-225 replaces the log with
           // the Decision correlation.
           const heldDecisionId = drainHoldLatch(holdLatch);
+          // Same per-turn rule, same reason, and it belongs HERE for the same
+          // ordering argument the latch's drain makes: this turn's
+          // tool_results all arrived earlier in this loop (the SDK echoes them
+          // back as `user` messages well before its `result`), so by the time
+          // we reach the turn boundary every substitution that needed the
+          // registry has already been made. Clearing any earlier would drop a
+          // hold before its result came back; not clearing at all would let a
+          // hold bleed into the next turn and quietly replace some later
+          // call's real output with the waiting-line.
+          heldCalls.clear();
           if (heldDecisionId !== null) {
             process.stderr.write(
               `runner: turn ended by a pre-call hold (decision ${heldDecisionId})\n`,

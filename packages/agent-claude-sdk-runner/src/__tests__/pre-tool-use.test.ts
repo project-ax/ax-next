@@ -340,6 +340,86 @@ describe('createPreToolUseHook', () => {
     });
     expect(latch.decisionId).toBe('dec_9');
   });
+
+  it('reports the held tool-call id to onHold (main.ts rewrites that call’s published result)', async () => {
+    const { client } = mkClient(async () => ({
+      verdict: 'hold',
+      decisionId: 'dec_9',
+      note: 'Held: sending email',
+    }));
+    const held: string[] = [];
+    const hook = createPreToolUseHook({
+      client,
+      workspaceRoot: '/agent',
+      onHold: (id) => held.push(id),
+    });
+    await hook(
+      preToolUseInput({ tool_name: 'mcp__gmail__send', tool_input: {} }),
+      'tu_1',
+      HOOK_OPTS,
+    );
+    expect(held).toEqual(['tu_1']);
+  });
+
+  it('does NOT call onHold on allow or on deny — only a hold is a hold', async () => {
+    const held: string[] = [];
+    const allowClient = mkClient(async () => ({ verdict: 'allow' })).client;
+    await createPreToolUseHook({
+      client: allowClient,
+      workspaceRoot: '/agent',
+      onHold: (id) => held.push(id),
+    })(preToolUseInput({ tool_name: 'Bash', tool_input: {} }), 'tu_1', HOOK_OPTS);
+    expect(held).toEqual([]);
+
+    const denyClient = mkClient(async () => ({
+      verdict: 'reject',
+      reason: 'nope',
+    })).client;
+    await createPreToolUseHook({
+      client: denyClient,
+      workspaceRoot: '/agent',
+      onHold: (id) => held.push(id),
+    })(preToolUseInput({ tool_name: 'Bash', tool_input: {} }), 'tu_2', HOOK_OPTS);
+    expect(held).toEqual([]);
+  });
+
+  it('does NOT call onHold when the SDK handed us no usable toolUseID', async () => {
+    // Same care as the `toolUseId ?? idGen()` comment in the hook: '' and
+    // undefined are DIFFERENT here. The policy may mint a synthetic id for the
+    // pre-call payload, but that id is not what the SDK will stamp on the
+    // tool_result, so recording it would either miss the substitution or —
+    // worse, for '' — key the registry on an id a later real result could
+    // collide with.
+    const { client } = mkClient(async () => ({
+      verdict: 'hold',
+      decisionId: 'dec_9',
+      note: 'Held: sending email',
+    }));
+    const held: string[] = [];
+    const latch = createHoldLatch();
+    const hook = createPreToolUseHook({
+      client,
+      workspaceRoot: '/agent',
+      idGen: () => 'generated-id',
+      holdLatch: latch,
+      onHold: (id) => held.push(id),
+    });
+
+    await hook(
+      preToolUseInput({ tool_name: 'mcp__gmail__send', tool_input: {} }),
+      '',
+      HOOK_OPTS,
+    );
+    await hook(
+      preToolUseInput({ tool_name: 'mcp__gmail__send', tool_input: {} }),
+      undefined,
+      HOOK_OPTS,
+    );
+
+    expect(held).toEqual([]);
+    // The hold itself still happened — only the display substitution is skipped.
+    expect(latch.decisionId).toBe('dec_9');
+  });
 });
 
 describe('resolveAttachmentPaths', () => {

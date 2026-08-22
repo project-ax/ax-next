@@ -20,6 +20,7 @@
  */
 import type { ThreadHistoryAdapter } from '@assistant-ui/react';
 import type { ContentBlock } from '@ax/ipc-protocol';
+import { stripMcpToolPrefix } from './tool-name';
 
 /**
  * Prefix assistant-ui's RemoteThreadList uses for the local placeholder id of
@@ -131,7 +132,11 @@ function blocksToParts(
       const matched = toolResults.get(block.id);
       const part: Record<string, unknown> = {
         type: 'dynamic-tool',
-        toolName: block.name,
+        // TASK-260: the SDK renames an MCP-hosted tool to
+        // `mcp__<server>__<tool>` — that's an internal wire identifier, not
+        // something a person should see. Strip it so the transcript renders
+        // the bare ax-native name the renderers already key on.
+        toolName: stripMcpToolPrefix(block.name),
         toolCallId: block.id,
         input: block.input,
       };

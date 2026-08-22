@@ -13,6 +13,15 @@
  *     JSON, and either a result or error block. Used as the
  *     `tools.Fallback` for unknown tool names.
  *
+ * NOTE (TASK-260): `ToolGroup` is NOT on the live render path. `Thread.tsx`
+ * imports only `ArtifactPublishTool` and `ToolFallback`; tool-call parts are
+ * folded into the chain-of-thought disclosure, whose collapsed header comes
+ * from `chainOfThoughtLabel` in `ChainOfThought.tsx`. `ToolGroup` and its
+ * `VERB_MAP` are exercised only by this component's own test today. Left in
+ * place rather than deleted in a bug-fix card, but do not reach for `VERB_MAP`
+ * expecting a user to see the result — a follow-up card owns reviving or
+ * removing it.
+ *
  * Class names like `tgroup`, `tgroup-body`, `tgroup-title`, `tstep` are
  * kept as test hooks — no CSS targets them anymore; Tailwind drives
  * the styling.
@@ -172,6 +181,33 @@ const stepStatus = (p: ToolCallMessagePartProps): 'running' | 'failed' | 'done' 
 const STEP_LABEL_CLASS =
   'uppercase text-[9.5px] tracking-[0.14em] text-ink-ghost mt-1.5 mb-0.5';
 
+/**
+ * The settled state has NO word (TASK-260).
+ *
+ * `done` was the one element in this panel that made a claim rather than
+ * reporting — and it is not always a true one. A tool call HELD for a person's
+ * approval has not run; its body says "Nothing has happened yet", and a `DONE`
+ * badge one line above that is a contradiction in adjacent pixels. Deleting the
+ * word costs nothing on the happy path, because the presence of a result block
+ * IS the completion signal and the absence of an error block IS the not-failed
+ * signal — and it removes a console-vocabulary shout from every tool call in
+ * the product, not just the held ones.
+ *
+ * The two states that remain are sentence-cased for the same reason: a
+ * non-technical user did not cause them and should not be shouted at about
+ * them.
+ *
+ * There is deliberately no third `Waiting` state here. Detecting a hold
+ * client-side would mean string-matching the runner's host-authored constant,
+ * which puts two packages in charge of one sentence — the exact failure
+ * `workspace/decision-copy.ts` was written to prevent. A real hold state needs
+ * a persisted flag first, and that is its own card.
+ */
+const STATUS_WORD: Record<'running' | 'failed', string> = {
+  running: 'Running',
+  failed: 'Failed',
+};
+
 export const ToolFallback: FC<ToolCallMessagePartProps> = (p) => {
   const status = stepStatus(p);
   return (
@@ -186,15 +222,16 @@ export const ToolFallback: FC<ToolCallMessagePartProps> = (p) => {
     >
       <div className="tstep-name text-primary font-medium mb-1">
         {p.toolName}
-        <span
-          className={cn(
-            'tstep-status ml-2 font-normal text-ink-ghost uppercase tracking-[0.12em] text-[9.5px]',
-            status === 'running' && 'text-primary',
-            status === 'failed' && 'text-destructive',
-          )}
-        >
-          {status}
-        </span>
+        {status !== 'done' ? (
+          <span
+            className={cn(
+              'tstep-status ml-2 font-sans font-normal text-[11px]',
+              status === 'running' ? 'text-primary' : 'text-destructive',
+            )}
+          >
+            {STATUS_WORD[status]}
+          </span>
+        ) : null}
       </div>
       <div className={STEP_LABEL_CLASS}>args</div>
       <div className="tstep-args">{formatJSON(p.args)}</div>
@@ -206,7 +243,23 @@ export const ToolFallback: FC<ToolCallMessagePartProps> = (p) => {
       ) : status === 'done' && p.result !== undefined ? (
         <>
           <div className={STEP_LABEL_CLASS}>result</div>
-          <div className="tstep-result">{formatJSON(p.result)}</div>
+          {/*
+           * A string result is PROSE; an object result is DATA (TASK-260). The
+           * panel is monospace because most tool output is JSON, but a tool
+           * that returns a sentence — a held call's "Waiting for you to
+           * choose…", an error explanation, a summary — reads as a code dump
+           * at 11px mono. Typeof is the whole heuristic: no tool-name list to
+           * go stale, and it improves every string-returning tool rather than
+           * special-casing one.
+           */}
+          <div
+            className={cn(
+              'tstep-result',
+              typeof p.result === 'string' && 'font-sans text-[13px] leading-[1.5]',
+            )}
+          >
+            {formatJSON(p.result)}
+          </div>
         </>
       ) : null}
     </div>

@@ -721,6 +721,23 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect(types[types.length - 1]).toBe('finish');
     expect(types).not.toContain('error');
   });
+
+  // TASK-260: the SDK renames an MCP-hosted tool to `mcp__<server>__<tool>`
+  // on the wire — that's an internal identifier and must not reach the
+  // transcript. The live tool-use frame branch strips it the same way
+  // history-adapter.ts does for hydrated turns.
+  test('a live tool-use frame strips the mcp__<server>__ wire prefix', async () => {
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      `data: {"reqId":"r1","kind":"tool-use","toolCallId":"t1","toolName":"mcp__ax-host-tools__request_capability","input":{},"seq":1}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      toolName?: string;
+    }>;
+    const toolChunk = chunks.find((c) => c.type === 'tool-input-available');
+    expect(toolChunk?.toolName).toBe('request_capability');
+  });
 });
 
 describe('AxChatTransport SSE phase parsing', () => {

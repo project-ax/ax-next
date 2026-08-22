@@ -85,10 +85,7 @@ export async function deliverResolution({
     return { delivered: false, reason: 'no-session' };
   }
 
-  const note =
-    outcome === 'approved'
-      ? decisionApprovedNote(decision.id)
-      : decisionDismissedNote(decision.id);
+  const note = outcome === 'approved' ? decisionApprovedNote() : decisionDismissedNote();
 
   try {
     await bus.call(SESSION_QUEUE_HOOK, deliveryCtx, {
