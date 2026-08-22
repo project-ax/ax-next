@@ -10,6 +10,8 @@ import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
 
+import { rail as railFixture } from './rail-fixture';
+
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
     '@/lib/workspace-api',
@@ -25,6 +27,10 @@ vi.mock('@/lib/workspace-api', async () => {
       approveDecision: vi.fn(),
       dismissDecision: vi.fn(),
       undoDecision: vi.fn(),
+      // The rail reads its own route (TASK-235 / AW-14). Without it in the
+      // mock, opening an agent throws before this file's subject renders.
+      rail: vi.fn(async () => railFixture()),
+      revokeGrant: vi.fn(),
     },
   };
 });
@@ -178,7 +184,6 @@ describe('WorkspaceShell', () => {
         startedAt: null,
         stoppedReason: null,
       },
-      permissions: [],
       conversationId: null,
       thread: [],
       past: [],

@@ -35,6 +35,71 @@ const RULES: PolicyRule[] = [
   },
 ];
 
+describe('capabilityRows — outOfReach (the scope subtraction)', () => {
+  /*
+    The rule table is GLOBAL: it describes what the product enforces, not what a
+    particular agent is wired to reach. Returned unfiltered to a per-agent
+    surface, it asserts reach the agent may not have — "Can search the web — on
+    its own" for an agent that cannot call `web_search` — which is a false ALLOW
+    claim on a blast-radius display and the one direction design H3/H4 says
+    never to be wrong in.
+
+    The caller does the subtraction because only it holds the tool catalog; this
+    plugin applies it, because only it holds `match.tool`.
+  */
+  it('drops an allow whose tool the caller proved unreachable', () => {
+    const sources = capabilityRows(RULES, { outOfReach: ['a2'] }).map((r) => r.source);
+    expect(sources).not.toContain('rule:a.allow.second');
+    expect(sources).toContain('rule:a.allow.first');
+  });
+
+  it('drops a hold too — an "asks you first" it cannot reach is the same lie', () => {
+    const sources = capabilityRows(RULES, { outOfReach: ['b'] }).map((r) => r.source);
+    expect(sources).not.toContain('rule:b.hold');
+  });
+
+  it('KEEPS a deny, whatever the scope says', () => {
+    // A deny for a tool the agent could not reach anyway is still true, and it
+    // is reassurance rather than reach. Dropping it would understate our own
+    // restrictions: it costs the reader information and endangers nobody.
+    const sources = capabilityRows(RULES, { outOfReach: ['z', 'a2', 'b', 'a1'] }).map(
+      (r) => r.source,
+    );
+    expect(sources).toEqual(['rule:z.deny']);
+  });
+
+  it('drops nothing when the caller proved nothing', () => {
+    const all = capabilityRows(RULES).map((r) => r.source);
+    expect(capabilityRows(RULES, {}).map((r) => r.source)).toEqual(all);
+    expect(capabilityRows(RULES, { outOfReach: [] }).map((r) => r.source)).toEqual(all);
+    expect(
+      capabilityRows(RULES, { outOfReach: undefined }).map((r) => r.source),
+    ).toEqual(all);
+  });
+
+  it('keeps the allow → hold → deny order and the authored order inside a group', () => {
+    expect(capabilityRows(RULES, { outOfReach: ['a1'] }).map((r) => r.source)).toEqual([
+      'rule:a.allow.second',
+      'rule:b.hold',
+      'rule:z.deny',
+    ]);
+  });
+
+  it('never exposes the tool it filtered on', () => {
+    // `match.tool` stays inside this module. Putting an identifier on a display
+    // row is a foot-gun on a surface whose mechanical rows ARE tool names.
+    for (const row of capabilityRows(RULES, { outOfReach: ['a2'] })) {
+      expect(Object.keys(row).sort()).toEqual([
+        'capability',
+        'described',
+        'provenance',
+        'source',
+        'verdict',
+      ]);
+    }
+  });
+});
+
 describe('capabilityRows', () => {
   it('sorts allow → hold → deny (§4.3.2)', () => {
     expect(capabilityRows(RULES).map((r) => r.verdict)).toEqual([

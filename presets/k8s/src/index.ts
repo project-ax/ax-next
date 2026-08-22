@@ -963,10 +963,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // `tool:list` (optionalCalls — no catalog just means the line falls to its
   // T0 floor), never a model, never a tool's model-facing description.
   //
-  // Half-wired window OPEN: nothing renders this yet — the agent rail (AW-14)
-  // is its first production consumer, and closes the window. Until then it is
-  // reachable + asserted through the @ax/agent-activity package canary, the
-  // same posture @ax/host-grants held between TASK-44 and TASK-42.
+  // HALF-WIRED WINDOW CLOSED (TASK-235 / AW-14). `agent-activity:get` now has a
+  // production consumer: channel-web's rail route reads it for the "Right now"
+  // line, and `GET /api/workspace/state` reads it for the roster strip.
+  //
+  // The hook has NO ACL of its own — it answers for whatever agentId it is
+  // handed, deliberately, so that `agents:resolve` stays the one check rather
+  // than becoming one of two. The route that mounts it owes it that check, and
+  // `routes-workspace-rail.test.ts` asserts the hook is never even reached for
+  // an agent the caller cannot resolve.
   plugins.push(createAgentActivityPlugin());
 
   // ----- 8. agents -------------------------------------------------------
@@ -1032,12 +1037,12 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // per-call I/O: the table is in-repo and evaluation is a pure first-match
   // scan.
   //
-  // HALF-WIRED WINDOW HALF-CLOSED. `tool-policy:evaluate` now has a real
-  // production caller — @ax/decisions' `tool:pre-call` subscriber, pushed
-  // directly below (TASK-225). `tool-policy:list-capabilities` is still
-  // waiting on TASK-235 (the permissions rail); it stays loaded and canary-
-  // covered until then, the same posture @ax/host-grants held above between
-  // TASK-44 and TASK-42.
+  // HALF-WIRED WINDOW CLOSED (TASK-235 / AW-14). Both hooks have production
+  // callers now: `tool-policy:evaluate` from @ax/decisions' `tool:pre-call`
+  // subscriber (TASK-225, pushed directly below) AND from channel-web's rail
+  // route, which asks it for the verdict on every catalog tool no rule
+  // describes; `tool-policy:list-capabilities` from that same rail route, where
+  // it produces "What it may do alone".
   plugins.push(createToolPolicyPlugin());
 
   // ----- 8a''''. decisions -----------------------------------------------

@@ -53,6 +53,33 @@ describe('tool-policy canary', () => {
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
+  it('applies outOfReach ACROSS THE BUS, keeping every deny', async () => {
+    /*
+      The unit test pins the filter; this pins that the filter survives the hook
+      boundary. `outOfReach` is an INPUT, and an input silently dropped on the
+      way in fails exactly like no filter at all — the rail would go back to
+      asserting reach an agent does not have, with every test still green.
+    */
+    const h = await boot();
+    const reachClaims = BUILTIN_RULES.filter((r) => r.verdict !== 'deny');
+    const denies = BUILTIN_RULES.filter((r) => r.verdict === 'deny');
+
+    const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(
+      'tool-policy:list-capabilities',
+      h.ctx(),
+      { agentId: 'a1', outOfReach: reachClaims.map((r) => r.match.tool) },
+    );
+    expect(caps.rows.map((r) => r.source)).toEqual(denies.map((r) => `rule:${r.id}`));
+
+    // …and the rows are unchanged for a caller that proved nothing.
+    const all = await h.bus.call<unknown, ListCapabilitiesOutput>(
+      'tool-policy:list-capabilities',
+      h.ctx(),
+      { agentId: 'a1' },
+    );
+    expect(all.rows.length).toBe(BUILTIN_RULES.length);
+  });
+
   it('survives the returns schema with every declared field intact', async () => {
     const h = await boot();
     const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(
@@ -95,15 +122,31 @@ describe('tool-policy canary', () => {
     const verdict = await h.bus.call<unknown, EvaluateResult>(
       'tool-policy:evaluate',
       h.ctx(),
-      { call: { name: 'Bash', input: { command: 'ls' } }, agentId: 'a1' },
+      { call: { name: 'no_such_tool', input: {} }, agentId: 'a1' },
     );
-    // Deliberately not seeded (AW-1): a hold on Bash fires on every command.
+    // No rule matching is allow: the table is an exception list over a system
+    // whose baseline reach is already bounded by the tool catalog, the egress
+    // allowlist and the connector scoping (AW-1).
     expect(verdict).toEqual({
       verdict: 'allow',
       ruleId: null,
       capability: null,
       irreversible: false,
     });
+  });
+
+  it('answers allow with a CATALOG rule for a sandbox builtin (AW-14)', async () => {
+    const h = await boot();
+    const verdict = await h.bus.call<unknown, EvaluateResult>(
+      'tool-policy:evaluate',
+      h.ctx(),
+      { call: { name: 'Bash', input: { command: 'ls' } }, agentId: 'a1' },
+    );
+    // AW-1 declined to seed the six sandbox builtins because a HOLD on Bash
+    // fires on every command. AW-14 seeded them as `catalog` ALLOW rows
+    // instead: the verdict is unchanged (allow either way) and the rail gains
+    // the sentence it was otherwise silent about, which design H4 forbids.
+    expect(verdict).toMatchObject({ verdict: 'allow', ruleId: 'sandbox.bash' });
   });
 
   it('answers deny for a disabled builtin as a rail row, not as enforcement', async () => {

@@ -61,6 +61,13 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     make the kernel's verifyCalls refuse to boot a deployment that simply
 //     chose not to run memory. So the routes gate on bus.hasService and the
 //     write answers 503 when nothing is there to keep the promise.
+//     TASK-235 (AW-14) adds no hard call either: the rail's four blocks read
+//     tool-policy:*, agent-activity:get, tool:list, the two grant records and
+//     decisions:list, every one of them optional and every one of them with a
+//     degradation that says "unknown", never "empty". It CLOSES two half-wired
+//     windows in doing so — tool-policy:list-capabilities (opened by TASK-224)
+//     and agent-activity:get (opened by TASK-229) now have production
+//     consumers.
 //   - subscribes: chat:stream-chunk (fills the buffer + per-connection
 //     filter), chat:phase (single-slot phase memory + per-connection
 //     filter), chat:turn-end (host-side eviction so the buffer doesn't
@@ -237,6 +244,61 @@ export function createChannelWebServerPlugin(
           hook: 'routines:list',
           degradation:
             'Activity rows are labelled with the routine path instead of its authored name',
+        },
+        {
+          // TASK-235 (AW-14) — "What it may do alone" is generated from the
+          // enforced policy table. Without @ax/tool-policy the block says it
+          // cannot show the rules rather than showing none: an empty
+          // permissions list reads as "this agent has no reach", which is the
+          // dangerous direction to be wrong in (design H4).
+          hook: 'tool-policy:list-capabilities',
+          degradation:
+            'the rail says it cannot show what the agent may do alone, rather than showing an empty list',
+        },
+        {
+          // Same block: the verdict on a tool no rule describes comes from the
+          // evaluator, never from a copy of the rule table here. Without it the
+          // catalog rows are omitted and the list is flagged incomplete.
+          hook: 'tool-policy:evaluate',
+          degradation:
+            'the rail omits the tools no rule describes and says the list is incomplete',
+        },
+        {
+          // Same block: the tool catalog supplies the MCP and unmapped rows.
+          hook: 'tool:list',
+          degradation:
+            'the rail cannot list third-party (MCP) tools or undescribed ones, and says the list is incomplete',
+        },
+        {
+          // TASK-235 — the "Right now" line. Without @ax/agent-activity the
+          // rail shows the agent's state word alone, which is honest: nothing
+          // is reporting.
+          hook: 'agent-activity:get',
+          degradation:
+            'the rail shows the agent state word alone instead of a live activity line',
+        },
+        {
+          // TASK-235 — "Granted by you" also covers what a person approved at a
+          // skill's or connection's install gate. Without @ax/skills those rows
+          // are absent and the group says the record is incomplete.
+          hook: 'skills:approved-caps-list',
+          degradation:
+            'the rail\'s "Granted by you" group omits capabilities approved at a skill or connection install gate',
+        },
+        {
+          // Same group's Revoke control. Without the writer the control is not
+          // rendered at all — a button that revokes nothing is worse than none.
+          hook: 'skills:approved-caps-revoke',
+          degradation:
+            'approved-capability grants render without a Revoke control (there is no writer to honour one)',
+        },
+        {
+          // TASK-235 — the "This week" counter reads the decision store. A
+          // deployment without @ax/decisions renders no counters panel at all
+          // rather than a zero, because a zero is a claim.
+          hook: 'decisions:list',
+          degradation:
+            'the rail renders no "This week" counters (nothing records decisions here)',
         },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],

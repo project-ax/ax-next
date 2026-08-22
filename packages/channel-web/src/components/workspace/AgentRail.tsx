@@ -1,25 +1,47 @@
 /**
- * The rail — what it is doing, what it may do alone, and what you have talked
- * about before.
+ * The rail — what it is doing, what it may do alone, what you granted it, this
+ * week's numbers, and what you have talked about before.
  *
- * "What it may do alone" is the most important block on the surface: an
- * autonomy product lives or dies on whether the human believes they know the
- * blast radius. Every row is generated from the policy record and carries the
- * rule that produced it, so a sentence drifting from the enforced policy shows
- * up rather than lying quietly. Until that generator exists (AW-14) the block
- * says it cannot show the policy — it never describes the agent's reach from
- * an empty array, in either direction.
+ * EVERY SENTENCE HERE COMES FROM SOMETHING THAT ENFORCES IT, COUNTS IT, OR
+ * OBSERVED IT. There are no fixture strings left. The permission rows are
+ * generated from the policy record and carry the rule that produced them, so a
+ * sentence drifting from the enforced policy shows up rather than lying
+ * quietly; the "Right now" line comes from the tool manifests the runner
+ * actually calls; the counter is an integer out of the decision store with its
+ * written definition printed underneath it.
  *
- * "Right now" deliberately has no progress bar and no ETA. See `Elapsed`.
+ * THREE RULES THIS FILE IS BUILT AROUND.
  *
- * There is no "This week" panel. It read a `stats` array the wire no longer
- * carries, and rendering it with zeros would be worse than dropping it: "you
- * overruled it: 0" is a claim, and we are not counting overrules. The panel
- * comes back when the counters do, not before.
+ * 1. An empty list is a CLAIM. So every block distinguishes "there is nothing"
+ *    from "this deployment has no producer" from "we could not read it", and
+ *    says which. A bare empty state on a security surface is the bug.
+ *
+ * 2. Understating reach is worse than overstating it (design H4). A capability
+ *    we cannot describe is rendered mechanically and explicitly, never omitted,
+ *    because a row that is not there reads as "it cannot do that". Same reason
+ *    the unrestricted-scope note exists: an agent with no tool allow-list can
+ *    reach whatever this deployment installs, and a tidy list of eleven rows
+ *    would read as a leash it does not have.
+ *
+ * 3. "Right now" has no progress bar and no ETA. See `Elapsed`.
+ *
+ * The rail reads its own route rather than riding on the agent detail: it is
+ * separately refreshable, which is what makes a Revoke button able to show its
+ * own consequence.
  */
+import { Fragment, useState } from 'react';
+import { AlertTriangle } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Card, CardContent } from '@/components/ui/card';
-import type { AgentDetail } from '@/lib/workspace-api';
-import { Elapsed, PermissionLine, SectionLabel } from './bits';
+import { Separator } from '@/components/ui/separator';
+import { useAgentRail } from '@/lib/workspace-rail';
+import type {
+  AgentRailData,
+  AgentDetail,
+  GrantRow,
+  RailReadStatus,
+} from '@/lib/workspace-api';
+import { Elapsed, GrantLine, PermissionLine, SectionLabel } from './bits';
 
 interface Props {
   detail: AgentDetail;
@@ -34,64 +56,89 @@ const STATE_WORD: Record<string, string> = {
   stopped: 'Stopped',
 };
 
+/** One muted line. The only thing a block says when it has nothing to show. */
+function Note({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="text-[13px] leading-relaxed text-muted-foreground">{children}</p>
+  );
+}
+
+/**
+ * What a block says when its read did not come back.
+ *
+ * Two different sentences for two different facts, because a reader can act on
+ * the difference: nothing to read from, versus something that would not answer.
+ * Neither is ever rendered as an empty list.
+ */
+function ReadFailure({ status, what }: { status: RailReadStatus; what: string }) {
+  if (status === 'unavailable') {
+    return <Note>This deployment doesn&apos;t keep {what}, so there&apos;s nothing to show.</Note>;
+  }
+  return (
+    <Note>
+      We couldn&apos;t read {what} just now. Treat this as unknown rather than
+      empty, and try reloading.
+    </Note>
+  );
+}
+
 export function AgentRail({ detail, openPastId, onOpenPast }: Props) {
-  const { agent, permissions, past } = detail;
-  /*
-    `now` is null until an activity line has a real producer (AW-8/AW-14). A
-    null renders as the state word ALONE — no counter row, no em-dash. An
-    em-dash where a sentence goes reads as "we know something and are not
-    saying"; the truth is that nothing is reporting yet.
-  */
-  const activity = agent.now;
+  const { agent, past } = detail;
+  const { rail, loading, error, revoke } = useAgentRail(agent.id);
+  /** The grant rows with a POST in flight, plus whatever the last one said. */
+  const [revoking, setRevoking] = useState<ReadonlySet<string>>(new Set());
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function onRevoke(row: GrantRow): Promise<void> {
+    setNotice(null);
+    setRevoking((prev) => new Set(prev).add(row.source));
+    const outcome = await revoke(row.ref);
+    setRevoking((prev) => {
+      const next = new Set(prev);
+      next.delete(row.source);
+      return next;
+    });
+    /*
+      Three outcomes, three sentences. "Already gone" is a refusal, not a
+      failure, and saying "revoked" for it would claim we did something we did
+      not.
+
+      The success line carries a caveat because the caveat is TRUE: a site
+      grant is loaded into the egress allowlist when a session opens
+      (`orchestrator.ts` reads `host-grants:list` there), so a conversation
+      that is already running keeps what it was given until it ends. "Revoked"
+      on its own would let someone believe they had just stopped something
+      mid-flight. "May" covers both cases without overstating either.
+    */
+    if (outcome === 'revoked') {
+      setNotice(
+        'Revoked. Anything already running may still have it until it finishes.',
+      );
+    }
+    if (outcome === 'already-gone') setNotice('That one was already gone.');
+    if (outcome === 'failed') {
+      setNotice("We couldn't take that back just now. Nothing changed.");
+    }
+  }
 
   return (
     <aside className="w-[296px] shrink-0 overflow-y-auto border-l border-border px-5 pb-6">
-      <SectionLabel>Right now</SectionLabel>
-      <Card className="shadow-sm">
-        <CardContent className="flex flex-col gap-2 p-3.5">
-          <div className="text-[13px]">
-            {activity ?? STATE_WORD[agent.state] ?? 'Resting'}
-          </div>
-          {activity !== null && (
-            <div className="flex justify-between text-[12px] text-muted-foreground">
-              <span>
-                {agent.counter
-                  ? `${agent.counter.done} of ${agent.counter.total} ${agent.counter.unit}`
-                  : ''}
-              </span>
-              <Elapsed since={agent.startedAt} />
-            </div>
-          )}
-        </CardContent>
-      </Card>
+      <RightNow agent={agent} rail={rail} loading={loading} error={error} />
 
       <SectionLabel>What it may do alone</SectionLabel>
-      <div className="flex flex-col">
-        {/*
-          An empty list describes THE ABSENCE OF THE VIEW, never the agent's
-          reach.
+      <Permissions name={agent.name} rail={rail} loading={loading} error={error} />
 
-          This block used to say "Nothing yet — it can talk to you and nothing
-          else. It will ask before it does anything for the first time." Both
-          halves were false. A default agent is bootstrapped with the wildcard
-          tool scope plus web tools, connectors and egress grants, so it can do
-          a great deal more than talk; and the ask-before-acting behaviour (the
-          `hold` verdict and the approvals substrate behind it) has not been
-          built. Understating blast radius is the dangerous direction to be
-          wrong in — the honest answer to "what may it do alone?" while the
-          policy rail is unbuilt (AW-14) is "we can't tell you yet".
-        */}
-        {permissions.length === 0 ? (
-          <p className="text-[13px] leading-relaxed text-muted-foreground">
-            We can&apos;t show this yet. When it&apos;s ready, this list will
-            say exactly what {agent.name} may do on its own — generated from the
-            rules that actually enforce it, so the two can&apos;t drift. Until
-            then, treat this as unknown rather than empty.
-          </p>
-        ) : (
-          permissions.map((p) => <PermissionLine key={p.sentence} row={p} />)
-        )}
-      </div>
+      <SectionLabel>Granted by you</SectionLabel>
+      <Grants
+        rail={rail}
+        loading={loading}
+        error={error}
+        revoking={revoking}
+        notice={notice}
+        onRevoke={onRevoke}
+      />
+
+      <ThisWeek rail={rail} loading={loading} error={error} />
 
       <SectionLabel>Previous conversations</SectionLabel>
       <Card className="shadow-sm">
@@ -119,5 +166,260 @@ export function AgentRail({ detail, openPastId, onOpenPast }: Props) {
         </CardContent>
       </Card>
     </aside>
+  );
+}
+
+/**
+ * "Right now" — a phrase, a REAL counter, and how long it has been going.
+ *
+ * Never a percentage, never an ETA, and never a counter the tool did not report
+ * (design H2). When the step stream goes quiet the phrase is REPLACED by the
+ * elapsed silence and the counter disappears with it: a hung agent that keeps
+ * saying "Reading email" for forty minutes is worse than one that says nothing,
+ * and a counter frozen at 29 of 41 is a claim that stopped being true.
+ *
+ * With no activity to report the line is the state word ALONE — no counter row,
+ * no em-dash. An em-dash where a sentence goes reads as "we know something and
+ * are not saying"; the truth is that nothing is reporting.
+ */
+function RightNow({
+  agent,
+  rail,
+  loading,
+  error,
+}: {
+  agent: AgentDetail['agent'];
+  rail: AgentRailData | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  const line = rail?.activity.activity ?? null;
+  return (
+    <>
+      <SectionLabel>Right now</SectionLabel>
+      <Card className="shadow-sm">
+        <CardContent className="flex flex-col gap-2 p-3.5">
+          <div className="text-[13px]">
+            {line?.phrase ?? STATE_WORD[agent.state] ?? 'Resting'}
+          </div>
+          {line !== null && (
+            <div className="flex justify-between text-[12px] text-muted-foreground">
+              <span>
+                {line.counter
+                  ? `${line.counter.done} of ${line.counter.total} ${line.counter.unit}`
+                  : ''}
+              </span>
+              <Elapsed since={line.startedAt} />
+            </div>
+          )}
+          {/*
+            A failed read is worth one line here, because the state word above
+            it would otherwise pass for an answer. A deployment with no activity
+            producer says nothing extra: the state word IS the honest answer
+            there, and a notice would be noise on every render forever.
+          */}
+          {!loading && (error !== null || rail?.activity.status === 'failed') && (
+            <p className="text-[11.5px] text-muted-foreground">
+              We couldn&apos;t read what it&apos;s doing just now.
+            </p>
+          )}
+        </CardContent>
+      </Card>
+    </>
+  );
+}
+
+/** The security claim. See the file header for the three rules it obeys. */
+function Permissions({
+  name,
+  rail,
+  loading,
+  error,
+}: {
+  name: string;
+  rail: AgentRailData | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  if (loading && rail === null) {
+    return <Note>Reading what {name} may do…</Note>;
+  }
+  if (rail === null) {
+    return (
+      <Note>
+        {error === null
+          ? 'We can’t show this yet.'
+          : 'We couldn’t read this just now.'}{' '}
+        Until it loads, treat what {name} may do as unknown rather than empty.
+      </Note>
+    );
+  }
+  const { status, rows, incomplete, unrestrictedTools } = rail.permissions;
+  if (status !== 'ok') {
+    return (
+      <Note>
+        {status === 'unavailable'
+          ? `This deployment doesn’t publish the rules that govern ${name}.`
+          : `We couldn’t read the rules that govern ${name} just now.`}{' '}
+        Treat this as unknown rather than empty — an agent with no list shown is
+        not an agent with no reach.
+      </Note>
+    );
+  }
+  return (
+    <div className="flex flex-col">
+      {rows.length === 0 && (
+        <Note>
+          Nothing here describes {name}&apos;s reach yet. That means we
+          can&apos;t tell you — not that there isn&apos;t any.
+        </Note>
+      )}
+      {/*
+        The index rides in the key on purpose. `source` is unique per producer,
+        but it is FENCED on the way out — two very long ids can truncate to the
+        same 60 characters — and a duplicate key here would silently drop a
+        permission row. This list is replaced wholesale on every read, so there
+        is no reorder for the index to spoil.
+      */}
+      {rows.map((row, i) => (
+        <Fragment key={`${row.source}#${String(i)}`}>
+          {/*
+            A rule from the group above ends here. Twenty rows separated only by
+            a small coloured glyph is a list nobody scans; a hairline between
+            "can", "asks first" and "never" makes the three blocks findable
+            without adding three headings that repeat what each row already says.
+          */}
+          {i > 0 && rows[i - 1]?.verdict !== row.verdict && (
+            <Separator className="my-2" />
+          )}
+          <PermissionLine row={row} />
+        </Fragment>
+      ))}
+      {unrestrictedTools && (
+        <Alert className="mt-3">
+          <AlertTriangle aria-hidden="true" />
+          <AlertDescription>
+            Nothing limits which tools {name} can use — it can reach anything
+            installed here, now or later. The list above is what&apos;s
+            installed today, not a boundary.
+          </AlertDescription>
+        </Alert>
+      )}
+      {incomplete && (
+        <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
+          One of the places we look didn&apos;t answer, so this list may be
+          missing something. It is not a complete list of what {name} cannot do.
+        </p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * "Granted by you" — the group a person can act on, and the one they are most
+ * likely to have forgotten they created (design §4.3.4).
+ */
+function Grants({
+  rail,
+  loading,
+  error,
+  revoking,
+  notice,
+  onRevoke,
+}: {
+  rail: AgentRailData | null;
+  loading: boolean;
+  error: string | null;
+  revoking: ReadonlySet<string>;
+  notice: string | null;
+  onRevoke: (row: GrantRow) => void;
+}) {
+  if (rail === null) {
+    if (loading) return <Note>Reading what you&apos;ve granted…</Note>;
+    return (
+      <Note>
+        We couldn&apos;t read this just now
+        {error === null ? '' : ` (${error})`}.
+      </Note>
+    );
+  }
+  const { status, rows, incomplete } = rail.grants;
+  if (status !== 'ok') {
+    return <ReadFailure status={status} what="a record of what you've granted" />;
+  }
+  return (
+    <div className="flex flex-col">
+      {rows.length === 0 && (
+        <Note>Nothing yet — you haven&apos;t granted anything beyond the rules above.</Note>
+      )}
+      {rows.map((row, i) => (
+        <GrantLine
+          key={`${row.source}#${String(i)}`}
+          row={row}
+          busy={revoking.has(row.source)}
+          onRevoke={onRevoke}
+        />
+      ))}
+      {incomplete && (
+        <p className="mt-2 text-[11.5px] leading-relaxed text-muted-foreground">
+          One of the places we look didn&apos;t answer, so there may be more
+          than this.
+        </p>
+      )}
+      {notice !== null && (
+        <p className="mt-2 text-[11.5px] text-muted-foreground">{notice}</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * "This week" — design §4.4.
+ *
+ * ONE number ships, and its written definition ships underneath it. The design
+ * names three; the other two have no source and a fabricated number is worse
+ * than a missing row, so they are absent rather than zeroed. "You overruled it:
+ * 0" would be a claim, and we are not counting overrules.
+ *
+ * The whole block disappears when there is no number to show, rather than
+ * standing there empty. A heading over nothing is a promise the surface is not
+ * keeping.
+ */
+function ThisWeek({
+  rail,
+  loading,
+  error,
+}: {
+  rail: AgentRailData | null;
+  loading: boolean;
+  error: string | null;
+}) {
+  if (rail === null || loading) return null;
+  const { status, rows } = rail.counters;
+  if (error !== null || status !== 'ok' || rows.length === 0) return null;
+  return (
+    <>
+      <SectionLabel>This week</SectionLabel>
+      <Card className="shadow-sm">
+        <CardContent className="flex flex-col gap-2.5 p-3.5">
+          {rows.map((row) => (
+            <div key={row.id} className="flex flex-col gap-0.5">
+              <div className="flex items-baseline justify-between gap-2">
+                <span className="text-[13px]">{row.label}</span>
+                <span className="text-[13px] tabular-nums">{row.value}</span>
+              </div>
+              {/*
+                The definition is rendered, not tucked into a tooltip. This is
+                the number a person will quote at somebody, and a number whose
+                meaning is one hover away is a number whose meaning drifts.
+              */}
+              <p className="text-[11.5px] leading-relaxed text-muted-foreground">
+                {row.definition}
+              </p>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+    </>
   );
 }

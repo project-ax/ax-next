@@ -642,6 +642,41 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation:
             'Activity rows are labelled with the routine path instead of its authored name',
         },
+        {
+          hook: 'tool-policy:list-capabilities',
+          degradation:
+            'the rail says it cannot show what the agent may do alone, rather than showing an empty list',
+        },
+        {
+          hook: 'tool-policy:evaluate',
+          degradation:
+            'the rail omits the tools no rule describes and says the list is incomplete',
+        },
+        {
+          hook: 'tool:list',
+          degradation:
+            'the rail cannot list third-party (MCP) tools or undescribed ones, and says the list is incomplete',
+        },
+        {
+          hook: 'agent-activity:get',
+          degradation:
+            'the rail shows the agent state word alone instead of a live activity line',
+        },
+        {
+          hook: 'skills:approved-caps-list',
+          degradation:
+            'the rail\'s "Granted by you" group omits capabilities approved at a skill or connection install gate',
+        },
+        {
+          hook: 'skills:approved-caps-revoke',
+          degradation:
+            'approved-capability grants render without a Revoke control (there is no writer to honour one)',
+        },
+        {
+          hook: 'decisions:list',
+          degradation:
+            'the rail renders no "This week" counters (nothing records decisions here)',
+        },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     });

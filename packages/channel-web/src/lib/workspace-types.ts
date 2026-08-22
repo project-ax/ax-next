@@ -231,19 +231,191 @@ export interface WorkspaceAgent {
   stoppedReason: string | null;
 }
 
+export type CapabilityVerdict = 'allow' | 'hold' | 'deny';
+
+/**
+ * Where a rail row's claim comes from. Mirrors `@ax/tool-policy`'s union rather
+ * than importing it (invariant 2), and widens it with nothing: the two members
+ * the policy plugin never emits — `grant` and `mcp` — are produced by the BFF,
+ * from the grant record and the tool catalog respectively.
+ *
+ *   - `rule`     — an in-repo policy decision, reviewed in a diff.
+ *   - `catalog`  — "this tool is reachable and no rule gates it". True about
+ *                  the system, and NOT a reviewed policy decision. The rail
+ *                  must not dress it up as one.
+ *   - `grant`    — a durable grant a human made at runtime.
+ *   - `mcp`      — a mechanical row for a third-party tool.
+ *   - `unmapped` — reach we cannot describe (design §4.3.5).
+ *
+ * THE RENDERER SWITCHES ON THIS, NEVER ON `source`. `source` is an opaque
+ * display token; parsing its prefix to decide rendering is the exact coupling
+ * AW-3's boundary review called out, and it breaks the moment the alternate
+ * per-tenant policy impl ships with different id shapes.
+ */
+export type CapabilityProvenance = 'rule' | 'catalog' | 'grant' | 'mcp' | 'unmapped';
+
 /**
  * One row of "What it may do alone".
  *
- * GENERATED from policy, never authored. `source` names the rule that produced
- * the sentence so drift between the enforced policy and the sentence a human
- * reads is visible rather than silent — a UI that overstates or understates
- * blast radius is the worst bug this surface can ship. `source: null` renders
- * as an explicit "not yet described" row instead of being quietly omitted.
+ * GENERATED, never authored here. A row is one of two things and the boolean
+ * says which:
+ *
+ *   - `described: true`  — `capability` is OUR claim, authored on the rule that
+ *     enforces it and CI-linted for shape. Rendered through the verdict's frame
+ *     (`permission-frames.ts`), so an author cannot write an allow phrase that
+ *     reads like a deny.
+ *   - `described: false` — we cannot describe this reach in our own words. The
+ *     row goes MECHANICAL: the tool's name (which we control) plus the verdict
+ *     (which we enforce), with the third party's own description available
+ *     behind an affordance and clearly attributed. Their prose is evidence,
+ *     never our claim.
+ *
+ * An undescribable capability is rendered EXPLICITLY, never omitted (design
+ * H4): a row that is not there reads to a human as "it cannot do that", and
+ * understating blast radius is the dangerous direction to be wrong in.
  */
 export interface PermissionRow {
-  verdict: 'allow' | 'hold' | 'deny';
-  sentence: string;
-  source: string | null;
+  verdict: CapabilityVerdict;
+  /** Our own authored clause. Empty string exactly when `described` is false. */
+  capability: string;
+  /** Opaque display provenance (`rule:web.search`, `mcp:linear.create_issue`). */
+  source: string;
+  provenance: CapabilityProvenance;
+  described: boolean;
+  /** `described: false` only — what we DO control: the tool's own name. */
+  mechanicalLabel: string | null;
+  /** `described: false` only — the third party's words, fenced and attributed. */
+  theirDescription: string | null;
+  /** `described: false` only — who wrote them ("linear"). Fenced. */
+  theirName: string | null;
+}
+
+/**
+ * What a "Granted by you" row points back at, so the revoke control can undo
+ * exactly the grant the row describes.
+ *
+ * The client NEVER builds one of these — it echoes back the object the server
+ * handed it. That is why there is no id to parse and no string to split: a
+ * revoke that had to re-derive its target from a display string is a revoke
+ * that can target the wrong thing.
+ */
+export type GrantRef =
+  | { grant: 'site'; host: string }
+  | {
+      grant: 'approved-capability';
+      capKind: 'host' | 'slot' | 'npm' | 'pypi' | 'mcp';
+      value: string;
+      /** Exactly one of these is non-null — the grant's subject. */
+      skillId: string | null;
+      connectorId: string | null;
+    };
+
+/**
+ * One row of "Granted by you" — design §4.3.4.
+ *
+ * A separate group from the built-in rules, because this is the group a person
+ * can act on and the one they are most likely to have forgotten they created.
+ *
+ * `action` is OURS (authored, one of a fixed set) and `label` is THE THING
+ * (a hostname, a package name, a saved-key name) — mechanical, fenced, and
+ * rendered as data rather than folded into our sentence. Keeping them apart is
+ * what stops a grant value from ever reading as our prose.
+ */
+export interface GrantRow {
+  ref: GrantRef;
+  /** Always `allow`. A grant you made is a thing the agent may now do alone. */
+  verdict: 'allow';
+  /** Our authored verb phrase: "reach", "install the npm package", … */
+  action: string;
+  /** The granted thing itself. Mechanical and fenced. */
+  label: string;
+  source: string;
+  provenance: 'grant';
+  /** ISO, when the grant record carries one. */
+  grantedAt: string | null;
+  /** What the grant was made FOR, when it has a subject. Fenced. */
+  grantedFor: { kind: 'skill' | 'connection'; id: string } | null;
+  /**
+   * False when this deployment has no writer for that grant kind. The control
+   * is then absent rather than present-and-inert: a Revoke button that revokes
+   * nothing is worse than no button.
+   */
+  revocable: boolean;
+}
+
+/**
+ * One "This week" number — design §4.4.
+ *
+ * `definition` is the row's WRITTEN definition, shipped alongside the number
+ * and shown to the reader. "You overruled it: 1" is the most valuable number on
+ * this surface and it is worthless the moment its meaning drifts, so the
+ * meaning travels with it instead of living only in a design doc.
+ */
+export interface CounterRow {
+  id: string;
+  label: string;
+  value: number;
+  definition: string;
+}
+
+/**
+ * How a rail section's read went.
+ *
+ * On this surface an empty array is a CLAIM, so "nothing" is not one state.
+ * `unavailable` means this deployment has no producer for that section at all;
+ * `failed` means it has one and we could not read it. Both are answers a human
+ * can act on; a bare `[]` standing in for either is a quiet lie.
+ */
+export type RailReadStatus = 'ok' | 'unavailable' | 'failed';
+
+/** The "Right now" line — see `@ax/agent-activity`'s `AgentActivity`. */
+export interface RailActivity {
+  phrase: string;
+  counter: { done: number; total: number; unit: string } | null;
+  startedAt: string;
+  /**
+   * The step stream went quiet long enough that `phrase` stopped being a claim
+   * about the present. When true, `phrase` is the system's own replacement line
+   * and the counter is gone — a counter frozen at 29 of 41 is a claim that
+   * stopped being true.
+   */
+  stale: boolean;
+  /** Which tier produced the phrase. Debugging only; nothing renders it. */
+  source: 'declared' | 'tool' | 'trigger';
+}
+
+/** `GET /api/workspace/agents/:agentId/rail`. */
+export interface AgentRailData {
+  activity: { status: RailReadStatus; activity: RailActivity | null };
+  permissions: {
+    status: RailReadStatus;
+    rows: PermissionRow[];
+    /**
+     * True when at least one source of reach could not be read, so this list is
+     * known-incomplete. H4 again: a short list must never be allowed to read as
+     * a short leash, so the surface says so out loud.
+     */
+    incomplete: boolean;
+    /**
+     * True when the agent carries NO tool allow-list — the wildcard scope every
+     * bootstrapped personal agent gets. Its reach is then whatever this
+     * deployment has installed, present and future, and the list below is a
+     * snapshot of that rather than a boundary.
+     *
+     * Deliberately a separate flag from `incomplete`. "We could not read one of
+     * the sources" and "there is no restriction to read" are different facts, a
+     * reader needs to be told which, and one boolean carrying both would be a
+     * banner that means two things.
+     */
+    unrestrictedTools: boolean;
+  };
+  grants: { status: RailReadStatus; rows: GrantRow[]; incomplete: boolean };
+  counters: {
+    status: RailReadStatus;
+    rows: CounterRow[];
+    /** How many days back the numbers cover. */
+    windowDays: number;
+  };
 }
 
 export type ActivityKind =

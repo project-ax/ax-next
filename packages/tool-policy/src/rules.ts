@@ -202,11 +202,83 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   },
 
   // -------------------------------------------------------------------------
-  // Deliberately NOT seeded (AW-1):
-  //   - `Bash`, `Read`, `Write`, `Edit`, `Glob`, `Grep`. A hold on Bash fires
-  //     on every command and makes the surface unusable; an allow row saying
-  //     "run any command on its own" is true but is the whole blast radius in
-  //     one line. AW-14 owns how the sandbox builtins are presented.
+  // The sandbox floor — CATALOG FACTS about the six built-in tools every
+  // runner gives an agent inside its own workspace (AW-14 / TASK-235, which
+  // AW-1 named as the owner of "how the sandbox builtins are presented").
+  //
+  // AW-1 declined to seed these and said why: a `hold` on `Bash` fires on every
+  // command and makes the surface unusable, and an `allow` row reading "run any
+  // command on its own" is true but puts the whole blast radius in one line.
+  // Both objections are about a HOLD or a one-liner. Neither is an argument for
+  // silence, and silence is the one answer design H4 forbids: a capability that
+  // is omitted reads to a human as "it cannot do that", and this is the single
+  // largest thing an agent can actually do.
+  //
+  // So they ship as six `catalog` rows — same posture as `web.search` below.
+  // The rows assert only "this tool is reachable and no rule gates it", which
+  // is true, and they name the boundary that makes it survivable: the agent's
+  // OWN workspace. They are not a policy decision and the rail does not dress
+  // them up as one.
+  //
+  // Why these six and not the claude-sdk runner's fuller list: these are the
+  // ones BOTH runners have (@ax/agent-aisdk-runner's `tools/builtins.ts`
+  // registers exactly Bash, Read, Write, Edit, Glob, Grep; the claude-sdk
+  // runner passes through the SDK's own set, which is a superset). A row for a
+  // tool a given deployment does not register is INERT, not wrong — see the
+  // header. The claude-sdk extras are covered by the rail's own
+  // unrestricted-scope row rather than by a hand-copied list that would drift
+  // against an SDK we do not version here.
+  {
+    id: 'sandbox.bash',
+    match: { tool: 'Bash' },
+    verdict: 'allow',
+    capability: 'run commands inside its own private workspace',
+    subject: 'agent',
+    provenance: 'catalog',
+  },
+  {
+    id: 'sandbox.read',
+    match: { tool: 'Read' },
+    verdict: 'allow',
+    capability: 'read files in its own workspace',
+    subject: 'agent',
+    provenance: 'catalog',
+  },
+  {
+    id: 'sandbox.write',
+    match: { tool: 'Write' },
+    verdict: 'allow',
+    capability: 'create files in its own workspace',
+    subject: 'agent',
+    provenance: 'catalog',
+  },
+  {
+    id: 'sandbox.edit',
+    match: { tool: 'Edit' },
+    verdict: 'allow',
+    capability: 'change files in its own workspace',
+    subject: 'agent',
+    provenance: 'catalog',
+  },
+  {
+    id: 'sandbox.glob',
+    match: { tool: 'Glob' },
+    verdict: 'allow',
+    capability: 'find files by name in its own workspace',
+    subject: 'agent',
+    provenance: 'catalog',
+  },
+  {
+    id: 'sandbox.grep',
+    match: { tool: 'Grep' },
+    verdict: 'allow',
+    capability: 'search inside files in its own workspace',
+    subject: 'agent',
+    provenance: 'catalog',
+  },
+
+  // -------------------------------------------------------------------------
+  // Deliberately NOT seeded (AW-1, as amended by AW-14):
   //   - Anything with a `when` predicate. No enforced condition keys on tool
   //     input today; ship `match: { tool }` and add `when` when a rule earns it.
   //   - Host / connector / approved-cap rows. Grant rows (§4.3.4), not rules.
