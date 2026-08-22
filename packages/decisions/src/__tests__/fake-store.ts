@@ -127,6 +127,9 @@ export function createFakeStore(): FakeStore {
         ...row,
         status: 'approved-pending-agent',
         replayDueAt: null,
+        // The host relinquished the flight without sending. Leaving the marker
+        // set would park a decision the agent is then forbidden to pick up.
+        replayClaimedAt: null,
       };
       rows.set(decisionId, next);
       return next;

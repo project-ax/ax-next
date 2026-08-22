@@ -100,10 +100,14 @@ export interface DecisionStore {
    *
    * NOT conditional on the current status, deliberately, and the only write in
    * this file that is not. Once the call has gone out that is a fact about the
-   * world and the row has to agree with it — including when an undo landed in
-   * the microseconds between the executor returning and this write. The undo
-   * lost; the send happened. Same rule `consumed_at` already enforces: that
-   * bell cannot be un-rung. Returns `null` only when the row is gone entirely.
+   * world and the row has to agree with it, whatever the row currently says.
+   *
+   * Belt-and-braces rather than load-bearing, as of the `replay_claimed_at`
+   * guard: `restore` now refuses any row the host has taken, so an undo can no
+   * longer land between the executor returning and this write. It stays
+   * unconditional because "the send happened" is not a claim that should ever
+   * depend on winning a race — the same rule `consumed_at` already enforces:
+   * that bell cannot be un-rung. Returns `null` only when the row is gone.
    */
   markReplayed(decisionId: string, nowIso: string): Promise<Decision | null>;
 
@@ -146,9 +150,22 @@ export interface DecisionStore {
    * sweep gets an empty list rather than a duplicate send.
    *
    * The cost of that atomicity: a host that dies between the claim and the
-   * replay loses the replay. The row stays `executed` with no receipt, which
-   * reads as "approved, nothing happened" — visible and wrong-in-the-safe-
-   * direction, versus a lease scheme that could send twice.
+   * replay loses the replay — on this path and on the immediate one alike. The
+   * row is left `executed`, claimed, and un-replayed, which means three things
+   * worth knowing before someone investigates it as a bug:
+   *
+   *   * nothing retries it (the claim already cleared `replay_due_at`) and
+   *     nothing consumes it, so the call runs ZERO times;
+   *   * it cannot be undone (`restore` refuses a claimed row);
+   *   * it keeps occupying its `(agent, fingerprint)` slot in the partial
+   *     unique index, so a fresh hold of the same call cannot be approved —
+   *     the claim collides and `decisions:approve` absorbs it with a
+   *     `decision_claim_refused` warning, which from the outside looks like an
+   *     approve button that does nothing.
+   *
+   * All of that is wrong in the SAFE direction — visible inaction rather than a
+   * silent double-send, which is what a lease-and-reaper scheme risks. A
+   * follow-up card owns the recovery path.
    */
   claimDueReplays(nowIso: string, limit: number): Promise<Decision[]>;
 
@@ -251,6 +268,13 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       return transition(decisionId, ['executed'], {
         status: 'approved-pending-agent',
         replay_due_at: null,
+        // RELINQUISH the flight. This is only ever reached from inside
+        // `settleReplay`, i.e. on a row the host had already CLAIMED — so
+        // leaving `replay_claimed_at` set would park a decision the agent is
+        // then forbidden to pick up, and the call would run zero times. Parking
+        // means the host is handing it back without having sent anything, so
+        // the in-flight marker has to drop with it.
+        replay_claimed_at: null,
       });
     },
 

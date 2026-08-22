@@ -336,11 +336,14 @@ describe('settleReplay — a completed replay stops being a standing authorisati
   });
 
   /**
-   * The race the review caught: an undo landing between the executor returning
-   * and the stamp. If `markReplayed` were conditional on `status = 'executed'`
-   * it would silently no-op, leaving a `pending` row while the receipt still
-   * said the call went out — design H1 exactly. The send happened; the row must
-   * agree with the world.
+   * A race the review caught, and the reason `markReplayed` is unconditional:
+   * if it were gated on `status = 'executed'` an undo landing between the
+   * executor returning and the stamp would silently no-op, leaving a `pending`
+   * row while the receipt said the call went out — design H1 exactly.
+   *
+   * The `replay_claimed_at` guard now refuses that undo outright, so this is
+   * belt-and-braces rather than the primary defence. It stays because "the send
+   * happened" must not be a claim that depends on winning a race.
    */
   it('an undo that lands mid-replay loses — the row still says executed', async () => {
     const bus = new HookBus();

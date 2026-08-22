@@ -747,4 +747,31 @@ describe('decisions store — a replay that actually ran', () => {
     const s = await freshStore();
     expect(await s.markReplayed('dec_nope', T_SOON)).toBeNull();
   });
+
+  it('parking a claimed flight hands the authorisation back to the agent', async () => {
+    // `parkForAgent` is only ever reached from INSIDE the replay, i.e. on a row
+    // the host had already claimed — its executor went away between the
+    // approval and the send. Earlier tests parked a row with no in-flight
+    // marker, a precondition that never occurs in production, and so missed
+    // this: leaving `replay_claimed_at` set parks a decision the agent is then
+    // forbidden to pick up, and the call runs ZERO times. Silent inaction is
+    // still the failure this package exists to prevent.
+    const s = await freshStore();
+    await s.create(base({ irreversible: true }));
+    await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      replayDueAt: T_REPLAY_DUE,
+    });
+    const claimed = await s.claimDueReplays(T_LATE, 10);
+    expect(claimed[0]!.replayClaimedAt).toBe(T_LATE);
+
+    const parked = await s.parkForAgent('dec_1');
+    expect(parked!.status).toBe('approved-pending-agent');
+    expect(parked!.replayClaimedAt).toBeNull();
+    expect(parked!.replayedAt).toBeNull();
+
+    // The whole point of the status: the agent performs it on its next run.
+    expect((await s.takeApproval('a1', 'fp-1', T_LATE))!.id).toBe('dec_1');
+  });
 });
