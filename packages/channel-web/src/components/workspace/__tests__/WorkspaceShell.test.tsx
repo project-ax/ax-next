@@ -167,7 +167,6 @@ describe('WorkspaceShell', () => {
           stoppedReason: null,
         },
       ],
-      decisions: [],
     });
     agentMock.mockResolvedValue({
       agent: {
