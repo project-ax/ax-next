@@ -88,3 +88,59 @@ export function isRejection(value: unknown): value is Rejection {
     typeof (value as { reason?: unknown }).reason === 'string'
   );
 }
+
+/**
+ * A `hold` is a rejection that carries a durable decision id — "a human must
+ * see this first", not "no". Deliberately a SUBTYPE of `Rejection` rather than
+ * a third `FireResult` arm: `FireResult` has 67 consumers and the correct
+ * behaviour for every one of them that does not know about holds is to treat
+ * it as a veto. Fail-closed by construction. Only the `tool.pre-call` handler
+ * looks for `.hold` and upgrades it to the wire's `hold` verdict.
+ */
+export interface Hold extends Rejection {
+  readonly hold: { readonly decisionId: string; readonly note: string };
+}
+
+/**
+ * The wire schema (`ToolPreCallResponseSchema`) caps `note` at 2000 characters.
+ * We clamp HERE, at the producer, rather than letting an over-long note fail
+ * `safeParse` in the host handler — that failure path returns a 500, which the
+ * runner's fail-closed catch turns into a generic deny, and a deny is exactly
+ * the outcome `hold` exists to avoid. A truncated sentence is a far better
+ * failure than a hold that quietly becomes "no".
+ */
+export const HOLD_NOTE_MAX = 2000;
+
+export function hold(opts: {
+  decisionId: string;
+  note: string;
+  source?: string;
+}): Hold {
+  const note =
+    opts.note.length > HOLD_NOTE_MAX ? opts.note.slice(0, HOLD_NOTE_MAX) : opts.note;
+  const base = { rejected: true as const, reason: note };
+  const withSource = opts.source !== undefined ? { ...base, source: opts.source } : base;
+  return { ...withSource, hold: { decisionId: opts.decisionId, note } };
+}
+
+/**
+ * Deliberately requires NON-EMPTY `decisionId` and `note`, matching the wire
+ * schema's `.min(1)`. A structurally-broken hold therefore reads as a plain
+ * `Rejection` and degrades to a deny carrying its own reason — instead of
+ * being recognised as a hold, failing the response-schema parse, and coming
+ * back as an opaque 500. Both outcomes are fail-closed; only one tells the
+ * model anything useful.
+ */
+export function isHold(value: unknown): value is Hold {
+  if (!isRejection(value)) return false;
+  const h = (value as { hold?: unknown }).hold;
+  if (typeof h !== 'object' || h === null) return false;
+  const { decisionId, note } = h as { decisionId?: unknown; note?: unknown };
+  return (
+    typeof decisionId === 'string' &&
+    decisionId.length > 0 &&
+    typeof note === 'string' &&
+    note.length > 0 &&
+    note.length <= HOLD_NOTE_MAX
+  );
+}

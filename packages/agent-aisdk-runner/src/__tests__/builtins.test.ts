@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import { promisify } from 'node:util';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Tool } from 'ai';
-import type { PreToolVerdict, ToolPolicy } from '@ax/agent-runner-core';
+import { createHoldLatch, type PreToolVerdict, type ToolPolicy } from '@ax/agent-runner-core';
 import { POLICY_WRAPPED, type WrappedExecute } from '../tools/policy-wrap.js';
 import { buildBuiltinTools, resolveBashTimeoutMs } from '../tools/builtins.js';
 
@@ -36,6 +36,7 @@ beforeEach(async () => {
     policy,
     homeDir: home,
     env: { PATH: process.env['PATH'] ?? '', HOME: home },
+    holdLatch: createHoldLatch(),
   });
 });
 
@@ -203,6 +204,7 @@ describe('Bash', () => {
       policy,
       homeDir: home,
       env: { PATH: process.env['PATH'] ?? '', AX_TEST_MARKER: 'composed' },
+      holdLatch: createHoldLatch(),
     });
     const out = await run('Bash', { command: 'echo "[$AX_TEST_MARKER]"' });
     expect(out).toContain('[composed]');

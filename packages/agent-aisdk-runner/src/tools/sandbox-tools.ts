@@ -14,7 +14,7 @@
 import { randomUUID } from 'node:crypto';
 import { jsonSchema, tool, type JSONSchema7, type Tool } from 'ai';
 import type { ToolDescriptor } from '@ax/ipc-protocol';
-import type { LocalDispatcher, ToolPolicy } from '@ax/agent-runner-core';
+import type { HoldLatch, LocalDispatcher, ToolPolicy } from '@ax/agent-runner-core';
 import { wrapWithPolicy } from './policy-wrap.js';
 
 export interface BuildSandboxToolsOptions {
@@ -24,6 +24,8 @@ export interface BuildSandboxToolsOptions {
   tools: ToolDescriptor[];
   /** Test seam: override the per-call id generator. */
   idGen?: () => string;
+  /** The one latch shared by every tool this turn — see WrapWithPolicyOptions. */
+  holdLatch: HoldLatch;
 }
 
 /**
@@ -51,7 +53,7 @@ function renderOutput(output: unknown): string {
 export function buildSandboxTools(
   opts: BuildSandboxToolsOptions,
 ): Record<string, Tool> {
-  const { policy, dispatcher, tools, idGen = () => randomUUID() } = opts;
+  const { policy, dispatcher, tools, idGen = () => randomUUID(), holdLatch } = opts;
   const sandboxTools = tools.filter((t) => t.executesIn === 'sandbox');
 
   const entries: Record<string, Tool> = {};
@@ -60,7 +62,7 @@ export function buildSandboxTools(
       description: descriptor.description ?? '',
       inputSchema: jsonSchema(descriptor.inputSchema as JSONSchema7),
       execute: wrapWithPolicy(
-        { policy, name: descriptor.name, isBuiltin: false },
+        { policy, name: descriptor.name, isBuiltin: false, holdLatch },
         async (input) => {
           // A dispatcher failure (unregistered tool, or the executor
           // itself throwing) propagates as a throw — `LocalDispatcher.

@@ -6,6 +6,7 @@ import {
   buildPythonVenvEnv,
   buildToolCacheEnv,
   buildTtyHintEnv,
+  createHoldLatch,
   createToolPolicy,
   runRunner,
   type Loop,
@@ -205,6 +206,12 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         },
       });
 
+      // ONE latch, shared by every tool this turn. A tool's `execute` cannot
+      // stop the loop by itself here (unlike the claude-sdk runner's SDK
+      // hook) — `stopWhen` below is what actually ends the turn, and it reads
+      // this same instance.
+      const holdLatch = createHoldLatch();
+
       // Skills: the read-only projection is the SOLE discovery path. Names +
       // descriptions go into the prompt; bodies load on demand through the
       // `Skill` tool. Discovery never throws — a malformed bundle is skipped
@@ -214,7 +221,10 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       // Merged rather than spread: one flat namespace means a collision must be
       // an error, not a last-write-wins coin flip. See mergeToolSets.
       const tools = mergeToolSets([
-        { label: 'built-ins', tools: buildBuiltinTools({ policy, homeDir, env: bashEnv }) },
+        {
+          label: 'built-ins',
+          tools: buildBuiltinTools({ policy, homeDir, env: bashEnv, holdLatch }),
+        },
         {
           label: 'host catalog tools',
           tools: buildHostTools({
@@ -222,20 +232,26 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             client,
             tools: catalog,
             flushWorkspace: flushWorkspaceForHostTool,
+            holdLatch,
           }),
         },
         {
           label: 'sandbox catalog tools',
-          tools: buildSandboxTools({ policy, dispatcher: localDispatcher, tools: catalog }),
+          tools: buildSandboxTools({
+            policy,
+            dispatcher: localDispatcher,
+            tools: catalog,
+            holdLatch,
+          }),
         },
-        { label: 'the Skill tool', tools: buildSkillTool({ policy, skills }) },
+        { label: 'the Skill tool', tools: buildSkillTool({ policy, skills, holdLatch }) },
       ]) as unknown as Record<string, Tool>;
       // I₁, enforced rather than asserted in prose. `WebFetch`/`WebSearch`/
       // `Task`/`AskUserQuestion`/`TodoWrite` are absent by construction here —
       // on this runner "disabled" means "never registered", so there is no
       // deny-list to keep in sync. (Web capability is unaffected: @ax/web-tools
       // supplies web_search/web_extract as ordinary host tools above.)
-      assertAllToolsWrapped(tools);
+      assertAllToolsWrapped(tools, holdLatch);
 
       // One parse, one opinion about which provider this is: `provider.ts`
       // owns both the model construction and the per-provider send-site
@@ -287,7 +303,10 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         model,
         instructions,
         tools,
-        stopWhen: stepCountIs(MAX_STEPS_PER_TURN),
+        // The tool's `execute` cannot stop the loop by itself (it returns
+        // text, not a signal) — the latch composes with the step cap so a
+        // hold ends the turn after the step that tripped it.
+        stopWhen: [stepCountIs(MAX_STEPS_PER_TURN), () => holdLatch.tripped],
         prepareStep: ({ steps, messages }) => compactor.step({ steps, messages }),
       });
 
@@ -304,6 +323,9 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         // null = the inbox said cancel (or hit its idle floor). Drain and exit;
         // the shell emits the single `event.chat-end` on the way out.
         if (next === null) return 0;
+
+        // Per-turn latch: a hold in one turn must not bleed into the next.
+        holdLatch.reset();
 
         transcript.append([toUserModelMessage(next.content)]);
 

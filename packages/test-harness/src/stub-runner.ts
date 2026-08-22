@@ -101,7 +101,10 @@ async function run(): Promise<number> {
       };
 
       const pre = (await client.call('tool.pre-call', { call })) as ToolPreCallResponse;
-      if (pre.verdict === 'reject') continue;
+      // `hold` is treated like `reject` here: the stub has no concept of a
+      // durable decision to resume from, and skipping the call is the
+      // fail-closed behaviour both non-allow verdicts share.
+      if (pre.verdict !== 'allow') continue;
 
       const finalCall = pre.modifiedCall ?? call;
 

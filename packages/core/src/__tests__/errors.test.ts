@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { PluginError, reject, isRejection } from '../errors.js';
+import {
+  PluginError,
+  reject,
+  isRejection,
+  hold,
+  isHold,
+  HOLD_NOTE_MAX,
+} from '../errors.js';
 
 describe('PluginError', () => {
   it('captures code, plugin, and cause', () => {
@@ -60,5 +67,48 @@ describe('reject', () => {
     expect(isRejection({ foo: 'bar' })).toBe(false);
     expect(isRejection(null)).toBe(false);
     expect(isRejection(undefined)).toBe(false);
+  });
+});
+
+describe('hold', () => {
+  it('is structurally a rejection so unaware callers fail closed', () => {
+    const h = hold({ decisionId: 'dec_1', note: 'Waiting for you to approve this' });
+    expect(isRejection(h)).toBe(true);
+    expect(h.reason).toBe('Waiting for you to approve this');
+  });
+
+  it('is distinguishable from a plain rejection', () => {
+    expect(isHold(hold({ decisionId: 'dec_1', note: 'n' }))).toBe(true);
+    expect(isHold({ rejected: true, reason: 'nope' })).toBe(false);
+  });
+
+  it('carries the decision id through', () => {
+    expect(hold({ decisionId: 'dec_1', note: 'n' }).hold.decisionId).toBe('dec_1');
+  });
+
+  it('clamps an over-long note to the wire ceiling so it cannot 500 into a deny', () => {
+    const h = hold({ decisionId: 'dec_1', note: 'x'.repeat(HOLD_NOTE_MAX + 500) });
+    expect(h.hold.note).toHaveLength(HOLD_NOTE_MAX);
+    expect(h.reason).toHaveLength(HOLD_NOTE_MAX);
+    expect(isHold(h)).toBe(true);
+  });
+
+  it('does not recognise a structurally-broken hold, so it degrades to a plain deny', () => {
+    // Each of these would fail ToolPreCallResponseSchema's `.min(1)` /
+    // `.max(2000)`. Reading them as ordinary rejections means the runner gets
+    // a deny carrying the real reason instead of an opaque internal error.
+    expect(isHold({ rejected: true, reason: 'r', hold: { decisionId: '', note: 'n' } })).toBe(
+      false,
+    );
+    expect(isHold({ rejected: true, reason: 'r', hold: { decisionId: 'd', note: '' } })).toBe(
+      false,
+    );
+    expect(
+      isHold({
+        rejected: true,
+        reason: 'r',
+        hold: { decisionId: 'd', note: 'x'.repeat(HOLD_NOTE_MAX + 1) },
+      }),
+    ).toBe(false);
   });
 });

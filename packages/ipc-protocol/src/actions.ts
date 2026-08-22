@@ -107,6 +107,17 @@ export const ToolPreCallResponseSchema = z.discriminatedUnion('verdict', [
     verdict: z.literal('reject'),
     reason: z.string(),
   }),
+  // `hold` — a human must see this before it happens. Returns as fast as
+  // `reject` (the 10 s ceiling in IPC_TIMEOUTS_MS makes waiting for a person
+  // impossible here) and differs in MEANING: do not retry, do not route
+  // around it, tell the user what you were about to do, end the turn.
+  // `note` is prose for the model to relay; `decisionId` is the opaque handle
+  // the durable decision is filed under.
+  z.object({
+    verdict: z.literal('hold'),
+    decisionId: z.string().min(1),
+    note: z.string().min(1).max(2000),
+  }),
 ]);
 export type ToolPreCallResponse = z.infer<typeof ToolPreCallResponseSchema>;
 

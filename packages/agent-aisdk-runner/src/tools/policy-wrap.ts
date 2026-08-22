@@ -29,7 +29,7 @@
 //      fire `postToolUse` first so the audit event records the failed call.
 // ---------------------------------------------------------------------------
 
-import type { ToolPolicy } from '@ax/agent-runner-core';
+import type { HoldLatch, ToolPolicy } from '@ax/agent-runner-core';
 
 /**
  * Marker set on every wrapped `execute`. `assertAllToolsWrapped` (and the test
@@ -40,6 +40,17 @@ import type { ToolPolicy } from '@ax/agent-runner-core';
  * process; `Symbol.for` is registry-global, so the check holds regardless.
  */
 export const POLICY_WRAPPED = Symbol.for('ax.aisdk.tool.policyWrapped');
+
+/**
+ * Marker set on every wrapped `execute` to the shared `HoldLatch` instance it
+ * was built with. On this runner a tool's `execute` cannot stop the turn by
+ * itself — `stopWhen` reads the latch instead — so every wrapped tool MUST
+ * share the SAME latch instance. A tool wired with its own (or no) latch
+ * would hold without ever stopping the turn, a silent-failure shape this
+ * repo has been bitten by before. A test proves identity across the whole
+ * built tool set by reading this symbol off each `execute`.
+ */
+export const HOLD_LATCH = Symbol.for('ax.aisdk.tool.holdLatch');
 
 /** What a tool implementation actually does, once the policy has allowed it. */
 export type ToolRunner = (
@@ -63,13 +74,23 @@ export interface WrapWithPolicyOptions {
    * `Bash` can't reach it.
    */
   isBuiltin: boolean;
+  /**
+   * The one latch shared by every wrapped tool in the turn. Required (not
+   * optional) — unlike the claude-sdk adapter, where the SDK's own
+   * `continue:false` stops the loop and the latch is just bookkeeping, on
+   * this runner `stopWhen` is what stops the loop, and it reads THIS latch.
+   * Omitting it, or passing a tool its own private latch, would let a hold
+   * return text but never end the turn — required makes tsc catch a missing
+   * wire at every call site instead of that shipping silently.
+   */
+  holdLatch: HoldLatch;
 }
 
 /** The `execute` shape `ai@7`'s `tool()` accepts, narrowed to what we produce. */
 export type WrappedExecute = ((
   input: unknown,
   options: { toolCallId: string; abortSignal?: AbortSignal },
-) => Promise<string>) & { [POLICY_WRAPPED]?: true };
+) => Promise<string>) & { [POLICY_WRAPPED]?: true; [HOLD_LATCH]?: HoldLatch };
 
 export function wrapWithPolicy(
   opts: WrapWithPolicyOptions,
@@ -87,6 +108,18 @@ export function wrapWithPolicy(
       // as an error: the model is meant to read this, adapt, and try a
       // permitted approach on the next call.
       return denialText(verdict.reason);
+    }
+
+    if (verdict.decision === 'hold') {
+      opts.holdLatch.trip(verdict.decisionId);
+      // Same shape as a denial — text, not a throw — for the same reason
+      // (choice 1 above). The difference is the latch: `stopWhen` reads it and
+      // ends the turn after THIS step, so the model never gets another step to
+      // try a different route to the same effect. It also never gets a step to
+      // narrate the hold, which is deliberate — the note lands in the
+      // transcript as this tool's result, and the durable thing the user acts
+      // on is the Decision row, not a sentence the model chose to write.
+      return holdText(verdict.note);
     }
 
     // The policy re-roots governed paths (`.ax/**`, `.claude/**`) onto the
@@ -127,6 +160,7 @@ export function wrapWithPolicy(
   };
 
   execute[POLICY_WRAPPED] = true;
+  execute[HOLD_LATCH] = opts.holdLatch;
   return execute;
 }
 
@@ -138,6 +172,20 @@ export function wrapWithPolicy(
  */
 export function denialText(reason: string): string {
   return `Tool call denied by policy: ${reason}\n\nThis is a policy decision, not a transient failure — retrying the same call will be denied again. Adjust your approach.`;
+}
+
+/**
+ * What the model reads on a hold. Deliberately instructive: `deny` invites a
+ * workaround, and "not yet" must not read as "not this way".
+ */
+export function holdText(note: string): string {
+  return [
+    note,
+    '',
+    'This action was recorded and is waiting for the person you are working for.',
+    'Do not retry it and do not achieve the same effect another way.',
+    'Tell them what you were about to do, then stop.',
+  ].join('\n');
 }
 
 function asRecord(input: unknown): Record<string, unknown> {
@@ -191,12 +239,21 @@ export function mergeToolSets(
 }
 
 /**
- * Every entry of a `ToolSet` must carry a policy-wrapped `execute`. Called on
- * the fully-assembled tool set at loop construction, so a tool registered on a
- * bypass path is a BOOT failure, not a silent hole in the gate.
+ * Every entry of a `ToolSet` must carry a policy-wrapped `execute`, and — when
+ * `expectedLatch` is given — every one of them must carry THAT latch, by
+ * identity. Called on the fully-assembled tool set at loop construction, so
+ * both a tool registered on a bypass path and a tool holding its own private
+ * latch are BOOT failures, not silent holes in the gate.
+ *
+ * The latch check earns its place because the failure it catches is invisible
+ * at runtime: `stopWhen` reads exactly one latch, so a tool wired to a
+ * different one would hold — refusing to run, returning the hold text — and
+ * the turn would carry right on to the next step. Nothing throws, nothing
+ * logs, and the whole point of the verdict is lost.
  */
 export function assertAllToolsWrapped(
   tools: Record<string, { execute?: unknown }>,
+  expectedLatch?: HoldLatch,
 ): void {
   const unwrapped = Object.entries(tools)
     .filter(([, t]) => {
@@ -208,6 +265,16 @@ export function assertAllToolsWrapped(
     throw new Error(
       `agent-aisdk-runner: tool(s) registered without the policy wrapper: ${unwrapped.join(', ')}. ` +
         'Every tool must go through wrapWithPolicy — it is the only pre-call gate on this runner.',
+    );
+  }
+  if (expectedLatch === undefined) return;
+  const strayLatch = Object.entries(tools)
+    .filter(([, t]) => (t.execute as WrappedExecute)[HOLD_LATCH] !== expectedLatch)
+    .map(([name]) => name);
+  if (strayLatch.length > 0) {
+    throw new Error(
+      `agent-aisdk-runner: tool(s) wired with a different hold latch than the loop's: ${strayLatch.join(', ')}. ` +
+        'stopWhen reads ONE latch — a tool holding on its own would refuse the call and let the turn continue anyway.',
     );
   }
 }

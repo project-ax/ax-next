@@ -1,4 +1,4 @@
-import { resolveAttachmentPaths, resolveGovernedPaths } from '@ax/agent-runner-core';
+import { createHoldLatch, resolveAttachmentPaths, resolveGovernedPaths } from '@ax/agent-runner-core';
 import type { IpcClient } from '@ax/ipc-protocol';
 import { describe, expect, it } from 'vitest';
 import { createPreToolUseHook } from '../pre-tool-use.js';
@@ -314,6 +314,31 @@ describe('createPreToolUseHook', () => {
     );
     expect(out).toEqual({});
     expect(calls).toEqual([]);
+  });
+
+  it('stops the SDK loop on a hold instead of denying', async () => {
+    const { client } = mkClient(async () => ({
+      verdict: 'hold',
+      decisionId: 'dec_9',
+      note: 'Held: sending email',
+    }));
+    const latch = createHoldLatch();
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', holdLatch: latch });
+    const out = await hook(
+      preToolUseInput({ tool_name: 'mcp__gmail__send', tool_input: {} }),
+      'tu_1',
+      HOOK_OPTS,
+    );
+    expect(out).toEqual({
+      continue: false,
+      stopReason: 'Held: sending email',
+      hookSpecificOutput: {
+        hookEventName: 'PreToolUse',
+        permissionDecision: 'deny',
+        permissionDecisionReason: 'Held: sending email',
+      },
+    });
+    expect(latch.decisionId).toBe('dec_9');
   });
 });
 

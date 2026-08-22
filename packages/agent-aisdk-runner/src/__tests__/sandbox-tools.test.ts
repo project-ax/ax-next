@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { ToolDescriptor } from '@ax/ipc-protocol';
-import { createLocalDispatcher } from '@ax/agent-runner-core';
-import type { PreToolVerdict, ToolPolicy } from '@ax/agent-runner-core';
+import { createHoldLatch, createLocalDispatcher, type PreToolVerdict, type ToolPolicy } from '@ax/agent-runner-core';
 import { POLICY_WRAPPED, type WrappedExecute } from '../tools/policy-wrap.js';
 import { buildSandboxTools } from '../tools/sandbox-tools.js';
 
@@ -18,6 +17,8 @@ function fakePolicy(over: Partial<ToolPolicy> = {}): ToolPolicy & {
   };
   return policy as never;
 }
+
+const holdLatch = createHoldLatch();
 
 const sampleSandboxDescriptor: ToolDescriptor = {
   name: 'echo_local',
@@ -50,6 +51,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor, sampleHostDescriptor],
+      holdLatch,
     });
     expect(Object.keys(tools)).toEqual(['echo_local']);
   });
@@ -66,6 +68,7 @@ describe('buildSandboxTools', () => {
       dispatcher,
       tools: [sampleSandboxDescriptor],
       idGen: () => 'id-1',
+      holdLatch,
     });
 
     const out = await unwrap(tools['echo_local']?.execute)({ text: 'hi' }, OPTS);
@@ -84,6 +87,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
+      holdLatch,
     });
     await expect(unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS)).rejects.toThrow(
       /artifact-path-not-publishable/,
@@ -97,6 +101,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
+      holdLatch,
     });
     await expect(unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS)).rejects.toThrow(
       /echo_local/,
@@ -110,6 +115,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
+      holdLatch,
     });
     const out = await unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS);
     expect(typeof out).toBe('string');
@@ -123,6 +129,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
+      holdLatch,
     });
     const out = await unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS);
     expect(out).toBe('plain string result');
@@ -139,6 +146,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
+      holdLatch,
     });
     await unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS);
     expect(seenId.length).toBeGreaterThan(0);
@@ -151,7 +159,7 @@ describe('buildSandboxTools', () => {
       inputSchema: { type: 'object' },
       executesIn: 'sandbox',
     };
-    const tools = buildSandboxTools({ policy: fakePolicy(), dispatcher, tools: [toolNoDesc] });
+    const tools = buildSandboxTools({ policy: fakePolicy(), dispatcher, tools: [toolNoDesc], holdLatch });
     expect(tools['no.desc']?.description).toBe('');
   });
 
@@ -169,6 +177,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
+      holdLatch,
     });
     await unwrap(tools['echo_local']?.execute)(
       { text: 'hi', undeclaredKey: 'still here' },
@@ -188,6 +197,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor, second],
+      holdLatch,
     });
     const names = Object.keys(tools);
     expect(names.length).toBeGreaterThan(0);
@@ -211,7 +221,7 @@ describe('buildSandboxTools', () => {
         reason: 'not on the allowlist',
       })),
     } as never);
-    const tools = buildSandboxTools({ policy, dispatcher, tools: [sampleSandboxDescriptor] });
+    const tools = buildSandboxTools({ policy, dispatcher, tools: [sampleSandboxDescriptor], holdLatch });
     const out = await unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS);
     expect(out).toContain('not on the allowlist');
     expect(dispatched).toBe(false);

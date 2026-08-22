@@ -3,7 +3,7 @@ import { promises as fsp } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 import { describe, it, expect, afterEach } from 'vitest';
-import { PluginError, reject } from '@ax/core';
+import { PluginError, reject, hold } from '@ax/core';
 import type {
   ToolCall,
   ToolDescriptor,
@@ -265,6 +265,34 @@ describe('dispatcher', () => {
     const parsed = JSON.parse(res.body);
     expect(parsed.verdict).toBe('reject');
     expect(parsed.reason).toBe('rm -rf blocked');
+  });
+
+  it('POST /tool.pre-call — subscriber holds → 200 with verdict: hold, not reject', async () => {
+    const s = await setup({
+      subscribers: [
+        {
+          hook: 'tool:pre-call',
+          handler: async () => hold({ decisionId: 'dec_42', note: 'Held for approval' }),
+        },
+      ],
+    });
+    setups.push(s);
+    const call: ToolCall = { id: 'c1', name: 'gmail_send', input: {} };
+    const res = await doRequest(
+      s.socketPath,
+      'POST',
+      '/tool.pre-call',
+      s.token,
+      JSON.stringify({ call }),
+    );
+    expect(res.status).toBe(200);
+    const parsed = JSON.parse(res.body);
+    expect(parsed).toEqual({
+      verdict: 'hold',
+      decisionId: 'dec_42',
+      note: 'Held for approval',
+    });
+    expect(parsed.verdict).not.toBe('reject');
   });
 
   // -------------------------------------------------------------------------

@@ -16,10 +16,22 @@
 // The policy itself (re-root + `tool.pre-call` adjudication) now lives in
 // `@ax/agent-runner-core`'s `tool-policy.ts`, shared with other runners.
 import type { HookCallback } from '@anthropic-ai/claude-agent-sdk';
-import { createToolPolicy, type CreateToolPolicyOptions } from '@ax/agent-runner-core';
+import {
+  createToolPolicy,
+  type CreateToolPolicyOptions,
+  type HoldLatch,
+} from '@ax/agent-runner-core';
 import { classifySdkToolName } from './tool-names.js';
 
-export type CreatePreToolUseHookOptions = CreateToolPolicyOptions;
+export type CreatePreToolUseHookOptions = CreateToolPolicyOptions & {
+  /**
+   * Tripped on a hold. Optional here because the SDK's own `continue:false` is
+   * what actually stops the loop — unlike the aisdk runner, where `stopWhen`
+   * reads the latch and it is load-bearing. `main.ts` reads it at the turn
+   * boundary so a held turn is distinguishable from a finished one.
+   */
+  holdLatch?: HoldLatch;
+};
 
 export function createPreToolUseHook(
   opts: CreatePreToolUseHookOptions,
@@ -60,6 +72,24 @@ export function createPreToolUseHook(
           hookEventName: 'PreToolUse',
           permissionDecision: 'deny',
           permissionDecisionReason: verdict.reason,
+        },
+      };
+    }
+
+    if (verdict.decision === 'hold') {
+      opts.holdLatch?.trip(verdict.decisionId);
+      // `continue: false` is the SDK's clean stop (SyncHookJSONOutput,
+      // sdk.d.ts:5192) — the loop ends here rather than handing the model a
+      // denial to improvise around. We ALSO emit permissionDecision:'deny' so
+      // the tool provably does not run in any SDK version where `continue` is
+      // honoured late; the two together are belt and braces, not redundancy.
+      return {
+        continue: false,
+        stopReason: verdict.note,
+        hookSpecificOutput: {
+          hookEventName: 'PreToolUse',
+          permissionDecision: 'deny',
+          permissionDecisionReason: verdict.note,
         },
       };
     }
