@@ -40,6 +40,7 @@ describe('tool-policy canary', () => {
       verdict: 'hold',
       ruleId: holdRule.id,
       capability: holdRule.capability,
+      irreversible: holdRule.irreversible === true,
     });
 
     const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(
@@ -97,7 +98,12 @@ describe('tool-policy canary', () => {
       { call: { name: 'Bash', input: { command: 'ls' } }, agentId: 'a1' },
     );
     // Deliberately not seeded (AW-1): a hold on Bash fires on every command.
-    expect(verdict).toEqual({ verdict: 'allow', ruleId: null, capability: null });
+    expect(verdict).toEqual({
+      verdict: 'allow',
+      ruleId: null,
+      capability: null,
+      irreversible: false,
+    });
   });
 
   it('answers deny for a disabled builtin as a rail row, not as enforcement', async () => {

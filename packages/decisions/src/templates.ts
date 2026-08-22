@@ -28,6 +28,13 @@
 /** Matches `@ax/tool-policy`'s own `CAPABILITY_MAX_CHARS`, with headroom. */
 const CAPABILITY_MAX = 120;
 const TOOL_NAME_MAX = 64;
+/**
+ * A host executor's failure message is free text written by whatever library
+ * or API the tool wraps, not by us. It is audit-trail detail, not prose a
+ * human is meant to read as our voice, so it gets a generous clamp rather
+ * than the tight ones above.
+ */
+const FAILURE_DETAIL_MAX = 200;
 
 /**
  * The shape a tool name is allowed to have before we are willing to print it.
@@ -71,6 +78,21 @@ export function sanitizeToolName(name: string | null | undefined): string | null
   if (typeof name !== 'string') return null;
   const clean = oneLine(name, TOOL_NAME_MAX);
   return SAFE_TOOL_NAME.test(clean) ? clean : null;
+}
+
+/**
+ * A host executor's failure message, made safe to store and to hand to a
+ * renderer. It is NOT a receipt: the receipt is always `FAILED_RECEIPT`. This
+ * is the audit-trail detail, and a host tool's message can quote
+ * model-authored input back at us (a rejected email address, an argument the
+ * remote API echoed), so it is stripped of control characters — which could
+ * forge a separate line in a log the way they could a hold note — and clamped
+ * with the same `oneLine` helper everything else in this file uses.
+ */
+export function sanitizeFailureDetail(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const clean = oneLine(value, FAILURE_DETAIL_MAX);
+  return clean.length > 0 ? clean : null;
 }
 
 export interface DecisionTextInput {
@@ -134,6 +156,53 @@ export function decisionText(input: DecisionTextInput): DecisionText {
         : `You turned this down. Nothing ran and nothing changed.`,
   };
 }
+
+/**
+ * Three more authored outcomes, alongside `approvedText`/`dismissedText`
+ * above. AW-5 adds paths the mechanical form in `decisionText` cannot cover,
+ * because none of them are "the call went out as recorded":
+ *
+ *   - a host replay that ran and failed partway,
+ *   - a call the host cannot even attempt (sandbox-only tool), and
+ *   - an approval a human pulled back inside the undo window.
+ *
+ * Every one of these is a constant, not a template built from `capability` or
+ * `toolName`, on purpose. The design this whole file exists to avoid derived
+ * one outcome line from a DIFFERENT outcome line by regex and shipped "sent
+ * your reply to Priya" for a reply that was never sent (design H1). A
+ * constant cannot be derived from anything — there is nothing to regex.
+ */
+
+/**
+ * The receipt when a host replay FAILED. Never derived from `approvedText`:
+ * `approvedText` says the call MAY run, which is true the instant a human
+ * says yes, and stays true right up until the replay itself. Reusing any part
+ * of that line here would let "you said yes" bleed into a receipt whose whole
+ * job is to say the opposite — it tried, and it did not work.
+ */
+export const FAILED_RECEIPT =
+  'It tried to do this, and it did not work. Nothing was completed.';
+
+/**
+ * The receipt when the host cannot replay the call at all — a tool that only
+ * runs inside the sandbox next to the agent, which the host has no way to
+ * reach once the turn has ended. This is not a failure: nothing was
+ * attempted and nothing went wrong. It is a promise about the future, so it
+ * says exactly that and nothing more — never "Sent", because nothing has
+ * gone anywhere yet.
+ */
+export const PENDING_AGENT_RECEIPT =
+  'Approved — it will do this the next time it runs.';
+
+/**
+ * The receipt when a human took an approval back inside the undo window.
+ * `undoDecision` returns the decision to `pending`, and the Activity row that
+ * reported the original outcome is now describing something that no longer
+ * holds — this line replaces it rather than leaving the old claim standing
+ * uncorrected next to a decision that is open again.
+ */
+export const RETRACTED_RECEIPT =
+  'You took this back. The receipt above no longer stands.';
 
 /**
  * The sentence the MODEL reads when its call is held.

@@ -63,6 +63,15 @@ export interface EvaluateResult {
   verdict: PolicyVerdict;
   ruleId: string | null;
   capability: string | null;
+  /**
+   * True when the matched rule says approving this call cannot be taken
+   * back. `@ax/decisions` (AW-5) captures this ON THE ROW at hold time and
+   * defers the replay by the undo window, so the 10-second undo is a real
+   * grace period before the outward action rather than a button that cannot
+   * undo anything. Absent rule / no match ⇒ false: we only claim
+   * irreversibility when a reviewed rule says so.
+   */
+  irreversible: boolean;
 }
 
 /** One row of "What it may do alone". */
@@ -131,6 +140,7 @@ export const EvaluateResultSchema = z.object({
   verdict: PolicyVerdictSchema,
   ruleId: z.string().nullable(),
   capability: z.string().nullable(),
+  irreversible: z.boolean(),
 });
 
 export const CapabilityRowSchema = z.object({

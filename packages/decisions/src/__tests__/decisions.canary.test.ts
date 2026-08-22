@@ -11,23 +11,32 @@
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createTestHarness, stopPostgresContainer, type TestHarness } from '@ax/test-harness';
 import { BUILTIN_RULES, createToolPolicyPlugin } from '@ax/tool-policy';
-import { isHold, isRejection, type AgentContext } from '@ax/core';
+import { isHold, isRejection, type AgentContext, type Hold, type ToolCall } from '@ax/core';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
-import { createDecisionsPlugin } from '../plugin.js';
+import { createDecisionsPlugin, type DecisionsPluginOptions } from '../plugin.js';
 import type {
   Decision,
+  DecisionExecutedPayload,
   DecisionRaisedPayload,
   DecisionsApproveOutput,
+  DecisionsGetOutput,
   DecisionsListOutput,
+  DecisionsSweepOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
 const harnesses: TestHarness[] = [];
 
-async function boot(): Promise<TestHarness> {
+/**
+ * `sweepIntervalMs: 0` disables the maintenance timer in every boot below.
+ * A background sweep firing mid-assertion would make the deferred-replay and
+ * expiry tests race a clock; the ones that need a sweep drive `decisions:sweep`
+ * themselves and get a deterministic answer back.
+ */
+async function boot(decisions: DecisionsPluginOptions = {}): Promise<TestHarness> {
   const h = await createTestHarness({
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
@@ -35,7 +44,7 @@ async function boot(): Promise<TestHarness> {
       // decisions must be able to see tool-policy's hook, and its subscriber
       // must run after anything that can deny outright.
       createToolPolicyPlugin(),
-      createDecisionsPlugin(),
+      createDecisionsPlugin({ sweepIntervalMs: 0, ...decisions }),
     ],
   });
   harnesses.push(h);
@@ -65,12 +74,115 @@ afterAll(async () => {
 const HOLD_RULE = BUILTIN_RULES.find((r) => r.verdict === 'hold')!;
 const DENY_RULE = BUILTIN_RULES.find((r) => r.verdict === 'deny')!;
 const ALLOW_RULE = BUILTIN_RULES.find((r) => r.verdict === 'allow')!;
+/**
+ * A SECOND held tool, and the one the host can never replay. `skill_propose`
+ * is `executesIn: 'sandbox'`, so no `tool:execute:skill_propose` hook exists —
+ * which is exactly the fourth row of AW-5's table, not a gap in the harness.
+ */
+const SANDBOX_HOLD_RULE = BUILTIN_RULES.find(
+  (r) => r.verdict === 'hold' && r.match.tool === 'skill_propose',
+)!;
 
 function userCtx(h: TestHarness): AgentContext {
   return h.ctx({ agentId: 'a1', userId: 'u1', conversationId: 'conv-1', sessionId: 's1' });
 }
 
+/**
+ * The UNATTENDED path: a routine tick. `defaultAttendanceFor` maps
+ * `source === 'routine'` to `unattended`, which is what makes the approval
+ * take the host-replay branch instead of waiting for a warm agent that no
+ * longer exists.
+ */
+function routineCtx(h: TestHarness): AgentContext {
+  return h.ctx({
+    agentId: 'a1',
+    userId: 'u1',
+    conversationId: 'conv-1',
+    sessionId: 's-routine',
+    source: 'routine',
+  });
+}
+
 const CALL = { id: 'c1', name: HOLD_RULE.match.tool, input: { to: 'a@b.c' } };
+const SANDBOX_CALL = {
+  id: 'c-sandbox',
+  name: SANDBOX_HOLD_RULE.match.tool,
+  input: { name: 'weekly-digest' },
+};
+
+/**
+ * Stand in for a host-side tool executor — the same dynamic
+ * `tool:execute:<name>` service hook `tool.execute-host` dispatches to. What
+ * it records is the argument the replay actually handed it, which is the only
+ * way to prove the card was WYSIWYG.
+ */
+function recordExecutor(
+  h: TestHarness,
+  toolName: string,
+  opts: { throws?: string } = {},
+): { calls: ToolCall[]; ctxs: AgentContext[] } {
+  const calls: ToolCall[] = [];
+  const ctxs: AgentContext[] = [];
+  h.bus.registerService<ToolCall, unknown>(
+    `tool:execute:${toolName}`,
+    '@ax/decisions/test/host-tool',
+    async (ctx, call) => {
+      ctxs.push(ctx);
+      calls.push(call);
+      if (opts.throws !== undefined) throw new Error(opts.throws);
+      return { ok: true };
+    },
+  );
+  return { calls, ctxs };
+}
+
+/** Fire a held call and hand back the decision id off the hold itself. */
+async function holdAndId(
+  h: TestHarness,
+  ctx: AgentContext,
+  call: { id: string; name: string; input: unknown },
+): Promise<string> {
+  const fired = await h.bus.fire('tool:pre-call', ctx, call);
+  expect(isHold(fired)).toBe(true);
+  return (fired as unknown as Hold).hold.decisionId;
+}
+
+function approve(
+  h: TestHarness,
+  ctx: AgentContext,
+  decisionId: string,
+): Promise<DecisionsApproveOutput> {
+  return h.bus.call<unknown, DecisionsApproveOutput>('decisions:approve', ctx, {
+    decisionId,
+    userId: 'u1',
+  });
+}
+
+async function readDecision(
+  h: TestHarness,
+  ctx: AgentContext,
+  decisionId: string,
+): Promise<Decision> {
+  const { decision } = await h.bus.call<unknown, DecisionsGetOutput>('decisions:get', ctx, {
+    decisionId,
+    userId: 'u1',
+  });
+  return decision!;
+}
+
+/** Collect every `decisions:executed` receipt this harness emits. */
+function collectReceipts(h: TestHarness): DecisionExecutedPayload[] {
+  const seen: DecisionExecutedPayload[] = [];
+  h.bus.subscribe<DecisionExecutedPayload>(
+    'decisions:executed',
+    '@ax/decisions/test/receipts',
+    async (_c, payload) => {
+      seen.push(payload);
+      return undefined;
+    },
+  );
+  return seen;
+}
 
 describe('decisions canary', () => {
   it('a held call becomes a durable row, and approving it authorises exactly one retry', async () => {
@@ -97,9 +209,13 @@ describe('decisions canary', () => {
       { decisionId: decisions[0]!.id, userId: 'u1' },
     );
     expect(approved.decision!.status).toBe('executed');
-    // Nothing ran: AW-4 leaves a standing authorisation, AW-5 adds the replay.
+    // The ATTENDED path: the agent is still warm, so the HOST ran nothing —
+    // it says so, and it says whose job it is. The standing authorisation is
+    // what the agent's own retry cashes in, two lines below.
     expect(approved.executed).toBe(false);
-    expect(approved.path).toBeNull();
+    expect(approved.path).toBe('agent-executes');
+    expect(approved.error).toBeNull();
+    expect(approved.pendingUntil).toBeNull();
 
     // The warm agent re-issues its call…
     expect((await h.bus.fire('tool:pre-call', ctx, CALL)).rejected).toBe(false);
@@ -113,14 +229,7 @@ describe('decisions canary', () => {
     await harnesses.pop()!.close({ onError: () => {} });
 
     // Same database, brand new bus and plugin instances.
-    const h = await createTestHarness({
-      plugins: [
-        createDatabasePostgresPlugin({ connectionString }),
-        createToolPolicyPlugin(),
-        createDecisionsPlugin(),
-      ],
-    });
-    harnesses.push(h);
+    const h = await boot();
     const { decisions } = await h.bus.call<unknown, DecisionsListOutput>(
       'decisions:list',
       userCtx(h),
@@ -309,6 +418,14 @@ describe('decisions canary', () => {
         'call',
         'callFingerprint',
         'ruleId',
+        // AW-5's three. A field added to `Decision` and not to `DecisionSchema`
+        // is silently STRIPPED on the way out of the bus, and `irreversible`
+        // going missing would mean an irreversible call replays with no undo
+        // window at all.
+        'irreversible',
+        'replayDueAt',
+        'replayedAt',
+        'replayError',
         'freshness',
         'summary',
         'detail',
@@ -328,15 +445,8 @@ describe('decisions canary', () => {
   });
 
   it('an expired decision cannot be approved', async () => {
-    const h = await createTestHarness({
-      plugins: [
-        createDatabasePostgresPlugin({ connectionString }),
-        createToolPolicyPlugin(),
-        // A TTL already in the past by the time anyone looks.
-        createDecisionsPlugin({ ttlMs: -1 }),
-      ],
-    });
-    harnesses.push(h);
+    // A TTL already in the past by the time anyone looks.
+    const h = await boot({ ttlMs: -1 });
     const ctx = userCtx(h);
     expect(isHold(await h.bus.fire('tool:pre-call', ctx, CALL))).toBe(true);
 
@@ -463,5 +573,227 @@ describe('decisions canary', () => {
     });
     expect(isRejection(denier)).toBe(true);
     expect(isHold(denier)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AW-5. Approving an UNATTENDED decision actually does the thing — or says,
+// in our own words, exactly why it did not.
+//
+// Every boot here approves from a normal web context (`userCtx`) a decision
+// that was RAISED from a routine (`routineCtx`). That split is the point: the
+// person clicking approve is not the turn that made the call, and the replay
+// has to run under the decision's own owner and agent, not the clicker's.
+// ---------------------------------------------------------------------------
+describe('decisions canary — execute on approve', () => {
+  it('replays the recorded call on the host, byte for byte', async () => {
+    const h = await boot();
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const id = await holdAndId(h, routineCtx(h), CALL);
+    const stored = await readDecision(h, userCtx(h), id);
+
+    const out = await approve(h, userCtx(h), id);
+
+    // The executor saw the recorded call — same id, same name, same nested
+    // input object. Nothing re-derived, re-serialised or "normalised" on the
+    // way in; that is the whole basis of the card's WYSIWYG promise.
+    expect(executor.calls).toHaveLength(1);
+    expect(executor.calls[0]).toEqual(stored.call);
+    expect(executor.calls[0]).toEqual(CALL);
+
+    // …and it ran under the DECISION's owner and agent, not the approving
+    // request's session. Firing with the clicker's ctx is how work lands in
+    // somebody else's workspace.
+    expect(executor.ctxs[0]!.userId).toBe('u1');
+    expect(executor.ctxs[0]!.agentId).toBe('a1');
+    expect(executor.ctxs[0]!.conversationId).toBe('conv-1');
+
+    expect(out.executed).toBe(true);
+    expect(out.path).toBe('host-replays');
+    expect(out.error).toBeNull();
+    expect(out.pendingUntil).toBeNull();
+
+    const after = await readDecision(h, userCtx(h), id);
+    expect(after.status).toBe('executed');
+    // The consume belongs to the agent-retry path. Replay IS the execution, so
+    // nothing is left standing at the gate for an agent to take up as well.
+    expect(after.consumedAt).toBeNull();
+    expect(after.replayedAt).not.toBeNull();
+    expect(after.replayError).toBeNull();
+    expect(after.replayDueAt).toBeNull();
+
+    // And the yes is SPENT. An agent making the identical call on its next run
+    // holds again rather than sailing through on an authorisation the host
+    // already used — otherwise one approval buys two sends.
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
+    expect(executor.calls).toHaveLength(1);
+  });
+
+  it('parks a sandbox-only tool instead of pretending to send it', async () => {
+    // The fourth row of AW-5's table. `skill_propose` runs in the sandbox, the
+    // turn is over, and there is no `tool:execute:skill_propose` hook — so the
+    // host does not try, does not fail, and does not fabricate a receipt.
+    const h = await boot();
+    const id = await holdAndId(h, routineCtx(h), SANDBOX_CALL);
+
+    const out = await approve(h, userCtx(h), id);
+    expect(out.executed).toBe(false);
+    expect(out.path).toBeNull();
+    expect(out.error).toBeNull();
+    expect(out.decision!.status).toBe('approved-pending-agent');
+
+    // The approval is REAL and waits at the gate. The next time that agent
+    // runs, its call goes through…
+    expect((await h.bus.fire('tool:pre-call', userCtx(h), SANDBOX_CALL)).rejected).toBe(false);
+    // …exactly once.
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), SANDBOX_CALL))).toBe(true);
+  });
+
+  it('the parked receipt promises the future and never claims a send', async () => {
+    const h = await boot();
+    const receipts = collectReceipts(h);
+    const id = await holdAndId(h, routineCtx(h), SANDBOX_CALL);
+    const stored = await readDecision(h, userCtx(h), id);
+
+    await approve(h, userCtx(h), id);
+
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.outcome).toBe('pending-agent');
+    expect(receipts[0]!.decisionId).toBe(id);
+    // `approvedText` says the call may run and would read as "done" next to a
+    // decision where nothing has happened yet.
+    expect(receipts[0]!.receipt).not.toBe(stored.approvedText);
+    expect(receipts[0]!.receipt).toContain('the next time it runs');
+  });
+
+  it('two concurrent approvals execute exactly once', async () => {
+    // A double click, two open tabs, a retried POST. The claim is a single
+    // conditional UPDATE, so only one of these is entitled to run anything.
+    const h = await boot();
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const id = await holdAndId(h, routineCtx(h), CALL);
+
+    const [a, b] = await Promise.all([
+      approve(h, userCtx(h), id),
+      approve(h, userCtx(h), id),
+    ]);
+
+    expect(executor.calls).toHaveLength(1);
+    expect([a.executed, b.executed].filter(Boolean)).toHaveLength(1);
+
+    // The loser reports the STORED outcome. `decision: null` would read as
+    // "no such decision" for a decision the human is looking straight at.
+    const loser = a.executed ? b : a;
+    expect(loser.decision).not.toBeNull();
+    expect(loser.decision!.status).toBe('executed');
+    expect(loser.path).toBeNull();
+    expect(loser.error).toBeNull();
+  });
+
+  it('a failed replay never emits the approved receipt', async () => {
+    // H1: an action that did not happen must not leave a log line saying it
+    // did — and must not leave a standing "yes" behind either.
+    const h = await boot();
+    recordExecutor(h, HOLD_RULE.match.tool, { throws: 'upstream 503' });
+    const receipts = collectReceipts(h);
+    const id = await holdAndId(h, routineCtx(h), CALL);
+    const stored = await readDecision(h, userCtx(h), id);
+
+    const out = await approve(h, userCtx(h), id);
+    expect(out.executed).toBe(false);
+    expect(out.error).not.toBeNull();
+    expect(out.error).toContain('upstream 503');
+
+    const after = await readDecision(h, userCtx(h), id);
+    expect(after.status).toBe('failed');
+    expect(after.replayError).toContain('upstream 503');
+
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.outcome).toBe('failed');
+    // The receipt a human reads is the AUTHORED failure line — never the
+    // approved one, and never the executor's own message.
+    expect(receipts[0]!.receipt).not.toContain(stored.approvedText);
+    expect(receipts[0]!.receipt).not.toContain('upstream 503');
+
+    // And the agent cannot quietly cash in a yes for something that failed.
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
+  });
+
+  it('undoing an approval the host has NOT yet acted on retracts its receipt', async () => {
+    // The sandbox-only case: the approval is real, the receipt says "it will
+    // do this the next time it runs", and nothing has gone out yet — so there
+    // is something an undo can actually take back.
+    const h = await boot();
+    const receipts = collectReceipts(h);
+    const id = await holdAndId(h, routineCtx(h), SANDBOX_CALL);
+
+    await approve(h, userCtx(h), id);
+    expect(receipts.at(-1)!.outcome).toBe('pending-agent');
+
+    const undone = await h.bus.call<unknown, { undone: boolean; decision: Decision | null }>(
+      'decisions:undo',
+      userCtx(h),
+      { decisionId: id, userId: 'u1' },
+    );
+    expect(undone.undone).toBe(true);
+    expect(undone.decision!.status).toBe('pending');
+
+    // The receipt above is now describing something that no longer holds, so
+    // AW-10's feed is told to remove it rather than leave the old claim
+    // standing next to a decision that is open again.
+    expect(receipts.at(-1)).toMatchObject({ decisionId: id, outcome: 'retracted' });
+    // And the standing authorisation went with it.
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), SANDBOX_CALL))).toBe(true);
+  });
+
+  it('refuses to undo a call the host has already made', async () => {
+    // Undo does not un-send an email. Once the replay has run, the honest
+    // answer is "no" — putting the row back on the queue would let a second
+    // approval do the whole thing again.
+    const h = await boot();
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const receipts = collectReceipts(h);
+    const id = await holdAndId(h, routineCtx(h), CALL);
+
+    await approve(h, userCtx(h), id);
+    expect(receipts.at(-1)!.outcome).toBe('executed');
+
+    const undone = await h.bus.call<unknown, { undone: boolean; decision: Decision | null }>(
+      'decisions:undo',
+      userCtx(h),
+      { decisionId: id, userId: 'u1' },
+    );
+    expect(undone.undone).toBe(false);
+    expect(undone.decision!.status).toBe('executed');
+    // No retraction was invented for a receipt that still stands…
+    expect(receipts.at(-1)!.outcome).toBe('executed');
+    // …and nothing ran a second time.
+    expect(executor.calls).toHaveLength(1);
+  });
+
+  it('the sweep expires an unanswered decision, and an expired one cannot be approved', async () => {
+    // A TTL that is already up. Nothing here reads the queue first, so the
+    // SWEEP is what moves the row — `decisions:list` has its own sweep and
+    // would otherwise be the one doing the work.
+    const h = await boot({ ttlMs: 0 });
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const id = await holdAndId(h, routineCtx(h), CALL);
+
+    const swept = await h.bus.call<unknown, DecisionsSweepOutput>(
+      'decisions:sweep',
+      userCtx(h),
+      {},
+    );
+    expect(swept.expired).toBe(1);
+    expect(swept.replayed).toBe(0);
+    expect((await readDecision(h, userCtx(h), id)).status).toBe('expired');
+
+    const out = await approve(h, userCtx(h), id);
+    expect(out.decision!.status).toBe('expired');
+    expect(out.executed).toBe(false);
+    expect(out.path).toBeNull();
+    // Approving a world that is gone runs nothing and authorises nothing.
+    expect(executor.calls).toEqual([]);
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
   });
 });

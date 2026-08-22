@@ -1,4 +1,11 @@
-export { createDecisionsPlugin, DEFAULT_DECISION_TTL_MS } from './plugin.js';
+export {
+  createDecisionsPlugin,
+  DEFAULT_DECISION_TTL_MS,
+  DEFAULT_SWEEP_INTERVAL_MS,
+} from './plugin.js';
+export { replayOnApprove, replayContext, settleReplay, emitExecuted } from './replay.js';
+export type { ReplayOutcome } from './replay.js';
+export { sweepExpired, runDueReplays, DEFAULT_REPLAY_BATCH } from './expiry.js';
 export type { DecisionsPluginOptions } from './plugin.js';
 export { callFingerprint } from './fingerprint.js';
 export {
@@ -26,18 +33,24 @@ export {
   denialSentence,
   holdNote,
   sanitizeCapability,
+  sanitizeFailureDetail,
   sanitizeToolName,
+  FAILED_RECEIPT,
   GATE_FAILURE_SENTENCE,
+  PENDING_AGENT_RECEIPT,
+  RETRACTED_RECEIPT,
 } from './templates.js';
 export type { DecisionText, DecisionTextInput } from './templates.js';
 export { runDecisionsMigration } from './migrations.js';
 export type { DecisionRow, DecisionsDatabase } from './migrations.js';
 export {
+  AUTHORISING_STATUSES,
   DecisionSchema,
   DecisionsApproveOutputSchema,
   DecisionsDismissOutputSchema,
   DecisionsGetOutputSchema,
   DecisionsListOutputSchema,
+  DecisionsSweepOutputSchema,
   DecisionsUndoOutputSchema,
   DecisionStatusSchema,
   FreshnessPredicateSchema,
@@ -48,8 +61,12 @@ export type {
   ActivityKind,
   Attendance,
   Decision,
+  DecisionExecutedOutcome,
+  DecisionExecutedPayload,
   DecisionKind,
   DecisionRaisedPayload,
+  DecisionsSweepInput,
+  DecisionsSweepOutput,
   DecisionStatus,
   DecisionsApproveInput,
   DecisionsApproveOutput,

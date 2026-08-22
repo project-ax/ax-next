@@ -34,6 +34,7 @@ function decision(over: Partial<Decision> = {}): Decision {
     },
     callFingerprint: 'fp-1',
     ruleId: 'test.rule',
+    irreversible: false,
     freshness: {
       kind: 'thread-head',
       value: 'msg-8841',
@@ -52,6 +53,8 @@ function decision(over: Partial<Decision> = {}): Decision {
     resolvedAt: null,
     staleReason: null,
     consumedAt: null,
+    replayDueAt: null,
+    replayError: null,
     ...over,
   };
 }
@@ -240,5 +243,31 @@ describe('undoDecision', () => {
     const r = undoDecision(dismissed, { now: T_SOON });
     expect(r.undone).toBe(true);
     expect(r.decision.status).toBe('pending');
+  });
+
+  // AW-5: 'approved-pending-agent' is what a host writes when it physically
+  // cannot replay a sandbox-only tool — the approval is real, it is just
+  // parked for the agent's next run instead of consumed immediately. That is
+  // still an authorising status, so a human who said yes by mistake needs the
+  // same undo window as any other approval.
+  it('reverses a decision parked as approved-pending-agent, inside the window', () => {
+    const parked = decision({
+      status: 'approved-pending-agent',
+      resolvedAt: T0,
+    });
+    const r = undoDecision(parked, { now: T_SOON });
+    expect(r.undone).toBe(true);
+    expect(r.decision.status).toBe('pending');
+  });
+
+  it('refuses to undo approved-pending-agent once the window has closed', () => {
+    const parked = decision({
+      status: 'approved-pending-agent',
+      resolvedAt: T0,
+    });
+    const past = new Date(Date.parse(T0) + UNDO_WINDOW_MS + 1).toISOString();
+    const r = undoDecision(parked, { now: past });
+    expect(r.undone).toBe(false);
+    expect(r.decision.status).toBe('approved-pending-agent');
   });
 });

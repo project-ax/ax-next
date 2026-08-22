@@ -1048,12 +1048,25 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // among the preset's `tool:pre-call` subscribers, after @ax/agent-activity
   // (observe-only) and after @ax/tool-policy (whose hooks it calls).
   //
-  // HALF-WIRED WINDOW OPEN, narrowly: `decisions:approve` leaves a standing
-  // authorisation that the still-warm agent consumes at the gate — which is
-  // the whole attended path and is exercised end to end by the package canary
-  // — but nothing replays a call on the UNATTENDED path yet. TASK-226 (AW-5)
-  // adds the host replay; TASK-234 (AW-11) adds the Today queue that calls
-  // `decisions:list` from the UI.
+  // TASK-226 (AW-5) CLOSES the unattended half of that window. Approving an
+  // unattended decision now replays the recorded call host-side through the
+  // dynamic `tool:execute:<name>` hook — the same seam `tool.execute-host`
+  // uses — exactly once, and only while the decision is live. A tool that runs
+  // in the sandbox has no such hook and cannot be replayed after the turn
+  // ended, so it resolves to `approved-pending-agent` and the agent performs it
+  // on its next run. @ax/skill-broker's `request_capability` (pushed
+  // unconditionally above) is the host-executed case the canary exercises.
+  //
+  // `decisions:sweep` runs on a timer inside the plugin: it expires decisions
+  // nobody answered, and it runs the deferred replay of an `irreversible` rule
+  // once the 10-second undo window has closed — which is what makes that undo a
+  // real grace period before the outward action rather than a button that
+  // cannot undo anything.
+  //
+  // HALF-WIRED WINDOW STILL OPEN, narrowly: nothing in the UI calls
+  // `decisions:list` or subscribes `decisions:executed` yet. TASK-234 (AW-11)
+  // adds the Today queue; TASK-233 (AW-10) adds the Activity feed that turns
+  // the receipt into a row a human reads.
   plugins.push(createDecisionsPlugin());
 
   // ----- 8b. credentials admin routes (optional) -------------------------
