@@ -33,8 +33,18 @@ Swallowed/silent errors in the turn lifecycle: `catch` blocks that swallow, `out
 - **Security** — for sandbox/IPC/plugin-loading/untrusted-content/dependency changes, walk the three threat models (sandbox escape, prompt injection, supply chain).
 - **Test quality** — do tests meaningfully assert behavior, or trivially pass?
 
+## Return within budget — never run silently forever
+A review that never returns is worse than a shallow one: the merge is automated, so a
+missing verdict reads as "no findings" (TASK-247). Budget roughly **20 minutes** of
+work. Front-load: read the diff and form your findings first, verify second. If you
+are running long, **stop and return what you have** — the findings you already have,
+plus an explicit `Unverified:` list of what you did not get to. Never let a build,
+test run, or grep loop swallow the whole budget; cap any single command and move on.
+A partial review, honestly labelled, is a real result. Silence is not.
+
 ## Output
 - **Verdict:** `APPROVE` or `CHANGES REQUESTED`.
 - **Findings:** numbered, each with **severity** (Critical / Important / Minor / Nit), `file:line`, what's wrong, concrete fix. Critical→Nit. Separate real bugs from nits.
 - **Verification:** actual build/test/grep results you ran.
+- **Unverified:** anything you ran out of budget for — say so rather than implying full coverage.
 Review only — never modify files.

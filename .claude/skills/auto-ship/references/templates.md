@@ -47,6 +47,13 @@ Dispatch via `Agent` with `run_in_background: true`,
 >   reporting** section; prefix exceptions (review findings, CI red, blocked) with
 >   `⚠`. Best-effort: a failed progress write must NEVER block the ship. The helper
 >   does the read-modify-write in shell — do not read the card body into your context.
+> - **The `ax-code-reviewer` subagent can hang and never return** (TASK-247 — it did on
+>   6 of 6 large cards in one run, hiding three real blocking bugs). Follow yolo-ship
+>   Phase 5's deadline protocol: 25-minute deadline, at most one ping, then ONE fresh
+>   re-dispatch with a minimal prompt. If that also blows the deadline, still open the
+>   PR but return `reviewer: hung` — auto-ship orders an independent pass before it
+>   merges. **Never** substitute your own self-review and report `reviewer: clean`; a
+>   reviewer that did not return is `hung`, always.
 > - Otherwise follow yolo-ship exactly: worktree, self-answering brainstorm,
 >   written plan, subagent-driven TDD, build+test+lint gate, local review,
 >   open PR, drive CI green.
@@ -59,6 +66,9 @@ Dispatch via `Agent` with `run_in_background: true`,
 > headSha: <sha> | -
 > mergeable: y | n | -
 > ci: green | red | pending
+> reviewer: clean | hung | skipped-<reason>        # REQUIRED. "clean" ONLY if an
+>                                                  # ax-code-reviewer actually RETURNED
+>                                                  # and its findings are addressed.
 > signature: <normalized failure signature> | -    # required iff outcome=failed
 > needs-input: | -                                  # required iff outcome=blocked
 >   - <one question per line — a decision only a human can make>
