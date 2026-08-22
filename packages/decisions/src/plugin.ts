@@ -467,15 +467,20 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
             return { decision: (await store!.get(decisionId, ownerUserId)) ?? current, undone: false };
           }
 
-          // RETRACT THE RECEIPT. An approve on the unattended path already
-          // emitted one — "you said yes, so it may …" — and leaving that
-          // standing after the person took it back would be the same class of
-          // lie as claiming an unsent email was sent (design H1). AW-10's feed
-          // removes the receipt on this.
+          // RETRACT THE RECEIPT. `outcome: 'retracted'` is a REMOVE instruction
+          // keyed on the decision id, not a new line of history: a receipt
+          // still standing next to a decision that is open again is the same
+          // class of lie as claiming an unsent email was sent (design H1).
           //
-          // Only for a row that HAD a receipt: an attended approval emitted
-          // none, so retracting one would be inventing history in the other
-          // direction.
+          // Fired for both authorising statuses even though only
+          // `approved-pending-agent` is guaranteed to have emitted a receipt —
+          // an attended approval emits none, and a deferred replay has not run
+          // yet. On those paths a subscriber keyed on the decision id finds
+          // nothing to remove, which is the correct no-op. Firing anyway is the
+          // deliberate choice: a subscriber should never have to work out which
+          // execution path an approval took in order to keep its own list
+          // honest. (A row the host ALREADY replayed cannot reach here at all —
+          // the `replayedAt` guard above refuses that undo outright.)
           if (current.status === 'executed' || current.status === 'approved-pending-agent') {
             await emitExecuted(bus, replayContext(saved), saved, 'retracted', RETRACTED_RECEIPT);
           }
