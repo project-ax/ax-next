@@ -1,5 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import { deriveActivity, DEFAULT_PHRASE, STALE_AFTER_MS } from '../derive.js';
+import {
+  deriveActivity,
+  DEFAULT_PHRASE,
+  MAX_PHRASE_CHARS,
+  STALE_AFTER_MS,
+} from '../derive.js';
 import type { DeriveInput } from '../types.js';
 
 const T0 = Date.parse('2026-08-21T09:00:00.000Z');
@@ -176,6 +181,55 @@ describe('deriveActivity — what the counter may count', () => {
 
   it('there is no counter without a tool at all', () => {
     expect(deriveActivity(input({ trigger: 'Morning email pass' })).counter).toBeNull();
+  });
+});
+
+describe('deriveActivity — the line is one line', () => {
+  // A routine's `name` reaches T0 unbounded: it comes from a file in the
+  // agent's own workspace, `validator-routine` only checks it is a non-empty
+  // string, and an agent can author a routine — so it is neither length-capped
+  // nor reliably a human's words.
+  it('flattens a multi-line trigger label into one line', () => {
+    expect(
+      deriveActivity(input({ trigger: 'Morning\nemail\r\n\tpass' })).phrase,
+    ).toBe('Morning email pass');
+  });
+
+  it('strips control characters rather than passing them to a renderer', () => {
+    const a = deriveActivity(input({ trigger: 'Morning\u0007email\u0000pass' }));
+    expect(a.phrase).toBe('Morning email pass');
+      expect(a.phrase).not.toMatch(/[\u0000-\u001F\u007F-\u009F]/);
+  });
+
+  it('truncates an over-long label and MARKS that it truncated', () => {
+    const a = deriveActivity(input({ trigger: 'M'.repeat(200) }));
+    expect(a.phrase).toHaveLength(MAX_PHRASE_CHARS);
+    expect(a.phrase.endsWith('…')).toBe(true);
+  });
+
+  it('leaves a label that already fits completely alone', () => {
+    const exact = 'M'.repeat(MAX_PHRASE_CHARS);
+    expect(deriveActivity(input({ trigger: exact })).phrase).toBe(exact);
+  });
+
+  it('fences the counter unit too', () => {
+    expect(
+      deriveActivity(
+        input({
+          tool: {
+            phrase: 'Reading email',
+            countable: ' mess\nages ',
+            reported: { done: 1, total: 2 },
+          },
+        }),
+      ).counter,
+    ).toEqual({ done: 1, total: 2, unit: 'mess ages' });
+  });
+
+  it('caps every tier, including a tool phrase that somehow got past the schema', () => {
+    const a = deriveActivity(input({ tool: { phrase: 'R'.repeat(500) } }));
+    expect(a.phrase.length).toBeLessThanOrEqual(MAX_PHRASE_CHARS);
+    expect(a.source).toBe('tool');
   });
 });
 

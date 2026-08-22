@@ -10,6 +10,19 @@ export const STALE_AFTER_MS = 90_000;
 export const DEFAULT_PHRASE = 'Working on your request';
 
 /**
+ * Hard ceiling on anything that reaches the line.
+ *
+ * `activityPhrase` is already capped at 40 by all three descriptor schemas, but
+ * the T0 trigger label is not: a routine's `name` comes from a file in the
+ * agent's own workspace, which means it is bounded by nobody and — since an
+ * agent can author a routine — is not reliably a human's words either. A status
+ * line is one line, so anything landing on it is fenced the same way: single
+ * line, plain text, bounded. Truncation is marked, because a sentence that got
+ * cut and does not say so is a sentence that means something else.
+ */
+export const MAX_PHRASE_CHARS = 60;
+
+/**
  * Three tiers, descending precedence, and every tier below the top is always
  * available — so there is never an empty state and never a stale one.
  *
@@ -33,8 +46,8 @@ export const DEFAULT_PHRASE = 'Working on your request';
  * testable at all.
  */
 export function deriveActivity(input: DeriveInput): AgentActivity {
-  const toolPhrase = trimmedOrNull(input.tool?.phrase);
-  const triggerPhrase = trimmedOrNull(input.trigger);
+  const toolPhrase = fencePhrase(input.tool?.phrase);
+  const triggerPhrase = fencePhrase(input.trigger);
 
   const tier: { phrase: string; source: AgentActivity['source'] } =
     toolPhrase !== null
@@ -78,7 +91,7 @@ export function deriveActivity(input: DeriveInput): AgentActivity {
  */
 function counterFrom(tool: DeriveToolInput | null | undefined): ActivityCounter | null {
   if (tool === null || tool === undefined) return null;
-  const unit = trimmedOrNull(tool.countable);
+  const unit = fencePhrase(tool.countable);
   const reported = tool.reported;
   if (unit === null || reported === undefined) return null;
   const { done, total } = reported;
@@ -87,8 +100,20 @@ function counterFrom(tool: DeriveToolInput | null | undefined): ActivityCounter 
   return { done, total, unit };
 }
 
-function trimmedOrNull(value: string | null | undefined): string | null {
+/**
+ * One line, plain text, bounded — or nothing at all.
+ *
+ * Control characters and line breaks are collapsed rather than rejected: a
+ * routine named over two lines is a formatting accident, not an attack, and
+ * dropping the label over it would cost a user their own words. What must not
+ * survive is anything that lets a string reshape the surface it lands on.
+ */
+function fencePhrase(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null;
-  const trimmed = value.trim();
-  return trimmed.length === 0 ? null : trimmed;
+  // Control characters (C0 and C1) become spaces, then every run of
+  // whitespace collapses to one.
+  const flattened = value.replace(/[\u0000-\u001F\u007F-\u009F]+/g, ' ').replace(/\s+/g, ' ').trim();
+  if (flattened.length === 0) return null;
+  if (flattened.length <= MAX_PHRASE_CHARS) return flattened;
+  return `${flattened.slice(0, MAX_PHRASE_CHARS - 1).trimEnd()}\u2026`;
 }
