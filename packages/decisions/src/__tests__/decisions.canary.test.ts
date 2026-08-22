@@ -436,7 +436,7 @@ describe('decisions canary', () => {
         'call',
         'callFingerprint',
         'ruleId',
-        // AW-5's three. A field added to `Decision` and not to `DecisionSchema`
+        // AW-5's four. A field added to `Decision` and not to `DecisionSchema`
         // is silently STRIPPED on the way out of the bus, and `irreversible`
         // going missing would mean an irreversible call replays with no undo
         // window at all.
