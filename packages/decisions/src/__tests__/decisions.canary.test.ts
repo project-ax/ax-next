@@ -16,7 +16,12 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { createDecisionsPlugin } from '../plugin.js';
-import type { Decision, DecisionsApproveOutput, DecisionsListOutput } from '../types.js';
+import type {
+  Decision,
+  DecisionRaisedPayload,
+  DecisionsApproveOutput,
+  DecisionsListOutput,
+} from '../types.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -356,6 +361,56 @@ describe('decisions canary', () => {
     expect(approved.executed).toBe(false);
     // And no authorisation was left behind.
     expect(isHold(await h.bus.fire('tool:pre-call', ctx, CALL))).toBe(true);
+  });
+
+  it('fires decisions:raised with the summary — and never with the tool input', async () => {
+    // AW-11's SSE is the consumer. It is fire-and-forget on purpose: a slow
+    // subscriber must not push the gate past the 10 s `tool.pre-call` ceiling,
+    // which the runner converts into a deny.
+    const h = await boot();
+    const seen: DecisionRaisedPayload[] = [];
+    let resolveFirst: () => void;
+    const fired = new Promise<void>((r) => {
+      resolveFirst = r;
+    });
+    h.bus.subscribe<DecisionRaisedPayload>(
+      'decisions:raised',
+      '@ax/decisions/test/listener',
+      async (_c, payload) => {
+        seen.push(payload);
+        resolveFirst();
+        return undefined;
+      },
+    );
+
+    const ctx = userCtx(h);
+    await h.bus.fire('tool:pre-call', ctx, CALL);
+    await fired;
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.agentId).toBe('a1');
+    expect(seen[0]!.conversationId).toBe('conv-1');
+    expect(seen[0]!.decisionId).toMatch(/^dec_[0-9a-f]{32}$/);
+    expect(seen[0]!.summary).toContain(HOLD_RULE.capability);
+    // The payload carries no `call` at all: a subscriber that rendered raw
+    // model output would put untrusted text on a trust surface.
+    expect(Object.keys(seen[0]!).sort()).toEqual(
+      ['agentId', 'conversationId', 'decisionId', 'summary'].sort(),
+    );
+  });
+
+  it('a throwing decisions:raised subscriber cannot turn a hold into anything else', async () => {
+    const h = await boot();
+    h.bus.subscribe('decisions:raised', '@ax/decisions/test/thrower', async () => {
+      throw new Error('SSE is down');
+    });
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
+    const { decisions } = await h.bus.call<unknown, DecisionsListOutput>(
+      'decisions:list',
+      userCtx(h),
+      { userId: 'u1' },
+    );
+    expect(decisions).toHaveLength(1);
   });
 
   it('resolving an already-resolved decision hands back the STORED row, not null', async () => {
