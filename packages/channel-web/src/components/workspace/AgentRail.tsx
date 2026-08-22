@@ -29,10 +29,11 @@
  * separately refreshable, which is what makes a Revoke button able to show its
  * own consequence.
  */
-import { useState } from 'react';
+import { Fragment, useState } from 'react';
 import { AlertTriangle } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Card, CardContent } from '@/components/ui/card';
+import { Separator } from '@/components/ui/separator';
 import { useAgentRail } from '@/lib/workspace-rail';
 import type {
   AgentRailData,
@@ -97,9 +98,23 @@ export function AgentRail({ detail, openPastId, onOpenPast }: Props) {
       next.delete(row.source);
       return next;
     });
-    // Three outcomes, three sentences. "Already gone" is a refusal, not a
-    // failure, and saying "revoked" for it would claim we did something we
-    // did not.
+    /*
+      Three outcomes, three sentences. "Already gone" is a refusal, not a
+      failure, and saying "revoked" for it would claim we did something we did
+      not.
+
+      The success line carries a caveat because the caveat is TRUE: a site
+      grant is loaded into the egress allowlist when a session opens
+      (`orchestrator.ts` reads `host-grants:list` there), so a conversation
+      that is already running keeps what it was given until it ends. "Revoked"
+      on its own would let someone believe they had just stopped something
+      mid-flight. "May" covers both cases without overstating either.
+    */
+    if (outcome === 'revoked') {
+      setNotice(
+        'Revoked. Anything already running may still have it until it finishes.',
+      );
+    }
     if (outcome === 'already-gone') setNotice('That one was already gone.');
     if (outcome === 'failed') {
       setNotice("We couldn't take that back just now. Nothing changed.");
@@ -267,15 +282,26 @@ function Permissions({
         is no reorder for the index to spoil.
       */}
       {rows.map((row, i) => (
-        <PermissionLine key={`${row.source}#${String(i)}`} row={row} />
+        <Fragment key={`${row.source}#${String(i)}`}>
+          {/*
+            A rule from the group above ends here. Twenty rows separated only by
+            a small coloured glyph is a list nobody scans; a hairline between
+            "can", "asks first" and "never" makes the three blocks findable
+            without adding three headings that repeat what each row already says.
+          */}
+          {i > 0 && rows[i - 1]?.verdict !== row.verdict && (
+            <Separator className="my-2" />
+          )}
+          <PermissionLine row={row} />
+        </Fragment>
       ))}
       {unrestrictedTools && (
         <Alert className="mt-3">
           <AlertTriangle aria-hidden="true" />
           <AlertDescription>
-            This list isn&apos;t a limit. {name} hasn&apos;t been given a tool
-            list, so it can use anything installed here — including tools added
-            later.
+            Nothing limits which tools {name} can use — it can reach anything
+            installed here, now or later. The list above is what&apos;s
+            installed today, not a boundary.
           </AlertDescription>
         </Alert>
       )}
@@ -387,7 +413,7 @@ function ThisWeek({
                 the number a person will quote at somebody, and a number whose
                 meaning is one hover away is a number whose meaning drifts.
               */}
-              <p className="text-[11px] leading-relaxed text-muted-foreground">
+              <p className="text-[11.5px] leading-relaxed text-muted-foreground">
                 {row.definition}
               </p>
             </div>

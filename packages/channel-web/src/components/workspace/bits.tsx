@@ -6,7 +6,7 @@
  * (`tailwind.config.ts` / `index.css`, both themes), because waiting-on-a-human
  * is a real third state that is neither an error nor business as usual.
  */
-import { Ban, Check, Hand, Info, type LucideIcon } from 'lucide-react';
+import { AlertTriangle, Ban, Check, Hand, type LucideIcon } from 'lucide-react';
 import { AvatarTile } from '@/components/AvatarTile';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
@@ -143,21 +143,24 @@ function VerdictMark({ verdict }: { verdict: CapabilityVerdict }) {
  * a third party writing prose that renders as our security claim.
  */
 function TheirDescription({ row }: { row: PermissionRow }) {
-  const who = row.theirName ?? 'this tool';
+  const who = row.theirName ?? 'somewhere else';
   return (
     <Popover>
       <PopoverTrigger asChild>
         <button
           type="button"
-          className="ml-1.5 inline-flex items-center gap-1 rounded-sm text-[11px] text-muted-foreground underline decoration-dotted underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+          className="rounded-sm underline decoration-dotted underline-offset-2 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
         >
-          <Info size={10} aria-hidden="true" />
-          described by {who} · not verified
+          What {who} says it does
         </button>
       </PopoverTrigger>
       <PopoverContent align="start" className="w-72">
         <p className="text-[11.5px] font-medium text-muted-foreground">
           {who} describes this tool as:
+        </p>
+        <p className="sr-only">
+          This description was written by {who}, not by us, and we have not
+          checked it.
         </p>
         <blockquote className="mt-1.5 border-l-2 border-border pl-2.5 text-[12.5px] italic text-muted-foreground">
           {row.theirDescription}
@@ -215,12 +218,25 @@ export function PermissionLine({ row }: { row: PermissionRow }) {
           <span>do something we can&apos;t put a name to</span>
         )}
         {frame.suffix !== null && <span> — {frame.suffix}</span>}
-        {!row.described && row.theirDescription !== null && (
-          <TheirDescription row={row} />
-        )}
-        {!row.described && row.theirDescription === null && (
-          <span className="ml-1.5 text-[11px] text-muted-foreground">
-            · we haven&apos;t described this one
+        {/*
+          THE TRUST LINE, and it is its own line on purpose.
+
+          Inline and muted, "not verified" read as a footnote about the TEXT —
+          a documentation quibble — when the thing we cannot vouch for is the
+          TOOL. So the sentence is now about the tool, in our voice, on its own
+          row, with the warning glyph design §4.3.5 asks for. The verdict mark
+          on the left still tells the truth about what happens (this really can
+          run on its own); this tells the truth about what we know.
+        */}
+        {!row.described && (
+          <span className="mt-0.5 flex items-start gap-1 text-[11.5px] text-muted-foreground">
+            <AlertTriangle size={10} aria-hidden="true" className="mt-[3px] shrink-0" />
+            <span>
+              {row.theirName === null
+                ? "We haven't described this one."
+                : `We can't tell you what this does — it comes from ${row.theirName}.`}{' '}
+              {row.theirDescription !== null && <TheirDescription row={row} />}
+            </span>
           </span>
         )}
         <span className="ml-1.5 break-all font-mono text-[10.5px] text-ink-ghost">

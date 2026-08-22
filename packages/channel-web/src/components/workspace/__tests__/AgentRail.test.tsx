@@ -211,11 +211,21 @@ describe('AgentRail — "What it may do alone"', () => {
     // Our claim: the tool name and the verdict. Nothing else.
     expect(container.textContent).toMatch(/Can use.*mcp\.linear\.create_issue/s);
     expect(container.textContent).toMatch(/asks you first/);
+    /*
+      THE ROW MUST READ AS LESS TRUSTWORTHY, NOT MERELY LESS DETAILED. The
+      sentence is about the TOOL — "we can't tell you what this does" — not
+      about the description text, and it names who the tool came from. A muted
+      "not verified" hung off the end of the row reads as a documentation
+      quibble; this cannot.
+    */
+    expect(
+      screen.getByText(/We can't tell you what this does — it comes from linear/),
+    ).toBeTruthy();
     // The vendor's words are NOT on the row — they are behind the affordance.
     expect(screen.queryByText('Creates an issue in Linear')).toBeNull();
-    expect(screen.getByText(/described by linear · not verified/)).toBeTruthy();
+    expect(screen.getByText(/What linear says it does/)).toBeTruthy();
 
-    fireEvent.click(screen.getByText(/described by linear · not verified/));
+    fireEvent.click(screen.getByText(/What linear says it does/));
     expect(await screen.findByText('Creates an issue in Linear')).toBeTruthy();
     // …and attributed, inside the disclosure, in their voice not ours.
     expect(screen.getByText(/linear describes this tool as/)).toBeTruthy();
@@ -247,7 +257,9 @@ describe('AgentRail — "What it may do alone"', () => {
     const { container } = renderRail();
 
     expect(await screen.findByText('some_unmapped_tool')).toBeTruthy();
-    expect(container.textContent).toMatch(/we haven't described this one/);
+    expect(container.textContent).toMatch(/We haven't described this one/);
+    // Nobody else's prose to offer, so no affordance that would promise some.
+    expect(screen.queryByText(/says it does/)).toBeNull();
   });
 
   it('still renders a row it can neither describe nor name', async () => {
@@ -280,6 +292,7 @@ describe('AgentRail — "What it may do alone"', () => {
 
     await screen.findByText(/rule:mystery/);
     expect(container.textContent).toMatch(/Can do something we can't put a name to/);
+    expect(container.textContent).toMatch(/We haven't described this one/);
     expect(container.querySelector('code')).toBeNull();
   });
 
@@ -297,8 +310,10 @@ describe('AgentRail — "What it may do alone"', () => {
     const { container } = renderRail();
 
     await screen.findByText(/search the web/);
-    expect(container.textContent).toMatch(/isn't a limit/);
-    expect(container.textContent).toMatch(/anything installed here/);
+    // Plain language, and it leads with the consequence. It fires for every
+    // default personal agent, so it must not read as an error either.
+    expect(container.textContent).toMatch(/Nothing limits which tools Quill can use/);
+    expect(container.textContent).toMatch(/not a boundary/);
   });
 
   it('says so when a source did not answer, instead of shipping a short list', async () => {
@@ -394,6 +409,14 @@ describe('AgentRail — "Granted by you"', () => {
     await waitFor(() => {
       expect(railMock.mock.calls.length).toBeGreaterThan(1);
     });
+    /*
+      And the receipt does not overstate what just happened. A site grant is
+      loaded into the egress allowlist when a session OPENS, so a conversation
+      already running keeps it until it ends. A bare "Revoked." would let
+      somebody believe they had stopped something mid-flight.
+    */
+    expect(await screen.findByText(/Revoked\./)).toBeTruthy();
+    expect(screen.getByText(/may still have it until it finishes/)).toBeTruthy();
   });
 
   it('reports "already gone" as a refusal, not as a success', async () => {
