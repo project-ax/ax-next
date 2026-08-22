@@ -327,7 +327,12 @@ export interface DecisionsSweepInput {
 export interface DecisionsSweepOutput {
   /** Open decisions moved to `expired`. */
   expired: number;
-  /** Deferred replays claimed and run in this pass. */
+  /**
+   * Deferred replays claimed and SETTLED in this pass — attempted and recorded,
+   * whichever way they went. A replay that failed still counts here, because
+   * the number answers "did the sweep do its job", not "did the tools succeed";
+   * the per-decision outcome is on the row and on `decisions:executed`.
+   */
   replayed: number;
 }
 
