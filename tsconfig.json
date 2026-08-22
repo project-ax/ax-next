@@ -63,6 +63,7 @@
     { "path": "packages/tool-connector-propose" },
     { "path": "packages/tool-skill-propose" },
     { "path": "packages/tool-policy" },
+    { "path": "packages/decisions" },
     { "path": "packages/skill-broker" },
     { "path": "packages/skills" },
     { "path": "packages/skills-parser" },

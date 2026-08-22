@@ -32,6 +32,7 @@ import { createSkillsPlugin } from '@ax/skills';
 import { createSkillBrokerPlugin } from '@ax/skill-broker';
 import { createHostGrantsPlugin } from '@ax/host-grants';
 import { createToolPolicyPlugin } from '@ax/tool-policy';
+import { createDecisionsPlugin } from '@ax/decisions';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createToolSkillProposePlugin } from '@ax/tool-skill-propose';
@@ -1024,14 +1025,36 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // per-call I/O: the table is in-repo and evaluation is a pure first-match
   // scan.
   //
-  // HALF-WIRED WINDOW OPEN. Neither hook has a production caller yet:
-  // `tool-policy:evaluate` gets one in TASK-225 (@ax/decisions' tool:pre-call
-  // subscriber) and `tool-policy:list-capabilities` in TASK-235 (the
-  // permissions rail). Loaded here — and exercised by the package canary —
-  // rather than held back, so the two consumers land against a plugin that is
-  // already booting in the real preset. Same posture @ax/host-grants held
-  // above between TASK-44 and TASK-42.
+  // HALF-WIRED WINDOW HALF-CLOSED. `tool-policy:evaluate` now has a real
+  // production caller — @ax/decisions' `tool:pre-call` subscriber, pushed
+  // directly below (TASK-225). `tool-policy:list-capabilities` is still
+  // waiting on TASK-235 (the permissions rail); it stays loaded and canary-
+  // covered until then, the same posture @ax/host-grants held above between
+  // TASK-44 and TASK-42.
   plugins.push(createToolPolicyPlugin());
+
+  // ----- 8a''''. decisions -----------------------------------------------
+  // @ax/decisions — the durable Decision row (agent-workspace design §3.2,
+  // TASK-225/AW-4). Subscribes `tool:pre-call`: it consumes a standing
+  // approval by call fingerprint, asks @ax/tool-policy for a verdict, and on
+  // `hold` writes a row a human can see and returns immediately instead of
+  // blocking anyone inside the 10 s pre-call ceiling.
+  //
+  // ORDER IS LOAD-BEARING and asserted in preset.test.ts. Registration order
+  // is subscriber order, `HookBus.fire` stops at the FIRST rejection, and
+  // `Hold` is a `Rejection` subtype — so a hold returned ahead of another
+  // subscriber's outright deny would pre-empt it and ask a human to permit
+  // something the system already forbids. This plugin therefore goes LAST
+  // among the preset's `tool:pre-call` subscribers, after @ax/agent-activity
+  // (observe-only) and after @ax/tool-policy (whose hooks it calls).
+  //
+  // HALF-WIRED WINDOW OPEN, narrowly: `decisions:approve` leaves a standing
+  // authorisation that the still-warm agent consumes at the gate — which is
+  // the whole attended path and is exercised end to end by the package canary
+  // — but nothing replays a call on the UNATTENDED path yet. TASK-226 (AW-5)
+  // adds the host replay; TASK-234 (AW-11) adds the Today queue that calls
+  // `decisions:list` from the UI.
+  plugins.push(createDecisionsPlugin());
 
   // ----- 8b. credentials admin routes (optional) -------------------------
   // Mounts /admin/credentials* (admin-only CRUD, new destination-based

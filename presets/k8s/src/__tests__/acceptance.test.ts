@@ -237,6 +237,18 @@ const PLUGINS_TO_DROP = new Set<string>([
   // grant→list→revoke reachability are pinned in preset.test.ts + the
   // @ax/host-grants package canary.
   '@ax/host-grants',
+  // Decisions (TASK-225): postgres-backed too — it calls database:get-instance
+  // in init, and these canaries swap postgres out. Its `tool:pre-call`
+  // subscriber is not on the chat-path canaries either: with @ax/tool-policy
+  // dropped below, `tool-policy:evaluate` has no registrant, and the gate
+  // fails CLOSED — every tool call in these canaries would come back denied.
+  // Static wiring + subscriber ORDER are pinned in preset.test.ts; the whole
+  // hold → row → approve → one-retry path is pinned in the @ax/decisions
+  // package canary against a real postgres.
+  '@ax/decisions',
+  // Tool policy (TASK-224): dropped with @ax/decisions, its only caller. On
+  // its own it registers two service hooks nothing in these canaries calls.
+  '@ax/tool-policy',
   // Auto-titling pair — now loaded UNCONDITIONALLY by the preset (llm-anthropic
   // resolves its key from the credential store at call time). @ax/conversation-
   // titles hard-`calls` conversations:get / conversations:set-title, satisfied
