@@ -182,6 +182,14 @@ const PLUGINS_TO_DROP = new Set<string>([
   // (exactly like the dropped @ax/skills). Not on this ACL canary's path;
   // static wiring is pinned in preset.test.ts.
   '@ax/host-grants',
+  // Decisions + tool policy (TASK-224/TASK-225): @ax/decisions is postgres-
+  // backed (calls database:get-instance in init) and this canary swaps
+  // postgres out. Its `tool:pre-call` gate fails CLOSED when
+  // `tool-policy:evaluate` has no registrant, so the pair comes off together.
+  // Not on this ACL canary's path; static wiring and the subscriber ORDER are
+  // pinned in preset.test.ts, the behaviour in the @ax/decisions canary.
+  '@ax/decisions',
+  '@ax/tool-policy',
   // Auto-titling pair — now loaded UNCONDITIONALLY by the preset. @ax/conversation-
   // titles hard-`calls` conversations:get / conversations:set-title, satisfied
   // only by the @ax/conversations we dropped above, so it would fail verifyCalls.

@@ -205,6 +205,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/credentials',
         '@ax/credentials-store-db',
         '@ax/database-postgres',
+        '@ax/decisions',
         '@ax/eventbus-postgres',
         '@ax/host-grants',
         '@ax/http-server',
@@ -255,6 +256,51 @@ describe('@ax/preset-k8s wiring', () => {
     // No database, no per-call hook dependency — the rule table is in-repo.
     expect(tp!.manifest.calls).toEqual([]);
     expect(tp!.manifest.subscribes).toEqual([]);
+  });
+
+  it('loads @ax/decisions and registers its five hooks (TASK-225)', () => {
+    const plugins = createK8sPlugins(stubConfig);
+    const d = plugins.find((p) => p.manifest.name === '@ax/decisions');
+    expect(d).toBeDefined();
+    expect(d!.manifest.registers).toEqual([
+      'decisions:list',
+      'decisions:get',
+      'decisions:approve',
+      'decisions:dismiss',
+      'decisions:undo',
+    ]);
+    // The half-wired window TASK-224 opened on `tool-policy:evaluate` closes
+    // here: this is its production caller.
+    expect(d!.manifest.calls).toEqual(['database:get-instance', 'tool-policy:evaluate']);
+    expect(d!.manifest.subscribes).toEqual(['tool:pre-call']);
+  });
+
+  it('registers @ax/decisions LAST among the tool:pre-call subscribers (TASK-225)', () => {
+    // Registration order IS subscriber order (`HookBus.subscribe` appends),
+    // `HookBus.fire` stops at the FIRST rejection, and `Hold` is a `Rejection`
+    // subtype. So a hold returned ahead of another subscriber's outright deny
+    // would pre-empt it — asking a human whether to permit something the
+    // system already forbids. A silent reorder is exactly the kind of change
+    // nothing else would catch.
+    const plugins = createK8sPlugins(stubConfig);
+    const preCallSubscribers = plugins
+      .map((p, index) => ({ name: p.manifest.name, index }))
+      .filter(({ name }) =>
+        plugins
+          .find((p) => p.manifest.name === name)!
+          .manifest.subscribes?.includes('tool:pre-call'),
+      );
+
+    // Sanity: the assertion is worthless if it is the only subscriber.
+    expect(preCallSubscribers.map((s) => s.name)).toContain('@ax/agent-activity');
+    expect(preCallSubscribers.map((s) => s.name)).toContain('@ax/decisions');
+
+    const last = preCallSubscribers[preCallSubscribers.length - 1]!;
+    expect(last.name).toBe('@ax/decisions');
+
+    // And it must come after the plugin whose hook it calls.
+    const names = plugins.map((p) => p.manifest.name);
+    expect(names.indexOf('@ax/decisions')).toBeGreaterThan(names.indexOf('@ax/tool-policy'));
   });
 
   it('does NOT include local-mode-only plugins', () => {

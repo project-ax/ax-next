@@ -48,6 +48,7 @@
     { "path": "../../packages/skill-broker" },
     { "path": "../../packages/host-grants" },
     { "path": "../../packages/tool-policy" },
+    { "path": "../../packages/decisions" },
     { "path": "../../packages/http-server" },
     { "path": "../../packages/auth-better" },
     { "path": "../../packages/teams" },
