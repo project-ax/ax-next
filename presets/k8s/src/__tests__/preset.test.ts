@@ -224,6 +224,7 @@ describe('@ax/preset-k8s wiring', () => {
         '@ax/teams',
         '@ax/tool-artifact-publish',
         '@ax/tool-dispatcher',
+        '@ax/tool-policy',
         '@ax/validator-identity',
         '@ax/validator-routine',
         '@ax/validator-service',
@@ -238,6 +239,22 @@ describe('@ax/preset-k8s wiring', () => {
     const vs = plugins.find((p) => p.manifest.name === '@ax/validator-service');
     expect(vs).toBeDefined();
     expect(vs!.manifest.registers).toEqual(['services:validate']);
+  });
+
+  it('loads @ax/tool-policy and registers its two hooks (TASK-224)', () => {
+    // Invariant 3, same PR: the plugin is registered in the preset the day it
+    // lands, even though its two consumers (TASK-225's tool:pre-call
+    // subscriber and TASK-235's permissions rail) are not built yet.
+    const plugins = createK8sPlugins(stubConfig);
+    const tp = plugins.find((p) => p.manifest.name === '@ax/tool-policy');
+    expect(tp).toBeDefined();
+    expect(tp!.manifest.registers).toEqual([
+      'tool-policy:evaluate',
+      'tool-policy:list-capabilities',
+    ]);
+    // No database, no per-call hook dependency — the rule table is in-repo.
+    expect(tp!.manifest.calls).toEqual([]);
+    expect(tp!.manifest.subscribes).toEqual([]);
   });
 
   it('does NOT include local-mode-only plugins', () => {

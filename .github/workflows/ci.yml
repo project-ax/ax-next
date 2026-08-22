@@ -26,6 +26,13 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
+      # The policy rule table's `capability` clauses are a security claim
+      # (design H3) rendered verbatim in the permissions rail. `rules.test.ts`
+      # asserts the same thing, but this step names the offending rule and its
+      # clause in the CI log — the person who broke it is usually editing prose,
+      # not code, and a vitest diff of a 16-element array is not a legible
+      # message. Cheap enough to run unconditionally.
+      - run: pnpm --filter @ax/tool-policy lint:capabilities
       # Tests: affected packages + dependents on PRs (fast feedback); full suite on
       # push to main (cross-package backstop — a shared-table break only shows on the
       # full run; auto-merge relies on this main gate, see auto-ship merge queue).

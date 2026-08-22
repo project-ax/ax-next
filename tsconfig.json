@@ -62,6 +62,7 @@
     { "path": "packages/tool-artifact-publish" },
     { "path": "packages/tool-connector-propose" },
     { "path": "packages/tool-skill-propose" },
+    { "path": "packages/tool-policy" },
     { "path": "packages/skill-broker" },
     { "path": "packages/skills" },
     { "path": "packages/skills-parser" },

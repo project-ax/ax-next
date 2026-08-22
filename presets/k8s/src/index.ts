@@ -31,6 +31,7 @@ import { createAgentsPlugin } from '@ax/agents';
 import { createSkillsPlugin } from '@ax/skills';
 import { createSkillBrokerPlugin } from '@ax/skill-broker';
 import { createHostGrantsPlugin } from '@ax/host-grants';
+import { createToolPolicyPlugin } from '@ax/tool-policy';
 import { createAttachmentsPlugin } from '@ax/attachments';
 import { createToolArtifactPublishPlugin } from '@ax/tool-artifact-publish';
 import { createToolSkillProposePlugin } from '@ax/tool-skill-propose';
@@ -1014,6 +1015,23 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // TASK-42 (half-wired window OPEN until then; reachable + tested via the
   // package canary here).
   plugins.push(createHostGrantsPlugin());
+
+  // ----- 8a'''. tool policy ----------------------------------------------
+  // @ax/tool-policy — THE policy rule table (agent-workspace design §4.3,
+  // TASK-224/AW-3). Owns `PolicyRule` and the user-facing `capability` clause
+  // that names each rule's reach, co-located on the rule so the enforced
+  // verdict and the sentence a human reads cannot drift. No database, no
+  // per-call I/O: the table is in-repo and evaluation is a pure first-match
+  // scan.
+  //
+  // HALF-WIRED WINDOW OPEN. Neither hook has a production caller yet:
+  // `tool-policy:evaluate` gets one in TASK-225 (@ax/decisions' tool:pre-call
+  // subscriber) and `tool-policy:list-capabilities` in TASK-235 (the
+  // permissions rail). Loaded here — and exercised by the package canary —
+  // rather than held back, so the two consumers land against a plugin that is
+  // already booting in the real preset. Same posture @ax/host-grants held
+  // above between TASK-44 and TASK-42.
+  plugins.push(createToolPolicyPlugin());
 
   // ----- 8b. credentials admin routes (optional) -------------------------
   // Mounts /admin/credentials* (admin-only CRUD, new destination-based
