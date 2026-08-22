@@ -82,6 +82,29 @@ export interface DecisionStore {
   ): Promise<Decision | null>;
 
   /**
+   * TAKE THE FLIGHT on a row that is already claimed — stamp `replay_claimed_at`
+   * on an `executed` row that nobody has taken and nothing has replayed.
+   *
+   * `claimForApproval` sets this in the same statement that claims the row,
+   * which is right for every path that knows at claim time that the host is
+   * making the call. TASK-277 added one that does not: an ATTENDED approval
+   * claims with `replay_claimed_at` null (it expects the warm agent to run the
+   * call), then discovers the delivery failed and takes the replay itself. That
+   * row sits `executed` with both timestamps null, which is precisely the shape
+   * `restore` accepts — so without this write an undo landing during the host
+   * tool would report success over a call already going out.
+   *
+   * A null return is NOT an error and never means "no such row": undo, or
+   * another resolver, got there first. The caller must report the stored
+   * outcome and MUST NOT replay.
+   *
+   * Deliberately not reachable from `approved-pending-agent`: parking hands the
+   * row back to the agent, and a flight stamped on a parked row would forbid
+   * the agent from ever picking it up (see `parkForAgent`).
+   */
+  claimReplayFlight(decisionId: string, nowIso: string): Promise<Decision | null>;
+
+  /**
    * The host replay threw. Records the failure and DROPS the standing
    * authorisation with it (the partial index does not cover `failed`), because
    * an action that did not happen must not leave behind a yes the agent can
@@ -243,6 +266,24 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         // one this row is about.
         replay_error: null,
       });
+    },
+
+    async claimReplayFlight(decisionId, nowIso) {
+      const row = await db
+        .updateTable(table)
+        .set({ replay_claimed_at: new Date(nowIso) })
+        .where('decision_id', '=', decisionId)
+        // `executed` only. A parked row is the agent's to perform, and a failed
+        // or re-opened one has nothing in flight to take.
+        .where('status', '=', 'executed')
+        // Nobody else has taken it — including this row's own claim, on the
+        // paths where the host knew at claim time that it was replaying.
+        .where('replay_claimed_at', 'is', null)
+        // And nothing has already gone out under it.
+        .where('replayed_at', 'is', null)
+        .returningAll()
+        .executeTakeFirst();
+      return row === undefined ? null : toDecision(row);
     },
 
     async markReplayed(decisionId, nowIso) {

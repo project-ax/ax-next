@@ -524,23 +524,60 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
               // was and leave a standing yes on a row nobody may ever come back
               // for. It takes the replay itself.
               //
-              // Double execution is not reachable from here: `settleReplay`
-              // stamps `replayed_at`, which takes the row out of the
-              // standing-authorisation set, so a late agent re-issue finds no
-              // yes to cash in. The row does go un-`replayClaimedAt`-stamped
-              // for the few milliseconds this takes — but that is only a window
-              // at all if a warm agent exists, and a warm agent is precisely
-              // what we have just failed to find.
+              // AND IT TAKES THE FLIGHT BEFORE THE CALL, which the first cut of
+              // this branch did not. The claim above wrote `replayClaimedAt:
+              // null` — `immediate` is false whenever `attended` is true,
+              // because the attended branch had no idea it might end up making
+              // the call. That left the row `executed` with BOTH
+              // `replay_claimed_at` and `replayed_at` null for the entire
+              // duration of the host tool, which is exactly the shape
+              // `store.restore` accepts as undoable. A `decisions:undo` landing
+              // in that window returned `undone: true` and fired the retracted
+              // receipt — telling the person it was taken back — while the call
+              // was already on its way out, and `markReplayed` then wrote the
+              // row back to `executed` over the top of them. "Undone" about a
+              // call that went out is the same lie as the silent no-op this
+              // whole card exists to remove.
+              //
+              // The REASONING that hid it is worth keeping, because it read as
+              // careful: the comment here used to argue the un-stamped window
+              // was safe, since the only thing that could exploit it was a
+              // byte-identical call from a warm agent and a warm agent was
+              // precisely what we had just failed to find. True, and beside the
+              // point — UNDO NEEDS NO WARM AGENT. It is a person and a button.
+              // A window argued safe against one actor is not safe; it is
+              // unexamined against every other.
+              //
+              // So the flight is taken as one conditional UPDATE off
+              // `status='executed' AND replay_claimed_at IS NULL AND
+              // replayed_at IS NULL`. Null back means undo or another resolver
+              // already won: report the stored outcome and run NOTHING. Only
+              // the host-replay side takes it — the sandbox-park side must
+              // leave `replay_claimed_at` null, because `parkForAgent` hands
+              // the row back to the agent and a flight it never took would
+              // forbid the agent from ever picking it up.
               ctx.logger.warn('decision_delivery_fell_back_to_replay', {
                 plugin: PLUGIN_NAME,
                 decisionId,
                 reason: delivery.reason,
               });
+              let flight: Decision = claimed;
+              if (hasExecutor) {
+                const taken = await store!.claimReplayFlight(decisionId, nowIso);
+                if (taken === null) {
+                  ctx.logger.warn('decision_replay_flight_lost', {
+                    plugin: PLUGIN_NAME,
+                    decisionId,
+                  });
+                  return settle(null);
+                }
+                flight = taken;
+              }
               const replayed = await settleReplay({
                 store: store!,
                 bus,
-                ctx: replayContext(claimed),
-                decision: claimed,
+                ctx: replayContext(flight),
+                decision: flight,
                 now,
               });
               return {

@@ -37,6 +37,7 @@ import type {
   DecisionsGetOutput,
   DecisionsListOutput,
   DecisionsSweepOutput,
+  DecisionsUndoOutput,
 } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -1367,6 +1368,71 @@ describe('decisions canary — attendance and delivery', () => {
 
     // Nothing left standing at the gate.
     expect(isHold(await h.bus.fire('tool:pre-call', ctx, CALL))).toBe(true);
+  });
+
+  it('never reports "undone" for a call the fallback replay has already made', async () => {
+    // THE WINDOW THE FALLBACK OPENED, and the reason it is worth a test of its
+    // own: the attended branch claims with `replayClaimedAt` null, because at
+    // claim time it expects the warm agent to make the call. When the delivery
+    // then fails and the host takes over, the row sat `executed` with both
+    // `replay_claimed_at` and `replayed_at` null — exactly what `restore`
+    // accepts — for the whole duration of the host tool. An undo landing there
+    // answered `undone: true` and fired the retracted receipt while the call
+    // was already going out, and `markReplayed` then wrote `executed` back over
+    // the person who thought they had stopped it.
+    //
+    // Undo needs no warm agent, which is what the first version of this branch
+    // failed to consider. It is a person and a button.
+    const h = await boot({}, undefined, liveChannels(), { throws: 'unknown-session' });
+    const receipts = collectReceipts(h);
+    const ctx = userCtx(h);
+    const calls: ToolCall[] = [];
+    let id = '';
+    let undoInside: DecisionsUndoOutput | undefined;
+
+    // The person hits Undo mid-flight — inside the host tool, which is the only
+    // instant that can distinguish the guard from its absence.
+    h.bus.registerService<ToolCall, unknown>(
+      `tool:execute:${HOLD_RULE.match.tool}`,
+      '@ax/decisions/test/slow-host-tool',
+      async (_c, call) => {
+        calls.push(call);
+        undoInside = await h.bus.call<unknown, DecisionsUndoOutput>('decisions:undo', ctx, {
+          decisionId: id,
+          userId: 'u1',
+        });
+        return { ok: true };
+      },
+    );
+
+    id = await holdAndId(h, ctx, CALL);
+    const out = await approve(h, ctx, id);
+
+    // THE INVARIANT, stated as one expression so it cannot be satisfied by
+    // reading half of it: it must never be true both that the person was told
+    // the approval was taken back AND that the call went out. Either undo is
+    // refused, or nothing was ever sent.
+    expect(undoInside!.undone && calls.length === 1).toBe(false);
+
+    // Which way it resolves here: the host had already taken the flight, so
+    // undo is refused and says so.
+    expect(calls).toHaveLength(1);
+    expect(undoInside!.undone).toBe(false);
+    expect(undoInside!.decision!.status).toBe('executed');
+    expect(out.executed).toBe(true);
+
+    // No retraction was invented for a receipt that still stands, and the one
+    // receipt emitted is the executed one.
+    expect(receipts.map((r) => r.outcome)).toEqual(['executed']);
+
+    const after = await readDecision(h, ctx, id);
+    expect(after.status).toBe('executed');
+    expect(after.replayedAt).not.toBeNull();
+    // The flight was taken BEFORE the call, not stamped after it.
+    expect(after.replayClaimedAt).not.toBeNull();
+    expect(Date.parse(after.replayClaimedAt!)).toBeLessThanOrEqual(
+      Date.parse(after.replayedAt!),
+    );
   });
 
   it('an attended decision whose conversation cannot be read at approve time still runs', async () => {
