@@ -176,9 +176,11 @@ runner's own builtins. Those differ by runner, and the difference matters for th
 - **claude-sdk** passes `allowedTools: ['Skill', ...agentConfig.allowedTools]` with
   `agentConfig.allowedTools` **empty by orchestrator default**, which the SDK reads as
   *no per-agent restriction* (`main.ts:474-480`). Its live catalog is therefore the SDK's
-  own default set minus `disallowedTools` — so it also includes `NotebookEdit`, `LS`,
-  `MultiEdit`, `TodoWrite` and others (named at `governed-paths.ts:26`,
-  `git-workspace.ts:367`).
+  own default set minus `disallowedTools` — so it also includes `NotebookEdit` and `LS`
+  (`governed-paths.ts:26`), `MultiEdit` (`git-workspace.ts:367`), and `TodoWrite`
+  (`agent-claude-sdk-runner/SECURITY.md:53`, which enumerates the runner's builtin set).
+  Note `TodoWrite` is *not* registered by aisdk (`agent-aisdk-runner/src/tools/builtins.ts:36`),
+  so it is a genuine per-runner difference, not a shared builtin.
 
 AW-14 must re-skin the prototype against *that* list, not reproduce the fixture — and must
 not present the aisdk seven as if they were the whole catalog, which would understate reach
@@ -328,7 +330,7 @@ distinct, documented cause (`tool-names.ts:18-46`).
 
 > **These four rules will never fire in the evaluator, and that is expected.** They are
 > **rail rows, not enforcement.** `classifySdkToolName` returns `{ kind: 'disabled' }` with
-> **no `axName`** (`tool-names.ts:66-72`), and `pre-tool-use.ts:35-44` returns `deny` before
+> **no `axName`** (the union variant at `tool-names.ts:70`; the `return { kind: 'disabled' }` at `:77`), and `pre-tool-use.ts:35-44` returns `deny` before
 > `policy.preToolUse` is ever called — so a disabled builtin never reaches `tool:pre-call`
 > to be matched. On the aisdk runner the four are not registered at all. AW-3 must not
 > "verify" them with an evaluator test that asserts a `deny` verdict from a live call; test
