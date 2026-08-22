@@ -770,6 +770,39 @@ describe('@ax/channel-web server plugin (integration)', () => {
       expect(await features.json()).toEqual({ agentWorkspacePreview: true });
     });
 
+    /*
+      TASK-261 — with the preview ON, the move of the decision routes
+      out of the `if (agentWorkspacePreview)` block must not have LOST them,
+      and must not have left a duplicate copy behind inside the block: two
+      `http:register-route` calls for the same (method, path) throw
+      `route already registered` out of the real `@ax/http-server` router, so
+      `boot()` resolving at all — for every route below, not just the first —
+      is itself part of the assertion.
+    */
+    it('registers each decision route exactly once when the preview is on', async () => {
+      const booted = await boot({ user: null, agentWorkspacePreview: true });
+      harness = booted.harness;
+
+      // user=null → authOr401 inside the handler → 401. A 404 would mean the
+      // route never made it into the array; a 405 would mean it landed under
+      // the wrong HTTP method.
+      const list = await fetch(`http://127.0.0.1:${booted.port}/api/workspace/decisions`);
+      expect(list.status).toBe(401);
+
+      for (const action of ['approve', 'dismiss', 'undo']) {
+        const r = await fetch(
+          `http://127.0.0.1:${booted.port}/api/workspace/decisions/d1/${action}`,
+          {
+            method: 'POST',
+            // Bypasses the CSRF origin check so the request reaches the
+            // handler's own authOr401 — that's what turns 403 into 401.
+            headers: { 'x-requested-with': 'ax-admin' },
+          },
+        );
+        expect(r.status).toBe(401);
+      }
+    });
+
     it('honours ?conversationId= through the real http-server query projection', async () => {
       // The regression this pins: http-server projects the query string with
       // `query[k.toLowerCase()] = v`, so a handler reading `conversationId`
@@ -983,7 +1016,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
       expect(memory.writeCtx).toEqual([]);
     });
 
-    it('leaves /api/workspace/* unmounted when the preview is off', async () => {
+    it('leaves the flagged /api/workspace/* routes unmounted when the preview is off, but keeps the whole decisions collection reachable', async () => {
       const booted = await boot({ user: null });
       harness = booted.harness;
 
@@ -992,6 +1025,16 @@ describe('@ax/channel-web server plugin (integration)', () => {
         `http://127.0.0.1:${booted.port}/api/workspace/state`,
       );
       expect(state.status).toBe(404);
+
+      const activity = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/activity`,
+      );
+      expect(activity.status).toBe(404);
+
+      const agentDetail = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test`,
+      );
+      expect(agentDetail.status).toBe(404);
 
       /*
         The Files routes (TASK-233) sit inside the same flag, and they are the
@@ -1011,30 +1054,57 @@ describe('@ax/channel-web server plugin (integration)', () => {
       expect(oneFile.status).toBe(404);
 
       /*
-        "Unmounted" now has exactly ONE exception, pinned by the test below:
-        `GET /api/workspace/decisions/:decisionId`. Read that one before adding
-        a second — the bar is a safety affordance that fails silently, not a
-        feature that would be handy to have early.
+        "Unmounted" has exactly one exception, and it is a whole collection
+        rather than a route: every `/api/workspace/decisions*` route mounts
+        unconditionally (asserted just below, and pinned as a PROPERTY by
+        `routes-workspace-decisions-unflagged.test.ts`). The bar for joining
+        that set is a safety affordance that fails silently, not a feature that
+        would be handy to have early.
       */
 
       const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
       expect(features.status).toBe(200);
       expect(await features.json()).toEqual({ agentWorkspacePreview: false });
+
+      /*
+        TASK-261 — the decisions collection mounts unconditionally now. A held
+        call reaches the default `/` chat surface whether or not the preview
+        flag is on, so gating these routes would gate only the remedy.
+        401 (authOr401 ran) rather than 404 (route missing) or 405 (wrong
+        method) proves each one is registered, on the right verb, outside the
+        flag.
+      */
+      const list = await fetch(`http://127.0.0.1:${booted.port}/api/workspace/decisions`);
+      expect(list.status).toBe(401);
+
+      for (const action of ['approve', 'dismiss', 'undo']) {
+        const r = await fetch(
+          `http://127.0.0.1:${booted.port}/api/workspace/decisions/d1/${action}`,
+          {
+            method: 'POST',
+            headers: { 'x-requested-with': 'ax-admin' },
+          },
+        );
+        expect(r.status).toBe(401);
+      }
     });
 
     it('KEEPS the single-decision re-read mounted when the preview is off', async () => {
       /*
-        The one deliberate exception to the test above, and it is a safety
-        affordance rather than a feature.
+        The test above covers the collection; this one is kept separate because
+        this route's reason for being unmounted-free is its own, and it is the
+        one most likely to be quietly re-gated by someone who reads the others
+        as "just the approve buttons".
 
         `GET /api/workspace/decisions/:decisionId` is how `undoable: false`
         reaches a browser: the queue polls it while a row is inside its undo
         window, so the Undo control disappears when the agent actually consumes
         the authorisation instead of when the ten seconds run out (TASK-259).
-        The approval card is going onto the default `/` surface unflagged, so a
-        route left behind the preview flag would 404 that poll forever — and a
-        failed poll is silent by design, so nothing would say so. Undo would sit
-        there for ten seconds on a call that had already gone out.
+        The approval card now renders on the default `/` surface unflagged
+        (TASK-261), so a route left behind the preview flag would 404 that poll
+        forever — and a failed poll is silent by design, so nothing would say
+        so. Undo would sit there for ten seconds on a call that had already
+        gone out.
 
         401, not 404, is the assertion: `user: null` means the handler ran and
         `authOr401` refused it. A 404 would mean the route was never registered
@@ -1047,13 +1117,6 @@ describe('@ax/channel-web server plugin (integration)', () => {
         `http://127.0.0.1:${booted.port}/api/workspace/decisions/d1`,
       );
       expect(oneDecision.status).toBe(401);
-
-      // And the collection it re-reads a row OUT of is still gated, so this
-      // exception really is one route wide.
-      const queue = await fetch(
-        `http://127.0.0.1:${booted.port}/api/workspace/decisions`,
-      );
-      expect(queue.status).toBe(404);
     });
   });
 

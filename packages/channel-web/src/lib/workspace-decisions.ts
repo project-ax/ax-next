@@ -63,6 +63,17 @@ const UNDO_POLL_MS = 1000;
  */
 const POLL_FAILURES_BEFORE_NOTE = 3;
 
+/**
+ * The read came back, and it was not a decisions page.
+ *
+ * Held as a distinct message from a network failure because it means something
+ * different to whoever is debugging it: the route answered, so this is a shape
+ * problem (a proxy sitting in front of it, an older host, a body we cannot
+ * parse) rather than an unreachable server.
+ */
+const DECISION_READ_MALFORMED =
+  'The decisions list came back in a shape we could not read.';
+
 export interface DecisionQueue {
   decisions: Decision[];
   loading: boolean;
@@ -99,6 +110,26 @@ export function useDecisionQueue(): DecisionQueue {
     try {
       const page = await workspaceApi.decisions();
       if (readId.current !== id) return;
+      /*
+        A body without a `decisions` array is a FAILED READ, not an empty queue.
+
+        The distinction at the top of this file is the whole point: an empty
+        queue says "nothing is waiting on you", which is the most reassuring
+        claim this product makes, and it may only be rendered when we actually
+        read the list. A malformed body is not that.
+
+        Guarding here also stops it becoming a crash. `decisions` feeds
+        `watchedKey` below, which calls `.filter` on it during render — so an
+        `undefined` did not degrade, it threw straight out of a hook and took
+        the surrounding surface down with it. That was survivable while the only
+        caller was the flag-gated `/workspace`; TASK-261 mounts this on the
+        default `/` chat surface, where a malformed decisions response would
+        blank the chat for every user.
+      */
+      if (!Array.isArray(page?.decisions)) {
+        setError(DECISION_READ_MALFORMED);
+        return;
+      }
       setDecisions(page.decisions);
       setError(null);
     } catch (e) {

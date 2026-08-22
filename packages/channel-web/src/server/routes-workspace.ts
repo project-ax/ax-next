@@ -60,10 +60,15 @@
  * nothing else — so the row a person reads in the thread is the row the queue
  * shows rather than a second copy of it that can disagree.
  *
- * The `/api/workspace/*` routes only mount when the preview flag is on
- * (capability minimization, invariant #5). `/api/features` always mounts and
- * needs no auth — it echoes a build-time flag and nothing else, exactly like
- * `GET /api/branding`.
+ * Most `/api/workspace/*` routes mount only when the preview flag is on
+ * (capability minimization, invariant #5) — an unmounted route is the
+ * cheapest minimization there is. The `/api/workspace/decisions*` collection
+ * is the exception: every route in it mounts unconditionally, because a held
+ * call reaches the default `/` chat surface whether or not the preview is on,
+ * and gating the routes would gate only the remedy (TASK-261/TASK-259). See
+ * `registerWorkspaceRoutes` below for the full accounting. `/api/features` always mounts and needs no
+ * auth — it echoes a build-time flag and nothing else, exactly like `GET
+ * /api/branding`.
  */
 import {
   PluginError,
@@ -3050,11 +3055,25 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 /**
  * Register the workspace routes against @ax/http-server.
  *
- * `/api/features` always mounts — it is how the SPA learns whether the rest of
- * this surface exists. Every `/api/workspace/*` route mounts ONLY when the
- * preview flag is on: an unmounted route is the cheapest possible capability
- * minimization (invariant #5), and a 404 is an honest answer for a surface the
- * deployment hasn't enabled.
+ * Two things mount unconditionally, and everything else stays behind
+ * `opts.agentWorkspacePreview`:
+ *
+ * - `GET /api/features` — it is how the SPA learns whether the rest of this
+ *   surface exists.
+ * - The four `/api/workspace/decisions*` routes (list, approve, dismiss,
+ *   undo). A held call reaches the DEFAULT `/` chat surface today — preview
+ *   flag or no — because `@ax/decisions` can hold any outward-facing tool
+ *   call regardless of who's looking at `/workspace`. Gating these routes
+ *   would gate only the remedy, leaving a dead end (a call nobody can
+ *   approve) as the default experience (TASK-261). Ungating them widens
+ *   *reachability*, not *authority*: `authOr401` and the owner-scoped
+ *   `decisions:get` / `resolveAgentOr404` checks inside the handlers are
+ *   unchanged, so a caller still only ever sees or resolves their own rows.
+ *
+ * Every other `/api/workspace/*` route still mounts ONLY when the preview
+ * flag is on: an unmounted route is the cheapest possible capability
+ * minimization (invariant #5), and a 404 is an honest answer for a surface
+ * the deployment hasn't enabled.
  */
 export async function registerWorkspaceRoutes(
   bus: HookBus,
@@ -3081,28 +3100,47 @@ export async function registerWorkspaceRoutes(
     },
     {
       /*
-        DELIBERATELY NOT BEHIND `agentWorkspacePreview`, and the only decision
-        route that isn't (yet).
+        THE WHOLE DECISIONS COLLECTION MOUNTS UNCONDITIONALLY. All five routes,
+        not four and an exception — see the note on `registerWorkspaceRoutes`
+        for why, and `routes-workspace-decisions-unflagged.test.ts` for the
+        property test that keeps it that way.
 
-        This is the re-read that closes the undo window early — the one way
-        `undoable: false` ever reaches a browser (TASK-259). The approval card,
-        undo window and all, is being put on the DEFAULT `/` chat surface
-        unflagged by TASK-261, which ungates the four sibling routes. If this
-        one were left inside the flag it would be the fifth route nobody
-        remembered, and the symptom would be invisible: the poll 404s forever,
+        The short version: `@ax/decisions` holds outward-facing tool calls on
+        the DEFAULT `/` chat surface whether or not a deployment turned the
+        workspace preview on. TASK-261 puts the approval card there, undo
+        window and all. A route left behind the flag would be a dead end whose
+        symptom is invisible — the single-decision re-read below is the one way
+        `undoable: false` ever reaches a browser (TASK-259), so if IT 404s,
         every Undo lingers the full ten seconds on a call that has already gone
-        out, and a failed poll says nothing by design. That is precisely the
-        bug this card exists to fix, reintroduced by a merge order.
+        out, and a failed poll says nothing by design.
 
-        So it leads rather than follows. Mounting it early costs nothing: it is
-        authenticated, owner-scoped through `loadOwnedDecision`, read-only, and
-        answers 404 for any id that is not the caller's — the same posture it
-        has with the flag on. `plugin.test.ts` pins that it stays reachable
-        with the preview off.
+        Mounting them early costs nothing: each is authenticated and
+        owner-scoped, and answers 404 for an id that is not the caller's — the
+        same posture it has with the flag on.
       */
+      method: 'GET',
+      path: '/api/workspace/decisions',
+      handler: handlers.decisions as unknown as RouteHandler,
+    },
+    {
       method: 'GET',
       path: '/api/workspace/decisions/:decisionId',
       handler: handlers.decision as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/decisions/:decisionId/approve',
+      handler: handlers.approveDecision as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/decisions/:decisionId/dismiss',
+      handler: handlers.dismissDecision as unknown as RouteHandler,
+    },
+    {
+      method: 'POST',
+      path: '/api/workspace/decisions/:decisionId/undo',
+      handler: handlers.undoDecision as unknown as RouteHandler,
     },
   ];
   if (opts.agentWorkspacePreview) {
@@ -3157,26 +3195,6 @@ export async function registerWorkspaceRoutes(
         method: 'PUT',
         path: '/api/workspace/agents/:agentId/memory/rules',
         handler: handlers.saveRules as unknown as RouteHandler,
-      },
-      {
-        method: 'GET',
-        path: '/api/workspace/decisions',
-        handler: handlers.decisions as unknown as RouteHandler,
-      },
-      {
-        method: 'POST',
-        path: '/api/workspace/decisions/:decisionId/approve',
-        handler: handlers.approveDecision as unknown as RouteHandler,
-      },
-      {
-        method: 'POST',
-        path: '/api/workspace/decisions/:decisionId/dismiss',
-        handler: handlers.dismissDecision as unknown as RouteHandler,
-      },
-      {
-        method: 'POST',
-        path: '/api/workspace/decisions/:decisionId/undo',
-        handler: handlers.undoDecision as unknown as RouteHandler,
       },
       {
         method: 'POST',

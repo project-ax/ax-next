@@ -11,6 +11,12 @@
  * If the human walks away instead, the reaper ends the turn and this exact
  * decision is waiting in Today. Same row, degraded path.
  *
+ * IT RENDERS ON BOTH SURFACES (TASK-261). `/workspace` draws it inside the
+ * thread; the default `/` chat surface draws it above the composer via
+ * `<InThreadApprovals>`. One component, one queue, one set of controls — a
+ * second, reduced renderer on the surface most people actually use is exactly
+ * the fork this card exists to avoid.
+ *
  * THE THIRD RENDERER OF ONE ROW (the queue, this, and one day Slack). Every
  * sentence about an OUTCOME comes from `decision-copy.ts`, shared with
  * `DecisionRow`, and a test renders both from one fixture and compares what

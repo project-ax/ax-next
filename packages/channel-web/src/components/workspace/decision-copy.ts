@@ -89,6 +89,16 @@ export const DECISION_UNDO_TOO_LATE =
 export const DECISION_ACTION_FAILED =
   'We could not reach the server, so nothing changed. Try again in a moment.';
 
+/**
+ * The heading over a failed read, on the `/` chat surface.
+ *
+ * It leads with the fact that survives the outage — somebody is waiting on you
+ * — rather than with our plumbing. The body (below) does the apologising. This
+ * pair is only ever shown when a live `decisionRaised` frame says a hold really
+ * does exist, so it is safe for it to state that as a fact.
+ */
+export const DECISION_READ_FAILED_TITLE = 'Your assistant is waiting on you';
+
 /** `GET /api/workspace/decisions` failed. NOT an empty queue. */
 export const DECISION_READ_FAILED =
   'We could not load what is waiting on you. Nothing has been decided without you — we just could not read the list back right now.';
