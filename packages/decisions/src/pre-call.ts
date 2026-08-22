@@ -125,7 +125,13 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     // 2. Policy.
     const answer = await deps.evaluate(ctx, call);
     if (answer.verdict === 'allow') return undefined;
-    if (answer.verdict === 'deny') {
+    if (answer.verdict !== 'hold') {
+      // `deny`, or a verdict we do not recognise. Both mean "this does not
+      // run", and the unrecognised case deliberately lands HERE rather than in
+      // the hold branch below: a verdict we cannot read must never become a
+      // question a human is invited to answer yes to. (The bus's `returns`
+      // enum already rejects an unknown verdict before we see it — this is the
+      // in-process path, and the belt to that pair of braces.)
       return reject({
         reason: denialSentence({ capability: answer.capability, toolName: call.name }),
         source: PLUGIN_NAME,
@@ -140,6 +146,10 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       id: decisionId,
       agentId: ctx.agentId,
       ownerUserId: ctx.userId,
+      // Empty when the hold happened outside a persistent conversation (a
+      // canary, an admin probe). The row is still valid and still resolvable
+      // from the Today queue — only the in-thread card has nowhere to land,
+      // which is the honest outcome for a turn that had no thread.
       conversationId: ctx.conversationId ?? '',
       // Always `action` today. `PolicyRule` carries no `kind`, and inferring
       // "grant" from a rule id inside THIS package would duplicate rule

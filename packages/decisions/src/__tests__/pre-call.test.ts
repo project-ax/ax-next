@@ -242,12 +242,14 @@ describe('tool:pre-call subscriber — it fails CLOSED', () => {
     expect((r as { reason: string }).reason).toBe(GATE_FAILURE_SENTENCE);
   });
 
-  it('rejects when the policy answers with a verdict we do not understand', async () => {
-    const { sub } = build({ verdict: 'maybe' as 'hold', ruleId: null, capability: null });
-    // An unknown verdict falls through to the hold branch, which records a row
-    // — never to the allow branch.
+  it('denies — and does NOT hold — on a verdict we do not understand', async () => {
+    const { sub, store } = build({ verdict: 'maybe' as 'hold', ruleId: null, capability: null });
     const r = await sub(ctx(), CALL);
     expect(isRejection(r)).toBe(true);
+    // Specifically not a hold: a verdict we cannot read must never become a
+    // question a human is invited to answer yes to.
+    expect(isHold(r)).toBe(false);
+    expect(store.rows.size).toBe(0);
   });
 
   it('rejects when the row cannot be written — a call we cannot record is a call we do not run', async () => {
