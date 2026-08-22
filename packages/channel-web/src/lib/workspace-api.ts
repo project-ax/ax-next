@@ -232,9 +232,21 @@ export class WorkspaceApiError extends Error {
  * mistaken for an empty collection.
  */
 export class WorkspaceShapeError extends Error {
+  /** The request that answered badly. For LOGS — never for the message. */
+  readonly path: string;
   constructor(path: string) {
-    super(`workspace ${path} → 200 with a body we could not read`);
+    // NO PATH IN THE MESSAGE. `TodayView` renders `queue.error` verbatim, so
+    // whatever goes in here is a sentence a person reads — and the path for a
+    // single-row re-read is `/decisions/dec_…`, i.e. an internal identifier on
+    // a user-facing surface. TASK-260 spent a whole card taking `dec_` ids off
+    // surfaces people read; putting one back through an error string would have
+    // two cards in one wave disagreeing about whether that id is fit to show.
+    //
+    // Not an injection concern — the id is server-issued, not user input. It is
+    // hygiene: a person cannot act on a decision id, so it is noise at best.
+    super('the server sent an answer we could not read');
     this.name = 'WorkspaceShapeError';
+    this.path = path;
   }
 }
 
@@ -254,7 +266,14 @@ export class WorkspaceShapeError extends Error {
  * and the poll went on crashing for anyone mid-undo-window.
  */
 function checkedRead<T>(path: string, body: unknown, ok: (b: unknown) => boolean): T {
-  if (!ok(body)) throw new WorkspaceShapeError(path);
+  if (!ok(body)) {
+    // The path goes HERE and not into the message: this is the developer's
+    // half of the split. Whoever is debugging a proxy or a version skew needs
+    // to know which route answered badly; the person looking at the screen
+    // does not, and their copy is an authored constant either way.
+    console.warn(`[workspace] ${path} answered 200 with a body we could not read`);
+    throw new WorkspaceShapeError(path);
+  }
   return body as T;
 }
 

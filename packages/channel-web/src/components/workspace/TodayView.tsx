@@ -216,6 +216,15 @@ export function TodayView({
                 Try again
               </Button>
             )}
+            {/*
+              RENDERED VERBATIM. Whatever a thrown error puts in its `message`
+              is a sentence a person reads, here, in this box. So an error on
+              this path must carry no internal identifier and no raw request
+              path — a `/decisions/dec_…` would put the exact id TASK-260 took
+              off the transcript back in front of a user, and nobody can act on
+              a decision id anyway. Debug detail belongs in a `console.warn` at
+              the throw site (see `checkedRead` in `workspace-api.ts`), not here.
+            */}
             <span className="font-mono text-[11px] text-muted-foreground">
               {error}
             </span>

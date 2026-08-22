@@ -63,8 +63,6 @@ const UNDO_POLL_MS = 1000;
  */
 const POLL_FAILURES_BEFORE_NOTE = 3;
 
-
-
 export interface DecisionQueue {
   decisions: Decision[];
   loading: boolean;
@@ -79,6 +77,11 @@ export interface DecisionQueue {
   undo: (id: string) => void;
   clearNotice: (id: string) => void;
   refresh: () => Promise<void>;
+}
+
+/** A value we are willing to treat as a decision row. */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
 }
 
 export function useDecisionQueue(): DecisionQueue {
@@ -199,11 +202,23 @@ export function useDecisionQueue(): DecisionQueue {
       void (async () => {
         try {
           const { decision, notice } = read(await post());
-          // `== null` on purpose: the routes 404 rather than answering 200 with
-          // a null row, so a missing `decision` here means the response was not
-          // the shape we asked for. Either way there is nothing to apply, and
-          // "nothing to apply" must never be rendered as a quiet success.
-          if (decision == null) {
+          /*
+            The routes 404 rather than answering 200 with a null row, so a
+            missing `decision` here means the response was not the shape we
+            asked for. Either way there is nothing to apply, and "nothing to
+            apply" must never be rendered as a quiet success.
+
+            Checked as an OBJECT, not just non-null, for parity with the two
+            READ paths that `checkedRead` guards in `workspace-api.ts`. A
+            truthy non-record (`[]`, `42`, `"gone"`) passes a `!= null` test and
+            lands in state as a row nothing can render: `decisionOutcome`
+            switches on `d.status`, has no `default`, and returns `undefined`
+            for a status it does not know — while its declared type says
+            `DecisionOutcome | null`, so a caller that trusts "non-null means
+            safe to dereference" crashes. Cheaper to reject it here than to
+            harden every reader.
+          */
+          if (!isRecord(decision)) {
             setNotice(id, DECISION_ACTION_FAILED);
             return;
           }

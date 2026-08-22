@@ -27,7 +27,12 @@ const approveDecision = vi.fn();
 const dismissDecision = vi.fn();
 const undoDecision = vi.fn();
 
-vi.mock('../lib/workspace-api', () => ({
+// The METHODS are stubbed; `WorkspaceShapeError` is passed through from the
+// real module. The malformed-body test below injects a genuine one, so the
+// rejection this file exercises is the same object the guard in
+// `workspace-api.ts` actually throws — not a look-alike that could drift.
+vi.mock('../lib/workspace-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/workspace-api')>()),
   workspaceApi: {
     decisions: (...a: unknown[]) => listDecisions(...a),
     decision: (...a: unknown[]) => readDecision(...a),
@@ -38,6 +43,7 @@ vi.mock('../lib/workspace-api', () => ({
 }));
 
 import { useDecisionQueue } from '../lib/workspace-decisions';
+import { WorkspaceShapeError } from '../lib/workspace-api';
 import {
   decisionFixture,
   resolvedFixture,
@@ -245,14 +251,20 @@ describe('useDecisionQueue — the undo window is closed by the server, not the 
     that already exists for a failed poll: the row is left exactly as the server
     last described it, and nobody is told anything, because nobody clicked.
   */
-  it('survives a malformed poll response and leaves the row untouched', async () => {
+  it('survives a REJECTED poll and leaves the row untouched', async () => {
     const resolved = resolvedFixture('executed');
     const { result } = await mountWith([resolved]);
     const before = result.current.decisions[0];
 
     // What a proxy or a host at a different version can produce: a 200 whose
     // body is not a decision read.
-    readDecision.mockRejectedValue(new Error('200 with a body we could not read'));
+    // The guard in `workspace-api.ts` turns a malformed body into exactly this
+    // rejection, so that is what we inject. To be clear about the seam: this
+    // test exercises the CONSUMER's `.catch`, not the guard — the guard has its
+    // own test in `workspace-api-decision-shape.test.ts`, and reverting it would
+    // redden that file rather than this one. Using the real error type is what
+    // makes the two halves visibly meet.
+    readDecision.mockRejectedValue(new WorkspaceShapeError('/decisions/d1'));
     await tick(POLL_MS);
 
     // Still mounted, still honest.

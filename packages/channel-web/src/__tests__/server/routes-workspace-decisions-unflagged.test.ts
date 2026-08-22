@@ -2,25 +2,28 @@
 /**
  * The decision routes and the preview flag must stay independent.
  *
- * TASK-261 moved the four `/api/workspace/decisions*` routes out of
- * `registerWorkspaceRoutes`' `if (agentWorkspacePreview)` block, because a
+ * TASK-261 moved the list, approve, dismiss and undo routes out of
+ * `registerWorkspaceRoutes`' `if (agentWorkspacePreview)` block, joining the
+ * single-row re-read TASK-259 had already put there — so the whole
+ * `/api/workspace/decisions*` collection now mounts unconditionally. Because a
  * call held for approval reaches the DEFAULT `/` chat surface whether or not
  * a deployment turned the workspace preview on. Gating the routes gated only
  * the remedy: the agent said it was waiting for an answer and every button
  * that could give one 404'd.
  *
- * `plugin.test.ts` proves the four routes we know about answer with the flag
+ * `plugin.test.ts` proves the routes we know about today answer with the flag
  * off. This file guards the thing that test cannot see: the NEXT decision
  * route somebody adds.
  *
  * The invariant is a set equality — the `/api/workspace/decisions*` routes
  * registered with the flag ON are exactly the ones registered with it OFF.
- * Nothing about it enumerates today's four, so a fifth route dropped into the
- * gated block fails here with its own path in the message, instead of
- * shipping as a silent 404 on the only surface that needs it. That is not
- * hypothetical: TASK-259 adds `GET /api/workspace/decisions/:decisionId` and
- * the `/` card reaches it through the same `useDecisionQueue` it shares with
- * `/workspace`.
+ * Nothing about it enumerates today's set, so the NEXT route dropped into the
+ * gated block fails here with its own path in the message, instead of shipping
+ * as a silent 404 on the only surface that needs it. That is not hypothetical:
+ * TASK-259's `GET /api/workspace/decisions/:decisionId` is reached from `/`
+ * through the same `useDecisionQueue` `/workspace` uses, and a 404 there is
+ * invisible — the poll is silent by design, so Undo would simply linger on a
+ * call that had already gone out.
  *
  * A stub bus, not a booted server, precisely BECAUSE the question is "what
  * got registered" rather than "what does it answer" — a real router can only

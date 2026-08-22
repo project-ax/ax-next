@@ -30,6 +30,37 @@ function respondWith(body: unknown) {
 
 afterEach(() => vi.restoreAllMocks());
 
+describe('what a shape failure is allowed to SAY', () => {
+  /*
+    `TodayView` renders `queue.error` verbatim in the alert, so this message is
+    user-facing copy whether it was written as copy or not. The single-row
+    re-read's path is `/decisions/dec_…`, so a message built from the path
+    would put an internal decision id in front of a person — the same id
+    TASK-260 spent a card removing from the transcript. Server-issued, so this
+    is hygiene rather than injection; a person still cannot act on it.
+  */
+  it('carries no request path or decision id in its message', async () => {
+    respondWith({});
+    await expect(workspaceApi.decision('dec_abc123')).rejects.toSatisfy(
+      (e: unknown) => {
+        const msg = (e as Error).message;
+        return (
+          !msg.includes('dec_abc123') &&
+          !msg.includes('/decisions') &&
+          !msg.includes('/api/')
+        );
+      },
+    );
+  });
+
+  it('keeps the path on the error for logs', async () => {
+    respondWith({});
+    await expect(workspaceApi.decision('dec_abc123')).rejects.toSatisfy(
+      (e: unknown) => (e as WorkspaceShapeError).path.includes('dec_abc123'),
+    );
+  });
+});
+
 describe('the decisions list read', () => {
   it('rejects a 200 with no decisions array rather than reporting an empty queue', async () => {
     respondWith({});
