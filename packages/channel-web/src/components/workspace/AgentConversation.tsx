@@ -29,14 +29,19 @@ interface Props {
   busy?: boolean;
   onSend: (text: string) => void;
   /**
-   * The three ways out of a decision. OPTIONAL, and an inline `ApprovalCard`
-   * renders only when all three are supplied — nothing serves approve/dismiss/
-   * undo yet, and a card whose buttons swallow the click is worse than no card.
-   * AW-11 supplies them along with the decisions themselves.
+   * The three ways out of a decision. REQUIRED: the routes behind them ship
+   * with the rows, so there is no longer a state where a card is on screen with
+   * nothing able to resolve it. Not optional-with-a-default — a card whose
+   * buttons swallow the click is worse than no card, and a default no-op is
+   * exactly how one gets added later without anyone noticing.
    */
-  onApprove?: (id: string) => void;
-  onDismiss?: (id: string) => void;
-  onUndo?: (id: string) => void;
+  onApprove: (id: string) => void;
+  onDismiss: (id: string) => void;
+  onUndo: (id: string) => void;
+  /** Rows with a POST in flight. Their controls go quiet, never absent. */
+  busyIds?: ReadonlySet<string>;
+  /** Per-row line from an action that failed or was refused. */
+  notices?: ReadonlyMap<string, string>;
 }
 
 export function AgentConversation({
@@ -49,6 +54,8 @@ export function AgentConversation({
   onApprove,
   onDismiss,
   onUndo,
+  busyIds,
+  notices,
 }: Props) {
   const [draft, setDraft] = useState('');
 
@@ -72,6 +79,8 @@ export function AgentConversation({
               onApprove={onApprove}
               onDismiss={onDismiss}
               onUndo={onUndo}
+              {...(busyIds !== undefined ? { busyIds } : {})}
+              {...(notices !== undefined ? { notices } : {})}
             />
           ))}
         </div>
@@ -110,13 +119,17 @@ function Message({
   onApprove,
   onDismiss,
   onUndo,
+  busyIds,
+  notices,
 }: {
   m: ThreadMessage;
   agent: WorkspaceAgent;
   decisions: Decision[];
-  onApprove: ((id: string) => void) | undefined;
-  onDismiss: ((id: string) => void) | undefined;
-  onUndo: ((id: string) => void) | undefined;
+  onApprove: (id: string) => void;
+  onDismiss: (id: string) => void;
+  onUndo: (id: string) => void;
+  busyIds?: ReadonlySet<string>;
+  notices?: ReadonlyMap<string, string>;
 }) {
   if (m.kind === 'user') {
     return (
@@ -151,7 +164,18 @@ function Message({
   }
 
   if (m.kind === 'approval') {
-    if (!onApprove || !onDismiss || !onUndo) return null;
+    /*
+      The card renders the row from the QUEUE, not a copy carried on the
+      message: `decisions` and the Today list are the same array, so a decision
+      resolved in one place is resolved in the other without a second fetch and
+      without two versions of one row disagreeing on screen.
+
+      A message whose decision is not in that array renders nothing. That is the
+      honest outcome for a row we do not have — the queue read failed, or it was
+      resolved and dropped from the open list — and it is strictly better than a
+      card built from a stale copy, which would offer buttons for a decision
+      that may already be closed.
+    */
     const d = decisions.find((x) => x.id === m.decisionId);
     if (!d) return null;
     return (
@@ -162,6 +186,8 @@ function Message({
           onApprove={() => onApprove(d.id)}
           onDismiss={() => onDismiss(d.id)}
           onUndo={() => onUndo(d.id)}
+          busy={busyIds?.has(d.id) === true}
+          notice={notices?.get(d.id) ?? null}
         />
       </div>
     );

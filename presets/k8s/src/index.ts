@@ -1063,10 +1063,13 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // real grace period before the outward action rather than a button that
   // cannot undo anything.
   //
-  // HALF-WIRED WINDOW STILL OPEN, narrowly: nothing in the UI calls
-  // `decisions:list` or subscribes `decisions:executed` yet. TASK-234 (AW-11)
-  // adds the Today queue; TASK-233 (AW-10) adds the Activity feed that turns
-  // the receipt into a row a human reads.
+  // HALF-WIRED WINDOW NARROWED (TASK-232 / AW-11): the Today queue now calls
+  // `decisions:list` / `:get` / `:approve` / `:dismiss` / `:undo` through
+  // channel-web's `/api/workspace/decisions*` routes, and `decisions:raised`
+  // reaches a live client as an SSE frame. What is STILL open is the receipt
+  // half — nothing subscribes `decisions:executed` yet, so an approval that the
+  // host performs leaves no row in the Activity feed. TASK-231 (AW-10) shipped
+  // the feed; joining the two is its follow-up.
   plugins.push(createDecisionsPlugin());
 
   // ----- 8b. credentials admin routes (optional) -------------------------

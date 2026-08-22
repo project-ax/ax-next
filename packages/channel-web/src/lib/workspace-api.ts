@@ -16,7 +16,9 @@
  * forbids: it reads as a working feature and fails at runtime. They come back
  * with the substrate that serves them:
  *
- *   - AW-11 — the decisions queue: `approve`, `dismiss`, `undo`.
+ *   - AW-11 — the decisions queue: BACK, and real. `decisions()`,
+ *     `approveDecision`, `dismissDecision`, `undoDecision` below are served by
+ *     `@ax/decisions` through the four `/api/workspace/decisions*` routes.
  *   - AW-12 — the halted/paused agent state and its files: `pause`, `restart`.
  *
  * `saveMemory` came back with AW-13, as `saveRules` — a narrower name, because
@@ -56,10 +58,64 @@ export type {
   WorkspaceFile,
 };
 
+/**
+ * `GET /api/workspace/state` — the roster, and only the roster.
+ *
+ * There is no `decisions` here. The queue has exactly ONE producer,
+ * `GET /api/workspace/decisions`, for the same reason the activity feed got its
+ * own route in AW-10: two fields over one collection is invariant 4 violated in
+ * the BFF, and they drift the moment one of them grows a filter.
+ */
 export interface BoardState {
   agents: WorkspaceAgent[];
-  /** Always `[]` until `@ax/decisions` lands (AW-11). */
+}
+
+/** `GET /api/workspace/decisions` — everything still waiting on this person. */
+export interface DecisionsPage {
   decisions: Decision[];
+}
+
+/**
+ * `POST /api/workspace/decisions/:id/approve`.
+ *
+ * `decision` is the row as the server now has it, and it is the ONLY thing the
+ * client applies — the machine that produced it lives in `@ax/decisions` and has
+ * no second copy here.
+ */
+export interface ApproveResult {
+  decision: Decision | null;
+  /**
+   * Whether the HOST actually ran the call as part of this approval. `false`
+   * whenever something else will run it, or nothing will: an attended agent
+   * re-issuing its own call, a sandbox-only tool the host cannot reach, an
+   * irreversible call deferred behind the undo window, or a click on a row that
+   * was already resolved. Never `true` unless a host executor returned.
+   */
+  executed: boolean;
+  /** Which side runs it, or `null` when nothing runs at all. */
+  path: 'agent-executes' | 'host-replays' | null;
+  /**
+   * The host executor's failure detail, sanitised. AUDIT DATA, NOT A RECEIPT —
+   * the row shows an authored failure line, never this string, because a host
+   * tool's error message can quote model-authored input straight back at us.
+   */
+  error: string | null;
+  /** When a deferred action will actually happen. Non-null only on that path. */
+  pendingUntil: string | null;
+}
+
+export interface DismissResult {
+  decision: Decision | null;
+}
+
+export interface UndoResult {
+  decision: Decision | null;
+  /**
+   * `false` with a row attached is a REFUSAL, not a failure: the call had
+   * already been made and there is nothing left to take back. The surface says
+   * so rather than leaving a button that looks broken.
+   */
+  undone: boolean;
 }
 
 /** One page of the activity collection — see `workspaceApi.activity`. */
@@ -146,6 +202,17 @@ export interface StreamHandlers {
   onDone: () => void;
   /** The turn ended badly, or the stream dropped without a terminator. */
   onError: (message: string) => void;
+  /**
+   * The agent stopped mid-turn to ask for something. NON-TERMINAL — the stream
+   * stays open and the turn carries on parking for an answer.
+   *
+   * Carries the decision's id and its one-line summary, and nothing else: the
+   * recorded call is model-authored and never rides this wire. The caller reads
+   * the row back through `decisions()` and renders it from there, so the card in
+   * the thread and the row in the queue are the same row rather than two
+   * descriptions of it.
+   */
+  onDecisionRaised?: (raised: { decisionId: string; summary: string }) => void;
   signal?: AbortSignal;
 }
 
@@ -164,8 +231,28 @@ export interface StreamHandlers {
 export const WORKSPACE_STREAM_LOST =
   'the reply stream ended without finishing';
 
+/** `POST` to a decision, with no body — the id in the path is the whole request. */
+function decisionPost<T>(id: string, action: string): Promise<T> {
+  return req<T>(`/decisions/${encodeURIComponent(id)}/${action}`, {
+    method: 'POST',
+  });
+}
+
 export const workspaceApi = {
   board: () => req<BoardState>('/state'),
+
+  /**
+   * Everything still waiting on this person, across every agent they can reach.
+   *
+   * Deliberately unscoped and unpaginated. The queue is a list of things a human
+   * has to answer; if it is ever long enough to need a page break, the product
+   * has a much bigger problem than a missing cursor.
+   */
+  decisions: () => req<DecisionsPage>('/decisions'),
+
+  approveDecision: (id: string) => decisionPost<ApproveResult>(id, 'approve'),
+  dismissDecision: (id: string) => decisionPost<DismissResult>(id, 'dismiss'),
+  undoDecision: (id: string) => decisionPost<UndoResult>(id, 'undo'),
 
   /**
    * One agent's panel. `conversationId` reads one of the agent's PAST
@@ -273,7 +360,7 @@ export const workspaceApi = {
  */
 async function streamReply(
   reqId: string,
-  { onText, onDone, onError, signal }: StreamHandlers,
+  { onText, onDone, onError, onDecisionRaised, signal }: StreamHandlers,
 ): Promise<void> {
   let res: Response;
   try {
@@ -333,6 +420,24 @@ async function streamReply(
         }
         if (frame.kind === 'text' && typeof frame.text === 'string') {
           onText(frame.text);
+          continue;
+        }
+        /*
+          A decision was raised mid-turn. Non-terminal: we keep reading, because
+          on an attended conversation the agent is still parked waiting for the
+          answer and the rest of the turn follows once it gets one.
+
+          We read only the two fields the frame is documented to carry and
+          ignore anything else on it. A frame missing either one is dropped
+          rather than forwarded — a card with no id is a card whose buttons
+          cannot do anything, which is worse than no card.
+        */
+        const raised = frame.decisionRaised;
+        if (onDecisionRaised && raised !== null && typeof raised === 'object') {
+          const { decisionId, summary } = raised as Record<string, unknown>;
+          if (typeof decisionId === 'string' && typeof summary === 'string') {
+            onDecisionRaised({ decisionId, summary });
+          }
         }
       }
     }

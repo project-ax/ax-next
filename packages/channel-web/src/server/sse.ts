@@ -35,6 +35,65 @@ import type { PermissionRequest, PhaseEvent, SseFrame, StreamChunk } from './typ
 
 const SSE_KEEPALIVE_MS = 25_000;
 
+/**
+ * How much of a decision's summary rides the wire.
+ *
+ * It is one line on a card — a person reads it and decides — so it gets a
+ * sentence's worth of room and no more. "However long the summary happened to
+ * come out" is not a size, and an unbounded string on a stream that a browser
+ * holds open for the length of a turn is a cost we'd pay every time.
+ */
+const DECISION_SUMMARY_MAX_CHARS = 120;
+
+/**
+ * What a person sees when the summary fences down to nothing.
+ *
+ * A card with an empty title is worse than a generic one: it looks like a bug,
+ * it gives no reason to click, and the thing it is hiding is a call that is
+ * genuinely waiting. A plain sentence at least tells the truth — something is
+ * waiting, go look — and the full decision is one fetch away on the card.
+ */
+const DECISION_SUMMARY_FALLBACK = 'A decision is waiting for you';
+
+/**
+ * Characters that rewrite the surface rather than appear on it: C0/C1 controls,
+ * the zero-width family, and the bidi marks, embeddings, overrides and isolates.
+ *
+ * The bidi half is the Trojan-source problem (CVE-2021-42574) pointed at an
+ * approval card. A lone U+202E reverses the visual order of everything after
+ * it, so a summary can be authored to read as one action while describing
+ * another; an unterminated isolate leaks that reordering into whatever the
+ * renderer draws next. React escapes markup, so this was never XSS — it is the
+ * quieter failure where the card says, in our voice, something other than what
+ * is on the wire, and a person approves it.
+ *
+ * They become spaces rather than vanishing, so a summary that leaned on one to
+ * separate two words still reads as two words.
+ *
+ * A deliberate local twin of `routes-workspace.ts`'s `fenceLine` rather than an
+ * import: that helper is private to its module and a parallel edit there
+ * shouldn't be able to change what this stream puts on the wire. Two small
+ * copies inside one plugin are cheaper than the coupling.
+ */
+const REWRITES_THE_SURFACE =
+  /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]+/g;
+
+/**
+ * One line, plain text, bounded — or `null` when nothing legible survives.
+ *
+ * The cap counts CODE POINTS, not UTF-16 units, so truncation can never split a
+ * surrogate pair and leave a lone half behind — ill-formed UTF-16 out of a
+ * function whose whole job is "plain text" would be a poor joke.
+ */
+function fenceLine(value: string | null | undefined, maxChars: number): string | null {
+  if (typeof value !== 'string') return null;
+  const flattened = value.replace(REWRITES_THE_SURFACE, ' ').replace(/\s+/g, ' ').trim();
+  if (flattened.length === 0) return null;
+  const points = [...flattened];
+  if (points.length <= maxChars) return flattened;
+  return `${points.slice(0, maxChars - 1).join('').trimEnd()}…`;
+}
+
 // Duck-typed request/response. The full @ax/http-server `HttpResponse` adds
 // `stream()` (we extended it for this slice); we re-declare just the
 // piece we need so this file stays free of @ax/http-server imports
@@ -178,6 +237,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
     const turnEndSubKey = `${PLUGIN_NAME}/sse-turn-end/${subscriberSuffix}`;
     const turnErrorSubKey = `${PLUGIN_NAME}/sse-turn-error/${subscriberSuffix}`;
     const permissionSubKey = `${PLUGIN_NAME}/sse-permission/${subscriberSuffix}`;
+    const decisionSubKey = `${PLUGIN_NAME}/sse-decision/${subscriberSuffix}`;
 
     const cleanup = (): void => {
       if (closed) return;
@@ -193,6 +253,7 @@ export function createSseHandler(deps: SseHandlerDeps) {
       deps.bus.unsubscribe('chat:turn-end', turnEndSubKey);
       deps.bus.unsubscribe('chat:turn-error', turnErrorSubKey);
       deps.bus.unsubscribe('chat:permission-request', permissionSubKey);
+      deps.bus.unsubscribe('decisions:raised', decisionSubKey);
     };
 
     stream.onClose(() => {
@@ -420,6 +481,59 @@ export function createSseHandler(deps: SseHandlerDeps) {
         return undefined;
       },
     );
+
+    // 4c-quater) Attach the decisions:raised subscriber (AW-11). @ax/decisions
+    // holds an outward-facing tool call inside `tool.pre-call` and fires this so
+    // the person already reading the thread sees the waiting card without
+    // hunting for it.
+    //
+    // Matched on the payload's OWN conversationId, not on ctx.conversationId
+    // like the skill card above. The skill card has no choice — the broker's
+    // payload doesn't name a conversation, so the firing ctx is all there is.
+    // Here the payload names it explicitly, and the explicit field is the
+    // authoritative one: `tool.pre-call` runs under whatever ctx invoked the
+    // tool, which for a routine or a replayed call is not this turn's, and a
+    // synthetic ctx can't quietly steer a card into the wrong thread.
+    //
+    // NON-terminal: we emit and KEEP the stream open (unlike turn-error, which
+    // closes) — the turn is still running, waiting on the hold. The connection's
+    // own reqId is stamped onto the envelope, exactly as the permission
+    // subscriber does.
+    deps.bus.subscribe<{
+      decisionId?: string;
+      agentId?: string;
+      conversationId?: string;
+      summary?: string;
+    }>('decisions:raised', decisionSubKey, async (_ctx, payload) => {
+      if (payload.conversationId !== conversationId) return undefined;
+      // A frame with no id would draw a card that cannot be acted on — every
+      // button on it needs the decisionId to post anywhere — and a frame with
+      // no summary has nothing to say. Neither is worth guessing at, so a
+      // payload missing either one matches nothing at all.
+      if (typeof payload.decisionId !== 'string' || payload.decisionId.length === 0) {
+        return undefined;
+      }
+      if (typeof payload.summary !== 'string') return undefined;
+      safeWrite({
+        reqId,
+        // Two fields, named one at a time, never a spread of the payload: a
+        // spread is how a field someone adds upstream later ends up on the wire
+        // without anyone deciding it should — and the field most likely to be
+        // added is the held call itself, whose input is model-authored.
+        decisionRaised: {
+          decisionId: payload.decisionId,
+          // The summary is host-authored, but it is BUILT from tool names and
+          // capability strings that arrive from MCP servers and agent-authored
+          // skills. That makes it untrusted text crossing a trust boundary, and
+          // this is the boundary — fencing here bounds what goes on the wire,
+          // not just what one renderer happens to do with it.
+          summary:
+            fenceLine(payload.summary, DECISION_SUMMARY_MAX_CHARS) ??
+            DECISION_SUMMARY_FALLBACK,
+        },
+      });
+      return undefined;
+    });
 
     // 4d) Keepalive. The SSE comment ":\n\n" is silently dropped by
     // EventSource but keeps proxies (and the http-server's idle

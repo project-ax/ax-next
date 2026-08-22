@@ -81,6 +81,11 @@ export type PhaseKind = 'sandbox-starting';
  *                                                   bundled approval card
  *                                                   (design §11.3); never
  *                                                   carries a secret.
+ *   - decision frame: `{ reqId, decisionRaised }`  — NON-terminal; a call is
+ *                                                   held and waiting for a
+ *                                                   person (AW-11). The stream
+ *                                                   stays open: the turn is
+ *                                                   still running.
  *
  * The `error` frame closes the stream when a turn ends WITHOUT a normal
  * `chat:turn-end` (the runner died mid-turn or wedged past the chat
@@ -193,6 +198,35 @@ export type PermissionRequest =
       packages?: { npm: string[]; pypi: string[] };
     };
 
+/**
+ * Inner object of the `decisionRaised` SSE frame (AW-11) — the moment
+ * `@ax/decisions` holds an outward-facing tool call, this is what the thread
+ * the person is already looking at gets told.
+ *
+ * It is deliberately NOT the whole `Decision`, and the two omissions are the
+ * point of the type:
+ *
+ * - No `call`. The held call's `input` is model-authored, and any subscriber
+ *   that rendered it would be putting untrusted text straight onto a trust
+ *   surface — the one surface where a person is about to say yes to something.
+ *   The card fetches the full decision over the authenticated route when it
+ *   needs the details, where the shape can be checked and the reach is the
+ *   caller's own.
+ * - `summary`, not `call.name`. A renderer that keyed off the tool name breaks
+ *   the day a connector-backed tool is renamed upstream, and it breaks quietly:
+ *   the card still draws, it just describes the wrong thing. The summary is
+ *   composed once, host-side, by the plugin that owns the decision.
+ *
+ * Re-declared here rather than imported from `@ax/decisions` — plugins talk
+ * through the hook bus, never through each other's modules (invariant 2). Same
+ * duplication-with-a-comment posture as `PermissionRequest` vs
+ * `@ax/skill-broker`, and `StreamChunk` vs `@ax/ipc-protocol`.
+ */
+export interface DecisionRaised {
+  decisionId: string;
+  summary: string;
+}
+
 export type SseFrame =
   | StreamChunk
   | { reqId: string; phase: PhaseKind }
@@ -202,7 +236,8 @@ export type SseFrame =
   // self-diagnosis), bounded + sanitized upstream and rendered as UNTRUSTED
   // text by the client. Omitted for ordinary errors.
   | { reqId: string; error: string; detail?: string }
-  | { reqId: string; permissionRequest: PermissionRequest };
+  | { reqId: string; permissionRequest: PermissionRequest }
+  | { reqId: string; decisionRaised: DecisionRaised };
 
 /**
  * Payload for the `chat:phase` subscriber hook. Matches the SSE phase

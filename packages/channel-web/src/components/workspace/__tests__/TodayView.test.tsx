@@ -9,6 +9,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { TodayView } from '../TodayView';
+import { decisionFixture } from './decision-fixture';
 
 /** The reassuring green tick that must not sit over a row of zeros. */
 const CHECK_ICON = 'svg[class*="check"]';
@@ -26,31 +27,27 @@ function agent(over: Partial<WorkspaceAgent> = {}): WorkspaceAgent {
   };
 }
 
-function decision(over: Partial<Decision> = {}): Decision {
-  return {
+/**
+ * The queue's rows come from the SHARED fixture — see `decision-fixture.ts`.
+ * A per-file copy would let this component and the two renderers drift apart
+ * while every test still passed, each agreeing with its own invention.
+ */
+const decision = (over: Partial<Decision> = {}): Decision =>
+  decisionFixture({
     id: 'd1',
     agentId: 'a-quill',
-    conversationId: 'c1',
-    kind: 'action',
     attendance: 'attended',
-    status: 'pending',
-    call: { id: 'call-1', name: 'mail__send', input: {} },
     freshness: null,
     summary: 'Send the reply to Dana?',
     detail: 'It answers her question about the roof quote.',
-    preview: null,
     primaryLabel: 'Send it',
     secondaryLabel: 'Let me edit',
     ghostLabel: 'Leave it',
     approvedText: 'Quill sent the reply to Dana',
     dismissedText: 'You left the reply to Dana unsent',
     createdAt: new Date().toISOString(),
-    expiresAt: new Date(Date.now() + 3600_000).toISOString(),
-    resolvedAt: null,
-    staleReason: null,
     ...over,
-  };
-}
+  });
 
 function renderToday(
   over: Partial<React.ComponentProps<typeof TodayView>> = {},
@@ -63,6 +60,9 @@ function renderToday(
       expandedId={null}
       onExpand={vi.fn()}
       onOpenAgent={vi.fn()}
+      onApprove={vi.fn()}
+      onDismiss={vi.fn()}
+      onUndo={vi.fn()}
       onSeeActivity={vi.fn()}
       {...over}
     />,
@@ -134,13 +134,82 @@ describe('the empty queue', () => {
   });
 
   it('shows the hint, in plain words, once there is a row', () => {
-    renderToday({
-      decisions: [decision()],
-      onApprove: vi.fn(),
-      onDismiss: vi.fn(),
-      onUndo: vi.fn(),
-    });
+    renderToday({ decisions: [decision()] });
 
     expect(screen.getByText(/Open a row to see the detail/)).toBeTruthy();
+  });
+});
+
+/*
+  An empty queue is the most reassuring claim this page makes. It is only ever
+  true when we managed to READ the queue — and a failed read looks exactly like
+  an empty one from the outside, which is what makes this the worst place on the
+  whole surface to be quietly wrong (design H7).
+*/
+describe('a queue we could not read', () => {
+  it('never says nothing is waiting on you', () => {
+    const { container } = renderToday({ error: 'workspace /decisions → 503' });
+
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+    expect(
+      screen.getByText('We could not check what is waiting on you.'),
+    ).toBeTruthy();
+    // And not the first-timer orientation either — that is the empty state,
+    // and this is not empty, it is unknown.
+    expect(container.textContent).not.toMatch(/wants your OK on/);
+  });
+
+  it('offers a way to try again and shows what went wrong', () => {
+    const onRetry = vi.fn();
+    renderToday({ error: 'workspace /decisions → 503', onRetry });
+
+    const retry = screen.getByRole('button', { name: 'Try again' });
+    retry.click();
+    expect(onRetry).toHaveBeenCalledTimes(1);
+    expect(screen.getByText('workspace /decisions → 503')).toBeTruthy();
+  });
+
+  it('does not count rows it could not read into the summary line', () => {
+    const { container } = renderToday({
+      error: 'boom',
+      decisions: [decision(), decision({ id: 'd2' })],
+    });
+    expect(container.textContent).not.toMatch(/waiting on you\b.*\d/);
+  });
+});
+
+describe('the first read, before it lands', () => {
+  it('does not flash the empty-queue claim while it is still checking', () => {
+    renderToday({ loading: true });
+    expect(screen.getByText(/Checking what is waiting on you/)).toBeTruthy();
+    expect(screen.queryByText(/wants your OK on/)).toBeNull();
+  });
+});
+
+describe('resolved rows', () => {
+  it('keeps a just-resolved row on screen so its receipt lands where the click did', () => {
+    renderToday({
+      decisions: [
+        decision({
+          status: 'executed',
+          resolvedAt: new Date().toISOString(),
+          undoable: true,
+        }),
+      ],
+    });
+    expect(screen.getByText('Quill sent the reply to Dana')).toBeTruthy();
+    expect(screen.getByRole('button', { name: /Undo/ })).toBeTruthy();
+  });
+
+  it('drops one resolved long enough ago that nobody is still looking at it', () => {
+    const { container } = renderToday({
+      decisions: [
+        decision({
+          status: 'executed',
+          resolvedAt: new Date(Date.now() - 10 * 60_000).toISOString(),
+        }),
+      ],
+    });
+    expect(container.textContent).not.toContain('Quill sent the reply to Dana');
   });
 });
