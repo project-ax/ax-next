@@ -272,6 +272,7 @@ function agentsMockPlugin(args: { allow: boolean }): Plugin {
         'agents:create',
         'workspace:apply',
         'workspace:read',
+        'workspace:list',
       ],
       calls: [],
       subscribes: [],
@@ -281,11 +282,15 @@ function agentsMockPlugin(args: { allow: boolean }): Plugin {
       // bootstrap route seeds .ax/BOOTSTRAP.md). TASK-142: workspace:read too
       // (the identity editor reads .ax/ files). This suite doesn't drive those
       // routes, so no-op registrations satisfy the verifyCalls walk.
+      // TASK-233: workspace:list joins them (the Files tab lists the tree).
       bus.registerService('workspace:apply', 'mock-agents', async () => {
         return { version: 'v0', delta: { before: null, after: 'v0', changes: [] } };
       });
       bus.registerService('workspace:read', 'mock-agents', async () => {
         return { found: false };
+      });
+      bus.registerService('workspace:list', 'mock-agents', async () => {
+        return { paths: [] };
       });
       bus.registerService('agents:resolve', 'mock-agents', async () => {
         if (!args.allow) {
@@ -580,6 +585,7 @@ describe('@ax/channel-web server plugin (integration)', () => {
         'agents:create',
         'workspace:apply',
         'workspace:read',
+        'workspace:list',
         'conversations:get-by-req-id',
         'conversations:create',
         'conversations:get',
@@ -951,6 +957,23 @@ describe('@ax/channel-web server plugin (integration)', () => {
         `http://127.0.0.1:${booted.port}/api/workspace/state`,
       );
       expect(state.status).toBe(404);
+
+      /*
+        The Files routes (TASK-233) sit inside the same flag, and they are the
+        ones worth naming: they are the only routes on this surface that read a
+        caller-supplied path out of a workspace. A route accidentally pushed
+        OUTSIDE the `if (agentWorkspacePreview)` block would still pass the
+        assertion above, because that one only asks about `/state`.
+      */
+      const files = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test/files`,
+      );
+      expect(files.status).toBe(404);
+
+      const oneFile = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test/files/x.md`,
+      );
+      expect(oneFile.status).toBe(404);
 
       const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
       expect(features.status).toBe(200);

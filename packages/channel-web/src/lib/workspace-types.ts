@@ -323,11 +323,39 @@ export interface MemoryDoc {
   body: string;
 }
 
-export interface WorkspaceFile {
+/**
+ * One row in the Files tab's list.
+ *
+ * What the prototype's `WorkspaceFile` had and this does not: `meta`
+ * ("2 KB · yesterday"), `title` (a heading distinct from the filename), and
+ * `blocks` — a hand-shaped `['p' | 'h' | 'mono', string]` document. All four
+ * were fixture conveniences with nothing behind them. The workspace listing
+ * reports paths and only paths: no size, no timestamp, no separate title. A
+ * `meta` line assembled from nothing would be the same class of lie as the
+ * `folded: 0` that used to sit on `PastConversation`.
+ *
+ * The two fields are NOT the same field twice:
+ *   - `path` is the key the client sends back to open the file. Raw, opaque,
+ *     never rendered.
+ *   - `name` is the label, fenced server-side. A filename is agent-authored
+ *     text and a file list is the classic Trojan-source surface.
+ */
+export interface WorkspaceFileSummary {
+  path: string;
   name: string;
-  meta: string;
-  title: string;
-  blocks: Array<['p' | 'h' | 'mono', string]>;
+}
+
+/** One file's text, as the server is willing to show it. */
+export interface WorkspaceFileBody {
+  path: string;
+  name: string;
+  /** `null` when there is no text to show — see `clipped`. */
+  body: string | null;
+  /**
+   * Why `body` is missing or short. `null` means the body is the whole file,
+   * and that is a promise the tab repeats to the reader.
+   */
+  clipped: 'binary' | 'too-large' | null;
 }
 
 /**

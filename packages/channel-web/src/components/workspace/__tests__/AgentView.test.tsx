@@ -14,6 +14,7 @@
  *   3. The dropped-stream error said "send it again" twice and meant RETYPE —
  *      the composer had already cleared the draft.
  */
+import type { ComponentProps } from 'react';
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
@@ -58,7 +59,6 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
     conversationId: 'c-now',
     thread: [{ kind: 'user', id: 't1', text: 'what is on today' }],
     past: [],
-    files: [],
     memory: [],
     ...over,
   };
@@ -76,7 +76,7 @@ function withPast() {
   );
 }
 
-function renderView() {
+function renderView(over: Partial<ComponentProps<typeof AgentView>> = {}) {
   return render(
     <AgentView
       agentId="a-quill"
@@ -91,6 +91,7 @@ function renderView() {
       onBack={vi.fn()}
       version={0}
       onChanged={vi.fn()}
+      {...over}
     />,
   );
 }
@@ -195,5 +196,59 @@ describe('a reply that did not finish', () => {
         expect.objectContaining({ text: 'summarise the roof quote' }),
       ),
     );
+  });
+});
+
+/*
+  "What it did" is the shared `ActivityFeed` with `agentId` set, and nothing
+  else (design §7 / plan task AW-12 step 4). If this tab ever needs a component
+  change beyond passing that prop, the feed is not one component and THAT is
+  the bug to fix — so what is pinned here is the two observable consequences of
+  the prop being set, not the prop itself.
+*/
+describe('the "What it did" tab', () => {
+  it('renders the shared feed scoped to this agent', async () => {
+    agentMock.mockResolvedValue(detail());
+
+    renderView({
+      tab: 'did',
+      activity: [
+        {
+          id: 'a-quill|daily.md|1',
+          agentId: 'a-quill',
+          at: new Date().toISOString(),
+          text: 'Morning inbox sweep',
+          kind: 'done',
+          detail: null,
+          tag: 'Scheduled',
+          decisionId: null,
+        },
+      ],
+    });
+
+    expect(await screen.findByText('Morning inbox sweep')).toBeTruthy();
+    // Scoped: no per-row "open this agent" button, because every row is this
+    // agent. An unscoped feed renders one on every row.
+    expect(screen.queryByRole('button', { name: 'Quill' })).toBeNull();
+  });
+
+  it('says the RECORD is empty, not that the agent did nothing', async () => {
+    agentMock.mockResolvedValue(detail());
+
+    renderView({ tab: 'did', activity: [] });
+
+    // The scoped phrasing — "what Quill does", not "what your agents do".
+    expect(
+      await screen.findByText(/The record of what Quill does is empty so far/),
+    ).toBeTruthy();
+  });
+
+  it('shows a read failure instead of an empty record', async () => {
+    agentMock.mockResolvedValue(detail());
+
+    renderView({ tab: 'did', activity: [], activityError: 'boom' });
+
+    expect(await screen.findByText(/could not load the record/i)).toBeTruthy();
+    expect(screen.queryByText(/Nothing recorded yet/)).toBeNull();
   });
 });

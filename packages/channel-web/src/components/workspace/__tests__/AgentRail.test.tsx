@@ -29,7 +29,6 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
     conversationId: null,
     thread: [],
     past: [],
-    files: [],
     memory: [],
     ...over,
   };

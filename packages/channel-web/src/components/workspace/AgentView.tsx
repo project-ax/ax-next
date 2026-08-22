@@ -8,7 +8,8 @@
  *
  * There is no Pause/Resume control. Pausing an agent has no backend, and a
  * button wired to a route that answers 501 is half-wired code with a friendly
- * face on it. It arrives with the halted/paused state itself (AW-12).
+ * face on it. It arrives with the halted/paused state itself, which nothing
+ * produces yet.
  *
  * Sending goes to the SHIPPED chat wire (`workspaceApi.sendMessage` →
  * `streamReply`), not to a workspace route of its own — starting a turn has one
@@ -490,8 +491,15 @@ export function AgentView({
             </div>
           )}
 
+          {/*
+            The Files tab reads the agent's workspace itself (AW-12) rather
+            than taking a `files` array off `detail`. A sub-array of the detail
+            response could not carry the difference between "this agent has
+            written nothing" and "we could not read its workspace", and the tab
+            has to be able to say which.
+          */}
           {tab === 'files' && (
-            <AgentFiles files={detail.files} agentName={agent.name} />
+            <AgentFiles agentId={agent.id} agentName={agent.name} />
           )}
 
           {tab === 'memory' && (

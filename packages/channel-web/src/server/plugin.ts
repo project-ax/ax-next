@@ -131,6 +131,11 @@ export function createChannelWebServerPlugin(
         // reads the agent's .ax/ files via workspace:read. Same hard-dep
         // rationale as workspace:apply (k8s preset always has a backend).
         'workspace:read',
+        // TASK-233 (AW-12): the workspace Files tab lists the agent's own
+        // tree. Same hard-dep rationale as workspace:read — every preset that
+        // loads channel-web loads a workspace backend, and all four base
+        // hooks are registered by the same plugin.
+        'workspace:list',
         'conversations:get-by-req-id',
         'conversations:create',
         'conversations:get',
