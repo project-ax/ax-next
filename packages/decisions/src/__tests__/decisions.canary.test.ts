@@ -1224,6 +1224,14 @@ describe('decisions canary — attendance and delivery', () => {
     expect(receipts).toHaveLength(1);
     expect(receipts[0]!.outcome).toBe('pending-agent');
     expect(receipts[0]!.receipt).toContain('the next time it runs');
+
+    // The approval is REAL and waits at the gate — `approved-pending-agent` is
+    // one of the two AUTHORISING_STATUSES, and a status the host chose for a
+    // person's yes had better still be worth something. The next time that
+    // agent runs, its call goes through…
+    expect((await h.bus.fire('tool:pre-call', ctx, SANDBOX_CALL)).rejected).toBe(false);
+    // …exactly once.
+    expect(isHold(await h.bus.fire('tool:pre-call', ctx, SANDBOX_CALL))).toBe(true);
   });
 
   it('an idle-expired irreversible decision gets the undo window it was owed', async () => {
@@ -1293,6 +1301,72 @@ describe('decisions canary — attendance and delivery', () => {
     // One approval, one execution: the fallback replay spent the yes.
     expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
     expect(executor.calls).toHaveLength(1);
+  });
+
+  it('the fallback parks a sandbox-only tool rather than leaving the row reading executed', async () => {
+    // The fallback's SECOND landing. The delivery failed, so the host takes
+    // over — and then finds it cannot make this call either, because
+    // `skill_propose` runs in the sandbox and the turn is over.
+    //
+    // The row has already been claimed `executed` by the time we get here: the
+    // attended branch had no reason to check for an executor, since it was not
+    // expecting to make the call itself. So this is the one path where
+    // `executed` is written and then walked back, and the assertion that
+    // matters is that it IS walked back.
+    const h = await boot({}, undefined, liveChannels(), { throws: 'unknown-session' });
+    const receipts = collectReceipts(h);
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, SANDBOX_CALL);
+
+    const out = await approve(h, ctx, id);
+    expect(out.executed).toBe(false);
+    expect(out.path).toBeNull();
+    expect(out.error).toBeNull();
+    expect(out.decision!.status).toBe('approved-pending-agent');
+    expect((await readDecision(h, ctx, id)).status).toBe('approved-pending-agent');
+
+    // "Approved — it will do this the next time it runs", never "Sent".
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.outcome).toBe('pending-agent');
+    expect(receipts[0]!.receipt).toContain('the next time it runs');
+
+    // And the yes is still there to be cashed in, once.
+    expect((await h.bus.fire('tool:pre-call', ctx, SANDBOX_CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', ctx, SANDBOX_CALL))).toBe(true);
+  });
+
+  it('the fallback records a THROWN replay as failed and drops the authorisation', async () => {
+    // The fallback's THIRD landing. H1: an action that did not happen must not
+    // leave a trace saying it did — and must not leave a standing yes behind
+    // either, or the agent quietly inherits an approval for something that
+    // failed.
+    const h = await boot({}, undefined, liveChannels(), { throws: 'unknown-session' });
+    recordExecutor(h, HOLD_RULE.match.tool, { throws: 'upstream 503' });
+    const receipts = collectReceipts(h);
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+    const stored = await readDecision(h, ctx, id);
+
+    const out = await approve(h, ctx, id);
+    expect(out.executed).toBe(false);
+    expect(out.path).toBeNull();
+    expect(out.error).not.toBeNull();
+    expect(out.error).toContain('upstream 503');
+
+    const after = await readDecision(h, ctx, id);
+    expect(after.status).toBe('failed');
+    expect(after.replayError).toContain('upstream 503');
+    expect(after.replayedAt).toBeNull();
+
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.outcome).toBe('failed');
+    // The authored failure line — never the approved one, never the executor's
+    // own message, which can quote model-authored input back at us.
+    expect(receipts[0]!.receipt).not.toContain(stored.approvedText);
+    expect(receipts[0]!.receipt).not.toContain('upstream 503');
+
+    // Nothing left standing at the gate.
+    expect(isHold(await h.bus.fire('tool:pre-call', ctx, CALL))).toBe(true);
   });
 
   it('an attended decision whose conversation cannot be read at approve time still runs', async () => {
