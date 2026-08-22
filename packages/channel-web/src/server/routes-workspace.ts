@@ -54,6 +54,14 @@
  * `/state`'s per-agent liveness probe is already an N+1; the feed's fan-out
  * lives on its own route rather than making that worse.
  *
+ * It has one producer and TWO SOURCES, which is a different thing: routine
+ * fires (`routines:recent-fires-for-agent`) and decision receipts
+ * (`decisions:recent-receipts-for-agent`), merged here by instant. A reader
+ * does not care whether their agent did something on a schedule or because
+ * they said yes to it, so both belong in one time-ordered list. Both sources
+ * are asked the same paged question so the merge cannot lose a row at the
+ * seam, and neither owns the collection — this route does.
+ *
  * The Today queue is the same story and the same rule: `GET
  * /api/workspace/decisions` is its one producer. The in-thread approval card
  * on `GET /api/workspace/agents/:agentId` is a POINTER — a `decisionId` and
@@ -461,6 +469,50 @@ interface DecisionsGetOutput {
   decision: StoredDecision | null;
 }
 
+/**
+ * `decisions:recent-receipts-for-agent` — the second source behind the Activity
+ * feed, duck-typed like every other hook on this surface (I2).
+ *
+ * Shaped to page exactly like `routines:recent-fires-for-agent` above, because
+ * the two are merged into one time-ordered collection and two sources that page
+ * differently cannot be merged without losing rows at the seam. The one
+ * difference is deliberate: `before` is an ISO STRING here where the fires hook
+ * takes a `Date`. @ax/decisions keeps every instant on its hook surface as an
+ * ISO string ("no `Date` ever leaves the store"), and the feed's own cursor is
+ * a string too, so this is the shape that needs no conversion at either end.
+ *
+ * `userId` is a SCOPE, not a hint, and dropping it would be a real leak rather
+ * than an inefficiency: a team agent can carry decisions belonging to several
+ * people, so passing the ACL on the AGENT is not the same as being entitled to
+ * read every decision attached to it.
+ *
+ * Note what is NOT here: no `call`, no `callFingerprint`, no `status`. The
+ * receipt is the sentence and the outcome, already derived by the plugin that
+ * authored the sentence — this surface renders it and does not re-derive it,
+ * which is what stops a second copy of the decision machine growing here by
+ * accident.
+ */
+interface DecisionReceiptRow {
+  decisionId: string;
+  agentId: string;
+  outcome: 'executed' | 'failed' | 'pending-agent';
+  /** HOST-AUTHORED prose. Fenced here anyway — see `receiptToActivityEvent`. */
+  receipt: string;
+  /** ISO instant. Orders the feed, cuts the page, prints on the row. */
+  at: string;
+  /** The host executor's sanitised failure detail, on a `failed` row only. */
+  error: string | null;
+}
+interface DecisionsRecentReceiptsInput {
+  userId: string;
+  agentId: string;
+  limit?: number;
+  before?: string;
+}
+interface DecisionsRecentReceiptsOutput {
+  receipts: DecisionReceiptRow[];
+}
+
 interface DecisionsResolveInput {
   decisionId: string;
   userId: string;
@@ -813,11 +865,18 @@ function sortableStamp(firedAt: Date | string): number {
 /**
  * How much of an authored line this feed will carry.
  *
- * The subject line is a LABEL — one truncating row in the DOM — so it gets the
- * same 60 the rest of the workspace gives a label. The second line is a
- * recorded error, which is a sentence and legitimately longer, so it gets more
- * room; it is still bounded, because "however long the agent felt like" is not
- * a size.
+ * On a ROUTINE row the subject line is a LABEL — a routine's name, one
+ * truncating row in the DOM — so it gets the same 60 the rest of the workspace
+ * gives a label. The second line is a recorded error, which is a sentence and
+ * legitimately longer, so it gets more room; it is still bounded, because
+ * "however long the agent felt like" is not a size.
+ *
+ * A DECISION row's subject is not a label at all — it is the authored receipt,
+ * a whole sentence — so it is carried at `DECISION_RECEIPT_MAX_CHARS` below,
+ * the same cap the queue and the in-thread card already use for the same
+ * strings. Chopping it at 60 would truncate mid-clause on the one row whose
+ * whole job is to say what happened. The DOM truncates either way; this is
+ * about what goes on the wire.
  */
 export const ACTIVITY_LABEL_MAX_CHARS = 60;
 export const ACTIVITY_DETAIL_MAX_CHARS = 200;
@@ -914,6 +973,16 @@ export const DECISION_FALLBACK_SUMMARY = 'A decision with no readable summary';
  */
 export const DECISION_FALLBACK_APPROVED = 'You approved this.';
 export const DECISION_FALLBACK_DISMISSED = 'You turned this down. Nothing ran.';
+
+/**
+ * What a decision receipt is badged as in the feed.
+ *
+ * Plain language, like the trigger labels above: the reader is being told where
+ * this row came from, and "it came from something you approved" is the whole
+ * message. Deliberately not the outcome — that is what the row's own sentence
+ * and icon say, and a badge repeating it would be the same fact three times.
+ */
+export const DECISION_RECEIPT_TAG = 'Approval';
 
 // --- the rail ------------------------------------------------------------
 
@@ -1320,9 +1389,56 @@ export function fireToActivityEvent(
           'It failed, and no reason was recorded.')
         : null,
     tag: TRIGGER_LABEL[fire.triggerSource] ?? null,
-    // Decision receipts join this collection with `decisions:executed`, which
-    // has not shipped. Nothing here comes from a decision yet.
+    // A routine fire has no decision behind it. Decision receipts are the
+    // feed's OTHER source and carry their own id — see
+    // `receiptToActivityEvent` below.
     decisionId: null,
+  };
+}
+
+/**
+ * One decision receipt → one feed row, or `null` for a receipt we cannot place
+ * in time.
+ *
+ * The receipt is DERIVED by @ax/decisions from the decision row on every read.
+ * That is what makes this surface's job small: there is no receipt store to
+ * reconcile with, no removal path, and an undone execution's row simply stops
+ * being returned — which is how "an undone execution's receipt disappears"
+ * became true without a line of code here doing anything about it.
+ *
+ * The prose is HOST-AUTHORED, and it is fenced anyway. `approvedText` is built
+ * from a capability clause and a tool name that arrive from MCP servers and
+ * agent-authored skills, so this is the trust boundary; fencing here bounds
+ * what goes on the WIRE, which is the only place a second renderer cannot
+ * forget to do it. Same reasoning as `toWireDecision`, a few hundred lines up.
+ *
+ * `text` is the RECEIPT and `detail` is the executor's own message, never the
+ * other way round. A host tool's failure text can quote model-authored input
+ * back at us, so it rides beside our claim as audit-trail detail and is never
+ * mistaken for our voice. Unlike a failed routine fire, a missing detail needs
+ * no stand-in sentence: the subject line already says it did not work, and
+ * "no reason was recorded" underneath that would be noise under a sentence
+ * that is already complete.
+ */
+export function receiptToActivityEvent(r: DecisionReceiptRow): ActivityEvent | null {
+  const stamp = Date.parse(r.at);
+  if (Number.isNaN(stamp)) return null; // An undateable row cannot be filed.
+  return {
+    // Composite and stable, in the same shape a fire's id takes. The decision
+    // id is a KEY — never rendered — so it goes in raw; fencing it could
+    // collapse two distinct decisions onto one row.
+    id: `${r.agentId}|decision|${r.decisionId}`,
+    agentId: r.agentId,
+    at: new Date(stamp).toISOString(),
+    // A receipt that fenced away entirely would say nothing at all, which
+    // reads as "we are not sure what you did". Every outcome keeps a plain
+    // sentence rather than an empty row.
+    text: fenceLine(r.receipt, DECISION_RECEIPT_MAX_CHARS) ?? DECISION_FALLBACK_APPROVED,
+    kind: r.outcome === 'failed' ? 'stopped' : 'approved',
+    detail:
+      r.outcome === 'failed' ? fenceLine(r.error, ACTIVITY_DETAIL_MAX_CHARS) : null,
+    tag: DECISION_RECEIPT_TAG,
+    decisionId: r.decisionId,
   };
 }
 
@@ -1556,6 +1672,58 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     } catch (err) {
       if (strict) throw err;
       initCtx.logger.warn('workspace_activity_fires_failed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [];
+    }
+  }
+
+  /**
+   * One agent's slice of the OTHER half of the feed: its decision receipts.
+   *
+   * The same strict/non-strict split `firesForAgent` makes, for the same reason
+   * and with one extra edge on it. A failed receipts read must never degrade
+   * into rows-we-do-have, because that page looks COMPLETE: the routine fires
+   * render, the feed has content, and every approval this agent ever acted on
+   * is silently missing with nothing on the surface to say so. "We don't know"
+   * rendering as "there is nothing here" is design H7, and it is the defect
+   * family TASK-238 / TASK-264 / TASK-272 all sit in. So on the per-agent tab —
+   * where this agent's history IS the page — the throw propagates and the route
+   * fails loudly.
+   *
+   * In the roster-wide fan-out it degrades, exactly as the fires read does: one
+   * agent's hiccup must not take the whole page down, and it is logged.
+   *
+   * `userId` is passed because the hook is owner-scoped. Reaching an agent is
+   * not the same as being entitled to read every decision attached to it — a
+   * team agent can carry several people's.
+   */
+  async function receiptsForAgent(
+    agentId: string,
+    userId: string,
+    limit: number,
+    before: Date | null,
+    strict: boolean,
+  ): Promise<DecisionReceiptRow[]> {
+    // No @ax/decisions in this deployment means there are genuinely no
+    // receipts. That is a configuration, not a fault, and it must not cost the
+    // routine history that IS there.
+    if (!bus.hasService('decisions:recent-receipts-for-agent')) return [];
+    try {
+      const out = await bus.call<
+        DecisionsRecentReceiptsInput,
+        DecisionsRecentReceiptsOutput
+      >('decisions:recent-receipts-for-agent', initCtx, {
+        userId,
+        agentId,
+        limit,
+        ...(before !== null ? { before: before.toISOString() } : {}),
+      });
+      return out.receipts ?? [];
+    } catch (err) {
+      if (strict) throw err;
+      initCtx.logger.warn('workspace_activity_receipts_failed', {
         agentId,
         error: err instanceof Error ? err.message : String(err),
       });
@@ -2470,7 +2638,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
      *
      * `?agentid=` scopes it to a single agent (the "What it did" tab);
      * unscoped it merges the whole roster (the Activity page). `?before=` is
-     * the pagination cursor and it is an INSTANT, never a row id.
+     * the pagination cursor and it is an INSTANT, never a row id — which is
+     * also what lets two sources with completely different storage share it.
      */
     async activity(req: RouteRequest, res: RouteResponse): Promise<void> {
       const userId = await authOr401(bus, initCtx, req, res);
@@ -2517,47 +2686,86 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         strict = false;
       }
 
+      /*
+        TWO SOURCES, ONE COLLECTION. Routine fires say what an agent did on its
+        own; decision receipts say what it did because a person said yes. They
+        are one story to a reader, so they are one feed — and both are asked the
+        SAME question (`limit`, `before`) so a merge cannot lose a row at the
+        seam. Each source hands back its newest `limit`; the merge sorts and
+        cuts, so a page is right however lopsided the mix happens to be.
+      */
       const slices = await Promise.all(
         targets.map(async (a) => {
-          const fires = await firesForAgent(a.id, limit, before, strict);
-          if (fires.length === 0) return { fires, names: new Map<string, string>() };
-          return { fires, names: await routineNames(a.id) };
+          const [fires, receipts] = await Promise.all([
+            firesForAgent(a.id, limit, before, strict),
+            receiptsForAgent(a.id, userId, limit, before, strict),
+          ]);
+          if (fires.length === 0) {
+            return { fires, receipts, names: new Map<string, string>() };
+          }
+          return { fires, receipts, names: await routineNames(a.id) };
         }),
       );
 
-      // Merge, newest first. Undateable rows sort last and are dropped by the
-      // mapper; they are not silently filed under "now".
+      /*
+        Mapped BEFORE the merge, so the two sources are comparable as one list
+        and the cursor below can be taken off whatever actually landed last.
+
+        `event: null` is a row that renders as nothing — a silenced fire, or
+        anything undateable. It still occupies its place in the page, which is
+        what keeps `nextBefore` honest: see `ActivityResponse`, a page can
+        legitimately come back with zero events and more history behind it.
+
+        Undateable rows sort LAST (`sortableStamp` floors them at -Infinity)
+        rather than landing wherever `NaN` comparisons leave them. They are
+        dropped by the mappers; they must not take a datable row's place on the
+        page on their way out.
+      */
       const merged = slices
-        .flatMap((s) => s.fires.map((f) => ({ fire: f, names: s.names })))
-        .sort((x, y) => sortableStamp(y.fire.firedAt) - sortableStamp(x.fire.firedAt))
+        .flatMap((s) => [
+          ...s.fires.map((f) => ({
+            stamp: sortableStamp(f.firedAt),
+            event: fireToActivityEvent(f, s.names),
+          })),
+          ...s.receipts.map((r) => ({
+            stamp: sortableStamp(r.at),
+            event: receiptToActivityEvent(r),
+          })),
+        ])
+        .sort((x, y) => y.stamp - x.stamp)
         .slice(0, limit);
 
       const events: ActivityEvent[] = [];
       for (const m of merged) {
-        const ev = fireToActivityEvent(m.fire, m.names);
-        if (ev !== null) events.push(ev);
+        if (m.event !== null) events.push(m.event);
       }
 
       /*
-        The cursor is the last fire we CONSIDERED. See `ActivityResponse`: a
-        page of all-silenced fires renders nothing, and a cursor taken from the
-        last visible row would strand the reader on it.
+        The cursor is the last row we CONSIDERED, not the last one rendered.
+        See `ActivityResponse`: a page of all-silenced fires renders nothing,
+        and a cursor taken from the last visible row would strand the reader on
+        it.
 
-        `null` when this page did not fill: every agent handed back everything
+        `null` when this page did not fill: every source handed back everything
         it had, so there is nothing older to ask for.
 
-        The cursor is EXCLUSIVE (`fired_at < before`), so two fires sharing a
-        millisecond exactly across a page boundary would cost the second one.
-        Fires are seconds-apart events written by a tick loop; a shared
-        millisecond is not a case we have, and the alternative — an inclusive
-        cursor — repeats a row on every single page turn, which a reader
-        actually notices.
+        The cursor is EXCLUSIVE on BOTH sources (`fired_at < before`,
+        `resolved_at < before`), so two rows sharing a millisecond exactly
+        across a page boundary would cost the second one. Fires are
+        seconds-apart events written by a tick loop and decisions are answered
+        by a human pressing a button; a shared millisecond is not a case we
+        have, and the alternative — an inclusive cursor — repeats a row on every
+        single page turn, which a reader actually notices.
+
+        `Number.isFinite`, not `!Number.isNaN`: `sortableStamp` floors an
+        unreadable instant at -Infinity so it sorts last, and `new
+        Date(-Infinity).toISOString()` THROWS rather than producing a bad
+        cursor.
       */
       const filled = merged.length === limit;
-      const last = merged.at(-1);
-      const lastStamp = last === undefined ? NaN : fireStamp(last.fire.firedAt);
+      const lastStamp = merged.at(-1)?.stamp ?? NaN;
       const nextBefore =
-        filled && !Number.isNaN(lastStamp) ? new Date(lastStamp).toISOString() : null;
+        filled && Number.isFinite(lastStamp) ? new Date(lastStamp).toISOString() : null;
 
       res.status(200).json({ events, nextBefore } satisfies ActivityResponse);
     },

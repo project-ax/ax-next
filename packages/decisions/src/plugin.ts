@@ -24,14 +24,15 @@ import {
 } from './machine.js';
 import { runDecisionsMigration, type DecisionsDatabase } from './migrations.js';
 import { createPreCallSubscriber, PLUGIN_NAME, type PolicyAnswer } from './pre-call.js';
-import { emitExecuted, replayContext, settleReplay } from './replay.js';
+import { receiptFor } from './receipts.js';
+import { replayContext, settleReplay } from './replay.js';
 import { createDecisionsStore, type DecisionStore } from './store.js';
-import { PENDING_AGENT_RECEIPT, RETRACTED_RECEIPT } from './templates.js';
 import {
   DecisionsApproveOutputSchema,
   DecisionsDismissOutputSchema,
   DecisionsGetOutputSchema,
   DecisionsListOutputSchema,
+  DecisionsRecentReceiptsOutputSchema,
   DecisionsSweepOutputSchema,
   DecisionsUndoOutputSchema,
   type Attendance,
@@ -44,6 +45,8 @@ import {
   type DecisionsGetOutput,
   type DecisionsListInput,
   type DecisionsListOutput,
+  type DecisionsRecentReceiptsInput,
+  type DecisionsRecentReceiptsOutput,
   type DecisionsSweepInput,
   type DecisionsSweepOutput,
   type DecisionsUndoInput,
@@ -66,6 +69,22 @@ export const DEFAULT_DECISION_TTL_MS = 48 * 60 * 60 * 1000;
  * by at most one interval, and being a few seconds late to send is fine.
  */
 export const DEFAULT_SWEEP_INTERVAL_MS = 5_000;
+
+/**
+ * The receipt page size, and its ceiling.
+ *
+ * The caller asks and we decide — a page size that arrives from a query string
+ * is untrusted input, and an unbounded one is a read that can be pointed at the
+ * whole table. The ceiling is generous because the Activity feed's own cap is
+ * 100 and it fans out across a roster; anything past that is not a page.
+ */
+export const DEFAULT_RECEIPT_LIMIT = 50;
+export const MAX_RECEIPT_LIMIT = 200;
+
+function clampReceiptLimit(limit: number | undefined): number {
+  if (typeof limit !== 'number' || !Number.isFinite(limit)) return DEFAULT_RECEIPT_LIMIT;
+  return Math.min(MAX_RECEIPT_LIMIT, Math.max(1, Math.floor(limit)));
+}
 
 export interface DecisionsPluginOptions {
   /** Time seam. */
@@ -139,6 +158,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       registers: [
         'decisions:list',
         'decisions:get',
+        'decisions:recent-receipts-for-agent',
         'decisions:approve',
         'decisions:dismiss',
         'decisions:undo',
@@ -314,6 +334,47 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           ),
         }),
         { returns: DecisionsGetOutputSchema },
+      );
+
+      /**
+       * The receipts, DERIVED from the rows, newest first, one page at a time.
+       *
+       * This is what replaced `decisions:executed` (TASK-279). The old hook
+       * pushed a receipt at whoever was listening the instant an outcome
+       * landed; nobody ever was, so no receipt existed anywhere and undo's
+       * retraction fired into the void. Reading them off the rows instead means
+       * there is exactly one place the outcome is recorded, undo removes a
+       * receipt by simply putting the row back, and a reader that was offline
+       * for the fire still sees everything that happened.
+       *
+       * Paged to match `routines:recent-fires-for-agent` field for field,
+       * because the Activity feed merges the two into one time-ordered
+       * collection and two sources that page differently cannot be merged
+       * without losing rows at the seam.
+       */
+      bus.registerService<DecisionsRecentReceiptsInput, DecisionsRecentReceiptsOutput>(
+        'decisions:recent-receipts-for-agent',
+        PLUGIN_NAME,
+        async (_ctx, input) => {
+          const ownerUserId = requireField(input.userId, 'userId');
+          const agentId = requireField(input.agentId, 'agentId');
+          const rows = await store!.listReceiptCandidates({
+            ownerUserId,
+            agentId,
+            limit: clampReceiptLimit(input.limit),
+            before: input.before,
+          });
+          // `receiptFor` cannot answer null for anything the store selected —
+          // the query is the same rule — but it is typed to allow it and this
+          // is a read, not a claim. Filtering rather than asserting means a
+          // future divergence costs a missing row, not a crashed feed.
+          return {
+            receipts: rows
+              .map(receiptFor)
+              .filter((r): r is NonNullable<typeof r> => r !== null),
+          };
+        },
+        { returns: DecisionsRecentReceiptsOutputSchema },
       );
 
       // ---------------------------------------------------------------------
@@ -614,13 +675,10 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           }
 
           if (parked) {
-            await emitExecuted(
-              bus,
-              replayContext(claimed),
-              claimed,
-              'pending-agent',
-              PENDING_AGENT_RECEIPT,
-            );
+            // The row IS the receipt. `approved-pending-agent` with nothing yet
+            // consumed reads back as "Approved — it will do this the next time
+            // it runs" (see `receiptFor`), so there is nothing to announce here
+            // and nothing that can announce it wrongly.
             return inert(claimed);
           }
 
@@ -745,23 +803,22 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
             return { decision: (await store!.get(decisionId, ownerUserId)) ?? current, undone: false };
           }
 
-          // RETRACT THE RECEIPT. `outcome: 'retracted'` is a REMOVE instruction
-          // keyed on the decision id, not a new line of history: a receipt
-          // still standing next to a decision that is open again is the same
-          // class of lie as claiming an unsent email was sent (design H1).
+          // THE RECEIPT IS ALREADY GONE, and nothing here had to remove it.
           //
-          // Fired for both authorising statuses even though only
-          // `approved-pending-agent` is guaranteed to have emitted a receipt —
-          // an attended approval emits none, and a deferred replay has not run
-          // yet. On those paths a subscriber keyed on the decision id finds
-          // nothing to remove, which is the correct no-op. Firing anyway is the
-          // deliberate choice: a subscriber should never have to work out which
-          // execution path an approval took in order to keep its own list
-          // honest. (A row the host ALREADY replayed cannot reach here at all —
-          // the `replayedAt` guard above refuses that undo outright.)
-          if (current.status === 'executed' || current.status === 'approved-pending-agent') {
-            await emitExecuted(bus, replayContext(saved), saved, 'retracted', RETRACTED_RECEIPT);
-          }
+          // `restore` wrote `pending` and cleared `resolvedAt`, and `receiptFor`
+          // answers null for that row — so the line that said what happened
+          // stops existing the instant the row stops saying it happened. There
+          // is no removal to get wrong and no window in which the two disagree.
+          //
+          // This used to be a `decisions:executed` fire carrying
+          // `outcome: 'retracted'`, i.e. "delete the row you wrote for me
+          // earlier". It was fired for both authorising statuses even though
+          // only one of them was guaranteed to have a receipt, on the reasoning
+          // that a subscriber should not have to work out which execution path
+          // an approval took. That reasoning was sound and the mechanism was
+          // not: nothing ever subscribed, so no receipt existed to retract, and
+          // the whole scheme only ever needed to exist because the receipt was
+          // being pushed instead of read. See TASK-279.
           return { decision: saved, undone: true };
         },
         { returns: DecisionsUndoOutputSchema },

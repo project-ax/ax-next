@@ -1,9 +1,12 @@
 export {
   createDecisionsPlugin,
   DEFAULT_DECISION_TTL_MS,
+  DEFAULT_RECEIPT_LIMIT,
   DEFAULT_SWEEP_INTERVAL_MS,
+  MAX_RECEIPT_LIMIT,
 } from './plugin.js';
-export { replayOnApprove, replayContext, settleReplay, emitExecuted } from './replay.js';
+export { replayOnApprove, replayContext, settleReplay } from './replay.js';
+export { receiptFor, RECEIPT_STATUSES } from './receipts.js';
 export type { ReplayOutcome } from './replay.js';
 export { sweepExpired, runDueReplays, DEFAULT_REPLAY_BATCH } from './expiry.js';
 export type { DecisionsPluginOptions } from './plugin.js';
@@ -49,7 +52,7 @@ export { deliverResolution, SESSION_QUEUE_HOOK } from './delivery.js';
 export type { DeliveryResult, ResolutionOutcome } from './delivery.js';
 export type { PolicyAnswer, PreCallDeps, PreCallSubscriber } from './pre-call.js';
 export { createDecisionsStore } from './store.js';
-export type { DecisionListFilter, DecisionStore } from './store.js';
+export type { DecisionListFilter, DecisionReceiptFilter, DecisionStore } from './store.js';
 export {
   decisionApprovedNote,
   decisionDismissedNote,
@@ -62,18 +65,19 @@ export {
   FAILED_RECEIPT,
   GATE_FAILURE_SENTENCE,
   PENDING_AGENT_RECEIPT,
-  RETRACTED_RECEIPT,
 } from './templates.js';
 export type { DecisionText, DecisionTextInput } from './templates.js';
 export { runDecisionsMigration } from './migrations.js';
 export type { DecisionRow, DecisionsDatabase } from './migrations.js';
 export {
   AUTHORISING_STATUSES,
+  DecisionReceiptSchema,
   DecisionSchema,
   DecisionsApproveOutputSchema,
   DecisionsDismissOutputSchema,
   DecisionsGetOutputSchema,
   DecisionsListOutputSchema,
+  DecisionsRecentReceiptsOutputSchema,
   DecisionsSweepOutputSchema,
   DecisionsUndoOutputSchema,
   DecisionStatusSchema,
@@ -85,9 +89,9 @@ export type {
   ActivityKind,
   Attendance,
   Decision,
-  DecisionExecutedOutcome,
-  DecisionExecutedPayload,
   DecisionKind,
+  DecisionReceipt,
+  DecisionReceiptOutcome,
   DecisionRaisedPayload,
   DecisionsSweepInput,
   DecisionsSweepOutput,
@@ -100,6 +104,8 @@ export type {
   DecisionsGetOutput,
   DecisionsListInput,
   DecisionsListOutput,
+  DecisionsRecentReceiptsInput,
+  DecisionsRecentReceiptsOutput,
   DecisionsUndoInput,
   DecisionsUndoOutput,
   ExecutionPath,

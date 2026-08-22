@@ -27,13 +27,9 @@
  */
 import { makeAgentContext, type AgentContext, type HookBus } from '@ax/core';
 import type { DecisionStore } from './store.js';
-import {
-  sanitizeFailureDetail,
-  FAILED_RECEIPT,
-  PENDING_AGENT_RECEIPT,
-} from './templates.js';
+import { sanitizeFailureDetail } from './templates.js';
 import { PLUGIN_NAME } from './pre-call.js';
-import type { Decision, DecisionExecutedPayload } from './types.js';
+import type { Decision } from './types.js';
 
 export interface ReplayOutcome {
   /** True only when a host executor actually returned. */
@@ -144,8 +140,15 @@ export async function replayOnApprove(args: {
 }
 
 /**
- * Run the replay AND persist what happened AND emit the receipt — three halves
- * that must not come apart.
+ * Run the replay AND persist what happened — two halves that must not come
+ * apart.
+ *
+ * It used to be three: a `decisions:executed` fire carried the receipt to
+ * whoever was listening. Nobody ever was, and TASK-279 replaced the event with
+ * a read — `receiptFor` derives the same sentence from the row this function
+ * writes. So persisting the outcome IS emitting the receipt now, and the class
+ * of bug where the write loses its race and the emit goes out anyway has
+ * nothing left to happen in.
  *
  * Shared by the two callers that replay a call: `decisions:approve` for a
  * reversible one, and the sweep for an irreversible one whose undo window has
@@ -171,20 +174,22 @@ export async function settleReplay(args: {
   const outcome = await replayOnApprove({ bus, ctx, decision });
 
   if (outcome.executed) {
-    // Stamp it BEFORE the receipt. `replayed_at` is what takes the row out of
-    // the standing-authorisation set — an identical agent call must not cash in
-    // the same yes, and an undo must not put it back on the queue for a second
-    // run. Emitting the receipt first would leave a window where both are true.
+    // `replayed_at` is what takes the row out of the standing-authorisation
+    // set — an identical agent call must not cash in the same yes, and an undo
+    // must not put it back on the queue for a second run. It is also, now, the
+    // thing that makes the receipt exist: `receiptFor` reads this stamp.
     //
     // This one write is unconditional on status (see `markReplayed`), so a null
     // here means the ROW IS GONE, not that we lost a race. Say so out loud: a
-    // receipt about to be emitted for a decision that no longer exists is worth
-    // finding in a log.
-    const stamped = await store.markReplayed(decision.id, now().toISOString());
-    warnIfLost(ctx, decision, 'markReplayed', stamped);
-    // The authored line written when the human was asked — and the only one of
-    // the four that claims the thing happened.
-    await emitExecuted(bus, ctx, decision, 'executed', decision.approvedText);
+    // call that went out with no row left to record it is worth finding in a
+    // log — and it is the one case where the receipt is genuinely lost, because
+    // there is nothing left to derive it from.
+    warnIfLost(
+      ctx,
+      decision,
+      'markReplayed',
+      await store.markReplayed(decision.id, now().toISOString()),
+    );
     return outcome;
   }
 
@@ -202,8 +207,13 @@ export async function settleReplay(args: {
     //     to make the call itself.
     //
     // Either way the approval stands and the agent will perform it.
+    //
+    // A LOST write here used to be a live bug (TASK-281): the park could lose
+    // to a concurrent undo and the `pending-agent` receipt went out anyway, so
+    // the feed claimed an approval the person had just taken back. There is no
+    // emit left. The row the undo wrote is `pending`, and a `pending` row has
+    // no receipt — the actor that moved the row owns what it says.
     warnIfLost(ctx, decision, 'parkForAgent', await store.parkForAgent(decision.id));
-    await emitExecuted(bus, ctx, decision, 'pending-agent', PENDING_AGENT_RECEIPT);
     return outcome;
   }
 
@@ -213,15 +223,16 @@ export async function settleReplay(args: {
     'markFailed',
     await store.markFailed(decision.id, { error: outcome.error }),
   );
-  await emitExecuted(bus, ctx, decision, 'failed', FAILED_RECEIPT);
   return outcome;
 }
 
 /**
  * A conditional write that changed nothing means the row moved underneath us.
- * Nothing here can un-run the call, so there is no recovery to attempt — but a
- * receipt whose row does not match it is exactly the kind of drift that is
- * impossible to reconstruct later from silence.
+ * Nothing here can un-run the call, so there is no recovery to attempt — and
+ * since the receipt is READ off the row, whatever moved it owns what the row
+ * now says. That is the correct outcome, but it is still worth a line: a call
+ * the host actually made, recorded nowhere, is impossible to reconstruct later
+ * from silence.
  */
 function warnIfLost(
   ctx: AgentContext,
@@ -235,39 +246,4 @@ function warnIfLost(
     decisionId: decision.id,
     write,
   });
-}
-
-/**
- * Fire `decisions:executed`.
- *
- * `HookBus.fire` resolves rather than throws when a subscriber blows up, so a
- * broken Activity feed cannot take the replay down with it. A subscriber
- * REJECTION is deliberately ignored: this hook reports something that has
- * already happened, and there is nothing left to veto.
- */
-export async function emitExecuted(
-  bus: HookBus,
-  ctx: AgentContext,
-  decision: Decision,
-  outcome: DecisionExecutedPayload['outcome'],
-  receipt: string,
-): Promise<void> {
-  const payload: DecisionExecutedPayload = {
-    decisionId: decision.id,
-    agentId: decision.agentId,
-    conversationId: decision.conversationId,
-    outcome,
-    // HOST-AUTHORED, chosen per outcome. Never `call.input`, and never one
-    // outcome's line rewritten into another's (design H1).
-    receipt,
-  };
-  try {
-    await bus.fire('decisions:executed', ctx, payload);
-  } catch (err) {
-    ctx.logger.error('decisions_executed_fire_failed', {
-      plugin: PLUGIN_NAME,
-      decisionId: decision.id,
-      err: err instanceof Error ? err : new Error(String(err)),
-    });
-  }
 }

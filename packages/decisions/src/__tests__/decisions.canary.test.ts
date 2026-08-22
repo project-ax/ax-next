@@ -31,11 +31,13 @@ import { UNDO_WINDOW_MS } from '../machine.js';
 import { createDecisionsPlugin, type DecisionsPluginOptions } from '../plugin.js';
 import type {
   Decision,
-  DecisionExecutedPayload,
+  DecisionReceipt,
   DecisionRaisedPayload,
   DecisionsApproveOutput,
   DecisionsGetOutput,
   DecisionsListOutput,
+  DecisionsRecentReceiptsInput,
+  DecisionsRecentReceiptsOutput,
   DecisionsSweepOutput,
   DecisionsUndoOutput,
 } from '../types.js';
@@ -286,18 +288,23 @@ async function readDecision(
   return decision!;
 }
 
-/** Collect every `decisions:executed` receipt this harness emits. */
-function collectReceipts(h: TestHarness): DecisionExecutedPayload[] {
-  const seen: DecisionExecutedPayload[] = [];
-  h.bus.subscribe<DecisionExecutedPayload>(
-    'decisions:executed',
-    '@ax/decisions/test/receipts',
-    async (_c, payload) => {
-      seen.push(payload);
-      return undefined;
-    },
+/**
+ * Read this agent's receipts back off the rows, through the real hook.
+ *
+ * A PULL, not a spy on a fire, and that is the point of TASK-279. The old
+ * helper subscribed to `decisions:executed` and collected what went past —
+ * which measured that an event was emitted, not that any receipt existed. It
+ * could not have caught the fact that nothing in the deployment subscribed, and
+ * it did not. Reading is the same thing the Activity feed does, so a receipt
+ * that fails to appear here fails to appear there.
+ */
+async function readReceipts(h: TestHarness): Promise<DecisionReceipt[]> {
+  const out = await h.bus.call<DecisionsRecentReceiptsInput, DecisionsRecentReceiptsOutput>(
+    'decisions:recent-receipts-for-agent',
+    userCtx(h),
+    { userId: 'u1', agentId: 'a1' },
   );
-  return seen;
+  return out.receipts;
 }
 
 describe('decisions canary', () => {
@@ -768,12 +775,12 @@ describe('decisions canary — execute on approve', () => {
 
   it('the parked receipt promises the future and never claims a send', async () => {
     const h = await boot();
-    const receipts = collectReceipts(h);
     const id = await holdAndId(h, routineCtx(h), SANDBOX_CALL);
     const stored = await readDecision(h, userCtx(h), id);
 
     await approve(h, userCtx(h), id);
 
+    const receipts = await readReceipts(h);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]!.outcome).toBe('pending-agent');
     expect(receipts[0]!.decisionId).toBe(id);
@@ -842,7 +849,6 @@ describe('decisions canary — execute on approve', () => {
     // did — and must not leave a standing "yes" behind either.
     const h = await boot();
     recordExecutor(h, HOLD_RULE.match.tool, { throws: 'upstream 503' });
-    const receipts = collectReceipts(h);
     const id = await holdAndId(h, routineCtx(h), CALL);
     const stored = await readDecision(h, userCtx(h), id);
 
@@ -855,27 +861,41 @@ describe('decisions canary — execute on approve', () => {
     expect(after.status).toBe('failed');
     expect(after.replayError).toContain('upstream 503');
 
+    const receipts = await readReceipts(h);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]!.outcome).toBe('failed');
     // The receipt a human reads is the AUTHORED failure line — never the
     // approved one, and never the executor's own message.
     expect(receipts[0]!.receipt).not.toContain(stored.approvedText);
     expect(receipts[0]!.receipt).not.toContain('upstream 503');
+    // The executor's words ride BESIDE it, as audit-trail detail.
+    expect(receipts[0]!.error).toContain('upstream 503');
 
     // And the agent cannot quietly cash in a yes for something that failed.
     expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
   });
 
-  it('undoing an approval the host has NOT yet acted on retracts its receipt', async () => {
-    // The sandbox-only case: the approval is real, the receipt says "it will
-    // do this the next time it runs", and nothing has gone out yet — so there
-    // is something an undo can actually take back.
+  it('an undone execution\'s receipt DISAPPEARS', async () => {
+    /*
+      TASK-237's acceptance criterion, which could not be exercised until now:
+      there was no receipt anywhere, so there was nothing for an undo to remove
+      and the criterion could not fail in the interesting way.
+
+      The sandbox-only case, because it is the one where an approval is real and
+      nothing has gone out yet — so there is genuinely something an undo can
+      take back. Driven through the REAL `decisions:undo` against real Postgres,
+      and read back through the REAL hook the Activity feed reads: no fire-spy
+      is involved on either side, because a spy would only have shown that an
+      event went past and this repo has been bitten by exactly that.
+    */
     const h = await boot();
-    const receipts = collectReceipts(h);
     const id = await holdAndId(h, routineCtx(h), SANDBOX_CALL);
 
     await approve(h, userCtx(h), id);
-    expect(receipts.at(-1)!.outcome).toBe('pending-agent');
+    expect((await readReceipts(h))[0]).toMatchObject({
+      decisionId: id,
+      outcome: 'pending-agent',
+    });
 
     const undone = await h.bus.call<unknown, { undone: boolean; decision: Decision | null }>(
       'decisions:undo',
@@ -885,10 +905,11 @@ describe('decisions canary — execute on approve', () => {
     expect(undone.undone).toBe(true);
     expect(undone.decision!.status).toBe('pending');
 
-    // The receipt above is now describing something that no longer holds, so
-    // AW-10's feed is told to remove it rather than leave the old claim
-    // standing next to a decision that is open again.
-    expect(receipts.at(-1)).toMatchObject({ decisionId: id, outcome: 'retracted' });
+    // GONE. Nothing deleted it and nothing was told to: the row is open again,
+    // and a receipt read off an open row does not exist. A line still claiming
+    // the agent would go on to do this would be the same class of lie as
+    // claiming an unsent email was sent (design H1).
+    expect(await readReceipts(h)).toEqual([]);
     // And the standing authorisation went with it.
     expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), SANDBOX_CALL))).toBe(true);
   });
@@ -899,11 +920,10 @@ describe('decisions canary — execute on approve', () => {
     // approval do the whole thing again.
     const h = await boot();
     const executor = recordExecutor(h, HOLD_RULE.match.tool);
-    const receipts = collectReceipts(h);
     const id = await holdAndId(h, routineCtx(h), CALL);
 
     await approve(h, userCtx(h), id);
-    expect(receipts.at(-1)!.outcome).toBe('executed');
+    expect((await readReceipts(h))[0]!.outcome).toBe('executed');
 
     const undone = await h.bus.call<unknown, { undone: boolean; decision: Decision | null }>(
       'decisions:undo',
@@ -912,8 +932,9 @@ describe('decisions canary — execute on approve', () => {
     );
     expect(undone.undone).toBe(false);
     expect(undone.decision!.status).toBe('executed');
-    // No retraction was invented for a receipt that still stands…
-    expect(receipts.at(-1)!.outcome).toBe('executed');
+    // The refusal changed nothing, so the receipt still stands and still says
+    // the same thing — read back off the row, not remembered from earlier.
+    expect((await readReceipts(h))[0]!.outcome).toBe('executed');
     // …and nothing ran a second time.
     expect(executor.calls).toHaveLength(1);
   });
@@ -927,7 +948,6 @@ describe('decisions canary — execute on approve', () => {
     let clock = new Date('2026-08-21T09:00:00.000Z');
     const h = await boot({ now: () => clock }, { rules: IRREVERSIBLE_RULES });
     const executor = recordExecutor(h, HOLD_RULE.match.tool);
-    const receipts = collectReceipts(h);
     const id = await holdAndId(h, routineCtx(h), CALL);
 
     const out = await approve(h, userCtx(h), id);
@@ -936,8 +956,9 @@ describe('decisions canary — execute on approve', () => {
     expect(out.path).toBe('host-replays');
     expect(out.pendingUntil).not.toBeNull();
     expect(executor.calls).toEqual([]);
-    // No receipt yet either: nothing has happened, so nothing says it has.
-    expect(receipts).toEqual([]);
+    // No receipt yet either: nothing has happened, so nothing says it has —
+    // and for the next ten seconds an undo can still stop it.
+    expect(await readReceipts(h)).toEqual([]);
 
     const stored = await readDecision(h, userCtx(h), id);
     expect(stored.irreversible).toBe(true);
@@ -958,7 +979,10 @@ describe('decisions canary — execute on approve', () => {
     );
     expect(swept.replayed).toBe(1);
     expect(executor.calls).toEqual([CALL]);
-    expect(receipts.at(-1)).toMatchObject({ decisionId: id, outcome: 'executed' });
+    expect((await readReceipts(h))[0]).toMatchObject({
+      decisionId: id,
+      outcome: 'executed',
+    });
 
     const after = await readDecision(h, userCtx(h), id);
     expect(after.status).toBe('executed');
@@ -1209,7 +1233,6 @@ describe('decisions canary — attendance and delivery', () => {
     // the approval stands and the agent will perform it next time it runs.
     const channels = liveChannels();
     const h = await boot({}, undefined, channels);
-    const receipts = collectReceipts(h);
     const ctx = userCtx(h);
     const id = await holdAndId(h, ctx, SANDBOX_CALL);
     expect((await readDecision(h, ctx, id)).attendance).toBe('attended');
@@ -1222,6 +1245,7 @@ describe('decisions canary — attendance and delivery', () => {
     expect(h.delivered).toEqual([]);
 
     // And the receipt promises the future instead of claiming a send.
+    const receipts = await readReceipts(h);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]!.outcome).toBe('pending-agent');
     expect(receipts[0]!.receipt).toContain('the next time it runs');
@@ -1315,7 +1339,6 @@ describe('decisions canary — attendance and delivery', () => {
     // `executed` is written and then walked back, and the assertion that
     // matters is that it IS walked back.
     const h = await boot({}, undefined, liveChannels(), { throws: 'unknown-session' });
-    const receipts = collectReceipts(h);
     const ctx = userCtx(h);
     const id = await holdAndId(h, ctx, SANDBOX_CALL);
 
@@ -1327,6 +1350,7 @@ describe('decisions canary — attendance and delivery', () => {
     expect((await readDecision(h, ctx, id)).status).toBe('approved-pending-agent');
 
     // "Approved — it will do this the next time it runs", never "Sent".
+    const receipts = await readReceipts(h);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]!.outcome).toBe('pending-agent');
     expect(receipts[0]!.receipt).toContain('the next time it runs');
@@ -1343,7 +1367,6 @@ describe('decisions canary — attendance and delivery', () => {
     // failed.
     const h = await boot({}, undefined, liveChannels(), { throws: 'unknown-session' });
     recordExecutor(h, HOLD_RULE.match.tool, { throws: 'upstream 503' });
-    const receipts = collectReceipts(h);
     const ctx = userCtx(h);
     const id = await holdAndId(h, ctx, CALL);
     const stored = await readDecision(h, ctx, id);
@@ -1359,6 +1382,7 @@ describe('decisions canary — attendance and delivery', () => {
     expect(after.replayError).toContain('upstream 503');
     expect(after.replayedAt).toBeNull();
 
+    const receipts = await readReceipts(h);
     expect(receipts).toHaveLength(1);
     expect(receipts[0]!.outcome).toBe('failed');
     // The authored failure line — never the approved one, never the executor's
@@ -1377,14 +1401,13 @@ describe('decisions canary — attendance and delivery', () => {
     // then fails and the host takes over, the row sat `executed` with both
     // `replay_claimed_at` and `replayed_at` null — exactly what `restore`
     // accepts — for the whole duration of the host tool. An undo landing there
-    // answered `undone: true` and fired the retracted receipt while the call
-    // was already going out, and `markReplayed` then wrote `executed` back over
-    // the person who thought they had stopped it.
+    // answered `undone: true` — telling the person it was taken back — while
+    // the call was already going out, and `markReplayed` then wrote `executed`
+    // back over the person who thought they had stopped it.
     //
     // Undo needs no warm agent, which is what the first version of this branch
     // failed to consider. It is a person and a button.
     const h = await boot({}, undefined, liveChannels(), { throws: 'unknown-session' });
-    const receipts = collectReceipts(h);
     const ctx = userCtx(h);
     const calls: ToolCall[] = [];
     let id = '';
@@ -1421,9 +1444,9 @@ describe('decisions canary — attendance and delivery', () => {
     expect(undoInside!.decision!.status).toBe('executed');
     expect(out.executed).toBe(true);
 
-    // No retraction was invented for a receipt that still stands, and the one
-    // receipt emitted is the executed one.
-    expect(receipts.map((r) => r.outcome)).toEqual(['executed']);
+    // The row is what a reader sees, and it says the call went out. There is
+    // no separate retraction anybody could have written over it.
+    expect((await readReceipts(h)).map((r) => r.outcome)).toEqual(['executed']);
 
     const after = await readDecision(h, ctx, id);
     expect(after.status).toBe('executed');

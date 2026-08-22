@@ -8,6 +8,7 @@
  * for real in `decisions.canary.test.ts`. This fake exists so the gate's tests
  * stay fast and hermetic, not to stand in for either of those.
  */
+import { RECEIPT_STATUSES } from '../receipts.js';
 import type { DecisionStore } from '../store.js';
 import { AUTHORISING_STATUSES, type Decision, type DecisionStatus } from '../types.js';
 
@@ -71,6 +72,33 @@ export function createFakeStore(): FakeStore {
         .filter((r) => agentId === undefined || r.agentId === agentId)
         .filter((r) => (status === undefined ? OPEN.includes(r.status) : r.status === status))
         .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+    },
+
+    /**
+     * The same rule the real store pushes into SQL, in the shape this fake
+     * uses for everything else. It is kept honest by `store.test.ts`, which
+     * runs the receipt-candidate cases against both this and real Postgres —
+     * a fake that answered a different question would let a caller's test pass
+     * over a query that does not work.
+     */
+    async listReceiptCandidates({ ownerUserId, agentId, limit, before }) {
+      return [...rows.values()]
+        .filter((r) => r.ownerUserId === ownerUserId && r.agentId === agentId)
+        .filter((r) => r.resolvedAt !== null)
+        .filter((r) => RECEIPT_STATUSES.includes(r.status))
+        .filter(
+          (r) =>
+            r.status !== 'executed' || r.replayedAt !== null || r.consumedAt !== null,
+        )
+        .filter((r) => before === undefined || r.resolvedAt! < before)
+        .sort((a, b) =>
+          a.resolvedAt! === b.resolvedAt!
+            ? b.id.localeCompare(a.id)
+            : a.resolvedAt! < b.resolvedAt!
+              ? 1
+              : -1,
+        )
+        .slice(0, limit);
     },
 
     async claimForApproval(decisionId, { nowIso, status, replayDueAt, replayClaimedAt }) {

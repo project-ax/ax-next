@@ -1111,13 +1111,23 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // pairing audit runs a second time on its first maintenance sweep, by which
   // point the whole boot is done.
   //
-  // HALF-WIRED WINDOW NARROWED (TASK-232 / AW-11): the Today queue now calls
-  // `decisions:list` / `:get` / `:approve` / `:dismiss` / `:undo` through
-  // channel-web's `/api/workspace/decisions*` routes, and `decisions:raised`
-  // reaches a live client as an SSE frame. What is STILL open is the receipt
-  // half — nothing subscribes `decisions:executed` yet, so an approval that the
-  // host performs leaves no row in the Activity feed. TASK-231 (AW-10) shipped
-  // the feed; joining the two is its follow-up.
+  // HALF-WIRED WINDOW CLOSED (TASK-232 / AW-11, then TASK-279): the Today queue
+  // calls `decisions:list` / `:get` / `:approve` / `:dismiss` / `:undo` through
+  // channel-web's `/api/workspace/decisions*` routes, `decisions:raised`
+  // reaches a live client as an SSE frame, and the receipt half — the last one
+  // open — now lands in the Activity feed.
+  //
+  // It was closed by DELETION, which is worth recording because the note here
+  // spent three slices promising a subscriber instead. `decisions:executed` was
+  // fired and subscribed to by nothing: an approval the host performed left no
+  // row in the feed, and undo's retraction landed on nothing. The fix was not
+  // the missing subscriber. The decision ROW already carries everything a
+  // receipt says, so the fire is gone and channel-web's `activity()` READS the
+  // receipts through `decisions:recent-receipts-for-agent`, merging them with
+  // the routine fires. Undo needs no removal path — the row goes back to
+  // `pending` and the derived receipt stops existing.
+  //
+  // Every hook this plugin registers now has a caller in this preset.
   plugins.push(createDecisionsPlugin());
 
   // ----- 8b. credentials admin routes (optional) -------------------------

@@ -18,6 +18,7 @@
  */
 import { sql, type Kysely } from 'kysely';
 import type { DecisionRow, DecisionsDatabase } from './migrations.js';
+import { RECEIPT_STATUSES } from './receipts.js';
 import {
   AUTHORISING_STATUSES,
   type Decision,
@@ -42,11 +43,55 @@ export interface DecisionListFilter {
   status?: DecisionStatus | undefined;
 }
 
+/**
+ * One agent's resolved decisions, newest first, one page at a time.
+ *
+ * A separate filter from `DecisionListFilter` rather than three optional fields
+ * bolted onto it: the queue read is "what is still open for this person",
+ * oldest first and unpaginated because a queue that needs paging is a queue
+ * nobody is answering. This one is history, newest first, and it has to page —
+ * two different questions, and merging them would leave every caller reading
+ * the doc comment to find out which one it was asking.
+ */
+export interface DecisionReceiptFilter {
+  ownerUserId: string;
+  agentId: string;
+  /** Page size. Already clamped by the caller. */
+  limit: number;
+  /**
+   * ISO instant, EXCLUSIVE — strictly older than this. An instant rather than
+   * a row id, so nothing here is tied to how the rows happen to be stored.
+   */
+  before?: string | undefined;
+}
+
 export interface DecisionStore {
   create(decision: Decision): Promise<Decision>;
   /** `ownerUserId`, when given, is a scope filter and not a hint. */
   get(decisionId: string, ownerUserId?: string): Promise<Decision | null>;
   list(filter: DecisionListFilter): Promise<Decision[]>;
+
+  /**
+   * The rows a receipt can be derived from, newest resolution first.
+   *
+   * The filter is `receiptFor`'s rule pushed into SQL — the receipt-bearing
+   * statuses, AND an `executed` row only once its call has actually gone out
+   * (`replayed_at` for the host, `consumed_at` for the agent). Doing it here
+   * rather than fetching a page and discarding most of it is what makes a page
+   * exactly a page: rows dropped after the LIMIT under-fill it, and a feed
+   * paging through under-filled pages stalls short of history it has.
+   *
+   * That puts one rule in two languages, which `receipts.test.ts` and
+   * `store.test.ts` both pin. It is the same deliberate duplication
+   * `decisions:undo` already carries against `restore`'s predicates: the store
+   * is the guarantee under concurrency, the function is the one a reader can
+   * follow.
+   *
+   * Ordered by `resolved_at` — the instant the receipt is filed under — with
+   * `decision_id` as the tie-break so two decisions answered in the same
+   * millisecond have a stable order rather than a page boundary that shuffles.
+   */
+  listReceiptCandidates(filter: DecisionReceiptFilter): Promise<Decision[]>;
 
   /**
    * THE claim. A single conditional `UPDATE ... WHERE status IN ('pending',
@@ -259,6 +304,39 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       // Oldest first: the queue is a queue, and the thing that has been
       // waiting longest is the thing most likely to be about to expire.
       const rows = await q.orderBy('created_at', 'asc').orderBy('decision_id', 'asc').execute();
+      return rows.map(toDecision);
+    },
+
+    async listReceiptCandidates({ ownerUserId, agentId, limit, before }) {
+      let q = db
+        .selectFrom(table)
+        .selectAll()
+        .where('owner_user_id', '=', ownerUserId)
+        .where('agent_id', '=', agentId)
+        // A receipt is filed under the instant the person answered, so a row
+        // with no such instant has nothing to be filed under. In practice every
+        // row in the statuses below carries one; the predicate is here because
+        // the ORDER BY depends on it and a null would sort unpredictably.
+        .where('resolved_at', 'is not', null)
+        .where('status', 'in', RECEIPT_STATUSES as string[]);
+      if (before !== undefined) q = q.where('resolved_at', '<', new Date(before));
+      const rows = await q
+        // The one status that is not on its own enough: `executed` is written
+        // the moment a human says yes, and on two paths the call has not gone
+        // out yet — an irreversible one waiting out its undo window, and an
+        // attended one waiting for its warm agent. Neither has anything to
+        // report, and both are still undoable.
+        .where((eb) =>
+          eb.or([
+            eb('status', '!=', 'executed'),
+            eb('replayed_at', 'is not', null),
+            eb('consumed_at', 'is not', null),
+          ]),
+        )
+        .orderBy('resolved_at', 'desc')
+        .orderBy('decision_id', 'desc')
+        .limit(limit)
+        .execute();
       return rows.map(toDecision);
     },
 
