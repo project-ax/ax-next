@@ -102,6 +102,20 @@ export async function runConversationsMigration<DB>(
       ADD COLUMN IF NOT EXISTS hidden BOOLEAN NOT NULL DEFAULT FALSE
   `.execute(db);
 
+  // AW-6 (2026-08-21). Which CHANNEL opened this conversation. Attendance —
+  // whether a held tool call can expect a person to answer while the agent is
+  // still warm — is a property of that channel, not of the turn.
+  //
+  // Additive and NULLABLE, exactly the shape `hidden` took above, minus the
+  // NOT NULL DEFAULT. NULL reads as `'web'` at the store boundary and there is
+  // no backfill: an existing conversation is by definition one a human opened.
+  // A DEFAULT would have to be written into every row of a table that grows
+  // per chat, for a value the read path already knows.
+  await sql`
+    ALTER TABLE conversations_v1_conversations
+      ADD COLUMN IF NOT EXISTS origin TEXT
+  `.execute(db);
+
   // Phase A routines foundation (2026-05-14). Stable per-(user, agent, key)
   // conversation lookup for routines with `conversation: shared`. The
   // routines plugin passes external_key = routine_path; non-routine
@@ -241,6 +255,10 @@ export interface ConversationsRow {
   workspace_ref: string | null;
   last_activity_at: Date | null;
   hidden: boolean;
+  // AW-6 (2026-08-21). The channel that opened the conversation. NULL on every
+  // row that predates the column, and on any caller that does not pass one —
+  // `rowToConversation` reads that as `'web'`.
+  origin: string | null;
   // Phase A (routines foundation, 2026-05-14). Stable per-(user, agent, key)
   // lookup handle. See migration block above for semantics. NULL for
   // non-routine conversations.

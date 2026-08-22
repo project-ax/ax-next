@@ -32,6 +32,18 @@ export type { ContentBlock };
 
 export type TurnRole = 'user' | 'assistant' | 'tool';
 
+/**
+ * The channel that opened a conversation. See `Conversation.origin`.
+ *
+ * Two values because `packages/` contains exactly two producers of
+ * conversations: channel-web and the routines tick. A third channel adds a
+ * third value.
+ */
+export type ConversationOrigin = 'web' | 'routine';
+
+/** The values a stored `origin` may take. Exported so the store can validate against one list. */
+export const CONVERSATION_ORIGINS: readonly ConversationOrigin[] = ['web', 'routine'];
+
 export interface Turn {
   turnId: string;
   turnIndex: number;
@@ -96,6 +108,23 @@ export interface Conversation {
   /** Phase A (2026-05-14). True for routine fire-log conversations that are not user-visible. */
   hidden: boolean;
   /**
+   * AW-6 (2026-08-21). Which CHANNEL opened this conversation.
+   *
+   * It exists so a held tool call can be classified as ATTENDED (a person is
+   * watching and can answer while the agent is still warm) or UNATTENDED (the
+   * turn will end before anyone sees it). That is a property of the channel,
+   * not of the turn — `ctx.source === 'routine'` answers "was this a scheduled
+   * fire", which is a different question that happens to have the same answer
+   * today.
+   *
+   * `'web'` on every row that predates the column and on every caller that
+   * does not pass one: an existing conversation is by definition one a human
+   * opened. Adding Slack later adds a VALUE here, not a schema change — and
+   * deliberately not an `attendance` field, because attendance is derived and
+   * a headless deployment would want "always unattended" regardless of channel.
+   */
+  origin: ConversationOrigin;
+  /**
    * Phase A (routines foundation, 2026-05-14). Stable per-(user, agent,
    * key) lookup handle for `conversations:find-or-create`. The routines
    * plugin passes external_key = routine_path for `conversation: shared`
@@ -128,6 +157,16 @@ export interface CreateInput {
    * to `false`.
    */
   hidden?: boolean;
+  /**
+   * AW-6 (2026-08-21). Which channel is opening this. Defaults to `'web'` —
+   * the overwhelming majority of conversations, and the safe default for a
+   * caller that has not been taught about the field: `'web'` means attended,
+   * and a misclassified-as-attended decision is the failure mode this design
+   * is willing to have (the agent parks, the idle floor expires, the row stays
+   * in Today). The opposite mistake strands a decision waiting for a warm
+   * agent, which is why the ATTENDANCE read fails the other way.
+   */
+  origin?: ConversationOrigin;
 }
 export type CreateOutput = Conversation;
 
@@ -421,6 +460,23 @@ export interface GetMetadataOutput {
   lastActivityAt: string | null;
   /** ISO-8601. */
   createdAt: string;
+  /**
+   * AW-6 (2026-08-21). The channel that opened this conversation. Present here
+   * as well as on `conversations:get` because the ATTENDANCE read rides the
+   * `tool:pre-call` 10 s ceiling, and `conversations:get` projects the whole
+   * display-event log on its way to the same field. This hook is the single
+   * indexed row read that question deserves.
+   */
+  origin: ConversationOrigin;
+  /**
+   * AW-6 (2026-08-21). The live session serving this conversation, or null when
+   * there is none. Already on `Conversation`; surfaced here so the delivery of
+   * a resolved decision to a still-warm agent is the SAME single row read as
+   * the attendance lookup, rather than a second, heavier one.
+   *
+   * Storage-agnostic: an opaque session handle, not a pod name or a socket path.
+   */
+  activeSessionId: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -449,6 +505,12 @@ export const GetMetadataOutputSchema = z.object({
   title: z.string().nullable(),
   lastActivityAt: z.string().nullable(),
   createdAt: z.string(),
+  // AW-6. A `z.object` STRIPS keys it does not declare, so a field missing
+  // here vanishes silently on the way out of the bus — the attendance read
+  // would see `undefined` and fall to its unattended fail-safe for every
+  // conversation, forever, with nothing failing loudly.
+  origin: z.enum(['web', 'routine']),
+  activeSessionId: z.string().nullable(),
 }) as unknown as ZodType<GetMetadataOutput>;
 
 /**
@@ -600,6 +662,8 @@ export interface FindOrCreateInput {
     title?: string | null;
     /** Phase D: see CreateInput.hidden. */
     hidden?: boolean;
+    /** AW-6: see CreateInput.origin. */
+    origin?: ConversationOrigin;
   };
 }
 export interface FindOrCreateOutput {
