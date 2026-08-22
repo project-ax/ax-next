@@ -934,6 +934,27 @@ export const SessionNextMessageResponseSchema = z.discriminatedUnion('type', [
     type: z.literal('timeout'),
     cursor: z.number().int().nonnegative(),
   }),
+  // A decision the agent held earlier has been resolved by a human. Delivered
+  // ONLY to a still-warm (attended) session — an unattended decision resolves
+  // through the host replay path (AW-5) and no runner ever hears about it.
+  //
+  // `note` is HOST-AUTHORED: it tells the agent what the person decided, in
+  // words the agent may relay. It never carries the person's free text and it
+  // never carries `call.input` — the model-authored half of the held call is
+  // stored on the decision row and is not echoed back into a line the model
+  // reads as instruction.
+  //
+  // The agent's re-issued call is NOT trusted to be faithful: @ax/decisions
+  // holds a standing approval keyed on the call FINGERPRINT (AW-4), so an
+  // unchanged call passes the gate exactly once and any change to it holds
+  // again. This message is a prompt, not an authorisation.
+  z.object({
+    type: z.literal('decision-resolved'),
+    decisionId: z.string().min(1),
+    outcome: z.enum(['approved', 'dismissed']),
+    note: z.string().min(1).max(2000),
+    cursor: z.number().int().nonnegative(),
+  }),
 ]);
 export type SessionNextMessageResponse = z.infer<
   typeof SessionNextMessageResponseSchema

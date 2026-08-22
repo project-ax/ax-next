@@ -58,6 +58,15 @@ export function createInbox(): Inbox {
         cursor: cursor + 1,
       };
     }
+    if (entry.type === 'decision-resolved') {
+      return {
+        type: 'decision-resolved',
+        decisionId: entry.decisionId,
+        outcome: entry.outcome,
+        note: entry.note,
+        cursor: cursor + 1,
+      };
+    }
     return { type: 'cancel', cursor: cursor + 1 };
   };
 

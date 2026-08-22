@@ -1,7 +1,7 @@
 import { describe, expect, it, vi, beforeEach, type Mock } from 'vitest';
 import type { IpcClient, IpcClientOptions } from '@ax/ipc-protocol';
 import type { RunnerEnv } from '../env.js';
-import type { Loop, RunnerSeams, TranscriptSource } from '../index.js';
+import type { Loop, LoopContext, RunnerSeams, TranscriptSource } from '../index.js';
 
 // ---------------------------------------------------------------------------
 // Unit test for the runner shell's exit-code contract:
@@ -61,6 +61,16 @@ vi.mock('../git-workspace.js', async (importOriginal) => {
 });
 
 const { runRunner } = await import('../run-runner.js');
+const { createInboxLoop } = await import('../inbox-loop.js');
+
+/** Drive the shell's message pump with a scripted inbox. */
+function scriptInbox(entries: unknown[]): void {
+  const queue = [...entries];
+  (createInboxLoop as unknown as Mock).mockReturnValueOnce({
+    next: vi.fn(async () => queue.shift() ?? { type: 'cancel' }),
+    cursor: 0,
+  });
+}
 
 /** The minimal shape readRunnerEnv produces (see env.ts). */
 function fakeEnv(): RunnerEnv {
@@ -208,6 +218,54 @@ describe('runRunner', () => {
       outcome: { kind: 'terminated', reason: 'Error: sdk exploded' },
     });
   });
+  // ---- AW-6: the decision-resolved delivery ----------------------------
+
+  describe('decision-resolved delivery', () => {
+    it('starts a turn from the host-authored note, labelled as not-the-user', async () => {
+      scriptInbox([
+        {
+          type: 'decision-resolved',
+          decisionId: 'dec_1',
+          outcome: 'approved',
+          note: 'They said yes. Make the call again exactly as you made it.',
+        },
+      ]);
+      let seen: unknown;
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          seen = await ctx.nextMessage();
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      // The note reaches the model VERBATIM apart from the fixed label. If a
+      // future edit started paraphrasing it here, the sentence the person's
+      // approval authorised and the sentence the agent reads would drift.
+      expect(seen).toEqual({
+        content:
+          'System message (not from the user): ' +
+          'They said yes. Make the call again exactly as you made it.',
+      });
+    });
+
+    it('re-polls past a delivery whose note is empty rather than waking the model', async () => {
+      scriptInbox([
+        { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: '   ' },
+        { type: 'cancel' },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          // `cancel` resolves null — so reaching null proves the empty
+          // delivery did NOT become a turn.
+          expect(await ctx.nextMessage()).toBeNull();
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      expect(loop.run).toHaveBeenCalledOnce();
+    });
+  });
+
   // ---- ctx.replaceTranscript (design §5 / §7 rung 3) --------------------
   //
   // The shell's only "the loop rewrote its own transcript" path. It exists

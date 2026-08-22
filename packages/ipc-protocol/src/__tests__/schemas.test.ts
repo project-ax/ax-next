@@ -332,6 +332,51 @@ describe('session.next-message response', () => {
     expect(parsed.type).toBe('timeout');
   });
 
+  it('accepts a decision-resolved delivery (AW-6)', () => {
+    const parsed = SessionNextMessageResponseSchema.parse({
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+      cursor: 7,
+    });
+    expect(parsed.type).toBe('decision-resolved');
+    if (parsed.type === 'decision-resolved') {
+      expect(parsed.outcome).toBe('approved');
+      expect(parsed.note).toBe('They said yes.');
+      expect(parsed.cursor).toBe(7);
+    }
+  });
+
+  it('rejects a decision-resolved outcome outside the human vocabulary', () => {
+    // `outcome` is the word a person would use, not the row's status. An
+    // `executed` / `approved-pending-agent` leaking onto the wire would be a
+    // storage vocabulary crossing a transport boundary (invariant 1).
+    const r = SessionNextMessageResponseSchema.safeParse({
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'executed',
+      note: 'n',
+      cursor: 7,
+    });
+    expect(r.success).toBe(false);
+  });
+
+  it('rejects a decision-resolved note that is empty or over the cap', () => {
+    // The note is host-authored prose the model reads back. An empty one is a
+    // producer bug; an unbounded one is a frame the runner has to swallow.
+    for (const note of ['', 'x'.repeat(2001)]) {
+      const r = SessionNextMessageResponseSchema.safeParse({
+        type: 'decision-resolved',
+        decisionId: 'dec_1',
+        outcome: 'approved',
+        note,
+        cursor: 7,
+      });
+      expect(r.success).toBe(false);
+    }
+  });
+
   it('rejects an unknown type', () => {
     const r = SessionNextMessageResponseSchema.safeParse({
       type: 'surprise',

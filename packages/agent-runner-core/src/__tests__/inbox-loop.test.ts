@@ -183,4 +183,62 @@ describe('inbox-loop idle floor', () => {
       process.off('unhandledRejection', onUnhandled);
     }
   });
+
+  // -------------------------------------------------------------------------
+  // AW-6 — the fourth delivery variant, and the open union it implies.
+  // -------------------------------------------------------------------------
+
+  it('surfaces a decision-resolved delivery and advances the cursor', async () => {
+    const { client, calls } = makeMockClient([
+      {
+        type: 'decision-resolved',
+        decisionId: 'dec_1',
+        outcome: 'approved',
+        note: 'They said yes.',
+        cursor: 4,
+      },
+    ]);
+    const loop = createInboxLoop({ client });
+    expect(await loop.next()).toEqual({
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+    });
+    expect(loop.cursor).toBe(4);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('re-polls past an unknown delivery type instead of crashing the turn', async () => {
+    // BEHAVIOUR CHANGE. This used to throw. A host newer than this runner
+    // delivering a variant it predates must not kill an otherwise healthy
+    // turn — see the comment at the end of `next()`.
+    const seen: string[] = [];
+    const { client } = makeMockClient([
+      { type: 'something-from-the-future', cursor: 3 },
+      { type: 'cancel', cursor: 4 },
+    ]);
+    const loop = createInboxLoop({ client, onUnknownDelivery: (t) => seen.push(t) });
+    expect(await loop.next()).toEqual({ type: 'cancel' });
+    expect(loop.cursor).toBe(4);
+    // Reported, not swallowed: the operator gets the variant name.
+    expect(seen).toEqual(['something-from-the-future']);
+  });
+
+  it('never rewinds the cursor on an unknown delivery with a bogus cursor', async () => {
+    // Skipping an entry we cannot act on is fine. REPLAYING one we already
+    // delivered is not — a rewound cursor would re-deliver a user message and
+    // the agent would answer it twice.
+    const { client } = makeMockClient([
+      { type: 'user-message', payload: { role: 'user', content: 'hi' }, reqId: 'r-1', cursor: 5 },
+      { type: 'something-from-the-future', cursor: 1 },
+      { type: 'weird-with-no-cursor' },
+      { type: 'cancel', cursor: 6 },
+    ]);
+    const loop = createInboxLoop({ client, onUnknownDelivery: () => {} });
+    await loop.next();
+    expect(loop.cursor).toBe(5);
+    expect(await loop.next()).toEqual({ type: 'cancel' });
+    expect(loop.cursor).toBe(6);
+  });
 });
