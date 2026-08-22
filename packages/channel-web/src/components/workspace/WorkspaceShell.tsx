@@ -213,16 +213,18 @@ function Inner() {
           {route.kind === 'activity' && (
             <>
               {/*
-                A count is only rendered when it is positive — the same rule
-                Today's summary line follows. `feed.events.length` is one
-                page's worth, not the collection's true size, so on a fetch
-                that has not landed yet (0, briefly, on every mount) or that
-                is genuinely empty, the subtitle is absent rather than a "0"
-                that reads as a claim about the whole record.
+                "12 entries" is a claim about the WHOLE record, and
+                `feed.events.length` only counts the pages fetched so far. So
+                the subtitle appears only once there is nothing left to page
+                into — at which point the two numbers are the same one. While
+                more is loadable the count is simply absent, along with the
+                zero that shows briefly on every mount before the first page
+                lands. Same rule as Today's summary line: a count is rendered
+                only when it is both positive and true.
               */}
               <WorkspaceHeader
                 title="Activity"
-                {...(feed.events.length > 0
+                {...(feed.events.length > 0 && !feed.hasMore
                   ? {
                       subtitle: `${feed.events.length} ${
                         feed.events.length === 1 ? 'entry' : 'entries'

@@ -75,8 +75,12 @@ export function useActivityFeed(agentId?: string): ActivityFeedState {
 
   const loadMore = useCallback(() => {
     if (nextBefore === null) return;
+    // Already fetching: a second call would supersede the first (same `before`,
+    // so no page is skipped) but buys the same rows twice. The button is
+    // `disabled` while loading; this guards the programmatic caller too.
+    if (loading) return;
     fetchPage(nextBefore, false);
-  }, [fetchPage, nextBefore]);
+  }, [fetchPage, loading, nextBefore]);
 
   return { events, loading, error, hasMore: nextBefore !== null, loadMore };
 }
