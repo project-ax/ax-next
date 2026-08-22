@@ -286,7 +286,14 @@ export function useDecisionQueue(): DecisionQueue {
       const watched = decisionsRef.current.filter((d) => undoSecondsLeft(d) > 0);
       if (watched.length === 0) {
         clearInterval(id);
+        pollFailures.current.clear();
         return;
+      }
+      // A row that has left its window will never be polled again, so its
+      // failure tally is dead weight. Dropped here rather than left to grow
+      // for as long as the tab stays open.
+      for (const key of pollFailures.current.keys()) {
+        if (!watched.some((d) => d.id === key)) pollFailures.current.delete(key);
       }
       for (const d of watched) {
         // A POST is already in flight for this row (e.g. the person just hit
