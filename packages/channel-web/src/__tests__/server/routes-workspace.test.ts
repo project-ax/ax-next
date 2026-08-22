@@ -22,6 +22,7 @@ import {
   DECISION_FALLBACK_PRIMARY,
   DECISION_FALLBACK_SECONDARY,
   DECISION_FALLBACK_SUMMARY,
+  DECISION_PREVIEW_BODY_MAX_CHARS,
   DECISION_RECEIPT_MAX_CHARS,
   DECISION_SUMMARY_MAX_CHARS,
   fireToActivityEvent,
@@ -2266,6 +2267,56 @@ describe('channel-web agent-workspace BFF', () => {
         // A lone surrogate is ill-formed UTF-16 coming out of a function whose
         // whole job is "plain text".
         expect(out.summary).not.toMatch(
+          /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
+        );
+      });
+
+      /*
+        The preview body is the LONGEST model-authored string on the row and the
+        only one shown verbatim as a quoted artifact — it is the draft email a
+        person is being asked to approve. Everything above proves the fence on
+        the short strings; a body that reached the browser unfenced would be the
+        one that mattered. A sibling PR in this epic was blocked for exactly
+        that, so the three tricks are pinned here directly on `toWireDecision`
+        rather than inferred from the summary passing.
+      */
+      it('fences a preview body that tries the same three tricks as a summary', () => {
+        const out = toWireDecision(
+          stored(
+            decision({
+              id: 'd1',
+              preview: {
+                meta: 'To: Priya',
+                // A bidi override, then a zero-width space wedged mid-word.
+                body: '\u202EThursday works\u200Bfor me.',
+              },
+            }),
+          ),
+        );
+        expect(out.preview).not.toBeNull();
+        expect(out.preview!.body).not.toMatch(FENCED_OUT);
+        expect(out.preview!.body).toBe('Thursday works for me.');
+      });
+
+      it('caps an over-long preview body on CODE POINTS, never splitting a pair', () => {
+        // Astral characters: a naive `slice` on UTF-16 units lands mid-pair and
+        // puts a lone surrogate — ill-formed UTF-16 — on the wire.
+        const out = toWireDecision(
+          stored(
+            decision({
+              id: 'd1',
+              preview: {
+                meta: 'To: Priya',
+                body: '\u{1D518}'.repeat(DECISION_PREVIEW_BODY_MAX_CHARS + 200),
+              },
+            }),
+          ),
+        );
+        expect(out.preview).not.toBeNull();
+        expect([...out.preview!.body].length).toBeLessThanOrEqual(
+          DECISION_PREVIEW_BODY_MAX_CHARS,
+        );
+        expect(out.preview!.body).not.toMatch(
           /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/,
         );
       });

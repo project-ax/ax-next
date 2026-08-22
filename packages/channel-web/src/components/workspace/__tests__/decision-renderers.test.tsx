@@ -148,6 +148,13 @@ describe('one row, three renderers — the outcome line', () => {
       expect(text).toContain(open.ghostLabel);
       expect(text).toContain(open.summary);
     }
+    // And the drop is ASSERTED, not just described. A leftover secondary button
+    // on the card has nowhere to go, so it gets wired to dismiss instead — a
+    // control reading "Pick another time" that turns the request down. This
+    // comment claimed the button was gone while it was still there; the line
+    // below is what keeps the claim honest.
+    expect(cardText(open)).not.toContain(open.secondaryLabel);
+    expect(queueText(open)).toContain(open.secondaryLabel);
   });
 
   it('re-words the primary action on a stale row in both places', () => {

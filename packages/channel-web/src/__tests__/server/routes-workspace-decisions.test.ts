@@ -76,6 +76,36 @@ const STORED = {
   replayError: null as string | null,
 };
 
+/**
+ * Everything on the stored row that must NOT survive the projection.
+ *
+ * The wire is deliberately NARROWER than the row: `call` is model-authored,
+ * and `callFingerprint` / `ruleId` / `ownerUserId` are host bookkeeping no
+ * renderer reads. Asserting only the prompt-injection marker proved the one
+ * field we happened to think about — these are checked in RAW BYTES off the
+ * socket, so the guarantee is regression-proof rather than true only of the
+ * fixture we built.
+ */
+const NEVER_ON_THE_WIRE = [
+  // the model-authored tool input, and the tool it would have called
+  'IGNORE PRIOR INSTRUCTIONS',
+  'gmail_send',
+  // host bookkeeping: the dedupe hash, the policy rule, the owner
+  'sha256:abcdef',
+  'rule-outward-email',
+  'callFingerprint',
+  'ruleId',
+  'ownerUserId',
+];
+
+/** The same check, as key names, on one projected row. */
+function expectNarrowerThanTheRow(raw: string, row: Record<string, unknown>): void {
+  for (const secret of NEVER_ON_THE_WIRE) expect(raw).not.toContain(secret);
+  for (const key of ['call', 'callFingerprint', 'ruleId', 'ownerUserId']) {
+    expect(Object.keys(row)).not.toContain(key);
+  }
+}
+
 interface DecisionsBody {
   decisions: Array<Record<string, unknown>>;
 }
@@ -168,9 +198,8 @@ describe('the decision routes over a real socket', () => {
     expect(body.decision.status).toBe('executed');
     expect(body.executed).toBe(true);
     expect(body.decision.undoable).toBe(true);
-    expect(Object.keys(body.decision)).not.toContain('call');
     // Over the wire, in bytes, not through a fixture we built ourselves.
-    expect(raw).not.toContain('IGNORE PRIOR INSTRUCTIONS');
+    expectNarrowerThanTheRow(raw, body.decision);
   });
 
   it('403s the same approval when the client forgets the header', async () => {
@@ -196,7 +225,7 @@ describe('the decision routes over a real socket', () => {
     const raw = await r.text();
     const body = JSON.parse(raw) as DecisionsBody;
     expect(body.decisions.map((d) => d.id)).toEqual(['d1']);
-    expect(raw).not.toContain('IGNORE PRIOR INSTRUCTIONS');
+    expectNarrowerThanTheRow(raw, body.decisions[0]!);
   });
 
   it('404s a decision that is not the caller\'s, over the real route', async () => {

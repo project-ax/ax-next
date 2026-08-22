@@ -145,9 +145,6 @@ export function ApprovalCard({
           <Button size="sm" onClick={onApprove} disabled={busy}>
             {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
           </Button>
-          <Button size="sm" variant="secondary" onClick={onDismiss} disabled={busy}>
-            {d.secondaryLabel}
-          </Button>
           <Button size="sm" variant="ghost" onClick={onDismiss} disabled={busy}>
             {d.ghostLabel}
           </Button>
