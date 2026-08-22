@@ -221,6 +221,66 @@ export class WorkspaceApiError extends Error {
   }
 }
 
+/**
+ * A 200 whose BODY is not the shape we asked for.
+ *
+ * Separate from `WorkspaceApiError` because it means something different to
+ * whoever is debugging it: the route answered, so this is a shape problem — a
+ * proxy in front of it, a host at a different version, a body we cannot parse —
+ * rather than an unreachable server. Callers treat it as a failed READ either
+ * way, which is the point: what must never happen is a malformed body being
+ * mistaken for an empty collection.
+ */
+export class WorkspaceShapeError extends Error {
+  /** The request that answered badly. For LOGS — never for the message. */
+  readonly path: string;
+  constructor(path: string) {
+    // NO PATH IN THE MESSAGE. `TodayView` renders `queue.error` verbatim, so
+    // whatever goes in here is a sentence a person reads — and the path for a
+    // single-row re-read is `/decisions/dec_…`, i.e. an internal identifier on
+    // a user-facing surface. TASK-260 spent a whole card taking `dec_` ids off
+    // surfaces people read; putting one back through an error string would have
+    // two cards in one wave disagreeing about whether that id is fit to show.
+    //
+    // Not an injection concern — the id is server-issued, not user input. It is
+    // hygiene: a person cannot act on a decision id, so it is noise at best.
+    super('the server sent an answer we could not read');
+    this.name = 'WorkspaceShapeError';
+    this.path = path;
+  }
+}
+
+/**
+ * Guard the two decision READS at the boundary they share.
+ *
+ * Both of them feed `useDecisionQueue`, and both feed it code that dereferences
+ * the result during React's RENDER phase — `watchedKey` calls `.filter` on the
+ * list, `applyPolledRow` reads `row.id` inside a `setDecisions` updater. So a
+ * malformed body did not degrade, it threw out of a hook, and there is no
+ * ErrorBoundary in this SPA: the whole chat surface unmounts. That was
+ * survivable while only the flag-gated `/workspace` mounted this. TASK-261 puts
+ * it on the default `/` chat surface, for every user, on every page load.
+ *
+ * Checked HERE rather than in each caller so the list read and the single-row
+ * re-read cannot drift — the first version of this guard covered only the list,
+ * and the poll went on crashing for anyone mid-undo-window.
+ */
+function checkedRead<T>(path: string, body: unknown, ok: (b: unknown) => boolean): T {
+  if (!ok(body)) {
+    // The path goes HERE and not into the message: this is the developer's
+    // half of the split. Whoever is debugging a proxy or a version skew needs
+    // to know which route answered badly; the person looking at the screen
+    // does not, and their copy is an authored constant either way.
+    console.warn(`[workspace] ${path} answered 200 with a body we could not read`);
+    throw new WorkspaceShapeError(path);
+  }
+  return body as T;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
 async function req<T>(
   path: string,
   init?: { method: string; body?: unknown },
@@ -306,15 +366,48 @@ export const workspaceApi = {
    * has to answer; if it is ever long enough to need a page break, the product
    * has a much bigger problem than a missing cursor.
    */
-  decisions: () => req<DecisionsPage>('/decisions'),
+  decisions: async () => {
+    const body = await req<unknown>('/decisions');
+    // Every ELEMENT too, not just the array. `undoSecondsLeft(d)` and
+    // `d.conversationId` are read during render, so one null row in an
+    // otherwise valid page crashes the same way a missing array does.
+    return checkedRead<DecisionsPage>(
+      '/decisions',
+      body,
+      (b) => isRecord(b) && Array.isArray(b.decisions) && b.decisions.every(isRecord),
+    );
+  },
 
   approveDecision: (id: string) => decisionPost<ApproveResult>(id, 'approve'),
   dismissDecision: (id: string) => decisionPost<DismissResult>(id, 'dismiss'),
   undoDecision: (id: string) => decisionPost<UndoResult>(id, 'undo'),
 
   /** One row, re-read by id. See `DecisionRead` for why this exists. */
-  decision: (id: string) =>
-    req<DecisionRead>(`/decisions/${encodeURIComponent(id)}`),
+  decision: async (id: string) => {
+    const path = `/decisions/${encodeURIComponent(id)}`;
+    const body = await req<unknown>(path);
+    /*
+      The ROW has to be there, not merely the key.
+
+      An earlier version of this let `{decision: null}` through, on the theory
+      that a null row means "it's gone, which is news". It is not: `resolvedOrGone`
+      on the server 404s for a missing row and says so in its own comment —
+      "404, never a 200 carrying `decision: null` … the client would apply it
+      over the row the person is looking at". `DecisionRead.decision` is
+      non-nullable to match, so TypeScript could not have caught the null either.
+
+      The only consumer is the undo-window poll, which hands the result straight
+      to `applyPolledRow` — typed `(row: Decision)`, reading `row.id` inside a
+      `setDecisions` updater. A null there throws during render, and with no
+      ErrorBoundary in this SPA that unmounts the whole chat surface: exactly
+      the failure this guard exists to stop, just moved one route over.
+    */
+    return checkedRead<DecisionRead>(
+      path,
+      body,
+      (b) => isRecord(b) && isRecord(b.decision),
+    );
+  },
 
   /**
    * One agent's panel. `conversationId` reads one of the agent's PAST

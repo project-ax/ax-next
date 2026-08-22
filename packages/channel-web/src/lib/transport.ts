@@ -48,6 +48,7 @@ import { HttpChatTransport, type UIMessage, type UIMessageChunk } from 'ai';
 import { agentStatusActions } from './agent-status-store';
 import { permissionCardActions } from './permission-card-store';
 import { stripMcpToolPrefix } from './tool-name';
+import { decisionRaisedActions } from './decision-raised-store';
 
 const DEFAULT_USER = 'guest';
 
@@ -202,7 +203,11 @@ type SseFrame =
             authored?: boolean;
             packages?: { npm: string[]; pypi: string[] };
           };
-    };
+    }
+  // TASK-261 — decision-raised frame (server §4c-quater). Carries only
+  // {decisionId, summary}, deliberately not the whole Decision (see
+  // decision-raised-store.ts). Non-terminal — see the handling branch below.
+  | { reqId: string; decisionRaised: { decisionId: string; summary: string } };
 
 interface AxChatTransportOptions {
   /**
@@ -870,6 +875,23 @@ async function consumeSseAttempt(
         // secret rides this frame.
         if ('permissionRequest' in frame && frame.permissionRequest) {
           permissionCardActions.show(frame.permissionRequest);
+          continue;
+        }
+        // decisionRaised frame (TASK-261) — out-of-band, same posture as
+        // permissionRequest: the stream keeps flowing (NON-terminal), and
+        // nothing here touches `controller` or enqueues a UIMessageChunk.
+        // A held call is not part of the transcript; the card that renders
+        // it (T4) is fed by the decisions route, not by this frame. All this
+        // branch does is bump a counter so `useConversationDecisions` knows
+        // to re-read that route. A frame without a decisionId describes
+        // nothing actionable, so it's dropped rather than triggering a read.
+        if ('decisionRaised' in frame && frame.decisionRaised) {
+          if (
+            typeof frame.decisionRaised.decisionId === 'string' &&
+            frame.decisionRaised.decisionId.length > 0
+          ) {
+            decisionRaisedActions.raise();
+          }
           continue;
         }
         // TASK-23 — per-chunk seq dedup + gap detection (content frames only).

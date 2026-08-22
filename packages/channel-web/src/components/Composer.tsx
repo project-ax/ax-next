@@ -31,6 +31,7 @@ import { Paperclip } from 'lucide-react';
 import { handleTestTrigger } from '../lib/agent-status-test-triggers';
 import { AgentStatus } from './AgentStatus';
 import { AttachmentComposerChip } from './AttachmentComposerChip';
+import { InThreadApprovals } from './InThreadApprovals';
 import { PermissionCard } from './PermissionCard';
 
 function AttachMenu() {
@@ -137,6 +138,7 @@ export function Composer() {
         className="composer-inner relative w-full max-w-[640px]"
         onSubmit={onSubmit}
       >
+        <InThreadApprovals />
         <PermissionCard />
         <AgentStatus />
         <ComposerPrimitive.AttachmentDropzone

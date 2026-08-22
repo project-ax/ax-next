@@ -26,6 +26,10 @@ import {
   getPermissionCardSnapshot,
   permissionCardActions,
 } from '../lib/permission-card-store';
+import {
+  decisionRaisedActions,
+  getDecisionRaisedSnapshot,
+} from '../lib/decision-raised-store';
 
 /**
  * Build a ReadableStream<Uint8Array> from a string body. Mirrors how fetch
@@ -244,6 +248,77 @@ describe('AxChatTransport SSE chunk parsing', () => {
     });
     expect(out.some((c) => c.type === 'finish')).toBe(true);
     permissionCardActions.reset();
+  });
+
+  // TASK-261 — the `/` surface's reader previously had no branch for
+  // decisionRaised, so the frame fell through every `if` and was silently
+  // dropped. These pin the fix: the frame bumps the store, never terminates
+  // the stream, and never enters the transcript.
+  it('a decisionRaised frame bumps the decision-raised store (non-terminal)', async () => {
+    decisionRaisedActions.resetForTest();
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      'data: {"reqId":"r1","decisionRaised":{"decisionId":"d1","summary":"Send email to alice@example.com"}}\n\n' +
+      'data: {"reqId":"r1","text":"ok","kind":"text","seq":1}\n\n' +
+      'data: {"reqId":"r1","done":true}\n\n';
+
+    const out = (await drain(asProcess(transport)(sseStream(body)))) as Array<{
+      type?: string;
+      delta?: string;
+    }>;
+
+    expect(getDecisionRaisedSnapshot().raised).toBe(1);
+    // The stream kept flowing past the frame: trailing text still streamed
+    // and the stream still finished cleanly.
+    expect(out.some((c) => c.type === 'text-delta' && c.delta === 'ok')).toBe(true);
+    expect(out.some((c) => c.type === 'finish')).toBe(true);
+    decisionRaisedActions.resetForTest();
+  });
+
+  it('a decisionRaised frame enqueues NO chunk — it never enters the transcript', async () => {
+    decisionRaisedActions.resetForTest();
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      'data: {"reqId":"r1","decisionRaised":{"decisionId":"d1","summary":"Send email"}}\n\n' +
+      'data: {"reqId":"r1","done":true}\n\n';
+
+    const out = await drain(asProcess(transport)(sseStream(body)));
+
+    // Only the terminal `finish` chunk — nothing representing the decision.
+    expect(out).toEqual([{ type: 'finish', finishReason: 'stop' }]);
+    decisionRaisedActions.resetForTest();
+  });
+
+  it('a decisionRaised frame with an empty decisionId is ignored (store unchanged, stream unbroken)', async () => {
+    decisionRaisedActions.resetForTest();
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      'data: {"reqId":"r1","decisionRaised":{"decisionId":"","summary":"nothing to raise"}}\n\n' +
+      'data: {"reqId":"r1","text":"after","kind":"text"}\n\n' +
+      'data: {"reqId":"r1","done":true}\n\n';
+
+    const out = (await drain(asProcess(transport)(sseStream(body)))) as Array<{
+      type?: string;
+      delta?: string;
+    }>;
+
+    expect(getDecisionRaisedSnapshot().raised).toBe(0);
+    expect(out.some((c) => c.type === 'text-delta' && c.delta === 'after')).toBe(true);
+    expect(out.some((c) => c.type === 'finish')).toBe(true);
+    decisionRaisedActions.resetForTest();
+  });
+
+  it('a decisionRaised frame with a missing decisionId is ignored (store unchanged, stream unbroken)', async () => {
+    decisionRaisedActions.resetForTest();
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      'data: {"reqId":"r1","decisionRaised":{"summary":"no id at all"}}\n\n' +
+      'data: {"reqId":"r1","done":true}\n\n';
+
+    await drain(asProcess(transport)(sseStream(body)));
+
+    expect(getDecisionRaisedSnapshot().raised).toBe(0);
+    decisionRaisedActions.resetForTest();
   });
 
   test('done frame closes any open part and emits finish', async () => {

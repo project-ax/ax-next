@@ -79,6 +79,11 @@ export interface DecisionQueue {
   refresh: () => Promise<void>;
 }
 
+/** A value we are willing to treat as a decision row. */
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
 export function useDecisionQueue(): DecisionQueue {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
@@ -99,6 +104,17 @@ export function useDecisionQueue(): DecisionQueue {
     try {
       const page = await workspaceApi.decisions();
       if (readId.current !== id) return;
+      /*
+        A body that is not a decisions page never reaches here — `workspaceApi`
+        throws `WorkspaceShapeError` at the boundary, and the `catch` below
+        turns it into a FAILED READ. That distinction is the whole point of the
+        header on this file: an empty queue says "nothing is waiting on you",
+        which is the most reassuring claim this product makes, and it may only
+        be rendered when we actually read the list. A malformed body is not
+        that — and `decisions` feeds `watchedKey` below, which calls `.filter`
+        on it during render, so an `undefined` here would not degrade, it would
+        throw out of the hook and unmount the surface.
+      */
       setDecisions(page.decisions);
       setError(null);
     } catch (e) {
@@ -186,17 +202,35 @@ export function useDecisionQueue(): DecisionQueue {
       void (async () => {
         try {
           const { decision, notice } = read(await post());
-          // `== null` on purpose: the routes 404 rather than answering 200 with
-          // a null row, so a missing `decision` here means the response was not
-          // the shape we asked for. Either way there is nothing to apply, and
-          // "nothing to apply" must never be rendered as a quiet success.
-          if (decision == null) {
+          /*
+            The routes 404 rather than answering 200 with a null row, so a
+            missing `decision` here means the response was not the shape we
+            asked for. Either way there is nothing to apply, and "nothing to
+            apply" must never be rendered as a quiet success.
+
+            Checked as an OBJECT, not just non-null, for parity with the two
+            READ paths that `checkedRead` guards in `workspace-api.ts`. A
+            truthy non-record (`42`, `"gone"`) passes a `!= null` test and
+            lands in state as a row nothing can render: `decisionOutcome`
+            switches on `d.status`, has no `default`, and returns `undefined`
+            for a status it does not know — while its declared type says
+            `DecisionOutcome | null`, so a caller that trusts "non-null means
+            safe to dereference" crashes. Cheaper to reject it here than to
+            harden every reader.
+          */
+          if (!isRecord(decision)) {
             setNotice(id, DECISION_ACTION_FAILED);
             return;
           }
           applyServerRow(decision);
           setNotice(id, notice);
-        } catch {
+        } catch (err) {
+          // Quiet in the UI is not silent anywhere else. Both READ paths log
+          // their failure (`checkedRead`, and `InThreadApprovals`), and this is
+          // the one decision path that still discarded its cause entirely —
+          // now the busier of the two, since the card ships on `/`. The user
+          // gets the authored notice below; an operator gets the reason.
+          console.warn(`[decisions] the ${id} action did not reach the server`, err);
           // The row is untouched — we never changed it — so there is nothing to
           // roll back. What there IS, is a person who clicked a button and is
           // owed an answer.

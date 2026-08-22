@@ -27,7 +27,12 @@ const approveDecision = vi.fn();
 const dismissDecision = vi.fn();
 const undoDecision = vi.fn();
 
-vi.mock('../lib/workspace-api', () => ({
+// The METHODS are stubbed; `WorkspaceShapeError` is passed through from the
+// real module. The malformed-body test below injects a genuine one, so the
+// rejection this file exercises is the same object the guard in
+// `workspace-api.ts` actually throws — not a look-alike that could drift.
+vi.mock('../lib/workspace-api', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../lib/workspace-api')>()),
   workspaceApi: {
     decisions: (...a: unknown[]) => listDecisions(...a),
     decision: (...a: unknown[]) => readDecision(...a),
@@ -38,6 +43,7 @@ vi.mock('../lib/workspace-api', () => ({
 }));
 
 import { useDecisionQueue } from '../lib/workspace-decisions';
+import { WorkspaceShapeError } from '../lib/workspace-api';
 import {
   decisionFixture,
   resolvedFixture,
@@ -229,5 +235,41 @@ describe('useDecisionQueue — the undo window is closed by the server, not the 
     });
     expect(result.current.decisions[0]).toEqual(takenBack);
     expect(result.current.decisions[0]!.undoable).toBe(false);
+  });
+
+  /*
+    A poll that comes back malformed must degrade, not take the surface down.
+
+    `applyPolledRow` is typed `(row: Decision)` and reads `row.id` inside a
+    `setDecisions` updater — during React's render phase, where the poll's own
+    `.catch` cannot see a throw. There is no ErrorBoundary in this SPA, so a
+    null row there unmounts the entire chat. That was survivable while only the
+    flag-gated /workspace mounted this queue; TASK-261 puts it on the default
+    surface, where the poll runs once a second for anyone mid-undo-window.
+
+    The guard is at the API boundary, so this rejects and lands in the `.catch`
+    that already exists for a failed poll: the row is left exactly as the server
+    last described it, and nobody is told anything, because nobody clicked.
+  */
+  it('survives a REJECTED poll and leaves the row untouched', async () => {
+    const resolved = resolvedFixture('executed');
+    const { result } = await mountWith([resolved]);
+    const before = result.current.decisions[0];
+
+    // What a proxy or a host at a different version can produce: a 200 whose
+    // body is not a decision read.
+    // The guard in `workspace-api.ts` turns a malformed body into exactly this
+    // rejection, so that is what we inject. To be clear about the seam: this
+    // test exercises the CONSUMER's `.catch`, not the guard — the guard has its
+    // own test in `workspace-api-decision-shape.test.ts`, and reverting it would
+    // redden that file rather than this one. Using the real error type is what
+    // makes the two halves visibly meet.
+    readDecision.mockRejectedValue(new WorkspaceShapeError('/decisions/d1'));
+    await tick(POLL_MS);
+
+    // Still mounted, still honest.
+    expect(result.current.decisions[0]).toEqual(before);
+    expect(result.current.error).toBeNull();
+    expect(result.current.notices.size).toBe(0);
   });
 });
