@@ -40,6 +40,7 @@ import { filterSensitive } from './sensitive-gate.js';
 import { slugify } from './slugify.js';
 import { raceTimeout, TimeoutError } from './timeout.js';
 import type { DocFile, DocFrontmatter } from './types.js';
+import { guardAutomaticWrite } from './human-tier.js';
 
 /** Minimal structured-logger interface (structurally matches the consolidator's
  *  `ConsolidationLogger`; declared locally to avoid a consolidator↔rollup import
@@ -388,6 +389,7 @@ export async function deleteRollupDoc(input: {
 }): Promise<boolean> {
   if (!SLUG_RE.test(input.slug)) return false; // never unlink an unguarded path
   const rel = docFile('rollup', input.slug);
+  guardAutomaticWrite('rollup-gc', rel);
   try {
     await unlink(join(input.workspaceRoot, rel));
   } catch (err) {

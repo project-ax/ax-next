@@ -24,7 +24,31 @@ export {
   SYSTEM_DIR,
   INBOX_DIR,
 } from './paths.js';
+export { rulesFile } from './paths.js';
 export type { SystemFileName } from './paths.js';
+
+// The human-owned memory tier (TASK-234). `AUTOMATIC_WRITERS` is exported so
+// the enforcement is inspectable from outside the package, not just asserted
+// inside it.
+export {
+  AUTOMATIC_WRITERS,
+  HUMAN_TIER_PATHS,
+  HUMAN_TIER_TIER_PATHS,
+  isHumanTierPath,
+  guardAutomaticWrite,
+  stripHumanTierChanges,
+  normalizeRulesBody,
+} from './human-tier.js';
+export type { AutomaticWriter } from './human-tier.js';
+export { MAX_RULES_CHARS } from './rules-hooks.js';
+export type {
+  MemoryRulesReadInput,
+  MemoryRulesReadOutput,
+  MemoryRulesWriteInput,
+  MemoryRulesWriteOutput,
+  MemoryLearnedReadOutput,
+} from './rules-hooks.js';
+export type { LearnedDoc } from './rules-store.js';
 
 export { filterSensitive } from './sensitive-gate.js';
 export type { FilterResult, RejectedFact, RejectionKind } from './sensitive-gate.js';

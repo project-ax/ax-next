@@ -34,6 +34,7 @@ import { regenerateMap, type MapDensifier } from './map.js';
 import { categoryDir, MEMORY_ROOT, type DocCategory } from './paths.js';
 import { findNearDupSlug } from './slug-guard.js';
 import { runRollupPass, type RollupConfig, type StageBNamer } from './rollup.js';
+import { guardAutomaticWrite } from './human-tier.js';
 
 /**
  * Categories a rollup class can be built over (TASK-200). Mirrors
@@ -464,6 +465,7 @@ async function decayInbox(
       continue;
     }
     if (ts > cutoffMs) continue;
+    guardAutomaticWrite('consolidator-decay', f.path);
     await deleteInboxFile(workspaceRoot, f.path);
     log.info('memory_strata_inbox_decayed', {
       id: f.frontmatter.id,
@@ -484,6 +486,11 @@ async function decayInbox(
 async function quarantineFile(workspaceRoot: string, inboxPath: string): Promise<void> {
   const name = inboxPath.split('/').pop()!;
   const dest = `${QUARANTINE_DIR}/${name}`;
+  // A move is two mutations, so guard both ends (TASK-234). Neither can be
+  // the human tier today — the source always comes from `listInbox` — but a
+  // rename is exactly the shape that would sneak past a write-only guard.
+  guardAutomaticWrite('consolidator-quarantine', inboxPath);
+  guardAutomaticWrite('consolidator-quarantine', dest);
   const absSrc = join(workspaceRoot, inboxPath);
   const absDest = join(workspaceRoot, dest);
   await mkdir(dirname(absDest), { recursive: true });

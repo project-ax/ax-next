@@ -18,6 +18,7 @@ import { buildMarkdownFile } from './frontmatter.js';
 import { categoryDir, docFile, type DocCategory } from './paths.js';
 import { mergeConversationId } from './recurrence.js';
 import type { DocFile, DocFrontmatter } from './types.js';
+import { guardAutomaticWrite } from './human-tier.js';
 
 export interface WriteNewDocInput {
   workspaceRoot: string;
@@ -275,6 +276,7 @@ function parseDoc(relPath: string, raw: string): DocFile {
  * rollup the frontmatter parser would choke on.
  */
 export async function atomicWriteUtf8(absPath: string, contents: string): Promise<void> {
+  guardAutomaticWrite('doc-store', absPath);
   // Write to a sibling temp file then rename. POSIX rename is atomic on
   // the same filesystem; this prevents a crash mid-write from leaving
   // a partially-written doc that our parser would later choke on.

@@ -391,7 +391,7 @@ describe('channel-web agent-workspace BFF', () => {
     expect(captured.body).toEqual({ error: 'missing-agent-id' });
   });
 
-  it('returns empty permissions/files/memory and NO stats key', async () => {
+  it('returns empty permissions/files and NO stats key', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
@@ -400,6 +400,9 @@ describe('channel-web agent-workspace BFF', () => {
     const body = captured.body as Record<string, unknown>;
     expect(body.permissions).toEqual([]);
     expect(body.files).toEqual([]);
+    // No memory plugin registered in this bus → no rows at all. NOT an empty
+    // rules row: an editor over storage that does not exist is the promise
+    // AW-13 exists to stop making.
     expect(body.memory).toEqual([]);
     // A zero is a claim. We are not counting anything yet, so there is no
     // place on the wire to put one.
@@ -409,6 +412,165 @@ describe('channel-web agent-workspace BFF', () => {
     expect(body.conversationId).toBeNull();
     expect(body.thread).toEqual([]);
     expect(body.past).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // The Memory tab (AW-13). What the route may and may not claim.
+  // -------------------------------------------------------------------------
+
+  function registerMemory(state: {
+    rules: string;
+    learned: Array<{ name: string; body: string }>;
+    calls: Array<{ hook: string; agentId: string; userId: string }>;
+    readThrows?: boolean;
+    learnedThrows?: boolean;
+  }): void {
+    bus.registerService('memory:rules:read', 'memory', async (ctx, i: unknown) => {
+      state.calls.push({
+        hook: 'read',
+        agentId: ctx.agentId,
+        userId: ctx.userId ?? '',
+      });
+      void i;
+      if (state.readThrows === true) throw new Error('tier unreachable');
+      return { body: state.rules };
+    });
+    bus.registerService('memory:learned:read', 'memory', async (ctx) => {
+      state.calls.push({
+        hook: 'learned',
+        agentId: ctx.agentId,
+        userId: ctx.userId ?? '',
+      });
+      if (state.learnedThrows === true) throw new Error('tier unreachable');
+      return { docs: state.learned };
+    });
+    bus.registerService('memory:rules:write', 'memory', async (ctx, i: unknown) => {
+      const { agentId, body } = i as { agentId: string; body: string };
+      state.calls.push({
+        hook: 'write',
+        agentId: ctx.agentId,
+        userId: ctx.userId ?? '',
+      });
+      expect(agentId).toBe(ctx.agentId);
+      state.rules = body;
+      return { written: true, body };
+    });
+  }
+
+  it('splits memory by owner, and routes every read on the agent\'s own ctx', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    const state = {
+      rules: '- Always cc Priya',
+      learned: [{ name: 'What it knows about you', body: '# User\n' }],
+      calls: [] as Array<{ hook: string; agentId: string; userId: string }>,
+    };
+    registerMemory(state);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+
+    expect(captured.statusCode).toBe(200);
+    expect((captured.body as { memory: unknown }).memory).toEqual([
+      { name: 'Your rules', scope: 'rules', body: '- Always cc Priya' },
+      { name: 'What it knows about you', scope: 'learned', body: '# User\n' },
+    ]);
+    // Every call carried the agent + the authenticated caller — never
+    // initCtx's `@ax/channel-web` / `system` identity, which would route a
+    // later write into the wrong workspace.
+    expect(state.calls).toEqual([
+      { hook: 'read', agentId: 'a1', userId: 'u1' },
+      { hook: 'learned', agentId: 'a1', userId: 'u1' },
+    ]);
+  });
+
+  it('omits the rules row when the read failed, rather than shipping an empty one', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerMemory({
+      rules: '- Always cc Priya',
+      learned: [{ name: 'ignored', body: 'ignored' }],
+      calls: [],
+      readThrows: true,
+    });
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+
+    expect(captured.statusCode).toBe(200);
+    /*
+      An empty rules row would render as a blank editor over rules the user
+      still has — one Save away from destroying them. "We could not read it"
+      and "you wrote nothing" are different answers and this surface must not
+      confuse them.
+    */
+    expect((captured.body as { memory: unknown }).memory).toEqual([]);
+  });
+
+  it('keeps the editor when only the LEARNED read fails, and invents no learned doc', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerMemory({
+      rules: '- Always cc Priya',
+      learned: [{ name: 'ignored', body: 'ignored' }],
+      calls: [],
+      learnedThrows: true,
+    });
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+
+    expect(captured.statusCode).toBe(200);
+    // The worst a dropped learned row can cost is a section that says the
+    // agent has written nothing yet — so it degrades, and the editor stays.
+    expect((captured.body as { memory: unknown }).memory).toEqual([
+      { name: 'Your rules', scope: 'rules', body: '- Always cc Priya' },
+    ]);
+  });
+
+  it('saveRules writes through the hook and never touches storage itself', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    const state = { rules: '', learned: [], calls: [] as Array<{ hook: string; agentId: string; userId: string }> };
+    registerMemory(state);
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.saveRules(mkReq({ agentId: 'a1' }, { body: '- Always cc Priya' }), res);
+
+    expect(captured.statusCode).toBe(200);
+    // The stored text rides back so the editor can adopt it instead of
+    // guessing at the writer's normalization.
+    expect(captured.body).toEqual({ saved: true, body: '- Always cc Priya' });
+    expect(state.rules).toBe('- Always cc Priya');
+    expect(state.calls).toEqual([{ hook: 'write', agentId: 'a1', userId: 'u1' }]);
+  });
+
+  it('refuses a saveRules with no string body, and 401s an anonymous one', async () => {
+    registerAuth(null);
+    const anon = makeWorkspaceHandlers({ bus, initCtx });
+    const a = mkRes();
+    await anon.saveRules(mkReq({ agentId: 'a1' }, { body: 'x' }), a.res);
+    expect(a.captured.statusCode).toBe(401);
+
+    bus = new HookBus();
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
+      const { agentId } = i as { agentId: string };
+      if (agentId !== 'a1') throw notFound();
+      return { agent: { id: 'a1', displayName: 'Inbox' } };
+    });
+    registerMemory({ rules: '', learned: [], calls: [] });
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+
+    const missing = mkRes();
+    await h.saveRules(mkReq({ agentId: 'a1' }, { notBody: 1 }), missing.res);
+    expect(missing.captured.statusCode).toBe(400);
+    expect(missing.captured.body).toEqual({ error: 'invalid-body' });
+
+    const noAgent = mkRes();
+    await h.saveRules(mkReq({}, { body: 'x' }), noAgent.res);
+    expect(noAgent.captured.statusCode).toBe(400);
+    expect(noAgent.captured.body).toEqual({ error: 'missing-agent-id' });
+
+    const foreign = mkRes();
+    await h.saveRules(mkReq({ agentId: 'a2' }, { body: 'x' }), foreign.res);
+    expect(foreign.captured.statusCode).toBe(404);
   });
 
   it('builds the thread from real turns, dropping thinking + tool blocks', async () => {

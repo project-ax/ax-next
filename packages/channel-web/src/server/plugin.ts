@@ -54,6 +54,13 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     optional session:is-alive. TASK-231 adds no hard call either: the
 //     activity feed reads the optional routines:recent-fires-for-agent and
 //     routines:list, and degrades to an empty feed without them.
+//     TASK-234 (AW-13) adds no hard call either: the Memory tab's
+//     memory:rules:read / memory:rules:write / memory:learned:read are
+//     @ax/memory-strata's, and memory-strata is OPTIONAL in both presets (the
+//     CLI gates it on --memory, k8s on cfg.hostLlmTools). Declaring them would
+//     make the kernel's verifyCalls refuse to boot a deployment that simply
+//     chose not to run memory. So the routes gate on bus.hasService and the
+//     write answers 503 when nothing is there to keep the promise.
 //   - subscribes: chat:stream-chunk (fills the buffer + per-connection
 //     filter), chat:phase (single-slot phase memory + per-connection
 //     filter), chat:turn-end (host-side eviction so the buffer doesn't

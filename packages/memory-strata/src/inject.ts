@@ -28,7 +28,9 @@ import type {
 } from '@ax/core';
 import { agentTierAvailable, AGENT_TIER_MEMORY_ROOT } from './agent-tier-sync.js';
 import { systemFile, recentFile, mapFile } from './paths.js';
+import { stripFrontmatter } from './frontmatter.js';
 import { retrieve } from './retriever.js';
+import { readRules } from './rules-store.js';
 
 const PLUGIN_NAME = '@ax/memory-strata';
 
@@ -72,6 +74,8 @@ export interface BuildMemoryBlockInput {
 
 /**
  * Build the auto-injected memory block for a given workspace. Contains:
+ *   ## Rules From Your User — permanent/memory/system/rules.md, the HUMAN tier
+ *                             (TASK-234): first in the block, last to be cut
  *   ## User Profile      — contents of permanent/memory/system/user.md (body only)
  *   ## Recent            — contents of permanent/memory/system/recent.md (body only)
  *   ## Memory Map        — contents of permanent/memory/system/map.md (TASK-190)
@@ -84,7 +88,9 @@ export interface BuildMemoryBlockInput {
  *   2. Truncate ## Memory Map (drop tail entries) — it's a derived index the
  *      agent can re-reach via memory_search.
  *   3. Truncate ## Recent body.
- *   4. Truncate ## User Profile body as last resort.
+ *   4. Truncate ## User Profile body.
+ *   5. Truncate ## Rules From Your User as the last resort — the human tier
+ *      yields only after every machine-written section already has.
  * The Memory Map is ALSO independently soft-capped to `mapMaxTokens`
  * (DEFAULT_MAP_MAX_TOKENS ≈ 2k) before the whole-block cap is applied.
  *
@@ -104,6 +110,16 @@ export async function buildMemoryBlock(
   // `workspaceRoot` is the shared host CWD and holds no per-agent memory. The
   // CLI path keeps reading the agent's own workspace root on the host FS.
   const useTier = agentTierAvailable(bus);
+  // TASK-234: the human tier. Read FIRST and rendered FIRST — the user's own
+  // instructions precede anything the agent worked out for itself, and the
+  // budget below trims the agent's tail before it touches the human's.
+  //
+  // Read through `readRules` rather than `readSystemBody` on purpose. The
+  // system-file readers strip a leading `---` fence as frontmatter, which the
+  // machine-written files all carry and the human tier deliberately does not —
+  // and a user whose first line is a markdown horizontal rule would watch the
+  // top of their own rules disappear. Verbatim means verbatim.
+  const rulesBody = await readRules(bus, ctx, input.workspaceRoot);
   const userProfileBody = useTier
     ? await readTierSystemBody(bus, ctx, 'user')
     : await readSystemBody(input.workspaceRoot, 'user');
@@ -132,7 +148,14 @@ export async function buildMemoryBlock(
     docsLines = sorted.map((r) => `- [${r.docId}] ${r.summary}`);
   }
 
-  return assembleUnderCap({ userProfileBody, recentBody, mapBody, docsLines, maxTokens });
+  return assembleUnderCap({
+    rulesBody,
+    userProfileBody,
+    recentBody,
+    mapBody,
+    docsLines,
+    maxTokens,
+  });
 }
 
 /**
@@ -181,6 +204,10 @@ export async function readInjectedMapBody(
     : await readSystemBody(workspaceRoot, 'map');
 }
 
+/**
+ * The MACHINE-written always-injected files. The human tier is deliberately
+ * absent: it is read verbatim by `readRules` (see `buildMemoryBlock`).
+ */
 type InjectedSystemName = 'user' | 'recent' | 'map';
 
 /** Map an injected-section name to its workspace-relative FS path. */
@@ -243,30 +270,10 @@ async function readTierSystemBody(
   }
 }
 
-/**
- * Strip the leading YAML frontmatter fence (`---\n...\n---\n`) from a
- * markdown file. Returns the body text that follows, trimmed of leading
- * and trailing blank lines, with a single trailing newline.
- * If no frontmatter fence is present, returns the full text as-is.
- */
-function stripFrontmatter(text: string): string {
-  const FENCE = '---';
-  // Must start with '---' (possibly after a BOM or leading whitespace stripped)
-  const trimmed = text.trimStart();
-  if (!trimmed.startsWith(FENCE)) return text.trim();
-
-  // Find the closing fence. Start searching after the opening fence line.
-  const afterOpen = trimmed.indexOf('\n') + 1;
-  const closeIdx = trimmed.indexOf(`\n${FENCE}`, afterOpen);
-  if (closeIdx === -1) return text.trim();
-
-  // Body starts after the closing fence line (skip the '\n---' + newline).
-  const bodyStart = closeIdx + `\n${FENCE}`.length;
-  const body = trimmed.slice(bodyStart);
-  return body.trim();
-}
 
 interface AssembleInput {
+  /** The human tier (TASK-234). Rendered first, truncated last. */
+  rulesBody: string;
   userProfileBody: string;
   recentBody: string;
   /** Memory Map body, already soft-capped to its own budget (TASK-190). */
@@ -285,7 +292,8 @@ interface AssembleInput {
  *   2. Drop Memory Map entry lines from the tail (it's a derived index,
  *      re-reachable via memory_search).
  *   3. Truncate the Recent body.
- *   4. Truncate the User Profile body (last resort).
+ *   4. Truncate the User Profile body.
+ *   5. Truncate the human's Rules (last resort — see TASK-234).
  * Always terminates; never throws. Returns '' when even a 1-char profile
  * doesn't fit (a pathologically tiny cap).
  *
@@ -295,6 +303,7 @@ interface AssembleInput {
  * nibbling), so the cost is O(sections), not O(chars).
  */
 function assembleUnderCap({
+  rulesBody,
   userProfileBody,
   recentBody,
   mapBody,
@@ -303,12 +312,13 @@ function assembleUnderCap({
 }: AssembleInput): string {
   const maxChars = maxTokens * 4;
 
+  let rules = rulesBody.trim();
   let profile = userProfileBody.trim();
   let recent = recentBody.trim();
   let map = mapBody.trim();
   const docs = [...docsLines];
 
-  const build = (): string => buildBlock(profile, recent, map, docs);
+  const build = (): string => buildBlock(rules, profile, recent, map, docs);
 
   // Step 1: drop lowest-rank docs from the tail.
   while (docs.length > 0 && build().length > maxChars) docs.pop();
@@ -324,11 +334,16 @@ function assembleUnderCap({
   truncateBodyToFit(recent, maxChars, build, (v) => { recent = v; });
   if (build().length <= maxChars) return build();
 
-  // Step 4: truncate the User Profile body as a last resort.
+  // Step 4: truncate the User Profile body.
   truncateBodyToFit(profile, maxChars, build, (v) => { profile = v; });
   if (build().length <= maxChars) return build();
 
-  // Cap so tight even a minimal profile doesn't fit — yield nothing.
+  // Step 5: the human's own rules, last of all (TASK-234). Everything the
+  // agent wrote for itself yields before one word the user typed does.
+  truncateBodyToFit(rules, maxChars, build, (v) => { rules = v; });
+  if (build().length <= maxChars) return build();
+
+  // Cap so tight even a minimal section doesn't fit — yield nothing.
   return '';
 }
 
@@ -386,12 +401,21 @@ function truncateBodyToFit(
  * returns ''.
  */
 function buildBlock(
+  rulesBody: string,
   userProfileBody: string,
   recentBody: string,
   mapBody: string,
   docsLines: string[],
 ): string {
   const parts: string[] = [];
+
+  // FIRST, always. These are the user's words, not the agent's summary of
+  // them, and they outrank everything below.
+  if (rulesBody.trim().length > 0) {
+    parts.push(
+      `## Rules From Your User\n\nWritten by your user, kept word for word. They take precedence over anything else in this block.\n\n${rulesBody.trim()}`,
+    );
+  }
 
   if (userProfileBody.trim().length > 0) {
     parts.push(`## User Profile\n\n${userProfileBody.trim()}`);

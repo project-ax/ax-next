@@ -249,8 +249,9 @@ export type ThreadMessage =
  * eats.
  *
  *   - `rules`   — the human's, verbatim, always injected, safe to hand-edit.
- *   - `learned` — the agent's, subject to rollup and GC. Editable, but the UI
- *                 says so.
+ *   - `learned` — the agent's, subject to rollup and GC. Read-only on this
+ *                 surface, and the UI says why: it is folded and dropped over
+ *                 time, so anything that needs to stick belongs in `rules`.
  */
 export interface MemoryDoc {
   name: string;

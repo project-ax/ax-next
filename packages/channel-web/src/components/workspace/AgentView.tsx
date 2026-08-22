@@ -466,7 +466,20 @@ export function AgentView({
           )}
 
           {tab === 'memory' && (
-            <AgentMemory docs={detail.memory} agentName={agent.name} />
+            <AgentMemory
+              docs={detail.memory}
+              agentName={agent.name}
+              onSaveRules={async (body) => {
+                const saved = await workspaceApi.saveRules(agent.id, body);
+                // Re-read so what the tab shows is what the server stored, not
+                // what we typed. If the write landed somewhere unexpected, the
+                // user finds out here rather than three weeks later.
+                onChanged();
+                // The editor adopts the STORED text (the writer normalizes),
+                // so it never sits one newline away from "saved".
+                return saved.body;
+              }}
+            />
           )}
         </div>
 
