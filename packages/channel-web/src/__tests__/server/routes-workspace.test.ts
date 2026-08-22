@@ -25,8 +25,10 @@ import {
   DECISION_PREVIEW_BODY_MAX_CHARS,
   DECISION_RECEIPT_MAX_CHARS,
   DECISION_SUMMARY_MAX_CHARS,
+  DECISION_RECEIPT_TAG,
   fireToActivityEvent,
   makeWorkspaceHandlers,
+  receiptToActivityEvent,
   toWireDecision,
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
@@ -147,6 +149,53 @@ function fire(o: {
   };
 }
 
+/**
+ * A receipt as `decisions:recent-receipts-for-agent` hands it over, plus the
+ * owner the mock filters on (which is NOT on the wire — the hook takes
+ * `userId` as a scope and answers only that person's rows).
+ */
+interface ReceiptRowLike {
+  decisionId: string;
+  agentId: string;
+  ownerUserId: string;
+  outcome: 'executed' | 'failed' | 'pending-agent';
+  receipt: string;
+  at: string;
+  error: string | null;
+}
+
+/**
+ * The two authored sentences @ax/decisions puts on a receipt whose outcome
+ * nobody was asked about. Restated as literals rather than imported: this
+ * package does not import other plugins (invariant 2), and the point of the
+ * assertions below is that whatever the hook says is what reaches the row,
+ * unaltered.
+ */
+const FAILED_RECEIPT =
+  'It tried to do this, and it did not work. Nothing was completed.';
+const PENDING_AGENT_RECEIPT =
+  'Approved — it will do this the next time it runs.';
+
+function receipt(o: {
+  decisionId: string;
+  at: string;
+  agentId?: string;
+  ownerUserId?: string;
+  outcome?: ReceiptRowLike['outcome'];
+  receipt?: string;
+  error?: string | null;
+}): ReceiptRowLike {
+  return {
+    decisionId: o.decisionId,
+    agentId: o.agentId ?? 'a1',
+    ownerUserId: o.ownerUserId ?? 'u1',
+    outcome: o.outcome ?? 'executed',
+    receipt: o.receipt ?? 'You said yes, so it may send email as you.',
+    at: o.at,
+    error: o.error ?? null,
+  };
+}
+
 describe('channel-web agent-workspace BFF', () => {
   let bus: HookBus;
   let conversations: ConvRow[];
@@ -155,6 +204,8 @@ describe('channel-web agent-workspace BFF', () => {
   let fires: FireRowLike[];
   let routinesByAgent: Map<string, Array<{ path: string; name: string }>>;
   let firesReadFailure: Map<string, Error>;
+  let receipts: ReceiptRowLike[];
+  let receiptsReadFailure: Map<string, Error>;
 
   function registerAuth(user: { id: string; isAdmin: boolean } | null): void {
     bus.registerService('auth:require-user', 'auth', async () => {
@@ -210,6 +261,45 @@ describe('channel-web agent-workspace BFF', () => {
     });
   }
 
+  /**
+   * The receipts half of the feed. Registered per-test for the same reason
+   * `registerRoutines` is: a deployment with no @ax/decisions is a real
+   * configuration, and the feed has to render the routine fires alone rather
+   * than failing or claiming the agent has done nothing.
+   *
+   * `before` arrives as an ISO STRING here, not a `Date` — @ax/decisions keeps
+   * every instant on its hook surface as an ISO string, and a mock that
+   * accepted a `Date` would agree with a route that is broken against the real
+   * registrar.
+   */
+  function registerDecisionReceipts(): void {
+    bus.registerService(
+      'decisions:recent-receipts-for-agent',
+      'decisions',
+      async (_c, i: unknown) => {
+        const { userId, agentId, limit, before } = i as {
+          userId: string;
+          agentId: string;
+          limit?: number;
+          before?: string;
+        };
+        // The hook is owner-scoped: a team agent can carry several people's
+        // decisions, so reaching the agent is not the same as being entitled
+        // to read its history. A route that dropped `userId` would pass every
+        // other assertion in this file.
+        const boom = receiptsReadFailure.get(agentId);
+        if (boom !== undefined) throw boom;
+        const rows = receipts
+          .filter((r) => r.agentId === agentId && r.ownerUserId === userId)
+          .filter((r) => before === undefined || r.at < before)
+          .sort((a, b) => (a.at < b.at ? 1 : -1))
+          .slice(0, limit ?? 20)
+          .map(({ ownerUserId: _o, ...rest }) => rest);
+        return { receipts: rows };
+      },
+    );
+  }
+
   beforeEach(() => {
     bus = new HookBus();
     conversations = [];
@@ -218,6 +308,8 @@ describe('channel-web agent-workspace BFF', () => {
     fires = [];
     routinesByAgent = new Map<string, Array<{ path: string; name: string }>>();
     firesReadFailure = new Map<string, Error>();
+    receipts = [];
+    receiptsReadFailure = new Map<string, Error>();
 
     bus.registerService('agents:list-for-user', 'agents', async () => ({
       agents: [
@@ -1421,6 +1513,279 @@ describe('channel-web agent-workspace BFF', () => {
     // raw token would put backend vocabulary in front of a human.
     const alien = { ...fire({ id: 4, firedAt: at }), triggerSource: 'quantum' as never };
     expect(fireToActivityEvent(alien, names)?.tag).toBeNull();
+  });
+
+  // --- decision receipts, the feed's second source -------------------------
+  //
+  // Until TASK-279 this half did not exist: @ax/decisions fired
+  // `decisions:executed` and nothing subscribed, so an approved-and-replayed
+  // decision produced NO row here at all and `decisionId` was hardcoded null.
+  // The fire is gone; the receipt is read off the decision row, which is what
+  // makes an undone execution's receipt disappear on its own.
+
+  it('renders an approved-and-replayed decision, with decisionId populated', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    registerDecisionReceipts();
+    receipts = [
+      receipt({
+        decisionId: 'dec_abc',
+        at: '2026-08-20T12:00:00.000Z',
+        receipt: 'You said yes, so it may send email as you.',
+      }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    const body = captured.body as ActivityBody;
+    expect(body.events).toHaveLength(1);
+    expect(body.events[0]).toMatchObject({
+      agentId: 'a1',
+      at: '2026-08-20T12:00:00.000Z',
+      kind: 'approved',
+      text: 'You said yes, so it may send email as you.',
+      detail: null,
+      tag: DECISION_RECEIPT_TAG,
+      // The whole point of the card: this was hardcoded null.
+      decisionId: 'dec_abc',
+    });
+  });
+
+  it('interleaves receipts with routine fires by instant, newest first', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    registerDecisionReceipts();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    fires = [
+      fire({ id: 1, firedAt: '2026-08-20T13:00:00.000Z' }),
+      fire({ id: 2, firedAt: '2026-08-20T11:00:00.000Z' }),
+    ];
+    receipts = [
+      receipt({ decisionId: 'dec_1', at: '2026-08-20T12:00:00.000Z' }),
+      receipt({ decisionId: 'dec_2', at: '2026-08-20T10:00:00.000Z' }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    const body = captured.body as ActivityBody;
+    // One collection, one order. Two sources that paginated differently could
+    // not be merged without losing rows at the seam.
+    expect(body.events.map((e) => e.at)).toEqual([
+      '2026-08-20T13:00:00.000Z',
+      '2026-08-20T12:00:00.000Z',
+      '2026-08-20T11:00:00.000Z',
+      '2026-08-20T10:00:00.000Z',
+    ]);
+    expect(body.events.map((e) => e.decisionId)).toEqual([
+      null,
+      'dec_1',
+      null,
+      'dec_2',
+    ]);
+  });
+
+  it('pages the merged feed on one cursor both sources honour', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    registerDecisionReceipts();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    fires = [fire({ id: 1, firedAt: '2026-08-20T13:00:00.000Z' })];
+    receipts = [
+      receipt({ decisionId: 'dec_1', at: '2026-08-20T12:00:00.000Z' }),
+      receipt({ decisionId: 'dec_2', at: '2026-08-20T11:00:00.000Z' }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const first = mkRes();
+    await h.activity(activityReq({ [ACTIVITY_LIMIT_QUERY_KEY]: '2' }), first.res);
+    const page1 = first.captured.body as ActivityBody;
+    expect(page1.events.map((e) => e.at)).toEqual([
+      '2026-08-20T13:00:00.000Z',
+      '2026-08-20T12:00:00.000Z',
+    ]);
+    expect(page1.nextBefore).toBe('2026-08-20T12:00:00.000Z');
+
+    const second = mkRes();
+    await h.activity(
+      activityReq({
+        [ACTIVITY_LIMIT_QUERY_KEY]: '2',
+        [ACTIVITY_BEFORE_QUERY_KEY]: page1.nextBefore!,
+      }),
+      second.res,
+    );
+    const page2 = second.captured.body as ActivityBody;
+    // The cursor is EXCLUSIVE on both sides, so nothing repeats and the older
+    // receipt is not stranded behind the fire that shared its page.
+    expect(page2.events.map((e) => e.decisionId)).toEqual(['dec_2']);
+  });
+
+  it('reads receipts under the CALLER\'s id, not the agent\'s owner', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    registerDecisionReceipts();
+    // A decision on a reachable agent, owned by somebody else. Reaching the
+    // agent is not the same as being entitled to read that person's history.
+    receipts = [
+      receipt({ decisionId: 'mine', at: '2026-08-20T12:00:00.000Z' }),
+      receipt({
+        decisionId: 'theirs',
+        at: '2026-08-20T13:00:00.000Z',
+        ownerUserId: 'u2',
+      }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    expect(
+      (captured.body as ActivityBody).events.map((e) => e.decisionId),
+    ).toEqual(['mine']);
+  });
+
+  it('does NOT swallow a receipts fault when the feed is scoped to one agent', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    registerDecisionReceipts();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    fires = [fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T12:00:00.000Z' })];
+    receiptsReadFailure.set('a1', new Error('connection terminated unexpectedly'));
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res } = mkRes();
+    // Design H7, and the defect family of TASK-238/264/272: a read that FAILED
+    // must never render as "nothing happened". Serving the fires alone here
+    // would be worse than an error — the page would look complete and would
+    // silently be missing every approval this agent ever acted on.
+    await expect(
+      h.activity(activityReq({ [ACTIVITY_AGENT_ID_QUERY_KEY]: 'a1' }), res),
+    ).rejects.toThrow(/connection terminated/);
+  });
+
+  it('degrades one agent\'s unreadable receipts on the roster-wide page', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    registerDecisionReceipts();
+    receipts = [receipt({ decisionId: 'dec_1', at: '2026-08-20T12:00:00.000Z' })];
+    receiptsReadFailure.set('a2', new Error('connection terminated unexpectedly'));
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    // One agent's hiccup must not take out a roster-wide page — the same
+    // degradation the fires fan-out already makes, and it is logged.
+    expect(captured.statusCode).toBe(200);
+    expect(
+      (captured.body as ActivityBody).events.map((e) => e.decisionId),
+    ).toEqual(['dec_1']);
+  });
+
+  it('shows the fires when no decisions plugin is loaded at all', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    fires = [fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z' })];
+    // No @ax/decisions in this deployment. There genuinely are no receipts —
+    // that is not a fault, and it must not cost the routine history.
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    expect(captured.statusCode).toBe(200);
+    expect((captured.body as ActivityBody).events.map((e) => e.text)).toEqual([
+      'Morning digest',
+    ]);
+  });
+
+  // --- the pure receipt mapping --------------------------------------------
+
+  it('renders a failed receipt as a stopped row carrying the executor detail', () => {
+    const ev = receiptToActivityEvent(
+      receipt({
+        decisionId: 'dec_1',
+        at: '2026-08-20T12:00:00.000Z',
+        outcome: 'failed',
+        receipt: FAILED_RECEIPT,
+        error: 'gmail refused the connection',
+      }),
+    )!;
+    expect(ev.kind).toBe('stopped');
+    // The AUTHORED line is the claim; the executor's own message is audit-trail
+    // detail beside it, never in our voice. A host tool's failure text can
+    // quote model-authored input back at us.
+    expect(ev.text).toBe(FAILED_RECEIPT);
+    expect(ev.detail).toBe('gmail refused the connection');
+  });
+
+  it('says nothing extra when a failure recorded no detail', () => {
+    // Unlike a fire, the subject line here ALREADY says it did not work — so
+    // there is nothing to invent, and a second line saying "no reason was
+    // recorded" would be noise under a sentence that is already complete.
+    const ev = receiptToActivityEvent(
+      receipt({
+        decisionId: 'dec_1',
+        at: '2026-08-20T12:00:00.000Z',
+        outcome: 'failed',
+        receipt: FAILED_RECEIPT,
+        error: null,
+      }),
+    )!;
+    expect(ev.detail).toBeNull();
+  });
+
+  it('renders a parked receipt as approved, promising the future', () => {
+    const ev = receiptToActivityEvent(
+      receipt({
+        decisionId: 'dec_1',
+        at: '2026-08-20T12:00:00.000Z',
+        outcome: 'pending-agent',
+        receipt: PENDING_AGENT_RECEIPT,
+      }),
+    )!;
+    expect(ev.kind).toBe('approved');
+    expect(ev.text).toBe(PENDING_AGENT_RECEIPT);
+  });
+
+  it('drops a receipt whose instant cannot be read', () => {
+    // Same rule as a fire: a row we cannot place in time would be bucketed
+    // under an arbitrary date, which is itself a claim about WHEN.
+    expect(
+      receiptToActivityEvent(receipt({ decisionId: 'dec_1', at: 'the other day' })),
+    ).toBeNull();
+  });
+
+  it('falls back to a plain sentence when the authored receipt fences to nothing', () => {
+    // `approvedText` is built from a capability clause that arrives from an MCP
+    // server or an agent-authored skill. A row whose line fences away would
+    // otherwise be a receipt that says nothing at all, which reads as "we are
+    // not sure what you did".
+    const ev = receiptToActivityEvent(
+      receipt({ decisionId: 'dec_1', at: '2026-08-20T12:00:00.000Z', receipt: '\u200B\u200B' }),
+    )!;
+    expect(ev.text).toBe(DECISION_FALLBACK_APPROVED);
+  });
+
+  it('neutralises a bidi override in an authored receipt', () => {
+    const ev = receiptToActivityEvent(
+      receipt({
+        decisionId: 'dec_1',
+        at: '2026-08-20T12:00:00.000Z',
+        receipt: '\u202EYou said yes.',
+      }),
+    )!;
+    expect(ev.text).not.toMatch(/[\u202A-\u202E]/);
+  });
+
+  it('never puts the decision id anywhere a renderer would print it', () => {
+    // The id is a KEY the client hands back to us. It rides in `id` and
+    // `decisionId` and is never folded into prose — the same rule the fire
+    // mapper keeps for the routine path.
+    const ev = receiptToActivityEvent(
+      receipt({ decisionId: 'dec_secret', at: '2026-08-20T12:00:00.000Z' }),
+    )!;
+    expect(ev.text).not.toContain('dec_secret');
+    expect(ev.detail).toBeNull();
+    expect(ev.id).toBe('a1|decision|dec_secret');
   });
 
   it('drops a fire whose instant cannot be read', () => {

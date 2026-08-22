@@ -11,7 +11,6 @@ import {
   FAILED_RECEIPT,
   GATE_FAILURE_SENTENCE,
   PENDING_AGENT_RECEIPT,
-  RETRACTED_RECEIPT,
 } from '../templates.js';
 
 const CAP = 'gain access to a new service or key';
@@ -173,7 +172,6 @@ describe('the AW-5 authored receipts', () => {
   const RECEIPTS = [
     ['FAILED_RECEIPT', FAILED_RECEIPT],
     ['PENDING_AGENT_RECEIPT', PENDING_AGENT_RECEIPT],
-    ['RETRACTED_RECEIPT', RETRACTED_RECEIPT],
   ] as const;
 
   it.each(RECEIPTS)('%s is non-empty and single-line', (_name, receipt) => {
@@ -184,8 +182,8 @@ describe('the AW-5 authored receipts', () => {
   it('is not reachable from another receipt, or from an approvedText sample, by string surgery', () => {
     // Design H1 again, generalised: a prior design derived the dismissed line
     // from the approved one by regex and shipped "sent your reply to Priya"
-    // for a reply that was never sent. None of these three constants may be
-    // built out of, or hide inside, one of the others or a live approvedText.
+    // for a reply that was never sent. Neither of these constants may be built
+    // out of, or hide inside, the other or a live approvedText.
     const approved1 = decisionText({
       capability: 'gain access to a new service or key',
       toolName: 'request_capability',
@@ -214,10 +212,6 @@ describe('the AW-5 authored receipts', () => {
     expect(FAILED_RECEIPT).not.toMatch(/\bdid\b(?!\s+not\b)/i);
   });
 
-  it('RETRACTED_RECEIPT says the person took it back and the old receipt no longer stands', () => {
-    expect(RETRACTED_RECEIPT).toMatch(/took this back/i);
-    expect(RETRACTED_RECEIPT).toMatch(/no longer stands/i);
-  });
 });
 
 describe('no producer in this module ever prints a decision id', () => {
@@ -241,13 +235,12 @@ describe('no producer in this module ever prints a decision id', () => {
       decisionDismissedNote(),
       FAILED_RECEIPT,
       PENDING_AGENT_RECEIPT,
-      RETRACTED_RECEIPT,
       GATE_FAILURE_SENTENCE,
     ];
 
     // Guard against the roll-call quietly emptying out: a `for` over an empty
     // array passes, which would make this test a green light over nothing.
-    expect(outputs.length).toBeGreaterThanOrEqual(20);
+    expect(outputs.length).toBeGreaterThanOrEqual(19);
     for (const output of outputs) {
       expect(typeof output).toBe('string');
       expect(output.length).toBeGreaterThan(0);

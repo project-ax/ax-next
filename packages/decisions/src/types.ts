@@ -341,29 +341,67 @@ export interface DecisionsApproveOutput {
 }
 
 /**
- * Fired once the host has actually done something — or definitively not done
- * it. Consumed by AW-10's Activity feed, which turns it into the receipt a
- * human reads.
+ * What a resolved decision says happened — DERIVED from the row on every read,
+ * never stored and never fired. See `receipts.ts` for why that is the whole
+ * design rather than an implementation detail.
  *
- * `receipt` is HOST-AUTHORED prose, chosen per outcome from a fixed set. It is
- * never derived from another outcome's string and never contains `call.input`.
+ * There is no `retracted` outcome and there is nothing to remove. An undone
+ * decision is `pending` again, and a `pending` row has no receipt.
  *
- * Deliberately fired on the FAILED path too. An action that did not happen must
- * leave a trace saying so; the alternative is silence, which a reader correctly
+ * `receipt` is HOST-AUTHORED prose, chosen per outcome. It is never derived
+ * from another outcome's string and never contains `call.input`.
+ *
+ * A FAILED replay gets one too. An action that did not happen must leave a
+ * trace saying so; the alternative is silence, which a reader correctly
  * interprets as "nothing was approved" (design H1).
  */
-export type DecisionExecutedOutcome =
-  | 'executed'
-  | 'failed'
-  | 'pending-agent'
-  | 'retracted';
+export type DecisionReceiptOutcome = 'executed' | 'failed' | 'pending-agent';
 
-export interface DecisionExecutedPayload {
+export interface DecisionReceipt {
   decisionId: string;
   agentId: string;
-  conversationId: string;
-  outcome: DecisionExecutedOutcome;
+  outcome: DecisionReceiptOutcome;
   receipt: string;
+  /**
+   * ISO instant — the moment the person answered (`resolvedAt`). It orders the
+   * feed, cuts the page, and prints on the row; see `receiptFor`.
+   */
+  at: string;
+  /**
+   * The host executor's failure detail, sanitised, on a `failed` receipt only.
+   * AUDIT TRAIL beside the receipt, never the receipt itself — a host tool's
+   * message can quote model-authored input back at us.
+   */
+  error: string | null;
+}
+
+/**
+ * `decisions:recent-receipts-for-agent` — one agent's receipts, newest first.
+ *
+ * Shaped to page identically to `routines:recent-fires-for-agent`, because the
+ * Activity feed merges the two into one collection and two sources that
+ * paginate differently cannot be merged without dropping rows.
+ *
+ * `before` is an ISO instant and EXCLUSIVE, matching the cursor the feed hands
+ * its client. It is an instant rather than a row id on purpose: a row id is
+ * storage vocabulary, and no alternate backend could reproduce one.
+ *
+ * `userId` is a SCOPE, not a hint. A team agent can carry decisions belonging
+ * to several people, so reaching the agent is not the same as being entitled to
+ * read its queue — the same rule `decisions:list` and `decisions:get` already
+ * enforce.
+ */
+export interface DecisionsRecentReceiptsInput {
+  userId: string;
+  agentId: string;
+  /** Page size. Clamped by the plugin; the caller asks, we decide. */
+  limit?: number | undefined;
+  /** ISO instant. Strictly older than this. */
+  before?: string | undefined;
+}
+
+export interface DecisionsRecentReceiptsOutput {
+  receipts: DecisionReceipt[];
 }
 
 /** Input to the `decisions:sweep` maintenance hook. */
@@ -379,7 +417,8 @@ export interface DecisionsSweepOutput {
    * Deferred replays claimed and SETTLED in this pass — attempted and recorded,
    * whichever way they went. A replay that failed still counts here, because
    * the number answers "did the sweep do its job", not "did the tools succeed";
-   * the per-decision outcome is on the row and on `decisions:executed`.
+   * the per-decision outcome is on the row, and the receipt is read back off
+   * the row (`decisions:recent-receipts-for-agent`).
    */
   replayed: number;
 }
@@ -488,6 +527,19 @@ export const DecisionSchema = z.object({
 export const DecisionsListOutputSchema = z.object({
   decisions: z.array(DecisionSchema),
 }) as unknown as z.ZodType<DecisionsListOutput>;
+
+export const DecisionReceiptSchema = z.object({
+  decisionId: z.string(),
+  agentId: z.string(),
+  outcome: z.enum(['executed', 'failed', 'pending-agent']),
+  receipt: z.string(),
+  at: z.string(),
+  error: z.string().nullable(),
+}) as unknown as z.ZodType<DecisionReceipt>;
+
+export const DecisionsRecentReceiptsOutputSchema = z.object({
+  receipts: z.array(DecisionReceiptSchema),
+}) as unknown as z.ZodType<DecisionsRecentReceiptsOutput>;
 
 export const DecisionsGetOutputSchema = z.object({
   decision: DecisionSchema.nullable(),

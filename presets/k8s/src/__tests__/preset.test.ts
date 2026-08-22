@@ -258,13 +258,19 @@ describe('@ax/preset-k8s wiring', () => {
     expect(tp!.manifest.subscribes).toEqual([]);
   });
 
-  it('loads @ax/decisions and registers its six hooks (TASK-225/TASK-226)', () => {
+  it('loads @ax/decisions and registers its seven hooks (TASK-225/TASK-226/TASK-279)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const d = plugins.find((p) => p.manifest.name === '@ax/decisions');
     expect(d).toBeDefined();
     expect(d!.manifest.registers).toEqual([
       'decisions:list',
       'decisions:get',
+      // TASK-279: the Activity feed's second source. It REPLACED the
+      // `decisions:executed` fire, which was registered by nobody and
+      // subscribed to by nobody — invariant 3 violated for three slices while
+      // the preset note promised a subscriber that was never coming. Every
+      // hook in this list now has a caller in this preset.
+      'decisions:recent-receipts-for-agent',
       'decisions:approve',
       'decisions:dismiss',
       'decisions:undo',

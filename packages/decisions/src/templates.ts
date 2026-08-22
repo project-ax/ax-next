@@ -158,19 +158,31 @@ export function decisionText(input: DecisionTextInput): DecisionText {
 }
 
 /**
- * Three more authored outcomes, alongside `approvedText`/`dismissedText`
- * above. AW-5 adds paths the mechanical form in `decisionText` cannot cover,
- * because none of them are "the call went out as recorded":
+ * Two more authored outcomes, alongside `approvedText`/`dismissedText` above.
+ * AW-5 adds paths the mechanical form in `decisionText` cannot cover, because
+ * neither of them is "the call went out as recorded":
  *
- *   - a host replay that ran and failed partway,
- *   - a call the host cannot even attempt (sandbox-only tool), and
- *   - an approval a human pulled back inside the undo window.
+ *   - a host replay that ran and failed partway, and
+ *   - a call the host cannot even attempt (sandbox-only tool).
  *
- * Every one of these is a constant, not a template built from `capability` or
- * `toolName`, on purpose. The design this whole file exists to avoid derived
- * one outcome line from a DIFFERENT outcome line by regex and shipped "sent
- * your reply to Priya" for a reply that was never sent (design H1). A
- * constant cannot be derived from anything — there is nothing to regex.
+ * Both are constants, not templates built from `capability` or `toolName`, on
+ * purpose. The design this whole file exists to avoid derived one outcome line
+ * from a DIFFERENT outcome line by regex and shipped "sent your reply to Priya"
+ * for a reply that was never sent (design H1). A constant cannot be derived
+ * from anything — there is nothing to regex.
+ *
+ * There WAS a third: `RETRACTED_RECEIPT`, the line shown when a human took an
+ * approval back inside the undo window. It is gone, and its absence is the
+ * point (TASK-279). It existed to replace a receipt that had already been
+ * pushed out to a feed; now the receipt is READ off the row, and an undone
+ * decision is `pending` again, so the old line stops existing on its own. A
+ * sentence whose whole job was to correct a claim we no longer make is a
+ * sentence with nothing to say.
+ *
+ * Both survivors are read by `receiptFor` at the moment somebody looks, never
+ * copied onto the row. `approvedText` is the opposite and deliberately so: it
+ * is written ONTO the row when the human is asked, because it is the sentence
+ * they agreed to and a rule edited afterwards must not rewrite it.
  */
 
 /**
@@ -193,18 +205,6 @@ export const FAILED_RECEIPT =
  */
 export const PENDING_AGENT_RECEIPT =
   'Approved — it will do this the next time it runs.';
-
-/**
- * The receipt when a human took an approval back inside the undo window.
- * `undoDecision` returns the decision to `pending`, and the Activity row that
- * reported the original outcome is now describing something that no longer
- * holds — this line replaces it rather than leaving the old claim standing
- * uncorrected next to a decision that is open again. Deliberately says nothing
- * about WHERE the old receipt is: the renderer owns layout, and a sentence that
- * says "above" is a promise about a list order this package cannot keep.
- */
-export const RETRACTED_RECEIPT =
-  'You took this back. That receipt no longer stands.';
 
 /**
  * The two sentences the MODEL reads when a person has ANSWERED a call it held

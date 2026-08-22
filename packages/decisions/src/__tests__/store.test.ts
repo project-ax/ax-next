@@ -5,8 +5,9 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import pg from 'pg';
 import { runDecisionsMigration, type DecisionsDatabase } from '../migrations.js';
 import { createDecisionsStore, type DecisionStore } from '../store.js';
+import { receiptFor } from '../receipts.js';
 import { createFakeStore } from './fake-store.js';
-import type { Decision } from '../types.js';
+import { DecisionStatusSchema, type Decision, type DecisionStatus } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
 let connectionString: string;
@@ -858,5 +859,185 @@ describe('decisions store — a replay that actually ran', () => {
 
     // The whole point of the status: the agent performs it on its next run.
     expect((await s.takeApproval('a1', 'fp-1', T_LATE))!.id).toBe('dec_1');
+  });
+});
+
+describe('decisions store — the rows a receipt is derived from', () => {
+  /**
+   * ONE RULE, TWO LANGUAGES, and this is the seam where they meet.
+   *
+   * `receiptFor` decides in TypeScript whether a row says anything happened;
+   * `listReceiptCandidates` asks the same question in SQL so that a page is
+   * exactly a page. Neither can see the other, and the failure when they drift
+   * is silent — a row that never reaches a reader is indistinguishable from a
+   * row that never happened. So the fixture below walks every status and every
+   * marker combination and pins the two against each other, against REAL
+   * Postgres rather than the fake.
+   *
+   * KEYED BY STATUS, not a flat list, and the key set is the point. A flat
+   * array — which this was — covers whatever somebody remembered to add, so a
+   * new `DecisionStatus` wired into `receiptFor` and omitted here escapes the
+   * very guard that claims to catch it. Two things stop that now:
+   *
+   *   * `satisfies Record<DecisionStatus, …>` — every union member must appear
+   *     as a key or this stops compiling. Note what that is NOT worth on its
+   *     own: `pnpm build` does not type-check `__tests__`, so it bites in an
+   *     editor and in a `tsc` run that includes tests, and nowhere else. It is
+   *     documentation with teeth, not the gate.
+   *   * the coverage assertion below, against `DecisionStatusSchema.options` —
+   *     the enum itself, which cannot fall behind the union. THAT is the gate,
+   *     because it fails in `pnpm test` where anyone will actually see it.
+   */
+  const CASES = {
+    pending: [{ name: 'pending', over: { status: 'pending', resolvedAt: null } }],
+    stale: [{ name: 'stale', over: { status: 'stale', resolvedAt: null } }],
+    dismissed: [{ name: 'dismissed', over: { status: 'dismissed', resolvedAt: T_SOON } }],
+    expired: [{ name: 'expired', over: { status: 'expired', resolvedAt: T_SOON } }],
+    executed: [
+      // Approved, but the call has NOT gone out: the deferred window, and the
+      // attended row still waiting for its warm agent. Both are still undoable.
+      { name: 'executed, nothing spent', over: { status: 'executed', resolvedAt: T_SOON } },
+      {
+        name: 'executed, host replayed it',
+        over: { status: 'executed', resolvedAt: T_SOON, replayedAt: T_LATE },
+      },
+      {
+        name: 'executed, agent consumed it',
+        over: { status: 'executed', resolvedAt: T_SOON, consumedAt: T_LATE },
+      },
+    ],
+    'approved-pending-agent': [
+      {
+        name: 'parked for the agent',
+        over: { status: 'approved-pending-agent', resolvedAt: T_SOON },
+      },
+      {
+        name: 'parked and since performed',
+        over: {
+          status: 'approved-pending-agent',
+          resolvedAt: T_SOON,
+          consumedAt: T_LATE,
+        },
+      },
+    ],
+    failed: [
+      {
+        name: 'failed',
+        over: { status: 'failed', resolvedAt: T_SOON, replayError: 'upstream 503' },
+      },
+    ],
+  } satisfies Record<DecisionStatus, ReadonlyArray<{ name: string; over: Partial<Decision> }>>;
+
+  const FLAT = Object.values(CASES).flat();
+
+  it('covers every status the union declares', () => {
+    // The gate the `satisfies` above cannot be, because `pnpm build` does not
+    // type-check this file. A status added to `DecisionStatus` — and therefore
+    // to the enum, which the `returns` schema forces to stay complete — with
+    // no fixture here fails HERE, before it can quietly escape the drift check
+    // below.
+    expect(Object.keys(CASES).sort()).toEqual([...DecisionStatusSchema.options].sort());
+  });
+
+  it('selects exactly the rows receiptFor answers for', async () => {
+    const s = await freshStore();
+    for (const [i, c] of FLAT.entries()) {
+      await s.create(
+        base({ id: `dec_${i}`, callFingerprint: `fp-${i}`, ...c.over }),
+      );
+    }
+
+    const selected = await s.listReceiptCandidates({
+      ownerUserId: 'u1',
+      agentId: 'a1',
+      limit: 100,
+    });
+    const selectedIds = new Set(selected.map((d) => d.id));
+
+    for (const [i, c] of FLAT.entries()) {
+      const row = base({ id: `dec_${i}`, callFingerprint: `fp-${i}`, ...c.over });
+      expect(
+        { case: c.name, selected: selectedIds.has(row.id) },
+        `SQL and receiptFor disagree about "${c.name}"`,
+      ).toEqual({ case: c.name, selected: receiptFor(row) !== null });
+    }
+  });
+
+  it('scopes to one owner and one agent — a shared agent is not a shared queue', async () => {
+    const s = await freshStore();
+    const resolved: Partial<Decision> = { status: 'failed', resolvedAt: T_SOON };
+    await s.create(base({ id: 'mine', callFingerprint: 'fp-a', ...resolved }));
+    await s.create(
+      base({
+        id: 'theirs',
+        callFingerprint: 'fp-b',
+        ownerUserId: 'u2',
+        ...resolved,
+      }),
+    );
+    await s.create(
+      base({ id: 'other-agent', callFingerprint: 'fp-c', agentId: 'a2', ...resolved }),
+    );
+
+    const rows = await s.listReceiptCandidates({
+      ownerUserId: 'u1',
+      agentId: 'a1',
+      limit: 100,
+    });
+    expect(rows.map((d) => d.id)).toEqual(['mine']);
+  });
+
+  it('pages newest-first on an EXCLUSIVE instant cursor', async () => {
+    const s = await freshStore();
+    const at = ['09:00', '10:00', '11:00'].map((t) => `2026-08-20T${t}:00.000Z`);
+    for (const [i, resolvedAt] of at.entries()) {
+      await s.create(
+        base({
+          id: `dec_${i}`,
+          callFingerprint: `fp-${i}`,
+          status: 'failed',
+          resolvedAt,
+        }),
+      );
+    }
+
+    const page1 = await s.listReceiptCandidates({
+      ownerUserId: 'u1',
+      agentId: 'a1',
+      limit: 2,
+    });
+    expect(page1.map((d) => d.resolvedAt)).toEqual([at[2], at[1]]);
+
+    const page2 = await s.listReceiptCandidates({
+      ownerUserId: 'u1',
+      agentId: 'a1',
+      limit: 2,
+      before: page1.at(-1)!.resolvedAt!,
+    });
+    // EXCLUSIVE: the cursor row is not served twice.
+    expect(page2.map((d) => d.resolvedAt)).toEqual([at[0]]);
+  });
+
+  it('orders two decisions answered in the same millisecond stably', async () => {
+    // Without the id tie-break the two could swap between the page that hands
+    // out the cursor and the page that uses it, which loses one and repeats
+    // the other.
+    const s = await freshStore();
+    for (const id of ['dec_a', 'dec_b', 'dec_c']) {
+      await s.create(
+        base({ id, callFingerprint: `fp-${id}`, status: 'failed', resolvedAt: T_SOON }),
+      );
+    }
+    const first = await s.listReceiptCandidates({
+      ownerUserId: 'u1',
+      agentId: 'a1',
+      limit: 3,
+    });
+    const again = await s.listReceiptCandidates({
+      ownerUserId: 'u1',
+      agentId: 'a1',
+      limit: 3,
+    });
+    expect(again.map((d) => d.id)).toEqual(first.map((d) => d.id));
   });
 });

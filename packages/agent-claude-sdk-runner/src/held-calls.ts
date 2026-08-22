@@ -30,9 +30,12 @@
  *     same reason.
  *   - no tool name. The SDK's wire name (`mcp__ax-host-tools__…`) is not a
  *     thing a person asked for, and the display layer owns that rename.
- *   - no claim about WHERE the approval can be answered. See the comment on
- *     `RETRACTED_RECEIPT` in `packages/decisions/src/templates.ts`: a sentence
- *     that says "above" is a promise about a layout this side cannot keep.
+ *   - no claim about WHERE the approval can be answered. A sentence that says
+ *     "above" is a promise about a layout this side cannot keep — the same
+ *     rule every authored line in `packages/decisions/src/templates.ts`
+ *     follows. (It used to cite that file's `RETRACTED_RECEIPT` by name; that
+ *     constant is gone — TASK-279 made an undone decision simply have no
+ *     receipt — but the rule it illustrated is unchanged.)
  *
  * Dialect owner: `decision-copy.ts`. This is a deliberate local twin, not an
  * import — plugins never import each other (CLAUDE.md invariant 2), and a
