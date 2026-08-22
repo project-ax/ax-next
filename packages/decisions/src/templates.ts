@@ -199,10 +199,12 @@ export const PENDING_AGENT_RECEIPT =
  * `undoDecision` returns the decision to `pending`, and the Activity row that
  * reported the original outcome is now describing something that no longer
  * holds — this line replaces it rather than leaving the old claim standing
- * uncorrected next to a decision that is open again.
+ * uncorrected next to a decision that is open again. Deliberately says nothing
+ * about WHERE the old receipt is: the renderer owns layout, and a sentence that
+ * says "above" is a promise about a list order this package cannot keep.
  */
 export const RETRACTED_RECEIPT =
-  'You took this back. The receipt above no longer stands.';
+  'You took this back. That receipt no longer stands.';
 
 /**
  * The sentence the MODEL reads when its call is held.

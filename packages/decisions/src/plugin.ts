@@ -300,6 +300,13 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           //   unattended, irreversible  -> claim now, replay when the undo
           //                                window closes.
           //   unattended, reversible    -> claim now, replay now.
+          //
+          // The undo window is honoured on the HOST path only, and that is a
+          // real limit rather than an oversight: on the attended path the
+          // still-warm agent re-issues its own call the moment the gate lets it
+          // through, and nothing here can hold the agent back for ten seconds.
+          // An irreversible rule whose calls need the grace period must be
+          // raised unattended. Recorded rather than papered over.
           // -----------------------------------------------------------------
           const attended = current.attendance === 'attended';
           const hasExecutor = bus.hasService(`tool:execute:${current.call.name}`);
@@ -343,7 +350,13 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           if (attended) {
             // AW-6 delivers the resolution to the warm agent. Nothing has
             // happened yet, so nothing claims it has: no receipt is fired here.
-            return { decision: claimed, executed: false, path: 'agent-executes', error: null, pendingUntil: null };
+            return {
+              decision: claimed,
+              executed: false,
+              path: 'agent-executes',
+              error: null,
+              pendingUntil: null,
+            };
           }
 
           if (parked) {
