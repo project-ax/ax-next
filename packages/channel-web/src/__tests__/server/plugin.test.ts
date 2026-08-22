@@ -958,6 +958,23 @@ describe('@ax/channel-web server plugin (integration)', () => {
       );
       expect(state.status).toBe(404);
 
+      /*
+        The Files routes (TASK-233) sit inside the same flag, and they are the
+        ones worth naming: they are the only routes on this surface that read a
+        caller-supplied path out of a workspace. A route accidentally pushed
+        OUTSIDE the `if (agentWorkspacePreview)` block would still pass the
+        assertion above, because that one only asks about `/state`.
+      */
+      const files = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test/files`,
+      );
+      expect(files.status).toBe(404);
+
+      const oneFile = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test/files/x.md`,
+      );
+      expect(oneFile.status).toBe(404);
+
       const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
       expect(features.status).toBe(200);
       expect(await features.json()).toEqual({ agentWorkspacePreview: false });

@@ -122,8 +122,16 @@ export function AgentFiles({
                 : `We could not read ${agentName}’s files. Nothing was lost; we just could not look right now.`}
             </span>
             {error.kind === 'failed' && (
-              <Button variant="secondary" size="sm" onClick={reload}>
-                Try again
+              // Disabled while the retry is in flight, so the click has a
+              // visible consequence. A button that looks idle after you press
+              // it reads as a button that did nothing.
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={reload}
+                disabled={loading}
+              >
+                {loading ? 'Trying\u2026' : 'Try again'}
               </Button>
             )}
             <span className="font-mono text-[11px] text-muted-foreground">
