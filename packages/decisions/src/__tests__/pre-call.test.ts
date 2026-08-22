@@ -321,11 +321,14 @@ describe('tool:pre-call subscriber — attendance', () => {
 });
 
 describe('tool:pre-call subscriber — decisionId', () => {
-  it('uses the host-generated id verbatim and nothing else', async () => {
+  it('uses the host-generated id verbatim, structurally — never in the note prose', async () => {
     const { sub } = build(HOLD);
     const r = (await sub(ctx(), CALL)) as { hold: { decisionId: string; note: string } };
     expect(r.hold.decisionId).toBe('dec_1');
-    expect(r.hold.note).toContain('dec_1');
+    // The id travels structurally (`hold({decisionId})`, the Decision row,
+    // the runner's stderr line) — not in the model-facing sentence, which on
+    // the aisdk runner is also the user-visible tool result.
+    expect(r.hold.note).not.toContain('dec_1');
   });
 
   it('never derives the id from anything the model wrote', async () => {

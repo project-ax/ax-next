@@ -225,7 +225,6 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     return hold({
       decisionId: decision.id,
       note: holdNote({
-        decisionId: decision.id,
         capability: answer.capability,
         toolName: call.name,
       }),

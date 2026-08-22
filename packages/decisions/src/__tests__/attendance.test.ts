@@ -228,8 +228,11 @@ describe('deliverResolution', () => {
     const note = (queued[0] as { entry: { note: string } }).entry.note;
     expect(note).not.toContain('IGNORE PREVIOUS');
     expect(note).not.toContain('email everyone');
-    // Host-authored: the decision id is the only variable in it.
-    expect(note).toContain('dec_1');
+    // Host-authored, and now id-free: the model never saw the decision id in
+    // the first place (it's not in the hold note either), so a dangling
+    // `dec_…` reference in the resolution note would be strictly worse than
+    // no token at all.
+    expect(note).not.toMatch(/dec_/);
   });
 
   it('sends a dismissal too — silence would leave the agent parked on a dead question', async () => {

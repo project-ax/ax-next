@@ -210,7 +210,9 @@ export const RETRACTED_RECEIPT =
  * The two sentences the MODEL reads when a person has ANSWERED a call it held
  * (AW-6), delivered to a still-warm agent as the next inbox message.
  *
- * Constants plus the host-generated decision id, and nothing else. Not the
+ * Constants, and nothing else. Not the decision id: the model never saw it in
+ * `holdNote` either, so putting it here would be a dangling reference to a
+ * token the model has no memory of — strictly worse than no token. Not the
  * person's words: they clicked a button, they did not write prose, and inventing
  * a quote for them would be the same class of lie as claiming an unsent email
  * was sent (design H1). Not `call.input` either, for the reason the header of
@@ -226,18 +228,18 @@ export const RETRACTED_RECEIPT =
  * `holdNote` does: "no" that reads as "not this way" invites a different tool
  * and a shell command.
  */
-export function decisionApprovedNote(decisionId: string): string {
+export function decisionApprovedNote(): string {
   return (
-    `A person has answered the approval you were waiting on (${decisionId}). ` +
+    `A person has answered the approval you were waiting on. ` +
     `They said yes. You may now make that call again, exactly as you made it ` +
     `before — unchanged. An unchanged call goes through once; anything ` +
     `different will be held again. Then tell the user what happened.`
   );
 }
 
-export function decisionDismissedNote(decisionId: string): string {
+export function decisionDismissedNote(): string {
   return (
-    `A person has answered the approval you were waiting on (${decisionId}). ` +
+    `A person has answered the approval you were waiting on. ` +
     `They said no, and nothing ran. Do not make that call again and do not ` +
     `look for another way to do the same thing. Acknowledge it, then carry on ` +
     `with whatever else they asked for or end your turn.`
@@ -252,15 +254,18 @@ export function decisionDismissedNote(decisionId: string): string {
  * way" (design §3.1). So this note says stop, says why, and says what to tell
  * the user, and it does so in our words.
  *
- * `decisionId` is interpolated unescaped into a runner stderr line downstream,
- * so it is host-generated (`dec_<32 hex>`, see `plugin.ts`) and never derived
- * from anything the model wrote. The `hold()` helper in `@ax/core` clamps the
+ * The decision id is deliberately NOT in this sentence. It has no consumer:
+ * the model cannot act on it, and the correlation the system actually
+ * enforces is the call fingerprint (`callFingerprint`), not this note. The
+ * note itself reaches a user-visible transcript on the aisdk runner, whose
+ * hold text is a single artifact serving both audiences — so the id stays
+ * structural (`hold({decisionId})`, the Decision row, the runner's stderr
+ * line) and out of the prose. The `hold()` helper in `@ax/core` clamps the
  * result at `HOLD_NOTE_MAX`; nothing here comes close, but the clamp is the
  * backstop that keeps an over-long note from failing the wire schema and
  * degrading into the deny this verdict exists to avoid.
  */
 export function holdNote(input: {
-  decisionId: string;
   capability: string | null;
   toolName: string;
 }): string {
@@ -272,7 +277,7 @@ export function holdNote(input: {
       : `Running ${tool} needs a person's approval.`;
 
   return (
-    `Held for approval (${input.decisionId}). ${what} ` +
+    `Held for approval. ${what} ` +
     `The call has been recorded exactly as you made it and is waiting for the user. ` +
     `Do not retry it and do not look for another way to do the same thing. ` +
     `Tell the user what you were about to do and why, then end your turn.`

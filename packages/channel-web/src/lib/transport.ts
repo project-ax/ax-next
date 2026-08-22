@@ -47,6 +47,7 @@ import type { ContentBlock } from '@ax/ipc-protocol';
 import { HttpChatTransport, type UIMessage, type UIMessageChunk } from 'ai';
 import { agentStatusActions } from './agent-status-store';
 import { permissionCardActions } from './permission-card-store';
+import { stripMcpToolPrefix } from './tool-name';
 
 const DEFAULT_USER = 'guest';
 
@@ -935,7 +936,11 @@ async function consumeSseAttempt(
           enqueueContent({
             type: 'tool-input-available',
             toolCallId: frame.toolCallId,
-            toolName: frame.toolName,
+            // TASK-260: the SDK renames an MCP-hosted tool to
+            // `mcp__<server>__<tool>` — that's an internal wire identifier,
+            // not something a person should see. Strip it so the transcript
+            // renders the bare ax-native name the renderers already key on.
+            toolName: stripMcpToolPrefix(frame.toolName),
             input: frame.input,
             dynamic: true,
           });

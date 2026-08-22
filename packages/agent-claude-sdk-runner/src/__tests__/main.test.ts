@@ -18,6 +18,14 @@ import {
   vi,
   type Mock,
 } from 'vitest';
+import { HELD_TOOL_RESULT_TEXT } from '../held-calls.js';
+
+// What `@ax/decisions` writes for the MODEL when it holds a call, and what the
+// CLI therefore hands back as the tool_result content. Kept verbatim-ish here
+// (shape, not exact wording) because the point of the TASK-260 test is that
+// NONE of it reaches the human's transcript.
+const MODEL_HOLD_NOTE =
+  'Held for approval (dec_abc123). Do not retry it and do not look for another way to do the same thing. Tell the user what you were about to do.';
 
 // ---------------------------------------------------------------------------
 // Unit-level test for main.ts — mocks the Anthropic SDK and the IPC client
@@ -1584,6 +1592,193 @@ describe('main()', () => {
       kind: 'text',
       text: 'done',
     });
+  });
+
+  it('TASK-260: a HELD call publishes the human line with no is_error; an unheld failure in the same turn is untouched, and the hold does not bleed into the next turn', async () => {
+    // The model's copy of a hold and the human's copy are different artifacts
+    // living in different stores: the SDK's jsonl keeps the instructive note
+    // (stop, do not retry, do not route around), and the display event log we
+    // publish here gets a sentence written for a person. What made this a bug
+    // is that `is_error: true` rode along, so the chat painted a waiting call
+    // as a FAILED one.
+    setEnv(COMPLETE_ENV);
+    fakeClient = buildFakeClient();
+    fakeClient.call.mockImplementation(async (action: string, payload: unknown) => {
+      if (action === 'session.get-config') {
+        return {
+          userId: 'u-test',
+          agentId: 'a-test',
+          agentConfig: {
+            displayName: 'Test Agent',
+            systemPromptAugment: '',
+            allowedTools: [],
+            mcpConfigIds: [],
+            model: 'anthropic/claude-sonnet-4-7',
+            runner: 'claude-sdk',
+          },
+          conversationId: null,
+          runnerSessionId: null,
+        };
+      }
+      if (action === 'workspace.materialize') return { bundleBytes: '' };
+      if (action === 'tool.list') return { tools: [] };
+      if (action === 'tool.pre-call') {
+        const { call } = payload as { call: { id: string } };
+        return call.id === 'tu_hold'
+          ? { verdict: 'hold', decisionId: 'dec_abc123', note: MODEL_HOLD_NOTE }
+          : { verdict: 'allow' };
+      }
+      throw new Error(`unexpected call: ${action}`);
+    });
+    fakeInbox = buildFakeInbox([
+      userEntry('send it'),
+      userEntry('now do the other thing'),
+      cancelEntry,
+    ]);
+
+    queryMock.mockImplementation((arg: unknown) => {
+      const { prompt, options } = arg as {
+        prompt: AsyncIterable<SDKUserMessage>;
+        options: {
+          hooks: {
+            PreToolUse: Array<{
+              hooks: Array<
+                (
+                  input: unknown,
+                  toolUseID: string | undefined,
+                  opts: unknown,
+                ) => Promise<unknown>
+              >;
+            }>;
+          };
+        };
+      };
+      const preToolUse = options.hooks.PreToolUse[0]!.hooks[0]!;
+      const firePreToolUse = async (id: string, name: string) =>
+        await preToolUse(
+          {
+            hook_event_name: 'PreToolUse',
+            session_id: 'sess-1',
+            transcript_path: '/tmp/t.jsonl',
+            cwd: '/tmp/workspace',
+            tool_name: name,
+            tool_input: {},
+            tool_use_id: id,
+          },
+          id,
+          { signal: new AbortController().signal },
+        );
+
+      return (async function* () {
+        const it = prompt[Symbol.asyncIterator]();
+        await it.next();
+
+        // Turn 1: two calls. One the host holds, one it allows and which then
+        // genuinely fails. Both come back from the CLI as `is_error` results.
+        yield assistantBlocks([
+          {
+            type: 'tool_use',
+            id: 'tu_hold',
+            name: 'mcp__ax-host-tools__request_capability',
+            input: {},
+          },
+          { type: 'tool_use', id: 'tu_fail', name: 'Bash', input: {} },
+        ]);
+        await firePreToolUse('tu_hold', 'mcp__ax-host-tools__request_capability');
+        await firePreToolUse('tu_fail', 'Bash');
+        // The CLI synthesises the held call's result out of our
+        // permissionDecisionReason — i.e. the MODEL-facing note, flagged as an
+        // error. This is the exact payload the bug forwarded to the human.
+        yield userToolResult('tu_hold', MODEL_HOLD_NOTE, true);
+        yield userToolResult('tu_fail', 'boom: exit 1', true);
+        yield resultSuccess();
+
+        // Turn 2: the registry has been cleared at the `result` boundary, so
+        // the same id (reused here purely as a probe — the SDK would mint a
+        // fresh one) publishes its REAL output again.
+        await it.next();
+        yield userToolResult('tu_hold', 'the real output', true);
+        yield resultSuccess();
+
+        await it.next();
+      })();
+    });
+
+    const { main } = await import('../main.js');
+    const rc = await main();
+    expect(rc).toBe(0);
+
+    const toolTurnEnds = fakeClient.event.mock.calls.filter(
+      (c) =>
+        c[0] === 'event.turn-end' && (c[1] as { role?: string }).role === 'tool',
+    );
+    expect(toolTurnEnds).toHaveLength(2);
+
+    const turn1Blocks = (
+      toolTurnEnds[0]?.[1] as { contentBlocks: Array<Record<string, unknown>> }
+    ).contentBlocks;
+    expect(turn1Blocks).toHaveLength(2);
+
+    // The held call: host-authored text, and `is_error` ABSENT — not false.
+    // Absent is the whole point: a key set to false is still a key downstream
+    // renderers have to remember to read the right way round.
+    const heldBlock = turn1Blocks[0]!;
+    expect(heldBlock.tool_use_id).toBe('tu_hold');
+    expect(heldBlock.content).toBe(HELD_TOOL_RESULT_TEXT);
+    expect('is_error' in heldBlock).toBe(false);
+    // None of the model's copy leaks onto the human's surface.
+    expect(JSON.stringify(heldBlock)).not.toMatch(/dec_/);
+    expect(JSON.stringify(heldBlock)).not.toContain('Do not retry');
+
+    // The unheld call that really failed keeps its output and its is_error.
+    // This is the assertion that stops the fix over-reaching.
+    expect(turn1Blocks[1]).toEqual({
+      type: 'tool_result',
+      tool_use_id: 'tu_fail',
+      content: 'boom: exit 1',
+      is_error: true,
+    });
+
+    // Turn 2 — no bleed.
+    const turn2Blocks = (
+      toolTurnEnds[1]?.[1] as { contentBlocks: Array<Record<string, unknown>> }
+    ).contentBlocks;
+    expect(turn2Blocks).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'tu_hold',
+        content: 'the real output',
+        is_error: true,
+      },
+    ]);
+
+    // The live stream has to agree with the durable block, block for block —
+    // a UI that renders the stream and a UI that rehydrates history must not
+    // disagree about whether this call failed.
+    const resultChunks = fakeClient.event.mock.calls
+      .filter(
+        (c) =>
+          c[0] === 'event.stream-chunk' &&
+          (c[1] as { kind?: string }).kind === 'tool-result',
+      )
+      .map((c) => c[1] as Record<string, unknown>);
+    expect(resultChunks).toHaveLength(3);
+
+    expect(resultChunks[0]?.toolCallId).toBe('tu_hold');
+    expect(resultChunks[0]?.output).toBe(HELD_TOOL_RESULT_TEXT);
+    expect('isError' in resultChunks[0]!).toBe(false);
+    expect(JSON.stringify(resultChunks[0])).not.toMatch(/dec_/);
+    expect(JSON.stringify(resultChunks[0])).not.toContain('Do not retry');
+
+    expect(resultChunks[1]).toEqual({
+      reqId: expect.any(String),
+      kind: 'tool-result',
+      toolCallId: 'tu_fail',
+      output: 'boom: exit 1',
+      isError: true,
+    });
+    expect(resultChunks[2]?.output).toBe('the real output');
+    expect(resultChunks[2]?.isError).toBe(true);
   });
 
   it('FAULTA-3: fresh first turn (runnerSessionId null) still emits turnId — read via transcriptSessionId, not the boot runnerSessionId', async () => {

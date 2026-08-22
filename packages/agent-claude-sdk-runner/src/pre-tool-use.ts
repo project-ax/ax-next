@@ -31,6 +31,18 @@ export type CreatePreToolUseHookOptions = CreateToolPolicyOptions & {
    * boundary so a held turn is distinguishable from a finished one.
    */
   holdLatch?: HoldLatch;
+  /**
+   * Called with the SDK's tool-call id when a call is held, so `main.ts` can
+   * recognise that call's tool_result later in the turn and publish the
+   * human's line instead of the model's hold note (which the CLI hands back
+   * flagged `is_error`, making a waiting call look like a failed one).
+   *
+   * Separate from `holdLatch` because they answer different questions: the
+   * latch records WHICH decision stopped the turn, this records WHICH CALL the
+   * person is being asked about. Fired only when the SDK gave us a real
+   * `toolUseID` — see the comment below on `''` vs `undefined`.
+   */
+  onHold?: (toolCallId: string) => void;
 };
 
 export function createPreToolUseHook(
@@ -78,6 +90,14 @@ export function createPreToolUseHook(
 
     if (verdict.decision === 'hold') {
       opts.holdLatch?.trip(verdict.decisionId);
+      // Only a REAL id. Same care as the `toolUseId ?? idGen()` note above:
+      // the policy may have minted a synthetic id for the pre-call payload,
+      // but the SDK will stamp its own id on the tool_result, so a synthetic
+      // one would never match — and '' would key the registry on a value a
+      // later result could collide with.
+      if (typeof toolUseID === 'string' && toolUseID !== '') {
+        opts.onHold?.(toolUseID);
+      }
       // `continue: false` is the SDK's clean stop (SyncHookJSONOutput,
       // sdk.d.ts:5192) — the loop ends here rather than handing the model a
       // denial to improvise around. We ALSO emit permissionDecision:'deny' so
