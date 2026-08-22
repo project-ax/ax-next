@@ -14,6 +14,11 @@ import type { AgentMessage, IpcClient } from '@ax/ipc-protocol';
 //
 // `next()` transparently swallows timeouts. Callers see only real entries.
 //
+// It also transparently swallows delivery variants it does not recognise
+// (AW-6): the union is open now — a host newer than this runner may deliver
+// something this build predates — so an unknown type is reported and re-polled
+// rather than thrown. See the branch at the end of `next()`.
+//
 // Terminal errors from the client (SessionInvalidError, exhausted-retry
 // HostUnavailableError) propagate out — the runner decides what to do.
 //
@@ -42,11 +47,31 @@ export interface InboxLoopOptions {
   now?: () => number;
   /** Testable seam — defaults to setTimeout-backed sleep. */
   sleep?: (ms: number) => Promise<void>;
+  /**
+   * Where the loop reports a delivery variant it does not understand.
+   * Defaults to a stderr line, matching the rest of the runner. Injected so a
+   * test can assert the report happened — a silent skip and a reported skip
+   * look identical from `next()`'s return value, and the whole point of the
+   * log-and-re-poll below is that the gap is VISIBLE.
+   */
+  onUnknownDelivery?: (type: string) => void;
 }
 
 export interface InboxLoopEntry {
-  type: 'user-message' | 'cancel' | 'idle-timeout';
+  type: 'user-message' | 'cancel' | 'idle-timeout' | 'decision-resolved';
   payload?: AgentMessage;
+  /**
+   * AW-6. Present iff `type === 'decision-resolved'` — a call this agent held
+   * earlier, answered by a person while this session was still warm.
+   *
+   * `note` is HOST-AUTHORED prose the shell turns into the opening message of
+   * a new turn. It is NOT an authorisation: the standing approval lives on the
+   * host, keyed on the held call's fingerprint, so the re-issued call passes
+   * the gate only if it is byte-identical to the one the person read.
+   */
+  decisionId?: string;
+  outcome?: 'approved' | 'dismissed';
+  note?: string;
   /**
    * Host-minted request id (J9). Present iff `type === 'user-message'`.
    * The runner caches it locally and stamps it onto every
@@ -76,7 +101,14 @@ export interface InboxLoop {
 type WireResponse =
   | { type: 'user-message'; payload: AgentMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
-  | { type: 'timeout'; cursor: number };
+  | { type: 'timeout'; cursor: number }
+  | {
+      type: 'decision-resolved';
+      decisionId: string;
+      outcome: 'approved' | 'dismissed';
+      note: string;
+      cursor: number;
+    };
 
 export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
   let cursor = opts.initialCursor ?? 0;
@@ -84,6 +116,11 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
   const idleTimeoutMs = opts.idleTimeoutMs ?? DEFAULT_INBOX_IDLE_MS;
   const now = opts.now ?? Date.now;
   const sleep = opts.sleep ?? defaultSleep;
+  const onUnknownDelivery =
+    opts.onUnknownDelivery ??
+    ((type: string): void => {
+      process.stderr.write(`runner: inbox_unknown_delivery type=${type}; re-polling\n`);
+    });
 
   const next = async (): Promise<InboxLoopEntry> => {
     const deadline = now() + idleTimeoutMs;
@@ -129,14 +166,40 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
         cursor = resp.cursor;
         return { type: 'cancel' };
       }
-      // Reject anything outside the three discriminated-union arms loudly —
-      // a silent fall-through to 'cancel' would mask protocol drift or a
-      // forward-compatible variant that arrives before the runner knows how
-      // to handle it. The ipc-client's schema validation should catch this
-      // upstream, but defense-in-depth at the loop boundary too.
-      throw new Error(
-        `inbox-loop: unexpected session.next-message response type: ${String((resp as { type?: unknown }).type)}`,
-      );
+      if (resp.type === 'decision-resolved') {
+        cursor = resp.cursor;
+        return {
+          type: 'decision-resolved',
+          decisionId: resp.decisionId,
+          outcome: resp.outcome,
+          note: resp.note,
+        };
+      }
+      // BEHAVIOUR CHANGE (AW-6). This used to `throw`, which killed the turn.
+      //
+      // The throw was defensible while the union was closed: an unrecognised
+      // type meant protocol drift and drift should be loud. It stopped being
+      // defensible the moment the union started GROWING — a host newer than
+      // this runner now legitimately delivers variants this build has never
+      // heard of, and the old behaviour turned a forward-compatible addition
+      // into a crashed turn on every runner in the fleet that had not been
+      // rebuilt yet.
+      //
+      // Advancing the cursor and re-polling loses nothing this runner could
+      // have acted on. It is reported, not swallowed: the operator sees the
+      // variant name and the version gap it implies. (The ipc-client's schema
+      // validation would reject a genuinely malformed response upstream and
+      // that error still propagates — this branch is reached only by a
+      // well-formed variant we do not know.)
+      onUnknownDelivery(String((resp as { type?: unknown }).type));
+      const advanced = (resp as { cursor?: unknown }).cursor;
+      if (typeof advanced === 'number' && Number.isInteger(advanced) && advanced > cursor) {
+        // Only ever FORWARD. A variant carrying a bogus or absent cursor must
+        // not rewind us onto entries we already delivered — replaying a
+        // user-message is worse than skipping an unknown one.
+        cursor = advanced;
+      }
+      continue;
     }
   };
 

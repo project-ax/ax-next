@@ -468,6 +468,82 @@ describe('@ax/session-inmemory plugin', () => {
     expect((caught as PluginError).code).toBe('invalid-payload');
   });
 
+  it('round-trips a decision-resolved entry and advances the cursor (AW-6)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>('session:create', ctx, {
+      sessionId: 's-dec',
+      workspaceRoot: '/tmp/ws',
+    });
+
+    const queued = await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+      'session:queue-work',
+      ctx,
+      {
+        sessionId: 's-dec',
+        entry: {
+          type: 'decision-resolved',
+          decisionId: 'dec_1',
+          outcome: 'approved',
+          note: 'They said yes.',
+        },
+      },
+    );
+    expect(queued.cursor).toBe(0);
+
+    const claimed = await h.bus.call<SessionClaimWorkInput, SessionClaimWorkOutput>(
+      'session:claim-work',
+      ctx,
+      { sessionId: 's-dec', cursor: 0, timeoutMs: 500 },
+    );
+    expect(claimed).toEqual({
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+      cursor: 1,
+    });
+  });
+
+  it('queue-work rejects a malformed decision-resolved entry (AW-6)', async () => {
+    // The note is prose the runner hands straight to the model, and the
+    // outcome is the human vocabulary the wire schema enforces. A producer
+    // that gets either wrong must fail HERE, not at the runner's poll — a
+    // wire-schema failure downstream wedges the runner at this cursor.
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>('session:create', ctx, {
+      sessionId: 's-dec-bad',
+      workspaceRoot: '/tmp/ws',
+    });
+
+    const bad: unknown[] = [
+      { type: 'decision-resolved', decisionId: '', outcome: 'approved', note: 'n' },
+      { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'executed', note: 'n' },
+      { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: '' },
+      {
+        type: 'decision-resolved',
+        decisionId: 'dec_1',
+        outcome: 'approved',
+        note: 'x'.repeat(2001),
+      },
+    ];
+    for (const entry of bad) {
+      let caught: unknown;
+      try {
+        await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+          'session:queue-work',
+          ctx,
+          { sessionId: 's-dec-bad', entry: entry as never },
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PluginError);
+      expect((caught as PluginError).code).toBe('invalid-payload');
+    }
+  });
+
   it('queue-work rejects a user-message with a role outside user|assistant', async () => {
     const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
     const ctx = h.ctx();

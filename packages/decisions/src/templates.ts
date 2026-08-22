@@ -207,6 +207,44 @@ export const RETRACTED_RECEIPT =
   'You took this back. That receipt no longer stands.';
 
 /**
+ * The two sentences the MODEL reads when a person has ANSWERED a call it held
+ * (AW-6), delivered to a still-warm agent as the next inbox message.
+ *
+ * Constants plus the host-generated decision id, and nothing else. Not the
+ * person's words: they clicked a button, they did not write prose, and inventing
+ * a quote for them would be the same class of lie as claiming an unsent email
+ * was sent (design H1). Not `call.input` either, for the reason the header of
+ * this file gives — model output must not be echoed into a note the model reads
+ * back as instruction.
+ *
+ * The approved note tells the agent to re-issue the call UNCHANGED. That is not
+ * a request we trust: the standing authorisation is keyed on the call's
+ * fingerprint, so an unchanged call passes the gate exactly once and any change
+ * to it holds again. Saying so is a courtesy to the model, not the enforcement.
+ *
+ * The dismissed note has to close the door on a workaround, for the same reason
+ * `holdNote` does: "no" that reads as "not this way" invites a different tool
+ * and a shell command.
+ */
+export function decisionApprovedNote(decisionId: string): string {
+  return (
+    `A person has answered the approval you were waiting on (${decisionId}). ` +
+    `They said yes. You may now make that call again, exactly as you made it ` +
+    `before — unchanged. An unchanged call goes through once; anything ` +
+    `different will be held again. Then tell the user what happened.`
+  );
+}
+
+export function decisionDismissedNote(decisionId: string): string {
+  return (
+    `A person has answered the approval you were waiting on (${decisionId}). ` +
+    `They said no, and nothing ran. Do not make that call again and do not ` +
+    `look for another way to do the same thing. Acknowledge it, then carry on ` +
+    `with whatever else they asked for or end your turn.`
+  );
+}
+
+/**
  * The sentence the MODEL reads when its call is held.
  *
  * `hold` differs from `deny` precisely here: a deny invites a workaround — a

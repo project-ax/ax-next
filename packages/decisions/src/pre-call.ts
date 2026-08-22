@@ -73,26 +73,20 @@ export interface PreCallDeps {
   idGen: () => string;
   ttlMs: number;
   /**
-   * How long the human has. Injected so AW-6 can make it a property of the
-   * channel rather than a constant.
+   * Whether anyone is expected to answer. AW-6 makes this a property of the
+   * conversation's CHANNEL rather than of the turn, which means a bus round
+   * trip — hence the promise. It is one indexed row read (see
+   * `attendance.ts`), and it rides inside the 10 s pre-call ceiling alongside
+   * the policy call and the row write.
+   *
+   * Required now: there is no sensible in-process default. AW-4's
+   * `ctx.source === 'routine'` guess is gone, because the honest fallback for
+   * "we cannot tell" is `unattended`, and a resolver that owns the failure
+   * paths is the only thing that can say so consistently.
    */
-  attendanceFor?: (ctx: AgentContext) => Attendance;
+  attendanceFor: (ctx: AgentContext) => Attendance | Promise<Attendance>;
   /** Fires `decisions:raised`. Optional so the unit tests need no bus. */
   bus?: HookBus | undefined;
-}
-
-/**
- * Attendance, v1. `web | routine` is the only axis that exists — there is no
- * Slack channel package (design §3.3's correction) — so a routine-minted
- * context is unattended and everything else is attended.
- *
- * This is deliberately NOT a synonym for "was this a routine" in the long run:
- * AW-6 replaces it with the conversation's own channel + park budget. The
- * value names the *property*, `attended`/`unattended`, so that swap adds a
- * channel rather than a new attendance value.
- */
-export function defaultAttendanceFor(ctx: AgentContext): Attendance {
-  return ctx.source === 'routine' ? 'unattended' : 'attended';
 }
 
 export type PreCallSubscriber = (
@@ -101,7 +95,6 @@ export type PreCallSubscriber = (
 ) => Promise<undefined | Rejection>;
 
 export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
-  const attendanceFor = deps.attendanceFor ?? defaultAttendanceFor;
 
   async function decide(ctx: AgentContext, call: ToolCall): Promise<undefined | Rejection> {
     const fingerprint = callFingerprint(call);
@@ -164,7 +157,7 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       // "grant" from a rule id inside THIS package would duplicate rule
       // identity across a boundary nothing can lint. See templates.ts.
       kind: 'action',
-      attendance: attendanceFor(ctx),
+      attendance: await deps.attendanceFor(ctx),
       status: 'pending',
       // The call, verbatim. `input` is model-authored and stays exactly as the
       // model wrote it — that is what makes the replay byte-faithful — and it

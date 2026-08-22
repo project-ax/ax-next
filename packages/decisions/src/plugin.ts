@@ -7,6 +7,8 @@ import {
   type ToolCall,
 } from '@ax/core';
 import type { Kysely } from 'kysely';
+import { createAttendanceResolver, CONVERSATION_METADATA_HOOK } from './attendance.js';
+import { deliverResolution, SESSION_QUEUE_HOOK } from './delivery.js';
 import { runDueReplays, sweepExpired } from './expiry.js';
 import {
   approveDecision,
@@ -65,8 +67,12 @@ export interface DecisionsPluginOptions {
   /** Id seam. Tests only — production uses the host-generated form below. */
   idGen?: () => string;
   ttlMs?: number;
-  /** Attendance seam. AW-6 replaces the default with the conversation's channel. */
-  attendanceFor?: (ctx: AgentContext) => Attendance;
+  /**
+   * Attendance seam. Production leaves it unset and gets
+   * `createAttendanceResolver(bus)` — the conversation's own channel (AW-6).
+   * Tests inject a resolver so they do not need a conversations store.
+   */
+  attendanceFor?: (ctx: AgentContext) => Attendance | Promise<Attendance>;
   /**
    * Maintenance-sweep cadence. `0` disables the timer entirely — tests drive
    * `decisions:sweep` directly rather than racing a clock.
@@ -138,6 +144,30 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       // `hasService` + `call`, exactly as `tool.execute-host` does. Adding a
       // wildcard here would be a lie the cycle-detector cannot check.
       calls: ['database:get-instance', 'tool-policy:evaluate'],
+      // OPTIONAL, not required, and the distinction is load-bearing in both
+      // directions. A host with no conversations store has no channels to read
+      // attendance from, so every decision is unattended — which is the
+      // fail-safe, not a degradation worth failing a boot over. A host with no
+      // session store has nowhere to deliver a resolution to, and the standing
+      // authorisation on the row already covers that: the agent picks it up on
+      // its next run. Declaring either as a hard `call` would make @ax/decisions
+      // unloadable in a preset that is perfectly capable of running it.
+      optionalCalls: [
+        {
+          hook: CONVERSATION_METADATA_HOOK,
+          degradation:
+            'Attendance cannot be derived from the conversation channel; every held ' +
+            'call is treated as unattended (the fail-safe) and approvals replay ' +
+            'host-side instead of returning to a warm agent.',
+        },
+        {
+          hook: SESSION_QUEUE_HOOK,
+          degradation:
+            'A resolved attended decision is not delivered to the warm agent. The ' +
+            'standing authorisation still stands on the row, so the agent performs ' +
+            'the call the next time it runs.',
+        },
+      ],
       subscribes: ['tool:pre-call'],
     },
 
@@ -179,7 +209,12 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         now,
         idGen,
         ttlMs,
-        ...(opts?.attendanceFor !== undefined ? { attendanceFor: opts.attendanceFor } : {}),
+        // AW-6: attendance is the conversation's channel, resolved through the
+        // bus. AW-4's `ctx.source === 'routine'` default is gone — it answered
+        // "was this a scheduled fire", which is a different question that
+        // happened to have the same answer while `packages/` held exactly two
+        // channels.
+        attendanceFor: opts?.attendanceFor ?? createAttendanceResolver(bus),
         bus,
       });
       bus.subscribe<ToolCall>('tool:pre-call', PLUGIN_NAME, subscriber);
@@ -355,8 +390,16 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           if (claimed === null) return settle(null);
 
           if (attended) {
-            // AW-6 delivers the resolution to the warm agent. Nothing has
-            // happened yet, so nothing claims it has: no receipt is fired here.
+            // AW-6: hand it to the warm agent as its next inbox message. It
+            // re-issues its own held call and the fingerprint gate authorises
+            // that exactly once.
+            //
+            // Nothing has happened yet, so nothing claims it has: no receipt is
+            // fired here. And nothing branches on the delivery outcome — if the
+            // session is already gone the standing authorisation simply waits on
+            // the row for the agent's next run, which is the unattended
+            // behaviour arrived at with no special case (design §3.3).
+            await deliverResolution({ bus, ctx, decision: claimed, outcome: 'approved' });
             return {
               decision: claimed,
               executed: false,
@@ -425,7 +468,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       bus.registerService<DecisionsDismissInput, DecisionsDismissOutput>(
         'decisions:dismiss',
         PLUGIN_NAME,
-        async (_ctx, input) => {
+        async (ctx, input) => {
           const decisionId = requireField(input.decisionId, 'decisionId');
           const ownerUserId = requireField(input.userId, 'userId');
           const current = await store!.get(decisionId, ownerUserId);
@@ -436,9 +479,22 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           // No event means the machine made no transition: already resolved.
           if (outcome.event === null) return { decision: current };
           const saved = await store!.markDismissed(decisionId, nowIso);
-          return {
-            decision: saved ?? (await store!.get(decisionId, ownerUserId)) ?? current,
-          };
+          const settled = saved ?? (await store!.get(decisionId, ownerUserId)) ?? current;
+          // AW-6: an ATTENDED agent is parked waiting for this answer. Telling
+          // it "no" matters as much as telling it "yes" — without the delivery
+          // it sits on the inbox until the idle floor expires and then dies
+          // mid-thought, having never learned the call was turned down.
+          //
+          // Gated on `saved`: only the caller who actually made the transition
+          // delivers. A second tab's click loses the conditional update and
+          // must not wake the agent a second time with the same news.
+          //
+          // `settled.attendance`, not `current`: same row, but read the value
+          // we are actually reporting.
+          if (saved !== null && settled.attendance === 'attended') {
+            await deliverResolution({ bus, ctx, decision: settled, outcome: 'dismissed' });
+          }
+          return { decision: settled };
         },
         { returns: DecisionsDismissOutputSchema },
       );

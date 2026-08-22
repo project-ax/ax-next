@@ -54,13 +54,31 @@ const PLUGIN_NAME = '@ax/session-postgres';
 // gets a terminal INTERNAL error, exits 1, the orchestrator records a
 // terminated chat-end, and the corrupt row shows up in audit/log so an
 // operator can surgically delete it.
+//
+// AW-6's `decision-resolved` stores `{ decisionId, outcome, note }` in the same
+// JSONB column, for the same reason and with the same corruption posture: a row
+// whose JSONB does not match its `type` throws rather than returning null,
+// because a null at this cursor is a runner that re-polls forever.
 export type InboxEntry =
   | { type: 'user-message'; payload: AgentMessage; reqId: string }
-  | { type: 'cancel' };
+  | { type: 'cancel' }
+  | {
+      type: 'decision-resolved';
+      decisionId: string;
+      outcome: 'approved' | 'dismissed';
+      note: string;
+    };
 
 export type ClaimResult =
   | { type: 'user-message'; payload: AgentMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
+  | {
+      type: 'decision-resolved';
+      decisionId: string;
+      outcome: 'approved' | 'dismissed';
+      note: string;
+      cursor: number;
+    }
   | { type: 'timeout'; cursor: number };
 
 export interface Inbox {
@@ -314,10 +332,7 @@ export function createInbox(opts: InboxOptions): Inbox {
               // column carries both without a schema migration. cancel
               // entries store null. The wrapping is internal — `claim`
               // unwraps before returning to the caller. (See `fetchEntry`.)
-              payload:
-                entry.type === 'user-message'
-                  ? ({ message: entry.payload, reqId: entry.reqId } as unknown as never)
-                  : null,
+              payload: inboxPayload(entry) as unknown as never,
             } as never)
             .execute();
           assigned = next;
@@ -491,6 +506,74 @@ async function fetchEntry(
   if (row.type === 'cancel') {
     return { type: 'cancel' };
   }
+  if (row.type === 'decision-resolved') {
+    // Same posture as the user-message branch above: a malformed payload is
+    // CORRUPTION, and returning null would leave the row in the DB but
+    // unreachable at this cursor — the claim loop would re-poll forever and
+    // the runner would hang with no diagnostic.
+    const wrapped = row.payload as
+      | { decisionId?: unknown; outcome?: unknown; note?: unknown }
+      | null
+      | undefined;
+    if (
+      wrapped === null ||
+      wrapped === undefined ||
+      typeof wrapped !== 'object' ||
+      typeof wrapped.decisionId !== 'string' ||
+      wrapped.decisionId.length === 0 ||
+      (wrapped.outcome !== 'approved' && wrapped.outcome !== 'dismissed') ||
+      typeof wrapped.note !== 'string' ||
+      wrapped.note.length === 0
+    ) {
+      throw new PluginError({
+        code: 'corrupt-inbox-row',
+        plugin: PLUGIN_NAME,
+        hookName: 'session:claim-work',
+        message:
+          `inbox row id=${String(row.id)} (session='${sessionId}', cursor=${cursor}) ` +
+          `has malformed JSONB payload: expected { decisionId, outcome, note } shape. ` +
+          `Surface for operator triage rather than silent skip — silent skip would ` +
+          `hang the runner forever at this cursor. Recovery: delete the row ` +
+          `(DELETE FROM session_postgres_v1_inbox WHERE id = ${String(row.id)}).`,
+      });
+    }
+    return {
+      type: 'decision-resolved',
+      decisionId: wrapped.decisionId,
+      outcome: wrapped.outcome,
+      note: wrapped.note,
+    };
+  }
+  // An entry type this build does not know. Unlike the malformed-payload cases
+  // above there is nothing to hand back, and returning null would hang the
+  // claim loop at this cursor — so it is the same class of failure and gets
+  // the same loud treatment.
+  throw new PluginError({
+    code: 'corrupt-inbox-row',
+    plugin: PLUGIN_NAME,
+    hookName: 'session:claim-work',
+    message:
+      `inbox row id=${String(row.id)} (session='${sessionId}', cursor=${cursor}) ` +
+      `has unknown type '${String(row.type)}'. Most likely a row written by a NEWER ` +
+      `host than this one. Recovery: delete the row ` +
+      `(DELETE FROM session_postgres_v1_inbox WHERE id = ${String(row.id)}).`,
+  });
+}
+
+/**
+ * What goes in the JSONB `payload` column for an entry. Written as one
+ * function so the queue-side shape and `fetchEntry`'s read-side shape are
+ * edited together — they are a pair, and a `cancel` row storing `null` while
+ * the reader expected an object is precisely the corruption the reader throws
+ * on.
+ */
+function inboxPayload(entry: InboxEntry): unknown {
+  if (entry.type === 'user-message') {
+    return { message: entry.payload, reqId: entry.reqId };
+  }
+  if (entry.type === 'decision-resolved') {
+    return { decisionId: entry.decisionId, outcome: entry.outcome, note: entry.note };
+  }
   return null;
 }
 
@@ -500,6 +583,15 @@ function deliver(entry: InboxEntry, cursor: number): ClaimResult {
       type: 'user-message',
       payload: entry.payload,
       reqId: entry.reqId,
+      cursor: cursor + 1,
+    };
+  }
+  if (entry.type === 'decision-resolved') {
+    return {
+      type: 'decision-resolved',
+      decisionId: entry.decisionId,
+      outcome: entry.outcome,
+      note: entry.note,
       cursor: cursor + 1,
     };
   }

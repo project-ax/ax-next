@@ -75,7 +75,7 @@ describe('session return schemas', () => {
     expect(SessionQueueWorkOutputSchema.safeParse({ cursor: 'x' }).success).toBe(false);
   });
 
-  it('SessionClaimWorkOutputSchema round-trips all three variants', () => {
+  it('SessionClaimWorkOutputSchema round-trips all four variants', () => {
     const um: SessionClaimWorkOutput = {
       type: 'user-message',
       payload: { role: 'user', content: 'hi', contentBlocks: [{ x: 1 }], turnId: 'T1' },
@@ -89,6 +89,19 @@ describe('session return schemas', () => {
 
     const timeout: SessionClaimWorkOutput = { type: 'timeout', cursor: 7 };
     expect(SessionClaimWorkOutputSchema.parse(timeout)).toEqual(timeout);
+
+    // AW-6's fourth variant. A `z.discriminatedUnion` REFUSES an undeclared
+    // discriminator outright (it does not strip like a `z.object`), so a
+    // variant missing from this schema is a hard hook-boundary failure, not a
+    // silently-dropped field.
+    const resolved: SessionClaimWorkOutput = {
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+      cursor: 8,
+    };
+    expect(SessionClaimWorkOutputSchema.parse(resolved)).toEqual(resolved);
 
     expect(SessionClaimWorkOutputSchema.safeParse({ type: 'bogus', cursor: 1 }).success).toBe(
       false,

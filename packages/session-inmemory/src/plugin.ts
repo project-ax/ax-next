@@ -226,6 +226,13 @@ function requireNonNegativeInt(
 // here would create a second source of truth for what 'valid role' means.
 const VALID_ROLES = new Set(['user', 'assistant']);
 
+/**
+ * Cap on the host-authored `decision-resolved` note. Mirrors the wire schema's
+ * bound in @ax/ipc-protocol — a note that passes here but fails there would
+ * make the runner's poll error out at exactly this cursor and never advance.
+ */
+const DECISION_NOTE_MAX = 2000;
+
 function requireInboxEntry(
   value: unknown,
   hookName: string,
@@ -282,11 +289,53 @@ function requireInboxEntry(
     return;
   }
   if (type === 'cancel') return;
+  // AW-6. `decision-resolved` is HOST-INTERNAL: it is produced only by
+  // @ax/decisions after a human answered, and no IPC action routes to
+  // `session:queue-work`. The checks below are the trust-boundary belt anyway
+  // — the note is prose the RUNNER hands straight to the model, so a
+  // malformed or unbounded one is worth refusing at the producer rather than
+  // discovering at the wire schema (which would fail the runner's poll and
+  // wedge it at this cursor).
+  //
+  // The cap matches @ax/ipc-protocol's `SessionNextMessageResponseSchema`
+  // note bound. Two copies of a number is how they stop agreeing, but the
+  // alternative is importing the wire schema into a storage plugin — a
+  // dependency this package deliberately does not have.
+  if (type === 'decision-resolved') {
+    const decisionId = (value as { decisionId?: unknown }).decisionId;
+    if (typeof decisionId !== 'string' || decisionId.length === 0) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.decisionId' must be a non-empty string for decision-resolved entries`,
+      });
+    }
+    const outcome = (value as { outcome?: unknown }).outcome;
+    if (outcome !== 'approved' && outcome !== 'dismissed') {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.outcome' must be 'approved' | 'dismissed'`,
+      });
+    }
+    const note = (value as { note?: unknown }).note;
+    if (typeof note !== 'string' || note.length === 0 || note.length > DECISION_NOTE_MAX) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.note' must be a non-empty string of at most ${DECISION_NOTE_MAX} characters`,
+      });
+    }
+    return;
+  }
   throw new PluginError({
     code: 'invalid-payload',
     plugin: PLUGIN_NAME,
     hookName,
-    message: `'entry.type' must be 'user-message' or 'cancel'`,
+    message: `'entry.type' must be 'user-message', 'cancel' or 'decision-resolved'`,
   });
 }
 

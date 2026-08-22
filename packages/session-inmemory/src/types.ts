@@ -60,13 +60,33 @@ export interface AgentConfig {
 // request. The runner reads it back through `session:claim-work` and
 // stamps it onto every `event.stream-chunk` so the host can route the
 // chunk back to the waiting client (Task 5/7). REQUIRED — never optional.
+//
+// AW-6 adds `decision-resolved`: a decision the agent held earlier, answered by
+// a human while the session was still warm. It carries NO reqId — nothing is
+// waiting on a response, because no host request produced it; the turn it
+// starts is host-initiated. `note` is HOST-AUTHORED prose (see
+// @ax/ipc-protocol's `SessionNextMessageResponseSchema`), never the person's
+// free text and never the model-authored `call.input`.
 export type InboxEntry =
   | { type: 'user-message'; payload: AgentMessage; reqId: string }
-  | { type: 'cancel' };
+  | { type: 'cancel' }
+  | {
+      type: 'decision-resolved';
+      decisionId: string;
+      outcome: 'approved' | 'dismissed';
+      note: string;
+    };
 
 export type ClaimResult =
   | { type: 'user-message'; payload: AgentMessage; reqId: string; cursor: number }
   | { type: 'cancel'; cursor: number }
+  | {
+      type: 'decision-resolved';
+      decisionId: string;
+      outcome: 'approved' | 'dismissed';
+      note: string;
+      cursor: number;
+    }
   | { type: 'timeout'; cursor: number };
 
 // ---------------------------------------------------------------------------
@@ -303,6 +323,17 @@ export const SessionClaimWorkOutputSchema = z.discriminatedUnion('type', [
     cursor: z.number(),
   }),
   z.object({ type: z.literal('cancel'), cursor: z.number() }),
+  // AW-6. Must appear here as well as on the wire schema: this is the
+  // `returns` contract the bus validates the handler against, and a variant
+  // missing from it is refused at the hook boundary before it ever reaches
+  // @ax/ipc-core's handler.
+  z.object({
+    type: z.literal('decision-resolved'),
+    decisionId: z.string(),
+    outcome: z.enum(['approved', 'dismissed']),
+    note: z.string(),
+    cursor: z.number(),
+  }),
   z.object({ type: z.literal('timeout'), cursor: z.number() }),
 ]) as unknown as ZodType<SessionClaimWorkOutput>;
 

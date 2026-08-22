@@ -148,6 +148,122 @@ describe('store + migrations round-trip', () => {
     expect(round!.conversationId).toBe(created.conversationId);
   });
 
+  // ---- AW-6: origin -------------------------------------------------------
+
+  it('defaults origin to web', async () => {
+    // No backfill and no column DEFAULT: NULL is what an untaught caller
+    // writes, and an existing conversation is by definition one a human
+    // opened. `'web'` is what NULL means.
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+
+    const c = await store.create({ userId: 'u1', agentId: 'agt_x', title: null });
+    expect(c.origin).toBe('web');
+    expect((await store.getByIdNotDeleted(c.conversationId))!.origin).toBe('web');
+    expect((await store.getMetadata(c.conversationId))!.origin).toBe('web');
+  });
+
+  it('records a routine origin', async () => {
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+
+    const c = await store.create({
+      userId: 'u1',
+      agentId: 'agt_x',
+      title: null,
+      origin: 'routine',
+    });
+    expect(c.origin).toBe('routine');
+    expect((await store.getByIdNotDeleted(c.conversationId))!.origin).toBe('routine');
+    expect((await store.getMetadata(c.conversationId))!.origin).toBe('routine');
+  });
+
+  it('reads a stored value it does not recognise as web, not as itself', async () => {
+    // A hand-edited row (or a future channel talking to an old host) must not
+    // widen the union that everything downstream switches on. Narrowing to the
+    // permissive-but-safe default beats leaking an unknown string.
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+    const c = await store.create({ userId: 'u1', agentId: 'agt_x', title: null });
+    await db
+      .updateTable('conversations_v1_conversations')
+      .set({ origin: 'slack' })
+      .where('conversation_id', '=', c.conversationId)
+      .execute();
+
+    expect((await store.getByIdNotDeleted(c.conversationId))!.origin).toBe('web');
+    expect((await store.getMetadata(c.conversationId))!.origin).toBe('web');
+  });
+
+  it('backfills a pre-existing hidden row to a routine origin', async () => {
+    // Reading NULL as 'web' reads it as ATTENDED, which for a routine's
+    // conversation means the approval waits for a warm agent that ended its
+    // turn hours ago. A per-fire row ages out; a `conversation: shared`
+    // routine keeps ONE row forever, so without the backfill it is
+    // misclassified for good.
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+
+    const tick = await store.create({
+      userId: 'u1',
+      agentId: 'agt_x',
+      title: null,
+      hidden: true,
+    });
+    const chat = await store.create({ userId: 'u1', agentId: 'agt_x', title: null });
+    // Simulate the pre-column state: both rows land with origin NULL.
+    await db
+      .updateTable('conversations_v1_conversations')
+      .set({ origin: null })
+      .execute();
+
+    await runConversationsMigration(db);
+
+    expect((await store.getByIdNotDeleted(tick.conversationId))!.origin).toBe('routine');
+    // And it does NOT touch a visible conversation — a human opened that one.
+    expect((await store.getByIdNotDeleted(chat.conversationId))!.origin).toBe('web');
+  });
+
+  it('the backfill leaves an explicit origin alone on a re-run', async () => {
+    // Idempotence (I11). Scoped to `origin IS NULL`, so a row a future channel
+    // wrote is untouched however many times the migration runs.
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+    const c = await store.create({
+      userId: 'u1',
+      agentId: 'agt_x',
+      title: null,
+      hidden: true,
+      origin: 'web',
+    });
+
+    await runConversationsMigration(db);
+    expect((await store.getByIdNotDeleted(c.conversationId))!.origin).toBe('web');
+  });
+
+  it('get-metadata carries the live session id', async () => {
+    // AW-6 delivers a resolved decision to the warm agent through this field.
+    // It rides the same single row read as the attendance lookup.
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+    const c = await store.create({ userId: 'u1', agentId: 'agt_x', title: null });
+    expect((await store.getMetadata(c.conversationId))!.activeSessionId).toBeNull();
+
+    await store.setActiveSession({
+      conversationId: c.conversationId,
+      userId: 'u1',
+      sessionId: 'sess-1',
+      reqId: 'req-1',
+    });
+    expect((await store.getMetadata(c.conversationId))!.activeSessionId).toBe('sess-1');
+  });
+
   it('soft-delete sets deleted_at; scopedConversations filters it out', async () => {
     const db = makeKysely();
     await runConversationsMigration(db);

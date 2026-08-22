@@ -172,4 +172,70 @@ describe('inbox corruption: malformed JSONB throws corrupt-inbox-row', () => {
 
     await inbox.shutdown();
   }, 15000);
+
+  // AW-6: the same posture for the fourth entry type. Two new ways a row can
+  // be unreadable — a decision-resolved row whose JSONB lost a field, and a
+  // row whose `type` this build has never heard of (a newer host wrote it).
+  // Both used to fall through `fetchEntry`'s trailing `return null`, and a
+  // null at a cursor that HAS a row is a runner that re-polls forever.
+  it('a malformed decision-resolved payload throws corrupt-inbox-row', async () => {
+    const { db, inbox } = await makeInbox();
+    await sql`
+      INSERT INTO session_postgres_v1_inbox (session_id, cursor, type, payload)
+      VALUES ('s-corrupt-3', 0, 'decision-resolved', ${JSON.stringify({
+        decisionId: 'dec_1',
+      })}::jsonb)
+    `.execute(db);
+
+    let caught: unknown;
+    try {
+      await inbox.claim('s-corrupt-3', 0, 1000);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('corrupt-inbox-row');
+    expect((caught as PluginError).message).toMatch(/decisionId, outcome, note/);
+
+    await inbox.shutdown();
+  }, 15000);
+
+  it('an unknown entry type throws instead of hanging the claim loop', async () => {
+    const { db, inbox } = await makeInbox();
+    await sql`
+      INSERT INTO session_postgres_v1_inbox (session_id, cursor, type, payload)
+      VALUES ('s-corrupt-4', 0, 'something-from-the-future', NULL)
+    `.execute(db);
+
+    let caught: unknown;
+    try {
+      await inbox.claim('s-corrupt-4', 0, 1000);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('corrupt-inbox-row');
+    expect((caught as PluginError).message).toMatch(/unknown type/);
+
+    await inbox.shutdown();
+  }, 15000);
+
+  it('round-trips a well-formed decision-resolved entry', async () => {
+    const { inbox } = await makeInbox();
+    const { cursor } = await inbox.queue('s-dec-pg', {
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+    });
+    expect(cursor).toBe(0);
+    expect(await inbox.claim('s-dec-pg', 0, 1000)).toEqual({
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+      cursor: 1,
+    });
+    await inbox.shutdown();
+  }, 15000);
 });
