@@ -7,7 +7,11 @@ import {
   type ToolCall,
 } from '@ax/core';
 import type { Kysely } from 'kysely';
-import { createAttendanceResolver, CONVERSATION_METADATA_HOOK } from './attendance.js';
+import {
+  conversationChannel,
+  createAttendanceResolver,
+  CONVERSATION_METADATA_HOOK,
+} from './attendance.js';
 import { deliverResolution, SESSION_QUEUE_HOOK } from './delivery.js';
 import { runDueReplays, sweepExpired } from './expiry.js';
 import { auditFreshnessPairs, checkFreshness } from './freshness.js';
@@ -174,9 +178,12 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         {
           hook: SESSION_QUEUE_HOOK,
           degradation:
-            'A resolved attended decision is not delivered to the warm agent. The ' +
-            'standing authorisation still stands on the row, so the agent performs ' +
-            'the call the next time it runs.',
+            'A resolved attended decision is not delivered to the warm agent, so it ' +
+            'is never told a person answered. An approval then falls back to the ' +
+            'host replay and the call is made host-side; only a call the host ' +
+            'cannot replay at all is left standing on the row for the agent to ' +
+            'perform on its next run. A dismissal loses its narration and nothing ' +
+            'else — there is no authorisation behind it.',
         },
       ],
       subscribes: ['tool:pre-call'],
@@ -405,14 +412,53 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           //                                window closes.
           //   unattended, reversible    -> claim now, replay now.
           //
+          // ATTENDED IS TWO QUESTIONS AND THE ROW ANSWERS ONLY ONE (TASK-277).
+          // `decision.attendance` is captured at hold time and says which
+          // CHANNEL opened the conversation — so a web thread is `attended`
+          // forever, including hours after its runner was reaped. Routing on
+          // the row alone sent an idle-expired approval down the attended
+          // branch anyway: the row was claimed `executed`, no replay was
+          // scheduled, the delivery found no session and logged, and the call
+          // never happened. The person's yes was consumed in silence.
+          //
+          // So the ROW says whether an agent could ever be there and the LIVE
+          // READ below says whether one is, and both have to hold. The read is
+          // gated on the stored value, so a routine-origin row costs nothing
+          // extra — it can never be attended.
+          //
+          // `conversationChannel` answers null for every "we do not know": no
+          // conversations store, an unreadable row, a throw. Null means
+          // unattended, which means the host replays, which means THE CALL
+          // STILL HAPPENS — the recoverable one of the two mistakes. See the
+          // asymmetry at the top of `attendance.ts`.
+          //
+          // Under the DECISION's ctx, never the approving request's, for the
+          // same reason the freshness read above uses one:
+          // `conversations:get-metadata` pre-filters on `(conversationId,
+          // userId)`, so an approver whose ctx named a different user would
+          // read back nothing and be told, wrongly but plausibly, that the
+          // session is gone.
+          //
           // The undo window is honoured on the HOST path only, and that is a
           // real limit rather than an oversight: on the attended path the
           // still-warm agent re-issues its own call the moment the gate lets it
           // through, and nothing here can hold the agent back for ten seconds.
           // An irreversible rule whose calls need the grace period must be
-          // raised unattended. Recorded rather than papered over.
+          // raised unattended. Recorded rather than papered over — though a web
+          // decision whose session has since died is on the host path now, and
+          // does get its grace period.
           // -----------------------------------------------------------------
-          const attended = current.attendance === 'attended';
+          const liveSessionId =
+            current.attendance === 'attended'
+              ? ((
+                  await conversationChannel(
+                    bus,
+                    replayContext(current),
+                    current.conversationId,
+                  )
+                )?.activeSessionId ?? null)
+              : null;
+          const attended = liveSessionId !== null;
           const hasExecutor = bus.hasService(`tool:execute:${current.call.name}`);
           const parked = !attended && !hasExecutor;
           const deferred = !attended && hasExecutor && current.irreversible;
@@ -461,14 +507,103 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           if (attended) {
             // AW-6: hand it to the warm agent as its next inbox message. It
             // re-issues its own held call and the fingerprint gate authorises
-            // that exactly once.
-            //
-            // Nothing has happened yet, so nothing claims it has: no receipt is
-            // fired here. And nothing branches on the delivery outcome — if the
-            // session is already gone the standing authorisation simply waits on
-            // the row for the agent's next run, which is the unattended
-            // behaviour arrived at with no special case (design §3.3).
-            await deliverResolution({ bus, ctx, decision: claimed, outcome: 'approved' });
+            // that exactly once. Nothing has happened yet, so nothing claims it
+            // has: no receipt is fired here.
+            const delivery = await deliverResolution({
+              bus,
+              ctx,
+              decision: claimed,
+              outcome: 'approved',
+            });
+            if (!delivery.delivered) {
+              // The liveness read closed the hours-wide hole; this is the
+              // milliseconds-wide one left over — the session ended between the
+              // lookup and the queue, or the queue refused outright. All three
+              // reasons mean the same thing, and it is the thing that matters:
+              // the agent was NOT told. So the host does not get to assume it
+              // was and leave a standing yes on a row nobody may ever come back
+              // for. It takes the replay itself.
+              //
+              // AND IT TAKES THE FLIGHT BEFORE THE CALL, which the first cut of
+              // this branch did not. The claim above wrote `replayClaimedAt:
+              // null` — `immediate` is false whenever `attended` is true,
+              // because the attended branch had no idea it might end up making
+              // the call. That left the row `executed` with BOTH
+              // `replay_claimed_at` and `replayed_at` null for the entire
+              // duration of the host tool, which is exactly the shape
+              // `store.restore` accepts as undoable. A `decisions:undo` landing
+              // in that window returned `undone: true` and fired the retracted
+              // receipt — telling the person it was taken back — while the call
+              // was already on its way out, and `markReplayed` then wrote the
+              // row back to `executed` over the top of them. "Undone" about a
+              // call that went out is the same lie as the silent no-op this
+              // whole card exists to remove.
+              //
+              // The REASONING that hid it is worth keeping, because it read as
+              // careful: the comment here used to argue the un-stamped window
+              // was safe, since the only thing that could exploit it was a
+              // byte-identical call from a warm agent and a warm agent was
+              // precisely what we had just failed to find. True, and beside the
+              // point — UNDO NEEDS NO WARM AGENT. It is a person and a button.
+              // A window argued safe against one actor is not safe; it is
+              // unexamined against every other.
+              //
+              // So the flight is taken as one conditional UPDATE off the same
+              // three columns `restore` and `takeApproval` guard — unconsumed,
+              // untaken, un-replayed, on an `executed` row. Null back means
+              // undo, a consuming agent, or another resolver already won:
+              // report the stored outcome and run NOTHING.
+              //
+              // WHY IT IS GATED ON `hasExecutor`. Not because a flight on the
+              // park side would be unrecoverable — `parkForAgent` clears
+              // `replay_claimed_at` unconditionally, so a mis-gate there is
+              // very nearly harmless. The real reason is that `hasExecutor` is
+              // the SAME answer `replayOnApprove` is about to branch on:
+              // `HookBus` has no deregistration, so `hasService` cannot go
+              // stale inside one handler. Gating on it takes the flight in
+              // exactly the case where a send is imminent, and skips it in
+              // exactly the case where the outcome is a park that must stay
+              // undoable. Taking it on the park side would close the row to
+              // undo for the duration of a branch that sends nothing — a
+              // window with no call behind it to justify it.
+              //
+              // The unrecoverable reading is real but SECONDARY: it needs the
+              // process to die between `claimReplayFlight` and `parkForAgent`,
+              // leaving a parked row carrying a flight nothing will ever clear,
+              // which `takeApproval` then refuses forever. Worth avoiding,
+              // not the reason.
+              ctx.logger.warn('decision_delivery_fell_back_to_replay', {
+                plugin: PLUGIN_NAME,
+                decisionId,
+                reason: delivery.reason,
+              });
+              let flight: Decision = claimed;
+              if (hasExecutor) {
+                const taken = await store!.claimReplayFlight(decisionId, nowIso);
+                if (taken === null) {
+                  ctx.logger.warn('decision_replay_flight_lost', {
+                    plugin: PLUGIN_NAME,
+                    decisionId,
+                  });
+                  return settle(null);
+                }
+                flight = taken;
+              }
+              const replayed = await settleReplay({
+                store: store!,
+                bus,
+                ctx: replayContext(flight),
+                decision: flight,
+                now,
+              });
+              return {
+                decision: (await store!.get(decisionId, ownerUserId)) ?? claimed,
+                executed: replayed.executed,
+                path: replayed.path,
+                error: replayed.error,
+                pendingUntil: null,
+              };
+            }
             return {
               decision: claimed,
               executed: false,
@@ -560,6 +695,17 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           //
           // `settled.attendance`, not `current`: same row, but read the value
           // we are actually reporting.
+          //
+          // AND DELIBERATELY NOT THE APPROVE PATH'S TREATMENT (TASK-277). This
+          // routes on the STORED attendance with no live session read, and it
+          // discards `deliverResolution`'s return — the two things approve just
+          // stopped doing. It is benign here for one reason, and it is the whole
+          // reason: a dismissal creates no standing authorisation and schedules
+          // no replay, so a delivery that never lands costs the agent its
+          // narration and nothing else. There is no call waiting to be made, so
+          // there is nothing for a fallback to run and nothing to be silently
+          // consumed. Adding a liveness read would buy an extra round-trip to
+          // reach the same `deliverResolution` no-op it already reaches.
           if (saved !== null && settled.attendance === 'attended') {
             await deliverResolution({ bus, ctx, decision: settled, outcome: 'dismissed' });
           }

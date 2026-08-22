@@ -102,6 +102,26 @@ export function createFakeStore(): FakeStore {
       return next;
     },
 
+    // Mirrors the real store's predicates exactly: `executed`, unconsumed,
+    // untaken, un-replayed — the same three columns `restore` and
+    // `takeApproval` guard. Null means undo, a consuming agent, or another
+    // resolver won the row first.
+    async claimReplayFlight(decisionId, nowIso) {
+      const row = rows.get(decisionId);
+      if (
+        row === undefined ||
+        row.status !== 'executed' ||
+        row.consumedAt !== null ||
+        row.replayClaimedAt !== null ||
+        row.replayedAt !== null
+      ) {
+        return null;
+      }
+      const next: Decision = { ...row, replayClaimedAt: nowIso };
+      rows.set(decisionId, next);
+      return next;
+    },
+
     // Unconditional on status, mirroring the real store: once the call has
     // gone out the row has to agree with the world, even if an undo landed in
     // between.

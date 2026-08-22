@@ -5,6 +5,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import pg from 'pg';
 import { runDecisionsMigration, type DecisionsDatabase } from '../migrations.js';
 import { createDecisionsStore, type DecisionStore } from '../store.js';
+import { createFakeStore } from './fake-store.js';
 import type { Decision } from '../types.js';
 
 let container: StartedPostgreSqlContainer;
@@ -473,6 +474,90 @@ describe('decisions store — the authorisation the agent takes up', () => {
     await s.create(base());
     await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
     expect((await s.takeApproval('a1', 'fp-1', T_SOON))!.id).toBe('dec_1');
+  });
+});
+
+/**
+ * TASK-277's fallback takes the flight AFTER the row was already claimed,
+ * because the attended path claims expecting the warm agent to make the call
+ * and only then finds out the delivery failed. That makes this the fourth guard
+ * over the same three columns, and the one most likely to drift from the other
+ * three — so its predicates get pinned here rather than only through the canary.
+ */
+describe('decisions store — claimReplayFlight', () => {
+  /** The real store and the fake, asked the identical question. */
+  async function bothStores(over: Partial<Decision> = {}): Promise<DecisionStore[]> {
+    const real = await freshStore();
+    const fake = createFakeStore();
+    for (const s of [real, fake]) {
+      await s.create(base());
+      // The attended claim: `executed`, and deliberately NO flight — the host
+      // did not know it would be the one calling.
+      await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+      if (Object.keys(over).length > 0) {
+        // The one column each case is about, set the way the real path sets it.
+        if (over.consumedAt !== undefined) await s.takeApproval('a1', 'fp-1', T_SOON);
+        if (over.replayedAt !== undefined) await s.markReplayed('dec_1', T_SOON);
+      }
+    }
+    return [real, fake];
+  }
+
+  it('takes the flight on an attended-claimed row nothing has touched', async () => {
+    // The counter-control. Without it every refusal below could pass simply
+    // because the method had stopped working.
+    for (const s of await bothStores()) {
+      const taken = await s.claimReplayFlight('dec_1', T_SOON);
+      expect(taken).not.toBeNull();
+      expect(taken!.replayClaimedAt).toBe(T_SOON);
+      // And the row is now closed to undo and to the agent, which is the whole
+      // reason the flight is taken before the call rather than after it.
+      expect(await s.restore('dec_1')).toBeNull();
+      expect(await s.takeApproval('a1', 'fp-1', T_SOON)).toBeNull();
+    }
+  });
+
+  it('REFUSES a row the agent has already consumed', async () => {
+    // The window between the claim and this write: the row is `executed` with
+    // every marker null, and `takeApproval` needs only `replay_claimed_at IS
+    // NULL` to spend it. A byte-identical agent call landing there consumes the
+    // yes — and a flight taken on top would send the same call a SECOND time.
+    for (const s of await bothStores({ consumedAt: T_SOON })) {
+      expect((await s.get('dec_1'))!.consumedAt).not.toBeNull();
+      expect(await s.claimReplayFlight('dec_1', T_LATE)).toBeNull();
+      // Refusing left the row alone: no half-written flight on a consumed row.
+      expect((await s.get('dec_1'))!.replayClaimedAt).toBeNull();
+    }
+  });
+
+  it('REFUSES a row the host has already replayed', async () => {
+    for (const s of await bothStores({ replayedAt: T_SOON })) {
+      expect(await s.claimReplayFlight('dec_1', T_LATE)).toBeNull();
+    }
+  });
+
+  it('REFUSES a row an undo re-opened, and a row already parked for the agent', async () => {
+    // The two statuses the fallback can find underneath it. `pending` is undo
+    // winning the race; `approved-pending-agent` is a row that is the AGENT's
+    // to perform — a flight stamped there would never be cleared, and
+    // `takeApproval` would refuse the agent forever.
+    for (const s of [await freshStore(), createFakeStore()]) {
+      await s.create(base());
+      await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+      await s.restore('dec_1');
+      expect((await s.get('dec_1'))!.status).toBe('pending');
+      expect(await s.claimReplayFlight('dec_1', T_LATE)).toBeNull();
+
+      await s.claimForApproval('dec_1', { nowIso: T_LATE, status: 'approved-pending-agent' });
+      expect(await s.claimReplayFlight('dec_1', T_LATE)).toBeNull();
+    }
+  });
+
+  it('is one-shot — a second flight on the same row returns null', async () => {
+    for (const s of await bothStores()) {
+      expect(await s.claimReplayFlight('dec_1', T_SOON)).not.toBeNull();
+      expect(await s.claimReplayFlight('dec_1', T_LATE)).toBeNull();
+    }
   });
 });
 

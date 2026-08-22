@@ -82,6 +82,42 @@ export interface DecisionStore {
   ): Promise<Decision | null>;
 
   /**
+   * TAKE THE FLIGHT on a row that is already claimed — stamp `replay_claimed_at`
+   * on an `executed` row nobody has consumed, nobody has taken, and nothing has
+   * replayed.
+   *
+   * `claimForApproval` sets this in the same statement that claims the row,
+   * which is right for every path that knows at claim time that the host is
+   * making the call. TASK-277 added one that does not: an ATTENDED approval
+   * claims with `replay_claimed_at` null (it expects the warm agent to run the
+   * call), then discovers the delivery failed and takes the replay itself. That
+   * row sits `executed` with every marker null, which is precisely the shape
+   * `restore` accepts — so without this write an undo landing during the host
+   * tool would report success over a call already going out.
+   *
+   * IT GUARDS THE SAME THREE COLUMNS AS ITS SIBLINGS, and that symmetry is the
+   * point rather than a coincidence. `restore` and `takeApproval` each refuse a
+   * row on all of `{consumed_at, replayed_at, replay_claimed_at}`; a guard here
+   * that checked only two would let a byte-identical agent call consume the
+   * authorisation through `takeApproval` in the window before this write, and
+   * then this write would take the flight on top of it and the call would go
+   * out TWICE. Three guards over the same three columns is also the shape the
+   * next reader will assume — a fourth that quietly checks fewer is a trap.
+   *
+   * A null return is NOT an error and never means "no such row": undo, a
+   * consuming agent, or another resolver got there first. The caller must
+   * report the stored outcome and MUST NOT replay.
+   *
+   * The status predicate refuses an ALREADY-PARKED row, which is a different
+   * question from whether the caller should ask at all (see the call site).
+   * `approved-pending-agent` is the agent's to perform, and a flight stamped on
+   * it would never be cleared — no later `parkForAgent` is coming — so
+   * `takeApproval` would refuse the agent forever and the call would run zero
+   * times.
+   */
+  claimReplayFlight(decisionId: string, nowIso: string): Promise<Decision | null>;
+
+  /**
    * The host replay threw. Records the failure and DROPS the standing
    * authorisation with it (the partial index does not cover `failed`), because
    * an action that did not happen must not leave behind a yes the agent can
@@ -243,6 +279,29 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         // one this row is about.
         replay_error: null,
       });
+    },
+
+    async claimReplayFlight(decisionId, nowIso) {
+      const row = await db
+        .updateTable(table)
+        .set({ replay_claimed_at: new Date(nowIso) })
+        .where('decision_id', '=', decisionId)
+        // `executed` only. A parked row is the agent's to perform, and a failed
+        // or re-opened one has nothing in flight to take.
+        .where('status', '=', 'executed')
+        // The AGENT has not already spent this yes. `takeApproval` needs only
+        // `replay_claimed_at IS NULL` to consume a row, so between the claim
+        // and this write a byte-identical agent call can win it — and taking
+        // the flight on top of that would send the call twice.
+        .where('consumed_at', 'is', null)
+        // Nobody else has taken it — including this row's own claim, on the
+        // paths where the host knew at claim time that it was replaying.
+        .where('replay_claimed_at', 'is', null)
+        // And nothing has already gone out under it.
+        .where('replayed_at', 'is', null)
+        .returningAll()
+        .executeTakeFirst();
+      return row === undefined ? null : toDecision(row);
     },
 
     async markReplayed(decisionId, nowIso) {
