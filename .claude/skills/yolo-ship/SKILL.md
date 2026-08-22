@@ -18,7 +18,7 @@ This skill orchestrates other skills. It does not re-explain them — it sequenc
 2. **Every non-trivial decision is logged** to `.claude/memory/decisions.md` (Date | Decision | Rationale | Alternatives). If you'd have asked the user, write the recommendation there instead.
 3. **Follow-up work is tracked, never silently dropped.** Anything you deliberately defer becomes a card on the **"TO DO"** project board (To Do, or Backlog if it's gated) — not a memory. **Orchestrated mode:** don't touch the board's **routing** (`Status`, `Depends on`) or other cards — auto-ship owns those; return follow-ups in your handoff so auto-ship creates the cards. The one thing you *do* write is the **progress block of your own card** (see Progress reporting). Likewise, **surface what you learned that changes assumptions for *other* tasks** — a changed interface, an established pattern, a decision, a gotcha, or a sibling card whose premise your work invalidated — in the handoff's `learnings:` field (and commit durable ones to `.claude/memory/`); auto-ship feeds them forward to the still-queued same-epic cards (auto-ship › Forward learning).
 4. **Pre-PR gate is `pnpm build` + `pnpm test` + lint** — not just build+test (see [[feedback_run_lint_before_pr]], [[feedback_run_tsc_alongside_vitest]]).
-5. **Done = branch reviewed clean *before* the PR + CI green, then merged.** The review runs locally via the `ax-code-reviewer` subagent before the PR exists — there is **no hosted-reviewer wait**. When CI is green you **auto-merge** (Phase 7) and fast-forward local `main`. **Exception — orchestrated mode:** if auto-ship dispatched you, do **NOT** merge and do **NOT** touch the board — stop at a green, verified-mergeable PR and return the handoff; auto-ship owns the serialized merge queue and all board writes.
+5. **Done = branch reviewed clean *before* the PR + CI green, then merged.** The review runs locally via the `ax-code-reviewer` subagent before the PR exists — there is **no hosted-reviewer wait**. That subagent **can hang without returning**; when it does, say so (`reviewer: hung`) and let the fallback run — never self-review and report it as clean (Phase 5, deadline protocol). When CI is green you **auto-merge** (Phase 7) and fast-forward local `main`. **Exception — orchestrated mode:** if auto-ship dispatched you, do **NOT** merge and do **NOT** touch the board — stop at a green, verified-mergeable PR and return the handoff; auto-ship owns the serialized merge queue and all board writes.
 
 ## Context budget (target < 300–400K tokens)
 
@@ -63,7 +63,7 @@ Per-phase line catalogue (prefix exceptions with `⚠`):
 | 2 Design | `plan written — <N> tasks` |
 | 3 Implement | per task `task <k>/<N> done — <slug>`; trouble `⚠ task <k>/<N> blocked — <why>` |
 | 4 Gate | `build+test+lint green` or `⚠ gate red — <tool/suite>` |
-| 5 Review | `⚠ review flagged <M> — addressing` → `review clean` |
+| 5 Review | `⚠ review flagged <M> — addressing` → `review clean`; on a hang `⚠ reviewer hung — re-dispatching`, then `⚠ reviewer hung ×2 — <fallback>` |
 | 6 Ship | `PR #<n> opened`; `⚠ CI red — <suite>`; `CI green ✅` |
 | 7 Merge | standalone only: `merged #<n> ✅` (orchestrated: auto-ship writes this) |
 
@@ -131,12 +131,46 @@ digraph review {
 }
 ```
 
-- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `main`** (merge-base `main...HEAD`) — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly (`git diff main...HEAD`) and the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in `decisions.md`. The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and runs read-only, so there's no model/effort to tier and nothing to pre-authorize — and because a subagent runs async, there's no Bash timeout to set and no hang to babysit.
+- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `main`** (merge-base `main...HEAD`) — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly (`git diff main...HEAD`) and the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in `decisions.md`. The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and runs read-only, so there's no model/effort to tier and nothing to pre-authorize. **It can still hang — see the deadline protocol below. Never assume "async" means "it will come back."**
 - **When to skip:** docs/comment/config-only or other non-code diffs — the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in `decisions.md`. Any code change gets reviewed.
 - **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in `decisions.md` any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-dispatch the reviewer** on the updated branch — each run re-reads the current `main...HEAD` diff — until it returns `APPROVE` / no actionable findings.
 - The reviewer is a **peer, not an authority** — treat its claims critically: push back on wrong ones (model names, recent APIs, anything you can verify) rather than blindly deferring.
 - Only when the review is clean do you proceed to Phase 6 and open the PR.
 - **Progress:** `⚠ review flagged <M> — addressing` when you start fixing, then `review clean` once the loop closes.
+
+#### The reviewer can hang — deadline protocol (REQUIRED)
+
+The `ax-code-reviewer` subagent has hung and never returned on **6 of 6 large cards**
+in one auto-ship run (TASK-247). On three of them the missing review was hiding a real
+blocking bug that would otherwise have auto-merged. **A silent review gate is worse
+than no gate, because the merge is automated.** It is *not* diff size and *not* the
+agent type — the same agent on the same large diffs, dispatched fresh, returned in
+13–17 min. It correlates with being spawned by a builder **deep into a long session**.
+So treat every dispatch as fallible:
+
+1. **Note the wall-clock time when you dispatch.** Successful passes land in 13–17 min;
+   the confirmed hang ran 40+ min with no return.
+2. **Deadline: 25 minutes.** Poll with `ScheduleWakeup`/short sleeps — do **not**
+   busy-spin. **Ping the agent at most once.** If it has not returned by the deadline,
+   the pass has **failed**; stop waiting.
+3. **First recovery — one fresh re-dispatch.** Launch a *new* `ax-code-reviewer` with a
+   **minimal, self-contained prompt** (the diff range, the worktree path, the focus —
+   nothing else). Never ping into the hung one; never re-send a long prompt. Same
+   25-minute deadline.
+4. **If the fresh dispatch also blows the deadline, fail LOUDLY — never quietly
+   self-review and call it clean:**
+   - **Orchestrated mode:** return `reviewer: hung` in the handoff. auto-ship then
+     orders an independent review pass **before** it merges (this is the mitigation
+     that provably worked). Still open the PR — do not fail the card for this.
+   - **Standalone mode:** run `/code-review high` inline as a fallback, and say
+     plainly in the PR body that the deep reviewer never returned and what stood in
+     for it. Do not write "review clean".
+5. **Honesty rule.** `reviewer: clean` means an `ax-code-reviewer` **returned** and its
+   actionable findings are addressed. A reviewer that never returned is
+   `reviewer: hung` — always. Log the hang (times, diff size, which dispatch) in
+   `decisions.md` so TASK-247 keeps accumulating evidence.
+- **Progress on a hang:** `⚠ reviewer hung — re-dispatching`, then
+  `⚠ reviewer hung ×2 — <fallback>` if the second one also blows the deadline.
 
 ### Phase 6 — Ship: open the PR + drive CI green
 The branch is already reviewed and clean, so there is **no hosted-reviewer wait** here. Open the PR and take CI to green.
@@ -215,7 +249,7 @@ reporting), then report the merge. Then you are done.
 | Design | superpowers:writing-plans, ax-conventions, security-checklist |
 | Implement | superpowers:subagent-driven-development, superpowers:test-driven-development |
 | Verify | superpowers:verification-before-completion, superpowers:requesting-code-review |
-| Review (pre-PR) | `ax-code-reviewer` subagent (`subagent_type: ax-code-reviewer`; Opus 4.8, max effort, whole branch vs `main`), superpowers:receiving-code-review |
+| Review (pre-PR) | `ax-code-reviewer` subagent (`subagent_type: ax-code-reviewer`; Opus 4.8, max effort, whole branch vs `main`), superpowers:receiving-code-review. **It can hang — 25-min deadline, one fresh re-dispatch, then fail loudly (`reviewer: hung`); never self-review and call it clean.** |
 | Ship | commit-commands:commit-push-pr, superpowers:systematic-debugging, `gh`, `ScheduleWakeup` |
 | Merge (Phase 7) | `gh pr merge --squash`, `git pull --ff-only` (standalone); hand off to auto-ship (orchestrated) |
 | Progress (every phase) | `append_progress` heartbeat to the card's progress block — auto-ship `references/github-project.md` §6; best-effort, shell-side, own card only |

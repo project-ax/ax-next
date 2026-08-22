@@ -258,6 +258,19 @@ gh pr merge <n> --squash --delete-branch
 git checkout main && git pull --ff-only
 ```
 
+**Review gate (blocking — check BEFORE `gh pr merge`).** Read the handoff's
+`reviewer:` field. If it is anything other than `clean` — `hung`, `skipped-…`, or
+**missing entirely** — the card never got its deep review, and CI does not substitute
+for one (the three worst bugs of the agent-workspace run were invisible to CI).
+**Dispatch your own independent `ax-code-reviewer`** on that PR's diff
+(`git diff main...<branch>`) with a **short, self-contained prompt**, from a fresh
+agent — orchestrator-dispatched passes have returned reliably in 13–17 min where
+builder-spawned ones hung (TASK-247). Merge only once it returns and its actionable
+findings are addressed (hand fixes back to the builder, or file them as follow-up
+cards if they are non-blocking). If your independent pass *also* hangs past 25
+minutes, **HALT that card and report** — do not merge an unreviewed code PR. Log the
+hang in the journal so TASK-247 keeps accumulating evidence.
+
 On a `pr-green` handoff (PR open, pre-merge): move the card → **In Review** (the agent
 already logged `PR #<n> opened` in its progress block — you no longer append a link).
 After the merge: move the card → **Done**, `append_progress … "merged #<n> ✅"` on the
