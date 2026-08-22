@@ -101,6 +101,18 @@ describe('WorkspaceShell', () => {
     expect(screen.queryByText('New agent')).toBeNull();
   });
 
+  it('does not badge a tab with a zero', async () => {
+    // "Needs you 0" is a measurement we have not made: `decisions` is empty
+    // because nothing produces decisions yet, not because none are pending.
+    boardMock.mockResolvedValue({ agents: [], decisions: [], activity: [] });
+
+    renderShell();
+    const tab = await screen.findByRole('radio', { name: /Needs you/ });
+
+    expect(tab.textContent).toBe('Needs you');
+    expect(tab.textContent).not.toMatch(/0/);
+  });
+
   it('says what we know and what to try when the board will not load', async () => {
     boardMock.mockRejectedValue(new Error('workspace /state → 503'));
 
@@ -122,5 +134,31 @@ describe('ActivityFeed', () => {
     expect(
       screen.getByText(/have not started keeping a record/),
     ).toBeTruthy();
+  });
+
+  it('names the agent when it is one agent\'s tab', () => {
+    // The same component backs the per-agent "What it did" tab. Answering a
+    // question about Quill with a sentence about "agents" reads like the
+    // wrong screen.
+    render(
+      <ActivityFeed
+        events={[]}
+        agents={[
+          {
+            id: 'a-quill',
+            name: 'Quill',
+            state: 'resting',
+            now: null,
+            counter: null,
+            startedAt: null,
+            stoppedReason: null,
+          },
+        ]}
+        agentId="a-quill"
+      />,
+    );
+
+    expect(screen.getByText(/record of what Quill does/)).toBeTruthy();
+    expect(screen.queryByText(/what agents do/)).toBeNull();
   });
 });

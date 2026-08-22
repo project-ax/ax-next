@@ -63,11 +63,16 @@ export interface AgentDetail {
   agent: WorkspaceAgent;
   /** Always `[]` in this task — the generated policy rows land in AW-14. */
   permissions: PermissionRow[];
-  /** The agent's current conversation, or `null` when it has never had one. */
+  /**
+   * The conversation `thread` was read from — the agent's current one, or the
+   * past one asked for by `agent(id, conversationId)`. `null` when the agent
+   * has never had a conversation, or when the current one was deleted between
+   * the list and the read.
+   */
   conversationId: string | null;
   /** Reconstructed from the real turns of that conversation. */
   thread: ThreadMessage[];
-  /** Older conversations, newest first. */
+  /** Older conversations, newest first. Pointers only — see `PastConversation`. */
   past: PastConversation[];
   /** Always `[]` in this task — AW-12. */
   files: WorkspaceFile[];
@@ -123,18 +128,44 @@ export interface StreamHandlers {
  * Shown when the stream ends with no `done` and no `error` — the host bounced
  * or the network dropped mid-turn. Saying nothing would leave a spinner up
  * forever, which is the one outcome worse than an error line.
+ *
+ * Phrased as a DETAIL, not as a sentence. The surface writes its own one-line
+ * prose ("That reply didn't finish…") and renders this underneath it. It used
+ * to be a full instruction — "Send it again to pick up where we left off" —
+ * which the caller then concatenated into its own instruction, producing three
+ * sentences about one event that told the reader twice to do a thing the UI
+ * now does with a Resend button.
  */
 export const WORKSPACE_STREAM_LOST =
-  'We lost the connection before the reply finished. Send it again to pick up where we left off.';
+  'the reply stream ended without finishing';
 
 export const workspaceApi = {
   board: () => req<BoardState>('/state'),
-  agent: (id: string) => req<AgentDetail>(`/agents/${encodeURIComponent(id)}`),
+
+  /**
+   * One agent's panel. `conversationId` reads one of the agent's PAST
+   * conversations instead of its current one — the rail's read-only excerpt.
+   * The server re-checks ownership of that id and 404s a conversation that is
+   * not this agent's, so a stale id in the rail can never render someone
+   * else's transcript.
+   */
+  agent: (id: string, conversationId?: string) =>
+    req<AgentDetail>(
+      `/agents/${encodeURIComponent(id)}` +
+        (conversationId === undefined
+          ? ''
+          : `?conversationId=${encodeURIComponent(conversationId)}`),
+    ),
 
   /**
    * Auto-routing: proposes an agent for a free-text request. Never dispatches.
-   * The server ignores the body today and answers from the roster; the text
-   * still rides along so the route can start reading it without a wire change.
+   *
+   * The pick is made from STRUCTURE — how many agents there are, which one was
+   * used last — so this request carries no body at all: `req()` sends none for
+   * `POST /route`, and `_text` is dropped on the floor. It stays in the
+   * signature to keep the call site honest about what is being asked about;
+   * putting the user's words on the wire for a route that would ignore them
+   * buys nothing.
    */
   route: (_text: string) => req<RouteProposal>('/route', { method: 'POST' }),
 

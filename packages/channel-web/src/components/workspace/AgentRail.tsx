@@ -6,7 +6,9 @@
  * autonomy product lives or dies on whether the human believes they know the
  * blast radius. Every row is generated from the policy record and carries the
  * rule that produced it, so a sentence drifting from the enforced policy shows
- * up rather than lying quietly.
+ * up rather than lying quietly. Until that generator exists (AW-14) the block
+ * says it cannot show the policy — it never describes the agent's reach from
+ * an empty array, in either direction.
  *
  * "Right now" deliberately has no progress bar and no ETA. See `Elapsed`.
  *
@@ -66,15 +68,25 @@ export function AgentRail({ detail, openPastId, onOpenPast }: Props) {
       <SectionLabel>What it may do alone</SectionLabel>
       <div className="flex flex-col">
         {/*
-          An empty list here must SAY it is empty. Rendering nothing reads as
-          "there is nothing to know", when the fact is "it has been granted
-          nothing yet" — the same understate-the-reach failure the unmapped-rule
-          row exists to prevent, just at the other end of the range.
+          An empty list describes THE ABSENCE OF THE VIEW, never the agent's
+          reach.
+
+          This block used to say "Nothing yet — it can talk to you and nothing
+          else. It will ask before it does anything for the first time." Both
+          halves were false. A default agent is bootstrapped with the wildcard
+          tool scope plus web tools, connectors and egress grants, so it can do
+          a great deal more than talk; and the ask-before-acting behaviour (the
+          `hold` verdict and the approvals substrate behind it) has not been
+          built. Understating blast radius is the dangerous direction to be
+          wrong in — the honest answer to "what may it do alone?" while the
+          policy rail is unbuilt (AW-14) is "we can't tell you yet".
         */}
         {permissions.length === 0 ? (
           <p className="text-[13px] leading-relaxed text-muted-foreground">
-            Nothing yet — it can talk to you and nothing else. It will ask before
-            it does anything for the first time.
+            We can&apos;t show this yet. When it&apos;s ready, this list will
+            say exactly what {agent.name} may do on its own — generated from the
+            rules that actually enforce it, so the two can&apos;t drift. Until
+            then, treat this as unknown rather than empty.
           </p>
         ) : (
           permissions.map((p) => <PermissionLine key={p.sentence} row={p} />)

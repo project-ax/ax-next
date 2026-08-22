@@ -2,9 +2,9 @@
  * Agent-workspace — small shared pieces.
  *
  * Everything here composes shadcn primitives and semantic tokens. No raw
- * colours: "held for you" gets the `warning` token added for exactly this
- * surface, because waiting-on-a-human is a real third state that is neither an
- * error nor business as usual.
+ * colours: "held for you" uses the project's existing `warning` token
+ * (`tailwind.config.ts` / `index.css`, both themes), because waiting-on-a-human
+ * is a real third state that is neither an error nor business as usual.
  */
 import { AlertTriangle, Ban, Check, Hand, type LucideIcon } from 'lucide-react';
 import { AvatarTile } from '@/components/AvatarTile';

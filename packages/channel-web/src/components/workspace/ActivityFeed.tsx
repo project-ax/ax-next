@@ -49,14 +49,19 @@ export function ActivityFeed({ events, agents, agentId, onOpenAgent }: Props) {
     started keeping the receipts.
   */
   if (rows.length === 0) {
+    // Scoped to the agent when the tab is. Under one agent's "What it did",
+    // "what agents do" is the wrong subject — the reader is asking about this
+    // one, and the global phrasing reads like a different screen's answer.
+    const scopedName = agentId === undefined ? null : name(agentId);
     return (
       <div className="flex flex-col gap-1.5 px-5 py-10 text-center">
         <p className="text-[13.5px] text-muted-foreground">
           Nothing recorded yet.
         </p>
         <p className="mx-auto max-w-[420px] text-[12.5px] leading-relaxed text-muted-foreground">
-          We have not started keeping a record of what agents do. When we do,
-          every run and every decision shows up here.
+          {scopedName === null
+            ? 'We have not started keeping a record of what agents do. When we do, every run and every decision shows up here.'
+            : `We have not started keeping a record of what ${scopedName} does. When we do, every run and every decision shows up here.`}
         </p>
       </div>
     );

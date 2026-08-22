@@ -230,13 +230,26 @@ export interface WorkspaceFile {
   blocks: Array<['p' | 'h' | 'mono', string]>;
 }
 
+/**
+ * One row in the rail's "Previous conversations" list — a pointer, not a copy.
+ *
+ * There is deliberately no `msgs` and no `folded`:
+ *
+ *   - the transcript is fetched on demand, by re-reading
+ *     `GET /api/workspace/agents/:agentId?conversationId=<id>`. Carrying it
+ *     inline meant every roster response shipped every past transcript, and
+ *     the field that actually shipped was `[]` — an empty array renders as
+ *     "this conversation had nothing in it", which is a claim, not an absence.
+ *   - `folded` (turns compaction summarised away before this excerpt) had no
+ *     producer at all. The rung-3 summarizer REWRITES the transcript rather
+ *     than recording how many turns it swallowed, so every row read `0` and
+ *     the UI printed "0 messages folded" over a real conversation. It comes
+ *     back if and when compaction records that count on the conversation row.
+ */
 export interface PastConversation {
   id: string;
   title: string;
   meta: string;
-  /** Turns folded into memory by compaction before this excerpt. */
-  folded: number;
-  msgs: ThreadMessage[];
 }
 
 /**

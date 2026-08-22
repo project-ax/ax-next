@@ -2,6 +2,8 @@
  * GET  /api/features                   — public feature-flag echo
  * GET  /api/workspace/state            — the roster + (eventually) the queue
  * GET  /api/workspace/agents/:agentId  — one agent's detail panel
+ *        ?conversationId=<id> reads that conversation instead of the current
+ *        one (the rail's read-only past-conversation view)
  * POST /api/workspace/route            — "which agent should hear this?"
  *
  * The agent-centric workspace surface (TASK-230 / plan task AW-9). This is the
@@ -146,9 +148,14 @@ export interface AgentDetail {
   agent: WorkspaceAgent;
   /** Empty until the policy rail is real (AW-14). The UI renders its own empty state. */
   permissions: PermissionRow[];
-  /** The agent's current conversation, or null when it has none yet. */
+  /**
+   * The conversation `thread` was read from: the agent's current one, or the
+   * one named by `?conversationId=`. `null` when the agent has never had a
+   * conversation, or when the current one vanished between the list and the
+   * read (a benign race — see `agentDetail`).
+   */
   conversationId: string | null;
-  /** Reconstructed from the current conversation's turns. */
+  /** Reconstructed from that conversation's turns. */
   thread: ThreadMessage[];
   /** Older conversations, newest first, excluding the current one. */
   past: PastConversation[];
@@ -456,35 +463,68 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
       const convs = await listConversations(userId, agentId);
       const current = convs[0] ?? null;
+      // A pointer per row, nothing more: the transcript arrives from a second
+      // read through `?conversationId=`, and there is no fold count to ship.
+      // See `PastConversation` for why both fields are gone.
       const past: PastConversation[] = convs.slice(1).map((c) => ({
         id: c.conversationId,
         title: c.title ?? 'Untitled conversation',
         meta: relativeDay(c.lastActivityAt ?? c.createdAt),
-        // Compaction's fold count has no reader-facing source yet — the rung-3
-        // summarizer rewrites the transcript rather than recording how many
-        // turns it swallowed. 0 is the truth we can defend today.
-        folded: 0,
-        // The excerpt is loaded on demand when a row is expanded; shipping
-        // every past transcript in the roster response would be a big payload
-        // nobody asked for.
-        msgs: [],
       }));
 
+      /*
+        Which conversation the caller is asking to READ. `?conversationId=`
+        opens one of the `past` rows read-only; without it we serve the
+        current one. Either way the ownership check below is the same, and it
+        is `conversations:get` — not the list we just read — that decides.
+      */
+      const requestedId = (req.query.conversationId ?? '').trim();
+      const targetId =
+        requestedId.length > 0 ? requestedId : (current?.conversationId ?? null);
+
       let thread: ThreadMessage[] = [];
-      if (current !== null) {
-        const got = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
-          'conversations:get',
-          initCtx,
-          { conversationId: current.conversationId, userId },
-        );
-        // conversations:get is the authority on ownership. If it disagrees with
-        // the list we just read, something drifted — refuse rather than render
-        // one agent's transcript under another agent's name.
-        if (got.conversation.agentId !== agentId || got.conversation.userId !== userId) {
-          res.status(404).json({ error: 'agent-not-found' });
-          return;
+      let threadConversationId: string | null = null;
+      if (targetId !== null) {
+        let got: ConversationsGetOutput | null = null;
+        try {
+          got = await bus.call<ConversationsGetInput, ConversationsGetOutput>(
+            'conversations:get',
+            initCtx,
+            { conversationId: targetId, userId },
+          );
+        } catch (err) {
+          if (requestedId.length > 0) {
+            // The caller named a conversation we cannot read. Answering 200
+            // with an empty thread would render "this conversation is empty"
+            // over a conversation that exists and is simply not theirs.
+            res.status(404).json({ error: 'conversation-not-found' });
+            return;
+          }
+          // The current conversation was deleted between the list and this
+          // read. That is a benign race, not a server fault: degrade to "no
+          // current conversation" rather than throwing a 500 at a user whose
+          // only crime was refreshing at the wrong moment.
+          initCtx.logger.warn('workspace_current_conversation_unreadable', {
+            agentId,
+            error: err instanceof Error ? err.message : String(err),
+          });
         }
-        thread = buildThread(got.turns ?? []);
+        if (got !== null) {
+          // conversations:get is the authority on ownership. If it disagrees
+          // with the list we just read, something drifted — refuse rather than
+          // render one agent's transcript under another agent's name.
+          if (
+            got.conversation.agentId !== agentId ||
+            got.conversation.userId !== userId
+          ) {
+            res.status(404).json({
+              error: requestedId.length > 0 ? 'conversation-not-found' : 'agent-not-found',
+            });
+            return;
+          }
+          thread = buildThread(got.turns ?? []);
+          threadConversationId = got.conversation.conversationId;
+        }
       }
 
       res.status(200).json({
@@ -494,7 +534,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // drifts from what the agent may actually do is the worst bug this
         // surface could ship, so we ship none.
         permissions: [],
-        conversationId: current === null ? null : current.conversationId,
+        conversationId: threadConversationId,
         thread,
         past,
         files: [], // AW-12

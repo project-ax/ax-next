@@ -100,9 +100,18 @@ function Inner() {
   }
 
   if (!board) {
+    /*
+      Near-unreachable: `refresh` sets either the board or the error. If we do
+      land here, the reader needs something to DO, not a shrug — "nothing to
+      show yet" reads as a verdict on their workspace when it is a verdict on
+      our fetch.
+    */
     return (
-      <div className="flex h-screen items-center justify-center bg-background text-[13px] text-muted-foreground">
-        We have nothing to show yet.
+      <div className="flex h-screen items-center justify-center gap-3 bg-background text-[13px] text-muted-foreground">
+        <span>We couldn&rsquo;t find anything to load. Refreshing usually sorts it.</span>
+        <Button variant="secondary" size="sm" onClick={() => void refresh()}>
+          Try again
+        </Button>
       </div>
     );
   }

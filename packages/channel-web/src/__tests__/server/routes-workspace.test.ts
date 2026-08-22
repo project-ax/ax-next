@@ -407,14 +407,136 @@ describe('channel-web agent-workspace BFF', () => {
     await h.agentDetail(mkReq({ agentId: 'a1' }), res);
     const body = captured.body as {
       conversationId: string | null;
-      past: Array<{ id: string; title: string; folded: number; msgs: unknown[]; meta: string }>;
+      past: Array<{ id: string; title: string; meta: string }>;
     };
     expect(body.conversationId).toBe('newest');
     expect(body.past.map((p) => p.id)).toEqual(['middle', 'old']);
     expect(body.past[0]!.title).toBe('Untitled conversation');
-    expect(body.past[0]!.folded).toBe(0);
-    expect(body.past[0]!.msgs).toEqual([]);
     expect(body.past[0]!.meta.length).toBeGreaterThan(0);
+    // A past row carries NO transcript and NO fold count. Both were fixtures:
+    // `msgs: []` rendered as "an empty conversation" and `folded: 0` as
+    // "0 messages were summarised". The excerpt now comes from a real re-read
+    // through `?conversationId=`.
+    expect(Object.keys(body.past[0]!)).toEqual(['id', 'title', 'meta']);
+  });
+
+  it('serves a past conversation\'s turns when ?conversationId= names one', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [
+      conv({
+        conversationId: 'now',
+        agentId: 'a1',
+        lastActivityAt: new Date().toISOString(),
+      }),
+      conv({
+        conversationId: 'back-then',
+        agentId: 'a1',
+        title: 'March',
+        createdAt: '2026-03-01T10:00:00.000Z',
+      }),
+    ];
+    turnsByConversation.set('now', [
+      {
+        turnId: 'n1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'what is on today' }],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+    ]);
+    turnsByConversation.set('back-then', [
+      {
+        turnId: 'b1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'what happened in March' }],
+        createdAt: '2026-03-01T10:00:00.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    const req = mkReq({ agentId: 'a1' });
+    (req.query as Record<string, string>).conversationId = 'back-then';
+    await h.agentDetail(req, res);
+
+    expect(captured.statusCode).toBe(200);
+    const body = captured.body as {
+      conversationId: string | null;
+      thread: Array<Record<string, unknown>>;
+    };
+    expect(body.conversationId).toBe('back-then');
+    expect(body.thread).toEqual([
+      { kind: 'user', id: 'b1', text: 'what happened in March' },
+    ]);
+  });
+
+  it('404s a ?conversationId= that belongs to a different agent', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [
+      conv({ conversationId: 'mine', agentId: 'a1' }),
+      // Same owner, different agent. Rendering it under a1's name would be
+      // the exact cross-agent leak the current-conversation check prevents.
+      conv({ conversationId: 'theirs', agentId: 'a2' }),
+    ];
+    turnsByConversation.set('theirs', [
+      {
+        turnId: 'x1',
+        turnIndex: 0,
+        role: 'user',
+        contentBlocks: [{ type: 'text', text: 'other agent secrets' }],
+        createdAt: '2026-08-01T10:00:00.000Z',
+      },
+    ]);
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    const req = mkReq({ agentId: 'a1' });
+    (req.query as Record<string, string>).conversationId = 'theirs';
+    await h.agentDetail(req, res);
+
+    expect(captured.statusCode).toBe(404);
+    expect(JSON.stringify(captured.body)).not.toContain('other agent secrets');
+  });
+
+  it('404s a ?conversationId= nobody can read, rather than rendering it empty', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    conversations = [conv({ conversationId: 'mine', agentId: 'a1' })];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    const req = mkReq({ agentId: 'a1' });
+    (req.query as Record<string, string>).conversationId = 'never-existed';
+    await h.agentDetail(req, res);
+
+    expect(captured.statusCode).toBe(404);
+  });
+
+  it('degrades to no-current-conversation when it is deleted mid-read', async () => {
+    // The benign race: conversations:list saw the row, conversations:get no
+    // longer does. That is a 200 with nothing to show, never a 500.
+    bus = new HookBus();
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('agents:list-for-user', 'agents', async () => ({ agents: [] }));
+    bus.registerService('agents:resolve', 'agents', async () => ({
+      agent: { id: 'a1', displayName: 'Inbox', visibility: 'personal' },
+    }));
+    bus.registerService('conversations:list', 'conversations', async () => [
+      conv({ conversationId: 'vanishing', agentId: 'a1' }),
+    ]);
+    // The list saw it; by the time we read it, it is gone.
+    bus.registerService('conversations:get', 'conversations', async () => {
+      throw notFound();
+    });
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+
+    expect(captured.statusCode).toBe(200);
+    const body = captured.body as { conversationId: string | null; thread: unknown[] };
+    expect(body.conversationId).toBeNull();
+    expect(body.thread).toEqual([]);
   });
 
   it('404s when the current conversation belongs to a different agent', async () => {

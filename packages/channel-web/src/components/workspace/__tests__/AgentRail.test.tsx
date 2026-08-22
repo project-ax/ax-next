@@ -75,8 +75,46 @@ describe('AgentRail', () => {
     expect(screen.getByText('2 of 9 files')).toBeTruthy();
   });
 
-  it('says out loud that the agent has been granted nothing yet', () => {
+  /*
+    The empty permissions list describes the ABSENCE OF THE VIEW, never the
+    agent's reach. It used to read "Nothing yet — it can talk to you and
+    nothing else. It will ask before it does anything for the first time." Both
+    sentences were false: a default agent is bootstrapped with the wildcard
+    tool scope plus web tools, connectors and egress grants, and the
+    ask-before-acting behaviour (the `hold` verdict) does not exist yet.
+    Understating blast radius is the dangerous direction to be wrong in.
+  */
+  it('describes the missing view, never what the agent may do', () => {
     renderRail(detail());
-    expect(screen.getByText(/it can talk to you and nothing else/)).toBeTruthy();
+
+    expect(screen.getByText(/We can't show this yet/)).toBeTruthy();
+    expect(screen.getByText(/unknown rather than empty/)).toBeTruthy();
+  });
+
+  it('makes no claim at all about the agent\'s reach when permissions are empty', () => {
+    const { container } = renderRail(detail());
+    const text = container.textContent ?? '';
+
+    // The specific false sentences, and the shape of any replacement for them.
+    expect(text).not.toMatch(/talk to you and nothing else/);
+    expect(text).not.toMatch(/will ask before/);
+    expect(text).not.toMatch(/nothing else/i);
+    expect(text).not.toMatch(/(can|cannot|can't|may) ?not/i);
+    // "Nothing yet" as a standalone verdict on the agent's grants is exactly
+    // the claim we cannot back.
+    expect(text).not.toMatch(/Nothing yet/);
+  });
+
+  it('still renders generated permission rows when there are any', () => {
+    renderRail(
+      detail({
+        permissions: [
+          { verdict: 'allow', sentence: 'Read your calendar', source: 'tool:gcal_read' },
+        ],
+      }),
+    );
+
+    expect(screen.getByText('Read your calendar')).toBeTruthy();
+    expect(screen.queryByText(/We can't show this yet/)).toBeNull();
   });
 });

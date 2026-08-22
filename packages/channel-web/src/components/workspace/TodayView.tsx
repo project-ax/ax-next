@@ -86,6 +86,38 @@ export function TodayView({
       ? 'Nothing is waiting on you.'
       : `${WORDS[open.length] ?? `${open.length} decisions`} ${open.length === 1 ? 'is' : 'are'} waiting on you.`;
 
+  /*
+    A COUNT IS ONLY RENDERED WHEN IT IS POSITIVE.
+
+    This line used to read "0 agents working · 0 waiting on you" beside a green
+    tick whenever the workspace was quiet — a reassuring report on a system we
+    had not measured. `working` is derived from `session:is-alive`, and when
+    that service is not registered every agent reads `resting`, so the zero is
+    not even "nothing is happening": it is "we did not look". A zero is a
+    claim; an absent line is the truth.
+  */
+  const summary: string[] = [];
+  if (working.length > 0) {
+    summary.push(
+      `${working.length} ${working.length === 1 ? 'agent' : 'agents'} working`,
+    );
+  }
+  if (open.length > 0) summary.push(`${open.length} waiting on you`);
+
+  /*
+    The hint describes an action on a row that exists. Rendered over an empty
+    list it was instructions for furniture that is not there. "Line" also read
+    like a phone line — these are rows.
+  */
+  const hint =
+    filter === 'needs'
+      ? open.length > 0
+        ? 'Open a row to see the detail and act on it.'
+        : null
+      : working.length > 0
+        ? 'Read-only — nothing here asks anything of you.'
+        : null;
+
   const agentFor = (id: string) => agents.find((a) => a.id === id);
 
   return (
@@ -94,12 +126,12 @@ export function TodayView({
         <h1 className="max-w-[620px] text-[21px] font-medium leading-snug tracking-[-0.02em] text-pretty">
           {headline}
         </h1>
-        <div className="flex items-center gap-2.5 text-[13.5px] text-muted-foreground">
-          <CheckCircle2 size={14} className="shrink-0 text-primary" />
-          <span>
-            {working.length} agents working · {open.length} waiting on you
-          </span>
-        </div>
+        {summary.length > 0 && (
+          <div className="flex items-center gap-2.5 text-[13.5px] text-muted-foreground">
+            <CheckCircle2 size={14} className="shrink-0 text-primary" />
+            <span>{summary.join(' · ')}</span>
+          </div>
+        )}
       </div>
 
       <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
@@ -142,8 +174,15 @@ export function TodayView({
                 );
               })}
             {open.length === 0 && justResolved.length === 0 && (
+              /*
+                The headline already said the queue is empty. Saying it again
+                two inches lower tells a first-timer nothing; what they do not
+                know is what this list is FOR, and this is the one moment they
+                have the attention to read it.
+              */
               <div className="px-5 py-10 text-center text-[13.5px] text-muted-foreground">
-                Nothing needs you right now.
+                When an agent hits something it wants your OK on, it&rsquo;ll
+                wait for you here.
               </div>
             )}
           </>
@@ -183,11 +222,7 @@ export function TodayView({
       </div>
 
       <div className="flex items-center gap-3 px-1 pt-3.5 text-[12.5px] text-muted-foreground">
-        <span>
-          {filter === 'needs'
-            ? 'Open a line to see the detail and act on it.'
-            : 'Read-only — nothing here asks anything of you.'}
-        </span>
+        {hint !== null && <span>{hint}</span>}
         <Button
           variant="ghost"
           size="sm"
