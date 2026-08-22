@@ -95,12 +95,28 @@ export const AUTHORISING_STATUSES: readonly DecisionStatus[] = [
  * a calendar slot etag, a document revision) and the UI never parses it.
  * `label` is the only part a human reads.
  *
- * Always `null` in AW-4: no tool produces one yet. AW-7 adds the producers.
+ * `value` is opaque to everything EXCEPT the tool that wrote it, and that is
+ * load-bearing: `tool-freshness:check:<tool>` is handed the predicate and
+ * nothing else, so a producer that needs to know WHAT to re-read encodes it in
+ * its own token. The host never parses one.
+ *
+ * `label` IS NULLABLE, and that is the freshness guard's own doing (AW-7). The
+ * "checked against…" clause describes hold-time; the instant the guard trips,
+ * that sentence is FALSE. Repeating it under an alert saying the world moved is
+ * worse than silence, so a stale row drops the clause rather than showing it
+ * stale (design §3.4). A producer with nothing legible to say may also send
+ * null — the predicate still guards, it just has no sentence.
+ *
+ * AW-7 adds the first two producers: `request_capability` (@ax/skill-broker)
+ * and `connector_propose` (@ax/tool-connector-propose). Every other tool
+ * produces no predicate and its decisions are unguarded — correct for a call
+ * with nothing meaningful to re-check, and the open question this task carries
+ * forward for the rest of the catalog.
  */
 export interface FreshnessPredicate {
   kind: string;
   value: string;
-  label: string;
+  label: string | null;
 }
 
 export interface Decision {
@@ -404,7 +420,11 @@ export const ToolCallSchema = z.object({
 export const FreshnessPredicateSchema = z.object({
   kind: z.string(),
   value: z.string(),
-  label: z.string(),
+  // Nullable since AW-7 — a stale row drops its "checked against…" clause. A
+  // `z.object` STRIPS what it does not declare, so this half of the shape
+  // change matters as much as the interface's: a non-nullable schema here
+  // would make every stale decision fail validation on its way out of the bus.
+  label: z.string().nullable(),
 });
 
 export const DecisionStatusSchema = z.enum([

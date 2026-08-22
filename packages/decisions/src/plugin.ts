@@ -10,11 +10,13 @@ import type { Kysely } from 'kysely';
 import { createAttendanceResolver, CONVERSATION_METADATA_HOOK } from './attendance.js';
 import { deliverResolution, SESSION_QUEUE_HOOK } from './delivery.js';
 import { runDueReplays, sweepExpired } from './expiry.js';
+import { auditFreshnessPairs, checkFreshness } from './freshness.js';
 import {
   approveDecision,
   dismissDecision,
   undoDecision,
   UNDO_WINDOW_MS,
+  type ApproveWorld,
 } from './machine.js';
 import { runDecisionsMigration, type DecisionsDatabase } from './migrations.js';
 import { createPreCallSubscriber, PLUGIN_NAME, type PolicyAnswer } from './pre-call.js';
@@ -138,11 +140,20 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         'decisions:undo',
         'decisions:sweep',
       ],
-      // `tool:execute:<name>` is deliberately ABSENT. It is the documented
-      // dynamic-service-hook exception — the hook name depends on the recorded
-      // call, so no manifest can list it — and it is reached through
-      // `hasService` + `call`, exactly as `tool.execute-host` does. Adding a
-      // wildcard here would be a lie the cycle-detector cannot check.
+      // `tool:execute:<name>` is deliberately ABSENT, and so are AW-7's
+      // `tool-freshness:capture:<name>` / `tool-freshness:check:<name>`. All
+      // three are the documented dynamic-service-hook exception — the hook name
+      // depends on the recorded call, so no manifest can list it — and all three
+      // are reached through `hasService` + `call`, exactly as
+      // `tool.execute-host` does. A wildcard here would be a lie the
+      // cycle-detector cannot check.
+      //
+      // They are not `optionalCalls` either, for the same reason: an
+      // `optionalCalls` entry is a NAMED hook whose absence has a stated
+      // degradation, and there is no name to write. What replaces that
+      // documentation is `presets/k8s`' test asserting that the two producers
+      // AW-7 ships are actually loaded — an unpaired or missing producer is
+      // otherwise a silent, permanent downgrade nobody can catch.
       calls: ['database:get-instance', 'tool-policy:evaluate'],
       // OPTIONAL, not required, and the distinction is load-bearing in both
       // directions. A host with no conversations store has no channels to read
@@ -219,20 +230,47 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       });
       bus.subscribe<ToolCall>('tool:pre-call', PLUGIN_NAME, subscriber);
 
+      // ---------------------------------------------------------------------
+      // AW-7 — the freshness producers have to come in PAIRS.
+      //
+      // A `check` hook with no matching `capture` never guards anything and
+      // never says so: nothing writes the predicate it exists to re-read, so
+      // every decision for that tool is silently unguarded while the surface
+      // looks fine. It LOGS and never throws — a tool that wired itself up
+      // wrong must not stop the host booting.
+      //
+      // Run twice, and both times are needed. At init it catches every producer
+      // that loaded BEFORE this plugin. But plugin init order is the preset's
+      // array order, and a producer pushed after @ax/decisions (the k8s
+      // preset's `connector_propose` is exactly that) has not registered
+      // anything yet — so the audit runs again on the first maintenance pass,
+      // by which time the whole boot is done. `reportedPairs` keeps each gap to
+      // one log line however many times it is seen.
+      // ---------------------------------------------------------------------
+      const reportedPairs = new Set<string>();
+      auditFreshnessPairs(bus, initCtx, reportedPairs);
+      let auditedAfterBoot = false;
+
       /** One maintenance pass: expire what nobody answered, run what is due. */
       const runSweep = async (
         ctx: AgentContext,
         limit?: number,
-      ): Promise<DecisionsSweepOutput> => ({
-        expired: await sweepExpired(store!, now()),
-        replayed: await runDueReplays({
-          store: store!,
-          bus,
-          now: now(),
-          limit,
-          logCtx: ctx,
-        }),
-      });
+      ): Promise<DecisionsSweepOutput> => {
+        if (!auditedAfterBoot) {
+          auditedAfterBoot = true;
+          auditFreshnessPairs(bus, ctx, reportedPairs);
+        }
+        return {
+          expired: await sweepExpired(store!, now()),
+          replayed: await runDueReplays({
+            store: store!,
+            bus,
+            now: now(),
+            limit,
+            logCtx: ctx,
+          }),
+        };
+      };
 
       // ---------------------------------------------------------------------
       // Reads
@@ -292,15 +330,46 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           }
 
           const nowIso = now().toISOString();
+
+          // -----------------------------------------------------------------
+          // AW-7 — THE FRESHNESS GUARD, BEFORE ANYTHING IS CLAIMED OR RUN.
+          //
+          // The world is re-read here and nowhere else: the machine is pure, so
+          // it can only compare what it is handed. A decision with no predicate
+          // hands it an EMPTY world, which the guard reads as "no observation"
+          // rather than pretending one matched.
+          //
+          // The read runs under a ctx built for the DECISION's owner and agent
+          // — never the approving request's. Hooks downstream of a producer
+          // route by `(userId, agentId)`, so checking with the wrong one would
+          // re-read somebody else's world and answer confidently about it. This
+          // repo has been bitten by exactly that on `workspace:apply`.
+          //
+          // `checkFreshness` is TOTAL and fails CLOSED: a check hook that is
+          // gone, throws, or answers unreadably resolves to a value that cannot
+          // match, which re-opens the decision and runs nothing. An unreadable
+          // world is a changed world.
+          // -----------------------------------------------------------------
+          let world: ApproveWorld = { now: nowIso, freshness: {} };
+          if (current.freshness !== null) {
+            const observed = await checkFreshness(
+              bus,
+              replayContext(current),
+              current.call.name,
+              current.freshness,
+            );
+            world = {
+              now: nowIso,
+              freshness: { [current.freshness.kind]: observed.value },
+              ...(observed.changed !== undefined
+                ? { changed: { [current.freshness.kind]: observed.changed } }
+                : {}),
+            };
+          }
+
           // The pure machine owns the rules: expiry, the freshness guard, and
           // "anything already resolved absorbs the click silently".
-          const outcome = approveDecision(current, {
-            now: nowIso,
-            // No producer supplies a predicate yet (AW-7), so there is nothing
-            // to re-check. An EMPTY world is the honest input: the guard reads
-            // "no observation" and does not pretend one matched.
-            freshness: {},
-          });
+          const outcome = approveDecision(current, world);
 
           // Every branch re-reads on a null: a conditional update that changed
           // nothing means someone else resolved the row between our read and

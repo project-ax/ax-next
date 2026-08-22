@@ -1155,3 +1155,204 @@ describe('decisions canary — attendance and delivery', () => {
     expect((await readDecision(h, ctx, id)).consumedAt).not.toBeNull();
   });
 });
+
+/**
+ * A decision drafted at 7am and approved at 1pm may be approving a world that
+ * no longer exists (design §3.4, AW-7).
+ *
+ * `world` below is a mutable box the test moves BETWEEN the hold and the
+ * approval. That is the whole scenario, and it is why these live in the canary
+ * rather than beside the pure machine: the machine already knows what to do
+ * with a moved predicate — what has to be proved here is that a real hold
+ * really captures one, a real approval really re-reads it, and a tripped guard
+ * really stops the host executor from running.
+ */
+interface FreshWorld {
+  value: string;
+  changed?: string;
+  captureThrows?: boolean;
+  checkThrows?: boolean;
+}
+
+const FRESH_LABEL = "Priya's thread, last message 8:41 AM";
+
+function freshnessProducer(h: TestHarness, toolName: string, world: FreshWorld): void {
+  h.bus.registerService(
+    `tool-freshness:capture:${toolName}`,
+    '@ax/decisions/test/freshness',
+    async () => {
+      if (world.captureThrows === true) throw new Error('the mailbox is unreachable');
+      return {
+        predicate: { kind: 'thread-head', value: world.value, label: FRESH_LABEL },
+      };
+    },
+  );
+  h.bus.registerService(
+    `tool-freshness:check:${toolName}`,
+    '@ax/decisions/test/freshness',
+    async () => {
+      if (world.checkThrows === true) throw new Error('the mailbox is unreachable');
+      return world.changed === undefined
+        ? { value: world.value }
+        : { value: world.value, changed: world.changed };
+    },
+  );
+}
+
+describe('decisions canary — the freshness guard', () => {
+  it('captures a predicate at hold time and executes when the world has not moved', async () => {
+    const h = await boot();
+    const world: FreshWorld = { value: 'msg-8841' };
+    freshnessProducer(h, HOLD_RULE.match.tool, world);
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = routineCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+
+    // The row carries what the tool captured, and the clause a human reads.
+    const held = await readDecision(h, ctx, id);
+    expect(held.freshness).toEqual({
+      kind: 'thread-head',
+      value: 'msg-8841',
+      label: FRESH_LABEL,
+    });
+
+    const out = await approve(h, userCtx(h), id);
+    expect(out.executed).toBe(true);
+    expect(executor.calls).toEqual([CALL]);
+  });
+
+  it('re-opens instead of executing when the predicate moved', async () => {
+    const h = await boot();
+    const world: FreshWorld = { value: 'msg-8841' };
+    freshnessProducer(h, HOLD_RULE.match.tool, world);
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = routineCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+
+    // Six hours pass. Priya replies again.
+    world.value = 'msg-9002';
+    world.changed = 'Priya replied again after this was drafted.';
+
+    const out = await approve(h, userCtx(h), id);
+    expect(out.executed).toBe(false);
+    expect(out.decision!.status).toBe('stale');
+    expect(out.decision!.staleReason).toBe('Priya replied again after this was drafted.');
+    // NOTHING ran. That is the entire point of the guard.
+    expect(executor.calls).toEqual([]);
+    // And the row says so durably, not just in this response.
+    expect((await readDecision(h, ctx, id)).status).toBe('stale');
+  });
+
+  it('drops the "checked against" clause on a stale row', async () => {
+    // The clause describes hold-time and is FALSE once the guard has tripped.
+    // Repeating it under an alert saying the opposite is worse than silence.
+    const h = await boot();
+    const world: FreshWorld = { value: 'msg-8841' };
+    freshnessProducer(h, HOLD_RULE.match.tool, world);
+    recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = routineCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+
+    world.value = 'msg-9002';
+    const { decision } = await approve(h, userCtx(h), id);
+    expect(decision!.freshness!.label).toBeNull();
+    // The predicate itself SURVIVES, re-captured at the new value — dropping
+    // the sentence is not dropping the guard.
+    expect(decision!.freshness!.value).toBe('msg-9002');
+  });
+
+  it('re-captures so a second approval proceeds', async () => {
+    // Annoying but honest, once. A guard that could never be satisfied would
+    // be a decision nobody can ever act on.
+    const h = await boot();
+    const world: FreshWorld = { value: 'msg-8841' };
+    freshnessProducer(h, HOLD_RULE.match.tool, world);
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = routineCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+
+    world.value = 'msg-9002';
+    const first = await approve(h, userCtx(h), id);
+    expect(first.executed).toBe(false);
+
+    // The human looked at the new state and said yes anyway.
+    const second = await approve(h, userCtx(h), id);
+    expect(second.executed).toBe(true);
+    expect(second.decision!.status).toBe('executed');
+    expect(executor.calls).toEqual([CALL]);
+  });
+
+  it('executes with no guard when the tool produced no predicate', async () => {
+    // No producer at all — the overwhelmingly common case, and the designed
+    // one. An unguarded row claims nothing and runs on approval.
+    const h = await boot();
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = routineCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+    expect((await readDecision(h, ctx, id)).freshness).toBeNull();
+
+    const out = await approve(h, userCtx(h), id);
+    expect(out.executed).toBe(true);
+    expect(executor.calls).toEqual([CALL]);
+  });
+
+  it('treats a check that THROWS as changed — an unreadable world is a changed world', async () => {
+    const h = await boot();
+    const world: FreshWorld = { value: 'msg-8841' };
+    freshnessProducer(h, HOLD_RULE.match.tool, world);
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = routineCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+
+    world.checkThrows = true;
+    const out = await approve(h, userCtx(h), id);
+    expect(out.executed).toBe(false);
+    expect(out.decision!.status).toBe('stale');
+    expect(out.decision!.staleReason).toMatch(/could not re-check/i);
+    expect(executor.calls).toEqual([]);
+
+    // Still broken on the second click — and the human, having been told once,
+    // gets to proceed rather than bounce forever.
+    const second = await approve(h, userCtx(h), id);
+    expect(second.executed).toBe(true);
+    expect(executor.calls).toEqual([CALL]);
+  });
+
+  it('leaves the row UNGUARDED when capture throws, rather than turning the hold into a deny', async () => {
+    // The other asymmetry. Capture runs inside the pre-call gate, whose catch
+    // turns a throw into a REJECT — so a broken producer must not be allowed
+    // to propagate, or one tool takes the whole approval surface down.
+    const h = await boot();
+    const world: FreshWorld = { value: 'msg-8841', captureThrows: true };
+    freshnessProducer(h, HOLD_RULE.match.tool, world);
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = routineCtx(h);
+
+    // Still a HOLD, not a deny.
+    const id = await holdAndId(h, ctx, CALL);
+    // And the row claims nothing: no predicate means no "checked against…".
+    expect((await readDecision(h, ctx, id)).freshness).toBeNull();
+
+    const out = await approve(h, userCtx(h), id);
+    expect(out.executed).toBe(true);
+    expect(executor.calls).toEqual([CALL]);
+  });
+
+  it('guards the ATTENDED path too, and hands nothing to the warm agent', async () => {
+    // Attended staleness is a seconds-long risk rather than an hours-long one,
+    // but the guard is not special-cased away: a moved predicate stops the
+    // approval BEFORE the resolution is delivered, so the agent is never told
+    // to go ahead with something the human would not have approved.
+    const h = await boot();
+    const world: FreshWorld = { value: 'msg-8841' };
+    freshnessProducer(h, HOLD_RULE.match.tool, world);
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+
+    world.value = 'msg-9002';
+    const out = await approve(h, ctx, id);
+    expect(out.decision!.status).toBe('stale');
+    expect(out.path).toBeNull();
+    expect(h.delivered).toEqual([]);
+  });
+});

@@ -33,6 +33,7 @@ import {
   type ToolCall,
 } from '@ax/core';
 import { callFingerprint } from './fingerprint.js';
+import { captureFreshness } from './freshness.js';
 import type { DecisionStore } from './store.js';
 import {
   decisionText,
@@ -170,9 +171,14 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       // the human was asked. AW-5 defers an irreversible call's replay by the
       // undo window so the undo is a real grace period.
       irreversible: answer.irreversible === true,
-      // AW-7 adds the producers. Until one exists, claiming to have checked
-      // anything would be a promise the storage does not keep.
-      freshness: null,
+      // AW-7: ask the tool for something we can re-read when a human finally
+      // answers. `captureFreshness` is TOTAL and fails OPEN — a tool with no
+      // producer, or a producer that throws, yields `null` here, and `null`
+      // claims nothing: the row renders no "checked against…" clause, so the
+      // surface never asserts a guard it does not have. The alternative —
+      // letting a broken producer turn a hold into a deny — would let one tool
+      // take the whole approval surface down.
+      freshness: await captureFreshness(deps.bus, ctx, call),
       summary: text.summary,
       detail: text.detail,
       // Never synthesised out of model output.

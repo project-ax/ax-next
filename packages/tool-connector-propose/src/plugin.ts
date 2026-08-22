@@ -7,6 +7,12 @@ import {
   type ToolDescriptor,
 } from '@ax/core';
 import { CONNECTOR_PROPOSE_DESCRIPTOR, CONNECTOR_PROPOSE_TOOL_NAME } from './descriptor.js';
+import {
+  registerConnectorFreshness,
+  CONNECTORS_RESOLVE_HOOK,
+  CONNECTOR_CAPTURE_HOOK,
+  CONNECTOR_CHECK_HOOK,
+} from './freshness.js';
 
 const PLUGIN_NAME = '@ax/tool-connector-propose';
 const EXECUTE_HOOK = `tool:execute:${CONNECTOR_PROPOSE_TOOL_NAME}` as const;
@@ -125,10 +131,34 @@ export function createToolConnectorProposePlugin(): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: '0.0.0',
-      registers: [EXECUTE_HOOK],
+      registers: [
+        EXECUTE_HOOK,
+        // AW-7's freshness pair. A PRODUCER's two hook names are fixed strings
+        // (unlike the CONSUMER side in @ax/decisions, where the name is built
+        // from a recorded call), so they are declared here like any other
+        // service — which is also what lets the kernel's duplicate-service
+        // check catch two plugins claiming the same tool's guard.
+        CONNECTOR_CAPTURE_HOOK,
+        CONNECTOR_CHECK_HOOK,
+      ],
       // Hard deps → init-ordering edges: the tool dispatcher (tool:register) and
       // the connectors store (connectors:install-authored) must init first.
       calls: ['tool:register', 'connectors:install-authored'],
+      // AW-7 — the freshness predicate is "what does this connector id resolve
+      // to for this owner right now". OPTIONAL rather than hard: the tool works
+      // without it, it just proposes unguarded. Kept out of `calls` deliberately
+      // — a preset that loads @ax/connectors always registers resolve, so a hard
+      // dep would only ever fire in a preset shape that cannot exist, while
+      // pretending the degradation is impossible.
+      optionalCalls: [
+        {
+          hook: CONNECTORS_RESOLVE_HOOK,
+          degradation:
+            'A held connector_propose carries no freshness predicate, so approving it ' +
+            'replays the recorded draft without first re-checking whether something ' +
+            'now occupies that connector id.',
+        },
+      ],
       subscribes: [],
     },
     async init({ bus }) {
@@ -145,6 +175,11 @@ export function createToolConnectorProposePlugin(): Plugin {
         initCtx,
         CONNECTOR_PROPOSE_DESCRIPTOR,
       );
+
+      // AW-7 — `connector_propose` is held by the AW-3 rule table and replayed
+      // host-side on approval, so it can be approved hours after the human was
+      // asked. This is the half that re-reads the owner's live registry first.
+      registerConnectorFreshness(bus);
 
       bus.registerService<{ input?: unknown } & Partial<ToolCall>, ConnectorProposeOutput>(
         EXECUTE_HOOK,

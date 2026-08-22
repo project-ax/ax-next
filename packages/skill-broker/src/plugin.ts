@@ -1,6 +1,11 @@
 import type { Plugin } from '@ax/core';
 import { registerSearchCatalog } from './tools/search-catalog.js';
 import { registerRequestCapability } from './tools/request-capability.js';
+import {
+  registerCapabilityFreshness,
+  CAPABILITY_CAPTURE_HOOK,
+  CAPABILITY_CHECK_HOOK,
+} from './tools/capability-freshness.js';
 
 const PLUGIN_NAME = '@ax/skill-broker';
 const PLUGIN_VERSION = '0.0.0';
@@ -25,7 +30,18 @@ export function createSkillBrokerPlugin(_config: SkillBrokerConfig = {}): Plugin
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: ['tool:execute:search_catalog', 'tool:execute:request_capability'],
+      registers: [
+        'tool:execute:search_catalog',
+        'tool:execute:request_capability',
+        // AW-7's freshness pair for `request_capability`. Unlike the CONSUMER
+        // side in @ax/decisions — where the hook name is built from a recorded
+        // call and no manifest can name it — a PRODUCER's two hook names are
+        // fixed strings, so they are declared here like any other service. That
+        // is also what makes the kernel's duplicate-service check able to catch
+        // two plugins claiming the same tool's guard.
+        CAPABILITY_CAPTURE_HOOK,
+        CAPABILITY_CHECK_HOOK,
+      ],
       // Hard deps → init-ordering edges: the dispatcher (tool:register) and the
       // catalog owner (skills:search-catalog / skills:get) must init first.
       calls: ['tool:register', 'skills:search-catalog', 'skills:get'],
@@ -64,6 +80,10 @@ export function createSkillBrokerPlugin(_config: SkillBrokerConfig = {}): Plugin
     async init({ bus }) {
       await registerSearchCatalog(bus);
       await registerRequestCapability(bus);
+      // AW-7 — `request_capability` is held by the AW-3 rule table, replayed
+      // host-side on approval, and therefore approvable hours after the human
+      // was asked. This is the half that re-reads the catalog entry first.
+      registerCapabilityFreshness(bus);
     },
   };
 }

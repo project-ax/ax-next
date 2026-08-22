@@ -100,6 +100,24 @@ describe('approveDecision — the freshness guard', () => {
     expect(r.event).toBeNull();
   });
 
+  it('drops the "checked against" clause on a stale row (AW-7)', () => {
+    // The clause describes HOLD-TIME. Once the guard has tripped it is false,
+    // and repeating it underneath an alert saying the opposite is worse than
+    // silence (design §3.4). The machine strips it here so no renderer has to
+    // decide — and the PREDICATE survives, re-captured, because dropping the
+    // sentence is not dropping the guard.
+    const r = approveDecision(decision(), {
+      now: T_LATE,
+      freshness: { 'thread-head': 'msg-9002' },
+    });
+
+    expect(r.decision.freshness).toEqual({
+      kind: 'thread-head',
+      value: 'msg-9002',
+      label: null,
+    });
+  });
+
   it('falls back to a generic reason when the guard cannot say what changed', () => {
     const r = approveDecision(decision(), {
       now: T_LATE,
