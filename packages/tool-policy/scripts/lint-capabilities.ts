@@ -4,7 +4,7 @@
  *
  * `rules.test.ts` covers the same ground. This script exists so the failure
  * names the offending rule and the offending clause in the CI log, instead of
- * being buried in a vitest diff of a 16-element array — the person who broke it
+ * being buried in a vitest diff of the whole rule table — the person who broke it
  * is usually editing prose, not code, and a legible message is the difference
  * between a one-line fix and a spelunk.
  *

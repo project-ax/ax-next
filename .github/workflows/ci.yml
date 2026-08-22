@@ -30,7 +30,7 @@ jobs:
       # (design H3) rendered verbatim in the permissions rail. `rules.test.ts`
       # asserts the same thing, but this step names the offending rule and its
       # clause in the CI log — the person who broke it is usually editing prose,
-      # not code, and a vitest diff of a 16-element array is not a legible
+      # not code, and a vitest diff of the whole rule table is not a legible
       # message. Cheap enough to run unconditionally.
       - run: pnpm --filter @ax/tool-policy lint:capabilities
       # Tests: affected packages + dependents on PRs (fast feedback); full suite on

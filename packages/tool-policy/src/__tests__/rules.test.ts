@@ -46,15 +46,31 @@ describe('BUILTIN_RULES', () => {
   });
 
   it('marks the catalog-fact allows as catalog, never as deliberated rules', () => {
-    // AW-1 §3.3: an `allow` row here asserts only "this tool is reachable and
-    // no rule gates it". Filing it as `provenance: 'rule'` would tell a human
+    // AW-1 §3.3: today's `allow` rows assert only "this tool is reachable and
+    // no rule gates it". Filing one as `provenance: 'rule'` would tell a human
     // we deliberated a permission we did not.
+    //
+    // Note what this does NOT assert: that `allow` implies `catalog`. A
+    // genuinely reviewed allow is legitimate and is the design's own §4.3.2
+    // example ("Can reply to scheduling requests — on its own"). The invariant
+    // is one-directional: the seven catalog facts below must stay `catalog`.
+    const CATALOG_FACTS = new Set([
+      'web.search',
+      'web.extract',
+      'memory.search',
+      'memory.read-section',
+      'memory.note',
+      'skills.search-catalog',
+      'artifacts.publish',
+    ]);
     for (const rule of BUILTIN_RULES) {
-      if (rule.verdict === 'allow') {
+      if (CATALOG_FACTS.has(rule.id)) {
         expect(rule.provenance, rule.id).toBe('catalog');
-      } else {
-        expect(rule.provenance, rule.id).toBe('rule');
       }
+      // Every rule declares provenance explicitly. The type defaults it to
+      // 'rule' when omitted, and a silent default on a claim about how much
+      // review a permission got is not a default worth having.
+      expect(rule.provenance, rule.id).toBeDefined();
     }
   });
 

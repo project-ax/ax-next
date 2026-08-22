@@ -36,6 +36,26 @@ describe('lintCapability', () => {
     complains('always send the reply', 'contains a verdict word');
   });
 
+  it('rejects a verdict word that is touching punctuation', () => {
+    // Regression: the first implementation probed for ` ${word} ` on a
+    // space-padded clause, so a verdict word next to a comma, hyphen or slash
+    // slipped through. Filed under `allow`, the first of these renders as
+    // "✓ Can never, ever delete anything — on its own" — the exact frame
+    // contradiction the authored/generated split is supposed to make
+    // unexpressible.
+    complains('never, ever delete anything', 'contains a verdict word');
+    complains('reply first-class post', 'contains a verdict word');
+    complains('it can/cannot run', 'contains a verdict word');
+    complains('(always) send the reply', 'contains a verdict word');
+  });
+
+  it('does not flag a verdict word buried inside a longer word', () => {
+    // The boundary probe must not turn "candelabra" or "canvas" into a verdict
+    // word — over-rejecting is the safe direction, but not THAT safe.
+    expect(lintCapability('polish the candelabra')).toEqual([]);
+    expect(lintCapability('stretch a canvas for you')).toEqual([]);
+  });
+
   it('rejects tool identifiers', () => {
     complains('call linear__create_issue', 'contains a tool identifier');
     complains('run createIssue for you', 'contains a tool identifier');

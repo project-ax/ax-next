@@ -48,6 +48,29 @@ const TOOL_IDENT = /_|`|\b[a-z]+[A-Z][a-zA-Z]*\b/;
 
 export const CAPABILITY_MAX_CHARS = 60;
 
+/**
+ * Word-boundary probe for one verdict word.
+ *
+ * This deliberately does NOT use ` ${w} ` on a space-padded clause. That is the
+ * obvious implementation and it is evaded by ordinary punctuation: `"never,
+ * ever delete anything"`, `"reply first-class post"` and `"it can/cannot run"`
+ * all sail through, because the verdict word is touching a comma, a hyphen or a
+ * slash rather than a space. Filed under `allow`, the first of those renders as
+ * `✓ Can never, ever delete anything — on its own` — the exact frame
+ * contradiction §4.3.1 claims is unexpressible.
+ *
+ * `\b` treats every non-word character as a boundary, which closes all three.
+ * It over-rejects a legitimate hyphenated "first-class"; that is the direction
+ * we want to be wrong in on a security claim, and rewording is cheap.
+ */
+function verdictWordProbe(word: string): RegExp {
+  // Only `can't` carries a non-word character, and `'` is not a regex
+  // metacharacter — but escape anyway so adding a word later cannot quietly
+  // turn into a pattern.
+  const escaped = word.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`\\b${escaped}\\b`, 'i');
+}
+
 export function lintCapability(clause: string): string[] {
   const errs: string[] = [];
   const trimmed = clause.trim();
@@ -71,11 +94,8 @@ export function lintCapability(clause: string): string[] {
   if (/[.!?]$/.test(trimmed)) {
     errs.push('must not end with punctuation — it is a clause, not a sentence');
   }
-  // Pad with spaces so a verdict word in first or last position still matches
-  // the ` word ` probe.
-  const lower = ` ${trimmed.toLowerCase()} `;
   for (const w of VERDICT_WORDS) {
-    if (lower.includes(` ${w} `)) {
+    if (verdictWordProbe(w).test(trimmed)) {
       errs.push(`contains a verdict word ("${w}") — the verdict supplies the frame`);
       break;
     }
