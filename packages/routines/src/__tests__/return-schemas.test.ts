@@ -3,6 +3,7 @@ import {
   FireNowOutputSchema,
   ListOutputSchema,
   RecentFiresOutputSchema,
+  RecentFiresForAgentOutputSchema,
   RoutinesDeleteDefaultOutputSchema,
   RoutinesGetDefaultOutputSchema,
   RoutinesListDefaultsOutputSchema,
@@ -15,6 +16,7 @@ import {
   type FireRow,
   type ListOutput,
   type RecentFiresOutput,
+  type RecentFiresForAgentOutput,
   type RoutineRow,
   type RoutinesDeleteDefaultOutput,
   type RoutinesListDefaultsOutput,
@@ -89,6 +91,11 @@ describe('routines return schemas', () => {
   it('routines:recent-fires round-trips a fully-populated FireRow', () => {
     const full: RecentFiresOutput = { fires: [fireRow] };
     expect(RecentFiresOutputSchema.parse(full)).toEqual(full);
+  });
+
+  it('routines:recent-fires-for-agent round-trips a fully-populated FireRow', () => {
+    const full: RecentFiresForAgentOutput = { fires: [fireRow] };
+    expect(RecentFiresForAgentOutputSchema.parse(full)).toEqual(full);
   });
 
   it('routines:fire-now round-trips', () => {

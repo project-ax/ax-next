@@ -64,6 +64,15 @@ export interface RecentFiresInput {
 export interface RecentFiresOutput {
   fires: FireRow[];
 }
+export interface RecentFiresForAgentInput {
+  agentId: string;
+  limit?: number;
+  /** Exclusive upper bound on `firedAt` — the pagination cursor. */
+  before?: Date;
+}
+export interface RecentFiresForAgentOutput {
+  fires: FireRow[];
+}
 
 export interface RoutinesConfig {
   tickIntervalMs?: number;
@@ -242,6 +251,10 @@ export const ListOutputSchema = z.object({
 export const RecentFiresOutputSchema = z.object({
   fires: z.array(FireRowSchema),
 }) as unknown as ZodType<RecentFiresOutput>;
+
+export const RecentFiresForAgentOutputSchema = z.object({
+  fires: z.array(FireRowSchema),
+}) as unknown as ZodType<RecentFiresForAgentOutput>;
 
 export const FireNowOutputSchema = z.object({
   fireId: z.number(),

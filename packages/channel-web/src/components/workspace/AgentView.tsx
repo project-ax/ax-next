@@ -41,6 +41,11 @@ interface Props {
   onTab: (t: AgentTab) => void;
   decisions: Decision[];
   activity: ActivityEvent[];
+  /** Threaded straight through to the `did` tab's `ActivityFeed` — see there. */
+  activityHasMore?: boolean;
+  onActivityLoadMore?: () => void;
+  activityLoading?: boolean;
+  activityError?: string | null;
   agents: WorkspaceAgent[];
   onBack: () => void;
   /**
@@ -68,6 +73,10 @@ export function AgentView({
   onTab,
   decisions,
   activity,
+  activityHasMore,
+  onActivityLoadMore,
+  activityLoading,
+  activityError,
   agents,
   onBack,
   onApprove,
@@ -444,6 +453,10 @@ export function AgentView({
                 events={activity}
                 agents={agents}
                 agentId={agent.id}
+                {...(activityHasMore !== undefined ? { hasMore: activityHasMore } : {})}
+                {...(onActivityLoadMore ? { onLoadMore: onActivityLoadMore } : {})}
+                {...(activityLoading !== undefined ? { loading: activityLoading } : {})}
+                {...(activityError !== undefined ? { error: activityError } : {})}
               />
             </div>
           )}

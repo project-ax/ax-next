@@ -143,6 +143,16 @@ export async function runRoutinesMigration(db: Kysely<RoutinesDatabase>): Promis
       ON routines_v1_fires (agent_id, path, fired_at DESC)
   `.execute(db);
 
+  // Not a duplicate of routines_v1_fires_by_routine above: that index leads
+  // on agent_id but its second column is path, so it can only serve queries
+  // scoped to one routine — it cannot serve an `ORDER BY fired_at DESC` that
+  // spans every path on the agent (routines:recent-fires-for-agent). This
+  // index drops `path` so a single scan covers the whole agent.
+  await sql`
+    CREATE INDEX IF NOT EXISTS routines_v1_fires_by_agent
+      ON routines_v1_fires (agent_id, fired_at DESC)
+  `.execute(db);
+
   await sql`
     ALTER TABLE routines_v1_fires
       ADD COLUMN IF NOT EXISTS rendered_prompt TEXT

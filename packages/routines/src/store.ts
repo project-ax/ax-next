@@ -94,6 +94,7 @@ export interface RoutinesStore {
   advance(input: AdvanceInput): Promise<void>;
   recordFire(input: RecordFireInput): Promise<number>;
   recentFires(input: { agentId: string; path: string; limit?: number }): Promise<FireRow[]>;
+  recentFiresForAgent(input: { agentId: string; limit?: number; before?: Date }): Promise<FireRow[]>;
   list(input: { agentId?: string }): Promise<RoutineRow[]>;
   findOne(input: { agentId: string; path: string }): Promise<RoutineRow | null>;
   upsertDefault(input: UpsertDefaultInput): Promise<{ defaultRoutineId: string; created: boolean }>;
@@ -201,6 +202,25 @@ function rowToRoutine(row: {
     lastError: row.last_error,
     definitionId: row.definition_id,
     definitionUpdatedAt: row.definition_updated_at,
+  };
+}
+
+function rowToFire(r: {
+  id: number | string | bigint;
+  agent_id: string; path: string; fired_at: Date;
+  trigger_source: string; conversation_id: string | null;
+  status: string; error: string | null; rendered_prompt: string | null;
+}): FireRow {
+  return {
+    id: Number(r.id),
+    agentId: r.agent_id,
+    path: r.path,
+    firedAt: r.fired_at,
+    triggerSource: r.trigger_source as FireSource,
+    conversationId: r.conversation_id,
+    status: r.status as FireStatus,
+    error: r.error,
+    renderedPrompt: r.rendered_prompt,
   };
 }
 
@@ -392,17 +412,21 @@ export function createRoutinesStore(db: Kysely<RoutinesDatabase>): RoutinesStore
         .orderBy('fired_at', 'desc')
         .limit(limit)
         .execute();
-      return rows.map((r) => ({
-        id: Number(r.id),
-        agentId: r.agent_id,
-        path: r.path,
-        firedAt: r.fired_at,
-        triggerSource: r.trigger_source as FireSource,
-        conversationId: r.conversation_id,
-        status: r.status as FireStatus,
-        error: r.error,
-        renderedPrompt: r.rendered_prompt,
-      }));
+      return rows.map(rowToFire);
+    },
+
+    async recentFiresForAgent(input) {
+      const limit = Math.min(100, Math.max(1, input.limit ?? 20));
+      let q = db
+        .selectFrom('routines_v1_fires')
+        .selectAll()
+        .where('agent_id', '=', input.agentId);
+      if (input.before !== undefined) q = q.where('fired_at', '<', input.before);
+      const rows = await q
+        .orderBy('fired_at', 'desc')
+        .limit(limit)
+        .execute();
+      return rows.map(rowToFire);
     },
 
     async list(input) {

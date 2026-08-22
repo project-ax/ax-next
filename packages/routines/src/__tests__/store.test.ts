@@ -228,6 +228,94 @@ describe('RoutinesStore.recentFires', () => {
   });
 });
 
+describe('RoutinesStore.recentFiresForAgent', () => {
+  it('returns fires across every routine on the agent, newest first', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput({
+      agentId: 'agt_a', path: '.ax/routines/one.md', name: 'one',
+      trigger: { kind: 'interval' as const, every: '60s' },
+    }));
+    await store.upsert(baseInput({
+      agentId: 'agt_a', path: '.ax/routines/two.md', name: 'two',
+      trigger: { kind: 'interval' as const, every: '60s' },
+    }));
+    // Interleave fires across the two paths so ordering can't accidentally
+    // fall out of insertion order matching path order.
+    await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/one.md',
+      triggerSource: 'manual', conversationId: null,
+      status: 'ok', error: null, renderedPrompt: 'one-1',
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/two.md',
+      triggerSource: 'manual', conversationId: null,
+      status: 'ok', error: null, renderedPrompt: 'two-1',
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/one.md',
+      triggerSource: 'manual', conversationId: null,
+      status: 'ok', error: null, renderedPrompt: 'one-2',
+    });
+
+    const out = await store.recentFiresForAgent({ agentId: 'agt_a' });
+    expect(out.map((f) => f.renderedPrompt)).toEqual(['one-2', 'two-1', 'one-1']);
+    expect(new Set(out.map((f) => f.path))).toEqual(new Set(['.ax/routines/one.md', '.ax/routines/two.md']));
+    for (let i = 1; i < out.length; i += 1) {
+      expect(out[i - 1]!.firedAt.getTime()).toBeGreaterThanOrEqual(out[i]!.firedAt.getTime());
+    }
+  });
+
+  it('paginates on firedAt, not on the row id', async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput({
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      trigger: { kind: 'interval' as const, every: '60s' },
+    }));
+    for (let i = 0; i < 5; i += 1) {
+      await store.recordFire({
+        agentId: 'agt_a', path: '.ax/routines/r.md',
+        triggerSource: 'manual', conversationId: null,
+        status: 'ok', error: null, renderedPrompt: `f${i}`,
+      });
+      await new Promise((r) => setTimeout(r, 5));
+    }
+    const page1 = await store.recentFiresForAgent({ agentId: 'agt_a', limit: 2 });
+    const page2 = await store.recentFiresForAgent({
+      agentId: 'agt_a', limit: 2, before: page1.at(-1)!.firedAt,
+    });
+    expect(page2[0]!.firedAt.getTime()).toBeLessThan(page1.at(-1)!.firedAt.getTime());
+    const page1Ids = new Set(page1.map((f) => f.id));
+    for (const f of page2) expect(page1Ids.has(f.id)).toBe(false);
+  });
+
+  it("never returns another agent's fires", async () => {
+    const store = createRoutinesStore(db);
+    await store.upsert(baseInput({
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      trigger: { kind: 'interval' as const, every: '60s' },
+    }));
+    await store.upsert(baseInput({
+      agentId: 'agt_b', path: '.ax/routines/r.md',
+      trigger: { kind: 'interval' as const, every: '60s' },
+    }));
+    await store.recordFire({
+      agentId: 'agt_a', path: '.ax/routines/r.md',
+      triggerSource: 'manual', conversationId: null,
+      status: 'ok', error: null, renderedPrompt: 'a-1',
+    });
+    await store.recordFire({
+      agentId: 'agt_b', path: '.ax/routines/r.md',
+      triggerSource: 'manual', conversationId: null,
+      status: 'ok', error: null, renderedPrompt: 'b-1',
+    });
+    const out = await store.recentFiresForAgent({ agentId: 'agt_a' });
+    expect(out.every((f) => f.agentId === 'agt_a')).toBe(true);
+    expect(out.map((f) => f.renderedPrompt)).not.toContain('b-1');
+  });
+});
+
 describe('RoutinesStore default-routine CRUD', () => {
   it('upsertDefault + listDefaults round-trip', async () => {
     const store = createRoutinesStore(db);

@@ -76,6 +76,15 @@ describe('runRoutinesMigration', () => {
     expect(names).toContain('routines_v1_due');
   });
 
+  it('routines_v1_fires_by_agent index exists on routines_v1_fires', async () => {
+    await runRoutinesMigration(db);
+    const idxes = await sql<{ indexname: string }>`
+      SELECT indexname FROM pg_indexes WHERE tablename = 'routines_v1_fires'
+    `.execute(db);
+    const names = idxes.rows.map((r) => r.indexname);
+    expect(names).toContain('routines_v1_fires_by_agent');
+  });
+
   it('is idempotent', async () => {
     await runRoutinesMigration(db);
     await runRoutinesMigration(db);

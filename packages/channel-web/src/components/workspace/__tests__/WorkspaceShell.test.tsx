@@ -9,7 +9,6 @@ import { render, screen } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
-import { ActivityFeed } from '../ActivityFeed';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
@@ -17,11 +16,17 @@ vi.mock('@/lib/workspace-api', async () => {
   );
   return {
     ...actual,
-    workspaceApi: { board: vi.fn(), agent: vi.fn(), route: vi.fn() },
+    workspaceApi: {
+      board: vi.fn(),
+      agent: vi.fn(),
+      route: vi.fn(),
+      activity: vi.fn(),
+    },
   };
 });
 
 const boardMock = vi.mocked(workspaceApi.board);
+const activityMock = vi.mocked(workspaceApi.activity);
 
 const user = {
   id: 'u1',
@@ -40,6 +45,8 @@ function renderShell() {
 
 beforeEach(() => {
   boardMock.mockReset();
+  activityMock.mockReset();
+  activityMock.mockResolvedValue({ events: [], nextBefore: null });
 });
 
 describe('WorkspaceShell', () => {
@@ -68,7 +75,6 @@ describe('WorkspaceShell', () => {
         },
       ],
       decisions: [],
-      activity: [],
     });
 
     renderShell();
@@ -81,7 +87,7 @@ describe('WorkspaceShell', () => {
   });
 
   it('shows the honest empty state when there are no decisions', async () => {
-    boardMock.mockResolvedValue({ agents: [], decisions: [], activity: [] });
+    boardMock.mockResolvedValue({ agents: [], decisions: [] });
 
     renderShell();
 
@@ -91,7 +97,7 @@ describe('WorkspaceShell', () => {
   it('does not offer a demo strip or a global stop', async () => {
     // Both drove mock-only routes. A control wired to nothing is worse than no
     // control, because it reads as a promise.
-    boardMock.mockResolvedValue({ agents: [], decisions: [], activity: [] });
+    boardMock.mockResolvedValue({ agents: [], decisions: [] });
 
     renderShell();
     await screen.findByText('Nothing is waiting on you.');
@@ -104,7 +110,7 @@ describe('WorkspaceShell', () => {
   it('does not badge a tab with a zero', async () => {
     // "Needs you 0" is a measurement we have not made: `decisions` is empty
     // because nothing produces decisions yet, not because none are pending.
-    boardMock.mockResolvedValue({ agents: [], decisions: [], activity: [] });
+    boardMock.mockResolvedValue({ agents: [], decisions: [] });
 
     renderShell();
     const tab = await screen.findByRole('radio', { name: /Needs you/ });
@@ -125,40 +131,7 @@ describe('WorkspaceShell', () => {
   });
 });
 
-describe('ActivityFeed', () => {
-  it('says "Nothing recorded yet." when the feed is empty', () => {
-    render(<ActivityFeed events={[]} agents={[]} />);
-    expect(screen.getByText('Nothing recorded yet.')).toBeTruthy();
-    // …and says WHY it is empty, so it does not read as "your agents did
-    // nothing".
-    expect(
-      screen.getByText(/have not started keeping a record/),
-    ).toBeTruthy();
-  });
-
-  it('names the agent when it is one agent\'s tab', () => {
-    // The same component backs the per-agent "What it did" tab. Answering a
-    // question about Quill with a sentence about "agents" reads like the
-    // wrong screen.
-    render(
-      <ActivityFeed
-        events={[]}
-        agents={[
-          {
-            id: 'a-quill',
-            name: 'Quill',
-            state: 'resting',
-            now: null,
-            counter: null,
-            startedAt: null,
-            stoppedReason: null,
-          },
-        ]}
-        agentId="a-quill"
-      />,
-    );
-
-    expect(screen.getByText(/record of what Quill does/)).toBeTruthy();
-    expect(screen.queryByText(/what agents do/)).toBeNull();
-  });
-});
+/*
+  The ActivityFeed's own tests moved to `ActivityFeed.test.tsx` when the feed
+  grew a real collection behind it (AW-10). They were never about the shell.
+*/

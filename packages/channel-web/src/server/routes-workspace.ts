@@ -4,6 +4,8 @@
  * GET  /api/workspace/agents/:agentId  — one agent's detail panel
  *        ?conversationId=<id> reads that conversation instead of the current
  *        one (the rail's read-only past-conversation view)
+ * GET  /api/workspace/activity         — THE event feed (one collection)
+ *        ?agentId=<id> scopes it to one agent; ?before=<ISO>&limit=<n> page it
  * POST /api/workspace/route            — "which agent should hear this?"
  *
  * The agent-centric workspace surface (TASK-230 / plan task AW-9). This is the
@@ -17,7 +19,7 @@
  * a plausible-looking fixture, and it does not return a zero — a zero is a
  * claim, and we are not counting anything yet. Concretely:
  *
- *   - `decisions` / `activity` — empty until @ax/decisions (AW-10 / AW-11).
+ *   - `decisions`              — empty until @ax/decisions (AW-11).
  *   - `permissions`            — empty until the policy rail is real (AW-14).
  *   - `files` / `memory`       — empty until AW-12 / AW-13.
  *   - `now` / `counter` / `startedAt` — null; nothing reports them yet (AW-8).
@@ -38,13 +40,20 @@
  *   - I2 — no cross-plugin imports. Every hook is a duck-typed `bus.call`, and
  *     the request/response shapes come from routes-chat.js.
  *
- * The three `/api/workspace/*` routes only mount when the preview flag is on
+ * The activity feed is one collection with ONE producer — the route above, not
+ * a field on `/state`. Two producers over one collection is invariant 4
+ * violated in the BFF, and a sub-array of a state blob cannot be paginated.
+ * `/state`'s per-agent liveness probe is already an N+1; the feed's fan-out
+ * lives on its own route rather than making that worse.
+ *
+ * The four `/api/workspace/*` routes only mount when the preview flag is on
  * (capability minimization, invariant #5). `/api/features` always mounts and
  * needs no auth — it echoes a build-time flag and nothing else, exactly like
  * `GET /api/branding`.
  */
 import { PluginError, isRejection, type AgentContext, type HookBus } from '@ax/core';
 import type {
+  ActivityEvent,
   AgentRunState,
   MemoryDoc,
   PastConversation,
@@ -121,6 +130,48 @@ interface SessionIsAliveOutput {
   alive: boolean;
 }
 
+/**
+ * The subset of @ax/routines' `FireRow` this surface reads.
+ *
+ * `firedAt` is typed `Date | string` on purpose. In-process the hook hands back
+ * real `Date` instances; anything that carries this over a wire hands back an
+ * ISO string. Accepting both here is cheaper than making every future
+ * transport pretend to be the in-process one.
+ *
+ * `id` is present in the payload and is DELIBERATELY not read: it is a
+ * `BIGSERIAL`, storage vocabulary that leaked into a hook payload before this
+ * task existed. It is not rendered, and it is not the pagination cursor.
+ */
+interface FireRow {
+  agentId: string;
+  path: string;
+  firedAt: Date | string;
+  triggerSource: 'tick' | 'webhook' | 'manual';
+  conversationId: string | null;
+  status: 'ok' | 'silenced' | 'error';
+  error: string | null;
+}
+interface RecentFiresForAgentInput {
+  agentId: string;
+  limit?: number;
+  before?: Date;
+}
+interface RecentFiresForAgentOutput {
+  fires: FireRow[];
+}
+
+/** Just enough of a routine to put its AUTHORED name on the row. */
+interface RoutineRow {
+  path: string;
+  name: string;
+}
+interface RoutinesListInput {
+  agentId?: string;
+}
+interface RoutinesListOutput {
+  routines: RoutineRow[];
+}
+
 // --- wire shapes ----------------------------------------------------------
 
 /** `GET /api/features` — the flag echo the SPA reads before it renders. */
@@ -128,13 +179,39 @@ export interface FeaturesResponse {
   agentWorkspacePreview: boolean;
 }
 
-/** `GET /api/workspace/state` — the roster plus two honest empties. */
+/**
+ * `GET /api/workspace/state` — the roster plus one honest empty.
+ *
+ * There is no `activity` here. The feed has exactly ONE producer,
+ * `GET /api/workspace/activity`, because two fields over one collection is the
+ * invariant-4 violation this task exists to remove — and because a sub-array of
+ * a state blob cannot be paginated, which the feed has to be.
+ */
 export interface WorkspaceStateResponse {
   agents: WorkspaceAgent[];
-  /** Empty until @ax/decisions lands (AW-10 / AW-11). */
+  /** Empty until @ax/decisions lands (AW-11). */
   decisions: never[];
-  /** Empty until the receipts feed lands (AW-11). */
-  activity: never[];
+}
+
+/**
+ * `GET /api/workspace/activity` — the one event collection, newest first.
+ *
+ * The global Activity page is this unfiltered; the per-agent "What it did" tab
+ * is this with `agentid` set. One route, one shape, one renderer.
+ */
+export interface ActivityResponse {
+  events: ActivityEvent[];
+  /**
+   * The cursor for the next page: the instant of the last fire CONSIDERED, not
+   * of the last event rendered.
+   *
+   * Those differ, and the difference is load-bearing. A `silenced` fire renders
+   * as nothing, so a page can legitimately come back with zero events and more
+   * history behind it. A client paginating on its last visible row would have
+   * no cursor at all and the feed would dead-end on a quiet stretch. `null`
+   * means we reached the end of what this agent has.
+   */
+  nextBefore: string | null;
 }
 
 /**
@@ -244,6 +321,162 @@ function byRecencyDesc(a: ConversationRow, b: ConversationRow): number {
  * query key on the way in, so this is the only spelling a handler ever sees.
  */
 export const CONVERSATION_ID_QUERY_KEY = 'conversationid';
+
+/**
+ * `GET /api/workspace/activity`'s query keys, in the ONLY spelling a handler
+ * ever sees. Same trap as `CONVERSATION_ID_QUERY_KEY`: the browser sends
+ * `?agentId=`, `http-server` projects it as `agentid`, and a handler reading
+ * `req.query.agentId` gets `undefined` forever — which here would silently
+ * serve the WHOLE workspace's feed under one agent's "What it did" tab.
+ */
+export const ACTIVITY_AGENT_ID_QUERY_KEY = 'agentid';
+export const ACTIVITY_BEFORE_QUERY_KEY = 'before';
+export const ACTIVITY_LIMIT_QUERY_KEY = 'limit';
+
+/** Page size. The client asks; we decide. */
+const ACTIVITY_DEFAULT_LIMIT = 50;
+export const ACTIVITY_MAX_LIMIT = 100;
+
+/** Plain-language trigger labels. The wire word is vocabulary, not a sentence. */
+const TRIGGER_LABEL: Record<FireRow['triggerSource'], string> = {
+  tick: 'Scheduled',
+  webhook: 'Webhook',
+  manual: 'Run by hand',
+};
+
+/** `Date | string` → epoch ms. `NaN` for anything unreadable. */
+function fireStamp(firedAt: Date | string): number {
+  return firedAt instanceof Date ? firedAt.getTime() : Date.parse(firedAt);
+}
+
+/**
+ * The same instant, but sortable: an unreadable one goes to the BOTTOM instead
+ * of wherever `NaN` comparisons happen to leave it. A row we cannot date is
+ * dropped by the mapper anyway; it must not take a datable row's place on the
+ * page on its way out.
+ */
+function sortableStamp(firedAt: Date | string): number {
+  const t = fireStamp(firedAt);
+  return Number.isNaN(t) ? Number.NEGATIVE_INFINITY : t;
+}
+
+/**
+ * How much of an authored line this feed will carry.
+ *
+ * The subject line is a LABEL — one truncating row in the DOM — so it gets the
+ * same 60 the rest of the workspace gives a label. The second line is a
+ * recorded error, which is a sentence and legitimately longer, so it gets more
+ * room; it is still bounded, because "however long the agent felt like" is not
+ * a size.
+ */
+export const ACTIVITY_LABEL_MAX_CHARS = 60;
+export const ACTIVITY_DETAIL_MAX_CHARS = 200;
+
+/**
+ * Characters that rewrite the surface rather than appear on it: C0/C1 controls,
+ * the zero-width family, and the bidi marks, embeddings, overrides and isolates.
+ *
+ * The bidi half is the Trojan-source problem (CVE-2021-42574) pointed at a feed
+ * row. A lone U+202E reverses the visual order of everything after it, so a
+ * routine name authored with one in front of `"gnp.dorp-eteled"` renders as a
+ * completely different filename; an unterminated isolate leaks that reordering
+ * into whatever the renderer draws next, which here is the row's own timestamp
+ * and the row below it. React escapes markup, so this was never XSS — it is the
+ * quieter failure where the feed says, in our voice, something other than what
+ * is on the wire.
+ *
+ * They become spaces rather than vanishing, so a name that leaned on one to
+ * separate two words still reads as two words.
+ */
+const REWRITES_THE_SURFACE =
+  /[\u0000-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]+/g;
+
+/**
+ * One line, plain text, bounded — or `null` when nothing legible survives.
+ *
+ * A routine's `name` is authored in a file in the agent's own workspace and
+ * validated only for non-emptiness, so it is untrusted text arriving from
+ * across a trust boundary; the recorded `error` on a fire is the same. This is
+ * the trust boundary — fencing here bounds what goes on the wire, not just what
+ * a particular renderer happens to do with it.
+ *
+ * Deliberately a local twin of `@ax/agent-activity`'s `fencePhrase` rather than
+ * an import: plugins talk through the hook bus, never through each other's
+ * modules (invariant 2).
+ *
+ * The cap counts CODE POINTS, not UTF-16 units, so truncation can never split a
+ * surrogate pair and leave a lone half behind — ill-formed UTF-16 out of a
+ * function whose whole job is "plain text" would be a poor joke.
+ */
+function fenceLine(value: string | null | undefined, maxChars: number): string | null {
+  if (typeof value !== 'string') return null;
+  const flattened = value.replace(REWRITES_THE_SURFACE, ' ').replace(/\s+/g, ' ').trim();
+  if (flattened.length === 0) return null;
+  const points = [...flattened];
+  if (points.length <= maxChars) return flattened;
+  return `${points.slice(0, maxChars - 1).join('').trimEnd()}\u2026`;
+}
+
+/**
+ * One fire → one feed row, or `null` for a fire that produced nothing.
+ *
+ * `silenced` maps to `null` and that is the whole point of this function. A
+ * silenced fire ran the trigger, decided there was nothing to say, and stopped.
+ * Rendering "Inbox digest — done" over it would be a receipt for an outcome
+ * nobody observed, which is honesty rule H1 — the exact failure this surface
+ * cannot afford. It is not rendered dimmed, or collapsed, or as "no change".
+ * It is not rendered.
+ *
+ * `nameByPath` supplies the routine's AUTHORED name. When a routine has been
+ * deleted its fires survive it, so the path is the fallback: it is the truest
+ * thing still known about that row, and it is not a guess at what the routine
+ * used to be called.
+ */
+export function fireToActivityEvent(
+  fire: FireRow,
+  nameByPath: ReadonlyMap<string, string>,
+): ActivityEvent | null {
+  if (fire.status === 'silenced') return null;
+  const stamp = fireStamp(fire.firedAt);
+  if (Number.isNaN(stamp)) return null; // An undateable row cannot be filed.
+  const at = new Date(stamp).toISOString();
+  // Both the authored name and the path are the agent's own words, so both go
+  // through the fence. A name fenced down to nothing falls through to the path
+  // exactly as an absent one does, and a row whose every candidate label is
+  // unprintable still gets a row — dropping it would claim the agent did
+  // nothing, which is the bigger lie.
+  const text =
+    fenceLine(nameByPath.get(fire.path), ACTIVITY_LABEL_MAX_CHARS) ??
+    fenceLine(fire.path, ACTIVITY_LABEL_MAX_CHARS) ??
+    'A routine with no readable name';
+  return {
+    // Composite, and stable across pages. Never the fire's BIGSERIAL id.
+    // Deliberately the RAW path: this is a key, not a label — it is never
+    // rendered, and fencing it could collapse two distinct paths onto one id.
+    id: `${fire.agentId}|${fire.path}|${at}`,
+    agentId: fire.agentId,
+    at,
+    text,
+    kind: fire.status === 'error' ? 'stopped' : 'done',
+    detail:
+      fire.status === 'error'
+        ? // Never an empty string, and never an invented cause. "We don't know
+          // why" is a true sentence; a plausible reason would not be. A
+          // recorded error that is blank or all whitespace is the same absence
+          // as a null one — passing it through would render a row that says
+          // something went wrong with nothing at all underneath it. An error
+          // made only of control or bidi characters is that same absence
+          // wearing a costume, so the fence runs FIRST and its `null` lands on
+          // the same sentence.
+          (fenceLine(fire.error, ACTIVITY_DETAIL_MAX_CHARS) ??
+          'It failed, and no reason was recorded.')
+        : null,
+    tag: TRIGGER_LABEL[fire.triggerSource] ?? null,
+    // Decision receipts join this collection with `decisions:executed`, which
+    // has not shipped. Nothing here comes from a decision yet.
+    decisionId: null,
+  };
+}
 
 /**
  * Is this a "the row isn't yours / isn't there" answer, or a real failure?
@@ -432,6 +665,70 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     };
   }
 
+  /**
+   * One agent's slice of the feed: its fires, plus the routine names to label
+   * them with.
+   *
+   * `strict` splits the two callers the same way `listConversations` does. On
+   * the per-agent tab this list IS the content, so a fault has to surface —
+   * "nothing recorded" over a failed read is a claim we cannot back (H7). In
+   * the roster-wide fan-out one agent's hiccup must not take the page down, so
+   * it degrades to nothing and says so in the log.
+   */
+  async function firesForAgent(
+    agentId: string,
+    limit: number,
+    before: Date | null,
+    strict: boolean,
+  ): Promise<FireRow[]> {
+    if (!bus.hasService('routines:recent-fires-for-agent')) return [];
+    try {
+      const out = await bus.call<RecentFiresForAgentInput, RecentFiresForAgentOutput>(
+        'routines:recent-fires-for-agent',
+        initCtx,
+        { agentId, limit, ...(before !== null ? { before } : {}) },
+      );
+      return out.fires ?? [];
+    } catch (err) {
+      if (strict) throw err;
+      initCtx.logger.warn('workspace_activity_fires_failed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [];
+    }
+  }
+
+  /**
+   * path → the routine's authored name, for one agent.
+   *
+   * ALWAYS scoped to one agent. `routines:list` with no `agentId` returns every
+   * routine in the deployment, including other people's; asking it broadly to
+   * save a round trip would hand one user another user's routine names.
+   *
+   * A failed read degrades to an empty map, which labels the rows with their
+   * paths. That is a worse label, not a wrong one — unlike dropping the rows,
+   * which would claim the agent did nothing.
+   */
+  async function routineNames(agentId: string): Promise<Map<string, string>> {
+    const names = new Map<string, string>();
+    if (!bus.hasService('routines:list')) return names;
+    try {
+      const out = await bus.call<RoutinesListInput, RoutinesListOutput>(
+        'routines:list',
+        initCtx,
+        { agentId },
+      );
+      for (const r of out.routines ?? []) names.set(r.path, r.name);
+    } catch (err) {
+      initCtx.logger.warn('workspace_activity_routine_names_failed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+    return names;
+  }
+
   async function listAgents(userId: string): Promise<AgentsListForUserOutput['agents']> {
     // Team agents surface only when we pass the user's teamIds — same read the
     // chat agent picker does, so the workspace roster and the picker agree.
@@ -475,13 +772,111 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
       res.status(200).json({
         agents: rows,
-        // Honest empties. @ax/decisions (AW-10) fills the queue; the receipts
-        // feed (AW-11) fills the activity rail. A fixture here would be
-        // indistinguishable from a real decision, which is the one thing this
-        // surface can never afford.
+        // An honest empty. @ax/decisions (AW-11) fills the queue; a fixture
+        // here would be indistinguishable from a real decision, which is the
+        // one thing this surface can never afford. The activity feed used to
+        // sit beside this as a second empty array — it now has a real producer
+        // of its own at GET /api/workspace/activity, and one collection gets
+        // one producer.
         decisions: [],
-        activity: [],
       } satisfies WorkspaceStateResponse);
+    },
+
+    /**
+     * GET /api/workspace/activity — the one event feed.
+     *
+     * `?agentid=` scopes it to a single agent (the "What it did" tab);
+     * unscoped it merges the whole roster (the Activity page). `?before=` is
+     * the pagination cursor and it is an INSTANT, never a row id.
+     */
+    async activity(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+
+      const rawLimit = Number.parseInt(
+        (req.query[ACTIVITY_LIMIT_QUERY_KEY] ?? '').trim(),
+        10,
+      );
+      const limit = Number.isNaN(rawLimit)
+        ? ACTIVITY_DEFAULT_LIMIT
+        : Math.min(ACTIVITY_MAX_LIMIT, Math.max(1, rawLimit));
+
+      /*
+        An unparseable `before` is REFUSED, not ignored. Dropping it would
+        silently rewind the reader to page one — the same rows again, under a
+        "load more" they just clicked, with no sign anything went wrong.
+      */
+      const rawBefore = (req.query[ACTIVITY_BEFORE_QUERY_KEY] ?? '').trim();
+      let before: Date | null = null;
+      if (rawBefore.length > 0) {
+        const parsed = Date.parse(rawBefore);
+        if (Number.isNaN(parsed)) {
+          res.status(400).json({ error: 'invalid-before' });
+          return;
+        }
+        before = new Date(parsed);
+      }
+
+      const scopedId = (req.query[ACTIVITY_AGENT_ID_QUERY_KEY] ?? '').trim();
+
+      // Which agents to read, and how loudly a failure counts. Scoped: ACL
+      // first, then strict — that agent's history IS the page. Unscoped: the
+      // roster, non-strict.
+      let targets: Array<{ id: string }>;
+      let strict: boolean;
+      if (scopedId.length > 0) {
+        const agent = await resolveAgentOr404(bus, initCtx, scopedId, userId, res);
+        if (agent === null) return;
+        targets = [{ id: agent.id }];
+        strict = true;
+      } else {
+        targets = await listAgents(userId);
+        strict = false;
+      }
+
+      const slices = await Promise.all(
+        targets.map(async (a) => {
+          const fires = await firesForAgent(a.id, limit, before, strict);
+          if (fires.length === 0) return { fires, names: new Map<string, string>() };
+          return { fires, names: await routineNames(a.id) };
+        }),
+      );
+
+      // Merge, newest first. Undateable rows sort last and are dropped by the
+      // mapper; they are not silently filed under "now".
+      const merged = slices
+        .flatMap((s) => s.fires.map((f) => ({ fire: f, names: s.names })))
+        .sort((x, y) => sortableStamp(y.fire.firedAt) - sortableStamp(x.fire.firedAt))
+        .slice(0, limit);
+
+      const events: ActivityEvent[] = [];
+      for (const m of merged) {
+        const ev = fireToActivityEvent(m.fire, m.names);
+        if (ev !== null) events.push(ev);
+      }
+
+      /*
+        The cursor is the last fire we CONSIDERED. See `ActivityResponse`: a
+        page of all-silenced fires renders nothing, and a cursor taken from the
+        last visible row would strand the reader on it.
+
+        `null` when this page did not fill: every agent handed back everything
+        it had, so there is nothing older to ask for.
+
+        The cursor is EXCLUSIVE (`fired_at < before`), so two fires sharing a
+        millisecond exactly across a page boundary would cost the second one.
+        Fires are seconds-apart events written by a tick loop; a shared
+        millisecond is not a case we have, and the alternative — an inclusive
+        cursor — repeats a row on every single page turn, which a reader
+        actually notices.
+      */
+      const filled = merged.length === limit;
+      const last = merged.at(-1);
+      const lastStamp = last === undefined ? NaN : fireStamp(last.fire.firedAt);
+      const nextBefore =
+        filled && !Number.isNaN(lastStamp) ? new Date(lastStamp).toISOString() : null;
+
+      res.status(200).json({ events, nextBefore } satisfies ActivityResponse);
     },
 
     /** GET /api/workspace/agents/:agentId */
@@ -705,6 +1100,11 @@ export async function registerWorkspaceRoutes(
         method: 'GET',
         path: '/api/workspace/agents/:agentId',
         handler: handlers.agentDetail as unknown as RouteHandler,
+      },
+      {
+        method: 'GET',
+        path: '/api/workspace/activity',
+        handler: handlers.activity as unknown as RouteHandler,
       },
       {
         method: 'POST',

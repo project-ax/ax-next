@@ -15,6 +15,7 @@
 import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { workspaceApi } from '@/lib/workspace-api';
+import { useActivityFeed } from '@/lib/workspace-activity';
 import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
 import { ActivityFeed } from './ActivityFeed';
@@ -38,6 +39,18 @@ function today(): string {
   });
 }
 
+/** Local calendar day, for the "done today" count — never the server's day. */
+function isLocalToday(at: string): boolean {
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return false;
+  const now = new Date();
+  return (
+    d.getFullYear() === now.getFullYear() &&
+    d.getMonth() === now.getMonth() &&
+    d.getDate() === now.getDate()
+  );
+}
+
 export function WorkspaceShell() {
   return (
     <WorkspaceProvider>
@@ -49,6 +62,14 @@ export function WorkspaceShell() {
 function Inner() {
   const { board, error, loading, refresh } = useWorkspace();
   const [route, setRoute] = useState<Route>({ kind: 'today' });
+  /**
+   * The single activity collection, scoped to the agent tab when one is open
+   * and to the whole workspace otherwise (design §7 — one feed and a filter).
+   * Called once here rather than once per consumer: Today's "done today"
+   * count, the Activity page, and a given agent's "What it did" tab all read
+   * off this same fetch.
+   */
+  const feed = useActivityFeed(route.kind === 'agent' ? route.id : undefined);
   const [filter, setFilter] = useState<'needs' | 'working'>('needs');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [rosterOpen, setRosterOpen] = useState(true);
@@ -167,6 +188,11 @@ function Inner() {
                   onExpand={setExpandedId}
                   onOpenAgent={openAgent}
                   onSeeActivity={() => setRoute({ kind: 'activity' })}
+                  doneToday={
+                    feed.events.filter(
+                      (e) => e.kind === 'done' && isLocalToday(e.at),
+                    ).length
+                  }
                 />
               </div>
               <HomeComposer
@@ -187,18 +213,21 @@ function Inner() {
           {route.kind === 'activity' && (
             <>
               {/*
-                No "0 entries" subtitle. Nothing produces the activity feed
-                yet, so a count here would be a measurement of a thing we are
-                not measuring — the same reason Today drops its counts line and
-                the rail has no "This week" panel. The feed's own empty state
-                says what is actually true.
+                "12 entries" is a claim about the WHOLE record, and
+                `feed.events.length` only counts the pages fetched so far. So
+                the subtitle appears only once there is nothing left to page
+                into — at which point the two numbers are the same one. While
+                more is loadable the count is simply absent, along with the
+                zero that shows briefly on every mount before the first page
+                lands. Same rule as Today's summary line: a count is rendered
+                only when it is both positive and true.
               */}
               <WorkspaceHeader
                 title="Activity"
-                {...(board.activity.length > 0
+                {...(feed.events.length > 0 && !feed.hasMore
                   ? {
-                      subtitle: `${board.activity.length} ${
-                        board.activity.length === 1 ? 'entry' : 'entries'
+                      subtitle: `${feed.events.length} ${
+                        feed.events.length === 1 ? 'entry' : 'entries'
                       }`,
                     }
                   : {})}
@@ -206,9 +235,13 @@ function Inner() {
               <div className="flex-1 overflow-y-auto">
                 <div className="mx-auto w-full max-w-[900px] px-6 pb-6">
                   <ActivityFeed
-                    events={board.activity}
+                    events={feed.events}
                     agents={board.agents}
                     onOpenAgent={openAgent}
+                    hasMore={feed.hasMore}
+                    onLoadMore={feed.loadMore}
+                    loading={feed.loading}
+                    error={feed.error}
                   />
                 </div>
               </div>
@@ -221,7 +254,11 @@ function Inner() {
               tab={route.tab}
               onTab={(t) => setRoute({ ...route, tab: t })}
               decisions={board.decisions}
-              activity={board.activity}
+              activity={feed.events}
+              activityHasMore={feed.hasMore}
+              onActivityLoadMore={feed.loadMore}
+              activityLoading={feed.loading}
+              activityError={feed.error}
               agents={board.agents}
               onBack={() => setRoute({ kind: 'today' })}
               version={version}

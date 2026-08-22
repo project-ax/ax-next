@@ -579,6 +579,16 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation:
             'every agent in the workspace roster reads as resting (liveness cannot be probed, and a guess would be worse than a blank)',
         },
+        {
+          hook: 'routines:recent-fires-for-agent',
+          degradation:
+            'the workspace Activity feed is empty (this deployment keeps no routine fire history)',
+        },
+        {
+          hook: 'routines:list',
+          degradation:
+            'Activity rows are labelled with the routine path instead of its authored name',
+        },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     });

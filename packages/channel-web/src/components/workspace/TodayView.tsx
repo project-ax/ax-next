@@ -51,6 +51,8 @@ interface Props {
   onDismiss?: (id: string) => void;
   onUndo?: (id: string) => void;
   onSeeActivity: () => void;
+  /** From the real activity feed — how many `done` rows landed today, local time. */
+  doneToday?: number;
 }
 
 export function TodayView({
@@ -64,6 +66,7 @@ export function TodayView({
   onDismiss,
   onUndo,
   onSeeActivity,
+  doneToday,
 }: Props) {
   const actionable =
     onApprove !== undefined && onDismiss !== undefined && onUndo !== undefined;
@@ -103,6 +106,9 @@ export function TodayView({
     );
   }
   if (open.length > 0) summary.push(`${open.length} waiting on you`);
+  if (doneToday !== undefined && doneToday > 0) {
+    summary.push(`${doneToday} done today`);
+  }
 
   /*
     The hint describes an action on a row that exists. Rendered over an empty
