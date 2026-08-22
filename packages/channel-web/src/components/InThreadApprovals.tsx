@@ -81,14 +81,15 @@ export function InThreadApprovals() {
     }
     if (loggedError.current === error) return;
     loggedError.current = error;
+    // No note about whether the banner is up: the dedup key is the message, so
+    // an annotation captured on the first observation would still say "no"
+    // after a later frame raised the banner. The log is about the failed READ.
     console.warn(
       '[decisions] could not read what is waiting for approval; ' +
-        `the in-thread card cannot be shown (surfaced to the reader: ${
-          raised > 0 ? 'yes' : 'no'
-        })`,
+        'the in-thread approval card cannot be shown',
       error,
     );
-  }, [error, raised]);
+  }, [error]);
   const next = open[0] ?? null;
 
   if (settled.length === 0 && next === null && !showReadFailure) return null;

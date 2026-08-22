@@ -179,9 +179,20 @@ describe('useConversationDecisions', () => {
     when we actually read the list.
   */
   it('treats a body with no decisions array as a failed read, not an empty queue', async () => {
-    vi.spyOn(workspaceApi, 'decisions').mockResolvedValue(
-      {} as unknown as { decisions: Decision[] },
-    );
+    /*
+      Goes through the REAL `workspaceApi`, mocking `fetch` rather than the
+      client method, because the shape guard lives at that boundary — stubbing
+      `workspaceApi.decisions` would step over the very thing under test and
+      assert a state production can no longer reach.
+
+      What this pins end to end: a 200 with the wrong body surfaces as a failed
+      read here, and never as "nothing is waiting on you".
+    */
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+    } as unknown as Response);
     const { result } = renderHook(() => useConversationDecisions());
 
     await waitFor(() => expect(result.current.error).not.toBeNull());
@@ -214,6 +225,36 @@ describe('useConversationDecisions', () => {
     // The plain receipts are still capped — only the live undo is exempt.
     expect(ids.filter((id) => id !== 'd-oldest-undoable')).toHaveLength(
       SETTLED_CAP,
+    );
+  });
+
+  /*
+    The exemption keys on `undoSecondsLeft() > 0`, not on the raw `undoable`
+    flag. `undoable` is the server's "could this be taken back AT ALL" and
+    carries no clock — an `approved-pending-agent` row stays `undoable` for as
+    long as its agent takes to re-run. `ApprovalCard` draws no Undo button for
+    those, so exempting them would stack buttonless receipts in a fixed cluster
+    that grows upward and defeat the cap outright.
+  */
+  it('caps rows that are undoable but whose clock has run out', async () => {
+    const longAgo = new Date(Date.now() - 10 * 60_000).toISOString();
+    serve([
+      decisionFixture({
+        id: 'd-stale-undoable',
+        status: 'approved-pending-agent',
+        resolvedAt: longAgo,
+        undoable: true,
+      }),
+      settledRow('d-2', minutesAgo(1)),
+      settledRow('d-3', minutesAgo(2)),
+      settledRow('d-4', minutesAgo(3)),
+    ]);
+    const { result } = renderHook(() => useConversationDecisions());
+
+    await waitFor(() => expect(result.current.settled.length).toBeGreaterThan(0));
+    expect(result.current.settled).toHaveLength(SETTLED_CAP);
+    expect(result.current.settled.map((d) => d.id)).not.toContain(
+      'd-stale-undoable',
     );
   });
 });

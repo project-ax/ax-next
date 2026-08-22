@@ -25,6 +25,7 @@ import { useDecisionQueue } from './workspace-decisions';
 import { useConversationId } from './use-conversation-id';
 import { decisionRaisedActions, useDecisionRaised } from './decision-raised-store';
 import { isOpenDecision } from './workspace-types';
+import { undoSecondsLeft } from '@/components/workspace/decision-copy';
 import type { Decision } from './workspace-api';
 
 /**
@@ -35,14 +36,19 @@ import type { Decision } from './workspace-api';
  * one off the top of the viewport — where there is no scrollbar to find it
  * again. Three is enough to see what just happened without the wall of history.
  *
- * A row still inside its undo window is EXEMPT (see below). The cap trims
- * history; Undo is not history. An earlier version of this comment said the
- * overflow was "what `/workspace` and the activity feed are for" — which is
- * false on exactly the deployments this file exists to serve, because both of
- * those are behind `AX_AGENT_WORKSPACE_PREVIEW` and this is the only decision
- * surface there is. Capping away a live Undo would have quietly shortened the
- * grace period on the fourth approval in ten seconds, with nowhere else to go
- * and nothing to say so.
+ * A row whose Undo is still LIVE is exempt (see below). The cap trims history;
+ * a control the reader can still press is not history. Capping one away would
+ * quietly shorten the grace period on the fourth approval inside ten seconds —
+ * and on the deployments this file exists to serve there is nowhere else to go,
+ * because `/workspace` and the activity feed are both behind
+ * `AX_AGENT_WORKSPACE_PREVIEW`.
+ *
+ * "Live" is `undoSecondsLeft() > 0`, which is the SAME test `ApprovalCard` uses
+ * to draw the button — deliberately not the raw `undoable` flag. `undoable` is
+ * the server's "could this still be taken back at all" and carries no clock, so
+ * an `approved-pending-agent` row can sit `undoable` for as long as its agent
+ * takes to re-run. Exempting on that would let buttonless receipts stack up and
+ * defeat the cap outright, which is the overflow this exists to stop.
  */
 export const SETTLED_CAP = 3;
 
@@ -140,16 +146,16 @@ export function useConversationDecisions(): ConversationDecisions {
       open: mine
         .filter((d) => isOpenDecision(d))
         .sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt)),
-      // Newest first, keep the newest few PLUS anything the server still says
-      // can be taken back, then flip into thread order so the most recent
-      // receipt sits closest to the composer where the reader's eyes already
-      // are. The `undoable` exemption is bounded in practice by the ten-second
-      // window: it can only hold rows somebody resolved in the last ten
-      // seconds, not a backlog.
+      // Newest first, keep the newest few PLUS any row whose Undo is still on
+      // screen, then flip into thread order so the most recent receipt sits
+      // closest to the composer where the reader's eyes already are. The
+      // exemption is genuinely bounded: `undoSecondsLeft` goes to 0 ten seconds
+      // after `resolvedAt`, so it can only ever hold rows resolved in the last
+      // ten seconds — never a backlog.
       settled: mine
         .filter((d) => !isOpenDecision(d))
         .sort((a, b) => resolvedTime(b) - resolvedTime(a))
-        .filter((d, i) => i < SETTLED_CAP || d.undoable)
+        .filter((d, i) => i < SETTLED_CAP || undoSecondsLeft(d) > 0)
         .reverse(),
     };
   }, [conversationId, decisions]);

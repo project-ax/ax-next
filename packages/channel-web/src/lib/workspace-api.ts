@@ -221,6 +221,47 @@ export class WorkspaceApiError extends Error {
   }
 }
 
+/**
+ * A 200 whose BODY is not the shape we asked for.
+ *
+ * Separate from `WorkspaceApiError` because it means something different to
+ * whoever is debugging it: the route answered, so this is a shape problem — a
+ * proxy in front of it, a host at a different version, a body we cannot parse —
+ * rather than an unreachable server. Callers treat it as a failed READ either
+ * way, which is the point: what must never happen is a malformed body being
+ * mistaken for an empty collection.
+ */
+export class WorkspaceShapeError extends Error {
+  constructor(path: string) {
+    super(`workspace ${path} → 200 with a body we could not read`);
+    this.name = 'WorkspaceShapeError';
+  }
+}
+
+/**
+ * Guard the two decision READS at the boundary they share.
+ *
+ * Both of them feed `useDecisionQueue`, and both feed it code that dereferences
+ * the result during React's RENDER phase — `watchedKey` calls `.filter` on the
+ * list, `applyPolledRow` reads `row.id` inside a `setDecisions` updater. So a
+ * malformed body did not degrade, it threw out of a hook, and there is no
+ * ErrorBoundary in this SPA: the whole chat surface unmounts. That was
+ * survivable while only the flag-gated `/workspace` mounted this. TASK-261 puts
+ * it on the default `/` chat surface, for every user, on every page load.
+ *
+ * Checked HERE rather than in each caller so the list read and the single-row
+ * re-read cannot drift — the first version of this guard covered only the list,
+ * and the poll went on crashing for anyone mid-undo-window.
+ */
+function checkedRead<T>(path: string, body: unknown, ok: (b: unknown) => boolean): T {
+  if (!ok(body)) throw new WorkspaceShapeError(path);
+  return body as T;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null;
+}
+
 async function req<T>(
   path: string,
   init?: { method: string; body?: unknown },
@@ -306,15 +347,26 @@ export const workspaceApi = {
    * has to answer; if it is ever long enough to need a page break, the product
    * has a much bigger problem than a missing cursor.
    */
-  decisions: () => req<DecisionsPage>('/decisions'),
+  decisions: async () => {
+    const body = await req<unknown>('/decisions');
+    return checkedRead<DecisionsPage>('/decisions', body, (b) =>
+      isRecord(b) && Array.isArray(b.decisions),
+    );
+  },
 
   approveDecision: (id: string) => decisionPost<ApproveResult>(id, 'approve'),
   dismissDecision: (id: string) => decisionPost<DismissResult>(id, 'dismiss'),
   undoDecision: (id: string) => decisionPost<UndoResult>(id, 'undo'),
 
   /** One row, re-read by id. See `DecisionRead` for why this exists. */
-  decision: (id: string) =>
-    req<DecisionRead>(`/decisions/${encodeURIComponent(id)}`),
+  decision: async (id: string) => {
+    const path = `/decisions/${encodeURIComponent(id)}`;
+    const body = await req<unknown>(path);
+    // `decision: null` is a legitimate answer (the row is gone); a body with no
+    // `decision` key at all is not. The poll's caller must be able to tell those
+    // apart, because one is news and the other is a broken response.
+    return checkedRead<DecisionRead>(path, body, (b) => isRecord(b) && 'decision' in b);
+  },
 
   /**
    * One agent's panel. `conversationId` reads one of the agent's PAST

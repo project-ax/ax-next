@@ -3060,8 +3060,12 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
  *
  * - `GET /api/features` — it is how the SPA learns whether the rest of this
  *   surface exists.
- * - The four `/api/workspace/decisions*` routes (list, approve, dismiss,
- *   undo). A held call reaches the DEFAULT `/` chat surface today — preview
+ * - Every `/api/workspace/decisions*` route — the list, the single-row re-read
+ *   that closes the undo window early, approve, dismiss and undo. All five, so
+ *   that "which ones" is never a question anybody has to get right again; the
+ *   property test in `routes-workspace-decisions-unflagged.test.ts` pins the
+ *   set rather than the count. A held call reaches the DEFAULT `/` chat
+ *   surface today — preview
  *   flag or no — because `@ax/decisions` can hold any outward-facing tool
  *   call regardless of who's looking at `/workspace`. Gating these routes
  *   would gate only the remedy, leaving a dead end (a call nobody can
