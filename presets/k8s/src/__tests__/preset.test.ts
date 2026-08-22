@@ -258,7 +258,7 @@ describe('@ax/preset-k8s wiring', () => {
     expect(tp!.manifest.subscribes).toEqual([]);
   });
 
-  it('loads @ax/decisions and registers its five hooks (TASK-225)', () => {
+  it('loads @ax/decisions and registers its six hooks (TASK-225/TASK-226)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const d = plugins.find((p) => p.manifest.name === '@ax/decisions');
     expect(d).toBeDefined();
@@ -268,10 +268,19 @@ describe('@ax/preset-k8s wiring', () => {
       'decisions:approve',
       'decisions:dismiss',
       'decisions:undo',
+      // TASK-226: expires what nobody answered, and runs an irreversible
+      // rule's deferred replay once the undo window has closed.
+      'decisions:sweep',
     ]);
     // The half-wired window TASK-224 opened on `tool-policy:evaluate` closes
     // here: this is its production caller.
+    //
+    // `tool:execute:<name>` is deliberately NOT in `calls`. TASK-226's host
+    // replay reaches it through the documented dynamic-service-hook exception
+    // — the hook name depends on the recorded call, so no manifest can name it
+    // — exactly as `tool.execute-host` does.
     expect(d!.manifest.calls).toEqual(['database:get-instance', 'tool-policy:evaluate']);
+    expect(d!.manifest.calls).not.toContain('tool:execute:request_capability');
     expect(d!.manifest.subscribes).toEqual(['tool:pre-call']);
   });
 

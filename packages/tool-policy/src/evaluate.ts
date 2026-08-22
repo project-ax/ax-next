@@ -41,7 +41,12 @@ export function evaluate(
   for (const rule of rules) {
     if (rule.match.tool !== call.name) continue;
     if (!matches(rule.match.when, call.input)) continue;
-    return { verdict: rule.verdict, ruleId: rule.id, capability: rule.capability };
+    return {
+      verdict: rule.verdict,
+      ruleId: rule.id,
+      capability: rule.capability,
+      irreversible: rule.irreversible === true,
+    };
   }
-  return { verdict: 'allow', ruleId: null, capability: null };
+  return { verdict: 'allow', ruleId: null, capability: null, irreversible: false };
 }

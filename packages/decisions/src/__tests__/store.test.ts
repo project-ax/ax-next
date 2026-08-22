@@ -69,6 +69,9 @@ function base(over: Partial<Decision> = {}): Decision {
     },
     callFingerprint: 'fp-1',
     ruleId: 'skills.request-capability',
+    // Captured at hold time. A reversible call replays as soon as it is
+    // approved; an irreversible one waits out the undo window first.
+    irreversible: false,
     freshness: null,
     summary: 'Wants to gain access to a new service or key',
     detail: 'It stopped before running request_capability.',
@@ -83,6 +86,12 @@ function base(over: Partial<Decision> = {}): Decision {
     resolvedAt: null,
     staleReason: null,
     consumedAt: null,
+    replayDueAt: null,
+    replayClaimedAt: null,
+    // Stamped when the HOST actually made the call — the other half of
+    // `consumedAt`, which records the agent making it.
+    replayedAt: null,
+    replayError: null,
     ...over,
   };
 }
@@ -175,35 +184,35 @@ describe('decisions store — the standing authorisation', () => {
   it('refuses a second unconsumed approval for the same (agent, fingerprint)', async () => {
     const s = await freshStore();
     await s.create(base());
-    await s.markExecuted('dec_1', T_SOON);
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
     await s.create(base({ id: 'dec_2' }));
     // The partial unique index is the guarantee: two approvals of the same
     // call shape cannot both leave an authorisation standing.
-    await expect(s.markExecuted('dec_2', T_SOON)).rejects.toThrow();
+    await expect(s.claimForApproval('dec_2', { nowIso: T_SOON, status: 'executed' })).rejects.toThrow();
   });
 
   it('allows a new approval once the first is consumed', async () => {
     const s = await freshStore();
     await s.create(base());
-    await s.markExecuted('dec_1', T_SOON);
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
     expect((await s.takeApproval('a1', 'fp-1', T_SOON))!.id).toBe('dec_1');
 
     await s.create(base({ id: 'dec_2' }));
-    const second = await s.markExecuted('dec_2', T_LATE);
+    const second = await s.claimForApproval('dec_2', { nowIso: T_LATE, status: 'executed' });
     expect(second!.status).toBe('executed');
   });
 
   it('scopes the authorisation to the agent — another agent gets nothing', async () => {
     const s = await freshStore();
     await s.create(base());
-    await s.markExecuted('dec_1', T_SOON);
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
     expect(await s.takeApproval('a2', 'fp-1', T_SOON)).toBeNull();
   });
 
   it('takeApproval is one-shot', async () => {
     const s = await freshStore();
     await s.create(base());
-    await s.markExecuted('dec_1', T_SOON);
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
     expect(await s.takeApproval('a1', 'fp-1', T_SOON)).not.toBeNull();
     expect(await s.takeApproval('a1', 'fp-1', T_SOON)).toBeNull();
   });
@@ -221,7 +230,7 @@ describe('decisions store — the standing authorisation', () => {
     // AW-5) a host replay race here.
     const s = await freshStore();
     await s.create(base());
-    await s.markExecuted('dec_1', T_SOON);
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
 
     const [a, b] = await Promise.all([
       s.takeApproval('a1', 'fp-1', T_SOON),
@@ -233,7 +242,7 @@ describe('decisions store — the standing authorisation', () => {
   it('exactly one of many concurrent takeApproval calls wins', async () => {
     const s = await freshStore();
     await s.create(base());
-    await s.markExecuted('dec_1', T_SOON);
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
 
     const results = await Promise.all(
       Array.from({ length: 8 }, () => s.takeApproval('a1', 'fp-1', T_SOON)),
@@ -246,16 +255,16 @@ describe('decisions store — transitions are conditional', () => {
   it('approving twice transitions once', async () => {
     const s = await freshStore();
     await s.create(base());
-    expect((await s.markExecuted('dec_1', T_SOON))!.status).toBe('executed');
+    expect((await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' }))!.status).toBe('executed');
     // Second call finds nothing open to change.
-    expect(await s.markExecuted('dec_1', T_LATE)).toBeNull();
+    expect(await s.claimForApproval('dec_1', { nowIso: T_LATE, status: 'executed' })).toBeNull();
     expect((await s.get('dec_1'))!.resolvedAt).toBe(T_SOON);
   });
 
   it('cannot dismiss something already approved', async () => {
     const s = await freshStore();
     await s.create(base());
-    await s.markExecuted('dec_1', T_SOON);
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
     expect(await s.markDismissed('dec_1', T_LATE)).toBeNull();
   });
 
@@ -270,13 +279,13 @@ describe('decisions store — transitions are conditional', () => {
     expect(staled!.resolvedAt).toBeNull();
     expect(staled!.freshness!.value).toBe('new');
     // Still open, so it is still approvable.
-    expect((await s.markExecuted('dec_1', T_LATE))!.status).toBe('executed');
+    expect((await s.claimForApproval('dec_1', { nowIso: T_LATE, status: 'executed' }))!.status).toBe('executed');
   });
 
-  it('markExecuted clears a stale reason that is no longer true', async () => {
+  it('claimForApproval clears a stale reason that is no longer true', async () => {
     const s = await freshStore();
     await s.create(base({ status: 'stale', staleReason: 'the world moved' }));
-    expect((await s.markExecuted('dec_1', T_LATE))!.staleReason).toBeNull();
+    expect((await s.claimForApproval('dec_1', { nowIso: T_LATE, status: 'executed' }))!.staleReason).toBeNull();
   });
 });
 
@@ -284,7 +293,7 @@ describe('decisions store — undo', () => {
   it('restores an approved decision to pending, dropping the authorisation', async () => {
     const s = await freshStore();
     await s.create(base());
-    await s.markExecuted('dec_1', T_SOON);
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
     const restored = await s.restore('dec_1');
     expect(restored!.status).toBe('pending');
     expect(restored!.resolvedAt).toBeNull();
@@ -297,7 +306,7 @@ describe('decisions store — undo', () => {
     // execution of a call that already ran.
     const s = await freshStore();
     await s.create(base());
-    await s.markExecuted('dec_1', T_SOON);
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
     await s.takeApproval('a1', 'fp-1', T_SOON);
     expect(await s.restore('dec_1')).toBeNull();
   });
@@ -330,5 +339,439 @@ describe('decisions store — expiry', () => {
     await s.create(base({ expiresAt: T0 }));
     expect(await s.expireDue(T_LATE)).toBe(1);
     expect(await s.expireDue(T_LATE)).toBe(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AW-5. Claiming, deferred replays, failure — everything the approve path
+// leans on to make "approving twice does it once" true across two tabs.
+// ---------------------------------------------------------------------------
+
+/** T_SOON + the undo window: when a deferred replay comes due. */
+const T_REPLAY_DUE = '2026-08-20T09:00:15.000Z';
+/** Inside the window — the replay is not due yet. */
+const T_REPLAY_EARLY = '2026-08-20T09:00:10.000Z';
+
+describe('decisions store — claimForApproval', () => {
+  it('is one-shot: the second claim returns null because SOMEONE ELSE RESOLVED IT', async () => {
+    const s = await freshStore();
+    await s.create(base());
+
+    const first = await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+    expect(first!.status).toBe('executed');
+
+    // Null here does NOT mean "no such row" — the row is right there, and a
+    // caller that reports "decision not found" is lying about state we have.
+    // It means the conditional UPDATE matched nothing because the row is no
+    // longer open: another tab, a retried POST, a concurrent replica got it.
+    expect(
+      await s.claimForApproval('dec_1', { nowIso: T_LATE, status: 'executed' }),
+    ).toBeNull();
+    expect((await s.get('dec_1'))!.status).toBe('executed');
+    expect((await s.get('dec_1'))!.resolvedAt).toBe(T_SOON);
+  });
+
+  it('refuses to leave two authorising rows standing for the same (agent, call)', async () => {
+    // The partial unique index covers BOTH authorising statuses since AW-5.
+    // `executed` and `approved-pending-agent` are equally a standing "yes" at
+    // the pre-call gate, so they cannot coexist unconsumed for one call shape
+    // — otherwise one call would carry two authorisations and run twice.
+    const s = await freshStore();
+    await s.create(base());
+    await s.create(base({ id: 'dec_2' }));
+
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+    await expect(
+      s.claimForApproval('dec_2', { nowIso: T_SOON, status: 'approved-pending-agent' }),
+    ).rejects.toThrow();
+  });
+
+  it('round-trips a deferred replay and clears it on re-claim after an undo', async () => {
+    const s = await freshStore();
+    await s.create(base({ irreversible: true }));
+    const claimed = await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      replayDueAt: T_REPLAY_DUE,
+    });
+    expect(claimed!.replayDueAt).toBe(T_REPLAY_DUE);
+
+    // Undo, then approve again without a deferral: the stale due-time must not
+    // survive, or the sweep would replay a call the second approval already ran.
+    await s.restore('dec_1');
+    const again = await s.claimForApproval('dec_1', { nowIso: T_LATE, status: 'executed' });
+    expect(again!.replayDueAt).toBeNull();
+  });
+});
+
+describe('decisions store — the authorisation the agent takes up', () => {
+  it("takeApproval honours 'approved-pending-agent' — that is the whole point of the status", async () => {
+    // The host could not replay this one (sandbox-only tool). The approval is
+    // real and waits at the gate for the agent's next run; refusing it here
+    // would make the status a dead end and its receipt a lie.
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'approved-pending-agent' });
+
+    const taken = await s.takeApproval('a1', 'fp-1', T_LATE);
+    expect(taken!.id).toBe('dec_1');
+    expect(taken!.status).toBe('approved-pending-agent');
+    // Still one-shot.
+    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+  });
+
+  it('takeApproval REFUSES a row whose deferred replay has not run yet', async () => {
+    // The host still intends to run this call. Letting the agent consume the
+    // authorisation underneath it is exactly how one approval becomes two sends.
+    const s = await freshStore();
+    await s.create(base({ irreversible: true }));
+    await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      replayDueAt: T_REPLAY_DUE,
+    });
+
+    expect(await s.takeApproval('a1', 'fp-1', T_REPLAY_EARLY)).toBeNull();
+
+    // …and it stays refused once the sweep has TAKEN the replay. The claim
+    // clears `replay_due_at`, so an earlier version of this predicate re-opened
+    // the row to the agent for exactly as long as the call was in flight — one
+    // approval, two sends. `replay_claimed_at` is what holds the door shut
+    // across that window.
+    const claimed = await s.claimDueReplays(T_LATE, 10);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]!.replayDueAt).toBeNull();
+    expect(claimed[0]!.replayClaimedAt).toBe(T_LATE);
+    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+
+    // And it is still refused after the call has actually gone out.
+    await s.markReplayed('dec_1', T_LATE);
+    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+  });
+
+  it('takeApproval REFUSES a row whose IMMEDIATE replay is in flight', async () => {
+    // The reversible path claims and replays in one breath, but "one breath"
+    // is still milliseconds of network. A byte-identical agent call landing in
+    // that window must not be able to spend the same yes.
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      replayClaimedAt: T_SOON,
+    });
+
+    expect(await s.takeApproval('a1', 'fp-1', T_SOON)).toBeNull();
+    // Undo is refused in that window too: the call is already on its way out.
+    expect(await s.restore('dec_1')).toBeNull();
+  });
+
+  it('takeApproval HONOURS an attended approval, which the host never replays', async () => {
+    // The counter-control: without it the two tests above could pass simply
+    // because `takeApproval` had stopped working.
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+    expect((await s.takeApproval('a1', 'fp-1', T_SOON))!.id).toBe('dec_1');
+  });
+});
+
+describe('decisions store — deferred replays', () => {
+  it('claims a due replay exactly once', async () => {
+    const s = await freshStore();
+    await s.create(base({ irreversible: true }));
+    await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      replayDueAt: T_REPLAY_DUE,
+    });
+
+    const first = await s.claimDueReplays(T_LATE, 10);
+    expect(first.map((d) => d.id)).toEqual(['dec_1']);
+    // The claim cleared `replay_due_at` in the same statement, so a second
+    // sweep — in this process or another replica — gets nothing rather than
+    // sending twice.
+    expect(await s.claimDueReplays(T_LATE, 10)).toEqual([]);
+    expect((await s.get('dec_1'))!.replayDueAt).toBeNull();
+  });
+
+  it('leaves a replay whose undo window has not closed alone', async () => {
+    const s = await freshStore();
+    await s.create(base({ irreversible: true }));
+    await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      replayDueAt: T_REPLAY_DUE,
+    });
+    expect(await s.claimDueReplays(T_REPLAY_EARLY, 10)).toEqual([]);
+    expect((await s.get('dec_1'))!.replayDueAt).toBe(T_REPLAY_DUE);
+  });
+
+  it('honours the batch limit and leaves the rest for the next pass', async () => {
+    const s = await freshStore();
+    // Distinct fingerprints: three unconsumed authorisations for ONE call
+    // shape is precisely what the unique index forbids.
+    for (const n of [1, 2, 3]) {
+      await s.create(base({ id: `dec_${n}`, callFingerprint: `fp-${n}`, irreversible: true }));
+      await s.claimForApproval(`dec_${n}`, {
+        nowIso: T_SOON,
+        status: 'executed',
+        replayDueAt: T_REPLAY_DUE,
+      });
+    }
+
+    expect(await s.claimDueReplays(T_LATE, 2)).toHaveLength(2);
+    expect(await s.claimDueReplays(T_LATE, 2)).toHaveLength(1);
+    expect(await s.claimDueReplays(T_LATE, 2)).toEqual([]);
+  });
+});
+
+describe('decisions store — a replay that failed', () => {
+  it('markFailed records the error and DROPS the standing authorisation', async () => {
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+
+    const failed = await s.markFailed('dec_1', { error: 'upstream 503' });
+    expect(failed!.status).toBe('failed');
+    expect(failed!.replayError).toBe('upstream 503');
+    expect(failed!.replayDueAt).toBeNull();
+
+    // An action that did not happen must not leave behind a yes the agent can
+    // quietly cash in later: the partial index does not cover `failed`, and
+    // neither does `takeApproval`.
+    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+  });
+
+  it('parkForAgent moves an executed claim to the agent without touching the yes', async () => {
+    // The executor went away between the approval and the deferred replay.
+    const s = await freshStore();
+    await s.create(base({ irreversible: true }));
+    await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      replayDueAt: T_REPLAY_DUE,
+    });
+
+    const parked = await s.parkForAgent('dec_1');
+    expect(parked!.status).toBe('approved-pending-agent');
+    expect(parked!.replayDueAt).toBeNull();
+    expect((await s.takeApproval('a1', 'fp-1', T_LATE))!.id).toBe('dec_1');
+  });
+});
+
+describe('decisions store — undo, with a replay pending', () => {
+  it('cancels a deferred replay outright', async () => {
+    // This is the entire reason an irreversible call waits: an undo inside the
+    // window has to STOP the outward action, not apologise for it afterwards.
+    const s = await freshStore();
+    await s.create(base({ irreversible: true }));
+    await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      replayDueAt: T_REPLAY_DUE,
+    });
+
+    const restored = await s.restore('dec_1');
+    expect(restored!.status).toBe('pending');
+    expect(restored!.replayDueAt).toBeNull();
+    // And the sweep finds nothing to run.
+    expect(await s.claimDueReplays(T_LATE, 10)).toEqual([]);
+  });
+
+  it("restores an 'approved-pending-agent' row too", async () => {
+    // A host that physically cannot replay still parked a real "yes", and a
+    // human who said yes by mistake needs the same undo as any other approval.
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'approved-pending-agent' });
+
+    const restored = await s.restore('dec_1');
+    expect(restored!.status).toBe('pending');
+    expect(restored!.resolvedAt).toBeNull();
+    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+  });
+});
+
+describe('decisions store — the AW-5 columns', () => {
+  it('round-trips irreversible, replayDueAt and replayError through create/get', async () => {
+    const s = await freshStore();
+    const written = base({
+      irreversible: true,
+      replayDueAt: T_REPLAY_DUE,
+      replayError: 'upstream 503',
+    });
+    await s.create(written);
+
+    const read = await s.get('dec_1');
+    expect(read).toEqual(written);
+    // Spelled out: a boolean that round-trips as a string, or as `undefined`
+    // for a row written before the column existed, would defer nothing.
+    expect(read!.irreversible).toBe(true);
+    expect(read!.replayDueAt).toBe(T_REPLAY_DUE);
+    expect(read!.replayError).toBe('upstream 503');
+  });
+
+  it('defaults an untouched decision to reversible with nothing pending', async () => {
+    const s = await freshStore();
+    await s.create(base());
+    const read = await s.get('dec_1');
+    expect(read!.irreversible).toBe(false);
+    expect(read!.replayDueAt).toBeNull();
+    expect(read!.replayError).toBeNull();
+  });
+});
+
+describe('decisions store — expiry does not rewrite history', () => {
+  it('leaves an already-resolved decision alone', async () => {
+    const s = await freshStore();
+    await s.create(base({ id: 'dec_approved', expiresAt: T0 }));
+    await s.create(base({ id: 'dec_parked', callFingerprint: 'fp-2', expiresAt: T0 }));
+    await s.claimForApproval('dec_approved', { nowIso: T_SOON, status: 'executed' });
+    await s.claimForApproval('dec_parked', {
+      nowIso: T_SOON,
+      status: 'approved-pending-agent',
+    });
+
+    // Both are long past their expiry, and neither is open any more.
+    expect(await s.expireDue(T_LATE)).toBe(0);
+    expect((await s.get('dec_approved'))!.status).toBe('executed');
+    expect((await s.get('dec_parked'))!.status).toBe('approved-pending-agent');
+    // And the standing authorisation survived the sweep.
+    expect((await s.takeApproval('a1', 'fp-2', T_LATE))!.id).toBe('dec_parked');
+  });
+});
+
+describe('decisions store — a replay that actually ran', () => {
+  it('markReplayed stamps the column, keeps the status, and consumes nothing', async () => {
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+
+    const replayed = await s.markReplayed('dec_1', T_SOON);
+    // `executed` is still the true statement about this row — the host ran it.
+    expect(replayed!.status).toBe('executed');
+    expect(replayed!.replayedAt).toBe(T_SOON);
+    expect(replayed!.replayDueAt).toBeNull();
+    expect(replayed!.replayError).toBeNull();
+    // The consume belongs to the AGENT's side of the authorisation. Replay is
+    // the execution, so there was never an agent retry to consume.
+    expect(replayed!.consumedAt).toBeNull();
+  });
+
+  it('leaves nothing for the agent to cash in', async () => {
+    // Without `replayed_at`, an agent making the identical call on its next
+    // run would sail through the gate on a yes the host already spent.
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+    await s.markReplayed('dec_1', T_SOON);
+
+    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+  });
+
+  it('refuses the undo — the host already made the call', async () => {
+    // Undo cannot un-send an email. Putting the row back on the queue would
+    // let a second approval do the whole thing AGAIN.
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+    await s.markReplayed('dec_1', T_SOON);
+
+    expect(await s.restore('dec_1')).toBeNull();
+    expect((await s.get('dec_1'))!.status).toBe('executed');
+  });
+
+  it('frees the index slot so the same call can be held and approved again', async () => {
+    // The regression this column exists to prevent: a replayed row is HISTORY,
+    // not a standing authorisation. If it kept occupying the partial unique
+    // index, the next hold of the same call could never be approved — the
+    // second claim would die on a unique violation and the human would be
+    // stuck looking at a button that always errors.
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+    await s.markReplayed('dec_1', T_SOON);
+
+    await s.create(base({ id: 'dec_2' }));
+    const second = await s.claimForApproval('dec_2', { nowIso: T_LATE, status: 'executed' });
+    expect(second!.status).toBe('executed');
+    expect(second!.replayedAt).toBeNull();
+  });
+
+  it('round-trips replayedAt through create/get', async () => {
+    const s = await freshStore();
+    await s.create(base({ replayedAt: T_SOON }));
+    expect((await s.get('dec_1'))!.replayedAt).toBe(T_SOON);
+  });
+
+  it('stamps even when an undo won the race, and keeps the ORIGINAL resolution instant', async () => {
+    // `markReplayed` is the one write in this file that is NOT conditional on
+    // status. An undo landing between the executor returning and this stamp
+    // would otherwise silently no-op, leaving a `pending` row behind a receipt
+    // that says the call went out. The send happened; the row agrees.
+    //
+    // `resolved_at` must stay the APPROVAL instant, not the replay instant —
+    // overwriting it would restart the 10-second undo window after the outward
+    // action, which is the one thing the deferral exists to prevent.
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+    const undone = await s.restore('dec_1');
+    expect(undone!.status).toBe('pending');
+
+    const replayed = await s.markReplayed('dec_1', T_LATE);
+    expect(replayed!.status).toBe('executed');
+    expect(replayed!.replayedAt).toBe(T_LATE);
+    // `restore` cleared it, so this row's first resolution instant is the replay.
+    expect(replayed!.resolvedAt).toBe(T_LATE);
+    // And it is now beyond undo either way.
+    expect(await s.restore('dec_1')).toBeNull();
+  });
+
+  it('does not move the resolution instant of a deferred replay', async () => {
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      replayDueAt: T_LATE,
+    });
+    const replayed = await s.markReplayed('dec_1', T_LATE);
+    // Approved at T_SOON, sent at T_LATE. The undo window ran from T_SOON.
+    expect(replayed!.resolvedAt).toBe(T_SOON);
+    expect(replayed!.replayedAt).toBe(T_LATE);
+  });
+
+  it('returns null only when the row is gone', async () => {
+    const s = await freshStore();
+    expect(await s.markReplayed('dec_nope', T_SOON)).toBeNull();
+  });
+
+  it('parking a claimed flight hands the authorisation back to the agent', async () => {
+    // `parkForAgent` is only ever reached from INSIDE the replay, i.e. on a row
+    // the host had already claimed — its executor went away between the
+    // approval and the send. Earlier tests parked a row with no in-flight
+    // marker, a precondition that never occurs in production, and so missed
+    // this: leaving `replay_claimed_at` set parks a decision the agent is then
+    // forbidden to pick up, and the call runs ZERO times. Silent inaction is
+    // still the failure this package exists to prevent.
+    const s = await freshStore();
+    await s.create(base({ irreversible: true }));
+    await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      replayDueAt: T_REPLAY_DUE,
+    });
+    const claimed = await s.claimDueReplays(T_LATE, 10);
+    expect(claimed[0]!.replayClaimedAt).toBe(T_LATE);
+
+    const parked = await s.parkForAgent('dec_1');
+    expect(parked!.status).toBe('approved-pending-agent');
+    expect(parked!.replayClaimedAt).toBeNull();
+    expect(parked!.replayedAt).toBeNull();
+
+    // The whole point of the status: the agent performs it on its next run.
+    expect((await s.takeApproval('a1', 'fp-1', T_LATE))!.id).toBe('dec_1');
   });
 });

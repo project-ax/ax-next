@@ -33,11 +33,12 @@
  *      resolves after the turn ended, so the host replays the recorded call —
  *      verbatim, which is what lets the approval card promise WYSIWYG.
  */
-import type {
-  ActivityEvent,
-  Decision,
-  ExecutionPath,
-  ToolCall,
+import {
+  AUTHORISING_STATUSES,
+  type ActivityEvent,
+  type Decision,
+  type ExecutionPath,
+  type ToolCall,
 } from './types.js';
 
 export type { ExecutionPath };
@@ -184,7 +185,15 @@ export function dismissDecision(
 }
 
 export function undoDecision(d: Decision, opts: { now: string }): UndoResult {
-  if (d.status !== 'executed' && d.status !== 'dismissed') {
+  // Undoable iff the decision carries a standing authorisation
+  // (`AUTHORISING_STATUSES` — 'executed' or, since AW-5, 'approved-pending-agent':
+  // a host that physically cannot replay a sandbox-only tool still parks a
+  // real "yes" on the decision, waiting for the agent's next run, and a human
+  // who said yes by mistake needs the same undo window as any other approval)
+  // or a dismissal. Reusing the shared constant here, rather than repeating
+  // the status list a third time, is the point of exporting it — `types.ts`
+  // names this exact spot as one of the three places that have to agree.
+  if (d.status !== 'dismissed' && !AUTHORISING_STATUSES.includes(d.status)) {
     return { decision: d, undone: false };
   }
   if (d.resolvedAt === null) return { decision: d, undone: false };

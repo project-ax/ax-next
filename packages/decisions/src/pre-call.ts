@@ -49,6 +49,15 @@ export interface PolicyAnswer {
   verdict: 'allow' | 'hold' | 'deny';
   ruleId: string | null;
   capability: string | null;
+  /**
+   * Whether the matched rule says approving this call cannot be taken back.
+   * Optional HERE and only here: the field is required on `@ax/tool-policy`'s
+   * side, but this is a structural mirror of a payload that crosses a bus, and
+   * an older producer that does not send it must degrade to `false` — claiming
+   * irreversibility we were not told about would defer replays nobody asked to
+   * defer.
+   */
+  irreversible?: boolean | undefined;
 }
 
 export interface PreCallDeps {
@@ -163,6 +172,11 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       call,
       callFingerprint: fingerprint,
       ruleId: answer.ruleId,
+      // Captured HERE, at hold time, and never re-read at approval time: the
+      // policy that governs an approval is the policy that was in force when
+      // the human was asked. AW-5 defers an irreversible call's replay by the
+      // undo window so the undo is a real grace period.
+      irreversible: answer.irreversible === true,
       // AW-7 adds the producers. Until one exists, claiming to have checked
       // anything would be a promise the storage does not keep.
       freshness: null,
@@ -180,6 +194,10 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       resolvedAt: null,
       staleReason: null,
       consumedAt: null,
+      replayDueAt: null,
+      replayClaimedAt: null,
+      replayedAt: null,
+      replayError: null,
     };
 
     await deps.store.create(decision);

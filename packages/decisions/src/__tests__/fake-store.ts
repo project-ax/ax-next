@@ -9,7 +9,7 @@
  * stay fast and hermetic, not to stand in for either of those.
  */
 import type { DecisionStore } from '../store.js';
-import type { Decision, DecisionStatus } from '../types.js';
+import { AUTHORISING_STATUSES, type Decision, type DecisionStatus } from '../types.js';
 
 const OPEN: readonly DecisionStatus[] = ['pending', 'stale'];
 
@@ -46,9 +46,10 @@ export function createFakeStore(): FakeStore {
         if (
           row.agentId === decision.agentId &&
           row.callFingerprint === decision.callFingerprint &&
-          row.status === 'executed' &&
+          AUTHORISING_STATUSES.includes(row.status) &&
           row.consumedAt === null &&
-          decision.status === 'executed'
+          row.replayedAt === null &&
+          AUTHORISING_STATUSES.includes(decision.status)
         ) {
           throw new Error('fake store: duplicate unconsumed authorisation');
         }
@@ -72,7 +73,7 @@ export function createFakeStore(): FakeStore {
         .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
     },
 
-    async markExecuted(decisionId, nowIso) {
+    async claimForApproval(decisionId, { nowIso, status, replayDueAt, replayClaimedAt }) {
       const row = open(decisionId);
       if (row === null) return null;
       for (const other of rows.values()) {
@@ -80,17 +81,68 @@ export function createFakeStore(): FakeStore {
           other.id !== decisionId &&
           other.agentId === row.agentId &&
           other.callFingerprint === row.callFingerprint &&
-          other.status === 'executed' &&
-          other.consumedAt === null
+          AUTHORISING_STATUSES.includes(other.status) &&
+          other.consumedAt === null &&
+          other.replayedAt === null
         ) {
           throw new Error('fake store: duplicate unconsumed authorisation');
         }
       }
       const next: Decision = {
         ...row,
-        status: 'executed',
+        status,
         resolvedAt: nowIso,
         staleReason: null,
+        replayDueAt: replayDueAt ?? null,
+        replayClaimedAt: replayClaimedAt ?? null,
+        replayedAt: null,
+        replayError: null,
+      };
+      rows.set(decisionId, next);
+      return next;
+    },
+
+    // Unconditional on status, mirroring the real store: once the call has
+    // gone out the row has to agree with the world, even if an undo landed in
+    // between.
+    async markReplayed(decisionId, nowIso) {
+      const row = rows.get(decisionId);
+      if (row === undefined) return null;
+      const next: Decision = {
+        ...row,
+        status: 'executed',
+        resolvedAt: row.resolvedAt ?? nowIso,
+        replayedAt: nowIso,
+        replayDueAt: null,
+        replayError: null,
+      };
+      rows.set(decisionId, next);
+      return next;
+    },
+
+    async parkForAgent(decisionId) {
+      const row = rows.get(decisionId);
+      if (row === undefined || row.status !== 'executed') return null;
+      const next: Decision = {
+        ...row,
+        status: 'approved-pending-agent',
+        replayDueAt: null,
+        // The host relinquished the flight without sending. Leaving the marker
+        // set would park a decision the agent is then forbidden to pick up.
+        replayClaimedAt: null,
+      };
+      rows.set(decisionId, next);
+      return next;
+    },
+
+    async markFailed(decisionId, { error }) {
+      const row = rows.get(decisionId);
+      if (row === undefined || row.status !== 'executed') return null;
+      const next: Decision = {
+        ...row,
+        status: 'failed',
+        replayError: error,
+        replayDueAt: null,
       };
       rows.set(decisionId, next);
       return next;
@@ -129,13 +181,17 @@ export function createFakeStore(): FakeStore {
     async restore(decisionId) {
       const row = rows.get(decisionId);
       if (row === undefined) return null;
-      if (row.status !== 'executed' && row.status !== 'dismissed') return null;
+      if (row.status !== 'dismissed' && !AUTHORISING_STATUSES.includes(row.status)) return null;
       if (row.consumedAt !== null) return null;
+      if (row.replayedAt !== null) return null;
+      if (row.replayClaimedAt !== null) return null;
       const next: Decision = {
         ...row,
         status: 'pending',
         resolvedAt: null,
         staleReason: null,
+        replayDueAt: null,
+        replayError: null,
       };
       rows.set(decisionId, next);
       return next;
@@ -152,14 +208,35 @@ export function createFakeStore(): FakeStore {
       return moved;
     },
 
+    async claimDueReplays(nowIso, limit) {
+      const claimed: Decision[] = [];
+      for (const [id, row] of rows) {
+        if (claimed.length >= limit) break;
+        if (
+          row.status === 'executed' &&
+          row.replayDueAt !== null &&
+          row.replayClaimedAt === null &&
+          Date.parse(row.replayDueAt) <= Date.parse(nowIso)
+        ) {
+          const next: Decision = { ...row, replayDueAt: null, replayClaimedAt: nowIso };
+          rows.set(id, next);
+          claimed.push(next);
+        }
+      }
+      return claimed;
+    },
+
     async takeApproval(agentId, callFingerprint, nowIso) {
       trip('takeApproval');
       for (const [id, row] of rows) {
         if (
           row.agentId === agentId &&
           row.callFingerprint === callFingerprint &&
-          row.status === 'executed' &&
-          row.consumedAt === null
+          AUTHORISING_STATUSES.includes(row.status) &&
+          row.consumedAt === null &&
+          row.replayDueAt === null &&
+          row.replayClaimedAt === null &&
+          row.replayedAt === null
         ) {
           const next: Decision = { ...row, consumedAt: nowIso };
           rows.set(id, next);

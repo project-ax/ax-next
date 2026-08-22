@@ -4,8 +4,12 @@ import {
   denialSentence,
   holdNote,
   sanitizeCapability,
+  sanitizeFailureDetail,
   sanitizeToolName,
+  FAILED_RECEIPT,
   GATE_FAILURE_SENTENCE,
+  PENDING_AGENT_RECEIPT,
+  RETRACTED_RECEIPT,
 } from '../templates.js';
 
 const CAP = 'gain access to a new service or key';
@@ -157,5 +161,82 @@ describe('the gate-failure sentence', () => {
   it('is a denial and says nothing about our internals', () => {
     expect(GATE_FAILURE_SENTENCE).toMatch(/not allowed/i);
     expect(GATE_FAILURE_SENTENCE).not.toMatch(/error|stack|postgres|sql/i);
+  });
+});
+
+describe('the AW-5 authored receipts', () => {
+  const RECEIPTS = [
+    ['FAILED_RECEIPT', FAILED_RECEIPT],
+    ['PENDING_AGENT_RECEIPT', PENDING_AGENT_RECEIPT],
+    ['RETRACTED_RECEIPT', RETRACTED_RECEIPT],
+  ] as const;
+
+  it.each(RECEIPTS)('%s is non-empty and single-line', (_name, receipt) => {
+    expect(receipt.length).toBeGreaterThan(0);
+    expect(receipt).not.toContain('\n');
+  });
+
+  it('is not reachable from another receipt, or from an approvedText sample, by string surgery', () => {
+    // Design H1 again, generalised: a prior design derived the dismissed line
+    // from the approved one by regex and shipped "sent your reply to Priya"
+    // for a reply that was never sent. None of these three constants may be
+    // built out of, or hide inside, one of the others or a live approvedText.
+    const approved1 = decisionText({
+      capability: 'gain access to a new service or key',
+      toolName: 'request_capability',
+    }).approvedText;
+    const approved2 = decisionText({
+      capability: null,
+      toolName: 'skill_propose',
+    }).approvedText;
+
+    const all = [...RECEIPTS.map(([, text]) => text), approved1, approved2];
+    for (const outer of all) {
+      for (const inner of all) {
+        if (outer === inner) continue;
+        expect(outer).not.toContain(inner);
+      }
+    }
+  });
+
+  it('PENDING_AGENT_RECEIPT never says the call went out', () => {
+    expect(PENDING_AGENT_RECEIPT).not.toMatch(/sent/i);
+    expect(PENDING_AGENT_RECEIPT).toMatch(/next time it runs/i);
+  });
+
+  it('FAILED_RECEIPT does not claim the call succeeded', () => {
+    expect(FAILED_RECEIPT).not.toMatch(/\bsent\b/i);
+    expect(FAILED_RECEIPT).not.toMatch(/\bdid\b(?!\s+not\b)/i);
+  });
+
+  it('RETRACTED_RECEIPT says the person took it back and the old receipt no longer stands', () => {
+    expect(RETRACTED_RECEIPT).toMatch(/took this back/i);
+    expect(RETRACTED_RECEIPT).toMatch(/no longer stands/i);
+  });
+});
+
+describe('sanitizeFailureDetail', () => {
+  it('flattens control characters, including CR/LF, instead of forging a new line', () => {
+    expect(sanitizeFailureDetail('rate limited\r\ntry again later')).toBe(
+      'rate limited try again later',
+    );
+  });
+
+  it('clamps an over-long message', () => {
+    const out = sanitizeFailureDetail('x'.repeat(500))!;
+    expect(out.length).toBeLessThanOrEqual(200);
+    expect(out.endsWith('…')).toBe(true);
+  });
+
+  it('returns null for non-string input', () => {
+    expect(sanitizeFailureDetail(null)).toBeNull();
+    expect(sanitizeFailureDetail(undefined)).toBeNull();
+    expect(sanitizeFailureDetail(42)).toBeNull();
+    expect(sanitizeFailureDetail({ message: 'boom' })).toBeNull();
+  });
+
+  it('returns null for a string that is empty or only whitespace', () => {
+    expect(sanitizeFailureDetail('')).toBeNull();
+    expect(sanitizeFailureDetail('   ')).toBeNull();
   });
 });

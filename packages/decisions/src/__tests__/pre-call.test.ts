@@ -100,7 +100,7 @@ describe('tool:pre-call subscriber — the standing authorisation', () => {
     const { sub, store } = build(HOLD);
     const first = await sub(ctx(), CALL);
     const held = await store.get((first as { hold: { decisionId: string } }).hold.decisionId);
-    await store.markExecuted(held!.id, NOW.toISOString());
+    await store.claimForApproval(held!.id, { nowIso: NOW.toISOString(), status: 'executed' });
 
     // The still-warm agent re-issues the same call.
     expect(await sub(ctx(), CALL)).toBeUndefined();
@@ -112,7 +112,7 @@ describe('tool:pre-call subscriber — the standing authorisation', () => {
     const { sub, store } = build(HOLD);
     const first = await sub(ctx(), CALL);
     const held = await store.get((first as { hold: { decisionId: string } }).hold.decisionId);
-    await store.markExecuted(held!.id, NOW.toISOString());
+    await store.claimForApproval(held!.id, { nowIso: NOW.toISOString(), status: 'executed' });
 
     const tampered: ToolCall = {
       ...CALL,
@@ -125,7 +125,7 @@ describe('tool:pre-call subscriber — the standing authorisation', () => {
     const { sub, store } = build(HOLD);
     const first = await sub(ctx(), CALL);
     const held = await store.get((first as { hold: { decisionId: string } }).hold.decisionId);
-    await store.markExecuted(held!.id, NOW.toISOString());
+    await store.claimForApproval(held!.id, { nowIso: NOW.toISOString(), status: 'executed' });
 
     expect(await sub(ctx(), { ...CALL, id: 'call-99' })).toBeUndefined();
   });
@@ -134,7 +134,7 @@ describe('tool:pre-call subscriber — the standing authorisation', () => {
     const { sub, store } = build(HOLD);
     const first = await sub(ctx(), CALL);
     const held = await store.get((first as { hold: { decisionId: string } }).hold.decisionId);
-    await store.markExecuted(held!.id, NOW.toISOString());
+    await store.claimForApproval(held!.id, { nowIso: NOW.toISOString(), status: 'executed' });
 
     expect(isHold(await sub(ctx({ agentId: 'a2' }), CALL))).toBe(true);
   });
@@ -147,9 +147,9 @@ describe('tool:pre-call subscriber — the standing authorisation', () => {
     let evaluated = 0;
     const { sub } = build(HOLD, store);
     const holdResult = await sub(ctx(), CALL);
-    await store.markExecuted(
+    await store.claimForApproval(
       (holdResult as { hold: { decisionId: string } }).hold.decisionId,
-      NOW.toISOString(),
+      { nowIso: NOW.toISOString(), status: 'executed' },
     );
 
     const counting = createPreCallSubscriber({

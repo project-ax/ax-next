@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { evaluate } from '../evaluate.js';
-import type { PolicyRule } from '../types.js';
+import { EvaluateResultSchema, type PolicyRule } from '../types.js';
 
 const RULES: PolicyRule[] = [
   {
@@ -32,6 +32,7 @@ describe('evaluate', () => {
       verdict: 'allow',
       ruleId: 'test.send.scheduling',
       capability: 'reply to scheduling requests',
+      irreversible: false,
     });
   });
 
@@ -40,6 +41,7 @@ describe('evaluate', () => {
       verdict: 'hold',
       ruleId: 'test.send.any',
       capability: 'write to a customer',
+      irreversible: false,
     });
   });
 
@@ -48,6 +50,7 @@ describe('evaluate', () => {
       verdict: 'allow',
       ruleId: null,
       capability: null,
+      irreversible: false,
     });
   });
 
@@ -107,5 +110,63 @@ describe('evaluate', () => {
     const before = JSON.stringify(RULES);
     expect(evaluate(RULES, call)).toEqual(evaluate(RULES, call));
     expect(JSON.stringify(RULES)).toBe(before);
+  });
+});
+
+describe('evaluate — irreversible', () => {
+  // Locally-constructed rules only. BUILTIN_RULES documents that none of
+  // today's seeded rules is irreversible — do not add one there for this test.
+  const IRREVERSIBLE_RULES: PolicyRule[] = [
+    {
+      id: 'test.wire.transfer',
+      match: { tool: 'wire_transfer' },
+      verdict: 'hold',
+      capability: 'move money out of the account',
+      subject: 'agent',
+      irreversible: true,
+    },
+    {
+      id: 'test.send.any',
+      match: { tool: 'gmail_send' },
+      verdict: 'hold',
+      capability: 'write to a customer',
+      subject: 'agent',
+    },
+  ];
+
+  it('reports irreversible: true when the matched rule says approving cannot be taken back', () => {
+    expect(evaluate(IRREVERSIBLE_RULES, { name: 'wire_transfer', input: {} })).toEqual({
+      verdict: 'hold',
+      ruleId: 'test.wire.transfer',
+      capability: 'move money out of the account',
+      irreversible: true,
+    });
+  });
+
+  it('reports irreversible: false when the matched rule omits the flag', () => {
+    expect(
+      evaluate(IRREVERSIBLE_RULES, { name: 'gmail_send', input: {} }),
+    ).toEqual({
+      verdict: 'hold',
+      ruleId: 'test.send.any',
+      capability: 'write to a customer',
+      irreversible: false,
+    });
+  });
+
+  it('reports irreversible: false when no rule matches', () => {
+    expect(evaluate(IRREVERSIBLE_RULES, { name: 'Read', input: {} })).toEqual({
+      verdict: 'allow',
+      ruleId: null,
+      capability: null,
+      irreversible: false,
+    });
+  });
+
+  it('EvaluateResultSchema.parse keeps the irreversible key — a z.object strips undeclared keys', () => {
+    const result = evaluate(IRREVERSIBLE_RULES, { name: 'wire_transfer', input: {} });
+    const parsed = EvaluateResultSchema.parse(result);
+    expect(parsed).toHaveProperty('irreversible', true);
+    expect(parsed).toEqual(result);
   });
 });
