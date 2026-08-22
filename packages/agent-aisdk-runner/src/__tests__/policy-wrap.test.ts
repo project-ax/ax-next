@@ -1,11 +1,24 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PreToolVerdict, ToolPolicy } from '@ax/agent-runner-core';
+import type { IpcClient, ToolDescriptor } from '@ax/ipc-protocol';
 import {
+  createHoldLatch,
+  createLocalDispatcher,
+  type PreToolVerdict,
+  type ToolPolicy,
+} from '@ax/agent-runner-core';
+import {
+  HOLD_LATCH,
   POLICY_WRAPPED,
   assertAllToolsWrapped,
   mergeToolSets,
   wrapWithPolicy,
+  type WrappedExecute,
 } from '../tools/policy-wrap.js';
+import { buildBuiltinTools } from '../tools/builtins.js';
+import { buildHostTools } from '../tools/host-tools.js';
+import { buildSandboxTools } from '../tools/sandbox-tools.js';
+import { buildSkillTool } from '../tools/skill-tool.js';
+import type { DiscoveredSkill } from '../skills-index.js';
 
 function fakePolicy(over: Partial<ToolPolicy> = {}): ToolPolicy & {
   preToolUse: ReturnType<typeof vi.fn>;
@@ -27,7 +40,7 @@ describe('wrapWithPolicy — the one choke point', () => {
   it('runs the executor and returns its output when the policy allows', async () => {
     const policy = fakePolicy();
     const run = vi.fn(async () => 'the output');
-    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() }, run);
 
     await expect(execute({ command: 'ls' }, OPTS)).resolves.toBe('the output');
 
@@ -56,7 +69,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       })),
     } as never);
     const run = vi.fn(async () => 'must not run');
-    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() }, run);
 
     const settled = await execute({ command: 'npm i' }, OPTS).then(
       (value) => ({ status: 'fulfilled' as const, value }),
@@ -81,7 +94,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       })),
     } as never);
     const run = vi.fn(async () => 'read ok');
-    const execute = wrapWithPolicy({ policy, name: 'Read', isBuiltin: true }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Read', isBuiltin: true, holdLatch: createHoldLatch() }, run);
 
     await execute({ file_path: '~/.ax/uploads/c1/t1/report.pdf' }, OPTS);
 
@@ -104,7 +117,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       postToolUse: vi.fn(async () => ({ note: 'Blocked host: registry.npmjs.org' })),
     } as never);
     const execute = wrapWithPolicy(
-      { policy, name: 'Bash', isBuiltin: true },
+      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
       async () => 'npm ERR! network',
     );
 
@@ -115,7 +128,7 @@ describe('wrapWithPolicy — the one choke point', () => {
   it('re-throws an executor failure (the SDK error channel) but still audits it', async () => {
     const policy = fakePolicy();
     const execute = wrapWithPolicy(
-      { policy, name: 'Read', isBuiltin: true },
+      { policy, name: 'Read', isBuiltin: true, holdLatch: createHoldLatch() },
       async () => {
         throw new Error('ENOENT: no such file');
       },
@@ -145,7 +158,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       })),
     } as never);
     const run = vi.fn(async () => 'ran anyway');
-    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() }, run);
 
     await expect(execute({ command: 'ls' }, OPTS)).resolves.toContain('503');
     expect(run).not.toHaveBeenCalled();
@@ -153,10 +166,41 @@ describe('wrapWithPolicy — the one choke point', () => {
 
   it('marks the returned execute so a bypass is detectable', () => {
     const execute = wrapWithPolicy(
-      { policy: fakePolicy(), name: 'Bash', isBuiltin: true },
+      { policy: fakePolicy(), name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
       async () => 'x',
     );
     expect(execute[POLICY_WRAPPED]).toBe(true);
+  });
+
+  it('returns the hold note as tool text, trips the latch, and never runs the tool', async () => {
+    const latch = createHoldLatch();
+    let ran = false;
+    const execute = wrapWithPolicy(
+      {
+        policy: fakePolicy({
+          preToolUse: vi.fn(async () => ({
+            decision: 'hold' as const,
+            decisionId: 'dec_3',
+            note: 'Held: sending email',
+          })),
+        } as never),
+        name: 'gmail_send',
+        isBuiltin: false,
+        holdLatch: latch,
+      },
+      async () => {
+        ran = true;
+        return 'sent';
+      },
+    );
+    const out = await execute({ to: 'a@b.c' }, { toolCallId: 'tc_1' });
+    expect(ran).toBe(false);
+    expect(out).toContain('Held: sending email');
+    // The instruction is the whole point of `hold` over `deny`: "not yet"
+    // must not read to the model as "not this way".
+    expect(out).toContain('Do not retry it and do not achieve the same effect another way.');
+    expect(out).toContain('waiting for the person you are working for');
+    expect(latch.decisionId).toBe('dec_3');
   });
 });
 
@@ -166,7 +210,7 @@ describe('assertAllToolsWrapped', () => {
     const tools = {
       Bash: {
         execute: wrapWithPolicy(
-          { policy, name: 'Bash', isBuiltin: true },
+          { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
           async () => 'x',
         ),
       },
@@ -179,7 +223,7 @@ describe('assertAllToolsWrapped', () => {
     const tools = {
       Bash: {
         execute: wrapWithPolicy(
-          { policy, name: 'Bash', isBuiltin: true },
+          { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
           async () => 'x',
         ),
       },
@@ -192,6 +236,31 @@ describe('assertAllToolsWrapped', () => {
 
   it('throws for a tool with no execute at all', () => {
     expect(() => assertAllToolsWrapped({ Broken: {} })).toThrow(/Broken/);
+  });
+
+  it('throws when a tool carries a DIFFERENT hold latch than the loop is watching', () => {
+    // The silent-failure shape: this tool is policy-wrapped, so the old check
+    // passes it. But `stopWhen` reads the loop's latch, and this one trips a
+    // latch nobody watches — the call is refused and the turn keeps going.
+    const loopLatch = createHoldLatch();
+    const tools = {
+      Bash: {
+        execute: wrapWithPolicy(
+          { policy: fakePolicy(), name: 'Bash', isBuiltin: true, holdLatch: loopLatch },
+          async () => 'x',
+        ),
+      },
+      Stray: {
+        execute: wrapWithPolicy(
+          { policy: fakePolicy(), name: 'Stray', isBuiltin: true, holdLatch: createHoldLatch() },
+          async () => 'x',
+        ),
+      },
+    };
+    expect(() => assertAllToolsWrapped(tools, loopLatch)).toThrow(/Stray/);
+    expect(() => assertAllToolsWrapped(tools, loopLatch)).not.toThrow(/Bash/);
+    // Without the expected latch the check is opt-in and stays quiet.
+    expect(() => assertAllToolsWrapped(tools)).not.toThrow();
   });
 });
 
@@ -227,5 +296,112 @@ describe('mergeToolSets', () => {
 
   it('is a no-op for empty groups', () => {
     expect(mergeToolSets([{ label: 'a', tools: {} }])).toEqual({});
+  });
+});
+
+describe('hold latch identity across the built tool set', () => {
+  // A per-tool latch would let a hold return text without ever ending the
+  // turn — `main.ts` reads ONE latch in `stopWhen`, so every builder MUST be
+  // handed the same instance. This mirrors how `main.ts` actually assembles
+  // the tool set: mergeToolSets over all four builders, one shared latch.
+  //
+  // What this test guards is the BUILDERS: hand them all one latch and every
+  // wrapped `execute` must carry that same object. It does not re-verify
+  // `main.ts`'s own wiring — that is covered by `holdLatch` being a REQUIRED
+  // option on all four builder types (tsc rejects a missing wire) plus the
+  // single `const holdLatch` those four call sites read.
+  function mkHostClient(): IpcClient {
+    return {
+      call: async () => ({ ok: true }),
+      callGet: async () => {
+        throw new Error('callGet not expected');
+      },
+      callBinary: async () => {
+        throw new Error('callBinary not expected');
+      },
+      callBinaryUpload: async () => {
+        throw new Error('callBinaryUpload not expected');
+      },
+      event: async () => {
+        throw new Error('event not expected');
+      },
+      close: async () => {
+        /* no-op */
+      },
+    } as IpcClient;
+  }
+
+  const HOST_DESCRIPTOR: ToolDescriptor = {
+    name: 'memory.recall',
+    description: 'recall a memory',
+    inputSchema: { type: 'object' },
+    executesIn: 'host',
+  };
+  const SANDBOX_DESCRIPTOR: ToolDescriptor = {
+    name: 'echo_local',
+    description: 'echo (sandbox-executed)',
+    inputSchema: { type: 'object' },
+    executesIn: 'sandbox',
+  };
+  const SKILL: DiscoveredSkill = {
+    id: 'pdf-filler',
+    name: 'pdf-filler',
+    description: 'Fills in PDF forms',
+    dir: '/home/agent/.claude/skills/pdf-filler',
+    body: '# pdf-filler\n\nOpen the form, then fill each field.\n',
+    hasMcpServers: false,
+  };
+
+  it('gives every wrapped tool the same hold latch instance', () => {
+    const latch = createHoldLatch();
+    const dispatcher = createLocalDispatcher();
+    dispatcher.register('echo_local', async (call) => ({ echoed: call.input }));
+
+    const catalog = [HOST_DESCRIPTOR, SANDBOX_DESCRIPTOR];
+
+    const tools = mergeToolSets([
+      {
+        label: 'built-ins',
+        tools: buildBuiltinTools({
+          policy: fakePolicy(),
+          homeDir: '/tmp/ax-hold-latch-test-home',
+          env: {},
+          holdLatch: latch,
+        }),
+      },
+      {
+        label: 'host catalog tools',
+        tools: buildHostTools({
+          policy: fakePolicy(),
+          client: mkHostClient(),
+          tools: catalog,
+          holdLatch: latch,
+        }),
+      },
+      {
+        label: 'sandbox catalog tools',
+        tools: buildSandboxTools({
+          policy: fakePolicy(),
+          dispatcher,
+          tools: catalog,
+          holdLatch: latch,
+        }),
+      },
+      {
+        label: 'the Skill tool',
+        tools: buildSkillTool({ policy: fakePolicy(), skills: [SKILL], holdLatch: latch }),
+      },
+    ]) as unknown as Record<string, { execute: WrappedExecute }>;
+
+    // Non-empty and covers all four groups: built-ins (e.g. Bash), the host
+    // catalog tool, the sandbox catalog tool, and Skill.
+    expect(Object.keys(tools)).toEqual(
+      expect.arrayContaining(['Bash', 'memory.recall', 'echo_local', 'Skill']),
+    );
+
+    for (const [name, entry] of Object.entries(tools)) {
+      expect(entry.execute[POLICY_WRAPPED], name).toBe(true);
+      expect(entry.execute[HOLD_LATCH], name).toBe(latch);
+    }
   });
 });

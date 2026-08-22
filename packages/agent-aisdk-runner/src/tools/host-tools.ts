@@ -28,7 +28,7 @@ import {
   type IpcClient,
   type ToolDescriptor,
 } from '@ax/ipc-protocol';
-import type { FlushOutcome, ToolPolicy } from '@ax/agent-runner-core';
+import type { FlushOutcome, HoldLatch, ToolPolicy } from '@ax/agent-runner-core';
 import { wrapWithPolicy } from './policy-wrap.js';
 
 export interface BuildHostToolsOptions {
@@ -46,6 +46,8 @@ export interface BuildHostToolsOptions {
   flushWorkspace?: () => Promise<FlushOutcome>;
   /** Test seam: override the per-call id generator. */
   idGen?: () => string;
+  /** The one latch shared by every tool this turn — see WrapWithPolicyOptions. */
+  holdLatch: HoldLatch;
 }
 
 /**
@@ -66,7 +68,7 @@ function renderOutput(output: unknown): string {
  * builtins).
  */
 export function buildHostTools(opts: BuildHostToolsOptions): Record<string, Tool> {
-  const { policy, client, tools, flushWorkspace, idGen = () => randomUUID() } = opts;
+  const { policy, client, tools, flushWorkspace, idGen = () => randomUUID(), holdLatch } = opts;
   const hostTools = tools.filter((t) => t.executesIn === 'host');
 
   const entries: Record<string, Tool> = {};
@@ -75,7 +77,7 @@ export function buildHostTools(opts: BuildHostToolsOptions): Record<string, Tool
       description: descriptor.description ?? '',
       inputSchema: jsonSchema(descriptor.inputSchema as JSONSchema7),
       execute: wrapWithPolicy(
-        { policy, name: descriptor.name, isBuiltin: false },
+        { policy, name: descriptor.name, isBuiltin: false, holdLatch },
         async (input) => {
           // Flush the live workspace BEFORE forwarding when this host tool
           // declares it reads workspace files the agent may have written

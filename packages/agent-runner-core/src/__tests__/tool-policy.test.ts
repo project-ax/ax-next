@@ -104,6 +104,17 @@ describe('createToolPolicy', () => {
 
     expect(verdict.decision).toBe('deny');
   });
+
+  it('maps a hold response to a hold verdict, not a deny', async () => {
+    const client = fakeClient({
+      verdict: 'hold',
+      decisionId: 'dec_7',
+      note: 'Ask first',
+    });
+    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+    const v = await policy.preToolUse('gmail_send', { to: 'a@b.c' }, 'tu_1');
+    expect(v).toEqual({ decision: 'hold', decisionId: 'dec_7', note: 'Ask first' });
+  });
 });
 
 describe('ToolPolicy.postToolUse', () => {

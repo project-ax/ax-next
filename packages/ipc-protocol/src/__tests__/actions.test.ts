@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { WorkspaceCommitNotifyResponseSchema } from '../actions.js';
+import { WorkspaceCommitNotifyResponseSchema, ToolPreCallResponseSchema } from '../actions.js';
 
 describe('WorkspaceCommitNotifyResponseSchema', () => {
   it('accepted:false carries only the actualParent re-sync signal (no inline bundle)', () => {
@@ -52,5 +52,53 @@ describe('WorkspaceCommitNotifyResponse recoverable', () => {
       reason: 'baseline drift',
     });
     expect(r.success).toBe(true);
+  });
+});
+
+describe('ToolPreCallResponseSchema hold arm', () => {
+  it('accepts a hold verdict', () => {
+    const parsed = ToolPreCallResponseSchema.parse({
+      verdict: 'hold',
+      decisionId: 'dec_1',
+      note: 'I stopped before sending this. Check the queue.',
+    });
+    expect(parsed).toEqual({
+      verdict: 'hold',
+      decisionId: 'dec_1',
+      note: 'I stopped before sending this. Check the queue.',
+    });
+  });
+
+  it('rejects a hold with no decision id', () => {
+    expect(() =>
+      ToolPreCallResponseSchema.parse({ verdict: 'hold', decisionId: '', note: 'n' }),
+    ).toThrow();
+  });
+
+  it('rejects a hold with an empty note', () => {
+    // A hold with nothing to say is worse than a deny: the model is told to
+    // stop and relay, and there is nothing to relay.
+    expect(() =>
+      ToolPreCallResponseSchema.parse({ verdict: 'hold', decisionId: 'dec_1', note: '' }),
+    ).toThrow();
+  });
+
+  it('rejects a note past the 2000-character ceiling', () => {
+    // `hold()` in @ax/core clamps to this same ceiling. This test is the wire
+    // boundary for anything that does NOT go through that constructor.
+    expect(() =>
+      ToolPreCallResponseSchema.parse({
+        verdict: 'hold',
+        decisionId: 'dec_1',
+        note: 'x'.repeat(2001),
+      }),
+    ).toThrow();
+    expect(() =>
+      ToolPreCallResponseSchema.parse({
+        verdict: 'hold',
+        decisionId: 'dec_1',
+        note: 'x'.repeat(2000),
+      }),
+    ).not.toThrow();
   });
 });

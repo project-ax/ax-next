@@ -21,7 +21,7 @@
 // ---------------------------------------------------------------------------
 
 import { jsonSchema, tool, type Tool } from 'ai';
-import type { ToolPolicy } from '@ax/agent-runner-core';
+import type { HoldLatch, ToolPolicy } from '@ax/agent-runner-core';
 import type { DiscoveredSkill } from '../skills-index.js';
 import { wrapWithPolicy } from './policy-wrap.js';
 
@@ -43,6 +43,8 @@ export const MCP_UNAVAILABLE_NOTE =
 export interface BuildSkillToolOptions {
   policy: ToolPolicy;
   skills: DiscoveredSkill[];
+  /** The one latch shared by every tool this turn — see WrapWithPolicyOptions. */
+  holdLatch: HoldLatch;
 }
 
 /**
@@ -61,7 +63,7 @@ export function buildSkillTool(
   const available = opts.skills.map((s) => s.name).join(', ');
 
   const execute = wrapWithPolicy(
-    { policy: opts.policy, name: SKILL_TOOL_NAME, isBuiltin: true },
+    { policy: opts.policy, name: SKILL_TOOL_NAME, isBuiltin: true, holdLatch: opts.holdLatch },
     async (input) => {
       const requested = typeof input['name'] === 'string' ? input['name'].trim() : '';
       const found = lookup(opts.skills, requested);

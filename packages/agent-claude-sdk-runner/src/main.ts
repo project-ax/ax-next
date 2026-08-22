@@ -19,6 +19,8 @@ import {
   buildTtyHintEnv,
   commitTrace,
   buildPythonVenvEnv,
+  createHoldLatch,
+  drainHoldLatch,
   runRunner,
   scaffoldSdkProjectsSymlink,
   type Loop,
@@ -159,6 +161,12 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
       //     (Task 9), so we deliberately skip plain-text user blocks here.
       let turnContentBlocks: ContentBlock[] = [];
       let turnToolResultBlocks: ContentBlock[] = [];
+      // One latch for the whole loop, tripped by the PreToolUse hook on a
+      // hold and drained per turn at the `result` boundary below. The SDK's
+      // own `continue:false` is what actually stops the loop — unlike the
+      // aisdk runner, where the latch IS the stop mechanism. Here it only
+      // records WHICH decision stopped the turn.
+      const holdLatch = createHoldLatch();
       // The uuid of the turn's MOST-RECENT assistant message (SDKAssistantMessage
       // .uuid). The SDK assigns this id to the jsonl line it writes for the
       // message. The per-turn commit waits for THIS uuid to land in the jsonl
@@ -513,6 +521,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                     recognizedRoots: [sdkHome, env.ephemeralRoot].filter(
                       (r): r is string => r !== undefined,
                     ),
+                    holdLatch,
                   }),
                 ],
               },
@@ -770,6 +779,20 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           const toolResultBlocks = turnToolResultBlocks;
           turnContentBlocks = [];
           turnToolResultBlocks = [];
+          // Read-then-clear, per turn: a hold must not bleed into the next
+          // turn, and the read has to happen first (that ordering is what
+          // `drainHoldLatch` exists to make un-mis-writable). This is the one
+          // place this runner consults the latch — `continue:false` is what
+          // actually stopped the loop, so without this the turn would end
+          // indistinguishably from a finished reply and nothing would record
+          // that a human is now the blocker. TASK-225 replaces the log with
+          // the Decision correlation.
+          const heldDecisionId = drainHoldLatch(holdLatch);
+          if (heldDecisionId !== null) {
+            process.stderr.write(
+              `runner: turn ended by a pre-call hold (decision ${heldDecisionId})\n`,
+            );
+          }
           const lastAssistantUuid = turnLastAssistantUuid;
           await ctx.endTurn({
             contentBlocks,

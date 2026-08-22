@@ -42,7 +42,7 @@ import type { Dirent, Stats } from 'node:fs';
 import { mkdir, open, readdir, readFile, stat, writeFile } from 'node:fs/promises';
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { jsonSchema, tool, type Tool } from 'ai';
-import type { ToolPolicy } from '@ax/agent-runner-core';
+import type { HoldLatch, ToolPolicy } from '@ax/agent-runner-core';
 import { wrapWithPolicy } from './policy-wrap.js';
 
 // --- Bounds ----------------------------------------------------------------
@@ -138,6 +138,8 @@ export interface BuiltinToolsOptions {
   homeDir: string;
   /** Env for the Bash child — already composed by the caller (proxy + venv + PATH). */
   env: Record<string, string>;
+  /** The one latch shared by every tool this turn — see WrapWithPolicyOptions. */
+  holdLatch: HoldLatch;
 }
 
 /**
@@ -152,7 +154,7 @@ export function buildBuiltinTools(
     name: string,
     run: (input: Record<string, unknown>, ctx: { abortSignal?: AbortSignal | undefined }) => Promise<string>,
   ): ReturnType<typeof wrapWithPolicy> =>
-    wrapWithPolicy({ policy: opts.policy, name, isBuiltin: true }, (input, ctx) =>
+    wrapWithPolicy({ policy: opts.policy, name, isBuiltin: true, holdLatch: opts.holdLatch }, (input, ctx) =>
       run(input, { abortSignal: ctx.abortSignal }),
     );
 

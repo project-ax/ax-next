@@ -16,7 +16,11 @@ import { buildEgressBlockNote } from './egress-note.js';
 
 export type PreToolVerdict =
   | { decision: 'deny'; reason: string }
-  | { decision: 'allow'; updatedInput?: Record<string, unknown> };
+  | { decision: 'allow'; updatedInput?: Record<string, unknown> }
+  // The host recorded this call and a human must see it. NOT a deny: the
+  // runner must surface `note` and end the turn, never retry or improvise a
+  // different route to the same effect.
+  | { decision: 'hold'; decisionId: string; note: string };
 
 export interface ToolPolicy {
   preToolUse(
@@ -76,6 +80,14 @@ export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
 
       if (parsed.verdict === 'reject') {
         return { decision: 'deny', reason: parsed.reason };
+      }
+
+      if (parsed.verdict === 'hold') {
+        return {
+          decision: 'hold',
+          decisionId: parsed.decisionId,
+          note: parsed.note,
+        };
       }
 
       const hostModified =

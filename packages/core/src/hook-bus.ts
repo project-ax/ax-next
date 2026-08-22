@@ -200,7 +200,17 @@ export class HookBus {
         continue;
       }
       if (isRejection(result)) {
-        return { rejected: true, reason: result.reason, source: result.source ?? sub.plugin };
+        // SPREAD the subscriber's rejection; do not rebuild it. This used to
+        // construct a fresh `{rejected, reason, source}`, which silently
+        // dropped every field a SUBTYPE of `Rejection` added — invisible while
+        // `Rejection` was the only shape anyone returned, and a real bug the
+        // moment one carried payload. `Hold` (see errors.ts) carries `.hold`,
+        // and losing it meant the one handler that reads it (`tool.pre-call`)
+        // never saw a hold: every one would have flattened into a plain deny,
+        // the exact outcome `hold` exists to prevent. Spreading fixes that for
+        // Hold AND for whatever subtype comes next. Only `source` is
+        // defaulted, to attribute an unattributed veto to its subscriber.
+        return { ...result, source: result.source ?? sub.plugin };
       }
       if (result !== undefined) {
         current = result as P;

@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { z } from 'zod';
 import { HookBus } from '../hook-bus.js';
-import { isRejection, PluginError, reject } from '../errors.js';
+import { isRejection, isHold, PluginError, reject, hold } from '../errors.js';
 import { makeAgentContext, createLogger } from '../context.js';
 import type { FireResult } from '../types.js';
 
@@ -140,6 +140,22 @@ describe('HookBus — subscriber hooks', () => {
     expect(bCalled).toBe(false);
     expect(res).toMatchObject({ rejected: true, reason: 'blocked', source: 'a' });
     expect(isRejection(res)).toBe(true);
+  });
+
+  it('preserves the .hold field through a hold rejection (not flattened to a plain deny)', async () => {
+    const bus = new HookBus();
+    bus.subscribe('h', 'a', async () =>
+      hold({ decisionId: 'dec_1', note: 'Held for approval' }),
+    );
+    const res = await bus.fire('h', silentCtx(), {});
+    expect(isRejection(res)).toBe(true);
+    expect(isHold(res)).toBe(true);
+    expect(res).toMatchObject({
+      rejected: true,
+      reason: 'Held for approval',
+      source: 'a',
+      hold: { decisionId: 'dec_1', note: 'Held for approval' },
+    });
   });
 
   it('subscriber throw is isolated: logged, chain continues', async () => {
