@@ -162,6 +162,10 @@ export function stripHumanTierChanges<T extends { path: string }>(
  * parsed. What the user typed is what gets injected.
  */
 export function normalizeRulesBody(body: string): string {
-  const trimmed = body.replace(/\s+$/u, '');
+  // `trimEnd()`, not `/\s+$/` — the regex backtracks polynomially on input that
+  // is mostly trailing whitespace, and this body is attacker-shaped in the only
+  // sense that matters: a person types it into a box. `trimEnd` is linear and
+  // strips the same set.
+  const trimmed = body.trimEnd();
   return trimmed.length === 0 ? '' : `${trimmed}\n`;
 }
