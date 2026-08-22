@@ -14,6 +14,7 @@ import {
   FireNowOutputSchema,
   ListOutputSchema,
   RecentFiresOutputSchema,
+  RecentFiresForAgentOutputSchema,
   RoutinesDeleteDefaultOutputSchema,
   RoutinesGetDefaultOutputSchema,
   RoutinesListDefaultsOutputSchema,
@@ -29,6 +30,8 @@ import type {
   ListOutput,
   RecentFiresInput,
   RecentFiresOutput,
+  RecentFiresForAgentInput,
+  RecentFiresForAgentOutput,
   RoutinesListDefaultsInput,
   RoutinesListDefaultsOutput,
   RoutinesGetDefaultInput,
@@ -71,6 +74,7 @@ export function createRoutinesPlugin(
         'routines:fire-now',
         'routines:list',
         'routines:recent-fires',
+        'routines:recent-fires-for-agent',
         'routines:list-defaults',
         'routines:get-default',
         'routines:upsert-default',
@@ -240,6 +244,15 @@ export function createRoutinesPlugin(
           return { fires };
         },
         { returns: RecentFiresOutputSchema },
+      );
+
+      bus.registerService<RecentFiresForAgentInput, RecentFiresForAgentOutput>(
+        'routines:recent-fires-for-agent', PLUGIN_NAME,
+        async (_ctx, input) => {
+          const fires = await localStore.recentFiresForAgent(input);
+          return { fires };
+        },
+        { returns: RecentFiresForAgentOutputSchema },
       );
 
       bus.registerService<FireNowInput, FireNowOutput>(

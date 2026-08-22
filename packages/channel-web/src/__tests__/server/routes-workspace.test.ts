@@ -9,7 +9,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import {
+  ACTIVITY_AGENT_ID_QUERY_KEY,
+  ACTIVITY_BEFORE_QUERY_KEY,
+  ACTIVITY_LIMIT_QUERY_KEY,
+  ACTIVITY_MAX_LIMIT,
   CONVERSATION_ID_QUERY_KEY,
+  fireToActivityEvent,
   makeWorkspaceHandlers,
 } from '../../server/routes-workspace.js';
 import type { RouteRequest, RouteResponse } from '../../server/routes-chat.js';
@@ -91,11 +96,53 @@ function conv(over: Partial<ConvRow> & { conversationId: string }): ConvRow {
   };
 }
 
+/**
+ * The @ax/routines `FireRow`, as the hook actually hands it over: `firedAt` is
+ * a real `Date` in-process, NOT an ISO string. A test that seeded strings here
+ * would agree with a route that is broken against the live registrar.
+ */
+interface FireRowLike {
+  id: number;
+  agentId: string;
+  path: string;
+  firedAt: Date;
+  triggerSource: 'tick' | 'webhook' | 'manual';
+  conversationId: string | null;
+  status: 'ok' | 'silenced' | 'error';
+  error: string | null;
+  renderedPrompt: string | null;
+}
+
+function fire(o: {
+  id: number;
+  firedAt: string;
+  agentId?: string;
+  path?: string;
+  status?: FireRowLike['status'];
+  error?: string | null;
+  triggerSource?: FireRowLike['triggerSource'];
+}): FireRowLike {
+  return {
+    id: o.id,
+    agentId: o.agentId ?? 'a1',
+    path: o.path ?? 'daily.md',
+    firedAt: new Date(o.firedAt),
+    triggerSource: o.triggerSource ?? 'tick',
+    conversationId: null,
+    status: o.status ?? 'ok',
+    error: o.error ?? null,
+    renderedPrompt: null,
+  };
+}
+
 describe('channel-web agent-workspace BFF', () => {
   let bus: HookBus;
   let conversations: ConvRow[];
   let aliveSessions: Set<string>;
   let turnsByConversation: Map<string, unknown[]>;
+  let fires: FireRowLike[];
+  let routinesByAgent: Map<string, Array<{ path: string; name: string }>>;
+  let firesReadFailure: Map<string, Error>;
 
   function registerAuth(user: { id: string; isAdmin: boolean } | null): void {
     bus.registerService('auth:require-user', 'auth', async () => {
@@ -110,11 +157,55 @@ describe('channel-web agent-workspace BFF', () => {
     });
   }
 
+  /**
+   * The two routines reads the Activity feed makes. Registered per-test rather
+   * than in `beforeEach` so a deployment WITHOUT @ax/routines is testable — an
+   * absent registrar is a real configuration, not an error case.
+   */
+  function registerRoutines(): void {
+    bus.registerService(
+      'routines:recent-fires-for-agent',
+      'routines',
+      async (_c, i: unknown) => {
+        const { agentId, limit, before } = i as {
+          agentId: string;
+          limit?: number;
+          before?: Date;
+        };
+        const boom = firesReadFailure.get(agentId);
+        if (boom !== undefined) throw boom;
+        const rows = fires
+          .filter((f) => f.agentId === agentId)
+          .filter(
+            (f) => before === undefined || f.firedAt.getTime() < before.getTime(),
+          )
+          .sort((a, b) => b.firedAt.getTime() - a.firedAt.getTime())
+          .slice(0, limit ?? 20);
+        return { fires: rows };
+      },
+    );
+    bus.registerService('routines:list', 'routines', async (_c, i: unknown) => {
+      const { agentId } = i as { agentId?: string };
+      // Reproduces the real hazard: `routines:list` with NO agentId returns
+      // EVERY agent's routines. A route that forgets to scope the call would
+      // silently label one agent's fires with another agent's routine names,
+      // so this mock makes that mistake fail here instead of in production.
+      const routines: Array<{ path: string; name: string }> = [];
+      for (const [id, rows] of routinesByAgent.entries()) {
+        if (agentId === undefined || id === agentId) routines.push(...rows);
+      }
+      return { routines };
+    });
+  }
+
   beforeEach(() => {
     bus = new HookBus();
     conversations = [];
     aliveSessions = new Set<string>();
     turnsByConversation = new Map<string, unknown[]>();
+    fires = [];
+    routinesByAgent = new Map<string, Array<{ path: string; name: string }>>();
+    firesReadFailure = new Map<string, Error>();
 
     bus.registerService('agents:list-for-user', 'agents', async () => ({
       agents: [
@@ -229,14 +320,18 @@ describe('channel-web agent-workspace BFF', () => {
     ]);
   });
 
-  it('returns honest empty decisions + activity (AW-10 / AW-11 own those)', async () => {
+  it('returns honest empty decisions and NO activity key at all', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
     await h.state(mkReq(), res);
-    const body = captured.body as { decisions: unknown[]; activity: unknown[] };
+    const body = captured.body as Record<string, unknown>;
     expect(body.decisions).toEqual([]);
-    expect(body.activity).toEqual([]);
+    // The feed has exactly ONE producer — GET /api/workspace/activity. A
+    // second field here would be a second source of truth for one collection
+    // (invariant 4), and the one that shipped was always `[]`, which renders
+    // as "nothing has happened" over an agent that has been running for weeks.
+    expect(Object.keys(body)).not.toContain('activity');
   });
 
   it('reports working for an agent with a live session, resting otherwise', async () => {
@@ -753,5 +848,407 @@ describe('channel-web agent-workspace BFF', () => {
     const s = mkRes();
     await h.state(mkReq(), s.res);
     expect(seen.every((c) => c.userId === 'u1')).toBe(true);
+  });
+
+  // -------------------------------------------------------------------------
+  // GET /api/workspace/activity — the ONE collection behind the feed.
+  // -------------------------------------------------------------------------
+
+  function activityReq(query: Record<string, string> = {}): RouteRequest {
+    const req = mkReq();
+    // LOWERCASED on purpose: http-server projects every query key through
+    // `k.toLowerCase()`, so a camelCase key never reaches a handler. Writing
+    // camelCase here would make this test agree with a handler that is broken
+    // in production. Proving the SPELLING is right needs a real URL, which is
+    // what `routes-workspace-query.test.ts` boots a server to do.
+    Object.assign(req.query as Record<string, string>, query);
+    return req;
+  }
+
+  interface ActivityBody {
+    events: Array<Record<string, unknown>>;
+    nextBefore: string | null;
+  }
+
+  it('401s an unauthenticated caller on /activity', async () => {
+    registerAuth(null);
+    registerRoutines();
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    expect(captured.statusCode).toBe(401);
+    expect(captured.body).toEqual({ error: 'unauthenticated' });
+  });
+
+  it('404s (not 403) an agentid the caller cannot reach', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    fires = [
+      fire({ id: 1, agentId: 'someone-elses', firedAt: '2026-08-20T10:00:00.000Z' }),
+    ];
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(
+      activityReq({ [ACTIVITY_AGENT_ID_QUERY_KEY]: 'someone-elses' }),
+      res,
+    );
+    expect(captured.statusCode).toBe(404);
+    expect(captured.body).toEqual({ error: 'agent-not-found' });
+  });
+
+  it('renders a silenced fire as nothing at all', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    routinesByAgent.set('a1', [
+      { path: 'daily.md', name: 'Morning digest' },
+      { path: 'watch.md', name: 'Inbox watch' },
+    ]);
+    fires = [
+      fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z', status: 'ok' }),
+      // A silenced fire produced NOTHING. A row claiming otherwise would be a
+      // receipt for an event that never happened (design H1).
+      fire({
+        id: 2,
+        firedAt: '2026-08-20T11:00:00.000Z',
+        status: 'silenced',
+        path: 'watch.md',
+      }),
+      fire({
+        id: 3,
+        firedAt: '2026-08-20T10:00:00.000Z',
+        status: 'error',
+        error: 'imap said no',
+      }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    expect(captured.statusCode).toBe(200);
+    const body = captured.body as ActivityBody;
+    expect(body.events.map((e) => e.kind)).toEqual(['done', 'stopped']);
+    expect(JSON.stringify(body)).not.toContain('Inbox watch');
+  });
+
+  it('renders an errored fire as a stopped row carrying the real error', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    fires = [
+      fire({
+        id: 1,
+        firedAt: '2026-08-20T10:00:00.000Z',
+        status: 'error',
+        error: 'gmail refused the connection',
+      }),
+      // No error text was recorded. We say so in plain words rather than
+      // inventing a reason or shipping an empty string that renders as a
+      // blank line under a row that says something went wrong.
+      fire({
+        id: 2,
+        firedAt: '2026-08-20T09:00:00.000Z',
+        path: 'sweep.md',
+        status: 'error',
+        error: null,
+      }),
+      // A recorded-but-blank error is the SAME absence as a null one. Passing
+      // it through renders a failure row with nothing underneath it.
+      fire({
+        id: 3,
+        firedAt: '2026-08-20T08:00:00.000Z',
+        path: 'sweep.md',
+        status: 'error',
+        error: '   ',
+      }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    const body = captured.body as ActivityBody;
+    expect(body.events[0]).toMatchObject({
+      kind: 'stopped',
+      text: 'Morning digest',
+      detail: 'gmail refused the connection',
+    });
+    // The routine is gone but its fires survive — the path is a real
+    // identifier, so it stands in for the name rather than a guessed label.
+    expect(body.events[1]).toMatchObject({ kind: 'stopped', text: 'sweep.md' });
+    expect(body.events[1]!.detail).toBe('It failed, and no reason was recorded.');
+    expect(body.events[2]!.detail).toBe('It failed, and no reason was recorded.');
+  });
+
+  it('carries an ISO instant and no server-computed day/time', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    fires = [fire({ id: 1, firedAt: '2026-08-20T16:12:00.000Z' })];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    const body = captured.body as ActivityBody;
+    const row = body.events[0]!;
+    expect(row.at).toBe('2026-08-20T16:12:00.000Z');
+    // "Today" and "4:12 PM" are rendering decisions, and a server that makes
+    // them files every reader outside its own timezone under the wrong day.
+    expect(Object.keys(row)).not.toContain('day');
+    expect(Object.keys(row)).not.toContain('time');
+    expect(row.tag).toBe('Scheduled');
+    expect(row.decisionId).toBeNull();
+  });
+
+  it('never puts the fire row id on the wire', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    // A distinctive id: if it leaks anywhere in the body, this finds it.
+    fires = [fire({ id: 987654321, firedAt: '2026-08-20T10:00:00.000Z' })];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    // FireRow.id is a BIGSERIAL — storage vocabulary. Shipping it would invite
+    // a client to paginate on it, which no other fire-history backend could
+    // reproduce. The cursor is the instant instead.
+    expect(JSON.stringify(captured.body)).not.toContain('987654321');
+    expect((captured.body as ActivityBody).events[0]!.id).toBe(
+      'a1|daily.md|2026-08-20T10:00:00.000Z',
+    );
+  });
+
+  it('merges both agents\' fires into one time-ordered collection', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a2', [{ path: 'scan.md', name: 'Paper scan' }]);
+    fires = [
+      fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T09:00:00.000Z' }),
+      fire({
+        id: 2,
+        agentId: 'a2',
+        path: 'scan.md',
+        firedAt: '2026-08-20T11:00:00.000Z',
+      }),
+      fire({ id: 3, agentId: 'a1', firedAt: '2026-08-20T13:00:00.000Z' }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    const body = captured.body as ActivityBody;
+    expect(body.events.map((e) => e.agentId)).toEqual(['a1', 'a2', 'a1']);
+    // Each row is named by ITS OWN agent's routines. `routines:list` with no
+    // agentId returns every agent's rows, so a mixed-up name here would mean
+    // the fan-out forgot to scope the call.
+    expect(body.events.map((e) => e.text)).toEqual([
+      'Morning digest',
+      'Paper scan',
+      'Morning digest',
+    ]);
+  });
+
+  it('scopes the feed to one agent when agentid names one', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    routinesByAgent.set('a2', [{ path: 'scan.md', name: 'Paper scan' }]);
+    fires = [
+      fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T09:00:00.000Z' }),
+      fire({
+        id: 2,
+        agentId: 'a2',
+        path: 'scan.md',
+        firedAt: '2026-08-20T11:00:00.000Z',
+      }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq({ [ACTIVITY_AGENT_ID_QUERY_KEY]: 'a2' }), res);
+    expect((captured.body as ActivityBody).events.map((e) => e.agentId)).toEqual([
+      'a2',
+    ]);
+  });
+
+  it('returns a nextBefore even when every fire on the page was silenced', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    fires = [
+      fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z', status: 'silenced' }),
+      fire({ id: 2, firedAt: '2026-08-20T11:00:00.000Z', status: 'silenced' }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq({ [ACTIVITY_LIMIT_QUERY_KEY]: '2' }), res);
+    const body = captured.body as ActivityBody;
+    // Zero rows rendered, but there may well be history behind them. A client
+    // paginating on the last RENDERED row would have nothing to page from and
+    // would dead-end on a page that is empty by construction.
+    expect(body.events).toEqual([]);
+    expect(body.nextBefore).toBe('2026-08-20T11:00:00.000Z');
+  });
+
+  it('pages back through the cursor it handed out', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    fires = [
+      fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z' }),
+      fire({ id: 2, firedAt: '2026-08-20T11:00:00.000Z' }),
+      fire({ id: 3, firedAt: '2026-08-20T10:00:00.000Z' }),
+    ];
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const first = mkRes();
+    await h.activity(activityReq({ [ACTIVITY_LIMIT_QUERY_KEY]: '2' }), first.res);
+    const page1 = first.captured.body as ActivityBody;
+    expect(page1.events.map((e) => e.at)).toEqual([
+      '2026-08-20T12:00:00.000Z',
+      '2026-08-20T11:00:00.000Z',
+    ]);
+    expect(page1.nextBefore).toBe('2026-08-20T11:00:00.000Z');
+
+    const second = mkRes();
+    await h.activity(
+      activityReq({
+        [ACTIVITY_LIMIT_QUERY_KEY]: '2',
+        [ACTIVITY_BEFORE_QUERY_KEY]: page1.nextBefore!,
+      }),
+      second.res,
+    );
+    const page2 = second.captured.body as ActivityBody;
+    expect(page2.events.map((e) => e.at)).toEqual(['2026-08-20T10:00:00.000Z']);
+    // The roster came back short of the page size, so every agent handed over
+    // everything it had — there is genuinely nothing older to ask for.
+    expect(page2.nextBefore).toBeNull();
+  });
+
+  it('400s an unparseable before cursor rather than serving page one again', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    fires = [fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z' })];
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(
+      activityReq({ [ACTIVITY_BEFORE_QUERY_KEY]: 'last tuesday' }),
+      res,
+    );
+    // Silently ignoring the cursor would restart the feed at the top, which
+    // reads as an infinite scroll that loops forever and never says why.
+    expect(captured.statusCode).toBe(400);
+    expect(captured.body).toEqual({ error: 'invalid-before' });
+  });
+
+  it('clamps limit to 1..ACTIVITY_MAX_LIMIT', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    const asked: number[] = [];
+    bus.registerService(
+      'routines:recent-fires-for-agent',
+      'routines',
+      async (_c, i: unknown) => {
+        asked.push((i as { limit: number }).limit);
+        return { fires: [] };
+      },
+    );
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    for (const raw of ['0', '-5', '99999', 'not a number']) {
+      const { res } = mkRes();
+      await h.activity(activityReq({ [ACTIVITY_LIMIT_QUERY_KEY]: raw }), res);
+    }
+    expect(asked.length).toBeGreaterThan(0);
+    expect(asked.every((n) => n >= 1 && n <= ACTIVITY_MAX_LIMIT)).toBe(true);
+  });
+
+  it('degrades one unreadable agent to nothing instead of 500ing the page', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    routinesByAgent.set('a1', [{ path: 'daily.md', name: 'Morning digest' }]);
+    fires = [fire({ id: 1, agentId: 'a1', firedAt: '2026-08-20T12:00:00.000Z' })];
+    firesReadFailure.set('a2', new Error('connection terminated unexpectedly'));
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    // One agent's hiccup must not take out a roster-wide page. It is logged,
+    // and that agent contributes nothing — the same degradation the roster's
+    // conversation listing already makes.
+    expect(captured.statusCode).toBe(200);
+    expect((captured.body as ActivityBody).events.map((e) => e.agentId)).toEqual([
+      'a1',
+    ]);
+  });
+
+  it('does NOT swallow the fault when the feed is scoped to that one agent', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    registerRoutines();
+    firesReadFailure.set('a1', new Error('connection terminated unexpectedly'));
+
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res } = mkRes();
+    // Scoped, that agent's history IS the content. Rendering the failure as an
+    // empty feed would claim the agent has done nothing, on top of a fault
+    // nobody was told about (design H7).
+    await expect(
+      h.activity(activityReq({ [ACTIVITY_AGENT_ID_QUERY_KEY]: 'a1' }), res),
+    ).rejects.toThrow(/connection terminated/);
+  });
+
+  it('returns an honest empty feed when nothing records routine history', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    // No routines plugin in this deployment. There genuinely is no history, so
+    // empty is the true answer — not a 503 and not a fabricated row.
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    expect(captured.statusCode).toBe(200);
+    expect(captured.body).toEqual({ events: [], nextBefore: null });
+  });
+
+  it('still shows the fires when routines:list is unavailable', async () => {
+    registerAuth({ id: 'u1', isAdmin: false });
+    bus.registerService('routines:recent-fires-for-agent', 'routines', async () => ({
+      fires: [fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z' })],
+    }));
+    const h = makeWorkspaceHandlers({ bus, initCtx });
+    const { res, captured } = mkRes();
+    await h.activity(activityReq(), res);
+    // No authored name to be had — the path is the honest stand-in. Dropping
+    // the row would claim the agent did nothing, which is the bigger lie.
+    expect((captured.body as ActivityBody).events[0]!.text).toBe('daily.md');
+  });
+
+  // --- the pure mapping ----------------------------------------------------
+
+  it('labels the trigger in plain words, and says nothing for one it cannot name', () => {
+    const names = new Map([['daily.md', 'Morning digest']]);
+    const at = '2026-08-20T12:00:00.000Z';
+    expect(
+      fireToActivityEvent(fire({ id: 1, firedAt: at, triggerSource: 'tick' }), names)
+        ?.tag,
+    ).toBe('Scheduled');
+    expect(
+      fireToActivityEvent(fire({ id: 2, firedAt: at, triggerSource: 'webhook' }), names)
+        ?.tag,
+    ).toBe('Webhook');
+    expect(
+      fireToActivityEvent(fire({ id: 3, firedAt: at, triggerSource: 'manual' }), names)
+        ?.tag,
+    ).toBe('Run by hand');
+    // A source we have no sentence for renders as no tag at all. Printing the
+    // raw token would put backend vocabulary in front of a human.
+    const alien = { ...fire({ id: 4, firedAt: at }), triggerSource: 'quantum' as never };
+    expect(fireToActivityEvent(alien, names)?.tag).toBeNull();
+  });
+
+  it('drops a fire whose instant cannot be read', () => {
+    const broken = fire({ id: 1, firedAt: '2026-08-20T12:00:00.000Z' });
+    (broken as { firedAt: unknown }).firedAt = 'the other day';
+    // A row we cannot place in time would be bucketed under an arbitrary date,
+    // which is itself a claim about WHEN something happened. There is no
+    // honest rendering of it, so there is no row.
+    expect(fireToActivityEvent(broken, new Map())).toBeNull();
   });
 });

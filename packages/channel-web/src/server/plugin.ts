@@ -51,7 +51,9 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     any of them.
 //     TASK-230 adds no hard call: the agent-workspace routes read through
 //     conversations:list / conversations:get (already declared) plus the
-//     optional session:is-alive.
+//     optional session:is-alive. TASK-231 adds no hard call either: the
+//     activity feed reads the optional routines:recent-fires-for-agent and
+//     routines:list, and degrades to an empty feed without them.
 //   - subscribes: chat:stream-chunk (fills the buffer + per-connection
 //     filter), chat:phase (single-slot phase memory + per-connection
 //     filter), chat:turn-end (host-side eviction so the buffer doesn't
@@ -206,6 +208,23 @@ export function createChannelWebServerPlugin(
           hook: 'session:is-alive',
           degradation:
             'every agent in the workspace roster reads as resting (liveness cannot be probed, and a guess would be worse than a blank)',
+        },
+        {
+          // TASK-231 — GET /api/workspace/activity is the one event feed, and
+          // routine fires are what it is made of today. A preset without
+          // @ax/routines records no routine history at all, so an empty feed
+          // there is the true answer rather than a swallowed read.
+          hook: 'routines:recent-fires-for-agent',
+          degradation:
+            'the workspace Activity feed is empty (this deployment keeps no routine fire history)',
+        },
+        {
+          // Same feed: this supplies the routine's AUTHORED name for each row.
+          // Without it the rows are labelled with their routine path — a worse
+          // label, but never a wrong one, and never a dropped row.
+          hook: 'routines:list',
+          degradation:
+            'Activity rows are labelled with the routine path instead of its authored name',
         },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],

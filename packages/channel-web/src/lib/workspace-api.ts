@@ -55,8 +55,21 @@ export interface BoardState {
   agents: WorkspaceAgent[];
   /** Always `[]` until `@ax/decisions` lands (AW-11). */
   decisions: Decision[];
-  /** Always `[]` until anything records what agents do (AW-14). */
-  activity: ActivityEvent[];
+}
+
+/** One page of the activity collection — see `workspaceApi.activity`. */
+export interface ActivityPage {
+  events: ActivityEvent[];
+  /** Pass back as `before` to fetch the next page. `null` = nothing older. */
+  nextBefore: string | null;
+}
+
+export interface ActivityQuery {
+  /** Scope to one agent's rows. Omitted = every agent. */
+  agentId?: string;
+  /** ISO instant — fetch rows older than this. Omitted = the newest page. */
+  before?: string;
+  limit?: number;
 }
 
 export interface AgentDetail {
@@ -168,6 +181,20 @@ export const workspaceApi = {
    * buys nothing.
    */
   route: (_text: string) => req<RouteProposal>('/route', { method: 'POST' }),
+
+  /**
+   * One page of the activity collection (design §7). `agentId` scopes to one
+   * agent's rows; `before` pages backward through older ones; `nextBefore` in
+   * the response is `null` exactly when there is nothing older to page into.
+   */
+  activity: (q: ActivityQuery = {}) => {
+    const params = new URLSearchParams();
+    if (q.agentId !== undefined) params.set('agentId', q.agentId);
+    if (q.before !== undefined) params.set('before', q.before);
+    if (q.limit !== undefined) params.set('limit', String(q.limit));
+    const qs = params.toString();
+    return req<ActivityPage>(`/activity${qs ? `?${qs}` : ''}`);
+  },
 
   /**
    * Start a turn on the SHIPPED chat wire. Returns the conversation the turn

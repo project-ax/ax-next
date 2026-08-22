@@ -98,6 +98,23 @@ describe('the summary line', () => {
   });
 });
 
+describe('doneToday', () => {
+  it('renders in the summary line when positive', () => {
+    renderToday({ doneToday: 3 });
+    expect(screen.getByText(/3 done today/)).toBeTruthy();
+  });
+
+  it('renders nothing when zero', () => {
+    const { container } = renderToday({ doneToday: 0 });
+    expect(container.textContent).not.toMatch(/done today/);
+  });
+
+  it('renders nothing when absent', () => {
+    const { container } = renderToday();
+    expect(container.textContent).not.toMatch(/done today/);
+  });
+});
+
 describe('the empty queue', () => {
   it('orients a first-timer instead of repeating the headline', () => {
     renderToday();

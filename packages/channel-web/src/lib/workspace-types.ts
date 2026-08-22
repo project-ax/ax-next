@@ -179,14 +179,35 @@ export type ActivityKind =
   | 'working'
   | 'stopped';
 
+/**
+ * One row of the single event feed (design §7).
+ *
+ * There is deliberately no `day` and no `time`. The prototype carried both as
+ * SERVER-COMPUTED display strings — "Today", "4:12 PM" — which are only right
+ * for a reader sitting in the server's timezone. Everyone else got a row
+ * confidently filed under the wrong day. The row now carries the instant and
+ * nothing else; the CLIENT buckets by its own local date and formats its own
+ * clock. A display string is a rendering decision, and rendering decisions do
+ * not belong on the wire.
+ *
+ * `id` is a composite of the things that identify the event on any backend
+ * (agent, routine path, instant). It is NOT the fire's row id: that is a
+ * `BIGSERIAL`, i.e. storage vocabulary, and it never crosses this wire.
+ */
 export interface ActivityEvent {
   id: string;
   agentId: string;
-  /** Bucket label — the mock keeps these coarse ("Today", "Yesterday"). */
-  day: string;
+  /** ISO instant. The client buckets by LOCAL date — see above. */
+  at: string;
   text: string;
-  time: string;
   kind: ActivityKind;
+  /**
+   * The second line: the real error on a `stopped` row, `null` otherwise.
+   * Carried separately from `text` so a failure keeps the same scannable
+   * subject line as a success, and so nothing has to be assembled by string
+   * surgery to say what went wrong.
+   */
+  detail: string | null;
   tag: string | null;
   /** Links a receipt back to the decision that produced it. */
   decisionId: string | null;
