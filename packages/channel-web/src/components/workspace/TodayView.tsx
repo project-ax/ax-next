@@ -223,69 +223,72 @@ export function TodayView({
         </Alert>
       )}
 
-      <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
-        {filter === 'needs' ? (
-          <>
-            {open.map((d) => renderRow(d, true))}
-            {justResolved.map((d) => renderRow(d, false))}
-            {readable && open.length === 0 && justResolved.length === 0 && (
-              /*
-                The headline already said the queue is empty. Saying it again
-                two inches lower tells a first-timer nothing; what they do not
-                know is what this list is FOR, and this is the one moment they
-                have the attention to read it.
+      {/*
+        The card is the list. With no list to show — the read failed and the
+        alert above has already said so — an empty bordered box adds a second
+        place for the eye to land and nothing for it to read there. The
+        "Working" filter is unaffected: it is built from the roster, which
+        loaded.
+      */}
+      {(readable || filter === 'working') && (
+        <div className="overflow-hidden rounded-lg border border-border bg-card shadow-sm">
+          {filter === 'needs' ? (
+            <>
+              {open.map((d) => renderRow(d, true))}
+              {justResolved.map((d) => renderRow(d, false))}
+              {readable && open.length === 0 && justResolved.length === 0 && (
+                /*
+                  The headline already said the queue is empty. Saying it again
+                  two inches lower tells a first-timer nothing; what they do not
+                  know is what this list is FOR, and this is the one moment they
+                  have the attention to read it.
 
-                Held back while the FIRST read is still in flight: "nothing is
-                waiting" flashing up before the rows arrive is the same claim,
-                just briefer.
-              */
-              <div className="px-5 py-10 text-center text-[13.5px] text-muted-foreground">
-                {loading
-                  ? 'Checking what is waiting on you…'
-                  : 'When an agent hits something it wants your OK on, it’ll wait for you here.'}
-              </div>
-            )}
-            {!readable && (
-              <div className="px-5 py-10 text-center text-[13.5px] text-muted-foreground">
-                Nothing has been decided without you — we just could not read the
-                list back.
-              </div>
-            )}
-          </>
-        ) : working.length === 0 ? (
-          <div className="px-5 py-10 text-center text-[13.5px] text-muted-foreground">
-            Nobody is mid-task right now.
-          </div>
-        ) : (
-          working.map((a) => (
-            <button
-              key={a.id}
-              type="button"
-              onClick={() => onOpenAgent(a.id)}
-              className="flex w-full items-center gap-3 border-b border-rule-soft px-5 py-3.5 text-left last:border-b-0"
-            >
-              <StateDot state="working" />
-              <span className="shrink-0 text-[13px] font-medium">{a.name}</span>
-              {/*
-                `now` is null until something real produces the activity line
-                (AW-8/AW-14). The name and the state dot already say "working";
-                a placeholder phrase here would read as a report.
-              */}
-              <span className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground">
-                {a.now ?? ''}
-              </span>
-              <span className="shrink-0 text-[12.5px] text-muted-foreground">
-                {a.counter
-                  ? `${a.counter.done} of ${a.counter.total} ${a.counter.unit}`
-                  : ''}
-              </span>
-              <span className="shrink-0 text-[12.5px] text-muted-foreground">
-                <Elapsed since={a.startedAt} />
-              </span>
-            </button>
-          ))
-        )}
-      </div>
+                  Held back while the FIRST read is still in flight: "nothing is
+                  waiting" flashing up before the rows arrive is the same claim,
+                  just briefer.
+                */
+                <div className="px-5 py-10 text-center text-[13.5px] text-muted-foreground">
+                  {loading
+                    ? 'Checking what is waiting on you…'
+                    : 'When an agent hits something it wants your OK on, it’ll wait for you here.'}
+                </div>
+              )}
+            </>
+          ) : working.length === 0 ? (
+            <div className="px-5 py-10 text-center text-[13.5px] text-muted-foreground">
+              Nobody is mid-task right now.
+            </div>
+          ) : (
+            working.map((a) => (
+              <button
+                key={a.id}
+                type="button"
+                onClick={() => onOpenAgent(a.id)}
+                className="flex w-full items-center gap-3 border-b border-rule-soft px-5 py-3.5 text-left last:border-b-0"
+              >
+                <StateDot state="working" />
+                <span className="shrink-0 text-[13px] font-medium">{a.name}</span>
+                {/*
+                  `now` is null until something real produces the activity line
+                  (AW-8/AW-14). The name and the state dot already say "working";
+                  a placeholder phrase here would read as a report.
+                */}
+                <span className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground">
+                  {a.now ?? ''}
+                </span>
+                <span className="shrink-0 text-[12.5px] text-muted-foreground">
+                  {a.counter
+                    ? `${a.counter.done} of ${a.counter.total} ${a.counter.unit}`
+                    : ''}
+                </span>
+                <span className="shrink-0 text-[12.5px] text-muted-foreground">
+                  <Elapsed since={a.startedAt} />
+                </span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
 
       <div className="flex items-center gap-3 px-1 pt-3.5 text-[12.5px] text-muted-foreground">
         {hint !== null && <span>{hint}</span>}
