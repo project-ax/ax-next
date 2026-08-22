@@ -94,21 +94,24 @@ export const DECISION_READ_FAILED =
   'We could not load what is waiting on you. Nothing has been decided without you — we just could not read the list back right now.';
 
 /**
- * How long an open decision has left, in plain words — or `null` when saying
- * so would be noise or a guess.
- *
- * Doing nothing is a choice here, and it is the one whose consequence is
- * invisible: an expired decision cannot be approved at all, only raised again.
- * A first-timer has no way to know that from a row that just sits there.
- *
- * Shown only inside the last day, because a deadline three days out is not a
- * fact anybody needs while triaging, and a line on every row is a line nobody
- * reads. Returns `null` for an unparseable date and for one already past —
- * "expires in -2 hours" is worse than silence, and a row that is somehow open
- * past its own expiry is a state we should not narrate.
+ * How close an expiry has to be before the row mentions it. A deadline three
+ * days out is not a fact anybody needs while triaging, and a line on every row
+ * is a line nobody reads.
  */
 export const EXPIRY_HINT_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * How long an open decision has left, in plain words — or `null` when saying so
+ * would be noise or a guess.
+ *
+ * Doing nothing is a choice here, and it is the one whose consequence is
+ * invisible: an expired decision cannot be approved at all, only asked again. A
+ * first-timer has no way to know that from a row that just sits there.
+ *
+ * Returns `null` for an unparseable date and for one already past — "expires in
+ * -2 hours" is worse than silence, and a row that is somehow open past its own
+ * expiry is a state we should not narrate.
+ */
 export function expiresSoonNote(d: Decision, now: number = Date.now()): string | null {
   const at = Date.parse(d.expiresAt);
   if (Number.isNaN(at)) return null;
