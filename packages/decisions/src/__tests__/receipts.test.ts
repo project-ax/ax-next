@@ -14,7 +14,7 @@
 import { describe, expect, it } from 'vitest';
 import { receiptFor, RECEIPT_STATUSES } from '../receipts.js';
 import { FAILED_RECEIPT, PENDING_AGENT_RECEIPT } from '../templates.js';
-import type { Decision, DecisionStatus } from '../types.js';
+import { DecisionStatusSchema, type Decision, type DecisionStatus } from '../types.js';
 
 const T_RESOLVED = '2026-08-20T09:00:00.000Z';
 const T_RAN = '2026-08-20T09:00:10.000Z';
@@ -138,25 +138,56 @@ describe('receiptFor — the states that have no receipt', () => {
 });
 
 describe('RECEIPT_STATUSES — the coarse filter the store pushes into SQL', () => {
-  it('covers every status receiptFor can answer for, and nothing else', () => {
-    const all: DecisionStatus[] = [
-      'pending',
-      'executed',
-      'approved-pending-agent',
-      'dismissed',
-      'stale',
-      'expired',
-      'failed',
-    ];
-    // The store's query and this function are two spellings of one rule, in
-    // two languages. This is the assertion that keeps them from drifting: any
-    // status the mapper can answer for MUST be selectable, or the row silently
-    // never reaches a reader.
-    const answerable = all.filter(
+  /**
+   * DERIVED FROM THE ENUM, never hand-listed, and that is the whole value of
+   * this test.
+   *
+   * It used to walk a literal array of the seven statuses — which meant a new
+   * `DecisionStatus` added to the union and wired into `receiptFor` but left
+   * out of that array sailed straight through the guard whose entire job was
+   * to catch exactly that. A hand-maintained list of everything is not a
+   * check on everything; it is a check on whatever somebody remembered.
+   *
+   * `DecisionStatusSchema` is a `z.enum`, so `.options` is the union itself
+   * and cannot fall behind it: the schema has to carry every value or the
+   * `returns` validation strips resolved rows off the bus, which the canary
+   * catches loudly. Deriving from it makes THAT the single list.
+   */
+  const ALL_STATUSES = DecisionStatusSchema.options as readonly DecisionStatus[];
+
+  it('walks every status the union declares', () => {
+    // Guard against the roll-call quietly emptying out — a `filter` over an
+    // empty array produces an empty array, which would make the assertion
+    // below a green light over nothing.
+    expect(ALL_STATUSES.length).toBeGreaterThanOrEqual(7);
+  });
+
+  /**
+   * WHAT THIS CATCHES, precisely — because the obvious reading of it is wrong
+   * and a comment that overstates a guard is worse than no guard.
+   *
+   * While the `RECEIPT_STATUSES` gate is the FIRST statement in `receiptFor`,
+   * the two sides of this assertion cannot disagree by construction: a status
+   * outside the list is refused at the gate, and a status inside it always
+   * answers for at least the marker-set variant below. Probing it by adding a
+   * status to the list, and to the union, leaves it green — correctly.
+   *
+   * What it does catch is the gate MOVING or GOING: a branch added above it,
+   * or the line deleted. That is not hypothetical — it is the bug this file
+   * found the first time it ran, where a `dismissed` row carrying a spent
+   * authorisation read back as a success while the SQL query excluded it, and
+   * the two halves of the rule silently disagreed.
+   *
+   * The full status x marker cross-check against real Postgres lives in
+   * `store.test.ts`, where both spellings can actually be run against each
+   * other. This is its cheap hermetic sentinel, not a replacement for it.
+   */
+  it('answers for exactly the statuses it lists, so the gate cannot drift', () => {
+    const answerable = ALL_STATUSES.filter(
       (status) =>
         receiptFor(base({ status, replayedAt: T_RAN })) !== null ||
         receiptFor(base({ status })) !== null,
     );
-    expect([...RECEIPT_STATUSES].sort()).toEqual(answerable.sort());
+    expect([...RECEIPT_STATUSES].sort()).toEqual([...answerable].sort());
   });
 });

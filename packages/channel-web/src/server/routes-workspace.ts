@@ -595,9 +595,18 @@ export interface ApproveResponse {
   path: ExecutionPath | null;
   /**
    * The host executor's sanitised failure detail — AUDIT-TRAIL data, not a
-   * receipt. The renderer shows the AUTHORED failure line and this decision's
-   * id; it never shows this string, because a host tool's message can quote
-   * model-authored input back at us.
+   * receipt. The approval card never shows it: `toWireDecision` drops
+   * `replayError` from the wire `Decision` outright, and the card renders the
+   * AUTHORED failure line and this decision's id instead, because a host
+   * tool's message can quote model-authored input back at us.
+   *
+   * ONE SURFACE DOES SHOW IT, and this comment used to deny that in general
+   * terms. Since TASK-279 the Activity feed carries the same string as a
+   * receipt row's SECOND line (`receiptToActivityEvent`), fenced, beside the
+   * authored sentence and never as it — the same slot a failed routine fire's
+   * own error already occupies. "Never the receipt" is the rule and it still
+   * holds everywhere; "never rendered" was never the rule, and stating it that
+   * broadly would have the next reader filing the feed as a bug.
    */
   error: string | null;
   pendingUntil: string | null;
@@ -2749,13 +2758,37 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         `null` when this page did not fill: every source handed back everything
         it had, so there is nothing older to ask for.
 
-        The cursor is EXCLUSIVE on BOTH sources (`fired_at < before`,
-        `resolved_at < before`), so two rows sharing a millisecond exactly
-        across a page boundary would cost the second one. Fires are
-        seconds-apart events written by a tick loop and decisions are answered
-        by a human pressing a button; a shared millisecond is not a case we
-        have, and the alternative — an inclusive cursor — repeats a row on every
-        single page turn, which a reader actually notices.
+        The cursor is EXCLUSIVE on both sources (`fired_at < before`,
+        `resolved_at < before`), and that carries a real cost: two rows sharing
+        an instant to the millisecond, straddling a page boundary, LOSE the
+        second one. It is not on this page, and `< before` excludes it from the
+        next — permanently, and with nothing on the surface to say a row went
+        missing.
+
+        THE OLD JUSTIFICATION FOR ACCEPTING THAT NO LONGER APPLIES, and it is
+        worth saying so rather than quietly editing it out. This comment used
+        to argue the collision was "not a case we have" because fires are
+        seconds-apart events written by a tick loop. That reasoned about ONE
+        stream. There are now two independent ones, and a tick-loop fire
+        colliding to the millisecond with the instant a human pressed Approve
+        is materially more plausible than two fires colliding with each other:
+        nothing co-ordinates those two clocks, and neither knows the other
+        exists.
+
+        The store's `decision_id` tie-break does NOT rescue it. That makes the
+        ORDER deterministic — which is what keeps a page boundary from
+        shuffling — but the cursor carries an instant and only an instant, so
+        both same-millisecond rows fall on the same side of `<` regardless of
+        how they were ordered.
+
+        Still exclusive, and now that is a judgement rather than a claim about
+        frequency. The fix that would actually close it is a COMPOSITE
+        `(instant, id)` cursor — "older than this instant, or at this instant
+        with a smaller id" — which means a signature change on both hooks and a
+        matching predicate in both backends, to buy a collision we have never
+        observed. An inclusive cursor is not the alternative: it repeats a row
+        on every single page turn, which a reader does notice. If this is ever
+        seen in the wild, the composite cursor is the answer.
 
         `Number.isFinite`, not `!Number.isNaN`: `sortableStamp` floors an
         unreadable instant at -Infinity so it sorts last, and `new
