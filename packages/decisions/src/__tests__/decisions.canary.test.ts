@@ -16,6 +16,7 @@ import {
   type ToolPolicyPluginOptions,
 } from '@ax/tool-policy';
 import {
+  createLogger,
   isHold,
   isRejection,
   PluginError,
@@ -51,7 +52,14 @@ const harnesses: TestHarness[] = [];
 async function boot(
   decisions: DecisionsPluginOptions = {},
   policy?: ToolPolicyPluginOptions,
-  channels: Record<string, Channel> = DEFAULT_CHANNELS,
+  channels: Record<string, Channel> = liveChannels(),
+  /**
+   * Makes `session:queue-work` refuse, the way the real one does when the
+   * reaper tore the session down after we had already looked and found it
+   * alive. That millisecond is the only gap the liveness read cannot close, so
+   * it needs a way to be reproduced.
+   */
+  queue: { throws?: string } = {},
 ): Promise<TestHarness & { delivered: DeliveredEntry[] }> {
   const delivered: DeliveredEntry[] = [];
   const h = await createTestHarness({
@@ -89,6 +97,13 @@ async function boot(
         };
       },
       'session:queue-work': async (_c, input) => {
+        if (queue.throws !== undefined) {
+          throw new PluginError({
+            code: 'unknown-session',
+            plugin: 'stub-sessions',
+            message: queue.throws,
+          });
+        }
         delivered.push(input as DeliveredEntry);
         return { cursor: delivered.length - 1 };
       },
@@ -125,11 +140,18 @@ interface DeliveredEntry {
  * `conv-web` carries an `activeSessionId` because that is what ATTENDED means
  * mechanically — the runner is parked on that session's inbox waiting for the
  * answer.
+ *
+ * A FUNCTION rather than a shared constant: a session ENDING between the hold
+ * and the approval is the whole of TASK-277, and the only way to say that to
+ * the stub is to mutate the map it reads. One shared object would carry that
+ * mutation into every other test in the file.
  */
-const DEFAULT_CHANNELS: Record<string, Channel> = {
-  'conv-web': { origin: 'web', activeSessionId: 'sess-warm', userId: 'u1' },
-  'conv-tick': { origin: 'routine', activeSessionId: null, userId: 'u1' },
-};
+function liveChannels(): Record<string, Channel> {
+  return {
+    'conv-web': { origin: 'web', activeSessionId: 'sess-warm', userId: 'u1' },
+    'conv-tick': { origin: 'routine', activeSessionId: null, userId: 'u1' },
+  };
+}
 
 /**
  * No rule in `BUILTIN_RULES` is marked `irreversible` — deliberately, and the
@@ -1057,6 +1079,13 @@ describe('decisions canary — attendance and delivery', () => {
     // The HOST ran nothing — that is the whole point of the attended path.
     expect(out.executed).toBe(false);
     expect(executor.calls).toEqual([]);
+    // And it left no host-replay trace behind. TASK-277 made this branch
+    // conditional on a LIVE session lookup, so this pair is now also the guard
+    // against over-correcting: a lookup that failed to see the warm session
+    // would send this decision down the host path and stamp `replayedAt`.
+    const row = await readDecision(h, ctx, id);
+    expect(row.status).toBe('executed');
+    expect(row.replayedAt).toBeNull();
 
     // The delivery landed on the session the runner is parked on.
     expect(h.delivered).toHaveLength(1);
@@ -1114,47 +1143,178 @@ describe('decisions canary — attendance and delivery', () => {
     expect(h.delivered).toEqual([]);
   });
 
-  it('an attended decision whose session is gone degrades into the unattended path', async () => {
-    // The design's no-special-case claim (§3.3). The person walked away, the
-    // idle floor expired, the runner exited — and then they came back and
-    // clicked Approve.
+  it('an attended decision whose session has since ended is replayed by the host', async () => {
+    // TASK-277, THE REGRESSION. `attendance` is captured at hold time and
+    // answers which CHANNEL opened the conversation — a web thread is
+    // `attended` forever, including hours after its runner was reaped. Routing
+    // the approval on that alone took the attended branch anyway: the row was
+    // claimed `executed`, no replay was scheduled, the delivery found no
+    // session and logged, and the call never happened. The person's yes was
+    // silently consumed.
     //
-    // Nothing branches on that. The delivery is a no-op, and the STANDING
-    // AUTHORISATION is what carries the approval forward: the next time the
-    // agent runs and makes the same call, the gate lets it through exactly
-    // once. That is precisely what an unattended decision does.
-    //
-    // NOTE on what is deliberately NOT asserted: the row does not go back to
-    // `pending`. AW-5's `claimForApproval` moved it to `executed` in the same
-    // write that won the claim, and re-opening a decision a person has already
-    // answered would be a lie about what they did.
-    const h = await boot({}, undefined, {
-      'conv-web': { origin: 'web', activeSessionId: null, userId: 'u1' },
-      'conv-tick': { origin: 'routine', activeSessionId: null, userId: 'u1' },
-    });
+    // What proves the fix is the EXECUTOR's call count. The row's status
+    // reading `executed` is precisely the false signal this test exists to
+    // catch, so it is never the evidence.
+    const channels = liveChannels();
+    const h = await boot({}, undefined, channels);
     const executor = recordExecutor(h, HOLD_RULE.match.tool);
     const ctx = userCtx(h);
     const id = await holdAndId(h, ctx, CALL);
+    // Held while somebody was watching…
     expect((await readDecision(h, ctx, id)).attendance).toBe('attended');
 
-    const out = await approve(h, ctx, id);
-    expect(out.executed).toBe(false);
-    expect(out.path).toBe('agent-executes');
-    // Nothing was delivered, and the host did not step in either.
-    expect(h.delivered).toEqual([]);
-    expect(executor.calls).toEqual([]);
+    // …and then they walked away. The idle reaper took the session down long
+    // before they came back and clicked Approve.
+    channels['conv-web']!.activeSessionId = null;
 
-    // The authorisation SURVIVED. A later run of the agent — a fresh session,
-    // any session — makes the same call and it goes through, once.
+    const out = await approve(h, ctx, id);
+
+    // The host made the call — once, byte for byte, exactly what was on the
+    // card.
+    expect(executor.calls).toEqual([CALL]);
+    expect(out.executed).toBe(true);
+    expect(out.path).toBe('host-replays');
+    expect(out.error).toBeNull();
+    // Nothing was queued: there was no session to queue onto.
+    expect(h.delivered).toEqual([]);
+
+    const after = await readDecision(h, ctx, id);
+    expect(after.replayedAt).not.toBeNull();
+    // The host decided it was making this call BEFORE it claimed the row, so
+    // the row closed to the agent's gate and to undo in the same statement. A
+    // decision that only discovers the host is replaying it afterwards leaves a
+    // window wide enough for a byte-identical agent call to spend the same yes.
+    expect(after.replayClaimedAt).not.toBeNull();
+    // The consume belongs to the agent-retry path. The host ran it, so nothing
+    // is left standing at the gate…
+    expect(after.consumedAt).toBeNull();
+    // …and a later agent run cannot cash the same yes in a second time.
     const later = h.ctx({
       agentId: 'a1',
       userId: 'u1',
       conversationId: 'conv-web',
       sessionId: 's-much-later',
     });
-    expect((await h.bus.fire('tool:pre-call', later, CALL)).rejected).toBe(false);
     expect(isHold(await h.bus.fire('tool:pre-call', later, CALL))).toBe(true);
-    expect((await readDecision(h, ctx, id)).consumedAt).not.toBeNull();
+    expect(executor.calls).toHaveLength(1);
+  });
+
+  it('an idle-expired decision the host cannot replay parks, rather than reading executed', async () => {
+    // The same dead session, but for `skill_propose` — `executesIn: 'sandbox'`,
+    // so there is no `tool:execute:skill_propose` hook and no sandbox left to
+    // run in. Nothing can run here whichever branch is taken, which is exactly
+    // why the STATUS is the thing to assert: `executed` would be a claim that
+    // the call went out, and `approved-pending-agent` is the honest answer that
+    // the approval stands and the agent will perform it next time it runs.
+    const channels = liveChannels();
+    const h = await boot({}, undefined, channels);
+    const receipts = collectReceipts(h);
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, SANDBOX_CALL);
+    expect((await readDecision(h, ctx, id)).attendance).toBe('attended');
+    channels['conv-web']!.activeSessionId = null;
+
+    const out = await approve(h, ctx, id);
+    expect(out.decision!.status).toBe('approved-pending-agent');
+    expect(out.executed).toBe(false);
+    expect(out.path).toBeNull();
+    expect(h.delivered).toEqual([]);
+
+    // And the receipt promises the future instead of claiming a send.
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.outcome).toBe('pending-agent');
+    expect(receipts[0]!.receipt).toContain('the next time it runs');
+  });
+
+  it('an idle-expired irreversible decision gets the undo window it was owed', async () => {
+    // An irreversible call raised on a web thread never used to get a grace
+    // period at all: the attended branch hands the decision straight back to
+    // the agent, and nothing can hold a warm agent back for ten seconds. Once
+    // the session is gone that reasoning no longer applies — the HOST is
+    // making this call, so the host can wait.
+    let clock = new Date('2026-08-21T09:00:00.000Z');
+    const channels = liveChannels();
+    const h = await boot({ now: () => clock }, { rules: IRREVERSIBLE_RULES }, channels);
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+    channels['conv-web']!.activeSessionId = null;
+
+    const out = await approve(h, ctx, id);
+    expect(out.path).toBe('host-replays');
+    expect(out.executed).toBe(false);
+    expect(out.pendingUntil).not.toBeNull();
+    expect(executor.calls).toEqual([]);
+
+    const stored = await readDecision(h, ctx, id);
+    expect(stored.replayDueAt).toBe(out.pendingUntil);
+    expect(Date.parse(stored.replayDueAt!) - Date.parse(stored.resolvedAt!)).toBe(
+      UNDO_WINDOW_MS,
+    );
+
+    // "Not yet" and "never" look identical until the window closes, so the
+    // sweep is the half of this test that carries it.
+    clock = new Date(clock.getTime() + UNDO_WINDOW_MS + 1);
+    const swept = await h.bus.call<unknown, DecisionsSweepOutput>(
+      'decisions:sweep',
+      ctx,
+      {},
+    );
+    expect(swept.replayed).toBe(1);
+    expect(executor.calls).toEqual([CALL]);
+  });
+
+  it('a session that dies between the liveness read and the queue falls back to the replay', async () => {
+    // The millisecond the live read cannot close. The session is there when we
+    // look and gone when we queue, so `session:queue-work` answers
+    // `unknown-session`. The agent was NOT told, so the host must not assume it
+    // was — and the fallback has to be loud, because a discarded delivery
+    // result is what TASK-277 was in the first place.
+    const lines: string[] = [];
+    const h = await boot({}, undefined, liveChannels(), { throws: 'unknown-session' });
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const id = await holdAndId(h, userCtx(h), CALL);
+    const approver = h.ctx({
+      agentId: 'a1',
+      userId: 'u1',
+      conversationId: 'conv-web',
+      sessionId: 's1',
+      logger: createLogger({ reqId: 'req-approve', writer: (line) => lines.push(line) }),
+    });
+
+    const out = await approve(h, approver, id);
+    expect(executor.calls).toEqual([CALL]);
+    expect(out.executed).toBe(true);
+    expect(out.path).toBe('host-replays');
+    expect(lines.join('\n')).toContain('decision_delivery_fell_back_to_replay');
+
+    const after = await readDecision(h, userCtx(h), id);
+    expect(after.replayedAt).not.toBeNull();
+    // One approval, one execution: the fallback replay spent the yes.
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
+    expect(executor.calls).toHaveLength(1);
+  });
+
+  it('an attended decision whose conversation cannot be read at approve time still runs', async () => {
+    // The fail-safe, on the approve side this time. The conversation was
+    // deleted, or the store is unreachable, or this host has no conversations
+    // plugin at all — `conversationChannel` answers null for every one of them,
+    // and null is not "somebody is there". Unattended is the recoverable
+    // reading: the host replays and the call still happens.
+    const channels = liveChannels();
+    const h = await boot({}, undefined, channels);
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+    expect((await readDecision(h, ctx, id)).attendance).toBe('attended');
+
+    delete channels['conv-web'];
+
+    const out = await approve(h, ctx, id);
+    expect(executor.calls).toEqual([CALL]);
+    expect(out.executed).toBe(true);
+    expect(out.path).toBe('host-replays');
+    expect(h.delivered).toEqual([]);
   });
 });
 

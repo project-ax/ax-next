@@ -7,7 +7,11 @@ import {
   type ToolCall,
 } from '@ax/core';
 import type { Kysely } from 'kysely';
-import { createAttendanceResolver, CONVERSATION_METADATA_HOOK } from './attendance.js';
+import {
+  conversationChannel,
+  createAttendanceResolver,
+  CONVERSATION_METADATA_HOOK,
+} from './attendance.js';
 import { deliverResolution, SESSION_QUEUE_HOOK } from './delivery.js';
 import { runDueReplays, sweepExpired } from './expiry.js';
 import { auditFreshnessPairs, checkFreshness } from './freshness.js';
@@ -405,14 +409,53 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           //                                window closes.
           //   unattended, reversible    -> claim now, replay now.
           //
+          // ATTENDED IS TWO QUESTIONS AND THE ROW ANSWERS ONLY ONE (TASK-277).
+          // `decision.attendance` is captured at hold time and says which
+          // CHANNEL opened the conversation — so a web thread is `attended`
+          // forever, including hours after its runner was reaped. Routing on
+          // the row alone sent an idle-expired approval down the attended
+          // branch anyway: the row was claimed `executed`, no replay was
+          // scheduled, the delivery found no session and logged, and the call
+          // never happened. The person's yes was consumed in silence.
+          //
+          // So the ROW says whether an agent could ever be there and the LIVE
+          // READ below says whether one is, and both have to hold. The read is
+          // gated on the stored value, so a routine-origin row costs nothing
+          // extra — it can never be attended.
+          //
+          // `conversationChannel` answers null for every "we do not know": no
+          // conversations store, an unreadable row, a throw. Null means
+          // unattended, which means the host replays, which means THE CALL
+          // STILL HAPPENS — the recoverable one of the two mistakes. See the
+          // asymmetry at the top of `attendance.ts`.
+          //
+          // Under the DECISION's ctx, never the approving request's, for the
+          // same reason the freshness read above uses one:
+          // `conversations:get-metadata` pre-filters on `(conversationId,
+          // userId)`, so an approver whose ctx named a different user would
+          // read back nothing and be told, wrongly but plausibly, that the
+          // session is gone.
+          //
           // The undo window is honoured on the HOST path only, and that is a
           // real limit rather than an oversight: on the attended path the
           // still-warm agent re-issues its own call the moment the gate lets it
           // through, and nothing here can hold the agent back for ten seconds.
           // An irreversible rule whose calls need the grace period must be
-          // raised unattended. Recorded rather than papered over.
+          // raised unattended. Recorded rather than papered over — though a web
+          // decision whose session has since died is on the host path now, and
+          // does get its grace period.
           // -----------------------------------------------------------------
-          const attended = current.attendance === 'attended';
+          const liveSessionId =
+            current.attendance === 'attended'
+              ? ((
+                  await conversationChannel(
+                    bus,
+                    replayContext(current),
+                    current.conversationId,
+                  )
+                )?.activeSessionId ?? null)
+              : null;
+          const attended = liveSessionId !== null;
           const hasExecutor = bus.hasService(`tool:execute:${current.call.name}`);
           const parked = !attended && !hasExecutor;
           const deferred = !attended && hasExecutor && current.irreversible;
@@ -461,14 +504,50 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           if (attended) {
             // AW-6: hand it to the warm agent as its next inbox message. It
             // re-issues its own held call and the fingerprint gate authorises
-            // that exactly once.
-            //
-            // Nothing has happened yet, so nothing claims it has: no receipt is
-            // fired here. And nothing branches on the delivery outcome — if the
-            // session is already gone the standing authorisation simply waits on
-            // the row for the agent's next run, which is the unattended
-            // behaviour arrived at with no special case (design §3.3).
-            await deliverResolution({ bus, ctx, decision: claimed, outcome: 'approved' });
+            // that exactly once. Nothing has happened yet, so nothing claims it
+            // has: no receipt is fired here.
+            const delivery = await deliverResolution({
+              bus,
+              ctx,
+              decision: claimed,
+              outcome: 'approved',
+            });
+            if (!delivery.delivered) {
+              // The liveness read closed the hours-wide hole; this is the
+              // milliseconds-wide one left over — the session ended between the
+              // lookup and the queue, or the queue refused outright. All three
+              // reasons mean the same thing, and it is the thing that matters:
+              // the agent was NOT told. So the host does not get to assume it
+              // was and leave a standing yes on a row nobody may ever come back
+              // for. It takes the replay itself.
+              //
+              // Double execution is not reachable from here: `settleReplay`
+              // stamps `replayed_at`, which takes the row out of the
+              // standing-authorisation set, so a late agent re-issue finds no
+              // yes to cash in. The row does go un-`replayClaimedAt`-stamped
+              // for the few milliseconds this takes — but that is only a window
+              // at all if a warm agent exists, and a warm agent is precisely
+              // what we have just failed to find.
+              ctx.logger.warn('decision_delivery_fell_back_to_replay', {
+                plugin: PLUGIN_NAME,
+                decisionId,
+                reason: delivery.reason,
+              });
+              const replayed = await settleReplay({
+                store: store!,
+                bus,
+                ctx: replayContext(claimed),
+                decision: claimed,
+                now,
+              });
+              return {
+                decision: (await store!.get(decisionId, ownerUserId)) ?? claimed,
+                executed: replayed.executed,
+                path: replayed.path,
+                error: replayed.error,
+                pendingUntil: null,
+              };
+            }
             return {
               decision: claimed,
               executed: false,

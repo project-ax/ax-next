@@ -13,11 +13,16 @@
  * narration, never its correctness.
  *
  * WHICH IS WHY IT NEVER THROWS. If the session is gone — the person took a
- * minute, the idle reaper won, the pod was rescheduled — there is nothing to
- * deliver to and nothing to fix. The standing authorisation is still on the
- * row, so the agent picks it up the next time it runs, which is precisely the
- * unattended behaviour. That degradation is the design's no-special-case claim
- * (design §3.3), and it is a `return`, not a branch.
+ * minute, the idle reaper won, the pod was rescheduled — there is nothing here
+ * to deliver to and nothing here to fix. Every outcome comes back as a VALUE.
+ *
+ * THE CALLER MUST READ THAT VALUE (TASK-277). A failed delivery is not a
+ * cosmetic loss of narration; it is evidence that the agent this decision was
+ * routed to does not exist. `decisions:approve` reads it that way and takes the
+ * host replay itself, because the standing authorisation on the row only helps
+ * if the agent ever runs again — and for a conversation whose session has
+ * already expired, it does not. Discarding this return is exactly how an
+ * approval came to be consumed with nothing behind it.
  */
 import type { AgentContext, HookBus } from '@ax/core';
 import { conversationChannel } from './attendance.js';
