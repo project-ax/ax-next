@@ -210,7 +210,7 @@ export function useDecisionQueue(): DecisionQueue {
 
             Checked as an OBJECT, not just non-null, for parity with the two
             READ paths that `checkedRead` guards in `workspace-api.ts`. A
-            truthy non-record (`[]`, `42`, `"gone"`) passes a `!= null` test and
+            truthy non-record (`42`, `"gone"`) passes a `!= null` test and
             lands in state as a row nothing can render: `decisionOutcome`
             switches on `d.status`, has no `default`, and returns `undefined`
             for a status it does not know — while its declared type says
@@ -224,7 +224,13 @@ export function useDecisionQueue(): DecisionQueue {
           }
           applyServerRow(decision);
           setNotice(id, notice);
-        } catch {
+        } catch (err) {
+          // Quiet in the UI is not silent anywhere else. Both READ paths log
+          // their failure (`checkedRead`, and `InThreadApprovals`), and this is
+          // the one decision path that still discarded its cause entirely —
+          // now the busier of the two, since the card ships on `/`. The user
+          // gets the authored notice below; an operator gets the reason.
+          console.warn(`[decisions] the ${id} action did not reach the server`, err);
           // The row is untouched — we never changed it — so there is nothing to
           // roll back. What there IS, is a person who clicked a button and is
           // owed an answer.

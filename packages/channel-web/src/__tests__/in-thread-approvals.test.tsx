@@ -225,6 +225,31 @@ describe('InThreadApprovals', () => {
     expect(screen.queryByRole('region', { name: 'Waiting for your approval' })).toBeNull();
   });
 
+  /*
+    Review finding: the live region must not contain the Undo countdown.
+
+    `aria-live` used to sit on the whole cluster, which announced arrival — and
+    also announced every mutation inside it. A settled receipt inside its undo
+    window re-renders `Undo | Ns` once a SECOND off `useDecisionClock`, so a
+    screen-reader user got up to ten announcements per resolved decision and the
+    one that mattered was buried. The announcer is now a separate node holding
+    one stable sentence.
+  */
+  it('keeps the ticking undo countdown out of the live region', async () => {
+    serveDecisions([resolvedFixture('executed')]);
+    const { container } = render(<InThreadApprovals />);
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: /undo/i })).toBeInTheDocument(),
+    );
+
+    const live = container.querySelectorAll('[aria-live]');
+    expect(live).toHaveLength(1);
+    // The one live node holds a sentence, never a card and never a counter.
+    expect(live[0]!.querySelector('button')).toBeNull();
+    expect(live[0]!.textContent ?? '').not.toMatch(/\d+s/);
+  });
+
   it('announces a wait when something really is open', async () => {
     serveDecisions([decisionFixture()]);
     render(<InThreadApprovals />);

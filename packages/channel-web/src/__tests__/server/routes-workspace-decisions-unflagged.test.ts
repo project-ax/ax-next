@@ -92,7 +92,11 @@ describe('the decisions collection vs the workspace preview flag', () => {
     // Guards the degenerate pass: two empty arrays are also "equal", and would
     // mean the whole collection had vanished rather than been ungated.
     const off = decisionRoutes(await registeredRoutes(false));
-    expect(off.length).toBeGreaterThanOrEqual(4);
+    // Five today. Tight rather than loose on purpose: a route dropped from
+    // BOTH branches would satisfy the set-equality above and a `>= 4` floor,
+    // and quietly shrink the collection. `plugin.test.ts` pins each path's verb
+    // and reachability; this pins that none of them went missing.
+    expect(off.length).toBeGreaterThanOrEqual(5);
     expect(off).toContain('GET /api/workspace/decisions');
   });
 

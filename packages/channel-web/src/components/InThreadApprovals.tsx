@@ -114,9 +114,25 @@ export function InThreadApprovals() {
     <div
       role="region"
       aria-label={waiting ? 'Waiting for your approval' : 'Recent approvals'}
-      aria-live="polite"
       className="mb-3 flex flex-col gap-2"
     >
+      {/*
+        The announcer is a SEPARATE node, and deliberately not the cluster.
+
+        `aria-live` on the wrapper announced arrival, which is what we wanted —
+        but it also announced every mutation inside it, and a settled receipt
+        inside its undo window re-renders `Undo | Ns` once a SECOND off
+        `useDecisionClock`. That is up to ten spurious announcements per
+        resolved decision, which is worse than none: it buries the one that
+        mattered. A live region and a ticking countdown must not share a node.
+
+        So this holds one stable sentence that changes only when the answer to
+        "is something waiting" changes, and the cards below are announced by
+        nothing.
+      */}
+      <span className="sr-only" role="status" aria-live="polite">
+        {next !== null ? 'Your agent is waiting for your approval.' : ''}
+      </span>
       {settled.map((d) => (
         <ApprovalCard key={d.id} decision={d} {...cardProps(d.id)} />
       ))}

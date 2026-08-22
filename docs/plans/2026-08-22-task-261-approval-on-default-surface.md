@@ -6,20 +6,21 @@
 
 > **Amended after rebase.** This was written against a `main` where the decisions
 > collection was four routes. TASK-259 landed first and added a fifth,
-> `GET /api/workspace/decisions/:decisionId` (the undo-window re-read). Read every
-> "four decision routes" below as "the decisions collection" — the shipped rule is
-> that the *whole collection* mounts unconditionally, pinned as a property by
-> `routes-workspace-decisions-unflagged.test.ts` rather than as a count.
+> `GET /api/workspace/decisions/:decisionId` (the undo-window re-read), so the
+> counts below were rewritten to name the *collection* instead. The shipped rule
+> is that the whole collection mounts unconditionally, pinned as a property by
+> `routes-workspace-decisions-unflagged.test.ts` rather than as a count —
+> deliberately, so the next route added cannot quietly fall outside it.
 
 ## The problem, precisely
 
 `@ax/decisions` holds an outward-facing tool call inside `tool.pre-call` and writes a
-`Decision` row. The whole resolution path — the four `/api/workspace/decisions*` routes,
+`Decision` row. The whole resolution path — the `/api/workspace/decisions*` routes,
 the `useDecisionQueue` hook, `ApprovalCard`, the undo window — already ships. It is just
 **unreachable from the surface people actually use**:
 
 - `registerWorkspaceRoutes` mounts every `/api/workspace/*` route inside
-  `if (opts.agentWorkspacePreview)`. Flag off ⇒ the four decision routes are never
+  `if (opts.agentWorkspacePreview)`. Flag off ⇒ the decision routes are never
   registered ⇒ 404, not merely hidden.
 - `ApprovalCard` is rendered only by `AgentConversation`, which only `/workspace` mounts,
   which only renders when `features.agentWorkspacePreview` is true.
@@ -38,7 +39,7 @@ Per the requester's clarifications on the card (this is spec):
 1. **Render the shipped `ApprovalCard`, reused as-is** — approve / deny **and** the undo
    window. No second renderer, no reduced control.
 2. **The approval path mounts unconditionally.** `AX_AGENT_WORKSPACE_PREVIEW` keeps
-   gating `/workspace`; the four decision routes and the `/`-surface control do not
+   gating `/workspace`; the decisions collection and the `/`-surface control do not
    consult it.
 3. **One decision, one set of controls.** Both surfaces render the same component fed by
    the same `useDecisionQueue` hook against the same route. Nothing is forked.
@@ -86,7 +87,7 @@ replay to maintain.
 
 ## Tasks
 
-### T1 — unmount the flag from the four decision routes (server)
+### T1 — unmount the flag from the decisions collection (server)
 
 `packages/channel-web/src/server/routes-workspace.ts`, `registerWorkspaceRoutes`.
 
@@ -102,7 +103,7 @@ second `resolveAgentOr404`). Ungating widens *reachability*, not authority — a
 un-actionable hold is the security-relevant failure here, not the route.
 
 **Test** (`src/__tests__/server/`): register with `agentWorkspacePreview: false` and assert
-the four decision paths ARE registered while `/api/workspace/state` and
+the decision paths ARE registered while `/api/workspace/state` and
 `/api/workspace/activity` are NOT; and with the flag on, everything is.
 
 *Load-bearing at MVP?* Yes — without it the `/` control 404s on every default deployment.
@@ -201,7 +202,7 @@ no boundary review is required; the PR body says so and explains the ungating.
 | Decision | Rationale | Alternative rejected |
 |---|---|---|
 | Mount above the composer, not as a transcript part | `PermissionCard` precedent; `/workspace` also appends approvals at the end of the thread rather than interleaving | A real message part needs a decisionId↔toolCallId join the wire deliberately drops |
-| Ungate only the four decision routes | Card spec: the remedy ships unflagged, the preview surface stays gated. Smallest reachability widening (invariant 5) | Ungating all of `/api/workspace/*`; a second `/api/chat/decisions*` mount (two producers, invariant 4) |
+| Ungate only the decisions collection | Card spec: the remedy ships unflagged, the preview surface stays gated. Smallest reachability widening (invariant 5) | Ungating all of `/api/workspace/*`; a second `/api/chat/decisions*` mount (two producers, invariant 4) |
 | The SSE frame refreshes; the list route renders | The frame carries `{decisionId, summary}` only — a card built from it would be a second, worse copy of the row | Rendering from the frame payload |
 | Reuse `useDecisionQueue` verbatim | The decision machine has one client copy and it is that hook; TASK-259's undo fix lands inside it | A `/`-specific fetch hook — a second place to get an outcome wrong |
 | `ApprovalCard` stays in `components/workspace/` | It is one of four files in a cluster; moving it churns files two sibling cards are editing | Moving it to a neutral directory |
