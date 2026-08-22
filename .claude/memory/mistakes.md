@@ -258,3 +258,23 @@ owning packages' suites — per-package green means nothing here; (b) grep for *
 - `2026-08-21` (TASK-224/AW-3) — **`expect(array).toContain('substring')` is EXACT ELEMENT equality, not substring matching — the plan's own TDD tests would have failed against the plan's own implementation.** AW-3's plan supplied both the lint tests and the lint code; the tests asserted `toContain('must not start with "to"')` while the code pushed `'must not start with "to" — the clause is a bare infinitive'`. Pasting the plan verbatim yields a red suite for a reason that has nothing to do with the feature, and "fixing" it by trimming the error messages to match would strip the half of each message that tells the author what to do instead. Use `expect(errs).toEqual(expect.arrayContaining([expect.stringContaining(...)]))` when the array holds human-readable prose. **General rule: a plan's code is a draft, not a fixture — run it before assuming a red test means you mis-transcribed it.** Two other AW-3 plan artifacts were also wrong on contact: a `TOOL_IDENT` regex that required TWO underscores and so let every real single-underscore tool name (`web_search`, `request_capability`) through clean, and a seed `capability` clause ("ask you a multiple-choice question") that failed the very lint the same plan specified, because `ask` is a verdict word.
 
 - `2026-08-21` (TASK-224/AW-3) — **A whole-word check written as `padded.includes(` ${word} `)` is evaded by ordinary punctuation, and on a security gate that is a real hole.** The capability lint's verdict-word check space-padded the clause and probed for ` never `, which correctly avoids the "candelabra" ≠ "can" false positive AND silently lets `"never, ever delete anything"`, `"reply first-class post"` and `"it can/cannot run"` through — comma, hyphen and slash are not spaces. Filed under `allow`, the first renders as `✓ Can never, ever delete anything — on its own`, which is exactly the frame contradiction design §4.3.1 claims the authored/generated split makes *unexpressible*. Every one of the 14 seeded clauses was clean, so nothing in the suite went red; a reviewer found it by probing the regex directly. FIX: `new RegExp('\\b' + escaped + '\\b', 'i')` per word — `\b` treats every non-word character as a boundary. It now over-rejects a hyphenated "first-class", which is the correct direction to be wrong in. PREVENTION: **whenever "whole word" matters, use `\b`, never space-padding** — and when the thing being matched is a security claim, write the evasion cases (word next to `,` `-` `/` `(` ) as tests BEFORE trusting the check. Corollary: a lint whose only inputs are the clean rows you just authored proves nothing about what it rejects.
+
+## 2026-08-21 (TASK-227) — a host-initiated bus call under the wrong user reads as "nothing there"
+
+`deliverResolution` originally read the conversation under the APPROVING request's
+ctx. `decisions:approve` takes its `userId` from the INPUT, not from `ctx`, so the
+two are not guaranteed to name the same person — and `conversations:get-metadata`
+pre-filters on `(conversationId, userId)` and answers `not-found` for anyone else.
+
+The failure mode is what makes it worth writing down: the lookup returning nothing
+is **indistinguishable from "the session is gone"**, which is a legitimate,
+expected, silently-handled outcome on this path. The delivery would have been
+skipped on every approval, forever, with no error and no log that read as wrong.
+
+Every test passed the same user for both, so nothing caught it. The fix is the rule
+TASK-226 already wrote for the host replay — build the ctx from the DECISION
+(`replayContext(decision)`), never from the request that triggered the work. The
+general shape: **when a host-initiated bus call happens on someone's say-so, the
+say-so identifies WHO CLICKED, not WHOSE WORK IT IS.** And when the wrong identity
+degrades into a legitimate no-op rather than an error, the test has to use two
+different users or it proves nothing — vacuity-check it by reverting the fix.

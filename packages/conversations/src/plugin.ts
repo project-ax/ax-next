@@ -20,6 +20,7 @@ import {
   dropTurnFromJsonl,
   validateContentBlocks,
   validateOptionalBoolean,
+  validateOptionalOrigin,
   validateRunnerType,
   validateTitle,
   validateWorkspaceRefForFreeze,
@@ -939,6 +940,13 @@ async function createConversation(
   // non-boolean (e.g. "true") gets a structured invalid-payload error
   // instead of a postgres "invalid input syntax" at INSERT time.
   const hidden = validateOptionalBoolean(input.hidden, 'hidden') ?? false;
+  // AW-6 (2026-08-21): which channel is opening this. Validated at the
+  // boundary for the same reason `hidden` is — a typo'd `'slack'` would
+  // otherwise persist and read back as `'web'`, i.e. as ATTENDED, silently.
+  // `exactOptionalPropertyTypes`: spread rather than pass `undefined`, so
+  // "the caller said nothing" and "the caller said undefined" stay the same
+  // thing all the way to the INSERT.
+  const origin = validateOptionalOrigin(input.origin, 'origin');
   const conv = await store.create({
     userId: input.userId,
     agentId: input.agentId,
@@ -946,6 +954,7 @@ async function createConversation(
     runnerType: validateRunnerType(agent.runner ?? null),
     workspaceRef,
     hidden,
+    ...(origin === undefined ? {} : { origin }),
   });
   return conv;
 }
@@ -1548,6 +1557,8 @@ async function findOrCreateConversation(
   const workspaceRef = validateWorkspaceRefForFreeze(agent.workspaceRef);
   // Phase D (2026-05-17): see createConversation for rationale.
   const hidden = validateOptionalBoolean(input.fallback.hidden, 'hidden') ?? false;
+  // AW-6: see createConversation.
+  const origin = validateOptionalOrigin(input.fallback.origin, 'origin');
   const result = await store.findOrCreate({
     userId: input.userId,
     agentId: input.agentId,
@@ -1559,6 +1570,7 @@ async function findOrCreateConversation(
       runnerType: validateRunnerType(agent.runner ?? null),
       workspaceRef,
       hidden,
+      ...(origin === undefined ? {} : { origin }),
     },
   });
   return result;

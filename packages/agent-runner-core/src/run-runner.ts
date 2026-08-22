@@ -29,6 +29,7 @@ import {
   materializeWorkspace,
   scaffoldWorkspaceGitignore,
 } from './git-workspace.js';
+import { decisionResolvedTurn } from './decision-turn.js';
 import { createInboxLoop } from './inbox-loop.js';
 import { materializeInstalledSkillsFromEnv } from './installed-skills.js';
 import { createLocalDispatcher, type LocalDispatcher } from './local-dispatcher.js';
@@ -762,6 +763,38 @@ async function runRunnerInner(
         // session:terminate path keys off.
         process.stderr.write('runner: inbox idle floor reached; exiting\n');
         return null;
+      }
+      if (entry.type === 'decision-resolved') {
+        // AW-6. A call this agent held earlier has been answered by a person
+        // while this session stayed warm. Start a turn whose opening message is
+        // HOST-AUTHORED.
+        //
+        // The agent may now re-issue its held call — and we do not trust it to
+        // reproduce that call faithfully, we CHECK. @ax/decisions holds a
+        // standing approval keyed on the call fingerprint (AW-4), so an
+        // unchanged call passes the gate exactly once and any change to it
+        // holds again. This message is a prompt, never an authorisation.
+        const content = decisionResolvedTurn(entry.note ?? '');
+        if (content === null) {
+          // Nothing to say. Waking the model with a blank prompt would burn a
+          // turn and produce a reply about nothing; re-poll instead. (The wire
+          // schema requires a non-empty note, so this is unreachable in
+          // practice — it is the belt to that pair of braces.)
+          process.stderr.write('runner: decision-resolved delivery had an empty note; ignoring\n');
+          continue;
+        }
+        // Clear the correlation handle. This turn is HOST-initiated: no
+        // agent:invoke is in flight, so there is no client waiting on a reqId.
+        // Leaving the previous turn's id set would stamp every chunk of this
+        // turn with a request that already completed — a stale correlation is
+        // worse than none, because `undefined` makes the shell skip the
+        // emission outright (see `currentReqId` above) while a stale id asks
+        // the host to route chunks at a closed door. The turn's content still
+        // reaches the user: `event.turn-end` persists it through
+        // @ax/conversations' display event log.
+        currentReqId = undefined;
+        chatEndHistory.push({ role: 'user', content });
+        return { content };
       }
       if (entry.payload === undefined) continue;
       // Capture the host-minted reqId so subsequent stream-chunk

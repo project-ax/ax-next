@@ -1063,6 +1063,17 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // real grace period before the outward action rather than a button that
   // cannot undo anything.
   //
+  // TASK-227 (AW-6) makes ATTENDANCE a property of the conversation's CHANNEL
+  // rather than of the turn: `conversations:get-metadata` reports the row's
+  // `origin` (`web` -> attended, `routine` -> unattended, anything unreadable
+  // -> unattended, the fail-safe), and an approved attended decision is handed
+  // back to the still-warm agent as a `decision-resolved` entry on its session
+  // inbox. Both hooks are declared `optionalCalls`, so a preset without them
+  // degrades rather than failing to boot — which is why preset.test.ts asserts
+  // that THIS preset does load their producers. Registration order does not
+  // matter for either (both are resolved at call time, and @ax/conversations
+  // is pushed below).
+  //
   // HALF-WIRED WINDOW NARROWED (TASK-232 / AW-11): the Today queue now calls
   // `decisions:list` / `:get` / `:approve` / `:dismiss` / `:undo` through
   // channel-web's `/api/workspace/decisions*` routes, and `decisions:raised`

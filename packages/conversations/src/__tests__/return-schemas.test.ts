@@ -23,6 +23,12 @@ describe('conversations return schemas', () => {
       title: 'My chat',
       lastActivityAt: '2026-05-24T00:00:00.000Z',
       createdAt: '2026-05-23T00:00:00.000Z',
+      // AW-6. The drift guard below is what stops these two from being
+      // dropped from the schema: a `z.object` strips undeclared keys silently,
+      // and an attendance read that always saw `undefined` would fall to its
+      // unattended fail-safe for every conversation with nothing failing.
+      origin: 'web',
+      activeSessionId: 'sess-1',
     };
 
     it('accepts a fully-populated value', () => {
@@ -38,6 +44,7 @@ describe('conversations return schemas', () => {
           workspaceRef: null,
           title: null,
           lastActivityAt: null,
+          activeSessionId: null,
         }).success,
       ).toBe(true);
     });

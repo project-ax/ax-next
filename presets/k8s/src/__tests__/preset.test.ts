@@ -282,6 +282,29 @@ describe('@ax/preset-k8s wiring', () => {
     expect(d!.manifest.calls).toEqual(['database:get-instance', 'tool-policy:evaluate']);
     expect(d!.manifest.calls).not.toContain('tool:execute:request_capability');
     expect(d!.manifest.subscribes).toEqual(['tool:pre-call']);
+
+    // TASK-227 (AW-6). Both OPTIONAL, and the distinction is load-bearing in
+    // both directions: a host with no conversations store treats every held
+    // call as unattended (the fail-safe), and a host with no session store
+    // simply does not deliver — the standing authorisation on the row still
+    // gets picked up on the agent's next run. Declaring either as a hard
+    // `call` would make @ax/decisions unloadable in a preset perfectly capable
+    // of running it.
+    expect(d!.manifest.optionalCalls?.map((oc) => oc.hook)).toEqual([
+      'conversations:get-metadata',
+      'session:queue-work',
+    ]);
+  });
+
+  it('loads the producers @ax/decisions reads attendance and delivers through (TASK-227)', () => {
+    // `optionalCalls` never fails a boot, which is exactly why this assertion
+    // has to exist: if @ax/conversations or @ax/session-postgres stopped being
+    // loaded here, every decision would silently become unattended and no
+    // approval would ever reach a warm agent — with nothing failing.
+    const plugins = createK8sPlugins(stubConfig);
+    const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
+    expect(registered.has('conversations:get-metadata')).toBe(true);
+    expect(registered.has('session:queue-work')).toBe(true);
   });
 
   it('registers @ax/decisions LAST among the tool:pre-call subscribers (TASK-225)', () => {

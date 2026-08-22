@@ -8,9 +8,11 @@ import type {
   ConversationsRow,
 } from './migrations.js';
 import { scopedConversations } from './scope.js';
+import { CONVERSATION_ORIGINS } from './types.js';
 import type {
   Conversation,
   ConversationEventKind,
+  ConversationOrigin,
   TurnRole,
 } from './types.js';
 
@@ -85,6 +87,28 @@ export function validateOptionalBoolean(
     throw invalid(`${field} must be a boolean if provided`);
   }
   return value;
+}
+
+/**
+ * Reject an `origin` outside the known channels.
+ *
+ * Validated at the boundary rather than trusted, for the same reason `hidden`
+ * is: a caller passing `'Web'` or `'slack'` would otherwise persist a value the
+ * read path silently narrows to `'web'` — an attendance answer that is wrong in
+ * the permissive direction, arrived at by a typo, with nothing failing.
+ */
+export function validateOptionalOrigin(
+  value: unknown,
+  field: string,
+): ConversationOrigin | undefined {
+  if (value === undefined) return undefined;
+  if (
+    typeof value !== 'string' ||
+    !CONVERSATION_ORIGINS.includes(value as ConversationOrigin)
+  ) {
+    throw invalid(`${field} must be one of ${CONVERSATION_ORIGINS.join(' | ')} if provided`);
+  }
+  return value as ConversationOrigin;
 }
 
 export function validateRole(value: unknown): TurnRole {
@@ -163,6 +187,12 @@ export function rowToConversation(row: ConversationsRow): Conversation {
     lastActivityAt:
       row.last_activity_at === null ? null : row.last_activity_at.toISOString(),
     hidden: row.hidden,
+    // AW-6. NULL — and anything the DB holds that is not a value we recognise
+    // — reads as `'web'`. There is no backfill: every row that predates the
+    // column belongs to a conversation a human opened in the browser, which is
+    // exactly what `'web'` means. Narrowing here rather than casting keeps a
+    // hand-edited row from widening the union everything downstream switches on.
+    origin: row.origin === 'routine' ? 'routine' : 'web',
     externalKey: row.external_key,
     createdAt: row.created_at.toISOString(),
     updatedAt: row.updated_at.toISOString(),
@@ -207,6 +237,11 @@ export interface ConversationStoreCreateArgs {
    * (routine per-fire conversations). Defaults to `false`.
    */
   hidden?: boolean;
+  /**
+   * AW-6 (2026-08-21). The channel opening this conversation. Optional;
+   * absent persists as NULL, which reads back as `'web'`.
+   */
+  origin?: ConversationOrigin;
 }
 
 /**
@@ -228,6 +263,10 @@ export interface ConversationMetadata {
   lastActivityAt: string | null;
   /** ISO-8601 string. */
   createdAt: string;
+  /** AW-6. The channel that opened this conversation. See `Conversation.origin`. */
+  origin: ConversationOrigin;
+  /** AW-6. The live session serving this conversation, or null. */
+  activeSessionId: string | null;
 }
 
 /**
@@ -535,7 +574,16 @@ export function createConversationStore(
       return rows.map(rowToConversation);
     },
 
-    async create({ userId, agentId, title, runnerType, workspaceRef, externalKey, hidden }) {
+    async create({
+      userId,
+      agentId,
+      title,
+      runnerType,
+      workspaceRef,
+      externalKey,
+      hidden,
+      origin,
+    }) {
       const id = mintConversationId();
       const now = new Date();
       const row = await db
@@ -560,6 +608,10 @@ export function createConversationStore(
           // per-fire conversations. Defaults to false; the column DEFAULT
           // matches, but supply explicitly for Kysely's non-nullable check.
           hidden: hidden ?? false,
+          // AW-6: NULL when the caller did not say. `rowToConversation` reads
+          // that as `'web'`, so an untaught caller lands on the value it would
+          // have chosen anyway — and no backfill is needed.
+          origin: origin ?? null,
           deleted_at: null,
           created_at: now,
           updated_at: now,
@@ -680,6 +732,11 @@ export function createConversationStore(
             ? null
             : row.last_activity_at.toISOString(),
         createdAt: row.created_at.toISOString(),
+        // AW-6. Same narrowing as `rowToConversation` — kept in step with it,
+        // because two projections of the same column reading NULL differently
+        // is how an attendance answer starts depending on which hook asked.
+        origin: row.origin === 'routine' ? 'routine' : 'web',
+        activeSessionId: row.active_session_id,
       };
     },
 
@@ -800,6 +857,8 @@ export function createConversationStore(
           // Phase D (2026-05-17): routines pass `hidden: true` for
           // per-fire conversations. Defaults to false.
           hidden: fallback.hidden ?? false,
+          // AW-6: see `create` above.
+          origin: fallback.origin ?? null,
           deleted_at: null,
           created_at: now,
           updated_at: now,

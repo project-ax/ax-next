@@ -127,6 +127,12 @@ interface AgentsResolveOutput {
 interface ConversationsCreateInput {
   userId: string;
   agentId: string;
+  /**
+   * AW-6. Structural mirror of `@ax/conversations`' `CreateInput.origin`
+   * (invariant 2 — no cross-plugin import). The channel that opened the
+   * conversation, which is what decides whether a held tool call is attended.
+   */
+  origin?: 'web' | 'routine';
 }
 interface ConversationsCreateOutput {
   conversationId: string;
@@ -466,6 +472,12 @@ export function createChatRouteHandlers(deps: ChatRouteDeps) {
         >('conversations:create', initCtx, {
           userId,
           agentId: body.agentId,
+          // AW-6: this is the one channel where a person is watching. A tool
+          // call held inside a turn on this conversation is ATTENDED — the
+          // agent parks on its inbox and the resolved decision comes back to it
+          // as the next message. Passed explicitly rather than relying on the
+          // default so the channel names itself.
+          origin: 'web',
         });
         conversationId = created.conversationId;
       } else {

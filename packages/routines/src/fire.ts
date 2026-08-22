@@ -71,7 +71,12 @@ export function createFireRoutine(deps: FireDeps) {
           userId: row.authorUserId,
           agentId: row.agentId,
           externalKey: row.path,
-          fallback: { title: row.name, hidden: true },
+          // AW-6: `origin: 'routine'` is what makes a tool call held inside a
+          // scheduled fire resolve as UNATTENDED — the host replays the
+          // approved call itself, because by the time anyone answers, the turn
+          // that raised it is long over and there is no warm agent to hand it
+          // back to.
+          fallback: { title: row.name, hidden: true, origin: 'routine' },
         });
         conversationId = out.conversation.conversationId;
       } else {
@@ -83,6 +88,8 @@ export function createFireRoutine(deps: FireDeps) {
           agentId: row.agentId,
           title: `${row.name} @ ${new Date().toISOString()}`,
           hidden: true,
+          // AW-6: see the shared-conversation branch above.
+          origin: 'routine',
         });
         conversationId = conv.conversationId;
       }
