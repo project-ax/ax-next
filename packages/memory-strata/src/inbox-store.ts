@@ -26,6 +26,7 @@ import { load as yamlLoad } from 'js-yaml';
 import { buildMarkdownFile } from './frontmatter.js';
 import { INBOX_DIR, inboxFile } from './paths.js';
 import type { MemoryFrontmatter, Observation } from './types.js';
+import { guardAutomaticWrite } from './human-tier.js';
 
 export interface InboxFile {
   /** Workspace-relative path, e.g. `permanent/memory/inbox/<ISO>.md`. */
@@ -83,6 +84,7 @@ export async function deleteInboxFile(
   workspaceRoot: string,
   inboxPath: string,
 ): Promise<void> {
+  guardAutomaticWrite('inbox-store', inboxPath);
   await unlink(join(workspaceRoot, inboxPath));
 }
 
@@ -148,6 +150,7 @@ export async function writeInboxObservation(
   };
 
   const body = `# Observation\n\n${obs.fact}\n`;
+  guardAutomaticWrite('inbox-store', rel);
   await writeFile(abs, buildMarkdownFile(fm, body), 'utf8');
   return rel;
 }

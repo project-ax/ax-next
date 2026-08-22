@@ -10,6 +10,8 @@
 // Layout (mirrors design doc § "File System Layout"):
 //   permanent/memory/
 //     system/agent.md
+//     system/rules.md           ← TASK-234: the HUMAN-owned tier. No automatic
+//                                  writer may touch it. See human-tier.ts.
 //     system/user.md
 //     system/session.md
 //     system/recent.md          ← Phase 2A: cached consolidation view
@@ -25,7 +27,20 @@ export const SYSTEM_DIR = `${MEMORY_ROOT}/system`;
 export const INBOX_DIR = `${MEMORY_ROOT}/inbox`;
 export const DOCS_DIR = `${MEMORY_ROOT}/docs`;
 
-export type SystemFileName = 'agent' | 'user' | 'session';
+export type SystemFileName = 'agent' | 'rules' | 'user' | 'session';
+
+/**
+ * Where the memory subtree lives inside the per-agent `/agent` git tier
+ * (TASK-182). The FS pipeline uses `permanent/memory/**` (MEMORY_ROOT) under a
+ * local scratch; the tier drops the `permanent/` host-layout prefix so the
+ * runner reads `/agent/memory/system/recent.md`.
+ *
+ * Lives here rather than in `agent-tier-sync.ts` so `human-tier.ts` — which
+ * every writer in the package imports — can derive the tier-side path of the
+ * human tier without importing the sync module and making a cycle out of the
+ * guard. `agent-tier-sync.ts` re-exports it, so its importers are unchanged.
+ */
+export const AGENT_TIER_MEMORY_ROOT = 'memory';
 
 export type DocCategory =
   | 'entity'
@@ -71,6 +86,20 @@ export function docFile(category: DocCategory, slug: string): string {
 
 export function categoryDir(category: DocCategory): string {
   return `${DOCS_DIR}/${category}`;
+}
+
+/**
+ * The HUMAN-owned tier (TASK-234). Written only by a person, through
+ * `memory:rules:write`; read by `inject.ts`, which puts it FIRST in the
+ * injected block. Every automatic writer in this package is forbidden to touch
+ * it — see `human-tier.ts` for how that is enforced rather than merely stated.
+ *
+ * Deliberately NOT seeded by `bootstrap.ts`: an absent rules file and an empty
+ * one mean the same thing, and the only writer of this path should be the one
+ * a human reaches.
+ */
+export function rulesFile(): string {
+  return systemFile('rules');
 }
 
 /** Cached view; regenerated end-to-end on every consolidation pass. */

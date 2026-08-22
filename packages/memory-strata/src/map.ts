@@ -52,6 +52,7 @@ import { filterSensitive } from './sensitive-gate.js';
 import { raceTimeout } from './timeout.js';
 import { mapFile, mapCacheFile, type DocCategory } from './paths.js';
 import type { DocFile, MemoryFrontmatter } from './types.js';
+import { guardAutomaticWrite } from './human-tier.js';
 
 /** Default soft cap on each densified one-liner (chars). Matches the bench. */
 export const MAP_SUMMARY_MAX_CHARS = 120;
@@ -212,6 +213,7 @@ export async function regenerateMap(
   };
 
   const rel = mapFile();
+  guardAutomaticWrite('map', rel);
   const abs = join(input.workspaceRoot, rel);
   await mkdir(dirname(abs), { recursive: true });
   await writeFile(abs, buildMarkdownFile(fm, body), 'utf8');

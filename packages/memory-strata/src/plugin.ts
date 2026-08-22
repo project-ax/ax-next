@@ -19,6 +19,7 @@ import { composeIdentityFromFiles, composeIdentityFromTier } from './compose-ide
 import { runConsolidation, type ConsolidationInput, type ConsolidationResult } from './consolidator.js';
 import { createDebouncer, type Debouncer } from './debounce.js';
 import { registerInject } from './inject.js';
+import { registerRulesHooks } from './rules-hooks.js';
 import { makeLlmDensifier, type MapDensifier } from './map.js';
 import { runObserver, type LlmCallFn } from './observer.js';
 import { makeStageBNamer, type StageBNamer } from './rollup.js';
@@ -295,7 +296,7 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
     manifest: {
       name: PLUGIN_NAME,
       version: PLUGIN_VERSION,
-      registers: ['memory:doc:written', 'memory:doc:deleted', 'tool:execute:memory_search', 'tool:execute:memory_read_section', 'tool:execute:memory_note', 'system-prompt:augment'],
+      registers: ['memory:doc:written', 'memory:doc:deleted', 'tool:execute:memory_search', 'tool:execute:memory_read_section', 'tool:execute:memory_note', 'system-prompt:augment', 'memory:rules:read', 'memory:rules:write', 'memory:learned:read'],
       // I5: minimal capability list. We `agents:resolve` to read the
       // agent's systemPrompt + model; we call llmCallHook for extraction.
       // No filesystem capability is declared at the manifest level
@@ -343,6 +344,10 @@ export function createMemoryStrataPlugin(cfg: MemoryStrataConfig = {}): Plugin {
       await registerMemoryReadSection(bus);
       await registerMemoryNote(bus);
       registerInject(bus);
+      // The human-owned tier's read/write pair + the agent's own working docs
+      // (TASK-234). Service hooks, not tools: the caller is the Memory tab, and
+      // the agent already reads its memory through injection + memory_search.
+      registerRulesHooks(bus);
 
       bus.subscribe<ChatStartPayload>(
         'chat:start',

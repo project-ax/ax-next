@@ -6,6 +6,8 @@
  *        one (the rail's read-only past-conversation view)
  * GET  /api/workspace/activity         — THE event feed (one collection)
  *        ?agentId=<id> scopes it to one agent; ?before=<ISO>&limit=<n> page it
+ * PUT  /api/workspace/agents/:agentId/memory/rules
+ *                                      — save the human-owned memory tier
  * POST /api/workspace/route            — "which agent should hear this?"
  *
  * The agent-centric workspace surface (TASK-230 / plan task AW-9). This is the
@@ -21,7 +23,7 @@
  *
  *   - `decisions`              — empty until @ax/decisions (AW-11).
  *   - `permissions`            — empty until the policy rail is real (AW-14).
- *   - `files` / `memory`       — empty until AW-12 / AW-13.
+ *   - `files`                  — empty until AW-12.
  *   - `now` / `counter` / `startedAt` — null; nothing reports them yet (AW-8).
  *   - there is no `stats` field at all.
  *
@@ -51,7 +53,13 @@
  * needs no auth — it echoes a build-time flag and nothing else, exactly like
  * `GET /api/branding`.
  */
-import { PluginError, isRejection, type AgentContext, type HookBus } from '@ax/core';
+import {
+  PluginError,
+  isRejection,
+  makeAgentContext,
+  type AgentContext,
+  type HookBus,
+} from '@ax/core';
 import type {
   ActivityEvent,
   AgentRunState,
@@ -172,6 +180,29 @@ interface RoutinesListOutput {
   routines: RoutineRow[];
 }
 
+/**
+ * @ax/memory-strata's Memory-tab hooks (AW-13). Duck-typed like every other
+ * hook on this surface (I2). Note what these payloads do NOT carry: no path,
+ * no revision, no tier vocabulary — the human tier could be a database row
+ * tomorrow and this file would not change.
+ */
+interface MemoryAgentInput {
+  agentId: string;
+}
+interface MemoryRulesReadOutput {
+  body: string;
+}
+interface MemoryRulesWriteInput {
+  agentId: string;
+  body: string;
+}
+interface MemoryRulesWriteOutput {
+  written: boolean;
+}
+interface MemoryLearnedReadOutput {
+  docs: Array<{ name: string; body: string }>;
+}
+
 // --- wire shapes ----------------------------------------------------------
 
 /** `GET /api/features` — the flag echo the SPA reads before it renders. */
@@ -238,8 +269,28 @@ export interface AgentDetail {
   past: PastConversation[];
   /** Empty until AW-12. */
   files: WorkspaceFile[];
-  /** Empty until AW-13. */
+  /**
+   * The Memory tab, split by WHO OWNS IT (AW-13).
+   *
+   * The `rules` doc is ALWAYS present, even when the user has written nothing:
+   * it is the editor, and an editor that only appears once you have already
+   * typed in it is not an editor. The `learned` docs are whatever the agent
+   * has actually written — an absent one is omitted rather than shipped as an
+   * empty heading.
+   */
   memory: MemoryDoc[];
+}
+
+/**
+ * The one human-owned doc's display name. Lives here rather than in the
+ * component because the server decides what a row IS; the component decides
+ * how it looks.
+ */
+export const RULES_DOC_NAME = 'Your rules';
+
+/** `PUT /api/workspace/agents/:agentId/memory/rules` — the human tier saved. */
+export interface SaveRulesResult {
+  saved: true;
 }
 
 /** `POST /api/workspace/route` — which agent should hear this. */
@@ -729,6 +780,85 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     return names;
   }
 
+   * The owner-routed context for one agent's memory.
+   *
+   * `memory:rules:write` reaches `workspace:apply`, which routes by
+   * `(userId, agentId)` — hand it the wrong ctx and the write lands in another
+   * agent's workspace. Constructing it HERE, from the authenticated caller and
+   * the agent they just passed the ACL for, is what keeps that honest; reusing
+   * `initCtx` (agentId `@ax/channel-web`, userId `system`) would not.
+   *
+   * The workspace root is inherited from `initCtx` so the CLI preset — which
+   * has no workspace backend and writes memory to the host filesystem — lands
+   * in the same root everything else in that preset uses.
+   */
+  function agentMemoryCtx(agentId: string, ownerUserId: string): AgentContext {
+    return makeAgentContext({
+      sessionId: 'workspace-memory',
+      agentId,
+      userId: ownerUserId,
+      workspace: initCtx.workspace,
+    });
+  }
+
+  /**
+   * The Memory tab's rows.
+   *
+   * A FAILED rules read omits the rules row entirely rather than shipping an
+   * empty one. This is the difference between "you have written no rules" and
+   * "we could not read your rules", and getting it wrong is destructive: an
+   * empty editor over unreadable storage invites the user to type something,
+   * press Save, and overwrite rules they still have. The UI renders the
+   * missing row as "we are not showing the editor right now", not as a blank
+   * box. Same discipline the rest of this surface uses — a zero is a claim.
+   *
+   * A failed LEARNED read is different: it drops those rows, because the worst
+   * it can cost is a section that says the agent has written nothing yet.
+   */
+  async function readMemory(agentId: string, userId: string): Promise<MemoryDoc[]> {
+    if (!bus.hasService('memory:rules:read')) return [];
+    const ctx = agentMemoryCtx(agentId, userId);
+    let rules: string | null = null;
+    try {
+      const out = await bus.call<MemoryAgentInput, MemoryRulesReadOutput>(
+        'memory:rules:read',
+        ctx,
+        { agentId },
+      );
+      rules = out.body;
+    } catch (err) {
+      initCtx.logger.warn('workspace_memory_rules_read_failed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [];
+    }
+
+    let learned: MemoryLearnedReadOutput['docs'] = [];
+    if (bus.hasService('memory:learned:read')) {
+      try {
+        learned = (
+          await bus.call<MemoryAgentInput, MemoryLearnedReadOutput>(
+            'memory:learned:read',
+            ctx,
+            { agentId },
+          )
+        ).docs;
+      } catch (err) {
+        initCtx.logger.warn('workspace_memory_learned_read_failed', {
+          agentId,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    return [
+      { name: RULES_DOC_NAME, scope: 'rules', body: rules },
+      // Model output. It rides as a plain string and React renders it as text.
+      ...learned.map((d): MemoryDoc => ({ name: d.name, scope: 'learned', body: d.body })),
+    ];
+  }
+
   async function listAgents(userId: string): Promise<AgentsListForUserOutput['agents']> {
     // Team agents surface only when we pass the user's teamIds — same read the
     // chat agent picker does, so the workspace roster and the picker agree.
@@ -982,8 +1112,72 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         thread,
         past,
         files: [], // AW-12
-        memory: [], // AW-13
+        memory: await readMemory(agentId, userId),
       } satisfies AgentDetail);
+    },
+
+    /**
+     * PUT /api/workspace/agents/:agentId/memory/rules — save the human tier.
+     *
+     * This route does not write a file. It calls `memory:rules:write`, which
+     * owns the one path in the memory tree no automatic writer may touch
+     * (AW-13). Two sources of truth for "where the user's rules live" is
+     * exactly the bug the tier exists to prevent.
+     *
+     * `body` is the user's own text. It is stored verbatim and rendered as
+     * text; nothing here parses it, and nothing builds markup from it.
+     */
+    async saveRules(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      // ACL first: a not-accessible agent → 404, no existence leak. Same
+      // posture as the read, and it runs BEFORE we touch any storage.
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      if (!bus.hasService('memory:rules:write')) {
+        // No memory plugin is loaded. Saying "saved" would be the exact lie
+        // this whole task exists to stop telling.
+        res.status(503).json({ error: 'memory-unavailable' });
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8'));
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      const body = (parsed as { body?: unknown } | null)?.body;
+      if (typeof body !== 'string') {
+        res.status(400).json({ error: 'invalid-body' });
+        return;
+      }
+
+      try {
+        await bus.call<MemoryRulesWriteInput, MemoryRulesWriteOutput>(
+          'memory:rules:write',
+          agentMemoryCtx(agentId, userId),
+          { agentId, body },
+        );
+      } catch (err) {
+        // A rejected payload is the caller's fault (too long, malformed);
+        // anything else is ours. Either way the user is TOLD — a Save that
+        // silently failed is how a hand-written rule goes missing.
+        if (err instanceof PluginError && err.code === 'invalid-payload') {
+          res.status(400).json({ error: 'invalid-body', detail: err.message });
+          return;
+        }
+        throw err;
+      }
+
+      res.status(200).json({ saved: true } satisfies SaveRulesResult);
     },
 
     /**
@@ -1082,7 +1276,11 @@ export async function registerWorkspaceRoutes(
   // Same duck-typed cast as routes-attachments.ts — http-server's HttpRequest /
   // HttpResponse are a structural superset of our adapter.
   type RouteHandler = (req: RouteRequest, res: RouteResponse) => Promise<void>;
-  const routes: Array<{ method: 'GET' | 'POST'; path: string; handler: RouteHandler }> = [
+  const routes: Array<{
+    method: 'GET' | 'POST' | 'PUT';
+    path: string;
+    handler: RouteHandler;
+  }> = [
     {
       method: 'GET',
       path: '/api/features',
@@ -1105,6 +1303,11 @@ export async function registerWorkspaceRoutes(
         method: 'GET',
         path: '/api/workspace/activity',
         handler: handlers.activity as unknown as RouteHandler,
+      },
+      {
+        method: 'PUT',
+        path: '/api/workspace/agents/:agentId/memory/rules',
+        handler: handlers.saveRules as unknown as RouteHandler,
       },
       {
         method: 'POST',

@@ -2,7 +2,17 @@ import { mkdir, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { buildMarkdownFile } from './frontmatter.js';
 import { systemFile, mapFile, type SystemFileName } from './paths.js';
+
+/**
+ * The system files bootstrap seeds. `rules` — the HUMAN tier (TASK-234) — is
+ * excluded at the TYPE level, not just left out of a literal: bootstrap is an
+ * automatic writer, and the only writer of the human tier should be the one a
+ * person reaches. `MemoryFileType` has no `system/rules` member for the same
+ * reason, so widening this alias fails the build before it fails a user.
+ */
+type SeededSystemFileName = Exclude<SystemFileName, 'rules'>;
 import type { MemoryFrontmatter } from './types.js';
+import { guardAutomaticWrite } from './human-tier.js';
 
 export interface BootstrapInput {
   /**
@@ -47,8 +57,12 @@ export async function bootstrapMemoryTree(
   const now = (input.nowFn ?? (() => new Date()))();
   const nowIso = now.toISOString();
 
+  // `rules` is deliberately absent from this list: it is the HUMAN tier
+  // (TASK-234), and bootstrap is an automatic writer. The guard below turns
+  // that from a fact about this literal into a fact the process enforces.
   for (const name of ['agent', 'user', 'session'] as const) {
     const rel = systemFile(name);
+    guardAutomaticWrite('bootstrap', rel);
     const abs = join(input.workspaceRoot, rel);
 
     await mkdir(dirname(abs), { recursive: true });
@@ -104,7 +118,7 @@ export async function bootstrapMemoryTree(
   return { created };
 }
 
-function systemFrontmatter(name: SystemFileName, nowIso: string): MemoryFrontmatter {
+function systemFrontmatter(name: SeededSystemFileName, nowIso: string): MemoryFrontmatter {
   return {
     id: name,
     type: `system/${name}`,
@@ -117,13 +131,13 @@ function systemFrontmatter(name: SystemFileName, nowIso: string): MemoryFrontmat
   };
 }
 
-const SYSTEM_SUMMARIES: Record<SystemFileName, string> = {
+const SYSTEM_SUMMARIES: Record<SeededSystemFileName, string> = {
   agent: 'The agent identity (IDENTITY.md + SOUL.md) — always loaded into context.',
   user: 'Active user profile and durable preferences — always loaded into context.',
   session: 'Rolling summary of the current chat session — always loaded into context.',
 };
 
-function systemBody(name: SystemFileName, composedIdentity: string): string {
+function systemBody(name: SeededSystemFileName, composedIdentity: string): string {
   if (name === 'agent') {
     // The composed identity (IDENTITY.md + SOUL.md). Empty when the agent has
     // no identity files yet (still bootstrapping) — seed a placeholder so the

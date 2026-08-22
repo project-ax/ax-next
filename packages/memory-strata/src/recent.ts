@@ -22,6 +22,7 @@ import { listInbox } from './inbox-store.js';
 import { listDocs } from './doc-store.js';
 import { recentFile } from './paths.js';
 import type { MemoryFrontmatter } from './types.js';
+import { guardAutomaticWrite } from './human-tier.js';
 
 const RECENT_DOC_LIMIT = 5;
 const ACTIVE_PROJECTS_WINDOW_DAYS = 7;
@@ -91,6 +92,7 @@ export async function regenerateRecent(input: {
   ].join('\n');
 
   const rel = recentFile();
+  guardAutomaticWrite('recent', rel);
   const abs = join(input.workspaceRoot, rel);
   await mkdir(dirname(abs), { recursive: true });
   await writeFile(abs, buildMarkdownFile(fm, body), 'utf8');

@@ -342,10 +342,56 @@ function skillsMockPlugin(): Plugin {
   };
 }
 
+/**
+ * AW-13 — @ax/memory-strata's Memory-tab hooks, in memory.
+ *
+ * Deliberately records the CTX each call arrives on. `memory:rules:write`
+ * reaches `workspace:apply`, which routes by `(userId, agentId)`; a route that
+ * fires with the wrong ctx writes another agent's workspace, and only a test
+ * that looks at the ctx can see it.
+ */
+function memoryMockPlugin(state: {
+  rules: string;
+  learned: Array<{ name: string; body: string }>;
+  writeCtx: Array<{ agentId: string; userId: string; payloadAgentId: string }>;
+  failWrite?: PluginError;
+}): Plugin {
+  return {
+    manifest: {
+      name: 'mock-memory',
+      version: '0.0.0',
+      registers: ['memory:rules:read', 'memory:rules:write', 'memory:learned:read'],
+      calls: [],
+      subscribes: [],
+    },
+    init({ bus }) {
+      bus.registerService('memory:rules:read', 'mock-memory', async () => ({
+        body: state.rules,
+      }));
+      bus.registerService('memory:rules:write', 'mock-memory', async (ctx, input) => {
+        const { agentId, body } = input as { agentId: string; body: string };
+        state.writeCtx.push({
+          agentId: ctx.agentId,
+          userId: ctx.userId ?? '',
+          payloadAgentId: agentId,
+        });
+        if (state.failWrite !== undefined) throw state.failWrite;
+        state.rules = body;
+        return { written: true };
+      });
+      bus.registerService('memory:learned:read', 'mock-memory', async () => ({
+        docs: state.learned,
+      }));
+    },
+  };
+}
+
 interface BootArgs {
   user?: { id: string; isAdmin: boolean } | null;
   /** TASK-230 — mount the /api/workspace/* preview surface. */
   agentWorkspacePreview?: boolean;
+  /** AW-13 — load the Memory-tab hooks. Omitted = no memory plugin at all. */
+  memory?: Parameters<typeof memoryMockPlugin>[0];
   /** TASK-230 — conversation rows the workspace detail route can read. */
   conversationRows?: MockConversationRow[];
   conversationTurns?: Map<string, Array<Record<string, unknown>>>;
@@ -404,6 +450,7 @@ async function boot(args: BootArgs = {}): Promise<{
       chatRunMockPlugin(),
       attachmentsMockPlugin(),
       skillsMockPlugin(),
+      ...(args.memory === undefined ? [] : [memoryMockPlugin(args.memory)]),
       createChannelWebServerPlugin(
         args.agentWorkspacePreview === undefined
           ? {}
@@ -761,6 +808,138 @@ describe('@ax/channel-web server plugin (integration)', () => {
       };
       expect(pastBody.conversationId).toBe('cnv_march');
       expect(pastBody.thread[0]?.text).toBe('happened in March');
+    });
+
+    /*
+      AW-13 — the human-owned memory tier, through the real server.
+
+      A handler-level test writes its own `params` object, so it cannot see
+      whether the PUT route was ever registered, whether http-server accepts
+      PUT on a path with a param in the middle of it, or whether the CSRF gate
+      lets the SPA's header through. Only a round trip can.
+    */
+    it('PUT /api/workspace/agents/:agentId/memory/rules saves the human tier', async () => {
+      const memory = {
+        rules: '',
+        learned: [{ name: 'What it knows about you', body: '# User\n\nLikes oat milk.\n' }],
+        writeCtx: [] as Array<{ agentId: string; userId: string; payloadAgentId: string }>,
+      };
+      const booted = await boot({
+        agentWorkspacePreview: true,
+        conversationRows: [],
+        memory,
+      });
+      harness = booted.harness;
+      const base = `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test`;
+
+      // Before: the editor is present and empty, and the agent's own doc is
+      // listed separately. An absent rules row would mean no editor at all.
+      const before = (await (await fetch(base)).json()) as {
+        memory: Array<{ name: string; scope: string; body: string }>;
+      };
+      expect(before.memory.map((d) => d.scope)).toEqual(['rules', 'learned']);
+      expect(before.memory[0]!.body).toBe('');
+
+      const put = await fetch(`${base}/memory/rules`, {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+        body: JSON.stringify({ body: '- Always cc Priya' }),
+      });
+      expect(put.status).toBe(200);
+      expect(await put.json()).toEqual({ saved: true });
+
+      // The write was routed to the agent the caller named, on the
+      // authenticated user's identity — not on `initCtx`'s system identity.
+      expect(memory.writeCtx).toEqual([
+        { agentId: 'agt_test', userId: 'userA', payloadAgentId: 'agt_test' },
+      ]);
+
+      const after = (await (await fetch(base)).json()) as {
+        memory: Array<{ scope: string; body: string }>;
+      };
+      expect(after.memory[0]).toEqual({
+        name: 'Your rules',
+        scope: 'rules',
+        body: '- Always cc Priya',
+      });
+    });
+
+    it('reports a refused rules write instead of claiming it saved', async () => {
+      const memory = {
+        rules: '',
+        learned: [],
+        writeCtx: [] as Array<{ agentId: string; userId: string; payloadAgentId: string }>,
+        failWrite: new PluginError({
+          code: 'invalid-payload',
+          plugin: 'mock-memory',
+          message: 'rules must be 16384 characters or fewer',
+        }),
+      };
+      const booted = await boot({ agentWorkspacePreview: true, memory });
+      harness = booted.harness;
+
+      const put = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test/memory/rules`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+          body: JSON.stringify({ body: 'x' }),
+        },
+      );
+      expect(put.status).toBe(400);
+      expect((await put.json()) as { error: string }).toMatchObject({
+        error: 'invalid-body',
+      });
+    });
+
+    it('503s the rules write when no memory plugin is loaded', async () => {
+      // No `memory` in BootArgs → the hooks are simply absent. Answering 200
+      // here would tell the user their rules were kept when nothing kept them.
+      const booted = await boot({ agentWorkspacePreview: true, conversationRows: [] });
+      harness = booted.harness;
+
+      const put = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test/memory/rules`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+          body: JSON.stringify({ body: '- Always cc Priya' }),
+        },
+      );
+      expect(put.status).toBe(503);
+      expect(await put.json()).toEqual({ error: 'memory-unavailable' });
+
+      // And the tab still opens, with no invented rows.
+      const detail = (await (
+        await fetch(`http://127.0.0.1:${booted.port}/api/workspace/agents/agt_test`)
+      ).json()) as { memory: unknown[] };
+      expect(detail.memory).toEqual([]);
+    });
+
+    it('404s a rules write for an agent the caller cannot reach', async () => {
+      const memory = {
+        rules: '',
+        learned: [],
+        writeCtx: [] as Array<{ agentId: string; userId: string; payloadAgentId: string }>,
+      };
+      const booted = await boot({
+        agentWorkspacePreview: true,
+        agentsAllow: false,
+        memory,
+      });
+      harness = booted.harness;
+
+      const put = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/agents/agt_other/memory/rules`,
+        {
+          method: 'PUT',
+          headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
+          body: JSON.stringify({ body: 'not mine' }),
+        },
+      );
+      expect(put.status).toBe(404);
+      // The ACL ran BEFORE any storage was touched.
+      expect(memory.writeCtx).toEqual([]);
     });
 
     it('leaves /api/workspace/* unmounted when the preview is off', async () => {

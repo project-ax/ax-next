@@ -34,6 +34,7 @@ import { regenerateMap, type MapDensifier } from './map.js';
 import { categoryDir, MEMORY_ROOT, type DocCategory } from './paths.js';
 import { findNearDupSlug } from './slug-guard.js';
 import { runRollupPass, type RollupConfig, type StageBNamer } from './rollup.js';
+import { guardAutomaticWrite } from './human-tier.js';
 
 /**
  * Categories a rollup class can be built over (TASK-200). Mirrors
@@ -464,6 +465,7 @@ async function decayInbox(
       continue;
     }
     if (ts > cutoffMs) continue;
+    guardAutomaticWrite('consolidator-decay', f.path);
     await deleteInboxFile(workspaceRoot, f.path);
     log.info('memory_strata_inbox_decayed', {
       id: f.frontmatter.id,

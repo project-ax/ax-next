@@ -60,7 +60,8 @@ import {
   type WorkspaceReadOutput,
   type WorkspaceVersion,
 } from '@ax/core';
-import { MEMORY_ROOT } from './paths.js';
+import { stripHumanTierChanges } from './human-tier.js';
+import { AGENT_TIER_MEMORY_ROOT, MEMORY_ROOT } from './paths.js';
 
 /**
  * Where the memory subtree lives inside the `/agent` git tier. The FS pipeline
@@ -68,8 +69,12 @@ import { MEMORY_ROOT } from './paths.js';
  * tier drops the `permanent/` host-layout prefix so the reflection runner reads
  * `/agent/memory/system/recent.md` — the path the skill-crystallization design
  * documents as the consolidated-memory home.
+ *
+ * Defined in `paths.ts` (so `human-tier.ts` can derive the human tier's
+ * tier-side path without importing this module) and re-exported here, where
+ * every existing importer already looks for it.
  */
-export const AGENT_TIER_MEMORY_ROOT = 'memory';
+export { AGENT_TIER_MEMORY_ROOT };
 
 /** `permanent/memory/foo` (scratch-relative) → `memory/foo` (/agent tier). */
 function scratchRelToTierPath(scratchRel: string): string {
@@ -226,9 +231,24 @@ export async function flushAgentTier(
     }
   }
 
-  if (changes.length === 0) return false;
+  /*
+    TASK-234: the human tier is never part of a derived delta. This flush diffs
+    a WHOLE subtree, so it can emit a change for a file the pipeline never
+    deliberately touched — most dangerously a `delete`, when the scratch was
+    hydrated before a concurrent human write and therefore never contained the
+    file. `memory:rules:write` owns that path and applies it on its own.
+  */
+  const safe = stripHumanTierChanges(changes);
+  if (safe.length < changes.length) {
+    ctx.logger.info('memory_strata_tier_flush_skipped_human_tier', {
+      agentId: ctx.agentId,
+      skipped: changes.length - safe.length,
+    });
+  }
 
-  await applyWithCasRetry(bus, ctx, changes, hydrated.baseVersion, reason);
+  if (safe.length === 0) return false;
+
+  await applyTierChanges(bus, ctx, safe, hydrated.baseVersion, reason);
   return true;
 }
 
@@ -250,7 +270,16 @@ function actualParentFromMismatch(
     : asWorkspaceVersion(cause.actualParent);
 }
 
-async function applyWithCasRetry(
+/**
+ * Apply a put/delete delta to the agent's `/agent` tier, retrying ONCE against
+ * the tier's actual head on a CAS mismatch.
+ *
+ * Exported for `rules-store.ts`: the human-tier write is a single-file apply
+ * with exactly the same concurrency contract, and a second hand-rolled retry
+ * would be a second answer to "what happens when the runner moved the tier
+ * under us" (invariant 4).
+ */
+export async function applyTierChanges(
   bus: HookBus,
   ctx: AgentContext,
   changes: FileChange[],

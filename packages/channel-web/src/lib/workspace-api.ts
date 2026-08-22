@@ -8,7 +8,7 @@
  *
  * WHAT WAS DELETED, AND WHY IT IS NOT COMING BACK AS A STUB
  *
- * `approve` / `dismiss` / `undo` / `pause` / `restart` / `saveMemory` /
+ * `approve` / `dismiss` / `undo` / `pause` / `restart` /
  * `stopAll` / `setScenario` / `createAgent` (and the `ApproveResponse` shape,
  * and `DemoScenario` with `BoardState.scenario` / `BoardState.stoppedAll`) all
  * pointed at mock routes that no longer exist. A client method calling a route
@@ -18,7 +18,12 @@
  *
  *   - AW-11 — the decisions queue: `approve`, `dismiss`, `undo`.
  *   - AW-12 — the halted/paused agent state and its files: `pause`, `restart`.
- *   - AW-13 — writable memory: `saveMemory`.
+ *
+ * `saveMemory` came back with AW-13, as `saveRules` — a narrower name, because
+ * only ONE of the two things the Memory tab shows is writable by a person. The
+ * agent's own working notes are not, and a method that could write either would
+ * be the first step back toward the editor that promised more than the storage
+ * keeps.
  *
  * `stopAll` / `setScenario` / `createAgent` were demo-strip and prototype
  * plumbing. They are not planned; the create flow already ships elsewhere.
@@ -89,7 +94,10 @@ export interface AgentDetail {
   past: PastConversation[];
   /** Always `[]` in this task — AW-12. */
   files: WorkspaceFile[];
-  /** Always `[]` in this task — AW-13. */
+  /**
+   * The Memory tab, split by owner. The `rules` doc is always present — it is
+   * the editor — and the `learned` docs are whatever the agent actually wrote.
+   */
   memory: MemoryDoc[];
 }
 
@@ -99,13 +107,17 @@ const writeHeaders = {
   'x-requested-with': 'ax-admin',
 };
 
-async function req<T>(path: string, init?: { method: string }): Promise<T> {
+async function req<T>(
+  path: string,
+  init?: { method: string; body?: unknown },
+): Promise<T> {
   const res = await fetch(`/api/workspace${path}`, {
     method: init?.method ?? 'GET',
     credentials: 'include',
     ...(init?.method !== undefined && init.method !== 'GET'
       ? { headers: writeHeaders }
       : {}),
+    ...(init?.body === undefined ? {} : { body: JSON.stringify(init.body) }),
   });
   if (!res.ok) {
     throw new Error(`workspace ${path} → ${res.status}`);
@@ -169,6 +181,20 @@ export const workspaceApi = {
           ? ''
           : `?conversationId=${encodeURIComponent(conversationId)}`),
     ),
+
+  /**
+   * Save the human-owned memory tier (AW-13).
+   *
+   * Named for what it can write. The server hands the text to
+   * `memory:rules:write`, the one writer of the one memory file the rollup and
+   * the GC are forbidden to touch — which is what makes "your rules are kept
+   * word for word" something we are allowed to say.
+   */
+  saveRules: (agentId: string, body: string) =>
+    req<{ saved: true }>(`/agents/${encodeURIComponent(agentId)}/memory/rules`, {
+      method: 'PUT',
+      body: { body },
+    }),
 
   /**
    * Auto-routing: proposes an agent for a free-text request. Never dispatches.
