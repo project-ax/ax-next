@@ -27,6 +27,7 @@ import {
   decisionOutcome,
   undoSecondsLeft,
 } from './decision-copy';
+import { useDecisionClock } from './use-decision-clock';
 
 interface Props {
   decision: Decision;
@@ -47,14 +48,16 @@ export function ApprovalCard({
   busy = false,
   notice = null,
 }: Props) {
-  const outcome = decisionOutcome(d);
+  // Same clock the queue row uses. The card sits in a transcript rather than a
+  // live list, but the two claims it makes are the same two — how long undo has
+  // left, and whether a deferred action has gone ahead — and a card that only
+  // re-read them when the thread was refetched would sit there offering an undo
+  // the server would refuse.
+  const now = useDecisionClock(d);
+  const outcome = decisionOutcome(d, now);
 
   if (outcome !== null) {
-    // The undo window is read once, at render. This card lives inside a
-    // transcript rather than a live queue, so it does not run a timer of its
-    // own — the row is re-read whenever the thread is, and an expired window
-    // simply comes back without the button.
-    const undoLeft = undoSecondsLeft(d);
+    const undoLeft = undoSecondsLeft(d, now);
     return (
       <div
         className="flex flex-col gap-1 text-[13px] text-muted-foreground"

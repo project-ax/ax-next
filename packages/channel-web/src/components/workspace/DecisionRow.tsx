@@ -25,7 +25,6 @@
  *     still be taken back; a dead Undo on something already sent would promise
  *     a person something we cannot do.
  */
-import { useEffect, useState } from 'react';
 import { ArrowRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
@@ -41,6 +40,7 @@ import {
   undoSecondsLeft,
   type DecisionOutcome,
 } from './decision-copy';
+import { useDecisionClock } from './use-decision-clock';
 
 function ago(iso: string): string {
   const mins = Math.round((Date.now() - Date.parse(iso)) / 60_000);
@@ -69,24 +69,6 @@ const TONE_DOT: Record<DecisionOutcome['tone'], 'working' | 'resting' | 'stopped
   bad: 'stopped',
 };
 
-/**
- * A live count of the undo seconds remaining, or 0.
- *
- * Recomputed on a timer rather than on the next fetch, because the affordance
- * has to disappear on a clock — a person who looks away for fifteen seconds must
- * not come back to a button that would now be refused.
- */
-function useUndoCountdown(d: Decision): number {
-  const [left, setLeft] = useState(() => undoSecondsLeft(d));
-  useEffect(() => {
-    const tick = (): void => setLeft(undoSecondsLeft(d));
-    tick();
-    const t = setInterval(tick, 500);
-    return () => clearInterval(t);
-  }, [d]);
-  return left;
-}
-
 interface Props {
   decision: Decision;
   agent: WorkspaceAgent;
@@ -114,9 +96,12 @@ export function DecisionRow({
   busy = false,
   notice = null,
 }: Props) {
-  const outcome = decisionOutcome(d);
-  const undoLeft = useUndoCountdown(d);
-  const expiry = expiresSoonNote(d);
+  // One clock for the whole row, so the countdown, the undo button and the
+  // outcome sentence can never disagree about what time it is.
+  const now = useDecisionClock(d);
+  const outcome = decisionOutcome(d, now);
+  const undoLeft = undoSecondsLeft(d, now);
+  const expiry = expiresSoonNote(d, now);
 
   if (outcome !== null) {
     return (

@@ -17,7 +17,8 @@
  * the agent will do it on its next run. Both renderers say exactly that, and
  * neither of them says "Sent".
  */
-import { describe, expect, it, vi } from 'vitest';
+import { act } from 'react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { ApprovalCard } from '../ApprovalCard';
 import { DecisionRow } from '../DecisionRow';
@@ -159,6 +160,68 @@ describe('one row, three renderers — the outcome line', () => {
       expect(text).toContain(DECISION_STALE_LEAD);
       expect(text).toContain('booked by someone else at 11:04');
     }
+  });
+});
+
+/*
+  The queue is read once and then updated by the responses to a person's own
+  clicks — there is no poll. So anything a row says that stops being true on a
+  CLOCK has to change itself, or the screen quietly keeps making a claim nobody
+  is checking any more (design H7).
+
+  Two of those, and they close together: the undo window, and whether a deferred
+  irreversible action has actually gone ahead.
+*/
+describe('a row that changes on its own', () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('stops saying an action is about to happen once it has happened', () => {
+    vi.useFakeTimers();
+    /*
+      `pendingUntil` is deliberately LATER than the undo window closes. The two
+      normally land together — the deferral IS the window — but the row reads
+      the server's instant against the browser's clock, and those two machines
+      do not agree to the second. With even a little skew the countdown finishes
+      first, and a row that only re-rendered while the countdown was running
+      would freeze on "it is about to go ahead" and stay there for as long as
+      the tab was open.
+    */
+    const deferred = resolvedFixture('executed', {
+      irreversible: true,
+      resolvedAt: new Date().toISOString(),
+      pendingUntil: new Date(Date.now() + 20_000).toISOString(),
+    });
+    const { container } = render(
+      <DecisionRow
+        decision={deferred}
+        agent={agent}
+        expanded={false}
+        onToggle={vi.fn()}
+        onOpenAgent={vi.fn()}
+        onApprove={vi.fn()}
+        onDismiss={vi.fn()}
+        onUndo={vi.fn()}
+      />,
+    );
+    expect(container.textContent).toContain(DECISION_GOING_OUT);
+
+    act(() => {
+      vi.advanceTimersByTime(11_000);
+    });
+    // The undo window has closed; the action still has not happened, and the
+    // row still says so rather than reporting an outcome nobody has observed.
+    expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
+    expect(container.textContent).toContain(DECISION_GOING_OUT);
+
+    act(() => {
+      vi.advanceTimersByTime(10_000);
+    });
+
+    // It went ahead. The row says the authored approved line now.
+    expect(container.textContent).not.toContain(DECISION_GOING_OUT);
+    expect(container.textContent).toContain(deferred.approvedText);
   });
 });
 
