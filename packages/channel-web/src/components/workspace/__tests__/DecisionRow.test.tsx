@@ -5,6 +5,7 @@ import {
   DECISION_EXPIRED,
   DECISION_FAILED,
   DECISION_PENDING_AGENT,
+  DECISION_STALE_LEAD,
 } from '../decision-copy';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
@@ -71,6 +72,37 @@ describe('DecisionRow — pending', () => {
   });
 });
 
+describe('DecisionRow — the cost of doing nothing', () => {
+  it('says when a decision is about to lapse, and what that means', () => {
+    renderRow(
+      decisionFixture({
+        expiresAt: new Date(Date.now() + 3 * 3600_000).toISOString(),
+      }),
+    );
+    // An expired decision cannot be approved at all, only raised again. A row
+    // that just sits there gives a first-timer no way to know that.
+    expect(screen.getByText(/expires in about 3 hours/)).toBeTruthy();
+  });
+
+  it('says nothing about a deadline that is days away', () => {
+    const { container } = renderRow(
+      decisionFixture({
+        expiresAt: new Date(Date.now() + 5 * 86_400_000).toISOString(),
+      }),
+    );
+    expect(container.textContent).not.toMatch(/expires/);
+  });
+
+  it('never counts backwards past an expiry it somehow outlived', () => {
+    const { container } = renderRow(
+      decisionFixture({
+        expiresAt: new Date(Date.now() - 3600_000).toISOString(),
+      }),
+    );
+    expect(container.textContent).not.toMatch(/expires/);
+  });
+});
+
 describe('DecisionRow — a click in flight', () => {
   it('disables the controls and says what it is doing, rather than hiding them', () => {
     // A control that VANISHES under the cursor reads as a crash. A disabled one
@@ -100,7 +132,7 @@ describe('DecisionRow — stale', () => {
 
   it('leads with the fact that nothing was sent', () => {
     renderRow(stale);
-    expect(screen.getByText('Nothing was sent.')).toBeTruthy();
+    expect(screen.getByText(DECISION_STALE_LEAD)).toBeTruthy();
     expect(screen.getByText(/booked by someone else at 11:04/)).toBeTruthy();
   });
 

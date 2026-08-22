@@ -33,7 +33,11 @@ import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { StateDot } from './bits';
 import {
   DECISION_NOTHING_YET,
+  DECISION_STALE_ADVICE,
+  DECISION_STALE_LEAD,
+  DECISION_STALE_SUMMARY,
   decisionOutcome,
+  expiresSoonNote,
   undoSecondsLeft,
   type DecisionOutcome,
 } from './decision-copy';
@@ -112,6 +116,7 @@ export function DecisionRow({
 }: Props) {
   const outcome = decisionOutcome(d);
   const undoLeft = useUndoCountdown(d);
+  const expiry = expiresSoonNote(d);
 
   if (outcome !== null) {
     return (
@@ -174,7 +179,7 @@ export function DecisionRow({
               : 'min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground'
           }
         >
-          {stale ? 'Needs another look — the world moved' : d.summary}
+          {stale ? DECISION_STALE_SUMMARY : d.summary}
         </span>
         <span className="shrink-0 text-[12.5px] text-muted-foreground">
           {ago(d.createdAt)}
@@ -191,9 +196,8 @@ export function DecisionRow({
           {stale && d.staleReason && (
             <Alert variant="destructive" className="mb-4">
               <AlertDescription className="text-[13px] leading-relaxed">
-                <strong className="font-medium">Nothing was sent.</strong>{' '}
-                {d.staleReason} Read it again before you approve — approving now
-                acts on the situation as it stands.
+                <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
+                {d.staleReason} {DECISION_STALE_ADVICE}
               </AlertDescription>
             </Alert>
           )}
@@ -221,6 +225,15 @@ export function DecisionRow({
             {provenance(d, agent.name)}
             {!stale && d.freshness && ` · checked against: ${d.freshness.label}`}
           </p>
+
+          {/*
+            Doing nothing is a choice, and it is the only one on this row whose
+            consequence is invisible. Shown only when the deadline is actually
+            near — see `expiresSoonNote`.
+          */}
+          {expiry !== null && (
+            <p className="mt-1.5 text-[11.5px] text-muted-foreground">{expiry}</p>
+          )}
 
           {notice !== null && (
             <Alert variant="destructive" className="mt-3 max-w-[660px]">

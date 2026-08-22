@@ -21,7 +21,12 @@ import { RotateCcw } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import type { Decision } from '@/lib/workspace-api';
-import { decisionOutcome, undoSecondsLeft } from './decision-copy';
+import {
+  DECISION_STALE_ADVICE,
+  DECISION_STALE_LEAD,
+  decisionOutcome,
+  undoSecondsLeft,
+} from './decision-copy';
 
 interface Props {
   decision: Decision;
@@ -116,9 +121,8 @@ export function ApprovalCard({
         */}
         {stale && d.staleReason && (
           <p className="mt-2 text-[12.5px] leading-relaxed text-destructive">
-            <strong className="font-medium">Nothing was sent.</strong>{' '}
-            {d.staleReason} Read it again before you approve — approving now acts
-            on the situation as it stands.
+            <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
+            {d.staleReason} {DECISION_STALE_ADVICE}
           </p>
         )}
         {d.preview && (

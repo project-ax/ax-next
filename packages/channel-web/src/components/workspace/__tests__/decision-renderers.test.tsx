@@ -26,6 +26,7 @@ import {
   DECISION_FAILED,
   DECISION_GOING_OUT,
   DECISION_PENDING_AGENT,
+  DECISION_STALE_LEAD,
 } from '../decision-copy';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
@@ -155,7 +156,7 @@ describe('one row, three renderers — the outcome line', () => {
     });
     for (const text of [queueText(stale), cardText(stale)]) {
       expect(text).toContain('Move it anyway');
-      expect(text).toContain('Nothing was sent.');
+      expect(text).toContain(DECISION_STALE_LEAD);
       expect(text).toContain('booked by someone else at 11:04');
     }
   });

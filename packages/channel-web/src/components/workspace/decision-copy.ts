@@ -34,6 +34,22 @@ import { UNDO_WINDOW_MS, type Decision } from '@/lib/workspace-types';
 export const DECISION_NOTHING_YET = 'Nothing happens until you choose';
 
 /**
+ * What a stale row leads with.
+ *
+ * Deliberately NOT "Nothing was sent" — the sentence this replaced. Most held
+ * calls are not sends: a calendar move, a file deletion, a payment. Telling
+ * someone nothing was SENT, about something that was never going to be sent,
+ * is a reassurance aimed slightly past them, and on the one screen where they
+ * are deciding whether to trust what we say.
+ */
+export const DECISION_STALE_LEAD = 'Nothing has happened yet.';
+export const DECISION_STALE_ADVICE =
+  'Have another look before you approve — it would act on how things are now, not how they were.';
+
+/** The collapsed stale row, where there is room for one clause. */
+export const DECISION_STALE_SUMMARY = 'Needs another look — things changed since it asked';
+
+/**
  * The approval stands; the action has not happened. Word for word the sentence
  * `@ax/decisions` puts on the Activity receipt for the same outcome — the two
  * surfaces describing one event differently is how a reader learns not to trust
@@ -44,32 +60,69 @@ export const DECISION_PENDING_AGENT =
 export const DECISION_PENDING_AGENT_NOTE =
   'It needs its own tools for this one, so it happens on its next run rather than now.';
 
-/** Approved, irreversible, and the grace period has not run out yet. */
-export const DECISION_GOING_OUT = 'You said yes — this is about to go out.';
+/**
+ * Approved, irreversible, and the grace period has not run out yet.
+ *
+ * Phrased without naming the action. "About to be sent" would be right for an
+ * email and wrong for a calendar move, a payment, a file deletion — and the one
+ * thing this line must be is true for whatever it is sitting under.
+ */
+export const DECISION_GOING_OUT = 'You said yes — it is about to go ahead.';
 export const DECISION_GOING_OUT_NOTE =
-  'Nothing has left yet. Undo now and it never will.';
+  'Nothing has happened yet. Undo now and it never will.';
 
 /** The host tried the call and the tool threw. */
 export const DECISION_FAILED = 'It tried to do this, and it did not work.';
 export const DECISION_FAILED_NOTE =
-  'Nothing was completed, and your approval is spent — it will ask again if it still needs to.';
+  'Nothing was completed. Your yes does not carry over, so it will ask again if it still needs to.';
 
 /** Nobody answered in time. */
 export const DECISION_EXPIRED = 'This one ran out of time, so nothing happened.';
 export const DECISION_EXPIRED_NOTE =
-  'It can raise it again the next time it comes up.';
+  'It can ask again the next time this comes up.';
 
 /** The undo POST came back saying it changed nothing. */
 export const DECISION_UNDO_TOO_LATE =
-  'That one had already gone out, so it could not be taken back.';
+  'That had already happened, so it could not be taken back.';
 
 /** An approve/dismiss/undo POST that never reached the server. */
 export const DECISION_ACTION_FAILED =
-  'We could not reach the server, so nothing changed. Have another go?';
+  'We could not reach the server, so nothing changed. Try again in a moment.';
 
 /** `GET /api/workspace/decisions` failed. NOT an empty queue. */
 export const DECISION_READ_FAILED =
   'We could not load what is waiting on you. Nothing has been decided without you — we just could not read the list back right now.';
+
+/**
+ * How long an open decision has left, in plain words — or `null` when saying
+ * so would be noise or a guess.
+ *
+ * Doing nothing is a choice here, and it is the one whose consequence is
+ * invisible: an expired decision cannot be approved at all, only raised again.
+ * A first-timer has no way to know that from a row that just sits there.
+ *
+ * Shown only inside the last day, because a deadline three days out is not a
+ * fact anybody needs while triaging, and a line on every row is a line nobody
+ * reads. Returns `null` for an unparseable date and for one already past —
+ * "expires in -2 hours" is worse than silence, and a row that is somehow open
+ * past its own expiry is a state we should not narrate.
+ */
+export const EXPIRY_HINT_WINDOW_MS = 24 * 60 * 60 * 1000;
+
+export function expiresSoonNote(d: Decision, now: number = Date.now()): string | null {
+  const at = Date.parse(d.expiresAt);
+  if (Number.isNaN(at)) return null;
+  const left = at - now;
+  if (left <= 0 || left > EXPIRY_HINT_WINDOW_MS) return null;
+  const hours = Math.round(left / 3_600_000);
+  const when =
+    hours < 1
+      ? 'in under an hour'
+      : hours === 1
+        ? 'in about an hour'
+        : `in about ${hours} hours`;
+  return `If nobody answers, it expires ${when} and has to be asked again.`;
+}
 
 /**
  * How a resolved row reads.
