@@ -11,6 +11,7 @@ import { makeAllowHostHandler } from './routes-allow-host.js';
 import { registerAttachmentsRoutes } from './routes-attachments.js';
 import { registerChatRoutes } from './routes-chat.js';
 import { makeConnectionsHandlers } from './routes-connections.js';
+import { registerWorkspaceRoutes } from './routes-workspace.js';
 import {
   createBufferFillSubscriber,
   createPermissionCardFillSubscriber,
@@ -48,6 +49,9 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     conversations:create / :get / :list / :delete,
 //     agent:invoke. All hard — the chat-flow surface can't function without
 //     any of them.
+//     TASK-230 adds no hard call: the agent-workspace routes read through
+//     conversations:list / conversations:get (already declared) plus the
+//     optional session:is-alive.
 //   - subscribes: chat:stream-chunk (fills the buffer + per-connection
 //     filter), chat:phase (single-slot phase memory + per-connection
 //     filter), chat:turn-end (host-side eviction so the buffer doesn't
@@ -70,6 +74,14 @@ export interface ChannelWebServerConfig {
    * of truth for the timeout (the orchestrator owns that); it's a sizing hint.
    */
   chatTimeoutMs?: number;
+  /**
+   * Mount the agent-centric workspace surface (`/api/workspace/*`, TASK-230).
+   * Off by default: it is a preview, and an unmounted route is the cheapest
+   * capability minimization there is (invariant #5). `GET /api/features`
+   * mounts either way so the SPA can ask rather than guess — it echoes exactly
+   * this flag.
+   */
+  agentWorkspacePreview?: boolean;
 }
 
 // How far above the configured chat timeout the cursor-shell reap ceiling sits,
@@ -185,6 +197,15 @@ export function createChannelWebServerPlugin(
           hook: 'host-grants:revoke',
           degradation:
             'the Settings "Allowed sites" Revoke control is a no-op (no persisted grants to remove)',
+        },
+        {
+          // TASK-230 — the agent-workspace roster derives each agent's
+          // working/resting state from whether one of its conversations holds a
+          // session the backend still calls alive. Without the probe we do not
+          // know, and "do not know" must never render as "it is busy".
+          hook: 'session:is-alive',
+          degradation:
+            'every agent in the workspace roster reads as resting (liveness cannot be probed, and a guess would be worse than a blank)',
         },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
@@ -480,6 +501,16 @@ export function createChannelWebServerPlugin(
         initCtx,
       );
       for (const u of attachmentRouteUnregisters) unregisterRoutes.push(u);
+
+      // TASK-230 — the agent-centric workspace surface. GET /api/features
+      // always mounts (it is how the SPA learns whether the rest of this exists);
+      // the three /api/workspace/* reads mount only behind the preview flag.
+      // Ships with its consumer (the workspace shell) in the same PR (I3 — no
+      // half-wired surface).
+      const workspaceRouteUnregisters = await registerWorkspaceRoutes(bus, initCtx, {
+        agentWorkspacePreview: config.agentWorkspacePreview === true,
+      });
+      for (const u of workspaceRouteUnregisters) unregisterRoutes.push(u);
     },
 
     async shutdown() {

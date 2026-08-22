@@ -70,6 +70,10 @@ function conversationsMockPlugin(args: {
         'conversations:get',
         'conversations:list',
         'conversations:delete',
+        // TASK-230 — channel-web declares session:is-alive as an OPTIONAL call
+        // (the workspace roster's working/resting probe). Registering it here
+        // keeps the flag-on boot exercising the real path.
+        'session:is-alive',
       ],
       calls: [],
       subscribes: [],
@@ -119,6 +123,12 @@ function conversationsMockPlugin(args: {
           message: 'conversations:delete stub (not exercised by this suite)',
         });
       });
+      // TASK-230 — the agent-workspace roster probes session liveness through
+      // this optional hook. Nothing here is alive, which is the honest answer
+      // for a suite that never starts a session.
+      bus.registerService('session:is-alive', 'mock-conversations', async () => ({
+        alive: false,
+      }));
     },
   };
 }
@@ -291,6 +301,8 @@ function skillsMockPlugin(): Plugin {
 
 interface BootArgs {
   user?: { id: string; isAdmin: boolean } | null;
+  /** TASK-230 — mount the /api/workspace/* preview surface. */
+  agentWorkspacePreview?: boolean;
   byReqId?: Map<
     string,
     | { conversationId: string; agentId: string; userId: string; activeReqId: string }
@@ -338,7 +350,11 @@ async function boot(args: BootArgs = {}): Promise<{
       chatRunMockPlugin(),
       attachmentsMockPlugin(),
       skillsMockPlugin(),
-      createChannelWebServerPlugin({}),
+      createChannelWebServerPlugin(
+        args.agentWorkspacePreview === undefined
+          ? {}
+          : { agentWorkspacePreview: args.agentWorkspacePreview },
+      ),
     ],
   });
   return { harness, port: http.boundPort(), http };
@@ -504,6 +520,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation:
             'the Settings "Allowed sites" Revoke control is a no-op (no persisted grants to remove)',
         },
+        {
+          hook: 'session:is-alive',
+          degradation:
+            'every agent in the workspace roster reads as resting (liveness cannot be probed, and a guess would be worse than a blank)',
+        },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     });
@@ -569,6 +590,47 @@ describe('@ax/channel-web server plugin (integration)', () => {
         },
       );
       expect(r.status).toBe(401);
+    });
+  });
+
+  describe('agent-workspace routes (TASK-230)', () => {
+    it('declares session:is-alive in manifest.optionalCalls', () => {
+      const plugin = createChannelWebServerPlugin();
+      const hooks = (plugin.manifest.optionalCalls ?? []).map((o) => o.hook);
+      expect(hooks).toContain('session:is-alive');
+    });
+
+    it('mounts /api/workspace/* and echoes the flag when the preview is on', async () => {
+      const booted = await boot({ user: null, agentWorkspacePreview: true });
+      harness = booted.harness;
+
+      // user=null → auth throws → 401. A 404 would mean the route is missing,
+      // which is exactly the bug this asserts against.
+      const state = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/state`,
+      );
+      expect(state.status).toBe(401);
+
+      // The flag echo needs no session at all — the SPA reads it before it
+      // knows whether anyone is signed in.
+      const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
+      expect(features.status).toBe(200);
+      expect(await features.json()).toEqual({ agentWorkspacePreview: true });
+    });
+
+    it('leaves /api/workspace/* unmounted when the preview is off', async () => {
+      const booted = await boot({ user: null });
+      harness = booted.harness;
+
+      // Not registered at all — the cheapest capability minimization there is.
+      const state = await fetch(
+        `http://127.0.0.1:${booted.port}/api/workspace/state`,
+      );
+      expect(state.status).toBe(404);
+
+      const features = await fetch(`http://127.0.0.1:${booted.port}/api/features`);
+      expect(features.status).toBe(200);
+      expect(await features.json()).toEqual({ agentWorkspacePreview: false });
     });
   });
 

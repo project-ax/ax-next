@@ -1,10 +1,9 @@
 /**
- * Agent-workspace prototype — shared types.
+ * Agent-workspace — the shapes the `/api/workspace/*` routes speak.
  *
- * PROTOTYPE. These shapes are the point of the exercise: they are drawn to
- * match what the host will actually persist once the approvals substrate
- * lands, so wiring the real backend is a matter of deleting `mock/workspace.ts`
- * and pointing `src/lib/workspace-api.ts` at real routes — not rewriting the UI.
+ * These started life in `mock/` next to the clickable prototype. They now sit
+ * in `src/lib/` because they are the real wire contract: `routes-workspace.ts`
+ * produces them and the workspace components consume them.
  *
  * Two shapes are load-bearing and deliberately mirror existing contracts:
  *
@@ -21,9 +20,11 @@
  *     agent executes the tool itself when the decision arrives; an unattended one
  *     ends the turn and the host replays the recorded call later.
  *
- * Types live in `mock/` because that is the established direction in this
- * package (`src/lib/agent-store.ts` already imports `Agent` from `mock/agents`).
- * When the real substrate ships they move to a plugin package.
+ * `Decision`, `FreshnessPredicate`, `Attendance` and `ExecutionPath` are
+ * declared here but not yet PRODUCED by anything: `/api/workspace/state`
+ * returns `decisions: []` until `@ax/decisions` lands (AW-4/AW-5/AW-11), at
+ * which point these become re-exports of the shapes that plugin owns. They are
+ * kept because `DecisionRow` and `ApprovalCard` are tested against them today.
  */
 
 /** Mirrors `ToolCallSchema` in `@ax/ipc-protocol`. */
@@ -121,33 +122,38 @@ export interface Decision {
   staleReason: string | null;
 }
 
+/**
+ * `working` and `resting` are the only two the host can derive today (a live
+ * session on one of the agent's conversations, or not). `waiting` arrives with
+ * the `hold` verdict (AW-2) and `stopped` with the halted-agent state (AW-11);
+ * both stay in the union so the renderers that already handle them keep
+ * compiling, and neither is ever produced by `/api/workspace/state` yet.
+ */
 export type AgentRunState = 'working' | 'waiting' | 'resting' | 'stopped';
-
-/** The channel that opened the conversation — the prior for `Attendance`. */
-export type AgentChannel = 'web' | 'slack' | 'routine';
 
 export interface WorkspaceAgent {
   id: string;
+  /** The agent's `displayName`. */
   name: string;
-  role: string;
-  /** Lucide icon name, resolved by the client. */
-  icon: string;
   state: AgentRunState;
-  channel: AgentChannel;
-  /** What it is doing right now, in plain words. */
-  now: string;
+  /**
+   * What it is doing right now, in plain words — `null` until the activity
+   * line has a real producer (design §4.2, AW-8/AW-14). A null renders as the
+   * state word alone; it is never filled with a placeholder phrase, because a
+   * placeholder is indistinguishable from a claim.
+   */
+  now: string | null;
   /**
    * A real counter from the loop, or null. Deliberately NOT a percentage and
    * NOT an ETA: an agent cannot know how long it has left, and one wrong
-   * "~2 min left" costs more trust than the widget could ever earn.
+   * "~2 min left" costs more trust than the widget could ever earn. Always
+   * null until a tool reports one (AW-8).
    */
   counter: { done: number; total: number; unit: string } | null;
   /** ISO. The UI renders elapsed time from this instead of guessing remaining. */
   startedAt: string | null;
   /** Why it stopped. Only set when `state === 'stopped'`. */
   stoppedReason: string | null;
-  paused: boolean;
-  footer: string;
 }
 
 /**
@@ -233,5 +239,10 @@ export interface PastConversation {
   msgs: ThreadMessage[];
 }
 
-/** Which fixture the mock server is currently serving. */
-export type DemoScenario = 'attended' | 'unattended' | 'incident';
+/**
+ * How long an approve/dismiss can be taken back. Lived in the mock decision
+ * machine; it is a property of the SURFACE (how long the undo affordance stays
+ * on screen), so it survives that file's deletion here rather than in `mock/`.
+ * `@ax/decisions` will own the server-side twin when it lands (AW-5).
+ */
+export const UNDO_WINDOW_MS = 10_000;

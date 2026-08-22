@@ -45,7 +45,7 @@ import { FirstRunAutoCreate } from './components/onboard/FirstRunAutoCreate';
 import { NewAgentDialog } from './components/onboard/NewAgentDialog';
 import { LoginPage } from './components/LoginPage';
 import { WorkspaceShell } from './components/workspace/WorkspaceShell';
-import { AGENT_WORKSPACE_PREVIEW } from './lib/features';
+import { fetchFeatures, DEFAULT_FEATURES, type Features } from './lib/features';
 import { Sidebar } from './components/Sidebar';
 import { SessionHeader } from './components/SessionHeader';
 import { Thread } from './components/Thread';
@@ -59,7 +59,7 @@ import { toastActions } from './lib/toast-store';
 type AppMode =
   | { kind: 'loading' }
   | { kind: 'wizard' }
-  | { kind: 'authenticated'; user: AuthUser }
+  | { kind: 'authenticated'; user: AuthUser; features: Features }
   | { kind: 'unauthenticated' };
 
 function isSetupPath(): boolean {
@@ -68,10 +68,11 @@ function isSetupPath(): boolean {
 }
 
 /**
- * The agent-workspace prototype lives outside the auth/bootstrap gate on
- * purpose: it is a dev-only design surface with its own mock backend, and
- * routing it through the first-run agent gate would mean the prototype's
- * behaviour depended on whatever the real agent list happened to contain.
+ * `/workspace` is a normal, gated surface: it goes through bootstrap, sign-in,
+ * and the first-run agent flow like every other route, and it renders only when
+ * the server says this deployment has the preview turned on
+ * (`features.agentWorkspacePreview`). A signed-out visitor gets the sign-in
+ * page, same as anywhere else.
  */
 function isWorkspacePath(): boolean {
   const p = window.location.pathname;
@@ -80,7 +81,6 @@ function isWorkspacePath(): boolean {
 
 export const App = () => {
   const [mode, setMode] = useState<AppMode>({ kind: 'loading' });
-  const workspacePreview = AGENT_WORKSPACE_PREVIEW && isWorkspacePath();
 
   // Full-page OAuth return fallback (Task 12). Runs once on mount. The popup
   // case is already handled by the bridge in main.tsx before React mounts, so
@@ -110,11 +110,6 @@ export const App = () => {
   }, []);
 
   useEffect(() => {
-    // The prototype route renders below without consulting `mode`, so skip the
-    // bootstrap + session round-trips entirely rather than firing an /admin/me
-    // that is guaranteed to 401 and clutter the console.
-    if (workspacePreview) return;
-
     let cancelled = false;
     void (async () => {
       // Defensive: lib/bootstrap-status.ts already swallows network and
@@ -147,10 +142,21 @@ export const App = () => {
       }
 
       try {
-        const session = await getSession();
+        // Concurrent, not serial: the feature flags are only needed once we
+        // know who the user is, but making boot wait for a second round-trip
+        // would add latency to every sign-in.
+        //
+        // Defensive .catch: lib/features.ts already swallows every failure and
+        // returns the all-off default, but a future refactor could let one
+        // escape — and a throw here would land an authenticated user on the
+        // sign-in page. Same posture as the fetchBootstrapStatus() guard above.
+        const [session, features] = await Promise.all([
+          getSession(),
+          fetchFeatures().catch(() => DEFAULT_FEATURES),
+        ]);
         if (cancelled) return;
         if (session?.user) {
-          setMode({ kind: 'authenticated', user: session.user });
+          setMode({ kind: 'authenticated', user: session.user, features });
         } else {
           setMode({ kind: 'unauthenticated' });
         }
@@ -163,14 +169,7 @@ export const App = () => {
     return () => {
       cancelled = true;
     };
-  }, [workspacePreview]);
-
-  // Checked after the hooks (rules-of-hooks) but before every gate: the
-  // prototype supplies its own data and must not be routed through bootstrap,
-  // sign-in, or the first-run agent flow.
-  if (workspacePreview) {
-    return <WorkspaceShell />;
-  }
+  }, []);
 
   if (mode.kind === 'loading') {
     return (
@@ -185,10 +184,10 @@ export const App = () => {
   if (mode.kind === 'unauthenticated') {
     return <LoginPage />;
   }
-  return <AppContent user={mode.user} />;
+  return <AppContent user={mode.user} features={mode.features} />;
 };
 
-const AppContent = ({ user }: { user: AuthUser }) => {
+const AppContent = ({ user, features }: { user: AuthUser; features: Features }) => {
   useTitleEvents();
   useHydrateAgents(); // lifted from SessionHeader so the first-run gate can read the result
   const { agents, agentsStatus, selectedAgentId, pendingAgentId } = useAgentStore();
@@ -301,6 +300,21 @@ const AppContent = ({ user }: { user: AuthUser }) => {
             bootstrapKickoff.trigger();
           }}
         />
+        <ToastStack />
+      </UserProvider>
+    );
+  }
+
+  // The agent workspace. Below the first-run gate on purpose: a brand-new user
+  // still gets the create-an-agent flow first, because a workspace with no
+  // agents in it has nothing to show them.
+  //
+  // No AssistantRuntimeProvider here — the workspace doesn't mount the
+  // assistant-ui runtime.
+  if (isWorkspacePath() && features.agentWorkspacePreview) {
+    return (
+      <UserProvider value={user}>
+        <WorkspaceShell />
         <ToastStack />
       </UserProvider>
     );

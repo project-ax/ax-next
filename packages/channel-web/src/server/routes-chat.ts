@@ -363,8 +363,12 @@ export interface ChatRouteDeps {
  * hook so team agents surface in the agent picker. The hook is k8s-preset-only
  * (declared as an optionalCall); a preset without @ax/teams — or a lookup
  * failure — degrades to personal-only rather than 500-ing the whole picker.
+ *
+ * Exported because the agent-workspace roster (routes-workspace.ts) needs the
+ * exact same read — one source of truth (invariant #4) beats two copies that
+ * quietly disagree about whether team agents count.
  */
-async function listTeamIdsForUser(
+export async function listTeamIdsForUser(
   bus: HookBus,
   ctx: AgentContext,
   userId: string,

@@ -16,16 +16,11 @@ const agents: WorkspaceAgent[] = [
   {
     id: 'scheduler',
     name: 'Scheduler',
-    role: 'Guards your calendar',
-    icon: 'calendar-days',
     state: 'waiting',
-    channel: 'routine',
-    now: '',
+    now: null,
     counter: null,
     startedAt: null,
     stoppedReason: null,
-    paused: false,
-    footer: '',
   },
 ];
 

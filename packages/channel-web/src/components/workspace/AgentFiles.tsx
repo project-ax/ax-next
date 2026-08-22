@@ -21,10 +21,20 @@ export function AgentFiles({
   const [idx, setIdx] = useState(0);
   const file = files[idx];
 
+  /*
+    Empty is the only thing this tab shows today — nothing reads the agent's
+    workspace into `files` yet (AW-12). We say what we can see rather than
+    inventing a document to fill the space.
+  */
   if (!file) {
     return (
-      <div className="px-6 py-10 text-center text-[13.5px] text-muted-foreground">
-        {agentName} has not written anything yet.
+      <div className="flex flex-col gap-1.5 px-6 py-10 text-center">
+        <p className="text-[13.5px] text-muted-foreground">
+          {agentName} has not written anything yet.
+        </p>
+        <p className="mx-auto max-w-[420px] text-[12.5px] leading-relaxed text-muted-foreground">
+          When it writes a file in its own workspace, we will show it here.
+        </p>
       </div>
     );
   }

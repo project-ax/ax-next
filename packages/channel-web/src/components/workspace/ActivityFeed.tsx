@@ -42,10 +42,22 @@ export function ActivityFeed({ events, agents, agentId, onOpenAgent }: Props) {
   const days = [...new Set(rows.map((e) => e.day))];
   const name = (id: string) => agents.find((a) => a.id === id)?.name ?? id;
 
+  /*
+    Empty is the ONLY thing this feed shows today: nothing writes activity
+    events yet (AW-14). Two lines, because "Nothing recorded yet." on its own
+    reads as "your agents did nothing", and the truth is that we have not
+    started keeping the receipts.
+  */
   if (rows.length === 0) {
     return (
-      <div className="px-5 py-10 text-center text-[13.5px] text-muted-foreground">
-        Nothing recorded yet.
+      <div className="flex flex-col gap-1.5 px-5 py-10 text-center">
+        <p className="text-[13.5px] text-muted-foreground">
+          Nothing recorded yet.
+        </p>
+        <p className="mx-auto max-w-[420px] text-[12.5px] leading-relaxed text-muted-foreground">
+          We have not started keeping a record of what agents do. When we do,
+          every run and every decision shows up here.
+        </p>
       </div>
     );
   }

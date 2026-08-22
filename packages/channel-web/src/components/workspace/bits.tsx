@@ -1,24 +1,12 @@
 /**
- * Agent-workspace prototype — small shared pieces.
+ * Agent-workspace — small shared pieces.
  *
  * Everything here composes shadcn primitives and semantic tokens. No raw
  * colours: "held for you" gets the `warning` token added for exactly this
  * surface, because waiting-on-a-human is a real third state that is neither an
  * error nor business as usual.
  */
-import {
-  AlertTriangle,
-  Ban,
-  CalendarDays,
-  Check,
-  CircleDashed,
-  CornerUpLeft,
-  Hand,
-  Hash,
-  Mail,
-  Plane,
-  type LucideIcon,
-} from 'lucide-react';
+import { AlertTriangle, Ban, Check, Hand, type LucideIcon } from 'lucide-react';
 import { AvatarTile } from '@/components/AvatarTile';
 import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
@@ -26,27 +14,39 @@ import type {
   AgentRunState,
   PermissionRow,
   WorkspaceAgent,
-} from '../../../mock/workspace-types';
+} from '@/lib/workspace-types';
 
-const ICONS: Record<string, LucideIcon> = {
-  mail: Mail,
-  hash: Hash,
-  'calendar-days': CalendarDays,
-  'corner-up-left': CornerUpLeft,
-  plane: Plane,
-};
+/**
+ * Up to two initials from the agent's display name — the same convention the
+ * shipped avatars use (`AgentChip` over `AvatarTile`), and the only identity
+ * mark we actually have. The prototype keyed a lucide glyph off an `icon`
+ * field the real agent record never carried: a picked-for-you icon is
+ * decoration pretending to be information.
+ */
+function initials(name: string): string {
+  const parts = name.trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return '?';
+  const first = parts[0]?.[0] ?? '';
+  const last = parts.length > 1 ? (parts[parts.length - 1]?.[0] ?? '') : '';
+  return (first + last).toUpperCase();
+}
 
 export function AgentTile({
   agent,
   size = 26,
 }: {
-  agent: Pick<WorkspaceAgent, 'icon'>;
+  agent: Pick<WorkspaceAgent, 'name'>;
   size?: number;
 }) {
-  const Icon = ICONS[agent.icon] ?? CircleDashed;
   return (
     <AvatarTile size={size} shape="square">
-      <Icon size={Math.round(size * 0.5)} className="text-foreground/70" />
+      <span
+        aria-hidden="true"
+        style={{ fontSize: Math.max(9, Math.round(size * 0.38)) }}
+        className="font-medium leading-none text-foreground/70"
+      >
+        {initials(agent.name)}
+      </span>
     </AvatarTile>
   );
 }
@@ -76,7 +76,6 @@ export function StateDot({
 }
 
 export function AgentStateLabel({ agent }: { agent: WorkspaceAgent }) {
-  if (agent.paused) return <Badge variant="secondary">Paused</Badge>;
   if (agent.state === 'stopped') return <Badge variant="destructive">Stopped</Badge>;
   if (agent.state === 'waiting')
     return (

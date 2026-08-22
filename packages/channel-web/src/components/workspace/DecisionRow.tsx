@@ -19,7 +19,7 @@ import { useEffect, useState } from 'react';
 import { ArrowRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { UNDO_WINDOW_MS } from '../../../mock/decision-machine';
+import { UNDO_WINDOW_MS } from '@/lib/workspace-types';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { StateDot } from './bits';
 
