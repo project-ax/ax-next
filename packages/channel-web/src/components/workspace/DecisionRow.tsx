@@ -205,10 +205,19 @@ export function DecisionRow({
             guard has tripped that sentence is false, and repeating it under an
             alert that says the opposite is worse than saying nothing — so the
             clause is dropped on a stale row rather than shown stale.
+
+            TWO conditions, not one, and the second is not belt-and-braces:
+            `label` is NULLABLE (AW-7) and the host writes null onto exactly the
+            rows this branch is about. `!stale` is what we MEAN; `label !== null`
+            is what is TRUE on the wire, and a row that arrived stale from the
+            server on a page load has both. Rendering on `!stale` alone would
+            print "checked against: null" the moment the two disagreed.
           */}
           <p className="mt-3 text-[11.5px] text-muted-foreground">
             {provenance(d, agent.name)}
-            {!stale && d.freshness && ` · checked against: ${d.freshness.label}`}
+            {!stale &&
+              d.freshness?.label != null &&
+              ` · checked against: ${d.freshness.label}`}
           </p>
 
           {/*

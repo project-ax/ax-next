@@ -307,6 +307,49 @@ describe('@ax/preset-k8s wiring', () => {
     expect(registered.has('session:queue-work')).toBe(true);
   });
 
+  it('loads the freshness producers the guard has nothing to guard without (TASK-228)', () => {
+    // THE REASON THIS TEST EXISTS. `tool-freshness:capture:<tool>` /
+    // `tool-freshness:check:<tool>` are reached through the dynamic-hook
+    // exception, so @ax/decisions can declare NOTHING about them — not a
+    // `call`, not even an `optionalCalls` entry, because there is no name to
+    // write. Nothing fails when a producer disappears: every decision for that
+    // tool silently becomes unguarded and the surface looks completely fine.
+    //
+    // This assertion is the whole of that safety net.
+    const plugins = createK8sPlugins({ ...stubConfig, allowUserInstalledSkills: true });
+    const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
+
+    // The cheap-and-obvious producer: one catalog read, always loaded because
+    // @ax/skill-broker is pushed unconditionally.
+    expect(registered.has('tool-freshness:capture:request_capability')).toBe(true);
+    expect(registered.has('tool-freshness:check:request_capability')).toBe(true);
+
+    // The one where it matters: approving writes the object that carries the
+    // agent's outward reach. Open-mode only, like the tool it guards.
+    expect(registered.has('tool-freshness:capture:connector_propose')).toBe(true);
+    expect(registered.has('tool-freshness:check:connector_propose')).toBe(true);
+
+    // And the world both producers read.
+    expect(registered.has('skills:get')).toBe(true);
+    expect(registered.has('connectors:resolve')).toBe(true);
+  });
+
+  it('never ships a freshness half-pair (TASK-228)', () => {
+    // A `check` with no `capture` guards nothing and says nothing: nothing
+    // writes the predicate it exists to re-read. @ax/decisions logs it at boot,
+    // but a log line in a cluster is a poor substitute for a red build.
+    for (const cfg of [stubConfig, { ...stubConfig, allowUserInstalledSkills: true }]) {
+      const registered = createK8sPlugins(cfg).flatMap((p) => p.manifest.registers);
+      const captures = registered
+        .filter((h) => h.startsWith('tool-freshness:capture:'))
+        .map((h) => h.slice('tool-freshness:capture:'.length));
+      const checks = registered
+        .filter((h) => h.startsWith('tool-freshness:check:'))
+        .map((h) => h.slice('tool-freshness:check:'.length));
+      expect([...captures].sort()).toEqual([...checks].sort());
+    }
+  });
+
   it('registers @ax/decisions LAST among the tool:pre-call subscribers (TASK-225)', () => {
     // Registration order IS subscriber order (`HookBus.subscribe` appends),
     // `HookBus.fire` stops at the FIRST rejection, and `Hold` is a `Rejection`

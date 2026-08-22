@@ -48,6 +48,13 @@ describe('DecisionRow — pending', () => {
     ).toBeTruthy();
   });
 
+  it('says nothing rather than "null" when the tool supplied no label', () => {
+    // A producer may capture a predicate it has no legible sentence for. The
+    // guard still works; there is simply no clause to print.
+    renderRow(decisionFixture({ freshness: { kind: 'slot-etag', value: 'etag-free', label: null } }));
+    expect(screen.queryByText(/checked against:/)).toBeNull();
+  });
+
   it('offers the three ways out and says nothing happens yet', () => {
     renderRow(decisionFixture());
     expect(screen.getByRole('button', { name: 'Move it' })).toBeTruthy();
@@ -141,6 +148,24 @@ describe('DecisionRow — stale', () => {
     // directly under an alert saying the slot was taken is worse than silence.
     renderRow(stale);
     expect(screen.queryByText(/checked against:/)).toBeNull();
+  });
+
+  it('drops it on the shape the host actually writes, too (AW-7)', () => {
+    // The row above still carries a label, and that is deliberate: it proves
+    // the RENDERER refuses to print the clause on a stale row whatever the
+    // wire says. This one is the wire's own shape — `@ax/decisions` strips
+    // `label` as it moves the row to `stale`, so `label: null` is what a real
+    // stale decision arrives with. Both have to be handled: a page loaded
+    // fresh gets the null, and an optimistic client-side transition may not.
+    renderRow(
+      decisionFixture({
+        status: 'stale',
+        staleReason: 'Thursday 9:30 was booked by someone else at 11:04.',
+        freshness: { kind: 'slot-etag', value: 'etag-taken', label: null },
+      }),
+    );
+    expect(screen.queryByText(/checked against:/)).toBeNull();
+    expect(screen.queryByText(/null/)).toBeNull();
   });
 
   it('re-words the primary action, because approving now means something else', () => {

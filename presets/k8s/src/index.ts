@@ -1003,6 +1003,13 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // (tool:register) + @ax/skills (skills:search-catalog / skills:get); both
   // are loaded above. Pushed unconditionally — it needs no API key (unlike
   // @ax/web-tools), and consumes only untrusted intent text in-memory.
+  //
+  // TASK-228 (AW-7): it also registers the FRESHNESS PAIR for
+  // `request_capability` — the AW-3 rule table holds that call, and the host
+  // replays it verbatim on approval, so a human can approve at 1pm a catalog
+  // entry they were shown at 7am. The predicate is one `skills:get` read, which
+  // is why this is the cheap-and-obvious half of AW-7's pair. Its absence would
+  // not fail a boot (see @ax/decisions below), so preset.test.ts asserts it.
   plugins.push(createSkillBrokerPlugin());
 
   // ----- 8a''. host grants ----------------------------------------------
@@ -1073,6 +1080,31 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // that THIS preset does load their producers. Registration order does not
   // matter for either (both are resolved at call time, and @ax/conversations
   // is pushed below).
+  //
+  // TASK-228 (AW-7) makes the FRESHNESS GUARD real. A hold now asks the tool
+  // for a predicate (`tool-freshness:capture:<tool>`) and an approval re-reads
+  // it (`tool-freshness:check:<tool>`) before anything is claimed or run; a
+  // predicate that moved re-opens the decision as `stale` and executes NOTHING.
+  //
+  // Both hook names are DYNAMIC — built from the recorded call — so, like
+  // `tool:execute:<name>`, @ax/decisions can declare nothing about them in its
+  // manifest, not even an `optionalCalls` entry. That means a producer quietly
+  // disappearing from this preset would silently unguard every decision for
+  // that tool with nothing failing. `preset.test.ts` asserts the two producers
+  // AW-7 ships are loaded here and that neither ever ships as a half-pair;
+  // that assertion IS the safety net.
+  //
+  // The producers themselves live with their tools, above and below:
+  // `request_capability` in @ax/skill-broker (unconditional) and
+  // `connector_propose` in @ax/tool-connector-propose (open-mode only). Every
+  // other tool produces no predicate and its decisions execute unguarded on
+  // approval — right for a call with nothing meaningful to re-check, and the
+  // open question AW-7 carries forward for the rest of the catalog.
+  //
+  // ORDER NOTE: @ax/tool-connector-propose is pushed AFTER this plugin, so its
+  // pair is not on the bus when @ax/decisions inits. That is why the plugin's
+  // pairing audit runs a second time on its first maintenance sweep, by which
+  // point the whole boot is done.
   //
   // HALF-WIRED WINDOW NARROWED (TASK-232 / AW-11): the Today queue now calls
   // `decisions:list` / `:get` / `:approve` / `:dismiss` / `:undo` through
@@ -1213,6 +1245,16 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // ax-connector-creator (a builtin loaded by loadBuiltinSkills, also gated on
   // this flag) drives it. The hard `connectors:install-authored` dep means this
   // is only ever pushed where @ax/connectors is loaded (k8s, just above).
+  //
+  // TASK-228 (AW-7): it also registers the FRESHNESS PAIR for
+  // `connector_propose`, and this is the producer that proves the guard MATTERS
+  // rather than merely fires. A connector carries the hosts the agent may reach
+  // and the slot the user's key lands in; approving a held propose replays the
+  // recorded draft into the owner's namespace under the id the model chose. If
+  // a human set that connection up in the meantime, the replay would write the
+  // agent's older draft over a live, human-approved one. The predicate is
+  // `connectors:resolve` on that id — declared `optionalCalls`, because without
+  // it the tool still works, it just proposes unguarded.
   if (config.allowUserInstalledSkills) {
     plugins.push(createToolConnectorProposePlugin());
   }

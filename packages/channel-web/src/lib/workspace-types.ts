@@ -82,12 +82,23 @@ export function isOpenDecision(d: { status: DecisionStatus }): boolean {
  * Captured WITH the decision at hold-time. `value` is opaque to the UI — the
  * tool that produced the call decides what "unchanged" means (a thread's head
  * message id, a calendar slot etag, a document revision). `label` is the only
- * part a human reads.
+ * part a human reads, and the ONLY part a renderer may print: `kind` and
+ * `value` are tokens, and nothing here parses one.
+ *
+ * `label` IS NULLABLE, and the guard is why (AW-7). The "checked against…"
+ * clause describes hold-time; the instant the guard trips, that sentence is
+ * false, so `@ax/decisions` strips it as it moves the row to `stale`. Repeating
+ * it under an alert saying the world moved would be worse than silence (design
+ * §3.4). A renderer therefore has to handle `label === null` — it is not a
+ * defensive branch, it is the stale row's normal shape.
+ *
+ * Mirrors `packages/decisions/src/types.ts`. A divergence between the two is a
+ * bug in one of them, not a variation.
  */
 export interface FreshnessPredicate {
   kind: string;
   value: string;
-  label: string;
+  label: string | null;
 }
 
 /**

@@ -268,7 +268,11 @@ interface StoredDecision {
   callFingerprint: string;
   ruleId: string | null;
   irreversible: boolean;
-  freshness: { kind: string; value: string; label: string } | null;
+  // `label` is NULLABLE on the stored row, and this mirror has to say so or
+  // it quietly stops being a mirror: `@ax/decisions` STRIPS the label as it
+  // moves a row to `stale` (AW-7), because the "checked against…" clause
+  // describes hold-time and is false the instant the guard trips.
+  freshness: { kind: string; value: string; label: string | null } | null;
   summary: string;
   detail: string;
   preview: { meta: string; body: string } | null;
@@ -775,6 +779,14 @@ export function toWireDecision(stored: StoredDecision): Decision {
     // anyone, so the whole predicate goes rather than half of it. `kind` and
     // `value` are opaque tokens the UI never parses or prints — see
     // `FreshnessPredicate`.
+    //
+    // This is ALSO the stale row's path since AW-7: the plugin strips `label`
+    // when the guard trips, so `fenceLine` answers null and the whole predicate
+    // drops here rather than in the renderer. The client type still declares
+    // `label` nullable — it mirrors the ROW's optionality, so the two
+    // `FreshnessPredicate` declarations stay one shape — and `DecisionRow`
+    // handles the null anyway. The narrowing is this route's decision to make,
+    // not something the type should pretend cannot happen.
     freshness:
       stored.freshness !== null && freshnessLabel !== null
         ? {

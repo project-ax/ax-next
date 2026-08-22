@@ -9,6 +9,23 @@ export { sweepExpired, runDueReplays, DEFAULT_REPLAY_BATCH } from './expiry.js';
 export type { DecisionsPluginOptions } from './plugin.js';
 export { callFingerprint } from './fingerprint.js';
 export {
+  auditFreshnessPairs,
+  captureFreshness,
+  checkFreshness,
+  freshnessCaptureHook,
+  freshnessCheckHook,
+  FRESHNESS_CAPTURE_PREFIX,
+  FRESHNESS_CHECK_PREFIX,
+  UNREADABLE_SENTENCE,
+  UNREADABLE_VALUE,
+} from './freshness.js';
+export type {
+  FreshnessCaptureInput,
+  FreshnessCaptureOutput,
+  FreshnessCheckInput,
+  FreshnessCheckOutput,
+} from './freshness.js';
+export {
   approveDecision,
   dismissDecision,
   undoDecision,

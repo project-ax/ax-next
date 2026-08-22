@@ -139,7 +139,13 @@ export function approveDecision(d: Decision, world: ApproveWorld): ApproveResult
             `The ${d.freshness.kind.replace(/-/g, ' ')} changed since this was drafted.`,
           // Re-capture, so approving again after the human has looked at the
           // new state executes rather than bouncing forever.
-          freshness: { ...d.freshness, value: observed },
+          //
+          // AND DROP THE LABEL. The "checked against…" clause describes
+          // HOLD-TIME. The instant the guard trips it is false, and repeating
+          // it under an alert that says the opposite is worse than silence
+          // (design §3.4). The renderer must not have to decide this — a stale
+          // row simply has no clause to show.
+          freshness: { ...d.freshness, value: observed, label: null },
         },
       };
     }
