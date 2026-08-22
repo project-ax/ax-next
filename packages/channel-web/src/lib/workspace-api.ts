@@ -134,6 +134,24 @@ export interface UndoResult {
   undone: boolean;
 }
 
+/**
+ * `GET /api/workspace/decisions/:decisionId` — one row, read back.
+ *
+ * The queue still has exactly ONE producer — `decisions()` above, the list —
+ * and this is not a second one. It exists because that list answers with
+ * still-OPEN rows only: a decision that just resolved (approved, dismissed)
+ * drops out of it immediately. A resolved row can stay on screen for a few
+ * seconds afterward — the undo affordance's countdown lives there — and while
+ * it does, the only way to find out the SERVER's current answer for that one
+ * row (has the call since been consumed or replayed, closing the undo window
+ * early) is to ask for it by id. Same projection (`toWireDecision`) as every
+ * other decision response; this is a re-read of one row already in the queue,
+ * not a new view onto it.
+ */
+export interface DecisionRead {
+  decision: Decision;
+}
+
 /** One page of the activity collection — see `workspaceApi.activity`. */
 export interface ActivityPage {
   events: ActivityEvent[];
@@ -293,6 +311,10 @@ export const workspaceApi = {
   approveDecision: (id: string) => decisionPost<ApproveResult>(id, 'approve'),
   dismissDecision: (id: string) => decisionPost<DismissResult>(id, 'dismiss'),
   undoDecision: (id: string) => decisionPost<UndoResult>(id, 'undo'),
+
+  /** One row, re-read by id. See `DecisionRead` for why this exists. */
+  decision: (id: string) =>
+    req<DecisionRead>(`/decisions/${encodeURIComponent(id)}`),
 
   /**
    * One agent's panel. `conversationId` reads one of the agent's PAST
