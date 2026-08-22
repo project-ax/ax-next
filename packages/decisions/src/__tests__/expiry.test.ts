@@ -49,6 +49,7 @@ function base(over: Partial<Decision> = {}): Decision {
     staleReason: null,
     consumedAt: null,
     replayDueAt: null,
+    replayClaimedAt: null,
     replayError: null,
     ...over,
   };

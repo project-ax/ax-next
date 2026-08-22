@@ -442,6 +442,7 @@ describe('decisions canary', () => {
         // window at all.
         'irreversible',
         'replayDueAt',
+        'replayClaimedAt',
         'replayedAt',
         'replayError',
         'freshness',
@@ -706,6 +707,36 @@ describe('decisions canary — execute on approve', () => {
     expect(loser.decision!.status).toBe('executed');
     expect(loser.path).toBeNull();
     expect(loser.error).toBeNull();
+  });
+
+  it('an agent that calls again WHILE the host is replaying is held, not let through', async () => {
+    // The window a review caught: between the host committing to the replay and
+    // the call returning, the row is `executed` with nothing consumed. An agent
+    // re-issuing the byte-identical call in that window would have spent the
+    // same yes and run the call a second time. `replay_claimed_at` is set in the
+    // same statement that claims the approval, so the door is shut the whole
+    // time the call is in flight.
+    const h = await boot();
+    let insideReplay: Awaited<ReturnType<typeof h.bus.fire>> | undefined;
+    h.bus.registerService<ToolCall, unknown>(
+      `tool:execute:${HOLD_RULE.match.tool}`,
+      '@ax/decisions/test/slow-host-tool',
+      async () => {
+        // The agent wakes up mid-send and asks for exactly the same thing.
+        insideReplay = await h.bus.fire('tool:pre-call', userCtx(h), CALL);
+        return { ok: true };
+      },
+    );
+    const id = await holdAndId(h, routineCtx(h), CALL);
+
+    const out = await approve(h, userCtx(h), id);
+    expect(out.executed).toBe(true);
+
+    // Held — a SECOND decision row, so the human sees the second attempt rather
+    // than it silently riding the first approval.
+    expect(isHold(insideReplay)).toBe(true);
+    expect((insideReplay as unknown as Hold).hold.decisionId).not.toBe(id);
+    expect((await readDecision(h, userCtx(h), id)).consumedAt).toBeNull();
   });
 
   it('a failed replay never emits the approved receipt', async () => {

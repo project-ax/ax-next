@@ -312,6 +312,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           const hasExecutor = bus.hasService(`tool:execute:${current.call.name}`);
           const parked = !attended && !hasExecutor;
           const deferred = !attended && hasExecutor && current.irreversible;
+          const immediate = !attended && hasExecutor && !current.irreversible;
           const replayDueAt = deferred
             ? new Date(Date.parse(nowIso) + UNDO_WINDOW_MS).toISOString()
             : null;
@@ -333,6 +334,12 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
               nowIso,
               status: parked ? 'approved-pending-agent' : 'executed',
               replayDueAt,
+              // The host is taking this replay RIGHT NOW, so the row closes to
+              // the agent's gate and to undo in the same statement that claims
+              // it. Skipping this leaves a window — small, but exactly wide
+              // enough for a concurrent byte-identical agent call to consume
+              // the authorisation and run the call a second time.
+              replayClaimedAt: immediate ? nowIso : null,
             });
           } catch (err) {
             ctx.logger.warn('decision_claim_refused', {

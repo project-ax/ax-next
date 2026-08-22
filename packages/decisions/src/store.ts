@@ -66,7 +66,10 @@ export interface DecisionStore {
    * Refusing loudly is the point.
    *
    * `replayDueAt` defers the host replay until the undo window closes, for an
-   * irreversible call.
+   * irreversible call. `replayClaimedAt` is its opposite number: the host is
+   * taking the replay NOW, so the row is closed to the agent's gate and to undo
+   * from this instant. Exactly one of the two is set on a host-replay claim,
+   * and neither is set on the attended or parked paths.
    */
   claimForApproval(
     decisionId: string,
@@ -74,6 +77,7 @@ export interface DecisionStore {
       nowIso: string;
       status: 'executed' | 'approved-pending-agent';
       replayDueAt?: string | null;
+      replayClaimedAt?: string | null;
     },
   ): Promise<Decision | null>;
 
@@ -205,7 +209,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       return rows.map(toDecision);
     },
 
-    claimForApproval(decisionId, { nowIso, status, replayDueAt }) {
+    claimForApproval(decisionId, { nowIso, status, replayDueAt, replayClaimedAt }) {
       return transition(decisionId, OPEN_STATUSES, {
         status,
         resolved_at: new Date(nowIso),
@@ -213,6 +217,10 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         stale_reason: null,
         replay_due_at:
           replayDueAt === undefined || replayDueAt === null ? null : new Date(replayDueAt),
+        replay_claimed_at:
+          replayClaimedAt === undefined || replayClaimedAt === null
+            ? null
+            : new Date(replayClaimedAt),
         // A re-approval after an undo starts clean; a leftover failure detail
         // from a previous attempt would describe a run that is no longer the
         // one this row is about.
@@ -299,6 +307,11 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         // the same bell-cannot-be-un-rung rule `consumed_at` enforces for the
         // agent's side of the authorisation.
         .where('replayed_at', 'is', null)
+        // Nor can it be un-sent while it is IN FLIGHT. A row the host has taken
+        // is a call already on its way out; undoing it would put a decision
+        // back on the queue that is about to be stamped `executed` underneath
+        // the person who thought they had stopped it.
+        .where('replay_claimed_at', 'is', null)
         .returningAll()
         .executeTakeFirst();
       return row === undefined ? null : toDecision(row);
@@ -321,17 +334,20 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         .where('status', '=', 'executed')
         .where('replay_due_at', 'is not', null)
         .where('replay_due_at', '<=', new Date(nowIso))
+        .where('replay_claimed_at', 'is', null)
         .orderBy('replay_due_at', 'asc')
         .limit(limit)
         .execute();
       if (due.length === 0) return [];
 
-      // The claim. Clearing `replay_due_at` in the UPDATE's own predicate is
-      // what makes it one-shot: a second sweep — in this process or another
-      // replica — matches nothing.
+      // The claim. Clearing `replay_due_at` and stamping `replay_claimed_at` in
+      // one statement, with both as predicates, is what makes it one-shot: a
+      // second sweep — in this process or another replica — matches nothing.
+      // And the stamp is what closes the row to the agent's gate for the whole
+      // time the call is in flight.
       const rows = await db
         .updateTable(table)
-        .set({ replay_due_at: null })
+        .set({ replay_due_at: null, replay_claimed_at: new Date(nowIso) })
         .where(
           'decision_id',
           'in',
@@ -339,6 +355,7 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         )
         .where('status', '=', 'executed')
         .where('replay_due_at', 'is not', null)
+        .where('replay_claimed_at', 'is', null)
         .returningAll()
         .execute();
       return rows.map(toDecision);
@@ -359,6 +376,11 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         // it. Letting the agent consume the authorisation underneath it is how
         // one approval becomes two sends.
         .where('replay_due_at', 'is', null)
+        // And a replay the host has TAKEN — one that is in flight right now —
+        // is the same hazard with a much shorter fuse. The window between the
+        // host committing to the call and the call returning is small, but a
+        // concurrent byte-identical agent call lands squarely in it.
+        .where('replay_claimed_at', 'is', null)
         // And a replay that ALREADY ran leaves nothing to authorise. Without
         // this, an agent making the identical call on its next run would sail
         // through the gate on a yes the host already spent.
@@ -402,6 +424,8 @@ function fromDecision(d: Decision): DecisionRow {
     consumed_at: d.consumedAt === null ? null : new Date(d.consumedAt),
     irreversible: d.irreversible,
     replay_due_at: d.replayDueAt === null ? null : new Date(d.replayDueAt),
+    replay_claimed_at:
+      d.replayClaimedAt === null ? null : new Date(d.replayClaimedAt),
     replayed_at: d.replayedAt === null ? null : new Date(d.replayedAt),
     replay_error: d.replayError,
   };
@@ -441,6 +465,8 @@ function toDecision(row: DecisionRow): Decision {
     consumedAt: row.consumed_at === null ? null : row.consumed_at.toISOString(),
     irreversible: row.irreversible === true,
     replayDueAt: row.replay_due_at === null ? null : row.replay_due_at.toISOString(),
+    replayClaimedAt:
+      row.replay_claimed_at === null ? null : row.replay_claimed_at.toISOString(),
     replayedAt: row.replayed_at === null ? null : row.replayed_at.toISOString(),
     replayError: row.replay_error,
   };

@@ -73,7 +73,7 @@ export function createFakeStore(): FakeStore {
         .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
     },
 
-    async claimForApproval(decisionId, { nowIso, status, replayDueAt }) {
+    async claimForApproval(decisionId, { nowIso, status, replayDueAt, replayClaimedAt }) {
       const row = open(decisionId);
       if (row === null) return null;
       for (const other of rows.values()) {
@@ -94,6 +94,7 @@ export function createFakeStore(): FakeStore {
         resolvedAt: nowIso,
         staleReason: null,
         replayDueAt: replayDueAt ?? null,
+        replayClaimedAt: replayClaimedAt ?? null,
         replayedAt: null,
         replayError: null,
       };
@@ -180,6 +181,7 @@ export function createFakeStore(): FakeStore {
       if (row.status !== 'dismissed' && !AUTHORISING_STATUSES.includes(row.status)) return null;
       if (row.consumedAt !== null) return null;
       if (row.replayedAt !== null) return null;
+      if (row.replayClaimedAt !== null) return null;
       const next: Decision = {
         ...row,
         status: 'pending',
@@ -210,9 +212,10 @@ export function createFakeStore(): FakeStore {
         if (
           row.status === 'executed' &&
           row.replayDueAt !== null &&
+          row.replayClaimedAt === null &&
           Date.parse(row.replayDueAt) <= Date.parse(nowIso)
         ) {
-          const next: Decision = { ...row, replayDueAt: null };
+          const next: Decision = { ...row, replayDueAt: null, replayClaimedAt: nowIso };
           rows.set(id, next);
           claimed.push(next);
         }
@@ -229,6 +232,7 @@ export function createFakeStore(): FakeStore {
           AUTHORISING_STATUSES.includes(row.status) &&
           row.consumedAt === null &&
           row.replayDueAt === null &&
+          row.replayClaimedAt === null &&
           row.replayedAt === null
         ) {
           const next: Decision = { ...row, consumedAt: nowIso };

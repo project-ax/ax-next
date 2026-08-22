@@ -195,6 +195,7 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       staleReason: null,
       consumedAt: null,
       replayDueAt: null,
+      replayClaimedAt: null,
       replayedAt: null,
       replayError: null,
     };

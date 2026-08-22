@@ -57,6 +57,7 @@ export async function runDecisionsMigration<DB>(db: Kysely<DB>): Promise<void> {
     ALTER TABLE decisions_v1_decisions
       ADD COLUMN IF NOT EXISTS irreversible  BOOLEAN NOT NULL DEFAULT FALSE,
       ADD COLUMN IF NOT EXISTS replay_due_at TIMESTAMPTZ,
+      ADD COLUMN IF NOT EXISTS replay_claimed_at TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS replayed_at   TIMESTAMPTZ,
       ADD COLUMN IF NOT EXISTS replay_error  TEXT
   `.execute(db);
@@ -128,6 +129,7 @@ export interface DecisionRow {
   consumed_at: Date | null;
   irreversible: boolean;
   replay_due_at: Date | null;
+  replay_claimed_at: Date | null;
   replayed_at: Date | null;
   replay_error: string | null;
 }

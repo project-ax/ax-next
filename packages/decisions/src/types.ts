@@ -184,6 +184,22 @@ export interface Decision {
    */
   replayDueAt: string | null;
   /**
+   * When the host TOOK OWNERSHIP of the replay — set the instant it commits to
+   * making the call, and never cleared.
+   *
+   * This is the in-flight marker, and it closes the window between "the host
+   * decided to run this" and "the host finished running it". Without it, an
+   * agent that happened to re-issue the byte-identical call during those few
+   * hundred milliseconds would consume the standing authorisation and run the
+   * call as well: one approval, two executions. `takeApproval` and `restore`
+   * both refuse a row that carries it.
+   *
+   * It is also what makes the deferred sweep one-shot across replicas: the
+   * claim sets this and clears `replayDueAt` in a single statement, so a second
+   * sweep — in this process or another host — matches nothing.
+   */
+  replayClaimedAt: string | null;
+  /**
    * When the HOST actually performed the call, if it did.
    *
    * This is not decoration — it is the second half of "one approval, one
@@ -428,6 +444,7 @@ export const DecisionSchema = z.object({
   staleReason: z.string().nullable(),
   consumedAt: z.string().nullable(),
   replayDueAt: z.string().nullable(),
+  replayClaimedAt: z.string().nullable(),
   replayedAt: z.string().nullable(),
   replayError: z.string().nullable(),
 }) as unknown as z.ZodType<Decision>;

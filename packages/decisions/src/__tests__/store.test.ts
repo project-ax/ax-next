@@ -87,6 +87,7 @@ function base(over: Partial<Decision> = {}): Decision {
     staleReason: null,
     consumedAt: null,
     replayDueAt: null,
+    replayClaimedAt: null,
     // Stamped when the HOST actually made the call — the other half of
     // `consumedAt`, which records the agent making it.
     replayedAt: null,
@@ -432,10 +433,46 @@ describe('decisions store — the authorisation the agent takes up', () => {
 
     expect(await s.takeApproval('a1', 'fp-1', T_REPLAY_EARLY)).toBeNull();
 
-    // Once the sweep has claimed the replay, `replay_due_at` is clear and the
-    // authorisation is available again.
-    await s.claimDueReplays(T_LATE, 10);
-    expect((await s.takeApproval('a1', 'fp-1', T_LATE))!.id).toBe('dec_1');
+    // …and it stays refused once the sweep has TAKEN the replay. The claim
+    // clears `replay_due_at`, so an earlier version of this predicate re-opened
+    // the row to the agent for exactly as long as the call was in flight — one
+    // approval, two sends. `replay_claimed_at` is what holds the door shut
+    // across that window.
+    const claimed = await s.claimDueReplays(T_LATE, 10);
+    expect(claimed).toHaveLength(1);
+    expect(claimed[0]!.replayDueAt).toBeNull();
+    expect(claimed[0]!.replayClaimedAt).toBe(T_LATE);
+    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+
+    // And it is still refused after the call has actually gone out.
+    await s.markReplayed('dec_1', T_LATE);
+    expect(await s.takeApproval('a1', 'fp-1', T_LATE)).toBeNull();
+  });
+
+  it('takeApproval REFUSES a row whose IMMEDIATE replay is in flight', async () => {
+    // The reversible path claims and replays in one breath, but "one breath"
+    // is still milliseconds of network. A byte-identical agent call landing in
+    // that window must not be able to spend the same yes.
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', {
+      nowIso: T_SOON,
+      status: 'executed',
+      replayClaimedAt: T_SOON,
+    });
+
+    expect(await s.takeApproval('a1', 'fp-1', T_SOON)).toBeNull();
+    // Undo is refused in that window too: the call is already on its way out.
+    expect(await s.restore('dec_1')).toBeNull();
+  });
+
+  it('takeApproval HONOURS an attended approval, which the host never replays', async () => {
+    // The counter-control: without it the two tests above could pass simply
+    // because `takeApproval` had stopped working.
+    const s = await freshStore();
+    await s.create(base());
+    await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' });
+    expect((await s.takeApproval('a1', 'fp-1', T_SOON))!.id).toBe('dec_1');
   });
 });
 
