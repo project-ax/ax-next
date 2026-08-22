@@ -5,7 +5,7 @@
  * shows comes from the API, and what the API has nothing for says so.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
@@ -32,6 +32,7 @@ vi.mock('@/lib/workspace-api', async () => {
 const boardMock = vi.mocked(workspaceApi.board);
 const activityMock = vi.mocked(workspaceApi.activity);
 const decisionsMock = vi.mocked(workspaceApi.decisions);
+const agentMock = vi.mocked(workspaceApi.agent);
 
 const user = {
   id: 'u1',
@@ -50,6 +51,7 @@ function renderShell() {
 
 beforeEach(() => {
   boardMock.mockReset();
+  agentMock.mockReset();
   activityMock.mockReset();
   activityMock.mockResolvedValue({ events: [], nextBefore: null });
   decisionsMock.mockReset();
@@ -141,6 +143,58 @@ describe('WorkspaceShell', () => {
       await screen.findByText('We could not check what is waiting on you.'),
     ).toBeTruthy();
     expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
+  });
+
+  it('scopes the feed to ONE agent when that agent is open, and only then', async () => {
+    /*
+      "What it did" is the one feed with `agentId` set (design §7). The scoping
+      happens HERE, in the fetch, not in the renderer — a tab that rendered the
+      unfiltered collection under one agent's heading would be a 200 that
+      quietly means something else, and it would look completely normal.
+
+      Both halves matter. Asserting only the scoped call would pass against a
+      hook that always scopes, which would break the global Activity page.
+    */
+    boardMock.mockResolvedValue({
+      agents: [
+        {
+          id: 'a-quill',
+          name: 'Quill',
+          state: 'resting',
+          now: null,
+          counter: null,
+          startedAt: null,
+          stoppedReason: null,
+        },
+      ],
+      decisions: [],
+    });
+    agentMock.mockResolvedValue({
+      agent: {
+        id: 'a-quill',
+        name: 'Quill',
+        state: 'resting',
+        now: null,
+        counter: null,
+        startedAt: null,
+        stoppedReason: null,
+      },
+      permissions: [],
+      conversationId: null,
+      thread: [],
+      past: [],
+      memory: [],
+    });
+
+    renderShell();
+
+    // The whole workspace, before anything is open.
+    await waitFor(() => expect(activityMock).toHaveBeenCalledWith({}));
+
+    fireEvent.click(await screen.findByRole('button', { name: /Quill/ }));
+    await waitFor(() =>
+      expect(activityMock).toHaveBeenCalledWith({ agentId: 'a-quill' }),
+    );
   });
 
   it('says what we know and what to try when the board will not load', async () => {

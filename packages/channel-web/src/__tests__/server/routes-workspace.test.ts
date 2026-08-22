@@ -401,7 +401,7 @@ describe('channel-web agent-workspace BFF', () => {
     expect(captured.body).toEqual({ error: 'missing-agent-id' });
   });
 
-  it('returns empty permissions/files and NO stats key', async () => {
+  it('returns empty permissions, no files key and NO stats key', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
@@ -409,7 +409,10 @@ describe('channel-web agent-workspace BFF', () => {
     expect(captured.statusCode).toBe(200);
     const body = captured.body as Record<string, unknown>;
     expect(body.permissions).toEqual([]);
-    expect(body.files).toEqual([]);
+    // `files` is GONE from this response (TASK-233 / AW-12). It is its own
+    // route now, because an empty array inside a 200 could not tell "this
+    // agent has written nothing" from "we could not read its workspace".
+    expect(body).not.toHaveProperty('files');
     // No memory plugin registered in this bus → no rows at all. NOT an empty
     // rules row: an editor over storage that does not exist is the promise
     // AW-13 exists to stop making.

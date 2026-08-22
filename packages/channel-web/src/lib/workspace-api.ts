@@ -44,7 +44,8 @@ import type {
   PermissionRow,
   ThreadMessage,
   WorkspaceAgent,
-  WorkspaceFile,
+  WorkspaceFileBody,
+  WorkspaceFileSummary,
 } from '@/lib/workspace-types';
 
 export type {
@@ -55,7 +56,8 @@ export type {
   PermissionRow,
   ThreadMessage,
   WorkspaceAgent,
-  WorkspaceFile,
+  WorkspaceFileBody,
+  WorkspaceFileSummary,
 };
 
 /**
@@ -125,6 +127,13 @@ export interface ActivityPage {
   nextBefore: string | null;
 }
 
+/** One listing of an agent's files — see `workspaceApi.files`. */
+export interface AgentFilesPage {
+  files: WorkspaceFileSummary[];
+  /** `true` when the agent has more files than one response will carry. */
+  truncated: boolean;
+}
+
 export interface ActivityQuery {
   /** Scope to one agent's rows. Omitted = every agent. */
   agentId?: string;
@@ -148,8 +157,6 @@ export interface AgentDetail {
   thread: ThreadMessage[];
   /** Older conversations, newest first. Pointers only — see `PastConversation`. */
   past: PastConversation[];
-  /** Always `[]` in this task — AW-12. */
-  files: WorkspaceFile[];
   /**
    * The Memory tab, split by owner. The `rules` doc is always present — it is
    * the editor — and the `learned` docs are whatever the agent actually wrote.
@@ -162,6 +169,27 @@ const writeHeaders = {
   'content-type': 'application/json',
   'x-requested-with': 'ax-admin',
 };
+
+/**
+ * A failed workspace call, carrying the status.
+ *
+ * The Files tab is why this exists. "We could not read this agent's
+ * workspace" and "no workspace backend is running in this deployment" are
+ * different sentences to a reader, and only the status tells them apart — a
+ * surface that renders both as one generic blip is a surface that sends
+ * someone hunting for a file that was never going to be there.
+ *
+ * `message` keeps the old text verbatim, so every existing `e.message` call
+ * site reads exactly as it did before.
+ */
+export class WorkspaceApiError extends Error {
+  readonly status: number;
+  constructor(path: string, status: number) {
+    super(`workspace ${path} → ${status}`);
+    this.name = 'WorkspaceApiError';
+    this.status = status;
+  }
+}
 
 async function req<T>(
   path: string,
@@ -176,7 +204,7 @@ async function req<T>(
     ...(init?.body === undefined ? {} : { body: JSON.stringify(init.body) }),
   });
   if (!res.ok) {
-    throw new Error(`workspace ${path} → ${res.status}`);
+    throw new WorkspaceApiError(path, res.status);
   }
   return (await res.json()) as T;
 }
@@ -267,6 +295,29 @@ export const workspaceApi = {
         (conversationId === undefined
           ? ''
           : `?conversationId=${encodeURIComponent(conversationId)}`),
+    ),
+
+  /**
+   * What this agent has written, in the workspace it owns (AW-12).
+   *
+   * Its OWN request, not a field on `agent(id)`. A `files: []` inside the
+   * detail response could not distinguish "has written nothing" from "we
+   * could not read the workspace", and the tab has to say which.
+   */
+  files: (agentId: string) =>
+    req<AgentFilesPage>(`/agents/${encodeURIComponent(agentId)}/files`),
+
+  /**
+   * One of those files.
+   *
+   * `path` is encoded WHOLE — slashes included — so the server receives one
+   * splat segment and decodes it exactly once. Encoding per-segment would
+   * leave real slashes on the wire, and then `a/../b` and `a%2F..%2Fb` would
+   * take different code paths to the same read. One shape, one decode.
+   */
+  file: (agentId: string, path: string) =>
+    req<WorkspaceFileBody>(
+      `/agents/${encodeURIComponent(agentId)}/files/${encodeURIComponent(path)}`,
     ),
 
   /**

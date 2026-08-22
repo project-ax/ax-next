@@ -32,40 +32,27 @@ import { MarkdownTextPrimitive } from '@assistant-ui/react-markdown';
 import { useAui, useAuiState } from '@assistant-ui/react';
 import remarkGfm from 'remark-gfm';
 import { ArtifactChip } from './ArtifactChip';
+import { MARKDOWN_PROSE_CLASS, safeUrlTransform } from './Markdown';
 import { useConversationId } from '../lib/use-conversation-id';
 import { stripMcpToolPrefix } from '../lib/tool-name';
 
 const AX_ARTIFACT_PREFIX = 'ax://artifact/';
-
-// Mirrors react-markdown's built-in safe-protocol list. We can't import
-// `defaultUrlTransform` directly because `react-markdown` isn't a direct
-// dep of `@ax/channel-web` — only a transitive of
-// `@assistant-ui/react-markdown` — so we inline the (tiny) check here.
-// Keep in sync with react-markdown@10: lib/index.js `safeProtocol` regex.
-const SAFE_PROTOCOL = /^(https?|ircs?|mailto|xmpp)$/i;
 
 /**
  * Pass `ax://...` URLs through; defer everything else to the standard
  * safe-protocol filter. Keeps the default protection against
  * `javascript:` / `data:` etc. while letting our custom Anchor see the
  * artifact URL it needs to intercept.
+ *
+ * The filter itself lives in `./Markdown` now, which renders the same
+ * markdown for callers that have a string rather than a message part. It used
+ * to be inlined here under a comment explaining that `react-markdown` was not
+ * a direct dependency and so `defaultUrlTransform` could not be imported —
+ * it is one now, and one copy of "which URLs are safe" is the point.
  */
 function urlTransform(url: string): string {
   if (url.startsWith(AX_ARTIFACT_PREFIX)) return url;
-  const colon = url.indexOf(':');
-  const questionMark = url.indexOf('?');
-  const numberSign = url.indexOf('#');
-  const slash = url.indexOf('/');
-  if (
-    colon === -1 ||
-    (slash !== -1 && colon > slash) ||
-    (questionMark !== -1 && colon > questionMark) ||
-    (numberSign !== -1 && colon > numberSign) ||
-    SAFE_PROTOCOL.test(url.slice(0, colon))
-  ) {
-    return url;
-  }
-  return '';
+  return safeUrlTransform(url);
 }
 
 /**
@@ -245,6 +232,6 @@ export const MarkdownText: FC = () => (
     remarkPlugins={[remarkGfm]}
     urlTransform={urlTransform}
     components={{ a: Anchor }}
-    className="aui-md prose dark:prose-invert max-w-none prose-p:leading-7 prose-pre:bg-card prose-pre:border prose-pre:border-border/40 prose-pre:rounded-xl prose-pre:backdrop-blur-sm prose-code:font-mono prose-code:text-[0.85em] prose-headings:tracking-tight prose-a:text-amber prose-a:no-underline hover:prose-a:underline prose-th:text-left"
+    className={MARKDOWN_PROSE_CLASS}
   />
 );

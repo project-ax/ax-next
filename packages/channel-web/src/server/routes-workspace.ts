@@ -6,6 +6,10 @@
  *        one (the rail's read-only past-conversation view)
  * GET  /api/workspace/activity         — THE event feed (one collection)
  *        ?agentId=<id> scopes it to one agent; ?before=<ISO>&limit=<n> page it
+ * GET  /api/workspace/agents/:agentId/files
+ *                                      — what the agent has written
+ * GET  /api/workspace/agents/:agentId/files/*
+ *                                      — one of those files, as text
  * PUT  /api/workspace/agents/:agentId/memory/rules
  *                                      — save the human-owned memory tier
  * GET  /api/workspace/decisions        — THE Today queue (one collection)
@@ -26,7 +30,6 @@
  * claim, and we are not counting anything yet. Concretely:
  *
  *   - `permissions`            — empty until the policy rail is real (AW-14).
- *   - `files`                  — empty until AW-12.
  *   - `now` / `counter` / `startedAt` — null; nothing reports them yet (AW-8).
  *   - there is no `stats` field at all.
  *
@@ -80,10 +83,10 @@ import type {
   PermissionRow,
   ThreadMessage,
   WorkspaceAgent,
-  WorkspaceFile,
 } from '../lib/workspace-types.js';
 import { isOpenDecision } from '../lib/workspace-types.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
+import { workspaceFilePath } from './safe-path.js';
 
 // --- duck-typed hook payloads (I2 — no cross-plugin imports) --------------
 
@@ -109,6 +112,28 @@ interface AgentsListForUserInput {
 interface AgentsListForUserOutput {
   agents: Array<{ id: string; displayName: string }>;
 }
+
+/**
+ * `workspace:list` / `workspace:read`, duck-typed like every other hook on
+ * this surface (I2 — no cross-plugin imports; the shapes are @ax/core's).
+ *
+ * Note what is NOT here: no `version`, no glob. This surface reads the CURRENT
+ * snapshot and does its own filtering, because the exclusion rule below has to
+ * be the SAME predicate for the listing and the read (invariant 4). Pushing it
+ * into a `pathGlob` would mean two spellings of "what we serve" — one in a
+ * glob string the backend interprets, one in the read path's guard — and the
+ * two backends in this repo do not even agree on glob syntax.
+ */
+interface WorkspaceListInput {
+  pathGlob?: string;
+}
+interface WorkspaceListOutput {
+  paths: string[];
+}
+interface WorkspaceReadInput {
+  path: string;
+}
+type WorkspaceReadResult = { found: true; bytes: Uint8Array } | { found: false };
 
 /** The subset of @ax/conversations' `Conversation` this surface reads. */
 interface ConversationRow {
@@ -388,6 +413,13 @@ export interface ActivityResponse {
  * Deliberately has NO `stats` field: the "This week" panel is not rendered in
  * this slice, because a counter with nothing behind it is a claim we can't
  * back. Same reasoning for the absent `suggestions`.
+ *
+ * And no `files` (AW-12). The Files tab is its own read for the same reason
+ * the activity feed is: a sub-array of a detail blob cannot carry the
+ * difference between "this agent has written nothing" and "we could not read
+ * its workspace". Shipping `files: []` inside a 200 meant the tab rendered
+ * "has not written anything yet" over a failed listing, and there was nowhere
+ * on the wire to say otherwise. `GET .../files` is that somewhere.
  */
 export interface AgentDetail {
   agent: WorkspaceAgent;
@@ -404,8 +436,6 @@ export interface AgentDetail {
   thread: ThreadMessage[];
   /** Older conversations, newest first, excluding the current one. */
   past: PastConversation[];
-  /** Empty until AW-12. */
-  files: WorkspaceFile[];
   /**
    * The Memory tab, split by WHO OWNS IT (AW-13).
    *
@@ -416,6 +446,57 @@ export interface AgentDetail {
    * empty heading.
    */
   memory: MemoryDoc[];
+}
+
+/**
+ * `GET /api/workspace/agents/:agentId/files` — one row per file the agent has
+ * in its workspace, minus the machinery.
+ *
+ * Two fields, and they are not the same field twice:
+ *
+ *   - `path` is the KEY. It is the RAW workspace path, echoed back verbatim,
+ *     and it is what the client puts back on the wire to open the file. It is
+ *     never rendered. Same call as `ActivityEvent.id`: fencing a key can
+ *     collapse two distinct paths onto one, and a label that cannot be used to
+ *     fetch anything is not a key.
+ *   - `name` is the LABEL, and it is fenced (see `fenceLine`). A filename is
+ *     authored by the agent, in the agent's own workspace, with no validation
+ *     beyond "git accepted it" — which is exactly the Trojan-source surface
+ *     (CVE-2021-42574) that a file listing is famous for. `report.md` written
+ *     with a U+202E in front of it renders as something else entirely.
+ *
+ * There is no size and no timestamp, because `workspace:list` reports neither
+ * and a made-up "2 KB" is a claim.
+ */
+export interface WorkspaceFileSummary {
+  path: string;
+  name: string;
+}
+
+export interface AgentFilesResponse {
+  files: WorkspaceFileSummary[];
+  /**
+   * `true` when the agent has more files than we are willing to put in one
+   * response. The tab says so out loud — a silently short list is a list that
+   * lies about what the agent has written.
+   */
+  truncated: boolean;
+}
+
+/**
+ * `GET /api/workspace/agents/:agentId/files/*` — one file's text.
+ *
+ * `body` is `null` only when there is nothing text-shaped to show, and
+ * `clipped` always says which of the two reasons applies. `clipped: null` with
+ * a `body` means "this is the whole file", and that is a promise we keep.
+ */
+export interface AgentFileResponse {
+  /** The raw key again, so the client can tell which request this answers. */
+  path: string;
+  /** The fenced label. */
+  name: string;
+  body: string | null;
+  clipped: 'binary' | 'too-large' | null;
 }
 
 /**
@@ -767,6 +848,121 @@ export function toWireDecision(stored: StoredDecision): Decision {
 }
 
 /**
+ * How much of a filename this surface will carry as a LABEL. Longer than a
+ * feed row's 60 because a path is legitimately `notes/2026/q3-summary.md` and
+ * chopping it at 60 turns two distinct files into the same row.
+ */
+export const FILE_LABEL_MAX_CHARS = 120;
+
+/**
+ * How many rows one listing will carry, and how much of one file we will send.
+ *
+ * Both are bounds on somebody else's output. An agent can write a hundred
+ * thousand files and a gigabyte into one of them; neither number is a reason
+ * for this process to build a hundred-megabyte JSON string. When either bound
+ * bites, the response SAYS SO rather than quietly serving less than it claims.
+ */
+export const WORKSPACE_FILES_MAX = 500;
+export const FILE_BODY_MAX_BYTES = 128 * 1024;
+
+/** How far in we look for a NUL before calling a file "not text". */
+const BINARY_PROBE_BYTES = 8000;
+
+/** What a row says when the agent's filename fences down to nothing legible. */
+export const UNREADABLE_FILE_NAME = 'A file with no readable name';
+
+/**
+ * The one predicate for "is this the agent's work, or is it our machinery?".
+ *
+ * Used by BOTH the listing and the read. One predicate, deliberately: an
+ * exclusion only the listing enforces is not an exclusion, it is a cosmetic
+ * filter with a direct-URL bypass sitting behind it.
+ *
+ *   - `.ax/**`     — identity, routines, uploads. Ours, and edited elsewhere.
+ *   - `.claude/**` — runner machinery.
+ *   - `memory/**`  — the Memory tab owns this, and it has DIFFERENT editing
+ *                    rules (AW-13: one tier is human-owned and kept word for
+ *                    word, the rest is the agent's own notes). Two tabs making
+ *                    two different promises about one file is how a
+ *                    hand-written rule gets eaten.
+ *
+ * `permanent/memory/**` is listed alongside `memory/**` because the memory
+ * package has TWO layouts for the same tier: `memory/**` in the workspace tree
+ * the agent actually reads, and `permanent/memory/**` in the host-local
+ * scratch the CLI preset writes when there is no workspace backend. The plan
+ * for this task named only the second, which never appears in a
+ * `workspace:list` from a real backend — so naming only it would have excluded
+ * nothing at all where it matters. Both are here.
+ */
+export const WORKSPACE_FILES_HIDDEN_PREFIXES: readonly string[] = [
+  '.ax/',
+  '.claude/',
+  'memory/',
+  'permanent/memory/',
+];
+
+export function isServableWorkspaceFile(path: string): boolean {
+  if (path.length === 0) return false;
+  return !WORKSPACE_FILES_HIDDEN_PREFIXES.some(
+    (prefix) => path === prefix.slice(0, -1) || path.startsWith(prefix),
+  );
+}
+
+/**
+ * A file's text, with the characters that rewrite a surface removed.
+ *
+ * The sibling of `fenceLine`, and different from it on purpose. `fenceLine`
+ * flattens all whitespace because it is producing a LABEL — one row, one line.
+ * A body is a document: newlines and tabs are its structure, and collapsing
+ * them would turn a markdown file into one long paragraph. So this strips the
+ * same bidi / zero-width / control family MINUS tab, newline and carriage
+ * return.
+ *
+ * They are removed rather than replaced with a space, because in a document
+ * the separators that do real work are the ones we are keeping anyway.
+ */
+const REWRITES_A_BODY =
+  /[\u0000-\u0008\u000B-\u000C\u000E-\u001F\u007F-\u009F\u061C\u200B-\u200F\u202A-\u202E\u2066-\u2069\uFEFF]/g;
+
+export function fenceBody(text: string): string {
+  return text.replace(REWRITES_A_BODY, '');
+}
+
+/** Shared so a clipped read and a whole read decode identically. */
+const FILE_DECODER = new TextDecoder('utf-8');
+
+/**
+ * Bytes → what the Files tab can honestly show.
+ *
+ * A workspace holds whatever the agent put in it, which includes PNGs, PDFs
+ * and sqlite files. Decoding one of those as UTF-8 produces a page of
+ * replacement characters that LOOKS like a corrupted document — so we say
+ * "this is not a text file" instead, and let the tab render that.
+ */
+export function decodeFileBody(bytes: Uint8Array): {
+  body: string | null;
+  clipped: AgentFileResponse['clipped'];
+} {
+  const probe = bytes.subarray(0, Math.min(bytes.length, BINARY_PROBE_BYTES));
+  if (probe.includes(0)) return { body: null, clipped: 'binary' };
+  if (bytes.length > FILE_BODY_MAX_BYTES) {
+    return {
+      body: fenceBody(FILE_DECODER.decode(bytes.subarray(0, FILE_BODY_MAX_BYTES))),
+      clipped: 'too-large',
+    };
+  }
+  return { body: fenceBody(FILE_DECODER.decode(bytes)), clipped: null };
+}
+
+/** One workspace path → one row. The key raw, the label fenced. */
+export function toFileSummary(path: string): WorkspaceFileSummary {
+  return {
+    path,
+    name: fenceLine(path, FILE_LABEL_MAX_CHARS) ?? UNREADABLE_FILE_NAME,
+  };
+}
+
+/**
  * One fire → one feed row, or `null` for a fire that produced nothing.
  *
  * `silenced` maps to `null` and that is the whole point of this function. A
@@ -1079,7 +1275,12 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * The owner-routed context for one agent's memory.
+   * The owner-routed context for one agent's workspace.
+   *
+   * Used by the memory tier AND the Files tab, because they are two views of
+   * ONE store: build them separately and the day someone changes how a
+   * workspace is addressed, one tab follows and the other quietly reads a
+   * different agent's tree.
    *
    * `memory:rules:write` reaches `workspace:apply`, which routes by
    * `(userId, agentId)` — hand it the wrong ctx and the write lands in another
@@ -1091,9 +1292,9 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * has no workspace backend and writes memory to the host filesystem — lands
    * in the same root everything else in that preset uses.
    */
-  function agentMemoryCtx(agentId: string, ownerUserId: string): AgentContext {
+  function agentWorkspaceCtx(agentId: string, ownerUserId: string): AgentContext {
     return makeAgentContext({
-      sessionId: 'workspace-memory',
+      sessionId: 'workspace-surface',
       agentId,
       userId: ownerUserId,
       workspace: initCtx.workspace,
@@ -1116,7 +1317,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    */
   async function readMemory(agentId: string, userId: string): Promise<MemoryDoc[]> {
     if (!bus.hasService('memory:rules:read')) return [];
-    const ctx = agentMemoryCtx(agentId, userId);
+    const ctx = agentWorkspaceCtx(agentId, userId);
     let rules: string | null = null;
     try {
       const out = await bus.call<MemoryAgentInput, MemoryRulesReadOutput>(
@@ -1699,9 +1900,126 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         conversationId: threadConversationId,
         thread,
         past,
-        files: [], // AW-12
         memory: await readMemory(agentId, userId),
       } satisfies AgentDetail);
+    },
+
+    /**
+     * GET /api/workspace/agents/:agentId/files — what this agent has written.
+     *
+     * STRICT, like the scoped activity read and unlike the roster fan-out: on
+     * this tab the listing IS the page. A swallowed failure would render
+     * "{agent} has not written anything yet" over a workspace we simply could
+     * not read, and the reader would have no way to tell the difference (H7).
+     * So a throw propagates and the tab shows an error.
+     *
+     * NOTE ON ISOLATION. The `git-protocol` workspace backend shards by
+     * (userId, agentId), so this listing is genuinely one agent's tree. The
+     * `local` single-repo backend — the CLI and the chart's default — ignores
+     * ctx entirely and keeps ONE tree for the whole deployment; there, this
+     * lists that shared tree, exactly as the identity editor and the routines
+     * list already read it. That is a property of the backend, not something
+     * this route can filter its way out of: a shared tree has no per-agent
+     * prefix to scope by. It is called out here rather than left for someone
+     * to discover, and a per-agent `local` backend is the fix.
+     */
+    async agentFiles(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      // ACL first: a not-accessible agent → 404, before we touch any storage.
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      if (!bus.hasService('workspace:list')) {
+        // No workspace backend is loaded. An empty list here would say "this
+        // agent has written nothing", which is a claim about the agent when
+        // the truth is a fact about the deployment.
+        res.status(503).json({ error: 'workspace-unavailable' });
+        return;
+      }
+
+      const out = await bus.call<WorkspaceListInput, WorkspaceListOutput>(
+        'workspace:list',
+        agentWorkspaceCtx(agentId, userId),
+        {},
+      );
+      const servable = (out.paths ?? []).filter(isServableWorkspaceFile);
+      res.status(200).json({
+        files: servable.slice(0, WORKSPACE_FILES_MAX).map(toFileSummary),
+        truncated: servable.length > WORKSPACE_FILES_MAX,
+      } satisfies AgentFilesResponse);
+    },
+
+    /**
+     * GET /api/workspace/agents/:agentId/files/* — one file's text.
+     *
+     * The only route on this surface that takes a PATH from the caller, which
+     * makes it the one worth reading twice. The order below is the security
+     * property, not a style choice:
+     *
+     *   1. authenticate    — identity is the session's, never the request's.
+     *   2. ACL             — `agents:resolve`, and a failure is 404.
+     *   3. validate path   — `workspaceFilePath`, which decodes exactly once.
+     *   4. apply the same exclusion the listing uses.
+     *   5. only now, read.
+     *
+     * Steps 2 and 3 are in that order deliberately. Validating first means a
+     * caller poking at someone else's agent learns which of their paths are
+     * well-formed — a 400 for one path and a 404 for another is an oracle,
+     * and building one out of an error code is free for the attacker.
+     *
+     * The splat arrives from `@ax/http-server` VERBATIM: undecoded, slashes
+     * intact (router.ts says so, and `@ax/static-files` depends on it). That
+     * is why `workspaceFilePath` owns the single decode.
+     */
+    async agentFile(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      const path = workspaceFilePath(req.params['*'] ?? '');
+      if (path === null) {
+        res.status(400).json({ error: 'invalid-path' });
+        return;
+      }
+      if (!isServableWorkspaceFile(path)) {
+        // Not 403: from the caller's side this is simply not a file this
+        // surface has, and the listing agrees — it never offered one.
+        res.status(404).json({ error: 'file-not-found' });
+        return;
+      }
+
+      if (!bus.hasService('workspace:read')) {
+        res.status(503).json({ error: 'workspace-unavailable' });
+        return;
+      }
+
+      const out = await bus.call<WorkspaceReadInput, WorkspaceReadResult>(
+        'workspace:read',
+        agentWorkspaceCtx(agentId, userId),
+        { path },
+      );
+      if (!out.found) {
+        res.status(404).json({ error: 'file-not-found' });
+        return;
+      }
+
+      res.status(200).json({
+        path,
+        name: fenceLine(path, FILE_LABEL_MAX_CHARS) ?? UNREADABLE_FILE_NAME,
+        ...decodeFileBody(out.bytes),
+      } satisfies AgentFileResponse);
     },
 
     /**
@@ -1753,7 +2071,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         stored = (
           await bus.call<MemoryRulesWriteInput, MemoryRulesWriteOutput>(
             'memory:rules:write',
-            agentMemoryCtx(agentId, userId),
+            agentWorkspaceCtx(agentId, userId),
             { agentId, body },
           )
         ).body;
@@ -1894,6 +2212,27 @@ export async function registerWorkspaceRoutes(
         method: 'GET',
         path: '/api/workspace/activity',
         handler: handlers.activity as unknown as RouteHandler,
+      },
+      {
+        method: 'GET',
+        path: '/api/workspace/agents/:agentId/files',
+        handler: handlers.agentFiles as unknown as RouteHandler,
+      },
+      {
+        /*
+          The splat is a bare `*`, and it MUST be the final segment —
+          `@ax/http-server`'s router only recognises that spelling (a
+          `/*path` segment compiles to a LITERAL and the route then matches
+          nothing but the URL `/files/*path`). The captured remainder lands
+          under `req.params['*']`, undecoded.
+
+          Registered after the exact `/files` route above only for
+          readability: the router tries every non-splat pattern before any
+          splat, so `/files` can never be swallowed by this one.
+        */
+        method: 'GET',
+        path: '/api/workspace/agents/:agentId/files/*',
+        handler: handlers.agentFile as unknown as RouteHandler,
       },
       {
         method: 'PUT',
