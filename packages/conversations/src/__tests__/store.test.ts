@@ -198,6 +198,54 @@ describe('store + migrations round-trip', () => {
     expect((await store.getMetadata(c.conversationId))!.origin).toBe('web');
   });
 
+  it('backfills a pre-existing hidden row to a routine origin', async () => {
+    // Reading NULL as 'web' reads it as ATTENDED, which for a routine's
+    // conversation means the approval waits for a warm agent that ended its
+    // turn hours ago. A per-fire row ages out; a `conversation: shared`
+    // routine keeps ONE row forever, so without the backfill it is
+    // misclassified for good.
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+
+    const tick = await store.create({
+      userId: 'u1',
+      agentId: 'agt_x',
+      title: null,
+      hidden: true,
+    });
+    const chat = await store.create({ userId: 'u1', agentId: 'agt_x', title: null });
+    // Simulate the pre-column state: both rows land with origin NULL.
+    await db
+      .updateTable('conversations_v1_conversations')
+      .set({ origin: null })
+      .execute();
+
+    await runConversationsMigration(db);
+
+    expect((await store.getByIdNotDeleted(tick.conversationId))!.origin).toBe('routine');
+    // And it does NOT touch a visible conversation — a human opened that one.
+    expect((await store.getByIdNotDeleted(chat.conversationId))!.origin).toBe('web');
+  });
+
+  it('the backfill leaves an explicit origin alone on a re-run', async () => {
+    // Idempotence (I11). Scoped to `origin IS NULL`, so a row a future channel
+    // wrote is untouched however many times the migration runs.
+    const db = makeKysely();
+    await runConversationsMigration(db);
+    const store = createConversationStore(db);
+    const c = await store.create({
+      userId: 'u1',
+      agentId: 'agt_x',
+      title: null,
+      hidden: true,
+      origin: 'web',
+    });
+
+    await runConversationsMigration(db);
+    expect((await store.getByIdNotDeleted(c.conversationId))!.origin).toBe('web');
+  });
+
   it('get-metadata carries the live session id', async () => {
     // AW-6 delivers a resolved decision to the warm agent through this field.
     // It rides the same single row read as the attendance lookup.

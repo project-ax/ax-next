@@ -116,6 +116,27 @@ export async function runConversationsMigration<DB>(
       ADD COLUMN IF NOT EXISTS origin TEXT
   `.execute(db);
 
+  // ...with ONE exception, and it is the whole reason this statement exists.
+  //
+  // Reading NULL as `'web'` reads it as ATTENDED, and for a conversation a
+  // routine opened that is the wrong direction to be wrong in: the approval
+  // would wait for a warm agent that ended its turn hours ago, the host would
+  // never replay it, and nothing would say so. A per-fire routine conversation
+  // ages out on its own, but a `conversation: shared` routine keeps ONE row
+  // forever — so without this, that row is misclassified for good.
+  //
+  // `hidden = TRUE` is the honest signal: every writer of it is the routines
+  // path (`conversations:create`/`find-or-create` with `hidden: true`, and
+  // `conversations:hide`, whose only caller is the routines silence-token
+  // logic). Scoped to `origin IS NULL` so it only ever touches rows that
+  // predate the column — a re-run, or a row a future channel wrote, is
+  // untouched (I11).
+  await sql`
+    UPDATE conversations_v1_conversations
+       SET origin = 'routine'
+     WHERE origin IS NULL AND hidden = TRUE
+  `.execute(db);
+
   // Phase A routines foundation (2026-05-14). Stable per-(user, agent, key)
   // conversation lookup for routines with `conversation: shared`. The
   // routines plugin passes external_key = routine_path; non-routine
