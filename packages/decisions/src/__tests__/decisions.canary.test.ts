@@ -10,11 +10,16 @@
  */
 import { createDatabasePostgresPlugin } from '@ax/database-postgres';
 import { createTestHarness, stopPostgresContainer, type TestHarness } from '@ax/test-harness';
-import { BUILTIN_RULES, createToolPolicyPlugin } from '@ax/tool-policy';
+import {
+  BUILTIN_RULES,
+  createToolPolicyPlugin,
+  type ToolPolicyPluginOptions,
+} from '@ax/tool-policy';
 import { isHold, isRejection, type AgentContext, type Hold, type ToolCall } from '@ax/core';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { UNDO_WINDOW_MS } from '../machine.js';
 import { createDecisionsPlugin, type DecisionsPluginOptions } from '../plugin.js';
 import type {
   Decision,
@@ -36,20 +41,33 @@ const harnesses: TestHarness[] = [];
  * expiry tests race a clock; the ones that need a sweep drive `decisions:sweep`
  * themselves and get a deterministic answer back.
  */
-async function boot(decisions: DecisionsPluginOptions = {}): Promise<TestHarness> {
+async function boot(
+  decisions: DecisionsPluginOptions = {},
+  policy?: ToolPolicyPluginOptions,
+): Promise<TestHarness> {
   const h = await createTestHarness({
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       // Registration order matters and is asserted in the k8s preset test:
       // decisions must be able to see tool-policy's hook, and its subscriber
       // must run after anything that can deny outright.
-      createToolPolicyPlugin(),
+      createToolPolicyPlugin(policy),
       createDecisionsPlugin({ sweepIntervalMs: 0, ...decisions }),
     ],
   });
   harnesses.push(h);
   return h;
 }
+
+/**
+ * No rule in `BUILTIN_RULES` is marked `irreversible` — deliberately, and the
+ * rule table says so. So the deferred-replay path needs an injected table. It
+ * is the same shape a real irreversible rule would have; only the flag differs
+ * from `HOLD_RULE`.
+ */
+const IRREVERSIBLE_RULES = [
+  { ...BUILTIN_RULES.find((r) => r.verdict === 'hold')!, irreversible: true },
+];
 
 beforeAll(async () => {
   container = await new PostgreSqlContainer('postgres:16-alpine').start();
@@ -769,6 +787,93 @@ describe('decisions canary — execute on approve', () => {
     expect(receipts.at(-1)!.outcome).toBe('executed');
     // …and nothing ran a second time.
     expect(executor.calls).toHaveLength(1);
+  });
+
+  it('an irreversible rule waits out the undo window before the call goes out', async () => {
+    // The grace period, end to end. `pendingUntil` is exactly when the undo
+    // window closes, nothing has gone out in the meantime, and the sweep is
+    // what finally sends it.
+    // A clock we control: the deferral is measured in real milliseconds, and a
+    // test that waited them out would be a test that sleeps.
+    let clock = new Date('2026-08-21T09:00:00.000Z');
+    const h = await boot({ now: () => clock }, { rules: IRREVERSIBLE_RULES });
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const receipts = collectReceipts(h);
+    const id = await holdAndId(h, routineCtx(h), CALL);
+
+    const out = await approve(h, userCtx(h), id);
+    // Approved — and deliberately NOT executed yet.
+    expect(out.executed).toBe(false);
+    expect(out.path).toBe('host-replays');
+    expect(out.pendingUntil).not.toBeNull();
+    expect(executor.calls).toEqual([]);
+    // No receipt yet either: nothing has happened, so nothing says it has.
+    expect(receipts).toEqual([]);
+
+    const stored = await readDecision(h, userCtx(h), id);
+    expect(stored.irreversible).toBe(true);
+    expect(stored.replayDueAt).toBe(out.pendingUntil);
+    expect(Date.parse(stored.replayDueAt!) - Date.parse(stored.resolvedAt!)).toBe(
+      UNDO_WINDOW_MS,
+    );
+    // And the agent cannot cash the authorisation in underneath the host while
+    // the send is still pending — otherwise one approval buys two sends.
+    expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
+
+    // The window closes.
+    clock = new Date(clock.getTime() + UNDO_WINDOW_MS + 1);
+    const swept = await h.bus.call<unknown, DecisionsSweepOutput>(
+      'decisions:sweep',
+      userCtx(h),
+      {},
+    );
+    expect(swept.replayed).toBe(1);
+    expect(executor.calls).toEqual([CALL]);
+    expect(receipts.at(-1)).toMatchObject({ decisionId: id, outcome: 'executed' });
+
+    const after = await readDecision(h, userCtx(h), id);
+    expect(after.status).toBe('executed');
+    expect(after.replayDueAt).toBeNull();
+    expect(after.replayedAt).not.toBeNull();
+
+    // Sweeping again does nothing — the claim cleared the due-time.
+    const again = await h.bus.call<unknown, DecisionsSweepOutput>(
+      'decisions:sweep',
+      userCtx(h),
+      {},
+    );
+    expect(again.replayed).toBe(0);
+    expect(executor.calls).toHaveLength(1);
+  });
+
+  it('undo inside the window cancels the send outright', async () => {
+    // This is the whole point of deferring an irreversible call: the undo
+    // button has to stop the outward action, not apologise for it afterwards.
+    let clock = new Date('2026-08-21T09:00:00.000Z');
+    const h = await boot({ now: () => clock }, { rules: IRREVERSIBLE_RULES });
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const id = await holdAndId(h, routineCtx(h), CALL);
+    await approve(h, userCtx(h), id);
+
+    const undone = await h.bus.call<unknown, { undone: boolean; decision: Decision | null }>(
+      'decisions:undo',
+      userCtx(h),
+      { decisionId: id, userId: 'u1' },
+    );
+    expect(undone.undone).toBe(true);
+    expect(undone.decision!.status).toBe('pending');
+    expect(undone.decision!.replayDueAt).toBeNull();
+
+    // Even once the window has long passed, there is nothing left to send.
+    clock = new Date(clock.getTime() + UNDO_WINDOW_MS * 10);
+    const swept = await h.bus.call<unknown, DecisionsSweepOutput>(
+      'decisions:sweep',
+      userCtx(h),
+      {},
+    );
+    expect(swept.replayed).toBe(0);
+    // Nothing ever went out.
+    expect(executor.calls).toEqual([]);
   });
 
   it('the sweep expires an unanswered decision, and an expired one cannot be approved', async () => {
