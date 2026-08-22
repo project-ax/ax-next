@@ -95,15 +95,31 @@ describe('tool-policy canary', () => {
     const verdict = await h.bus.call<unknown, EvaluateResult>(
       'tool-policy:evaluate',
       h.ctx(),
-      { call: { name: 'Bash', input: { command: 'ls' } }, agentId: 'a1' },
+      { call: { name: 'no_such_tool', input: {} }, agentId: 'a1' },
     );
-    // Deliberately not seeded (AW-1): a hold on Bash fires on every command.
+    // No rule matching is allow: the table is an exception list over a system
+    // whose baseline reach is already bounded by the tool catalog, the egress
+    // allowlist and the connector scoping (AW-1).
     expect(verdict).toEqual({
       verdict: 'allow',
       ruleId: null,
       capability: null,
       irreversible: false,
     });
+  });
+
+  it('answers allow with a CATALOG rule for a sandbox builtin (AW-14)', async () => {
+    const h = await boot();
+    const verdict = await h.bus.call<unknown, EvaluateResult>(
+      'tool-policy:evaluate',
+      h.ctx(),
+      { call: { name: 'Bash', input: { command: 'ls' } }, agentId: 'a1' },
+    );
+    // AW-1 declined to seed the six sandbox builtins because a HOLD on Bash
+    // fires on every command. AW-14 seeded them as `catalog` ALLOW rows
+    // instead: the verdict is unchanged (allow either way) and the rail gains
+    // the sentence it was otherwise silent about, which design H4 forbids.
+    expect(verdict).toMatchObject({ verdict: 'allow', ruleId: 'sandbox.bash' });
   });
 
   it('answers deny for a disabled builtin as a rail row, not as enforcement', async () => {

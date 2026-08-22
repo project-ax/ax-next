@@ -23,6 +23,7 @@ import {
   type WorkspaceAgent,
 } from '@/lib/workspace-api';
 import { AgentView } from '../AgentView';
+import { rail as railFixture } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
   const actual = await vi.importActual<Record<string, unknown>>(
@@ -32,6 +33,10 @@ vi.mock('@/lib/workspace-api', async () => {
     ...actual,
     workspaceApi: {
       agent: vi.fn(),
+      // The rail reads its own route (AW-14). Without it in the mock, mounting
+      // the chat tab throws before this file's subject renders at all.
+      rail: vi.fn(async () => railFixture()),
+      revokeGrant: vi.fn(),
       sendMessage: vi.fn(),
       streamReply: vi.fn(),
     },
@@ -55,7 +60,6 @@ const quill: WorkspaceAgent = {
 function detail(over: Partial<AgentDetail> = {}): AgentDetail {
   return {
     agent: quill,
-    permissions: [],
     conversationId: 'c-now',
     thread: [{ kind: 'user', id: 't1', text: 'what is on today' }],
     past: [],

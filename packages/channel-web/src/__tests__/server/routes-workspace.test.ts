@@ -401,17 +401,20 @@ describe('channel-web agent-workspace BFF', () => {
     expect(captured.body).toEqual({ error: 'missing-agent-id' });
   });
 
-  it('returns empty permissions, no files key and NO stats key', async () => {
+  it('carries no permissions key, no files key and NO stats key', async () => {
     registerAuth({ id: 'u1', isAdmin: false });
     const h = makeWorkspaceHandlers({ bus, initCtx });
     const { res, captured } = mkRes();
     await h.agentDetail(mkReq({ agentId: 'a1' }), res);
     expect(captured.statusCode).toBe(200);
     const body = captured.body as Record<string, unknown>;
-    expect(body.permissions).toEqual([]);
-    // `files` is GONE from this response (TASK-233 / AW-12). It is its own
-    // route now, because an empty array inside a 200 could not tell "this
-    // agent has written nothing" from "we could not read its workspace".
+    // Both fields left this response for the same reason, one task apart. An
+    // empty array inside a 200 could not tell "this agent has written nothing"
+    // from "we could not read its workspace" (`files`, TASK-233 / AW-12), and a
+    // leftover empty `permissions` would be a second, always-empty answer to
+    // "what may it do alone" (TASK-235 / AW-14) — the claim the rail exists to
+    // stop making. Each is its own route now.
+    expect(body).not.toHaveProperty('permissions');
     expect(body).not.toHaveProperty('files');
     // No memory plugin registered in this bus → no rows at all. NOT an empty
     // rules row: an editor over storage that does not exist is the promise

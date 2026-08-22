@@ -74,17 +74,24 @@ import {
 } from '@ax/core';
 import type {
   ActivityEvent,
+  AgentRailData,
   AgentRunState,
+  CapabilityProvenance,
+  CapabilityVerdict,
   Decision,
   DecisionStatus,
   ExecutionPath,
+  GrantRef,
+  GrantRow,
   MemoryDoc,
   PastConversation,
   PermissionRow,
+  RailActivity,
   ThreadMessage,
   WorkspaceAgent,
 } from '../lib/workspace-types.js';
 import { isOpenDecision } from '../lib/workspace-types.js';
+import { byVerdict } from '../lib/permission-frames.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
 import { workspaceFilePath } from './safe-path.js';
 
@@ -101,8 +108,132 @@ interface AgentsResolveInput {
   agentId: string;
   userId: string;
 }
+/**
+ * The agent record as `agents:resolve` hands it back.
+ *
+ * Everything past `displayName` is OPTIONAL here on purpose. `@ax/agents`
+ * always sets them, but this is a duck-typed read of somebody else's hook and
+ * the rail must degrade rather than crash if an alternate impl carries less.
+ * Where one is missing the rail says its reach is unknown — never that it is
+ * empty.
+ */
+interface ResolvedAgent {
+  id: string;
+  displayName: string;
+  /** The agent's tool allow-list. EMPTY (with `mcpConfigIds`) is the wildcard. */
+  allowedTools?: string[];
+  /** The MCP server ids this agent may reach. Empty + empty = unrestricted. */
+  mcpConfigIds?: string[];
+  skillAttachments?: Array<{ skillId?: string }>;
+  connectorAttachments?: string[];
+}
 interface AgentsResolveOutput {
-  agent: { id: string; displayName: string };
+  agent: ResolvedAgent;
+}
+
+// --- the rail's reads (design §4.2/§4.3/§4.4) ------------------------------
+
+/** @ax/tool-policy's `CapabilityRow`, duck-typed (I2). */
+interface PolicyCapabilityRow {
+  verdict: CapabilityVerdict;
+  capability: string;
+  source: string;
+  provenance: CapabilityProvenance;
+  described: boolean;
+  theirDescription?: string;
+  mechanicalLabel?: string;
+}
+interface ToolPolicyListCapabilitiesInput {
+  agentId: string;
+}
+interface ToolPolicyListCapabilitiesOutput {
+  rows: PolicyCapabilityRow[];
+}
+
+/**
+ * `tool-policy:evaluate`, used here for exactly two facts about a catalog tool:
+ * what verdict the enforced table gives it, and whether a rule already
+ * describes it (`ruleId !== null`). Asking the evaluator rather than
+ * re-deriving either is the whole point — the rail's verdict is the enforced
+ * verdict or it is decoration.
+ */
+interface ToolPolicyEvaluateInput {
+  call: { name: string; input: unknown };
+  agentId: string;
+}
+interface ToolPolicyEvaluateOutput {
+  verdict: CapabilityVerdict;
+  ruleId: string | null;
+  capability: string | null;
+  irreversible: boolean;
+}
+
+/** @ax/agent-activity's `AgentActivity`, duck-typed (I2). */
+interface AgentActivityGetInput {
+  agentId: string;
+}
+interface AgentActivityGetOutput {
+  activity: {
+    phrase?: unknown;
+    counter?: unknown;
+    startedAt?: unknown;
+    source?: unknown;
+    stale?: unknown;
+  } | null;
+}
+
+/** The tool catalog. Only the three fields the rail reads. */
+interface ToolCatalogEntry {
+  name: string;
+  description?: string;
+  executesIn?: string;
+}
+interface ToolListOutput {
+  tools: ToolCatalogEntry[];
+}
+
+interface HostGrantsListInput {
+  ownerUserId: string;
+  agentId: string;
+}
+interface HostGrantsListOutput {
+  hosts: Array<{ host: string; grantedAt: string }>;
+}
+interface HostGrantsRevokeInput {
+  ownerUserId: string;
+  agentId: string;
+  host: string;
+}
+interface HostGrantsRevokeOutput {
+  revoked: boolean;
+}
+
+/**
+ * @ax/skills' approved-capability wall, per (owner, agent, ONE subject). There
+ * is deliberately no "everything this agent was granted" hook — the store is
+ * keyed by subject — so the rail enumerates the agent's own skills and
+ * connections and asks once per subject.
+ */
+type ApprovedCapKind = 'host' | 'slot' | 'npm' | 'pypi' | 'mcp';
+interface ApprovedCapsListInput {
+  ownerUserId: string;
+  agentId: string;
+  skillId?: string;
+  connectorId?: string;
+}
+interface ApprovedCapsListOutput {
+  capabilities: Array<{ kind: ApprovedCapKind; value: string }>;
+}
+interface ApprovedCapsRevokeInput {
+  ownerUserId: string;
+  agentId: string;
+  kind: ApprovedCapKind;
+  value: string;
+  skillId?: string;
+  connectorId?: string;
+}
+interface ApprovedCapsRevokeOutput {
+  cleared: boolean;
 }
 
 interface AgentsListForUserInput {
@@ -427,8 +558,6 @@ export interface ActivityResponse {
  */
 export interface AgentDetail {
   agent: WorkspaceAgent;
-  /** Empty until the policy rail is real (AW-14). The UI renders its own empty state. */
-  permissions: PermissionRow[];
   /**
    * The conversation `thread` was read from: the agent's current one, or the
    * one named by `?conversationId=`. `null` when the agent has never had a
@@ -745,6 +874,128 @@ export const DECISION_FALLBACK_SUMMARY = 'A decision with no readable summary';
  */
 export const DECISION_FALLBACK_APPROVED = 'You approved this.';
 export const DECISION_FALLBACK_DISMISSED = 'You turned this down. Nothing ran.';
+
+// --- the rail ------------------------------------------------------------
+
+/**
+ * How much of a rail string reaches the browser.
+ *
+ * A capability clause is CI-linted to 60 already; a tool name and an MCP server
+ * id are ours; a vendor's description is not bounded by anybody, so it gets a
+ * paragraph's worth and no more. All four go through `fenceLine` regardless —
+ * fencing bounds what goes on the WIRE, which is the only place a second
+ * renderer cannot forget to do it.
+ */
+export const RAIL_LABEL_MAX_CHARS = 60;
+export const RAIL_DESCRIPTION_MAX_CHARS = 400;
+
+/** How far back "This week" looks. */
+export const COUNTER_WINDOW_DAYS = 7;
+
+/**
+ * The host-side namespace every MCP tool's name carries — `mcp.<serverId>.<tool>`.
+ *
+ * A local twin of @ax/mcp-client's `MCP_NAMESPACE_PREFIX` and the parse in its
+ * `filterByAgentScope`, mirrored rather than imported for the reason `fenceLine`
+ * is: plugins talk through the hook bus, never through each other's modules
+ * (invariant 2). The parse rule is copied exactly, INCLUDING its safe default —
+ * a name in the `mcp.` namespace that does not parse is treated as an MCP tool
+ * with no readable server, not as a native tool.
+ */
+const MCP_TOOL_PREFIX = 'mcp.';
+
+/** `mcp.<serverId>.<tool>` split in two, or `null` for a native tool name. */
+export function parseMcpToolName(
+  name: string,
+): { serverId: string; tool: string } | null {
+  if (!name.startsWith(MCP_TOOL_PREFIX)) return null;
+  const after = name.slice(MCP_TOOL_PREFIX.length);
+  const dot = after.indexOf('.');
+  if (dot <= 0) return null;
+  const tool = after.slice(dot + 1);
+  if (tool.length === 0) return null;
+  return { serverId: after.slice(0, dot), tool };
+}
+
+/**
+ * The agent's tool scope, as `@ax/mcp-client` reads it.
+ *
+ * BOTH lists empty is the WILDCARD sentinel — it means "no per-agent
+ * restriction", which is what a bootstrapped personal agent gets. It does not
+ * mean "no tools", and a rail that read it that way would tell a user their
+ * agent can do nothing at the exact moment it can do everything.
+ */
+interface AgentToolScope {
+  allowedTools: string[];
+  mcpConfigIds: string[];
+  unrestricted: boolean;
+}
+
+export function toolScopeOf(agent: ResolvedAgent): AgentToolScope {
+  const allowedTools = Array.isArray(agent.allowedTools) ? agent.allowedTools : [];
+  const mcpConfigIds = Array.isArray(agent.mcpConfigIds) ? agent.mcpConfigIds : [];
+  return {
+    allowedTools,
+    mcpConfigIds,
+    unrestricted: allowedTools.length === 0 && mcpConfigIds.length === 0,
+  };
+}
+
+/** Would this agent see this catalog tool? Same rule as `filterByAgentScope`. */
+export function inAgentScope(name: string, scope: AgentToolScope): boolean {
+  if (scope.unrestricted) return true;
+  if (name.startsWith(MCP_TOOL_PREFIX)) {
+    const parsed = parseMcpToolName(name);
+    // Unparseable inside the namespace: invisible to every agent, exactly as
+    // the dispatcher decides it. Never fall back to the native allow-list.
+    return parsed !== null && scope.mcpConfigIds.includes(parsed.serverId);
+  }
+  return scope.allowedTools.includes(name);
+}
+
+/**
+ * Our authored verb phrase for each kind of thing a person can grant.
+ *
+ * Authored, closed, and NEVER derived from the granted value: the value is a
+ * hostname or a package name that arrived from a skill manifest, and folding it
+ * into a sentence would put somebody else's string in our voice. It is carried
+ * beside the phrase as `label` and rendered as data.
+ */
+const GRANT_ACTION: Record<ApprovedCapKind, string> = {
+  host: 'reach',
+  slot: 'use the saved key called',
+  npm: 'install the npm package',
+  pypi: 'install the Python package',
+  mcp: 'connect to the tool server',
+};
+
+/** The grant kinds `skills:approved-caps-list` can return. */
+const APPROVED_CAP_KINDS: readonly ApprovedCapKind[] = [
+  'host',
+  'slot',
+  'npm',
+  'pypi',
+  'mcp',
+];
+
+/**
+ * Every status a decision can hold.
+ *
+ * The counter below needs "created, ANY status" and `decisions:list` takes one
+ * exact status at a time (omitted means the open ones only). So the list is
+ * walked. If a status is ever added to @ax/decisions and not added here, the
+ * counter UNDERCOUNTS — which is why it is spelled out rather than inferred,
+ * and why `routes-workspace-rail.test.ts` pins it against the wire union.
+ */
+export const ALL_DECISION_STATUSES: readonly DecisionStatus[] = [
+  'pending',
+  'executed',
+  'approved-pending-agent',
+  'dismissed',
+  'stale',
+  'expired',
+  'failed',
+];
 
 /**
  * The stored row → the row a browser sees.
@@ -1127,11 +1378,18 @@ export interface WorkspaceHandlerDeps {
    * `registerWorkspaceRoutes`; the handler only needs it to tell the truth.
    */
   agentWorkspacePreview?: boolean;
+  /**
+   * Time seam for the "This week" window. Injected so the counter's boundary is
+   * testable — a counter whose definition cannot be tested at its edge is a
+   * counter whose definition will drift.
+   */
+  now?: () => Date;
 }
 
 export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   const { bus, initCtx } = deps;
   const agentWorkspacePreview = deps.agentWorkspacePreview === true;
+  const now = deps.now ?? ((): Date => new Date());
 
   /**
    * Every conversation the caller owns under one agent, newest first.
@@ -1204,20 +1462,29 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
-   * The roster row. Everything past `state` is null because nothing produces
-   * it yet — see the file header. A null renders as the state word alone.
+   * The roster row.
+   *
+   * `now` / `counter` / `startedAt` come from the SAME read the rail uses, so
+   * the Today strip and the rail cannot disagree about what an agent is doing.
+   * All three stay null when there is no activity to report — a null renders as
+   * the state word alone, and never as a placeholder phrase, because a
+   * placeholder is indistinguishable from a claim.
+   *
+   * `stoppedReason` is still null: nothing stops an agent yet (AW-12).
    */
   function toWorkspaceAgent(
     agent: { id: string; displayName: string },
     state: AgentRunState,
+    activity?: AgentRailData['activity'],
   ): WorkspaceAgent {
+    const line = activity?.activity ?? null;
     return {
       id: agent.id,
       name: agent.displayName,
       state,
-      now: null,
-      counter: null,
-      startedAt: null,
+      now: line?.phrase ?? null,
+      counter: line?.counter ?? null,
+      startedAt: line?.startedAt ?? null,
       stoppedReason: null,
     };
   }
@@ -1536,6 +1803,412 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     }
   }
 
+  // --- the rail (design §4, AW-14) ---------------------------------------
+
+  /**
+   * "Right now" — one short phrase, a real counter, and a start time.
+   *
+   * `agent-activity:get` HAS NO ACL: it answers for whatever `agentId` it is
+   * handed, and says so on its own registration. Every caller of this function
+   * has already been through `agents:resolve`, which is the check — see the
+   * two call sites.
+   *
+   * The phrase is fenced again here even though @ax/agent-activity already
+   * fences it. It is a duck-typed hook: an alternate impl (a runner-step
+   * stream, a headless deployment answering null) is not bound by the current
+   * one's care, and this is the trust boundary.
+   */
+  async function readActivity(agentId: string): Promise<AgentRailData['activity']> {
+    if (!bus.hasService('agent-activity:get')) {
+      return { status: 'unavailable', activity: null };
+    }
+    try {
+      const out = await bus.call<AgentActivityGetInput, AgentActivityGetOutput>(
+        'agent-activity:get',
+        initCtx,
+        { agentId },
+      );
+      return { status: 'ok', activity: toRailActivity(out.activity) };
+    } catch (err) {
+      initCtx.logger.warn('workspace_rail_activity_failed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { status: 'failed', activity: null };
+    }
+  }
+
+  /**
+   * "What it may do alone" — the security claim, from three producers.
+   *
+   *   1. `tool-policy:list-capabilities` — the described rows. Each one's
+   *      sentence is authored ON the rule that enforces it, so the two cannot
+   *      drift.
+   *   2. the tool catalog, for everything a rule does NOT describe: an MCP
+   *      tool becomes a mechanical row, anything else an unmapped one. Omitting
+   *      them would be the H4 failure — a row that is not there reads as "it
+   *      cannot do that".
+   *   3. the agent's own tool scope, which decides which catalog entries the
+   *      agent can actually see, and whether it is restricted at all.
+   */
+  async function readPermissions(
+    agent: ResolvedAgent,
+  ): Promise<AgentRailData['permissions']> {
+    const scope = toolScopeOf(agent);
+    if (!bus.hasService('tool-policy:list-capabilities')) {
+      return {
+        status: 'unavailable',
+        rows: [],
+        incomplete: true,
+        unrestrictedTools: scope.unrestricted,
+      };
+    }
+
+    let described: PermissionRow[];
+    try {
+      const out = await bus.call<
+        ToolPolicyListCapabilitiesInput,
+        ToolPolicyListCapabilitiesOutput
+      >('tool-policy:list-capabilities', initCtx, { agentId: agent.id });
+      described = (out.rows ?? []).map(toWirePermission);
+    } catch (err) {
+      initCtx.logger.warn('workspace_rail_policy_failed', {
+        agentId: agent.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return {
+        status: 'failed',
+        rows: [],
+        incomplete: true,
+        unrestrictedTools: scope.unrestricted,
+      };
+    }
+
+    const catalog = await catalogPermissions(agent, scope);
+    return {
+      status: 'ok',
+      rows: byVerdict([...described, ...catalog.rows]),
+      incomplete: catalog.incomplete,
+      unrestrictedTools: scope.unrestricted,
+    };
+  }
+
+  /**
+   * The catalog half: every tool this agent can see that no rule describes.
+   *
+   * The verdict comes from `tool-policy:evaluate`, not from a copy of the rule
+   * table — and `ruleId !== null` is what tells us a described row already
+   * covers this tool, so the two halves cannot double up.
+   *
+   * KNOWN LIMIT, written down because it is a security surface: a rule carrying
+   * a `when` predicate is evaluated here against an EMPTY input, so a
+   * conditional `hold` would fall through to whatever the unconditional answer
+   * is. No rule in the table carries a `when` today (`rules.ts` says so
+   * explicitly). When the first one lands, this has to read the strictest
+   * verdict for the tool rather than the verdict for a call we are not making —
+   * which needs `list-capabilities` to expose the tool it belongs to. See the
+   * PR's follow-ups.
+   */
+  async function catalogPermissions(
+    agent: ResolvedAgent,
+    scope: AgentToolScope,
+  ): Promise<{ rows: PermissionRow[]; incomplete: boolean }> {
+    // Without the evaluator we can neither name a verdict nor tell which tools
+    // a rule already covers. Guessing either would put a made-up security claim
+    // on the surface, so we say the list is incomplete instead.
+    if (!bus.hasService('tool:list') || !bus.hasService('tool-policy:evaluate')) {
+      return { rows: [], incomplete: true };
+    }
+
+    let tools: ToolCatalogEntry[];
+    try {
+      const out = await bus.call<Record<string, never>, ToolListOutput>(
+        'tool:list',
+        initCtx,
+        {},
+      );
+      tools = out.tools ?? [];
+    } catch (err) {
+      initCtx.logger.warn('workspace_rail_catalog_failed', {
+        agentId: agent.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { rows: [], incomplete: true };
+    }
+
+    const rows: PermissionRow[] = [];
+    let incomplete = false;
+    for (const tool of tools) {
+      const name = typeof tool?.name === 'string' ? tool.name : '';
+      if (name.length === 0) continue;
+      if (!inAgentScope(name, scope)) continue;
+
+      let verdict: CapabilityVerdict;
+      let ruled: boolean;
+      try {
+        const ev = await bus.call<ToolPolicyEvaluateInput, ToolPolicyEvaluateOutput>(
+          'tool-policy:evaluate',
+          initCtx,
+          { call: { name, input: {} }, agentId: agent.id },
+        );
+        verdict = ev.verdict;
+        ruled = ev.ruleId !== null;
+      } catch (err) {
+        // One unreadable tool costs us that row, and the list says so. It never
+        // costs us the other rows, and it is never quietly dropped.
+        incomplete = true;
+        initCtx.logger.warn('workspace_rail_evaluate_failed', {
+          agentId: agent.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+        continue;
+      }
+      // A rule already describes this tool in our own words. One row per
+      // capability, and the described one is the better row.
+      if (ruled) continue;
+
+      const mcp = parseMcpToolName(name);
+      const label = fenceLine(name, RAIL_LABEL_MAX_CHARS);
+      if (label === null) {
+        incomplete = true;
+        continue;
+      }
+      rows.push({
+        verdict,
+        // Never our words for a row we cannot describe. The empty string is
+        // the contract, not an oversight.
+        capability: '',
+        source: mcp === null ? `tool:${name}` : `mcp:${name}`,
+        provenance: mcp === null ? 'unmapped' : 'mcp',
+        described: false,
+        mechanicalLabel: label,
+        // The vendor's own prose, for MCP tools only, and only as attributed
+        // evidence. A native tool's `description` is written to steer an LLM
+        // and is not a description of reach, so it is dropped rather than
+        // promoted into a claim.
+        theirDescription:
+          mcp === null ? null : fenceLine(tool.description, RAIL_DESCRIPTION_MAX_CHARS),
+        theirName: mcp === null ? null : fenceLine(mcp.serverId, RAIL_LABEL_MAX_CHARS),
+      });
+    }
+    return { rows, incomplete };
+  }
+
+  /**
+   * "Granted by you" — design §4.3.4.
+   *
+   * Two records, one group. `@ax/host-grants` holds the sites a person let this
+   * agent reach; `@ax/skills`' approved-capability wall holds everything a
+   * person approved at a skill's or a connection's install gate. Both are
+   * things the reader did on purpose and has probably forgotten, which is the
+   * whole reason they are separated from the built-in rules.
+   *
+   * The wall's store is keyed by SUBJECT and has no "list them all" read, so we
+   * ask once per skill and once per connection this agent carries.
+   */
+  async function readGrants(
+    userId: string,
+    agent: ResolvedAgent,
+  ): Promise<AgentRailData['grants']> {
+    const hasSites = bus.hasService('host-grants:list');
+    const hasWall = bus.hasService('skills:approved-caps-list');
+    if (!hasSites && !hasWall) {
+      return { status: 'unavailable', rows: [], incomplete: false };
+    }
+
+    const rows: GrantRow[] = [];
+    let incomplete = false;
+    let read = false;
+
+    if (hasSites) {
+      const revocable = bus.hasService('host-grants:revoke');
+      try {
+        const out = await bus.call<HostGrantsListInput, HostGrantsListOutput>(
+          'host-grants:list',
+          initCtx,
+          { ownerUserId: userId, agentId: agent.id },
+        );
+        read = true;
+        for (const row of out.hosts ?? []) {
+          const label = fenceLine(row?.host, RAIL_LABEL_MAX_CHARS);
+          if (label === null) {
+            incomplete = true;
+            continue;
+          }
+          rows.push({
+            ref: { grant: 'site', host: row.host },
+            verdict: 'allow',
+            action: GRANT_ACTION.host,
+            label,
+            source: `grant:${label}`,
+            provenance: 'grant',
+            grantedAt: isoOrNull(row?.grantedAt),
+            grantedFor: null,
+            revocable,
+          });
+        }
+      } catch (err) {
+        incomplete = true;
+        initCtx.logger.warn('workspace_rail_site_grants_failed', {
+          agentId: agent.id,
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    }
+
+    if (hasWall) {
+      const revocable = bus.hasService('skills:approved-caps-revoke');
+      const subjects: Array<{ kind: 'skill' | 'connection'; id: string }> = [
+        ...(agent.skillAttachments ?? [])
+          .map((a) => a?.skillId)
+          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+          .map((id) => ({ kind: 'skill' as const, id })),
+        ...(agent.connectorAttachments ?? [])
+          .filter((id): id is string => typeof id === 'string' && id.length > 0)
+          .map((id) => ({ kind: 'connection' as const, id })),
+      ];
+      for (const subject of subjects) {
+        try {
+          const out = await bus.call<ApprovedCapsListInput, ApprovedCapsListOutput>(
+            'skills:approved-caps-list',
+            initCtx,
+            {
+              ownerUserId: userId,
+              agentId: agent.id,
+              ...(subject.kind === 'skill'
+                ? { skillId: subject.id }
+                : { connectorId: subject.id }),
+            },
+          );
+          read = true;
+          for (const cap of out.capabilities ?? []) {
+            if (!APPROVED_CAP_KINDS.includes(cap?.kind)) {
+              // A kind we have no authored phrase for. Counting it as a gap is
+              // the honest move: we know reach was granted and cannot name it.
+              incomplete = true;
+              continue;
+            }
+            const label = fenceLine(cap.value, RAIL_LABEL_MAX_CHARS);
+            const forId = fenceLine(subject.id, RAIL_LABEL_MAX_CHARS);
+            if (label === null) {
+              incomplete = true;
+              continue;
+            }
+            rows.push({
+              ref: {
+                grant: 'approved-capability',
+                capKind: cap.kind,
+                value: cap.value,
+                skillId: subject.kind === 'skill' ? subject.id : null,
+                connectorId: subject.kind === 'connection' ? subject.id : null,
+              },
+              verdict: 'allow',
+              action: GRANT_ACTION[cap.kind],
+              label,
+              source: `grant:${cap.kind}:${label}`,
+              provenance: 'grant',
+              grantedAt: null,
+              grantedFor: forId === null ? null : { kind: subject.kind, id: forId },
+              revocable,
+            });
+          }
+        } catch (err) {
+          incomplete = true;
+          initCtx.logger.warn('workspace_rail_wall_grants_failed', {
+            agentId: agent.id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      }
+      // No subjects is not a failed read: an agent with no skills and no
+      // connections genuinely has no wall grants.
+      if (subjects.length === 0) read = true;
+    }
+
+    return {
+      // Nothing readable at all is `failed`, not an empty list. An empty list
+      // here says "you have granted this agent nothing", which is a claim.
+      status: read ? 'ok' : 'failed',
+      rows: dedupeGrants(rows),
+      incomplete,
+    };
+  }
+
+  /**
+   * "This week" — design §4.4.
+   *
+   * ONE row ships. The other two in the design's table have no source, and the
+   * plan is explicit that a missing row is honest while a fabricated number is
+   * not:
+   *
+   *   - *Handled on its own* — "tool calls with verdict `allow`, in window".
+   *     Nothing in the system counts tool calls. There is no event store behind
+   *     `tool:pre-call`, and inventing one is not this card.
+   *   - *You overruled it* — "Decisions dismissed + executions undone". The
+   *     dismissals are countable. The UNDOs are not: `decisions:undo` restores
+   *     the row to `pending` and clears `resolved_at`, so an undone decision is
+   *     indistinguishable from one that was never resolved. Shipping the
+   *     dismissal half under a label whose written definition includes undos is
+   *     precisely the drift §4.4's table exists to prevent, so the row waits
+   *     for a real source.
+   *
+   * See the PR's follow-ups for both.
+   */
+  async function readCounters(
+    userId: string,
+    agentId: string,
+  ): Promise<AgentRailData['counters']> {
+    if (!bus.hasService('decisions:list')) {
+      return {
+        status: 'unavailable',
+        rows: [],
+        windowDays: COUNTER_WINDOW_DAYS,
+      };
+    }
+    const since = now().getTime() - COUNTER_WINDOW_DAYS * 24 * 60 * 60 * 1000;
+    const seen = new Set<string>();
+    try {
+      // `decisions:list` takes ONE exact status and defaults to the open ones,
+      // so "any status" is a walk of the union. The ids are deduped because a
+      // row could legitimately move between two of these reads.
+      for (const status of ALL_DECISION_STATUSES) {
+        const out = await bus.call<DecisionsListInput, DecisionsListOutput>(
+          'decisions:list',
+          initCtx,
+          { userId, agentId, status },
+        );
+        for (const d of out.decisions ?? []) {
+          const at = Date.parse(d?.createdAt ?? '');
+          if (!Number.isNaN(at) && at >= since && typeof d.id === 'string') {
+            seen.add(d.id);
+          }
+        }
+      }
+    } catch (err) {
+      initCtx.logger.warn('workspace_rail_counters_failed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { status: 'failed', rows: [], windowDays: COUNTER_WINDOW_DAYS };
+    }
+
+    return {
+      status: 'ok',
+      rows: [
+        {
+          id: 'brought-to-you',
+          label: 'Brought to you',
+          value: seen.size,
+          // THE written definition, shipped with the number. §4.4's whole point
+          // is that this sentence and that integer travel together.
+          definition:
+            'Decisions this agent raised for you in the last 7 days, whatever you decided — including the ones that expired.',
+        },
+      ],
+      windowDays: COUNTER_WINDOW_DAYS,
+    };
+  }
+
   return {
     /**
      * GET /api/features — a public echo of a build-time flag.
@@ -1559,9 +2232,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const canProbe = bus.hasService('session:is-alive');
       const rows = await Promise.all(
         agents.map(async (a) => {
-          if (!canProbe) return toWorkspaceAgent(a, 'resting');
+          // The roster is already inside `agents:list-for-user`, which is the
+          // ACL — `readActivity` is safe here for the same reason it is safe on
+          // the rail, and for no other.
+          const line = await readActivity(a.id);
+          if (!canProbe) return toWorkspaceAgent(a, 'resting', line);
           const convs = await listConversations(userId, a.id);
-          return toWorkspaceAgent(a, await deriveState(convs));
+          return toWorkspaceAgent(a, await deriveState(convs), line);
         }),
       );
 
@@ -1903,12 +2580,13 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       }
 
       res.status(200).json({
-        agent: toWorkspaceAgent(agent, await deriveState(convs)),
-        // Empty until the policy rail can GENERATE these sentences from the
-        // enforced rules (AW-14). A hand-written permission sentence that
-        // drifts from what the agent may actually do is the worst bug this
-        // surface could ship, so we ship none.
-        permissions: [],
+        agent: toWorkspaceAgent(agent, await deriveState(convs), await readActivity(agentId)),
+        // There is no `permissions` here any more. The rail's three blocks have
+        // their own producer — `GET /api/workspace/agents/:agentId/rail` — for
+        // the reason the feed and the queue got theirs: one collection, one
+        // producer, and a security claim that cannot be paginated or refreshed
+        // separately from the panel it hangs off is a claim nobody can reload
+        // when it looks wrong.
         conversationId: threadConversationId,
         thread,
         past,
@@ -2032,6 +2710,114 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         name: fenceLine(path, FILE_LABEL_MAX_CHARS) ?? UNREADABLE_FILE_NAME,
         ...decodeFileBody(out.bytes),
       } satisfies AgentFileResponse);
+    },
+
+    /**
+     * GET /api/workspace/agents/:agentId/rail — the right-hand rail.
+     *
+     * THE ACL FOR `agent-activity:get` LIVES HERE. That hook has none of its
+     * own — it answers for whatever agentId it is handed, and documents that
+     * whoever mounts it owes the route a check. `resolveAgentOr404` is that
+     * check: without it, any signed-in user could read any other user's agent's
+     * activity line by guessing an id.
+     *
+     * Four independent reads, four independent statuses. A section that has no
+     * producer in this deployment and a section whose producer we could not
+     * read are DIFFERENT answers, and neither of them is an empty array — on
+     * this surface an empty array is a claim about the agent's reach.
+     */
+    async rail(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      const [activity, permissions, grants, counters] = await Promise.all([
+        readActivity(agentId),
+        readPermissions(agent),
+        readGrants(userId, agent),
+        readCounters(userId, agentId),
+      ]);
+      res
+        .status(200)
+        .json({ activity, permissions, grants, counters } satisfies AgentRailData);
+    },
+
+    /**
+     * POST /api/workspace/agents/:agentId/grants/revoke — take one back.
+     *
+     * The body carries the `ref` the rail handed out, verbatim. Nothing here
+     * parses a display string to find its target: a revoke that re-derived what
+     * to remove from what a row happened to say is a revoke that can remove the
+     * wrong thing.
+     *
+     * `revoked: false` is a real answer — the grant was already gone — and it
+     * is reported as one rather than dressed up as success.
+     */
+    async revokeGrant(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const agentId = req.params.agentId ?? '';
+      if (agentId.length === 0) {
+        res.status(400).json({ error: 'missing-agent-id' });
+        return;
+      }
+      const agent = await resolveAgentOr404(bus, initCtx, agentId, userId, res);
+      if (agent === null) return;
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(req.body.toString('utf-8')) as unknown;
+      } catch {
+        res.status(400).json({ error: 'invalid-json' });
+        return;
+      }
+      const ref = readGrantRef((parsed as { ref?: unknown } | null)?.ref);
+      if (ref === null) {
+        res.status(400).json({ error: 'invalid-grant' });
+        return;
+      }
+
+      // Ownership is the (userId, agentId) pair on every write below. A ref
+      // naming somebody else's skill simply matches no row — the store's key
+      // includes the owner and the agent, so there is nothing to widen.
+      if (ref.grant === 'site') {
+        if (!bus.hasService('host-grants:revoke')) {
+          res.status(503).json({ error: 'grants-unavailable' });
+          return;
+        }
+        const out = await bus.call<HostGrantsRevokeInput, HostGrantsRevokeOutput>(
+          'host-grants:revoke',
+          initCtx,
+          { ownerUserId: userId, agentId, host: ref.host },
+        );
+        res.status(200).json({ revoked: out.revoked === true });
+        return;
+      }
+
+      if (!bus.hasService('skills:approved-caps-revoke')) {
+        res.status(503).json({ error: 'grants-unavailable' });
+        return;
+      }
+      const out = await bus.call<ApprovedCapsRevokeInput, ApprovedCapsRevokeOutput>(
+        'skills:approved-caps-revoke',
+        initCtx,
+        {
+          ownerUserId: userId,
+          agentId,
+          kind: ref.capKind,
+          value: ref.value,
+          ...(ref.skillId !== null
+            ? { skillId: ref.skillId }
+            : { connectorId: ref.connectorId ?? '' }),
+        },
+      );
+      res.status(200).json({ revoked: out.cleared === true });
     },
 
     /**
@@ -2247,6 +3033,16 @@ export async function registerWorkspaceRoutes(
         handler: handlers.agentFile as unknown as RouteHandler,
       },
       {
+        method: 'GET',
+        path: '/api/workspace/agents/:agentId/rail',
+        handler: handlers.rail as unknown as RouteHandler,
+      },
+      {
+        method: 'POST',
+        path: '/api/workspace/agents/:agentId/grants/revoke',
+        handler: handlers.revokeGrant as unknown as RouteHandler,
+      },
+      {
         method: 'PUT',
         path: '/api/workspace/agents/:agentId/memory/rules',
         handler: handlers.saveRules as unknown as RouteHandler,
@@ -2289,4 +3085,146 @@ export async function registerWorkspaceRoutes(
     unregisters.push(result.unregister);
   }
   return unregisters;
+}
+
+// --- rail projections (module-level: pure, and unit-testable on their own) ---
+
+/**
+ * `@ax/tool-policy`'s row → the wire row.
+ *
+ * Two jobs. It FENCES every string that survives — a capability clause is
+ * in-repo and CI-linted, but `theirDescription` is a third party's prose and
+ * this is the trust boundary. And it NORMALISES the optionals to `null`, so a
+ * renderer never has to tell `undefined` from "not applicable".
+ *
+ * A described row whose clause fences to nothing DEMOTES to a mechanical one
+ * rather than rendering an empty sentence: "Can  — on its own" is a security
+ * claim with a hole in it.
+ */
+export function toWirePermission(row: PolicyCapabilityRow): PermissionRow {
+  const capability = row.described
+    ? fenceLine(row.capability, RAIL_LABEL_MAX_CHARS)
+    : null;
+  const mechanicalLabel = fenceLine(row.mechanicalLabel, RAIL_LABEL_MAX_CHARS);
+  const described = row.described && capability !== null;
+  return {
+    verdict: row.verdict,
+    capability: described ? (capability ?? '') : '',
+    source: fenceLine(row.source, RAIL_LABEL_MAX_CHARS) ?? 'unknown',
+    provenance: described ? row.provenance : row.provenance === 'mcp' ? 'mcp' : 'unmapped',
+    described,
+    mechanicalLabel: described ? null : mechanicalLabel,
+    theirDescription: described
+      ? null
+      : fenceLine(row.theirDescription, RAIL_DESCRIPTION_MAX_CHARS),
+    theirName: null,
+  };
+}
+
+/**
+ * The activity hook's answer → the wire line, or `null`.
+ *
+ * Everything is re-checked. `phrase` is fenced; a counter is kept only when it
+ * describes a real position in a real set (two integers, a positive total, and
+ * `done` inside it), because a counter is the one thing on this surface a
+ * reader will take as arithmetic; and `startedAt` must parse, since the UI
+ * renders elapsed time from it and `Invalid Date` renders as "NaN min ago".
+ */
+export function toRailActivity(raw: AgentActivityGetOutput['activity']): RailActivity | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const phrase = fenceLine(
+    typeof raw.phrase === 'string' ? raw.phrase : null,
+    RAIL_LABEL_MAX_CHARS,
+  );
+  const startedAt = isoOrNull(raw.startedAt);
+  if (phrase === null || startedAt === null) return null;
+  const stale = raw.stale === true;
+  return {
+    phrase,
+    // Staleness drops the counter. @ax/agent-activity already does this; we do
+    // it again because "the phrase is no longer a claim about the present" and
+    // "29 of 41 is still true" cannot both hold, and this is the last chance.
+    counter: stale ? null : toRailCounter(raw.counter),
+    startedAt,
+    stale,
+    source:
+      raw.source === 'declared' || raw.source === 'tool' || raw.source === 'trigger'
+        ? raw.source
+        : 'trigger',
+  };
+}
+
+function toRailCounter(raw: unknown): RailActivity['counter'] {
+  if (raw === null || typeof raw !== 'object') return null;
+  const { done, total, unit } = raw as Record<string, unknown>;
+  if (!Number.isInteger(done) || !Number.isInteger(total)) return null;
+  const d = done as number;
+  const t = total as number;
+  if (t <= 0 || d < 0 || d > t) return null;
+  const fenced = fenceLine(typeof unit === 'string' ? unit : null, RAIL_LABEL_MAX_CHARS);
+  if (fenced === null) return null;
+  return { done: d, total: t, unit: fenced };
+}
+
+/** A parseable instant as ISO, or `null`. Never `Invalid Date` on the wire. */
+function isoOrNull(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  const at = Date.parse(raw);
+  return Number.isNaN(at) ? null : new Date(at).toISOString();
+}
+
+/**
+ * One row per thing granted.
+ *
+ * A host can legitimately appear twice — once as a site grant, once as a
+ * skill's approved `host` capability — and two identical-looking rows with two
+ * different Revoke buttons is a surface that cannot be acted on. First wins,
+ * and site grants are collected first because that is the record the Settings
+ * "Allowed sites" panel already lets a person manage.
+ */
+function dedupeGrants(rows: readonly GrantRow[]): GrantRow[] {
+  const seen = new Set<string>();
+  const out: GrantRow[] = [];
+  for (const row of rows) {
+    const key = `${row.action}\u0000${row.label}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(row);
+  }
+  return out;
+}
+
+/**
+ * A `GrantRef` off the wire, or `null`.
+ *
+ * Strict on purpose: this object decides what gets deleted. Every field is
+ * checked, the kind is checked against the closed list, and "exactly one
+ * subject" is enforced rather than assumed — a ref carrying both a skill and a
+ * connection would revoke against whichever branch happened to be read first.
+ */
+export function readGrantRef(raw: unknown): GrantRef | null {
+  if (raw === null || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (r.grant === 'site') {
+    return typeof r.host === 'string' && r.host.length > 0
+      ? { grant: 'site', host: r.host }
+      : null;
+  }
+  if (r.grant !== 'approved-capability') return null;
+  const kind = r.capKind;
+  if (typeof kind !== 'string' || !APPROVED_CAP_KINDS.includes(kind as ApprovedCapKind)) {
+    return null;
+  }
+  if (typeof r.value !== 'string' || r.value.length === 0) return null;
+  const skillId = typeof r.skillId === 'string' && r.skillId.length > 0 ? r.skillId : null;
+  const connectorId =
+    typeof r.connectorId === 'string' && r.connectorId.length > 0 ? r.connectorId : null;
+  if ((skillId === null) === (connectorId === null)) return null;
+  return {
+    grant: 'approved-capability',
+    capKind: kind as ApprovedCapKind,
+    value: r.value,
+    skillId,
+    connectorId,
+  };
 }

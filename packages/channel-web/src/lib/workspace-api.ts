@@ -16,6 +16,8 @@
  * forbids: it reads as a working feature and fails at runtime. They come back
  * with the substrate that serves them:
  *
+ *   - AW-14 — the rail: `rail()` and `revokeGrant()` below are served by
+ *     `GET /api/workspace/agents/:id/rail` and its sibling POST.
  *   - AW-11 — the decisions queue: BACK, and real. `decisions()`,
  *     `approveDecision`, `dismissDecision`, `undoDecision` below are served by
  *     `@ax/decisions` through the four `/api/workspace/decisions*` routes.
@@ -38,10 +40,16 @@
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
   ActivityEvent,
+  AgentRailData,
+  CounterRow,
+  RailReadStatus,
   Decision,
+  GrantRef,
+  GrantRow,
   MemoryDoc,
   PastConversation,
   PermissionRow,
+  RailActivity,
   ThreadMessage,
   WorkspaceAgent,
   WorkspaceFileBody,
@@ -50,10 +58,16 @@ import type {
 
 export type {
   ActivityEvent,
+  AgentRailData,
+  CounterRow,
+  RailReadStatus,
   Decision,
+  GrantRef,
+  GrantRow,
   MemoryDoc,
   PastConversation,
   PermissionRow,
+  RailActivity,
   ThreadMessage,
   WorkspaceAgent,
   WorkspaceFileBody,
@@ -144,8 +158,6 @@ export interface ActivityQuery {
 
 export interface AgentDetail {
   agent: WorkspaceAgent;
-  /** Always `[]` in this task — the generated policy rows land in AW-14. */
-  permissions: PermissionRow[];
   /**
    * The conversation `thread` was read from — the agent's current one, or the
    * past one asked for by `agent(id, conversationId)`. `null` when the agent
@@ -318,6 +330,33 @@ export const workspaceApi = {
   file: (agentId: string, path: string) =>
     req<WorkspaceFileBody>(
       `/agents/${encodeURIComponent(agentId)}/files/${encodeURIComponent(path)}`,
+    ),
+
+  /**
+   * The right-hand rail: what it is doing, what it may do alone, what you
+   * granted it, and this week's numbers (AW-14).
+   *
+   * A read of its own rather than a field on `agent()`, for the reason the feed
+   * and the queue got their own routes: one collection, one producer. It also
+   * means the security claim can be refreshed on demand — after a revoke, say —
+   * without re-reading a whole conversation transcript to do it.
+   */
+  rail: (agentId: string) =>
+    req<AgentRailData>(`/agents/${encodeURIComponent(agentId)}/rail`),
+
+  /**
+   * Take back one grant.
+   *
+   * `ref` is the object the rail handed out, echoed back unchanged. The client
+   * never builds one and never parses a row's display text to find its target.
+   *
+   * `revoked: false` means the grant was already gone — a refusal, not a
+   * failure, and the caller reports it as one.
+   */
+  revokeGrant: (agentId: string, ref: GrantRef) =>
+    req<{ revoked: boolean }>(
+      `/agents/${encodeURIComponent(agentId)}/grants/revoke`,
+      { method: 'POST', body: { ref } },
     ),
 
   /**
