@@ -1,6 +1,6 @@
 /**
  * GET  /api/features                   — public feature-flag echo
- * GET  /api/workspace/state            — the roster + (eventually) the queue
+ * GET  /api/workspace/state            — the agent roster
  * GET  /api/workspace/agents/:agentId  — one agent's detail panel
  *        ?conversationId=<id> reads that conversation instead of the current
  *        one (the rail's read-only past-conversation view)
@@ -8,6 +8,10 @@
  *        ?agentId=<id> scopes it to one agent; ?before=<ISO>&limit=<n> page it
  * PUT  /api/workspace/agents/:agentId/memory/rules
  *                                      — save the human-owned memory tier
+ * GET  /api/workspace/decisions        — THE Today queue (one collection)
+ * POST /api/workspace/decisions/:decisionId/approve
+ * POST /api/workspace/decisions/:decisionId/dismiss
+ * POST /api/workspace/decisions/:decisionId/undo
  * POST /api/workspace/route            — "which agent should hear this?"
  *
  * The agent-centric workspace surface (TASK-230 / plan task AW-9). This is the
@@ -21,7 +25,6 @@
  * a plausible-looking fixture, and it does not return a zero — a zero is a
  * claim, and we are not counting anything yet. Concretely:
  *
- *   - `decisions`              — empty until @ax/decisions (AW-11).
  *   - `permissions`            — empty until the policy rail is real (AW-14).
  *   - `files`                  — empty until AW-12.
  *   - `now` / `counter` / `startedAt` — null; nothing reports them yet (AW-8).
@@ -48,7 +51,13 @@
  * `/state`'s per-agent liveness probe is already an N+1; the feed's fan-out
  * lives on its own route rather than making that worse.
  *
- * The four `/api/workspace/*` routes only mount when the preview flag is on
+ * The Today queue is the same story and the same rule: `GET
+ * /api/workspace/decisions` is its one producer. The in-thread approval card
+ * on `GET /api/workspace/agents/:agentId` is a POINTER — a `decisionId` and
+ * nothing else — so the row a person reads in the thread is the row the queue
+ * shows rather than a second copy of it that can disagree.
+ *
+ * The `/api/workspace/*` routes only mount when the preview flag is on
  * (capability minimization, invariant #5). `/api/features` always mounts and
  * needs no auth — it echoes a build-time flag and nothing else, exactly like
  * `GET /api/branding`.
@@ -63,6 +72,9 @@ import {
 import type {
   ActivityEvent,
   AgentRunState,
+  Decision,
+  DecisionStatus,
+  ExecutionPath,
   MemoryDoc,
   PastConversation,
   PermissionRow,
@@ -70,6 +82,7 @@ import type {
   WorkspaceAgent,
   WorkspaceFile,
 } from '../lib/workspace-types.js';
+import { isOpenDecision } from '../lib/workspace-types.js';
 import { listTeamIdsForUser, type RouteRequest, type RouteResponse } from './routes-chat.js';
 
 // --- duck-typed hook payloads (I2 — no cross-plugin imports) --------------
@@ -205,6 +218,87 @@ interface MemoryLearnedReadOutput {
   docs: Array<{ name: string; body: string }>;
 }
 
+/**
+ * The decision row as @ax/decisions stores it — the FULL one, `call` and all.
+ *
+ * Named `StoredDecision` so it can never be confused with the wire `Decision`
+ * imported above: they are different shapes on purpose, and the difference is
+ * the whole job of `toWireDecision`. Duck-typed rather than imported, because
+ * plugins talk through the hook bus and never through each other's modules
+ * (invariant 2).
+ *
+ * `call.input` is MODEL-AUTHORED. It is read by exactly nothing in this file,
+ * and it is on this interface only so that dropping it is a visible decision
+ * rather than an omission nobody notices.
+ */
+interface StoredDecision {
+  id: string;
+  agentId: string;
+  ownerUserId: string;
+  conversationId: string;
+  kind: 'action' | 'grant';
+  attendance: 'attended' | 'unattended';
+  status: DecisionStatus;
+  call: { id: string; name: string; input: unknown };
+  callFingerprint: string;
+  ruleId: string | null;
+  irreversible: boolean;
+  freshness: { kind: string; value: string; label: string } | null;
+  summary: string;
+  detail: string;
+  preview: { meta: string; body: string } | null;
+  primaryLabel: string;
+  secondaryLabel: string;
+  ghostLabel: string;
+  approvedText: string;
+  dismissedText: string;
+  createdAt: string;
+  expiresAt: string;
+  resolvedAt: string | null;
+  staleReason: string | null;
+  consumedAt: string | null;
+  replayDueAt: string | null;
+  replayClaimedAt: string | null;
+  replayedAt: string | null;
+  replayError: string | null;
+}
+
+interface DecisionsListInput {
+  userId: string;
+  agentId?: string;
+  status?: DecisionStatus;
+}
+interface DecisionsListOutput {
+  decisions: StoredDecision[];
+}
+
+interface DecisionsGetInput {
+  decisionId: string;
+  userId: string;
+}
+interface DecisionsGetOutput {
+  decision: StoredDecision | null;
+}
+
+interface DecisionsResolveInput {
+  decisionId: string;
+  userId: string;
+}
+interface DecisionsApproveOutput {
+  decision: StoredDecision | null;
+  executed: boolean;
+  path: ExecutionPath | null;
+  error: string | null;
+  pendingUntil: string | null;
+}
+interface DecisionsDismissOutput {
+  decision: StoredDecision | null;
+}
+interface DecisionsUndoOutput {
+  decision: StoredDecision | null;
+  undone: boolean;
+}
+
 // --- wire shapes ----------------------------------------------------------
 
 /** `GET /api/features` — the flag echo the SPA reads before it renders. */
@@ -213,17 +307,58 @@ export interface FeaturesResponse {
 }
 
 /**
- * `GET /api/workspace/state` — the roster plus one honest empty.
+ * `GET /api/workspace/state` — the roster, and only the roster.
  *
- * There is no `activity` here. The feed has exactly ONE producer,
- * `GET /api/workspace/activity`, because two fields over one collection is the
- * invariant-4 violation this task exists to remove — and because a sub-array of
- * a state blob cannot be paginated, which the feed has to be.
+ * There is no `activity` here and no `decisions` here. Each of those is one
+ * collection with exactly one producer of its own — `GET
+ * /api/workspace/activity` and `GET /api/workspace/decisions` — because two
+ * fields over one collection is invariant 4 violated in the BFF, and because a
+ * sub-array of a state blob cannot be paginated or re-fetched on its own after
+ * someone approves something.
+ *
+ * The queue's field lived here for one slice as an honest `[]` while
+ * @ax/decisions was being built. It moves out for the same reason the activity
+ * feed did, not because the empty was wrong.
  */
 export interface WorkspaceStateResponse {
   agents: WorkspaceAgent[];
-  /** Empty until @ax/decisions lands (AW-11). */
-  decisions: never[];
+}
+
+/** `GET /api/workspace/decisions` — the Today queue, still-open rows only. */
+export interface DecisionsResponse {
+  decisions: Decision[];
+}
+
+/**
+ * `POST /api/workspace/decisions/:decisionId/approve`.
+ *
+ * Everything past `decision` is the plugin's answer about what actually
+ * happened, passed straight through: `executed` is only ever true when a host
+ * executor returned, and `pendingUntil` is non-null only for an irreversible
+ * call whose execution was deferred until the undo window closes.
+ */
+export interface ApproveResponse {
+  decision: Decision;
+  executed: boolean;
+  path: ExecutionPath | null;
+  /**
+   * The host executor's sanitised failure detail — AUDIT-TRAIL data, not a
+   * receipt. The renderer shows the AUTHORED failure line and this decision's
+   * id; it never shows this string, because a host tool's message can quote
+   * model-authored input back at us.
+   */
+  error: string | null;
+  pendingUntil: string | null;
+}
+
+export interface DismissResponse {
+  decision: Decision;
+}
+
+export interface UndoResponse {
+  decision: Decision;
+  /** False when there was nothing left to take back. */
+  undone: boolean;
 }
 
 /**
@@ -476,6 +611,159 @@ function fenceLine(value: string | null | undefined, maxChars: number): string |
   const points = [...flattened];
   if (points.length <= maxChars) return flattened;
   return `${points.slice(0, maxChars - 1).join('').trimEnd()}\u2026`;
+}
+
+/**
+ * How much of a decision's authored prose reaches the browser.
+ *
+ * These are host-authored strings, but they are BUILT from tool names and
+ * capability sentences that arrive from MCP servers and agent-authored skills.
+ * That makes this the trust boundary, and it is fenced here rather than in a
+ * renderer: fencing bounds what goes on the WIRE, so a second renderer — the
+ * in-thread card, and later Slack — cannot forget to do it.
+ *
+ * The sizes follow what each string is. A summary is a queue row, a detail is a
+ * paragraph, a label is a button, a receipt is a sentence, and a preview body
+ * is a quoted artifact — the actual email — so it gets real room while still
+ * being bounded, because "however long the model felt like" is not a size.
+ */
+export const DECISION_SUMMARY_MAX_CHARS = 120;
+export const DECISION_DETAIL_MAX_CHARS = 400;
+export const DECISION_LABEL_MAX_CHARS = 40;
+export const DECISION_RECEIPT_MAX_CHARS = 200;
+export const DECISION_PREVIEW_META_MAX_CHARS = 120;
+export const DECISION_PREVIEW_BODY_MAX_CHARS = 2000;
+
+/**
+ * What a control says when its authored label fences down to nothing.
+ *
+ * A prose field may legitimately come back null — a paragraph nobody wrote
+ * renders as no paragraph. A BUTTON may not: an unlabelled button on a surface
+ * whose entire job is "do you want this to happen" is a control a person
+ * cannot read before they press it. So the button always says something, and
+ * what it says is the plainest true thing we have.
+ */
+export const DECISION_FALLBACK_PRIMARY = 'Approve';
+export const DECISION_FALLBACK_SECONDARY = 'Open the conversation';
+export const DECISION_FALLBACK_GHOST = 'Dismiss';
+
+/** Same rule for the row's own headline — see the activity feed's twin. */
+export const DECISION_FALLBACK_SUMMARY = 'A decision with no readable summary';
+
+/**
+ * And for the two receipts. A resolved row whose line fenced to nothing would
+ * be a receipt that says nothing at all, which reads as "we are not sure what
+ * you did" — so each outcome keeps its own plain sentence. They stay separate
+ * strings for the reason the plugin keeps them separate: deriving one from the
+ * other by string surgery once shipped "sent your reply" for a reply that was
+ * never sent.
+ */
+export const DECISION_FALLBACK_APPROVED = 'You approved this.';
+export const DECISION_FALLBACK_DISMISSED = 'You turned this down. Nothing ran.';
+
+/**
+ * The stored row → the row a browser sees.
+ *
+ * Two jobs, and nothing else. It DROPS the fields a renderer has no use for —
+ * `call` above all, which is model-authored and would put untrusted text on a
+ * trust surface for no reader's benefit — and it FENCES every string that
+ * survives. See `Decision` in `../lib/workspace-types.ts` for the full account
+ * of what goes and why.
+ *
+ * The one derived field is `undoable`, and it is derived HERE so there is only
+ * one copy of the rule. A client re-deriving it from `consumedAt` /
+ * `replayedAt` would be a second copy of the decision machine built by
+ * accident, and those two fields would have to cross the wire to make it
+ * possible.
+ */
+export function toWireDecision(stored: StoredDecision): Decision {
+  const freshnessLabel = fenceLine(stored.freshness?.label, DECISION_LABEL_MAX_CHARS);
+  const previewBody = fenceLine(stored.preview?.body, DECISION_PREVIEW_BODY_MAX_CHARS);
+  return {
+    // Identifiers, not prose: they are keys the client hands back to us, they
+    // are never rendered, and fencing them could collapse two distinct ids
+    // onto one.
+    id: stored.id,
+    agentId: stored.agentId,
+    conversationId: stored.conversationId,
+    kind: stored.kind,
+    attendance: stored.attendance,
+    status: stored.status,
+    irreversible: stored.irreversible,
+    // A predicate with no readable label is not a claim we can put in front of
+    // anyone, so the whole predicate goes rather than half of it. `kind` and
+    // `value` are opaque tokens the UI never parses or prints — see
+    // `FreshnessPredicate`.
+    freshness:
+      stored.freshness !== null && freshnessLabel !== null
+        ? {
+            kind: stored.freshness.kind,
+            value: stored.freshness.value,
+            label: freshnessLabel,
+          }
+        : null,
+    summary:
+      fenceLine(stored.summary, DECISION_SUMMARY_MAX_CHARS) ?? DECISION_FALLBACK_SUMMARY,
+    // A paragraph is not a control. One that fences to nothing is simply not
+    // there, and the renderer draws no paragraph.
+    detail: fenceLine(stored.detail, DECISION_DETAIL_MAX_CHARS) ?? '',
+    // The quoted artifact. No readable body means there is nothing to quote,
+    // so the block goes. A readable body with an unreadable header keeps the
+    // body — the header is orientation, the body is the thing being approved.
+    preview:
+      previewBody !== null
+        ? {
+            meta: fenceLine(stored.preview?.meta, DECISION_PREVIEW_META_MAX_CHARS) ?? '',
+            body: previewBody,
+          }
+        : null,
+    primaryLabel:
+      fenceLine(stored.primaryLabel, DECISION_LABEL_MAX_CHARS) ??
+      DECISION_FALLBACK_PRIMARY,
+    secondaryLabel:
+      fenceLine(stored.secondaryLabel, DECISION_LABEL_MAX_CHARS) ??
+      DECISION_FALLBACK_SECONDARY,
+    ghostLabel:
+      fenceLine(stored.ghostLabel, DECISION_LABEL_MAX_CHARS) ?? DECISION_FALLBACK_GHOST,
+    approvedText:
+      fenceLine(stored.approvedText, DECISION_RECEIPT_MAX_CHARS) ??
+      DECISION_FALLBACK_APPROVED,
+    dismissedText:
+      fenceLine(stored.dismissedText, DECISION_RECEIPT_MAX_CHARS) ??
+      DECISION_FALLBACK_DISMISSED,
+    createdAt: stored.createdAt,
+    expiresAt: stored.expiresAt,
+    resolvedAt: stored.resolvedAt,
+    staleReason: fenceLine(stored.staleReason, DECISION_DETAIL_MAX_CHARS),
+    // `replayDueAt` renamed. The plugin's replay queue is the plugin's
+    // business; what a reader needs to know is when the thing they approved
+    // will actually happen (invariant 1).
+    pendingUntil: stored.replayDueAt,
+    /*
+      Can this still be taken back?
+
+      Only while the call has NOT been made. `consumedAt` records the agent
+      taking the standing authorisation up at the pre-call gate; `replayedAt`
+      records the host performing the call itself. Either one means something
+      went out, and undo does not un-send an email — so the affordance is not
+      offered at all rather than offered and refused.
+
+      A button that cannot do what it names is the worst control this surface
+      could ship: it teaches people that the safety net is there when it is
+      not, which is exactly the belief that makes an approval queue dangerous.
+
+      The TIME window is not part of this. That is `UNDO_WINDOW_MS` measured
+      from `resolvedAt`, counted down by the client so the button disappears on
+      a clock rather than on the next poll.
+    */
+    undoable:
+      (stored.status === 'executed' ||
+        stored.status === 'approved-pending-agent' ||
+        stored.status === 'dismissed') &&
+      stored.resolvedAt !== null &&
+      stored.consumedAt === null &&
+      stored.replayedAt === null,
+  };
 }
 
 /**
@@ -882,6 +1170,159 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     return out.agents;
   }
 
+  /**
+   * Can this caller still reach this agent?
+   *
+   * `false` means the ACL said no — the agent was deleted, or unshared, or was
+   * never theirs. Anything else RETHROWS: "we could not check" is not a no,
+   * and rendering it as one would quietly empty someone's queue on the day the
+   * agent store hiccups. A queue that says "nothing needs you" when four
+   * things do is the failure this surface cannot afford (design H7).
+   *
+   * The discrimination is on the ERROR CODE, not on the error class, and that
+   * detail is load-bearing here. `HookBus.call` wraps every throw a service
+   * hook makes in a `PluginError` — code `unknown` — so `instanceof` alone
+   * cannot tell a verdict from an outage. `agents:resolve` says `not-found`
+   * for an agent that is gone and `forbidden` for one that was never theirs;
+   * everything else is a fault. Same test `isBenignConversationRead` makes a
+   * few lines up, for the same reason.
+   *
+   * A per-row read on the DETAIL panel can afford to be blunter — 404 either
+   * way, one agent, no list to quietly shorten — which is why
+   * `resolveAgentOr404` is not this function.
+   */
+  async function canReachAgent(agentId: string, userId: string): Promise<boolean> {
+    try {
+      await bus.call<AgentsResolveInput, AgentsResolveOutput>('agents:resolve', initCtx, {
+        agentId,
+        userId,
+      });
+      return true;
+    } catch (err) {
+      const denied =
+        (err instanceof PluginError &&
+          (err.code === 'not-found' || err.code === 'forbidden')) ||
+        isRejection(err);
+      if (!denied) throw err;
+      initCtx.logger.warn('workspace_decision_agent_unreachable', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * The read every resolution route starts with: the caller's own decision,
+   * with its agent checked, or `null` after the response has been written.
+   *
+   * `decisions:get` is owner-scoped and answers `null` for a decision that
+   * belongs to someone else, which is the same answer it gives for one that
+   * does not exist — and that is the point. A 404 rather than a 403 keeps us
+   * from telling a foreign caller whether an id is real, which is the house
+   * posture everywhere else on this surface.
+   *
+   * A THROW from the hook is deliberately not caught. It means the read
+   * failed, not that the row is missing, and answering 404 would turn "we
+   * don't know" into "it isn't there".
+   */
+  async function loadOwnedDecision(
+    req: RouteRequest,
+    res: RouteResponse,
+    userId: string,
+  ): Promise<StoredDecision | null> {
+    const decisionId = (req.params.decisionId ?? '').trim();
+    if (decisionId.length === 0) {
+      res.status(400).json({ error: 'missing-decision-id' });
+      return null;
+    }
+    if (!bus.hasService('decisions:get')) {
+      // No decisions plugin means no decisions to resolve. Not an error on our
+      // side, and not a 500 — there is simply no such row.
+      res.status(404).json({ error: 'decision-not-found' });
+      return null;
+    }
+    const got = await bus.call<DecisionsGetInput, DecisionsGetOutput>(
+      'decisions:get',
+      initCtx,
+      { decisionId, userId },
+    );
+    if (got.decision === null) {
+      res.status(404).json({ error: 'decision-not-found' });
+      return null;
+    }
+    // Owning the decision is not the same as still being able to reach the
+    // agent it belongs to, so both gates run.
+    const agent = await resolveAgentOr404(
+      bus,
+      initCtx,
+      got.decision.agentId,
+      userId,
+      res,
+    );
+    if (agent === null) return null;
+    return got.decision;
+  }
+
+  /**
+   * A resolution hook that came back with no row: the decision was there a
+   * moment ago and is not now. 404, never a 200 carrying `decision: null` — a
+   * 200 that says nothing still looks like an answer, and the client would
+   * apply it over the row the person is looking at.
+   */
+  function resolvedOrGone(
+    decision: StoredDecision | null,
+    res: RouteResponse,
+  ): Decision | null {
+    if (decision === null) {
+      res.status(404).json({ error: 'decision-not-found' });
+      return null;
+    }
+    return toWireDecision(decision);
+  }
+
+  /**
+   * The in-thread approval cards for one conversation, oldest first.
+   *
+   * Each card is a POINTER — a `decisionId` and nothing else. The row itself
+   * comes from `GET /api/workspace/decisions`, which the client has already
+   * read, so there is exactly one copy of every decision on the page and the
+   * thread cannot disagree with the queue about what is still open.
+   *
+   * A failed read costs the CARDS, not the panel. The decision is still in the
+   * queue on its own route, so the person still sees it and can still act;
+   * taking the whole detail panel down over this would cost them the
+   * transcript as well, to save a card they have another way to reach.
+   */
+  async function approvalMessages(
+    userId: string,
+    agentId: string,
+    conversationId: string,
+  ): Promise<ThreadMessage[]> {
+    if (!bus.hasService('decisions:list')) return [];
+    try {
+      const out = await bus.call<DecisionsListInput, DecisionsListOutput>(
+        'decisions:list',
+        initCtx,
+        { userId, agentId },
+      );
+      const stamp = (iso: string): number => {
+        const t = Date.parse(iso);
+        return Number.isNaN(t) ? 0 : t;
+      };
+      return (out.decisions ?? [])
+        .filter((d) => d.conversationId === conversationId && isOpenDecision(d))
+        .sort((a, b) => stamp(a.createdAt) - stamp(b.createdAt))
+        .map((d) => ({ kind: 'approval', id: `decision-${d.id}`, decisionId: d.id }));
+    } catch (err) {
+      initCtx.logger.warn('workspace_thread_decisions_failed', {
+        agentId,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return [];
+    }
+  }
+
   return {
     /**
      * GET /api/features — a public echo of a build-time flag.
@@ -911,16 +1352,135 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         }),
       );
 
+      // The roster and nothing else. Both of the collections that used to sit
+      // beside it as empty arrays now have a producer of their own — the feed
+      // at GET /api/workspace/activity, the queue at GET
+      // /api/workspace/decisions — and one collection gets one producer.
+      res.status(200).json({ agents: rows } satisfies WorkspaceStateResponse);
+    },
+
+    /**
+     * GET /api/workspace/decisions — the Today queue.
+     *
+     * Thin on purpose. The machine that decides what is still open, what has
+     * expired, and what the freshness guard has to say about it lives in
+     * @ax/decisions and there is exactly one copy of it (invariant 4). This
+     * route reads, checks the ACL, and projects.
+     */
+    async decisions(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+
+      if (!bus.hasService('decisions:list')) {
+        // In a deployment without the plugin a decision cannot exist, so `[]`
+        // is TRUE rather than a claim laid over a failed read — the same
+        // distinction the activity route draws when @ax/routines is absent.
+        res.status(200).json({ decisions: [] } satisfies DecisionsResponse);
+        return;
+      }
+
+      // No status filter: the hook's own default is "everything still
+      // actionable by a human", and re-stating that here would be a second
+      // copy of the open-status list waiting to disagree with the first.
+      const out = await bus.call<DecisionsListInput, DecisionsListOutput>(
+        'decisions:list',
+        initCtx,
+        { userId },
+      );
+      const rows = out.decisions ?? [];
+
+      // One ACL check per DISTINCT agent. A queue is one row per outward
+      // action, so several rows routinely share an agent and resolving each
+      // one separately would multiply the check by the queue's length for no
+      // extra safety.
+      const agentIds = [...new Set(rows.map((d) => d.agentId))];
+      const verdicts = await Promise.all(
+        agentIds.map(async (id) => [id, await canReachAgent(id, userId)] as const),
+      );
+      const reachable = new Map(verdicts);
+
       res.status(200).json({
-        agents: rows,
-        // An honest empty. @ax/decisions (AW-11) fills the queue; a fixture
-        // here would be indistinguishable from a real decision, which is the
-        // one thing this surface can never afford. The activity feed used to
-        // sit beside this as a second empty array — it now has a real producer
-        // of its own at GET /api/workspace/activity, and one collection gets
-        // one producer.
-        decisions: [],
-      } satisfies WorkspaceStateResponse);
+        decisions: rows
+          .filter((d) => reachable.get(d.agentId) === true)
+          .map(toWireDecision),
+      } satisfies DecisionsResponse);
+    },
+
+    /**
+     * POST /api/workspace/decisions/:decisionId/approve
+     *
+     * A pass-through, and it has to stay one. @ax/decisions owns the single
+     * claim that makes an approval happen exactly once — the route never
+     * dedupes, never re-checks freshness, and never decides on its own that a
+     * second click is a no-op. Two tabs both posting is a case the plugin
+     * already handles; a route that tried to help would be a second, divergent
+     * copy of the rule.
+     */
+    async approveDecision(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const stored = await loadOwnedDecision(req, res, userId);
+      if (stored === null) return;
+
+      const out = await bus.call<DecisionsResolveInput, DecisionsApproveOutput>(
+        'decisions:approve',
+        initCtx,
+        { decisionId: stored.id, userId },
+      );
+      const decision = resolvedOrGone(out.decision, res);
+      if (decision === null) return;
+      res.status(200).json({
+        decision,
+        executed: out.executed,
+        path: out.path,
+        // Bounded and flattened like every other string that leaves here, and
+        // still not a receipt: the renderer shows an AUTHORED failure line,
+        // never this. It rides along because an operator looking at a failed
+        // approval needs the detail, and null is a fine answer.
+        error: fenceLine(out.error, DECISION_RECEIPT_MAX_CHARS),
+        pendingUntil: out.pendingUntil,
+      } satisfies ApproveResponse);
+    },
+
+    /** POST /api/workspace/decisions/:decisionId/dismiss */
+    async dismissDecision(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const stored = await loadOwnedDecision(req, res, userId);
+      if (stored === null) return;
+
+      const out = await bus.call<DecisionsResolveInput, DecisionsDismissOutput>(
+        'decisions:dismiss',
+        initCtx,
+        { decisionId: stored.id, userId },
+      );
+      const decision = resolvedOrGone(out.decision, res);
+      if (decision === null) return;
+      res.status(200).json({ decision } satisfies DismissResponse);
+    },
+
+    /**
+     * POST /api/workspace/decisions/:decisionId/undo
+     *
+     * `undone` is the plugin's answer, not ours. A late undo — one the window
+     * has closed on, or one whose call has already been made — comes back with
+     * the row and `undone: false`, and that is a 200: the click was absorbed
+     * and the honest thing to show is what the row actually says now.
+     */
+    async undoDecision(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const stored = await loadOwnedDecision(req, res, userId);
+      if (stored === null) return;
+
+      const out = await bus.call<DecisionsResolveInput, DecisionsUndoOutput>(
+        'decisions:undo',
+        initCtx,
+        { decisionId: stored.id, userId },
+      );
+      const decision = resolvedOrGone(out.decision, res);
+      if (decision === null) return;
+      res.status(200).json({ decision, undone: out.undone } satisfies UndoResponse);
     },
 
     /**
@@ -1112,6 +1672,23 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         }
       }
 
+      /*
+        The still-open decisions raised in THIS conversation, as cards at the
+        end of the thread. They go last because that is where they happened:
+        the agent got as far as an outward action and stopped to ask.
+
+        There is deliberately no decision payload on this response. The client
+        already has every row from GET /api/workspace/decisions, and a second
+        copy travelling on a second route is precisely the two-producers bug
+        this task exists to avoid.
+      */
+      if (threadConversationId !== null) {
+        thread = [
+          ...thread,
+          ...(await approvalMessages(userId, agentId, threadConversationId)),
+        ];
+      }
+
       res.status(200).json({
         agent: toWorkspaceAgent(agent, await deriveState(convs)),
         // Empty until the policy rail can GENERATE these sentences from the
@@ -1272,7 +1849,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
  * Register the workspace routes against @ax/http-server.
  *
  * `/api/features` always mounts — it is how the SPA learns whether the rest of
- * this surface exists. The `/api/workspace/*` routes mount ONLY when the
+ * this surface exists. Every `/api/workspace/*` route mounts ONLY when the
  * preview flag is on: an unmounted route is the cheapest possible capability
  * minimization (invariant #5), and a 404 is an honest answer for a surface the
  * deployment hasn't enabled.
@@ -1322,6 +1899,26 @@ export async function registerWorkspaceRoutes(
         method: 'PUT',
         path: '/api/workspace/agents/:agentId/memory/rules',
         handler: handlers.saveRules as unknown as RouteHandler,
+      },
+      {
+        method: 'GET',
+        path: '/api/workspace/decisions',
+        handler: handlers.decisions as unknown as RouteHandler,
+      },
+      {
+        method: 'POST',
+        path: '/api/workspace/decisions/:decisionId/approve',
+        handler: handlers.approveDecision as unknown as RouteHandler,
+      },
+      {
+        method: 'POST',
+        path: '/api/workspace/decisions/:decisionId/dismiss',
+        handler: handlers.dismissDecision as unknown as RouteHandler,
+      },
+      {
+        method: 'POST',
+        path: '/api/workspace/decisions/:decisionId/undo',
+        handler: handlers.undoDecision as unknown as RouteHandler,
       },
       {
         method: 'POST',

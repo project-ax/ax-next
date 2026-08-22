@@ -1,3 +1,36 @@
+/**
+ * The JIT permission card — and why it is NOT a `Decision`.
+ *
+ * This question comes up every time someone reads both surfaces, so here is the
+ * answer once, in the file, rather than in a PR description nobody re-reads
+ * (TASK-232 / plan task AW-11 asked for exactly this).
+ *
+ * The two look alike. Both stop mid-turn, both put a card in the thread, both
+ * have an approve and a decline. They are different things:
+ *
+ *   - This card is a **capability GRANT**. "May this agent ever reach
+ *     `api.linear.app`?" It is durable, it is agent-scoped, and there is no
+ *     recorded call behind it — approving does not run anything, it widens what
+ *     the agent may do and then lets the turn continue via `regenerate()`.
+ *
+ *   - A `Decision` (`@ax/decisions`, rendered by `workspace/ApprovalCard.tsx`
+ *     and `workspace/DecisionRow.tsx`) is an **outward ACTION**. "Shall THIS
+ *     email go?" It is one-shot, it carries the verbatim call so approving can
+ *     replay it byte for byte, and it is freshness-guarded so an approval given
+ *     six hours later cannot act on a world that has since moved.
+ *
+ * Collapsing them would force every grant to carry a null `call`, a null
+ * `freshness`, and an `approvedText` that cannot say what happened because
+ * nothing happened — plus a resolution path (`regenerate()`) that shares no
+ * code at all with the host replay. That is three lies and a switch statement in
+ * exchange for one component.
+ *
+ * The `kind: 'action' | 'grant'` field on `Decision` stays, because a grant
+ * raised THROUGH a policy hold is a real case and belongs on that row. This
+ * card is not that case: it is fired by `chat:permission-request` from
+ * @ax/skill-broker and the egress wall, mid-turn, with the agent still warm. It
+ * is not migrated, and it should not be.
+ */
 import { useState, type ReactElement } from 'react';
 import {
   Card,

@@ -21,12 +21,17 @@ vi.mock('@/lib/workspace-api', async () => {
       agent: vi.fn(),
       route: vi.fn(),
       activity: vi.fn(),
+      decisions: vi.fn(),
+      approveDecision: vi.fn(),
+      dismissDecision: vi.fn(),
+      undoDecision: vi.fn(),
     },
   };
 });
 
 const boardMock = vi.mocked(workspaceApi.board);
 const activityMock = vi.mocked(workspaceApi.activity);
+const decisionsMock = vi.mocked(workspaceApi.decisions);
 
 const user = {
   id: 'u1',
@@ -47,6 +52,8 @@ beforeEach(() => {
   boardMock.mockReset();
   activityMock.mockReset();
   activityMock.mockResolvedValue({ events: [], nextBefore: null });
+  decisionsMock.mockReset();
+  decisionsMock.mockResolvedValue({ decisions: [] });
 });
 
 describe('WorkspaceShell', () => {
@@ -74,7 +81,6 @@ describe('WorkspaceShell', () => {
           stoppedReason: null,
         },
       ],
-      decisions: [],
     });
 
     renderShell();
@@ -87,7 +93,7 @@ describe('WorkspaceShell', () => {
   });
 
   it('shows the honest empty state when there are no decisions', async () => {
-    boardMock.mockResolvedValue({ agents: [], decisions: [] });
+    boardMock.mockResolvedValue({ agents: [] });
 
     renderShell();
 
@@ -97,7 +103,7 @@ describe('WorkspaceShell', () => {
   it('does not offer a demo strip or a global stop', async () => {
     // Both drove mock-only routes. A control wired to nothing is worse than no
     // control, because it reads as a promise.
-    boardMock.mockResolvedValue({ agents: [], decisions: [] });
+    boardMock.mockResolvedValue({ agents: [] });
 
     renderShell();
     await screen.findByText('Nothing is waiting on you.');
@@ -108,15 +114,33 @@ describe('WorkspaceShell', () => {
   });
 
   it('does not badge a tab with a zero', async () => {
-    // "Needs you 0" is a measurement we have not made: `decisions` is empty
-    // because nothing produces decisions yet, not because none are pending.
-    boardMock.mockResolvedValue({ agents: [], decisions: [] });
+    // "Needs you 0" is a number nobody needs. The queue read succeeded and came
+    // back empty, so the honest thing to render is the headline saying so — not
+    // a zero pinned to a tab.
+    boardMock.mockResolvedValue({ agents: [] });
 
     renderShell();
     const tab = await screen.findByRole('radio', { name: /Needs you/ });
 
     expect(tab.textContent).toBe('Needs you');
     expect(tab.textContent).not.toMatch(/0/);
+  });
+
+  it('never claims the queue is empty when the queue read FAILED', async () => {
+    /*
+      The roster loaded; the queue did not. "Nothing is waiting on you." here
+      would be the single most damaging sentence this product can print — it is
+      indistinguishable from the true version and means the opposite (H7).
+    */
+    boardMock.mockResolvedValue({ agents: [] });
+    decisionsMock.mockRejectedValue(new Error('workspace /decisions → 503'));
+
+    renderShell();
+
+    expect(
+      await screen.findByText('We could not check what is waiting on you.'),
+    ).toBeTruthy();
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
   });
 
   it('says what we know and what to try when the board will not load', async () => {

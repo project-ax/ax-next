@@ -5,12 +5,7 @@
  * in `src/lib/` because they are the real wire contract: `routes-workspace.ts`
  * produces them and the workspace components consume them.
  *
- * Two shapes are load-bearing and deliberately mirror existing contracts:
- *
- *   - `ToolCall` is `ToolCallSchema` from `@ax/ipc-protocol` ({ id, name, input }).
- *     A held decision stores the call VERBATIM so approving it can replay the
- *     exact call through `tool.execute-host` rather than re-running the model.
- *     That is what makes an approval card WYSIWYG by construction.
+ * One shape is load-bearing and deliberately mirrors an existing contract:
  *
  *   - `Attendance` is the axis the whole design turns on. `tool.pre-call` has a
  *     10s ceiling (`@ax/ipc-protocol` IPC_TIMEOUTS_MS) and converts timeouts to
@@ -20,19 +15,11 @@
  *     agent executes the tool itself when the decision arrives; an unattended one
  *     ends the turn and the host replays the recorded call later.
  *
- * `Decision`, `FreshnessPredicate`, `Attendance` and `ExecutionPath` are
- * declared here but not yet PRODUCED by anything: `/api/workspace/state`
- * returns `decisions: []` until `@ax/decisions` lands (AW-4/AW-5/AW-11), at
- * which point these become re-exports of the shapes that plugin owns. They are
- * kept because `DecisionRow` and `ApprovalCard` are tested against them today.
+ * `Decision` is a PROJECTION of the row `@ax/decisions` owns, not a copy of it.
+ * The projection is the point — see the interface below for what is dropped and
+ * why. It is mirrored here rather than imported because plugins talk through
+ * the hook bus, never through each other's modules (invariant 2).
  */
-
-/** Mirrors `ToolCallSchema` in `@ax/ipc-protocol`. */
-export interface ToolCall {
-  id: string;
-  name: string;
-  input: Record<string, unknown>;
-}
 
 /**
  * Where the conversation that produced this decision is being watched, which
@@ -68,10 +55,28 @@ export type ExecutionPath = 'agent-executes' | 'host-replays';
 export type DecisionStatus =
   | 'pending'
   | 'executed'
+  | 'approved-pending-agent'
   | 'dismissed'
   | 'stale'
   | 'expired'
   | 'failed';
+
+/**
+ * The two statuses that are still a QUESTION. Everything else is a receipt.
+ *
+ * Exported because three things have to agree on which rows are still open —
+ * the queue's headline count, the queue's row list, and the sidebar's pending
+ * badge — and three copies of a status list is how they stop agreeing.
+ */
+export const OPEN_DECISION_STATUSES: readonly DecisionStatus[] = [
+  'pending',
+  'stale',
+];
+
+/** True while a decision is still waiting on a human. */
+export function isOpenDecision(d: { status: DecisionStatus }): boolean {
+  return OPEN_DECISION_STATUSES.includes(d.status);
+}
 
 /**
  * Captured WITH the decision at hold-time. `value` is opaque to the UI — the
@@ -85,6 +90,31 @@ export interface FreshnessPredicate {
   label: string;
 }
 
+/**
+ * One decision, as the BROWSER sees it.
+ *
+ * This is a PROJECTION of `@ax/decisions`' `Decision`, and the difference is
+ * deliberate — capability minimisation applies to a wire shape exactly as it
+ * applies to a filesystem path (invariant 5). What the plugin stores and what a
+ * renderer needs are not the same set, so the route hands over the second one:
+ *
+ *   - `call` is DROPPED, `input` and all. It is MODEL-AUTHORED, it is the one
+ *     field on the row nothing here renders, and shipping it would put raw
+ *     model output on a trust surface for no reader's benefit (design H6). The
+ *     WYSIWYG promise is kept by `preview`, which is host-authored. The SSE
+ *     frame drops it for the same reason, and a test asserts both.
+ *   - `ownerUserId` is DROPPED: it is always the caller, so it says nothing,
+ *     and a user id on a page is one more identifier to leak.
+ *   - `callFingerprint` / `ruleId` / `consumedAt` / `replayClaimedAt` /
+ *     `replayedAt` / `replayError` are DROPPED: host bookkeeping. What a reader
+ *     needs out of them is whether this can still be taken back, and that is
+ *     `undoable` below — one derived boolean instead of four raw fields a
+ *     client would have to re-derive it from, which is how a second copy of the
+ *     decision machine gets built by accident (invariant 4).
+ *
+ * Everything kept is either something a renderer puts on screen or something it
+ * has to branch on.
+ */
 export interface Decision {
   id: string;
   agentId: string;
@@ -92,8 +122,13 @@ export interface Decision {
   kind: DecisionKind;
   attendance: Attendance;
   status: DecisionStatus;
-  /** The recorded call, replayed verbatim on approval. */
-  call: ToolCall;
+  /**
+   * Whether the rule that held this call said approving it cannot be taken
+   * back. Captured at hold time. An irreversible call is DEFERRED by the undo
+   * window rather than run immediately, so the grace period sits before the
+   * outward action instead of pretending to reverse one.
+   */
+  irreversible: boolean;
   /** null when the action has nothing meaningful to re-check. */
   freshness: FreshnessPredicate | null;
   /** One line, the queue row. */
@@ -120,6 +155,35 @@ export interface Decision {
   resolvedAt: string | null;
   /** Set only when the freshness guard fails. Human-readable. */
   staleReason: string | null;
+  /**
+   * ISO instant an approved action will ACTUALLY happen, when it has not
+   * happened yet. Non-null only for an `irreversible` call whose execution the
+   * host deferred until the undo window closes.
+   *
+   * This is what stops the row claiming an outcome it has not observed (design
+   * H1): for those ten seconds the status reads `executed` because the
+   * AUTHORISATION is final, but nothing has gone out, and the row says so.
+   *
+   * Named for what it means to a reader, not for the host mechanism behind it:
+   * `replayDueAt` is the plugin's word for its own replay queue, and a replay
+   * queue is not a thing a browser knows about (invariant 1).
+   */
+  pendingUntil: string | null;
+  /**
+   * Can this still be taken back? SERVER-DERIVED, and the only reason the raw
+   * bookkeeping fields above are not on the wire.
+   *
+   * False the moment the call has actually been made — either the agent
+   * re-issued it and the gate let it through, or the host performed it. Undo
+   * cannot un-send an email, so once something has gone out the affordance is
+   * not shown at all. A button that cannot do the thing it names is the worst
+   * control this surface could ship.
+   *
+   * It does NOT include the time window: that is `UNDO_WINDOW_MS` measured
+   * from `resolvedAt`, and the client counts it down itself so the button
+   * disappears on a clock rather than on the next poll.
+   */
+  undoable: boolean;
 }
 
 /**
@@ -236,10 +300,10 @@ export type ThreadMessage =
    * the honest number of folded turns is "unknown", not zero, which is why the
    * prototype's `0 messages folded` marker was deleted rather than defaulted.
    *
-   * The same "kept for a real future producer" reasoning covers `approval`
-   * (AW-11) and `status` (AW-8): the route emits only `user` and `agent`
-   * today. A renderer with no producer shows nothing; a renderer with a
-   * PLACEHOLDER producer shows a lie, and that is the line this card draws.
+   * `approval` NOW HAS A PRODUCER (AW-11): `GET /api/workspace/agents/:id`
+   * appends one message per still-open decision on the conversation it read,
+   * so the in-thread card is the same row the Today queue shows rather than a
+   * second copy of it. `status` (AW-8) is still waiting for one.
    */
   | { kind: 'fold'; id: string; text: string };
 
@@ -289,9 +353,16 @@ export interface PastConversation {
 }
 
 /**
- * How long an approve/dismiss can be taken back. Lived in the mock decision
- * machine; it is a property of the SURFACE (how long the undo affordance stays
- * on screen), so it survives that file's deletion here rather than in `mock/`.
- * `@ax/decisions` will own the server-side twin when it lands (AW-5).
+ * How long an approve/dismiss can be taken back — the SURFACE's half of it:
+ * how long the undo affordance stays on screen, counted from the server's
+ * `resolvedAt`.
+ *
+ * `@ax/decisions` owns the ENFORCING twin, and the two numbers agreeing is not
+ * what makes this correct. The server refuses a late undo whatever this
+ * constant says, and it also tells us up front whether a given row can be taken
+ * back at all (`Decision.undoable`). This value only decides when the button
+ * stops being offered — if it ever drifted, the failure is a button that lingers
+ * a second too long and is politely refused, not an undo that silently does
+ * nothing.
  */
 export const UNDO_WINDOW_MS = 10_000;

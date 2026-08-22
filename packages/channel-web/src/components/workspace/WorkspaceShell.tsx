@@ -16,8 +16,10 @@ import { useEffect, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { workspaceApi } from '@/lib/workspace-api';
 import { useActivityFeed } from '@/lib/workspace-activity';
+import { useDecisionQueue } from '@/lib/workspace-decisions';
 import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
+import { isOpenDecision } from '@/lib/workspace-types';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentView, type AgentTab } from './AgentView';
 import { HomeComposer } from './HomeComposer';
@@ -70,6 +72,14 @@ function Inner() {
    * off this same fetch.
    */
   const feed = useActivityFeed(route.kind === 'agent' ? route.id : undefined);
+  /**
+   * The queue, fetched once here and read by three places: Today's rows, the
+   * sidebar's pending badge, and the in-thread approval card on an agent's
+   * tab. One collection, one fetch, one array — the card in the thread and the
+   * row in Today are literally the same object, so resolving one resolves both
+   * without a second read and without two copies drifting apart on screen.
+   */
+  const queue = useDecisionQueue();
   const [filter, setFilter] = useState<'needs' | 'working'>('needs');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [rosterOpen, setRosterOpen] = useState(true);
@@ -137,9 +147,13 @@ function Inner() {
     );
   }
 
-  const pending = board.decisions.filter(
-    (d) => d.status === 'pending' || d.status === 'stale',
-  ).length;
+  /*
+    The sidebar badge counts only what we actually read. A failed queue read
+    leaves it at zero — which is the same number a genuinely empty queue shows,
+    and that is the honest ambiguity: Today itself says out loud that it could
+    not check. A badge cannot carry that sentence, so it does not try to.
+  */
+  const pending = queue.decisions.filter(isOpenDecision).length;
   const workingCount = board.agents.filter((a) => a.state === 'working').length;
 
   const openAgent = (id: string) =>
@@ -174,19 +188,21 @@ function Inner() {
                 />
               </WorkspaceHeader>
               <div className="flex-1 overflow-y-auto">
-                {/*
-                  No onApprove/onDismiss/onUndo: `/api/workspace/state` returns
-                  `decisions: []` and nothing serves the three actions yet, so
-                  TodayView renders no decision rows at all. AW-11 supplies both
-                  halves together.
-                */}
                 <TodayView
-                  decisions={board.decisions}
+                  decisions={queue.decisions}
                   agents={board.agents}
                   filter={filter}
                   expandedId={expandedId}
                   onExpand={setExpandedId}
                   onOpenAgent={openAgent}
+                  onApprove={queue.approve}
+                  onDismiss={queue.dismiss}
+                  onUndo={queue.undo}
+                  busyIds={queue.busyIds}
+                  notices={queue.notices}
+                  error={queue.error}
+                  loading={queue.loading}
+                  onRetry={() => void queue.refresh()}
                   onSeeActivity={() => setRoute({ kind: 'activity' })}
                   doneToday={
                     feed.events.filter(
@@ -253,7 +269,13 @@ function Inner() {
               agentId={route.id}
               tab={route.tab}
               onTab={(t) => setRoute({ ...route, tab: t })}
-              decisions={board.decisions}
+              decisions={queue.decisions}
+              onApprove={queue.approve}
+              onDismiss={queue.dismiss}
+              onUndo={queue.undo}
+              busyIds={queue.busyIds}
+              notices={queue.notices}
+              onDecisionRaised={() => void queue.refresh()}
               activity={feed.events}
               activityHasMore={feed.hasMore}
               onActivityLoadMore={feed.loadMore}
@@ -269,7 +291,7 @@ function Inner() {
               }
               onPendingReplyConsumed={() => setPendingReply(null)}
               onChanged={async () => {
-                await refresh();
+                await Promise.all([refresh(), queue.refresh()]);
                 bump();
               }}
             />

@@ -5,23 +5,42 @@
  * artifact (the email body, the invite), what the agent promises not to do
  * until told, and the three ways out.
  *
- * The two states worth studying are the ones a happy-path mockup never shows:
+ * PRESENTATIONAL. It renders the row it is handed and calls back; it does not
+ * know what approving will do, and it must not guess — `useDecisionQueue` posts
+ * and swaps in whatever the server says, and `decision-copy.ts` turns a status
+ * into words. This component's whole job is layout and which control to offer.
+ *
+ * The states worth studying are the ones a happy-path mockup never shows:
  *
  *   - `stale` — approving re-checked the world and found it had moved, so
  *     nothing was executed and the row re-opens saying what changed. The
  *     primary button changes its wording, because approving now means
  *     something different than it did a second ago.
- *   - resolved-with-undo — for ten seconds after an irreversible outward
- *     action, taking it back is one click and does not require finding the
- *     Activity feed.
+ *   - `approved-pending-agent` — a real yes for an action that HAS NOT
+ *     HAPPENED. It reads "it will do this the next time it runs", never "Sent".
+ *   - approved-but-deferred — an irreversible action, authorised, still inside
+ *     its grace period. Nothing has gone out; Undo genuinely stops it.
+ *   - resolved-with-undo — for ten seconds after an action, taking it back is
+ *     one click. The button appears ONLY while the server says the row can
+ *     still be taken back; a dead Undo on something already sent would promise
+ *     a person something we cannot do.
  */
-import { useEffect, useState } from 'react';
 import { ArrowRight, ChevronDown, ChevronUp, RotateCcw } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { UNDO_WINDOW_MS } from '@/lib/workspace-types';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { StateDot } from './bits';
+import {
+  DECISION_NOTHING_YET,
+  DECISION_STALE_ADVICE,
+  DECISION_STALE_LEAD,
+  DECISION_STALE_SUMMARY,
+  decisionOutcome,
+  expiresSoonNote,
+  undoSecondsLeft,
+  type DecisionOutcome,
+} from './decision-copy';
+import { useDecisionClock } from './use-decision-clock';
 
 function ago(iso: string): string {
   const mins = Math.round((Date.now() - Date.parse(iso)) / 60_000);
@@ -43,6 +62,13 @@ function provenance(d: Decision, agentName: string): string {
     : `Held during an unattended run · ${agentName} ended its turn rather than wait`;
 }
 
+/** The dot's colour follows the outcome's tone, so the list scans at a glance. */
+const TONE_DOT: Record<DecisionOutcome['tone'], 'working' | 'resting' | 'stopped'> = {
+  done: 'working',
+  quiet: 'resting',
+  bad: 'stopped',
+};
+
 interface Props {
   decision: Decision;
   agent: WorkspaceAgent;
@@ -52,6 +78,10 @@ interface Props {
   onApprove: () => void;
   onDismiss: () => void;
   onUndo: () => void;
+  /** A POST is in flight for this row: the controls go quiet, never absent. */
+  busy?: boolean;
+  /** What the last action came back with, when it was not what was asked for. */
+  notice?: string | null;
 }
 
 export function DecisionRow({
@@ -63,41 +93,50 @@ export function DecisionRow({
   onApprove,
   onDismiss,
   onUndo,
+  busy = false,
+  notice = null,
 }: Props) {
-  const resolved = d.status === 'executed' || d.status === 'dismissed';
-  const [undoLeft, setUndoLeft] = useState<number>(0);
+  // One clock for the whole row, so the countdown, the undo button and the
+  // outcome sentence can never disagree about what time it is.
+  const now = useDecisionClock(d);
+  const outcome = decisionOutcome(d, now);
+  const undoLeft = undoSecondsLeft(d, now);
+  const expiry = expiresSoonNote(d, now);
 
-  useEffect(() => {
-    if (!resolved || !d.resolvedAt) {
-      setUndoLeft(0);
-      return;
-    }
-    const tick = () => {
-      const left = UNDO_WINDOW_MS - (Date.now() - Date.parse(d.resolvedAt!));
-      setUndoLeft(Math.max(0, Math.ceil(left / 1000)));
-    };
-    tick();
-    const t = setInterval(tick, 500);
-    return () => clearInterval(t);
-  }, [resolved, d.resolvedAt]);
-
-  if (resolved) {
+  if (outcome !== null) {
     return (
-      <div className="flex items-center gap-3 border-b border-rule-soft px-5 py-3.5 last:border-b-0">
-        <StateDot state={d.status === 'executed' ? 'working' : 'resting'} />
-        <span className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground">
-          {d.status === 'executed' ? d.approvedText : d.dismissedText}
-        </span>
-        {undoLeft > 0 && (
-          <Button
-            variant="ghost"
-            size="sm"
-            onClick={onUndo}
-            className="h-7 gap-1.5 text-[12px] text-primary"
-          >
-            <RotateCcw size={11} />
-            Undo · {undoLeft}s
-          </Button>
+      <div
+        className="flex flex-col gap-1 border-b border-rule-soft px-5 py-3.5 last:border-b-0"
+        data-testid={`decision-${d.id}`}
+        data-status={d.status}
+      >
+        <div className="flex items-center gap-3">
+          <StateDot state={TONE_DOT[outcome.tone]} />
+          <span className="min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground">
+            {outcome.line}
+          </span>
+          {undoLeft > 0 && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onUndo}
+              disabled={busy}
+              className="h-7 gap-1.5 text-[12px] text-primary"
+            >
+              <RotateCcw size={11} />
+              Undo · {undoLeft}s
+            </Button>
+          )}
+        </div>
+        {outcome.note !== null && (
+          <p className="pl-[22px] text-[12px] leading-relaxed text-muted-foreground">
+            {outcome.note}
+          </p>
+        )}
+        {notice !== null && (
+          <p className="pl-[22px] text-[12px] leading-relaxed text-destructive">
+            {notice}
+          </p>
         )}
       </div>
     );
@@ -125,7 +164,7 @@ export function DecisionRow({
               : 'min-w-0 flex-1 truncate text-[13.5px] text-muted-foreground'
           }
         >
-          {stale ? 'Needs another look — the world moved' : d.summary}
+          {stale ? DECISION_STALE_SUMMARY : d.summary}
         </span>
         <span className="shrink-0 text-[12.5px] text-muted-foreground">
           {ago(d.createdAt)}
@@ -142,9 +181,8 @@ export function DecisionRow({
           {stale && d.staleReason && (
             <Alert variant="destructive" className="mb-4">
               <AlertDescription className="text-[13px] leading-relaxed">
-                <strong className="font-medium">Nothing was sent.</strong>{' '}
-                {d.staleReason} Read it again before you approve — approving now
-                acts on the situation as it stands.
+                <strong className="font-medium">{DECISION_STALE_LEAD}</strong>{' '}
+                {d.staleReason} {DECISION_STALE_ADVICE}
               </AlertDescription>
             </Alert>
           )}
@@ -173,18 +211,46 @@ export function DecisionRow({
             {!stale && d.freshness && ` · checked against: ${d.freshness.label}`}
           </p>
 
+          {/*
+            Doing nothing is a choice, and it is the only one on this row whose
+            consequence is invisible. Shown only when the deadline is actually
+            near — see `expiresSoonNote`.
+          */}
+          {expiry !== null && (
+            <p className="mt-1.5 text-[11.5px] text-muted-foreground">{expiry}</p>
+          )}
+
+          {notice !== null && (
+            <Alert variant="destructive" className="mt-3 max-w-[660px]">
+              <AlertDescription className="text-[13px] leading-relaxed">
+                {notice}
+              </AlertDescription>
+            </Alert>
+          )}
+
           <div className="mt-4 flex flex-wrap items-center gap-2">
-            <Button size="sm" onClick={onApprove}>
+            <Button size="sm" onClick={onApprove} disabled={busy}>
               {stale ? `${d.primaryLabel} anyway` : d.primaryLabel}
             </Button>
-            <Button size="sm" variant="secondary" onClick={onOpenAgent}>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={onOpenAgent}
+              disabled={busy}
+            >
               {d.secondaryLabel}
             </Button>
-            <Button size="sm" variant="ghost" onClick={onDismiss}>
+            <Button size="sm" variant="ghost" onClick={onDismiss} disabled={busy}>
               {d.ghostLabel}
             </Button>
             <span className="ml-1 text-[11.5px] text-muted-foreground">
-              Nothing happens until you choose
+              {/*
+                While a click is in flight we say what we are doing instead of
+                repeating a promise that is no longer the current state. The
+                buttons are DISABLED, not removed — a control that vanishes
+                under the cursor reads as a crash.
+              */}
+              {busy ? 'Working on it…' : DECISION_NOTHING_YET}
             </span>
             <Button
               size="sm"

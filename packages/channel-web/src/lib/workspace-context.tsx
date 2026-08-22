@@ -1,15 +1,23 @@
 /**
  * Agent-workspace — board state.
  *
- * One fetch of `/state` feeds Today, the sidebar, and Activity, because they
- * are three views of the same collections rather than three feeds.
+ * One fetch of `/state` feeds Today, the sidebar, and an agent's tab, because
+ * they are three views of one roster rather than three rosters.
  *
- * Read-only on purpose. Every mutation that used to live here (approve,
- * dismiss, undo, stop-all, scenario switching) called a mock route that no
- * longer exists; they come back with the substrate that serves them (AW-11 for
- * decisions, AW-12 for pause/files, AW-13 for memory). Until then the only
- * write this surface makes is sending a message, and that goes straight to the
- * shipped chat wire — see `workspace-api.ts`.
+ * IT IS THE ROSTER AND NOTHING ELSE. The other two collections this surface
+ * shows have producers of their own — `useActivityFeed` over
+ * `GET /api/workspace/activity`, and `useDecisionQueue` over
+ * `GET /api/workspace/decisions` — because each of them needs something a field
+ * on a state blob cannot give it (a cursor; a place to put the three writes).
+ * One collection, one producer, one hook.
+ *
+ * Read-only on purpose. The mutations that used to live here (approve, dismiss,
+ * undo, stop-all, scenario switching) called a mock route that no longer
+ * exists. Approve/dismiss/undo now live in `useDecisionQueue`, next to the read
+ * whose rows they change; the rest come back with the substrate that serves
+ * them (AW-12 for pause/files, AW-13 for memory). The only other write this
+ * surface makes is sending a message, and that goes straight to the shipped
+ * chat wire — see `workspace-api.ts`.
  *
  * `loading` is separate from `board === null` on purpose: a surface has to be
  * able to tell "we are still fetching" from "we fetched and there is nothing

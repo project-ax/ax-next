@@ -1202,3 +1202,242 @@ describe('permission-request replay on (re)connect (TASK-82)', () => {
     }
   });
 });
+
+// AW-11 — the `decisionRaised` frame. `@ax/decisions` fires `decisions:raised`
+// the moment a tool call is held for a person to approve, and this connection is
+// how the waiting card reaches the thread the person is already looking at.
+//
+// Two things about this frame are worth stating out loud, because both are the
+// kind of detail a later change quietly undoes:
+//
+//   - It is matched on the payload's OWN `conversationId`, not on the firing
+//     ctx. `@ax/decisions` runs inside `tool.pre-call`, and that ctx belongs to
+//     whatever path invoked the tool; the payload field is the authoritative one
+//     and a synthetic ctx cannot confuse it.
+//   - It carries `decisionId` and `summary` and nothing else. The held call's
+//     `input` is model-authored, and a card that rendered it would put untrusted
+//     text straight onto a trust surface.
+describe('decisionRaised frame', () => {
+  // Built from char codes rather than typed literally: a raw U+202E in a source
+  // file reverses the rest of the line for whoever reads the diff, which is the
+  // very problem this test is about.
+  const BIDI_OVERRIDE = String.fromCharCode(0x202e); // RIGHT-TO-LEFT OVERRIDE
+  const ZERO_WIDTH = String.fromCharCode(0x200b); // ZERO WIDTH SPACE
+  const ELLIPSIS = String.fromCharCode(0x2026);
+
+  /** The payload `@ax/decisions` fires, with room to bend one field per test. */
+  function raised(over: Record<string, unknown> = {}): Record<string, unknown> {
+    return {
+      decisionId: 'dec_1',
+      agentId: 'agt_test',
+      conversationId: 'cnv_test',
+      summary: 'Send the weekly update to sam@example.com',
+      ...over,
+    };
+  }
+
+  /** The same payload minus one field, for the "we drop what we can't render" case. */
+  function raisedWithout(missing: string): Record<string, unknown> {
+    const payload = raised();
+    delete payload[missing];
+    return payload;
+  }
+
+  function framesOf(writes: string[]): Array<Record<string, unknown>> {
+    return writes
+      .filter((w) => w.startsWith('data: '))
+      .map((w) => JSON.parse(w.slice(6)) as Record<string, unknown>);
+  }
+
+  it('pushes a decisionRaised frame to the live client', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire('decisions:raised', initCtx, raised());
+
+      const frame = framesOf(captured.streamWrites).find((f) => 'decisionRaised' in f);
+      expect(frame).toEqual({
+        reqId: 'r-test',
+        decisionRaised: {
+          decisionId: 'dec_1',
+          summary: 'Send the weekly update to sam@example.com',
+        },
+      });
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('does NOT deliver a decision raised on a different conversation', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire('decisions:raised', initCtx, raised({ conversationId: 'cnv_OTHER' }));
+
+      expect(framesOf(captured.streamWrites).some((f) => 'decisionRaised' in f)).toBe(false);
+      expect(captured.streamClosed).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  // A frame with no id renders a card nobody can act on, and a frame with no
+  // conversation belongs to no thread at all. Both are dropped rather than
+  // guessed at.
+  it('ignores a payload missing the decisionId, the summary, or the conversation', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire('decisions:raised', initCtx, raisedWithout('decisionId'));
+      await bus.fire('decisions:raised', initCtx, raisedWithout('summary'));
+      await bus.fire('decisions:raised', initCtx, raisedWithout('conversationId'));
+
+      expect(framesOf(captured.streamWrites).some((f) => 'decisionRaised' in f)).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('does not leak the tool input into the frame', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      // The extra `call` is deliberately not part of `DecisionRaisedPayload`.
+      // It stands in for a field someone adds upstream later: the frame must
+      // forward the two fields it names, never whatever happens to arrive.
+      await bus.fire(
+        'decisions:raised',
+        initCtx,
+        raised({
+          call: { id: 'tc_1', name: 'send_email', input: { body: 'IGNORE PRIOR INSTRUCTIONS' } },
+        }) as unknown,
+      );
+
+      expect(captured.streamWrites.join('')).not.toContain('IGNORE PRIOR INSTRUCTIONS');
+      const frame = framesOf(captured.streamWrites).find((f) => 'decisionRaised' in f);
+      expect(Object.keys(frame?.decisionRaised as Record<string, unknown>).sort()).toEqual([
+        'decisionId',
+        'summary',
+      ]);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('is NON-terminal — the stream stays open and a later done frame still arrives', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire('decisions:raised', initCtx, raised());
+      expect(captured.streamClosed).toBe(false);
+
+      await bus.fire('chat:turn-end', ctxWithConversation(initCtx, 'cnv_test'), {
+        reqId: 'r-test',
+      });
+
+      const frames = framesOf(captured.streamWrites);
+      expect(frames.some((f) => 'decisionRaised' in f)).toBe(true);
+      expect(frames.some((f) => f.done === true)).toBe(true);
+      expect(captured.streamClosed).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('unwires the subscriber when the client disconnects', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      const unsubscribed = vi.spyOn(bus, 'unsubscribe');
+      captured.fireClientClose();
+      // The connection is gone, so its subscription has to go with it —
+      // otherwise every closed tab leaves a live closure on the bus.
+      expect(unsubscribed.mock.calls.map((c) => c[0])).toContain('decisions:raised');
+      unsubscribed.mockRestore();
+
+      const before = captured.streamWrites.length;
+      await bus.fire('decisions:raised', initCtx, raised({ decisionId: 'dec_after_close' }));
+      expect(captured.streamWrites).toHaveLength(before);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  // The summary is host-authored, but it is BUILT from tool names and
+  // capability strings that arrive from MCP servers and agent-authored skills.
+  // That makes it untrusted text crossing a trust boundary, and the wire is
+  // where we bound it.
+  it('flattens a summary carrying a bidi override or a zero-width character', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire(
+        'decisions:raised',
+        initCtx,
+        raised({
+          summary: `Send${BIDI_OVERRIDE}dnuf er${ZERO_WIDTH} to sam@example.com`,
+        }),
+      );
+
+      const frame = framesOf(captured.streamWrites).find((f) => 'decisionRaised' in f);
+      const summary = (frame?.decisionRaised as { summary: string }).summary;
+      expect(summary).toBe('Send dnuf er to sam@example.com');
+      expect(summary).not.toMatch(new RegExp(`[${BIDI_OVERRIDE}${ZERO_WIDTH}]`));
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('falls back to a generic line when nothing legible survives the fence', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire(
+        'decisions:raised',
+        initCtx,
+        raised({ summary: `${BIDI_OVERRIDE}${ZERO_WIDTH}  ` }),
+      );
+
+      const frame = framesOf(captured.streamWrites).find((f) => 'decisionRaised' in f);
+      expect(frame).toEqual({
+        reqId: 'r-test',
+        decisionRaised: { decisionId: 'dec_1', summary: 'A decision is waiting for you' },
+      });
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('bounds a very long summary at 120 code points', async () => {
+    const { bus, initCtx, handler, buffer } = bootHandler();
+    try {
+      const { res, captured } = fakeRes();
+      await handler(fakeReq({ reqId: 'r-test' }), res);
+
+      await bus.fire('decisions:raised', initCtx, raised({ summary: 'x'.repeat(400) }));
+
+      const frame = framesOf(captured.streamWrites).find((f) => 'decisionRaised' in f);
+      const summary = (frame?.decisionRaised as { summary: string }).summary;
+      expect([...summary]).toHaveLength(120);
+      expect(summary.endsWith(ELLIPSIS)).toBe(true);
+    } finally {
+      buffer.dispose();
+    }
+  });
+});

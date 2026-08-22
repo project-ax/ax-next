@@ -83,6 +83,9 @@ function renderView() {
       tab="chat"
       onTab={vi.fn()}
       decisions={[]}
+      onApprove={vi.fn()}
+      onDismiss={vi.fn()}
+      onUndo={vi.fn()}
       activity={[]}
       agents={[quill]}
       onBack={vi.fn()}

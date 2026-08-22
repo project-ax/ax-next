@@ -49,13 +49,21 @@ interface Props {
   agents: WorkspaceAgent[];
   onBack: () => void;
   /**
-   * The three ways out of a decision. Optional for the same reason they are on
-   * `TodayView`: nothing serves approve/dismiss/undo yet, and the shell passes
-   * none. AW-11 supplies them with the decisions themselves.
+   * The three ways out of a decision. REQUIRED — see `AgentConversation` for
+   * why they are not optional-with-a-default.
    */
-  onApprove?: (id: string) => void;
-  onDismiss?: (id: string) => void;
-  onUndo?: (id: string) => void;
+  onApprove: (id: string) => void;
+  onDismiss: (id: string) => void;
+  onUndo: (id: string) => void;
+  /** Rows with a POST in flight, and any per-row notice from the last action. */
+  busyIds?: ReadonlySet<string>;
+  notices?: ReadonlyMap<string, string>;
+  /**
+   * The agent stopped mid-turn to ask for something. Fired from the live SSE
+   * stream so the card appears in the thread as it happens rather than on the
+   * reader's next refresh — the shell re-reads the queue and this panel.
+   */
+  onDecisionRaised?: (decisionId: string) => void;
   /** Bumped by the shell whenever the board changes, to re-pull detail. */
   version: number;
   onChanged: () => void;
@@ -82,6 +90,9 @@ export function AgentView({
   onApprove,
   onDismiss,
   onUndo,
+  busyIds,
+  notices,
+  onDecisionRaised,
   version,
   onChanged,
   pendingReply = null,
@@ -194,9 +205,25 @@ export function AgentView({
           setStreaming(false);
           setTurnError(message);
         },
+        /*
+          The agent stopped to ask for something. NON-TERMINAL: the stream
+          stays open, the turn is parked waiting for an answer, and the
+          spinner stays up because the agent genuinely is still going.
+
+          The frame carries only an id and a one-line summary, so we do not
+          render it — we re-read. `load()` brings back the thread with the
+          approval message on the end of it, and `onChanged()` pulls the
+          decision itself into the queue the card reads from. The card is then
+          the same row Today shows rather than a second description of it.
+        */
+        onDecisionRaised: ({ decisionId }) => {
+          void load();
+          onDecisionRaised?.(decisionId);
+          onChanged();
+        },
       });
     },
-    [load, onChanged],
+    [load, onChanged, onDecisionRaised],
   );
 
   /*
@@ -440,9 +467,11 @@ export function AgentView({
                 readOnly={past !== null}
                 busy={streaming}
                 onSend={(text) => void send(text)}
-                {...(onApprove ? { onApprove } : {})}
-                {...(onDismiss ? { onDismiss } : {})}
-                {...(onUndo ? { onUndo } : {})}
+                onApprove={onApprove}
+                onDismiss={onDismiss}
+                onUndo={onUndo}
+                {...(busyIds !== undefined ? { busyIds } : {})}
+                {...(notices !== undefined ? { notices } : {})}
               />
             </>
           )}
