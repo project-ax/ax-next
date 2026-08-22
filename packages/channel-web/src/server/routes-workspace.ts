@@ -505,6 +505,25 @@ export interface DecisionsResponse {
 }
 
 /**
+ * `GET /api/workspace/decisions/:decisionId` — ONE row, read back.
+ *
+ * The list route above answers with the still-open rows only: once a
+ * decision resolves it drops out of `decisions:list`'s default status set, so
+ * a resolved row the client is still showing can never come back through a
+ * re-fetch of the queue. And a resolved row is exactly the case that needs
+ * re-reading — it is the one carrying the Undo affordance, and `undoable`
+ * goes false the moment `decisions:approve` (or the replay it schedules)
+ * marks the row `consumedAt`. The approve response itself cannot carry that:
+ * it is captured a moment after `resolvedAt`, before anything has consumed
+ * the authorisation, so it is always `undoable: true` and stays that way in
+ * the client's hands until something re-reads the row. This route is that
+ * re-read — the one way `undoable` reaching false ever reaches the browser.
+ */
+export interface DecisionResponse {
+  decision: Decision;
+}
+
+/**
  * `POST /api/workspace/decisions/:decisionId/approve`.
  *
  * Everything past `decision` is the plugin's answer about what actually
@@ -2346,6 +2365,24 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     },
 
     /**
+     * GET /api/workspace/decisions/:decisionId — ONE row, read back.
+     *
+     * The list route above answers with the still-open rows only, so a
+     * resolved decision cannot be found there again. This is the re-read a
+     * client makes to learn that a row it is still showing has since been
+     * consumed — see `DecisionResponse`. Thin on purpose, same as the list
+     * route: `loadOwnedDecision` is the one ACL check every resolution route
+     * already shares, so this reuses it rather than writing a second one.
+     */
+    async decision(req: RouteRequest, res: RouteResponse): Promise<void> {
+      const userId = await authOr401(bus, initCtx, req, res);
+      if (userId === null) return;
+      const stored = await loadOwnedDecision(req, res, userId);
+      if (stored === null) return;
+      res.status(200).json({ decision: toWireDecision(stored) } satisfies DecisionResponse);
+    },
+
+    /**
      * POST /api/workspace/decisions/:decisionId/approve
      *
      * A pass-through, and it has to stay one. @ax/decisions owns the single
@@ -3041,6 +3078,31 @@ export async function registerWorkspaceRoutes(
       method: 'GET',
       path: '/api/features',
       handler: handlers.features as unknown as RouteHandler,
+    },
+    {
+      /*
+        DELIBERATELY NOT BEHIND `agentWorkspacePreview`, and the only decision
+        route that isn't (yet).
+
+        This is the re-read that closes the undo window early — the one way
+        `undoable: false` ever reaches a browser (TASK-259). The approval card,
+        undo window and all, is being put on the DEFAULT `/` chat surface
+        unflagged by TASK-261, which ungates the four sibling routes. If this
+        one were left inside the flag it would be the fifth route nobody
+        remembered, and the symptom would be invisible: the poll 404s forever,
+        every Undo lingers the full ten seconds on a call that has already gone
+        out, and a failed poll says nothing by design. That is precisely the
+        bug this card exists to fix, reintroduced by a merge order.
+
+        So it leads rather than follows. Mounting it early costs nothing: it is
+        authenticated, owner-scoped through `loadOwnedDecision`, read-only, and
+        answers 404 for any id that is not the caller's — the same posture it
+        has with the flag on. `plugin.test.ts` pins that it stays reachable
+        with the preview off.
+      */
+      method: 'GET',
+      path: '/api/workspace/decisions/:decisionId',
+      handler: handlers.decision as unknown as RouteHandler,
     },
   ];
   if (opts.agentWorkspacePreview) {

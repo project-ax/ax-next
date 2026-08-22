@@ -109,6 +109,9 @@ function expectNarrowerThanTheRow(raw: string, row: Record<string, unknown>): vo
 interface DecisionsBody {
   decisions: Array<Record<string, unknown>>;
 }
+interface DecisionBody {
+  decision: Record<string, unknown>;
+}
 interface ApproveBody {
   decision: Record<string, unknown>;
   executed: boolean;
@@ -226,6 +229,21 @@ describe('the decision routes over a real socket', () => {
     const body = JSON.parse(raw) as DecisionsBody;
     expect(body.decisions.map((d) => d.id)).toEqual(['d1']);
     expectNarrowerThanTheRow(raw, body.decisions[0]!);
+  });
+
+  it('extracts :decisionId from a real URL on the single-row GET route', async () => {
+    const booted = await boot();
+    harness = booted.harness;
+
+    // The route-spelling drift this file exists to catch: a handler test
+    // hands `:decisionId` over in `params` itself, which proves nothing about
+    // whether the router actually parses it out of the URL this way.
+    const r = await fetch(`http://127.0.0.1:${booted.port}/api/workspace/decisions/d1`);
+    expect(r.status).toBe(200);
+    const raw = await r.text();
+    const body = JSON.parse(raw) as DecisionBody;
+    expect(body.decision.id).toBe('d1');
+    expectNarrowerThanTheRow(raw, body.decision);
   });
 
   it('404s a decision that is not the caller\'s, over the real route', async () => {
