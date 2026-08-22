@@ -15,7 +15,14 @@ import {
   createToolPolicyPlugin,
   type ToolPolicyPluginOptions,
 } from '@ax/tool-policy';
-import { isHold, isRejection, type AgentContext, type Hold, type ToolCall } from '@ax/core';
+import {
+  isHold,
+  isRejection,
+  PluginError,
+  type AgentContext,
+  type Hold,
+  type ToolCall,
+} from '@ax/core';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
@@ -44,8 +51,48 @@ const harnesses: TestHarness[] = [];
 async function boot(
   decisions: DecisionsPluginOptions = {},
   policy?: ToolPolicyPluginOptions,
-): Promise<TestHarness> {
+  channels: Record<string, Channel> = DEFAULT_CHANNELS,
+): Promise<TestHarness & { delivered: DeliveredEntry[] }> {
+  const delivered: DeliveredEntry[] = [];
   const h = await createTestHarness({
+    // AW-6. Two stand-ins for plugins @ax/decisions reaches through
+    // `optionalCalls`. Nothing about attendance is injected any more — the
+    // plugin resolves it through `conversations:get-metadata` exactly as it
+    // does in the k8s preset, so a regression in that path fails HERE rather
+    // than only in the cluster.
+    services: {
+      'conversations:get-metadata': async (_c, input) => {
+        const { conversationId, userId } = input as {
+          conversationId: string;
+          userId: string;
+        };
+        const row = channels[conversationId];
+        if (row === undefined || row.userId !== userId) {
+          throw new PluginError({
+            code: 'not-found',
+            plugin: 'stub-conversations',
+            message: `conversation '${conversationId}' not found`,
+          });
+        }
+        return {
+          conversationId,
+          userId,
+          agentId: 'a1',
+          runnerType: null,
+          runnerSessionId: null,
+          workspaceRef: null,
+          title: null,
+          lastActivityAt: null,
+          createdAt: '2026-08-21T09:00:00.000Z',
+          origin: row.origin,
+          activeSessionId: row.activeSessionId,
+        };
+      },
+      'session:queue-work': async (_c, input) => {
+        delivered.push(input as DeliveredEntry);
+        return { cursor: delivered.length - 1 };
+      },
+    },
     plugins: [
       createDatabasePostgresPlugin({ connectionString }),
       // Registration order matters and is asserted in the k8s preset test:
@@ -56,8 +103,33 @@ async function boot(
     ],
   });
   harnesses.push(h);
-  return h;
+  return Object.assign(h, { delivered });
 }
+
+/** What the stub conversations store holds for one conversation. */
+interface Channel {
+  origin: 'web' | 'routine';
+  activeSessionId: string | null;
+  userId: string;
+}
+
+interface DeliveredEntry {
+  sessionId: string;
+  entry: { type: string; decisionId: string; outcome: string; note: string };
+}
+
+/**
+ * The two channels every canary boot has: a live web thread someone is
+ * watching, and a routine's own conversation with no session behind it.
+ *
+ * `conv-web` carries an `activeSessionId` because that is what ATTENDED means
+ * mechanically — the runner is parked on that session's inbox waiting for the
+ * answer.
+ */
+const DEFAULT_CHANNELS: Record<string, Channel> = {
+  'conv-web': { origin: 'web', activeSessionId: 'sess-warm', userId: 'u1' },
+  'conv-tick': { origin: 'routine', activeSessionId: null, userId: 'u1' },
+};
 
 /**
  * No rule in `BUILTIN_RULES` is marked `irreversible` — deliberately, and the
@@ -101,23 +173,26 @@ const SANDBOX_HOLD_RULE = BUILTIN_RULES.find(
   (r) => r.verdict === 'hold' && r.match.tool === 'skill_propose',
 )!;
 
+/** The ATTENDED path: a live web thread with a warm session behind it. */
 function userCtx(h: TestHarness): AgentContext {
-  return h.ctx({ agentId: 'a1', userId: 'u1', conversationId: 'conv-1', sessionId: 's1' });
+  return h.ctx({ agentId: 'a1', userId: 'u1', conversationId: 'conv-web', sessionId: 's1' });
 }
 
 /**
- * The UNATTENDED path: a routine tick. `defaultAttendanceFor` maps
- * `source === 'routine'` to `unattended`, which is what makes the approval
- * take the host-replay branch instead of waiting for a warm agent that no
- * longer exists.
+ * The UNATTENDED path: a routine's own conversation.
+ *
+ * AW-6: attendance comes from the CONVERSATION's channel, not from
+ * `ctx.source`. This ctx deliberately does NOT set `source: 'routine'` — if
+ * anything in the gate ever starts reading it again, the unattended tests
+ * below keep passing for the wrong reason, and this is where that would be
+ * hidden.
  */
 function routineCtx(h: TestHarness): AgentContext {
   return h.ctx({
     agentId: 'a1',
     userId: 'u1',
-    conversationId: 'conv-1',
+    conversationId: 'conv-tick',
     sessionId: 's-routine',
-    source: 'routine',
   });
 }
 
@@ -518,7 +593,7 @@ describe('decisions canary', () => {
 
     expect(seen).toHaveLength(1);
     expect(seen[0]!.agentId).toBe('a1');
-    expect(seen[0]!.conversationId).toBe('conv-1');
+    expect(seen[0]!.conversationId).toBe('conv-web');
     expect(seen[0]!.decisionId).toMatch(/^dec_[0-9a-f]{32}$/);
     expect(seen[0]!.summary).toContain(HOLD_RULE.capability);
     // The payload carries no `call` at all: a subscriber that rendered raw
@@ -625,7 +700,7 @@ describe('decisions canary — execute on approve', () => {
     // somebody else's workspace.
     expect(executor.ctxs[0]!.userId).toBe('u1');
     expect(executor.ctxs[0]!.agentId).toBe('a1');
-    expect(executor.ctxs[0]!.conversationId).toBe('conv-1');
+    expect(executor.ctxs[0]!.conversationId).toBe('conv-tick');
 
     expect(out.executed).toBe(true);
     expect(out.path).toBe('host-replays');
@@ -931,5 +1006,152 @@ describe('decisions canary — execute on approve', () => {
     // Approving a world that is gone runs nothing and authorises nothing.
     expect(executor.calls).toEqual([]);
     expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// AW-6. Attendance is the conversation's channel, and a resolved ATTENDED
+// decision comes back to the still-warm agent as its next inbox message.
+//
+// Nothing here injects `attendanceFor`. The plugin resolves it through
+// `conversations:get-metadata` exactly as it does in the k8s preset, so if that
+// path regresses these fail rather than only the cluster walk.
+// ---------------------------------------------------------------------------
+describe('decisions canary — attendance and delivery', () => {
+  it('derives attendance from the conversation, not from the turn', async () => {
+    const h = await boot();
+    const web = await readDecision(h, userCtx(h), await holdAndId(h, userCtx(h), CALL));
+    expect(web.attendance).toBe('attended');
+
+    const tick = await readDecision(
+      h,
+      userCtx(h),
+      await holdAndId(h, routineCtx(h), SANDBOX_CALL),
+    );
+    expect(tick.attendance).toBe('unattended');
+  });
+
+  it('is unattended when the conversation cannot be read at all', async () => {
+    // The fail-safe. Unattended misread as attended strands the decision
+    // waiting for a warm agent that is already gone; the reverse just means the
+    // host replays the call itself.
+    const h = await boot();
+    const ctx = h.ctx({
+      agentId: 'a1',
+      userId: 'u1',
+      conversationId: 'conv-nowhere',
+      sessionId: 's-x',
+    });
+    const stored = await readDecision(h, userCtx(h), await holdAndId(h, ctx, CALL));
+    expect(stored.attendance).toBe('unattended');
+  });
+
+  it('delivers an approval to the warm agent, and the retry cashes it in', async () => {
+    const h = await boot();
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+
+    const out = await approve(h, ctx, id);
+    expect(out.path).toBe('agent-executes');
+    // The HOST ran nothing — that is the whole point of the attended path.
+    expect(out.executed).toBe(false);
+    expect(executor.calls).toEqual([]);
+
+    // The delivery landed on the session the runner is parked on.
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.sessionId).toBe('sess-warm');
+    expect(h.delivered[0]!.entry.type).toBe('decision-resolved');
+    expect(h.delivered[0]!.entry.decisionId).toBe(id);
+    expect(h.delivered[0]!.entry.outcome).toBe('approved');
+    // HOST-AUTHORED. The recorded call's input is model-authored and never
+    // reaches a line the model reads back as instruction.
+    expect(h.delivered[0]!.entry.note).toContain(id);
+    expect(h.delivered[0]!.entry.note).not.toContain('a@b.c');
+
+    // And the authorisation the delivery is telling the agent about is real:
+    // one byte-identical retry passes, the next holds again.
+    expect((await h.bus.fire('tool:pre-call', ctx, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', ctx, CALL))).toBe(true);
+  });
+
+  it('delivers a dismissal too, so the agent is not left parked on a dead question', async () => {
+    const h = await boot();
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+
+    await h.bus.call('decisions:dismiss', ctx, { decisionId: id, userId: 'u1' });
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.entry.outcome).toBe('dismissed');
+    // A dismissal authorises nothing: the call still holds.
+    expect(isHold(await h.bus.fire('tool:pre-call', ctx, CALL))).toBe(true);
+  });
+
+  it('delivers a dismissal exactly once even when two tabs click it', async () => {
+    // Only the caller who actually made the transition delivers. Otherwise the
+    // second tab wakes the agent again with news it already has.
+    const h = await boot();
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+
+    await Promise.all([
+      h.bus.call('decisions:dismiss', ctx, { decisionId: id, userId: 'u1' }),
+      h.bus.call('decisions:dismiss', ctx, { decisionId: id, userId: 'u1' }),
+    ]);
+    expect(h.delivered).toHaveLength(1);
+  });
+
+  it('never delivers on the unattended path — nobody is listening', async () => {
+    const h = await boot();
+    recordExecutor(h, HOLD_RULE.match.tool);
+    const id = await holdAndId(h, routineCtx(h), CALL);
+
+    const out = await approve(h, userCtx(h), id);
+    expect(out.executed).toBe(true);
+    expect(out.path).toBe('host-replays');
+    expect(h.delivered).toEqual([]);
+  });
+
+  it('an attended decision whose session is gone degrades into the unattended path', async () => {
+    // The design's no-special-case claim (§3.3). The person walked away, the
+    // idle floor expired, the runner exited — and then they came back and
+    // clicked Approve.
+    //
+    // Nothing branches on that. The delivery is a no-op, and the STANDING
+    // AUTHORISATION is what carries the approval forward: the next time the
+    // agent runs and makes the same call, the gate lets it through exactly
+    // once. That is precisely what an unattended decision does.
+    //
+    // NOTE on what is deliberately NOT asserted: the row does not go back to
+    // `pending`. AW-5's `claimForApproval` moved it to `executed` in the same
+    // write that won the claim, and re-opening a decision a person has already
+    // answered would be a lie about what they did.
+    const h = await boot({}, undefined, {
+      'conv-web': { origin: 'web', activeSessionId: null, userId: 'u1' },
+      'conv-tick': { origin: 'routine', activeSessionId: null, userId: 'u1' },
+    });
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+    expect((await readDecision(h, ctx, id)).attendance).toBe('attended');
+
+    const out = await approve(h, ctx, id);
+    expect(out.executed).toBe(false);
+    expect(out.path).toBe('agent-executes');
+    // Nothing was delivered, and the host did not step in either.
+    expect(h.delivered).toEqual([]);
+    expect(executor.calls).toEqual([]);
+
+    // The authorisation SURVIVED. A later run of the agent — a fresh session,
+    // any session — makes the same call and it goes through, once.
+    const later = h.ctx({
+      agentId: 'a1',
+      userId: 'u1',
+      conversationId: 'conv-web',
+      sessionId: 's-much-later',
+    });
+    expect((await h.bus.fire('tool:pre-call', later, CALL)).rejected).toBe(false);
+    expect(isHold(await h.bus.fire('tool:pre-call', later, CALL))).toBe(true);
+    expect((await readDecision(h, ctx, id)).consumedAt).not.toBeNull();
   });
 });

@@ -1,7 +1,11 @@
 import { isHold, isRejection, makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { callFingerprint } from '../fingerprint.js';
-import { createPreCallSubscriber, defaultAttendanceFor, type PolicyAnswer } from '../pre-call.js';
+import {
+  createPreCallSubscriber,
+  type PolicyAnswer,
+  type PreCallDeps,
+} from '../pre-call.js';
 import { GATE_FAILURE_SENTENCE } from '../templates.js';
 import { createFakeStore, type FakeStore } from './fake-store.js';
 
@@ -41,6 +45,7 @@ let ids = 0;
 function build(
   answer: PolicyAnswer | (() => Promise<PolicyAnswer>),
   store: FakeStore = createFakeStore(),
+  attendanceFor: PreCallDeps['attendanceFor'] = async () => 'attended',
 ): { sub: ReturnType<typeof createPreCallSubscriber>; store: FakeStore } {
   ids = 0;
   return {
@@ -50,6 +55,7 @@ function build(
       now: () => NOW,
       idGen: () => `dec_${(ids += 1)}`,
       ttlMs: TTL_MS,
+      attendanceFor,
     }),
     store,
   };
@@ -277,25 +283,40 @@ describe('tool:pre-call subscriber — it fails CLOSED', () => {
 });
 
 describe('tool:pre-call subscriber — attendance', () => {
-  it('an interactive turn is attended', async () => {
-    const { sub, store } = build(HOLD);
+  it('records what the resolver said — attended', async () => {
+    const { sub, store } = build(HOLD, createFakeStore(), async () => 'attended');
     const r = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
     expect((await store.get(r.hold.decisionId))!.attendance).toBe('attended');
   });
 
-  it('a routine-minted turn is unattended', async () => {
-    const { sub, store } = build(HOLD);
-    const r = (await sub(ctx({ source: 'routine' }), CALL)) as {
-      hold: { decisionId: string };
-    };
+  it('records what the resolver said — unattended', async () => {
+    const { sub, store } = build(HOLD, createFakeStore(), async () => 'unattended');
+    const r = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
     expect((await store.get(r.hold.decisionId))!.attendance).toBe('unattended');
   });
 
-  it('names the property, not the channel', () => {
-    // If this ever returns 'web' or 'routine', a Slack channel plugin becomes
-    // a new attendance VALUE instead of a new channel.
-    expect(defaultAttendanceFor(ctx())).toBe('attended');
-    expect(defaultAttendanceFor(ctx({ source: 'routine' }))).toBe('unattended');
+  it('does NOT read ctx.source — attendance is the channel, not the turn', async () => {
+    // AW-4 derived this from `ctx.source === 'routine'`. That answers "was this
+    // a scheduled fire", which is a different question with the same answer
+    // only while `packages/` holds exactly two channels. A routine-minted ctx
+    // on a web conversation is attended: someone IS watching that thread.
+    const { sub, store } = build(HOLD, createFakeStore(), async () => 'attended');
+    const r = (await sub(ctx({ source: 'routine' }), CALL)) as {
+      hold: { decisionId: string };
+    };
+    expect((await store.get(r.hold.decisionId))!.attendance).toBe('attended');
+  });
+
+  it('fails closed when the resolver throws', async () => {
+    // The gate wraps everything in a catch that returns a rejection — a
+    // resolver that throws must not become a silent allow, and must not become
+    // a row with a guessed attendance either.
+    const { sub } = build(HOLD, createFakeStore(), async () => {
+      throw new Error('conversations store is down');
+    });
+    const r = await sub(ctx(), CALL);
+    expect(isRejection(r)).toBe(true);
+    expect(isHold(r)).toBe(false);
   });
 });
 

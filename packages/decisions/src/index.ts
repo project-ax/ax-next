@@ -20,15 +20,22 @@ export type {
   ResolveResult,
   UndoResult,
 } from './machine.js';
+export { createPreCallSubscriber, PLUGIN_NAME } from './pre-call.js';
 export {
-  createPreCallSubscriber,
-  defaultAttendanceFor,
-  PLUGIN_NAME,
-} from './pre-call.js';
+  attendanceFor,
+  conversationChannel,
+  createAttendanceResolver,
+  CONVERSATION_METADATA_HOOK,
+} from './attendance.js';
+export type { ConversationLookup } from './attendance.js';
+export { deliverResolution, SESSION_QUEUE_HOOK } from './delivery.js';
+export type { DeliveryResult, ResolutionOutcome } from './delivery.js';
 export type { PolicyAnswer, PreCallDeps, PreCallSubscriber } from './pre-call.js';
 export { createDecisionsStore } from './store.js';
 export type { DecisionListFilter, DecisionStore } from './store.js';
 export {
+  decisionApprovedNote,
+  decisionDismissedNote,
   decisionText,
   denialSentence,
   holdNote,
