@@ -112,6 +112,32 @@ export interface EvaluateInput {
 
 export interface ListCapabilitiesInput {
   agentId: string;
+  /**
+   * Tool names the CALLER has established this agent cannot reach.
+   *
+   * The rule table is global: it describes what the product enforces, not what
+   * a particular agent is wired to. An agent scoped to `['Read']` would
+   * otherwise be shown "Can search the web — on its own", which is a false
+   * ALLOW claim on a blast-radius surface — the one direction design H3/H4
+   * says never to be wrong in.
+   *
+   * The table cannot answer this itself. Which tools exist and which of them an
+   * agent can see is the tool catalog's business, and the catalog lives on the
+   * other side of the bus. So the caller — which holds both — subtracts, and
+   * this plugin applies the subtraction to the rows it owns. `match.tool` never
+   * leaves the plugin: exposing it would put an identifier on a display row
+   * that a renderer must not render, which is a foot-gun on this surface.
+   *
+   * ONLY `allow` AND `hold` ROWS ARE DROPPED. A `deny` for a tool the agent
+   * could not reach anyway is still true, and it is reassurance rather than
+   * reach — dropping it would understate our restrictions, which costs
+   * information and endangers nobody. An `allow` it cannot reach is the lie.
+   *
+   * Omitted or empty means DROP NOTHING, which is deliberately the overstating
+   * direction: a caller that cannot read the catalog gets every row and says
+   * elsewhere that its list may be incomplete.
+   */
+  outOfReach?: string[] | undefined;
 }
 
 export interface ListCapabilitiesOutput {

@@ -53,6 +53,33 @@ describe('tool-policy canary', () => {
     expect(order).toEqual([...order].sort((a, b) => a - b));
   });
 
+  it('applies outOfReach ACROSS THE BUS, keeping every deny', async () => {
+    /*
+      The unit test pins the filter; this pins that the filter survives the hook
+      boundary. `outOfReach` is an INPUT, and an input silently dropped on the
+      way in fails exactly like no filter at all — the rail would go back to
+      asserting reach an agent does not have, with every test still green.
+    */
+    const h = await boot();
+    const reachClaims = BUILTIN_RULES.filter((r) => r.verdict !== 'deny');
+    const denies = BUILTIN_RULES.filter((r) => r.verdict === 'deny');
+
+    const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(
+      'tool-policy:list-capabilities',
+      h.ctx(),
+      { agentId: 'a1', outOfReach: reachClaims.map((r) => r.match.tool) },
+    );
+    expect(caps.rows.map((r) => r.source)).toEqual(denies.map((r) => `rule:${r.id}`));
+
+    // …and the rows are unchanged for a caller that proved nothing.
+    const all = await h.bus.call<unknown, ListCapabilitiesOutput>(
+      'tool-policy:list-capabilities',
+      h.ctx(),
+      { agentId: 'a1' },
+    );
+    expect(all.rows.length).toBe(BUILTIN_RULES.length);
+  });
+
   it('survives the returns schema with every declared field intact', async () => {
     const h = await boot();
     const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(

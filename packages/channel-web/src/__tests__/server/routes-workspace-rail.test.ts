@@ -82,6 +82,18 @@ function notFound(): PluginError {
   return new PluginError({ code: 'not-found', plugin: 'mock-agents', message: 'nope' });
 }
 
+/**
+ * `source` -> the tool its rule matches, for the policy mock's `outOfReach`
+ * filter. The real plugin holds this privately (`match.tool` never rides out on
+ * a row); the mock needs its own copy to reproduce the same behaviour.
+ */
+const RULE_TOOL: Record<string, string> = {
+  'rule:web.search': 'web_search',
+  'rule:skills.request-capability': 'request_capability',
+  'rule:sandbox.read': 'Read',
+  'rule:builtins.task': 'Task',
+};
+
 interface AgentRecord {
   id: string;
   displayName: string;
@@ -107,6 +119,8 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
   let catalog: Array<{ name: string; description?: string; executesIn?: string }>;
   let policyRows: unknown[];
   let policyThrows: Error | null;
+  /** What the route last told the policy plugin this agent cannot reach. */
+  let lastOutOfReach: string[] | null;
   let ruledTools: Map<string, { verdict: string; ruleId: string }>;
   let siteGrants: Map<string, Array<{ host: string; grantedAt: string }>>;
   let wallGrants: Map<string, Array<{ kind: string; value: string }>>;
@@ -139,9 +153,24 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
   }
 
   function registerPolicy(): void {
-    bus.registerService('tool-policy:list-capabilities', 'policy', async () => {
+    bus.registerService('tool-policy:list-capabilities', 'policy', async (_c, i: unknown) => {
       if (policyThrows !== null) throw policyThrows;
-      return { rows: policyRows };
+      /*
+        The real registrar applies `outOfReach` (@ax/tool-policy's
+        `applyReach`). Mirrored here — a stub that ignored the field would let
+        the scope test pass against a route that never sent it. The plugin's own
+        tests pin the filter itself; this pins that the ROUTE asks for it.
+      */
+      const { outOfReach } = i as { outOfReach?: string[] };
+      const unreachable = new Set(outOfReach ?? []);
+      lastOutOfReach = outOfReach ?? null;
+      return {
+        rows: (policyRows as Array<Record<string, unknown>>).filter((r) => {
+          if (r.verdict === 'deny') return true;
+          const tool = RULE_TOOL[String(r.source)];
+          return tool === undefined || !unreachable.has(tool);
+        }),
+      };
     });
     bus.registerService('tool-policy:evaluate', 'policy', async (_c, i: unknown) => {
       const { call } = i as { call: { name: string } };
@@ -216,6 +245,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     catalog = [];
     policyRows = [];
     policyThrows = null;
+    lastOutOfReach = null;
     ruledTools = new Map();
     siteGrants = new Map();
     wallGrants = new Map();
@@ -392,6 +422,98 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
       'mcp.linear.create_issue',
       'web_search',
     ]);
+  });
+
+  it('never asserts reach an agent’s tool scope excludes', async () => {
+    /*
+      THE REGRESSION. `tool-policy:list-capabilities` returns the GLOBAL rule
+      table — it describes what the product enforces, not what this agent is
+      wired to reach. Rendered unfiltered, an agent scoped to `['Read']` is told
+      "Can search the web — on its own" about a tool it cannot call: a false
+      ALLOW claim on the blast-radius surface, which is the one direction design
+      H3/H4 says never to be wrong in.
+
+      The earlier scope test could not catch this — it ran with an EMPTY rule
+      table, so there was no described row to be wrong about.
+    */
+    registerPolicy();
+    registerCatalog();
+    policyRows = [
+      { verdict: 'allow', capability: 'search the web', source: 'rule:web.search', provenance: 'catalog', described: true },
+      { verdict: 'allow', capability: 'read files in its own workspace', source: 'rule:sandbox.read', provenance: 'catalog', described: true },
+      { verdict: 'hold', capability: 'gain access to a new service or key', source: 'rule:skills.request-capability', provenance: 'rule', described: true },
+      { verdict: 'deny', capability: 'start a hidden helper agent', source: 'rule:builtins.task', provenance: 'rule', described: true },
+    ];
+    catalog = [
+      { name: 'web_search', executesIn: 'host' },
+      { name: 'request_capability', executesIn: 'host' },
+    ];
+    ruledTools.set('web_search', { verdict: 'allow', ruleId: 'web.search' });
+    ruledTools.set('request_capability', {
+      verdict: 'hold',
+      ruleId: 'skills.request-capability',
+    });
+    agents.set('a1', agent({ id: 'a1', allowedTools: ['Read'], mcpConfigIds: [] }));
+
+    const body = (await railFor()).body as AgentRailData;
+    const sources = body.permissions.rows.map((r) => r.source);
+
+    // Both reach claims for host tools this agent cannot call are GONE.
+    expect(sources).not.toContain('rule:web.search');
+    expect(sources).not.toContain('rule:skills.request-capability');
+    // The deny stays. A deny for a tool it could not reach anyway is still
+    // true, and it is reassurance rather than reach — dropping it would
+    // understate our restrictions, which costs information and endangers
+    // nobody. An allow it cannot reach is the lie.
+    expect(sources).toContain('rule:builtins.task');
+    // And a SANDBOX built-in's row survives: `Read` is registered by the
+    // runner, not by the host catalog, so its absence from the catalog proves
+    // nothing about reach and it is never subtracted.
+    expect(sources).toContain('rule:sandbox.read');
+  });
+
+  it('sends the scope subtraction to the policy plugin, not just to its own rows', async () => {
+    registerPolicy();
+    registerCatalog();
+    catalog = [
+      { name: 'web_search', executesIn: 'host' },
+      { name: 'memory_search', executesIn: 'host' },
+    ];
+    agents.set('a1', agent({ id: 'a1', allowedTools: ['web_search'], mcpConfigIds: [] }));
+    await railFor();
+    expect(lastOutOfReach).toEqual(['memory_search']);
+  });
+
+  it('drops nothing for an unrestricted agent', async () => {
+    registerPolicy();
+    registerCatalog();
+    policyRows = [
+      { verdict: 'allow', capability: 'search the web', source: 'rule:web.search', provenance: 'catalog', described: true },
+    ];
+    catalog = [{ name: 'web_search', executesIn: 'host' }];
+    ruledTools.set('web_search', { verdict: 'allow', ruleId: 'web.search' });
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.permissions.rows.map((r) => r.source)).toContain('rule:web.search');
+    expect(body.permissions.unrestrictedTools).toBe(true);
+  });
+
+  it('drops nothing when the catalog could not be read — overstating is the survivable direction', async () => {
+    registerPolicy();
+    // Registered, and it throws: we have PROVED nothing about what this agent
+    // cannot reach, so no reach claim is subtracted and the list says it may be
+    // incomplete rather than quietly getting shorter.
+    bus.registerService('tool:list', 'catalog', async () => {
+      throw new Error('catalog down');
+    });
+    policyRows = [
+      { verdict: 'allow', capability: 'search the web', source: 'rule:web.search', provenance: 'catalog', described: true },
+    ];
+    agents.set('a1', agent({ id: 'a1', allowedTools: ['Read'], mcpConfigIds: [] }));
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.permissions.rows.map((r) => r.source)).toContain('rule:web.search');
+    expect(body.permissions.incomplete).toBe(true);
   });
 
   it('tells "no producer" apart from "read failed" apart from "nothing there"', async () => {

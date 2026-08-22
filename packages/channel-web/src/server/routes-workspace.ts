@@ -145,6 +145,8 @@ interface PolicyCapabilityRow {
 }
 interface ToolPolicyListCapabilitiesInput {
   agentId: string;
+  /** Tool names we have ESTABLISHED this agent cannot reach. See `readPermissions`. */
+  outOfReach?: string[];
 }
 interface ToolPolicyListCapabilitiesOutput {
   rows: PolicyCapabilityRow[];
@@ -190,6 +192,19 @@ interface ToolCatalogEntry {
 }
 interface ToolListOutput {
   tools: ToolCatalogEntry[];
+}
+
+/**
+ * What the catalog half of "What it may do alone" produced.
+ *
+ * `outOfReach` is the interesting one: the host-catalog tools this agent's
+ * scope excludes. It is not rendered — it is subtracted from the GLOBAL rule
+ * table so a rule cannot assert reach this particular agent does not have.
+ */
+interface CatalogPermissions {
+  rows: PermissionRow[];
+  incomplete: boolean;
+  outOfReach: string[];
 }
 
 interface HostGrantsListInput {
@@ -1864,12 +1879,25 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       };
     }
 
+    // THE CATALOG IS READ FIRST, and the order is load-bearing. The rule table
+    // is GLOBAL — it describes what the product enforces, not what this agent
+    // is wired to reach — so an agent scoped to `['Read']` would otherwise be
+    // told "Can search the web — on its own", a false ALLOW claim on the
+    // blast-radius surface. Only the catalog can say which tools exist, and
+    // only the agent's scope can say which of them it sees; subtracting the two
+    // here is what lets the policy plugin drop the reach claims that are not
+    // this agent's. See `outOfReach`.
+    const catalog = await catalogPermissions(agent, scope);
+
     let described: PermissionRow[];
     try {
       const out = await bus.call<
         ToolPolicyListCapabilitiesInput,
         ToolPolicyListCapabilitiesOutput
-      >('tool-policy:list-capabilities', initCtx, { agentId: agent.id });
+      >('tool-policy:list-capabilities', initCtx, {
+        agentId: agent.id,
+        outOfReach: catalog.outOfReach,
+      });
       described = (out.rows ?? []).map(toWirePermission);
     } catch (err) {
       initCtx.logger.warn('workspace_rail_policy_failed', {
@@ -1884,7 +1912,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       };
     }
 
-    const catalog = await catalogPermissions(agent, scope);
     return {
       status: 'ok',
       rows: byVerdict([...described, ...catalog.rows]),
@@ -1912,12 +1939,17 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   async function catalogPermissions(
     agent: ResolvedAgent,
     scope: AgentToolScope,
-  ): Promise<{ rows: PermissionRow[]; incomplete: boolean }> {
+  ): Promise<CatalogPermissions> {
     // Without the evaluator we can neither name a verdict nor tell which tools
     // a rule already covers. Guessing either would put a made-up security claim
     // on the surface, so we say the list is incomplete instead.
+    //
+    // `outOfReach` is EMPTY on every early return here, which is the
+    // overstating direction on purpose: with no catalog we have proved nothing
+    // about what this agent cannot reach, so we drop no reach claim and the
+    // caller says the list may be incomplete.
     if (!bus.hasService('tool:list') || !bus.hasService('tool-policy:evaluate')) {
-      return { rows: [], incomplete: true };
+      return { rows: [], incomplete: true, outOfReach: [] };
     }
 
     let tools: ToolCatalogEntry[];
@@ -1933,15 +1965,31 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         agentId: agent.id,
         error: err instanceof Error ? err.message : String(err),
       });
-      return { rows: [], incomplete: true };
+      return { rows: [], incomplete: true, outOfReach: [] };
     }
 
     const rows: PermissionRow[] = [];
+    const outOfReach: string[] = [];
     let incomplete = false;
     for (const tool of tools) {
       const name = typeof tool?.name === 'string' ? tool.name : '';
       if (name.length === 0) continue;
-      if (!inAgentScope(name, scope)) continue;
+      if (!inAgentScope(name, scope)) {
+        /*
+          PROVED unreachable: the host registers this tool and this agent's
+          scope excludes it, by the same rule the dispatcher applies. A rule
+          describing it must not claim this agent can do it.
+
+          Only a HOST-CATALOG tool lands here, and that limit is deliberate. A
+          sandbox built-in (`Bash`, `Read`, …) is registered by the RUNNER, not
+          by this catalog — the aisdk runner ships its six regardless of
+          `allowedTools` — so its absence from the catalog proves nothing and it
+          is never subtracted. Overstating is the survivable direction; guessing
+          a sandbox tool away is not.
+        */
+        outOfReach.push(name);
+        continue;
+      }
 
       let verdict: CapabilityVerdict;
       let ruled: boolean;
@@ -1977,6 +2025,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         verdict,
         // Never our words for a row we cannot describe. The empty string is
         // the contract, not an oversight.
+
         capability: '',
         source: mcp === null ? `tool:${name}` : `mcp:${name}`,
         provenance: mcp === null ? 'unmapped' : 'mcp',
@@ -1991,7 +2040,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         theirName: mcp === null ? null : fenceLine(mcp.serverId, RAIL_LABEL_MAX_CHARS),
       });
     }
-    return { rows, incomplete };
+    return { rows, incomplete, outOfReach };
   }
 
   /**
