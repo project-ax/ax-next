@@ -234,6 +234,45 @@ describe('deriveActivity — the line is one line', () => {
 });
 
 describe('deriveActivity — the things this surface must never say', () => {
+  // A routine's name is authored in a file in the agent's own workspace and
+  // reviewed by nobody. A reader cannot tell whose voice the line is in, so a
+  // label carrying progress-bar vocabulary is declined, not rewritten.
+  it.each([
+    'Inbox — 40 left',
+    'Sync 80% of the archive',
+    'Time remaining check',
+    'Delivery ETA sweep',
+  ])('declines a trigger label that talks like a progress bar: %s', (trigger) => {
+    const a = deriveActivity(input({ trigger }));
+    expect(a.phrase).toBe(DEFAULT_PHRASE);
+    expect(a.source).toBe('trigger');
+  });
+
+  it('declines a tool phrase that talks like a progress bar, dropping to T0', () => {
+    const a = deriveActivity(
+      input({ tool: { phrase: 'Reading 80% of email' }, trigger: 'Morning email pass' }),
+    );
+    expect(a.phrase).toBe('Morning email pass');
+    expect(a.source).toBe('trigger');
+  });
+
+  it('does not fire on an innocent word that merely contains one', () => {
+    for (const trigger of ['Beta channel sweep', 'Leftover receipts', 'Metadata pass']) {
+      expect(deriveActivity(input({ trigger })).phrase).toBe(trigger);
+    }
+  });
+
+  it('declines a counter unit that talks like a progress bar', () => {
+    expect(
+      deriveActivity(
+        input({
+          tool: { phrase: 'Reading email', countable: '% done', reported: { done: 1, total: 2 } },
+        }),
+      ).counter,
+    ).toBeNull();
+  });
+
+
   it('never emits a percentage, a remaining, an eta, or a time left', () => {
     const matrix: DeriveInput[] = [
       input(),
@@ -249,6 +288,22 @@ describe('deriveActivity — the things this surface must never say', () => {
       const rendered = JSON.stringify(deriveActivity(one));
       expect(rendered).not.toMatch(/%|remaining|left|eta/i);
     }
+  });
+});
+
+describe('deriveActivity — it does not take its caller down', () => {
+  it('survives a non-finite startedAt rather than throwing on toISOString', () => {
+    for (const startedAt of [Number.NaN, Number.POSITIVE_INFINITY, 8.64e15 * 2]) {
+      const a = deriveActivity(input({ startedAt, trigger: 'Morning email pass' }));
+      expect(() => new Date(a.startedAt).toISOString()).not.toThrow();
+      expect(a.phrase).toBe('Morning email pass');
+    }
+  });
+
+  it('falls back to `now` before it falls back to the epoch', () => {
+    expect(deriveActivity(input({ startedAt: Number.NaN, now: T0 })).startedAt).toBe(
+      '2026-08-21T09:00:00.000Z',
+    );
   });
 });
 

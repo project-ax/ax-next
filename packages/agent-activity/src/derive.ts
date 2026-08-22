@@ -23,6 +23,22 @@ export const DEFAULT_PHRASE = 'Working on your request';
 export const MAX_PHRASE_CHARS = 60;
 
 /**
+ * The vocabulary of a progress bar. None of it may reach this surface (design
+ * H2): an LLM agent cannot know how long it has left, and one wrong "~2 min
+ * left" costs more trust than the widget could ever earn.
+ *
+ * Authored `activityPhrase` strings are held to this by a roll-call test in the
+ * k8s preset, but a T0 trigger label is a routine's own `name` out of the
+ * agent's workspace — nobody reviewed it. A routine called "Inbox — 40 left"
+ * would put a count-down on the line in our voice, and a reader cannot tell
+ * whose voice it is. So the check runs here, at the last moment before the
+ * phrase becomes the answer, and a label that trips it drops to the tier below
+ * rather than being rewritten. We do not edit somebody's words; we decline to
+ * repeat them.
+ */
+const PROGRESS_VOCABULARY = /%|\bremaining\b|\bleft\b|\beta\b/i;
+
+/**
  * Three tiers, descending precedence, and every tier below the top is always
  * available — so there is never an empty state and never a stale one.
  *
@@ -46,15 +62,18 @@ export const MAX_PHRASE_CHARS = 60;
  * testable at all.
  */
 export function deriveActivity(input: DeriveInput): AgentActivity {
-  const toolPhrase = fencePhrase(input.tool?.phrase);
-  const triggerPhrase = fencePhrase(input.trigger);
+  const toolPhrase = usablePhrase(input.tool?.phrase);
+  const triggerPhrase = usablePhrase(input.trigger);
 
   const tier: { phrase: string; source: AgentActivity['source'] } =
     toolPhrase !== null
       ? { phrase: toolPhrase, source: 'tool' }
       : { phrase: triggerPhrase ?? DEFAULT_PHRASE, source: 'trigger' };
 
-  const startedAt = new Date(input.startedAt).toISOString();
+  // `new Date(NaN).toISOString()` throws. The plugin only ever passes a real
+  // clock reading, but this function is exported and a status line is the last
+  // thing that should be able to take a caller down.
+  const startedAt = isoOrNull(input.startedAt) ?? isoOrNull(input.now) ?? EPOCH_ISO;
   const silentFor = input.now - input.lastStepAt;
 
   if (silentFor >= STALE_AFTER_MS) {
@@ -91,7 +110,7 @@ export function deriveActivity(input: DeriveInput): AgentActivity {
  */
 function counterFrom(tool: DeriveToolInput | null | undefined): ActivityCounter | null {
   if (tool === null || tool === undefined) return null;
-  const unit = fencePhrase(tool.countable);
+  const unit = usablePhrase(tool.countable);
   const reported = tool.reported;
   if (unit === null || reported === undefined) return null;
   const { done, total } = reported;
@@ -108,6 +127,31 @@ function counterFrom(tool: DeriveToolInput | null | undefined): ActivityCounter 
  * dropping the label over it would cost a user their own words. What must not
  * survive is anything that lets a string reshape the surface it lands on.
  */
+const EPOCH_ISO = new Date(0).toISOString();
+
+/**
+ * ECMA-262's outer limit for a Date: 100 million days either side of the epoch.
+ * `Number.isFinite` alone is not enough — a finite number past this still makes
+ * `toISOString()` throw.
+ */
+const MAX_TIME_VALUE = 8_640_000_000_000_000;
+
+function isoOrNull(at: number): string | null {
+  if (!Number.isFinite(at) || Math.abs(at) > MAX_TIME_VALUE) return null;
+  return new Date(at).toISOString();
+}
+
+/**
+ * A phrase this surface is willing to say: fenced to one bounded line, and free
+ * of the progress-bar vocabulary. Anything else is `null`, and the caller falls
+ * to the tier below — which always resolves.
+ */
+function usablePhrase(value: string | null | undefined): string | null {
+  const fenced = fencePhrase(value);
+  if (fenced === null) return null;
+  return PROGRESS_VOCABULARY.test(fenced) ? null : fenced;
+}
+
 function fencePhrase(value: string | null | undefined): string | null {
   if (typeof value !== 'string') return null;
   // Control characters (C0 and C1) become spaces, then every run of

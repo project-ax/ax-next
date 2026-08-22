@@ -237,6 +237,43 @@ describe('agent-activity:get', () => {
   });
 });
 
+describe('two tool calls in flight at once', () => {
+  it('shows the tool that was CALLED last, not the lookup that RESOLVED last', async () => {
+    const bus = new HookBus();
+    const gates: Array<() => void> = [];
+    bus.registerService<Record<string, never>, { tools: ToolDescriptor[] }>(
+      'tool:list',
+      '@ax/test-catalog',
+      async () =>
+        new Promise((resolve) => {
+          gates.push(() =>
+            resolve({
+              tools: [
+                descriptor({ name: 'slow_tool', activityPhrase: 'Reading a web page' }),
+                descriptor({ name: 'fast_tool', activityPhrase: 'Searching the web' }),
+              ],
+            }),
+          );
+        }),
+    );
+    await boot(bus);
+    await bus.fire('chat:start', ctx(), {});
+
+    // Two calls start, in order; their catalog lookups finish in the opposite
+    // order. The line must follow call order.
+    const first = bus.fire('tool:pre-call', ctx(), { id: 'c1', name: 'slow_tool', input: {} });
+    clock = T0 + 1;
+    const second = bus.fire('tool:pre-call', ctx(), { id: 'c2', name: 'fast_tool', input: {} });
+
+    await vi.waitFor(() => expect(gates).toHaveLength(2));
+    gates[1]!();
+    gates[0]!();
+    await Promise.all([first, second]);
+
+    expect((await get(bus)).activity).toMatchObject({ phrase: 'Searching the web' });
+  });
+});
+
 describe('staleness, through the injected clock', () => {
   it('replaces the phrase after 90 seconds of silence and drops the counter', async () => {
     const bus = new HookBus();

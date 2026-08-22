@@ -18,7 +18,14 @@ const PLUGIN_VERSION = '0.0.0';
 const AgentActivitySchema = z.object({
   phrase: z.string(),
   counter: z
-    .object({ done: z.number(), total: z.number(), unit: z.string() })
+    .object({
+      // Integers, and a real position in a real set — the same shape
+      // `deriveActivity` enforces, restated here so the wire contract says what
+      // it means rather than leaving `z.number()` to imply NaN is fine.
+      done: z.number().int().nonnegative(),
+      total: z.number().int().positive(),
+      unit: z.string(),
+    })
     .nullable(),
   startedAt: z.string(),
   source: z.union([z.literal('declared'), z.literal('tool'), z.literal('trigger')]),
@@ -55,6 +62,13 @@ interface ActivityRecord {
    * first `tool:list` and never changes afterwards, and `tool:list` is scoped
    * to the calling agent, so a per-record cache is both correct and bounded by
    * the number of agents actually working right now.
+   *
+   * The record is keyed by agent, not by session, so two concurrent
+   * conversations on one agent share this map — filled from whichever of them
+   * called a tool first. If an admin edited the agent between the two sessions'
+   * frozen configs, the second session's newest tool can miss its phrase and
+   * fall to the floor. That is a display miss and nothing more: this map never
+   * gates a call, it only names one.
    */
   catalog: Map<string, DeriveToolInput> | null;
 }
@@ -213,7 +227,12 @@ export function createAgentActivityPlugin(cfg: AgentActivityConfig = {}): Plugin
     record.tool = null;
     byAgent.set(ctx.agentId, record);
 
-    record.tool = await lookupPhrase(bus, ctx, record, call?.name);
+    const tool = await lookupPhrase(bus, ctx, record, call?.name);
+    // Two tool calls can be in flight on one agent, and the catalog lookup is
+    // async — so the one that RESOLVES last need not be the one that STARTED
+    // last. Publish only if no newer step has landed while we were away, so the
+    // line follows call order rather than resolution order.
+    if (record.lastStepAt === at) record.tool = tool;
   }
 
   async function lookupPhrase(
