@@ -258,3 +258,59 @@ body {
 .msg-body .aui-md li { margin-bottom: 0.6em; }
 .msg-body .aui-md li:last-child { margin-bottom: 0; }
 
+/* MARKDOWN OUTSIDE THE THREAD (`.ax-md`).
+
+   The `prose-*` classes on the Markdown container emit NOTHING in this build —
+   `@tailwindcss/typography` is not installed, and the `.msg-body` rules above
+   are what actually gives an assistant reply its block rhythm. A rendered file
+   body (the workspace Files tab) is not inside `.msg-body`, so without these it
+   inherits Preflight: headings the same size as body text, lists with no
+   markers, everything touching. That reads as a broken document rather than as
+   the file the agent wrote.
+
+   Kept to block rhythm, weight and markers — colours come from semantic tokens
+   so light and dark both work, and nothing here hardcodes a hue. */
+.ax-md :is(h1, h2, h3, h4) {
+  font-weight: 600;
+  line-height: 1.3;
+  margin: 1.4em 0 0.5em;
+}
+.ax-md > :first-child { margin-top: 0; }
+.ax-md h1 { font-size: 1.35em; }
+.ax-md h2 { font-size: 1.2em; }
+.ax-md h3 { font-size: 1.08em; }
+.ax-md h4 { font-size: 1em; }
+.ax-md p { margin-bottom: 0.75em; }
+.ax-md p:last-child { margin-bottom: 0; }
+.ax-md :is(ul, ol) { margin: 0.75em 0; padding-left: 1.4em; }
+.ax-md ul { list-style: disc; }
+.ax-md ol { list-style: decimal; }
+.ax-md li { margin-bottom: 0.35em; }
+.ax-md li:last-child { margin-bottom: 0; }
+.ax-md a { color: hsl(var(--primary)); text-decoration: underline; text-underline-offset: 2px; }
+.ax-md code {
+  font-family: ui-monospace, SFMono-Regular, "SF Mono", Menlo, monospace;
+  font-size: 0.88em;
+  background: hsl(var(--muted));
+  border-radius: 4px;
+  padding: 0.1em 0.35em;
+}
+.ax-md pre {
+  background: hsl(var(--muted));
+  border: 1px solid hsl(var(--border));
+  border-radius: 8px;
+  padding: 0.75em 0.9em;
+  overflow-x: auto;
+  margin: 0.75em 0;
+}
+.ax-md pre code { background: none; padding: 0; }
+.ax-md blockquote {
+  border-left: 2px solid hsl(var(--rule-soft));
+  color: hsl(var(--muted-foreground));
+  padding-left: 0.9em;
+  margin: 0.75em 0;
+}
+.ax-md hr { border-top: 1px solid hsl(var(--rule-soft)); margin: 1.2em 0; }
+.ax-md table { width: 100%; border-collapse: collapse; margin: 0.75em 0; display: block; overflow-x: auto; }
+.ax-md :is(th, td) { border: 1px solid hsl(var(--rule-soft)); padding: 0.35em 0.6em; text-align: left; }
+.ax-md th { font-weight: 600; }

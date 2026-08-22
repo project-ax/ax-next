@@ -155,6 +155,14 @@ describe('AgentFiles', () => {
     const { container } = renderTab();
     fireEvent.click(await screen.findByText('plan.md'));
     expect(await screen.findByRole('heading', { name: 'Ship it' })).toBeTruthy();
+    /*
+      And it is STYLED. The `prose-*` utilities on the container emit no CSS —
+      @tailwindcss/typography is not installed — so `.ax-md` in index.css is
+      what stops a rendered file from inheriting Preflight and coming out with
+      body-sized headings and unmarked lists. Without this assertion the class
+      is invisible to the suite and a tidy-up deletes it.
+    */
+    expect(container.querySelector('.ax-md')).toBeTruthy();
     // A remote <img> in a file body is an outbound request the reader's
     // browser makes on the file author's behalf. The alt text survives.
     expect(container.querySelector('img')).toBeNull();

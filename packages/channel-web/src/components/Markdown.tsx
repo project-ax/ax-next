@@ -37,6 +37,7 @@
 import type { ComponentPropsWithoutRef, FC } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { cn } from '@/lib/utils';
 
 /**
  * Mirrors react-markdown's built-in safe-protocol list. Kept in sync with
@@ -74,8 +75,15 @@ export function safeUrlTransform(url: string): string {
 }
 
 /**
- * The typography this package gives rendered markdown. Shared with
- * `MarkdownText` so a heading in a file looks like a heading in a reply.
+ * The class list `MarkdownText` has always carried. Exported so there is one
+ * copy of it rather than two.
+ *
+ * Be aware of what it does NOT do: `@tailwindcss/typography` is not installed
+ * in this package, so every `prose-*` utility in here emits no CSS at all. An
+ * assistant reply gets its block rhythm from the `.msg-body` rules in
+ * `index.css`, not from these. Anything rendered OUTSIDE the thread needs
+ * `.ax-md` (below) or it inherits Preflight — headings the size of body text,
+ * lists with no markers.
  */
 export const MARKDOWN_PROSE_CLASS =
   'aui-md prose dark:prose-invert max-w-none prose-p:leading-7 prose-pre:bg-card prose-pre:border prose-pre:border-border/40 prose-pre:rounded-xl prose-pre:backdrop-blur-sm prose-code:font-mono prose-code:text-[0.85em] prose-headings:tracking-tight prose-a:text-amber prose-a:no-underline hover:prose-a:underline prose-th:text-left';
@@ -111,7 +119,10 @@ export const Markdown: FC<{ text: string; className?: string }> = ({
   text,
   className,
 }) => (
-  <div className={className ?? MARKDOWN_PROSE_CLASS}>
+  // `ax-md` is the typography (index.css). It is not optional decoration: this
+  // renders outside `.msg-body`, where Preflight has zeroed every heading and
+  // stripped every list marker.
+  <div className={cn(MARKDOWN_PROSE_CLASS, 'ax-md', className)}>
     <ReactMarkdown
       remarkPlugins={[remarkGfm]}
       urlTransform={safeUrlTransform}
