@@ -570,6 +570,7 @@ export async function rollbackToBaseline(
   // So: restore from `baseline` when the path exists there, delete when it does
   // not. Both leave the path with nothing to re-submit, which is what closes
   // the wedge; they differ only in what the agent is left holding.
+  let unexpected: string | null = null;
   for (const t of targets) {
     // ONE PATH PER CALL. A batched `git checkout baseline -- <all paths>` fails
     // atomically the moment any one of them is new to the baseline (unmatched
@@ -579,8 +580,7 @@ export async function rollbackToBaseline(
     // `:(literal)` disables pathspec globbing. Without it a filename holding
     // `*` or `[` would match OTHER files and revert them out of the agent's
     // tree — the very data loss this card exists to stop, re-entering through
-    // the fix. A non-zero exit means the path is not in the baseline (a newly
-    // created file), which is the delete case.
+    // the fix.
     const restored = await runGit([
       '-C',
       root,
@@ -589,11 +589,35 @@ export async function rollbackToBaseline(
       '--',
       `:(literal)${t.rel}`,
     ]);
-    if (restored.code !== 0) {
+
+    // EXIT 1 SPECIFICALLY, not "non-zero". Exit 1 is git's "pathspec did not
+    // match any file(s)" — the path is not in the baseline, i.e. the agent
+    // created it this turn, i.e. the delete case. Every other failure (128:
+    // bad object, lock contention, IO) means we do not know what the path is,
+    // and treating those as "newly created, delete it" would silently delete a
+    // BASELINE-tracked file on an error path — the same silent-deletion class
+    // this card exists to fix, re-entering one level down.
+    if (restored.code === 1) {
       // These are file changes, never a subtree — say so rather than leaning on
       // the default.
       await fs.rm(t.resolved, { force: true, recursive: false });
+    } else if (restored.code !== 0) {
+      // Fail closed, same as an unusable path above: we cannot undo this path
+      // precisely, so undo everything. Leaving it would let the refused content
+      // re-stage next turn and re-veto forever.
+      unexpected = `${t.rel}: ${restored.stderr.trim()}`;
+      break;
     }
+  }
+
+  if (unexpected !== null) {
+    process.stderr.write(
+      `runner: could not undo discard path (${unexpected}); falling back to a whole-tree reset\n`,
+    );
+    await expectOk(
+      await runGit(['-C', root, 'reset', '--hard', 'baseline']),
+      'git reset --hard baseline',
+    );
   }
 }
 

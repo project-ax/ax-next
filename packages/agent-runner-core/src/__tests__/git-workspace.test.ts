@@ -823,6 +823,55 @@ describe('rollbackToBaseline', () => {
     expect(await commitTurnAndBundle({ root, reason: 'next turn' })).toBeNull();
   }, REAL_GIT_TIMEOUT_MS);
 
+  it('TASK-287: a git error that is NOT "unmatched pathspec" fails closed, it does not delete', async () => {
+    // The delete branch is gated on exit 1 — git's "pathspec did not match any
+    // file(s)", i.e. the path is not in the baseline. Every other failure (128:
+    // bad object, lock contention, IO) means we do not know what the path is,
+    // and treating those as "newly created, delete it" would silently delete a
+    // BASELINE-tracked file on an error path: the same silent-deletion class
+    // this card exists to fix, one level down.
+    //
+    // Forced deterministically with a `git` shim first on PATH that fails only
+    // `checkout` (exit 128) and delegates everything else to the real binary
+    // (it restores the original PATH before exec'ing, so it cannot recurse).
+    const { root } = await setupMaterializedWorkspace({
+      baselineFiles: { '.ax/BOOTSTRAP.md': 'canonical host-seeded bootstrap' },
+    });
+    await fs.writeFile(path.join(root, '.ax', 'BOOTSTRAP.md'), 'agent-authored');
+    await commitTurnAndBundle({ root, reason: 'turn' });
+
+    const priorPath = process.env.PATH ?? '';
+    const shimDir = path.join(scratchRoot, 'gitshim');
+    await fs.mkdir(shimDir, { recursive: true });
+    await fs.writeFile(
+      path.join(shimDir, 'git'),
+      [
+        '#!/bin/sh',
+        'for a in "$@"; do',
+        '  if [ "$a" = "checkout" ]; then',
+        '    echo "fatal: simulated git failure" >&2',
+        '    exit 128',
+        '  fi',
+        'done',
+        `export PATH='${priorPath}'`,
+        'exec git "$@"',
+      ].join('\n') + '\n',
+      { mode: 0o755 },
+    );
+
+    process.env.PATH = `${shimDir}:${priorPath}`;
+    try {
+      await rollbackToBaseline(root, 'mixed', ['.ax/BOOTSTRAP.md']);
+    } finally {
+      process.env.PATH = priorPath;
+    }
+
+    // NOT deleted. The fallback whole-tree `--hard` put the host's seed back.
+    expect(await fs.readFile(path.join(root, '.ax', 'BOOTSTRAP.md'), 'utf8')).toBe(
+      'canonical host-seeded bootstrap',
+    );
+  }, REAL_GIT_TIMEOUT_MS);
+
   it('TASK-287: parks the vetoed commit under refs/ax-vetoed before destroying it', async () => {
     // The turn is committed BEFORE the host is asked, so a reset only
     // de-references that commit — it does not discard it. Parking it keeps a
