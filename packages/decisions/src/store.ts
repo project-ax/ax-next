@@ -16,6 +16,7 @@
  * Reads are scoped by `owner_user_id` wherever a caller supplies one; the
  * plugin always does. User A's queries must never touch user B's rows.
  */
+import { createHash } from 'node:crypto';
 import { sql, type Kysely } from 'kysely';
 import type { DecisionRow, DecisionsDatabase } from './migrations.js';
 import { RECEIPT_STATUSES } from './receipts.js';
@@ -78,6 +79,31 @@ function isUniqueViolation(err: unknown): boolean {
   );
 }
 
+/**
+ * The advisory-lock key `createOrReuseOpen` serialises on: one lock per
+ * (agent, call shape), so two agents holding unrelated calls never wait on
+ * each other.
+ *
+ * Derived in JS rather than with `hashtext(...)` in SQL: that function is an
+ * undocumented Postgres internal, so nothing promises its value is stable
+ * across server versions — and stability is the whole requirement here. Every
+ * host has to compute the same key for the same call, or two replicas mid
+ * upgrade are not queueing behind each other at all. A sha256 truncated to a
+ * signed 64-bit integer is stable by construction.
+ *
+ * A collision costs a spurious wait on an unrelated hold and nothing else: the
+ * lock only orders the callers, and the SELECT inside it still matches on the
+ * real columns. The agent id is folded in for the same reason it is a column
+ * — this is the key the standing authorisation is keyed on.
+ */
+function openHoldLockKey(agentId: string, callFingerprint: string): string {
+  return createHash('sha256')
+    .update(`${agentId}\u0000${callFingerprint}`)
+    .digest()
+    .readBigInt64BE(0)
+    .toString();
+}
+
 /** The statuses `restore()` (undo) can walk back from. */
 const UNDOABLE_STATUSES: readonly DecisionStatus[] = [
   ...AUTHORISING_STATUSES,
@@ -115,6 +141,47 @@ export interface DecisionReceiptFilter {
 
 export interface DecisionStore {
   create(decision: Decision): Promise<Decision>;
+
+  /**
+   * RAISE A HOLD, OR HAND BACK THE ONE ALREADY STANDING for this person, this
+   * agent and this call shape (TASK-254).
+   *
+   * `created: false` means the row that comes back is somebody else's write —
+   * an OLDER open decision for the identical call — and the caller must adopt
+   * its id rather than the one it asked for. The decision it passed in was
+   * never written.
+   *
+   * WHY REUSE RATHER THAN REFUSE. The obvious alternative is a second partial
+   * unique index over the open statuses, letting the database refuse the
+   * duplicate outright. It cannot be that, because `restore` (undo) moves a
+   * row INTO `pending`, and it does so on rows whose identical call may
+   * already have been held again: dismiss → the agent tries the same call →
+   * undo the dismissal, or an irreversible approval waiting out its undo
+   * window → the agent tries again → undo. Both are ordinary sequences, and
+   * under such an index both would make `decisions:undo` throw. A hold that
+   * fails to raise, or an undo that 500s, is worse than the duplicate either
+   * would be preventing.
+   *
+   * THE KEY IS (agent_id, call_fingerprint) — the same key the standing
+   * authorisation is keyed on, because that is the collision being removed:
+   * `decisions_v1_authorised_unconsumed` has no conversation in it, so two
+   * open rows in two of one person's threads are two cards for ONE
+   * authorisation, and approving the second is exactly the refusal this
+   * exists to make unreachable.
+   *
+   * PLUS THE OWNER, which is the one place it is deliberately NARROWER than
+   * that index. Reads are owner-scoped; handing user B the id of user A's row
+   * on a shared team agent would give B a question they cannot see, answer or
+   * dismiss. Two rows that collide at approval time — loudly, since TASK-253 —
+   * beat one row that is invisible to the person being asked. That residue is
+   * pinned by a test rather than left to be rediscovered.
+   *
+   * ATOMIC, because the caller's read-then-create is not. Two byte-identical
+   * `tool:pre-call` events race in the ordinary course of a turn, and this
+   * repo has been bitten by that exact shape before. See the implementation
+   * for what the lock does and does not serialise.
+   */
+  createOrReuseOpen(decision: Decision): Promise<{ decision: Decision; created: boolean }>;
   /** `ownerUserId`, when given, is a scope filter and not a hint. */
   get(decisionId: string, ownerUserId?: string): Promise<Decision | null>;
   list(filter: DecisionListFilter): Promise<Decision[]>;
@@ -411,6 +478,63 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
     async create(decision) {
       await db.insertInto(table).values(fromDecision(decision)).execute();
       return decision;
+    },
+
+    async createOrReuseOpen(decision) {
+      return db.transaction().execute(async (trx) => {
+        // THE SERIALISER. Without it this is a textbook TOCTOU: under READ
+        // COMMITTED neither of two concurrent transactions sees the other's
+        // uncommitted row, so both read "nothing open" and both insert. That
+        // is not theoretical — with a warm connection pool, eight racing holds
+        // of one call produced eight rows on every run before this line
+        // existed. `store.test.ts` pins it, and warms the pool on purpose: a
+        // pool still opening its connections serialises the callers by
+        // accident, and that accident is what made the first cut of that test
+        // pass with no guard here at all.
+        //
+        // An advisory lock rather than a unique index because the index is the
+        // option this method exists to avoid — see the doc on the interface:
+        // it would make `restore` throw on ordinary undo sequences. The lock
+        // constrains only the callers that take it, which is the trade being
+        // made deliberately.
+        //
+        // WHAT IT DOES NOT SERIALISE, stated plainly because a comment that
+        // claimed otherwise would be worse than none: `restore` moves a row
+        // back into `pending` without taking this lock, so an undo landing in
+        // the same instant as a hold of the identical call can still leave two
+        // open rows. That window is milliseconds wide, needs an undo and a
+        // byte-identical re-call to coincide, and degrades to exactly what
+        // this repo did before — two cards, the second approval refused out
+        // loud by `claimForApproval`. Taking the lock in `restore` too would
+        // close it; it would also put a blocking lock acquisition on the undo
+        // path, where the whole promise is a ten-second window that does not
+        // stall.
+        //
+        // It is held for the two statements below and released by COMMIT or
+        // ROLLBACK whatever happens — the transaction-scoped variant cannot be
+        // leaked by a caller that forgets to unlock, which the session-scoped
+        // one can.
+        await sql`SELECT pg_advisory_xact_lock(${openHoldLockKey(
+          decision.agentId,
+          decision.callFingerprint,
+        )}::bigint)`.execute(trx);
+
+        const existing = await trx
+          .selectFrom(table)
+          .selectAll()
+          .where('agent_id', '=', decision.agentId)
+          .where('owner_user_id', '=', decision.ownerUserId)
+          .where('call_fingerprint', '=', decision.callFingerprint)
+          .where('status', 'in', OPEN_STATUSES as string[])
+          .orderBy('created_at', 'asc')
+          .orderBy('decision_id', 'asc')
+          .executeTakeFirst();
+        if (existing !== undefined) {
+          return { decision: toDecision(existing), created: false };
+        }
+        await trx.insertInto(table).values(fromDecision(decision)).execute();
+        return { decision, created: true };
+      });
     },
 
     async get(decisionId, ownerUserId) {

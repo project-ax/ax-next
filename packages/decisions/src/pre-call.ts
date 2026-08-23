@@ -15,7 +15,8 @@
  *      re-adjudicated — the human already decided, and re-running policy could
  *      only ever second-guess them. Consuming is atomic and one-shot.
  *   2. Then evaluate policy.
- *   3. Only then write a row and hold.
+ *   3. Only then raise a hold — REUSING the question already standing for this
+ *      call, if there is one, rather than writing a second row (TASK-254).
  *
  * Step 1 before step 2 is also what makes the attended path honest without
  * trusting the model. The authorisation is keyed on the call FINGERPRINT, so
@@ -200,37 +201,75 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
       replayError: null,
     };
 
-    await deps.store.create(decision);
+    // ONE QUESTION PER CALL (TASK-254). If this person already has an OPEN
+    // decision for this agent and this call shape, the row built above is
+    // discarded and we hold on theirs. The attendance read and the freshness
+    // capture that went into building it are then wasted — both are reads, and
+    // peeking for the standing row before doing them would be exactly the
+    // non-atomic read-then-create this delegates to the store to avoid.
+    //
+    // The gate used to write a row every time it held, and only the
+    // AUTHORISING statuses are covered by the partial unique index — so two
+    // PENDING rows for one call were reachable by the most ordinary route
+    // there is: the agent tries again. What that costs is worse than the
+    // duplicate card it looks like. On the host-replay path the first approval
+    // stamps `replayed_at`, which takes the row OUT of that index and frees
+    // the slot, so approving the second card claimed cleanly and SENT THE CALL
+    // A SECOND TIME — two rows both reading `executed`, nothing refused,
+    // nothing to see afterwards. On the paths where the call has not gone out
+    // yet the index did refuse, and since TASK-253 that refusal is reported
+    // rather than swallowed — but a person being asked the same question twice
+    // and told "no" to the second is still the bug, just an audible one.
+    //
+    // Collapsing here rather than teaching the approval path to cope is what
+    // makes both of those unreachable from a duplicate hold: there is one
+    // card, one answer, and one execution. The store makes it atomic; the
+    // read-then-create this looks like would be a TOCTOU, and two identical
+    // `tool:pre-call` events genuinely race.
+    const { decision: raised, created } = await deps.store.createOrReuseOpen(decision);
+
+    const note = holdNote({ capability: answer.capability, toolName: call.name });
+
+    if (!created) {
+      // The row we hold on is the one already on the queue — a DIFFERENT id
+      // from the one minted above, and possibly raised in another of this
+      // person's threads. The id travels back to the runner structurally, and
+      // the delivery on approval follows the stored row, so both halves stay
+      // consistent with whichever thread asked first.
+      ctx.logger.info('decision_hold_reused', {
+        plugin: PLUGIN_NAME,
+        decisionId: raised.id,
+        tool: call.name,
+      });
+      // And deliberately NO `decisions:raised`. That event means "a new
+      // question is waiting" and the SSE subscriber turns it into a card;
+      // firing it for a question already on the queue draws the same card
+      // twice, which is the visible half of the bug being fixed.
+      return hold({ decisionId: raised.id, note, source: PLUGIN_NAME });
+    }
 
     // Fire-and-forget: a slow SSE subscriber must not push us past the
     // `tool.pre-call` 10 s ceiling, which the runner turns into a deny.
     if (deps.bus !== undefined) {
       const payload: DecisionRaisedPayload = {
-        decisionId: decision.id,
-        agentId: decision.agentId,
-        conversationId: decision.conversationId,
+        decisionId: raised.id,
+        agentId: raised.agentId,
+        conversationId: raised.conversationId,
         // `summary` and not `call.name`: a renderer keying off the tool name
         // breaks the day a connector-backed tool is renamed upstream. And
         // deliberately not `call.input` — raw model output on a trust surface.
-        summary: decision.summary,
+        summary: raised.summary,
       };
       void deps.bus.fire('decisions:raised', ctx, payload).catch((err: unknown) => {
         ctx.logger.error('decisions_raised_fire_failed', {
           plugin: PLUGIN_NAME,
-          decisionId: decision.id,
+          decisionId: raised.id,
           err: err instanceof Error ? err : new Error(String(err)),
         });
       });
     }
 
-    return hold({
-      decisionId: decision.id,
-      note: holdNote({
-        capability: answer.capability,
-        toolName: call.name,
-      }),
-      source: PLUGIN_NAME,
-    });
+    return hold({ decisionId: raised.id, note, source: PLUGIN_NAME });
   }
 
   return async (ctx, call) => {

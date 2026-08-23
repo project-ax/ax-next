@@ -35,6 +35,7 @@ import type {
   DecisionReceipt,
   DecisionRaisedPayload,
   DecisionsApproveOutput,
+  DecisionsDismissOutput,
   DecisionsGetOutput,
   DecisionsListOutput,
   DecisionsRecentReceiptsInput,
@@ -1057,6 +1058,78 @@ describe('decisions canary — execute on approve', () => {
     // Approving a world that is gone runs nothing and authorises nothing.
     expect(executor.calls).toEqual([]);
     expect(isHold(await h.bus.fire('tool:pre-call', userCtx(h), CALL))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-254. The gate raises ONE question per (agent, call shape) that is still
+// open, so the human is never asked the same thing twice for one call — and
+// the unique index's refusal, which TASK-253 made loud, stops being reachable
+// from the ordinary "the agent tried again" path that used to produce it.
+// ---------------------------------------------------------------------------
+describe('decisions canary — the same call, held twice', () => {
+  it('asks one question for two identical held calls, and approving it sends ONCE', async () => {
+    const h = await boot();
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+
+    // The agent issues the identical call twice: a retry, a re-run of the turn,
+    // two parallel tool calls in one turn. Both are held.
+    const first = await holdAndId(h, routineCtx(h), CALL);
+    const second = await holdAndId(h, routineCtx(h), { ...CALL, id: 'c1-retry' });
+
+    // The card's own case: "two holds of the same call, then approving each".
+    const a = await approve(h, userCtx(h), first);
+    const b = await approve(h, userCtx(h), second);
+
+    // THE ASSERTION, and it is a side effect rather than a row status: the
+    // call went out ONCE. Before this collapse it went out TWICE on exactly
+    // this path, and both rows read `executed` while it did — the index frees
+    // its slot the moment `replayed_at` is stamped, so nothing refused the
+    // second approval and nothing looked wrong afterwards.
+    expect(executor.calls).toHaveLength(1);
+    expect(executor.calls[0]).toEqual(CALL);
+
+    // Because there was one question, not two. The call ids differ and the
+    // fingerprints do not.
+    expect(second).toBe(first);
+    const { decisions } = await h.bus.call<unknown, DecisionsListOutput>(
+      'decisions:list',
+      userCtx(h),
+      { userId: 'u1', status: 'executed' },
+    );
+    expect(decisions).toHaveLength(1);
+
+    // And the second click is the idempotent one the machine already absorbs —
+    // it reports the stored outcome rather than dying on the unique index and
+    // coming back with TASK-253's refusal sentence. That branch still exists
+    // and still speaks (a shared agent's two owners can still collide); the
+    // ordinary "the agent tried again" path no longer reaches it.
+    expect(a.executed).toBe(true);
+    expect(a.error).toBeNull();
+    expect(b.error).toBeNull();
+    expect(b.decision!.status).toBe('executed');
+  });
+
+  it('gives the human a fresh question after they said no, and it sends nothing until they say yes', async () => {
+    // The collapse keys on the OPEN statuses only. A dismissal is an answer, so
+    // an agent that tries again is asking something new — reviving the
+    // dismissed row instead would put a "no" back on the queue as if the person
+    // had never touched it.
+    const h = await boot();
+    const executor = recordExecutor(h, HOLD_RULE.match.tool);
+    const first = await holdAndId(h, routineCtx(h), CALL);
+    await h.bus.call<unknown, DecisionsDismissOutput>('decisions:dismiss', userCtx(h), {
+      decisionId: first,
+      userId: 'u1',
+    });
+
+    const second = await holdAndId(h, routineCtx(h), CALL);
+    expect(second).not.toBe(first);
+    expect(executor.calls).toHaveLength(0);
+
+    const out = await approve(h, userCtx(h), second);
+    expect(out.executed).toBe(true);
+    expect(executor.calls).toHaveLength(1);
   });
 });
 

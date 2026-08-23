@@ -1334,3 +1334,153 @@ describe('decisions store — reclaiming a stranded flight', () => {
     }
   });
 });
+
+describe('decisions store — one OPEN question per (agent, call shape)', () => {
+  // TASK-254. The gate's collapse lives here because a read-then-create in the
+  // caller is a TOCTOU, and two identical `tool:pre-call` events genuinely
+  // race. Every case below runs against real Postgres AND the fake, because
+  // the fake is what the gate's own unit tests are proved against — a fake
+  // answering a different question would let those pass over a store that
+  // does not do this.
+  const both = async (): Promise<DecisionStore[]> => [await freshStore(), createFakeStore()];
+
+  it('creates when nothing is open for this (agent, call shape)', async () => {
+    for (const s of await both()) {
+      const out = await s.createOrReuseOpen(base());
+      expect(out.created).toBe(true);
+      expect(out.decision.id).toBe('dec_1');
+      expect((await s.get('dec_1'))!.status).toBe('pending');
+    }
+  });
+
+  it('hands back the standing OPEN row instead of writing a second', async () => {
+    for (const s of await both()) {
+      await s.createOrReuseOpen(base());
+      const out = await s.createOrReuseOpen(base({ id: 'dec_2' }));
+      expect(out.created).toBe(false);
+      expect(out.decision.id).toBe('dec_1');
+      // The second row was never written — not written and then hidden.
+      expect(await s.get('dec_2')).toBeNull();
+    }
+  });
+
+  it('reuses a STALE row — the freshness guard re-opened it, it is still open', async () => {
+    for (const s of await both()) {
+      await s.createOrReuseOpen(base());
+      await s.markStale('dec_1', { staleReason: 'the draft moved', freshness: null });
+      const out = await s.createOrReuseOpen(base({ id: 'dec_2' }));
+      expect(out.created).toBe(false);
+      expect(out.decision.id).toBe('dec_1');
+    }
+  });
+
+  for (const [name, close] of [
+    ['dismissed', async (s: DecisionStore) => void (await s.markDismissed('dec_1', T_SOON))],
+    ['expired', async (s: DecisionStore) => void (await s.markExpired('dec_1', T_SOON))],
+    [
+      'approved',
+      async (s: DecisionStore) =>
+        void (await s.claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' })),
+    ],
+  ] as const) {
+    it(`does NOT reuse a ${name} row — that question has an answer`, async () => {
+      for (const s of await both()) {
+        await s.createOrReuseOpen(base());
+        await close(s);
+        const out = await s.createOrReuseOpen(base({ id: 'dec_2' }));
+        expect(out.created).toBe(true);
+        expect(out.decision.id).toBe('dec_2');
+      }
+    });
+  }
+
+  it('scopes to the AGENT — one agent’s question never stands in for another’s', async () => {
+    for (const s of await both()) {
+      await s.createOrReuseOpen(base());
+      const out = await s.createOrReuseOpen(base({ id: 'dec_2', agentId: 'a2' }));
+      expect(out.created).toBe(true);
+      expect(out.decision.id).toBe('dec_2');
+    }
+  });
+
+  it('scopes to the CALL SHAPE — a different call is a different question', async () => {
+    for (const s of await both()) {
+      await s.createOrReuseOpen(base());
+      const out = await s.createOrReuseOpen(base({ id: 'dec_2', callFingerprint: 'fp-2' }));
+      expect(out.created).toBe(true);
+      expect(out.decision.id).toBe('dec_2');
+    }
+  });
+
+  it('scopes to the OWNER — a shared agent is not a shared queue', async () => {
+    // Reads are owner-scoped, so handing u2 the id of u1's row would give u2 a
+    // question they cannot see or answer. Two rows that collide at approval
+    // time (loudly, since TASK-253) beat one row that is invisible to the
+    // person being asked.
+    for (const s of await both()) {
+      await s.createOrReuseOpen(base());
+      const out = await s.createOrReuseOpen(base({ id: 'dec_2', ownerUserId: 'u2' }));
+      expect(out.created).toBe(true);
+      expect(out.decision.id).toBe('dec_2');
+    }
+  });
+
+  it('reuses across the same person’s CONVERSATIONS', async () => {
+    // Deliberately wider than the thread: the authorisation this leads to is
+    // keyed (agent, fingerprint) with no conversation in it, so two open rows
+    // in two threads are two cards for one authorisation.
+    for (const s of await both()) {
+      await s.createOrReuseOpen(base());
+      const out = await s.createOrReuseOpen(base({ id: 'dec_2', conversationId: 'c2' }));
+      expect(out.created).toBe(false);
+      expect(out.decision.id).toBe('dec_1');
+      expect(out.decision.conversationId).toBe('c1');
+    }
+  });
+
+  it('lets an UNDO put a dismissal back even though the agent has since asked again', async () => {
+    // The reachable state that rules out the other design — a second partial
+    // unique index over the open statuses, letting the database refuse the
+    // duplicate. Dismiss, the agent tries the identical call, undo: two open
+    // rows for one (agent, call shape), which such an index would have turned
+    // into a THROWN undo. It leaves two cards instead, and the second approval
+    // of them is refused out loud by `claimForApproval` — the residue this
+    // collapse knowingly leaves, and much the cheaper of the two.
+    for (const s of await both()) {
+      await s.createOrReuseOpen(base());
+      await s.markDismissed('dec_1', T_SOON);
+      expect((await s.createOrReuseOpen(base({ id: 'dec_2' }))).created).toBe(true);
+
+      const restored = await s.restore('dec_1');
+      expect(restored).not.toBeNull();
+      expect(restored!.status).toBe('pending');
+      expect(await s.list({ ownerUserId: 'u1' })).toHaveLength(2);
+    }
+  });
+
+  it('is ATOMIC — eight racing holds of the same call leave exactly one row', async () => {
+    // The TOCTOU the caller cannot close on its own: two identical
+    // `tool:pre-call` events, each reading "nothing open" before either writes.
+    // Real Postgres only — the fake is single-threaded, so it cannot fail this
+    // and must not be allowed to claim it passes it.
+    const db = new Kysely<DecisionsDatabase>({
+      dialect: new PostgresDialect({ pool: new pg.Pool({ connectionString, max: 8 }) }),
+    });
+    opened.push(db);
+    await runDecisionsMigration(db);
+    const s = createDecisionsStore(db);
+    // Warm every connection first. Postgres opens them lazily, and a pool that
+    // is still connecting serialises the callers by accident — which would
+    // make this test pass with no guard at all.
+    await Promise.all(Array.from({ length: 8 }, () => sql`SELECT 1`.execute(db)));
+    const results = await Promise.all(
+      Array.from({ length: 8 }, (_, i) =>
+        s.createOrReuseOpen(base({ id: `dec_race_${i}` })),
+      ),
+    );
+    expect(results.filter((r) => r.created)).toHaveLength(1);
+    const ids = new Set(results.map((r) => r.decision.id));
+    expect(ids.size).toBe(1);
+    expect(await s.list({ ownerUserId: 'u1' })).toHaveLength(1);
+  });
+});
