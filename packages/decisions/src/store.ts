@@ -172,9 +172,12 @@ export interface DecisionStore {
    * PLUS THE OWNER, which is the one place it is deliberately NARROWER than
    * that index. Reads are owner-scoped; handing user B the id of user A's row
    * on a shared team agent would give B a question they cannot see, answer or
-   * dismiss. Two rows that collide at approval time — loudly, since TASK-253 —
-   * beat one row that is invisible to the person being asked. That residue is
-   * pinned by a test rather than left to be rediscovered.
+   * dismiss — a question nobody can answer is worse than two that collide. The
+   * collision that leaves is the same one the `restore` race leaves, with the
+   * same two outcomes and the same nasty half: refused out loud where nothing
+   * has gone out yet, and a SECOND SEND where the host has already replayed
+   * and freed the index slot. See the note on the implementation. Pinned by a
+   * test rather than left to be rediscovered.
    *
    * ATOMIC, because the caller's read-then-create is not. Two byte-identical
    * `tool:pre-call` events race in the ordinary course of a turn, and this
@@ -498,17 +501,41 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
         // constrains only the callers that take it, which is the trade being
         // made deliberately.
         //
-        // WHAT IT DOES NOT SERIALISE, stated plainly because a comment that
-        // claimed otherwise would be worse than none: `restore` moves a row
-        // back into `pending` without taking this lock, so an undo landing in
-        // the same instant as a hold of the identical call can still leave two
-        // open rows. That window is milliseconds wide, needs an undo and a
-        // byte-identical re-call to coincide, and degrades to exactly what
-        // this repo did before — two cards, the second approval refused out
-        // loud by `claimForApproval`. Taking the lock in `restore` too would
-        // close it; it would also put a blocking lock acquisition on the undo
-        // path, where the whole promise is a ten-second window that does not
-        // stall.
+        // WHAT IT DOES NOT COVER, and the cost is worse than it first reads.
+        // `restore` (undo) walks a row back into `pending` without consulting
+        // the open row an agent's retry raised in the meantime, so dismiss →
+        // the agent tries the identical call → undo still leaves TWO open rows
+        // for one call shape. The gate never sees that pair: both rows already
+        // existed when the undo landed.
+        //
+        // Approving both is then not one outcome but two, and only one of them
+        // is loud:
+        //
+        //   * ATTENDED, or PARKED, or a DEFERRED irreversible call — nothing
+        //     has gone out when the second approval arrives, so the first row
+        //     still occupies its slot in `decisions_v1_authorised_unconsumed`,
+        //     the claim raises `23505`, and the person is told
+        //     (`CLAIM_REFUSED_DETAIL`). This is the sub-case TASK-253 made
+        //     audible.
+        //   * REVERSIBLE and UNATTENDED — the host replays immediately and
+        //     `markReplayed` stamps `replayed_at`, which is in the index's own
+        //     predicate. The row LEAVES the index, the second claim finds the
+        //     slot free, and THE CALL GOES OUT A SECOND TIME with nothing
+        //     refused and nothing said. That is the true worst case, and it is
+        //     the same double send this collapse exists to remove — reached by
+        //     a different route.
+        //
+        // Both halves are pinned in `decisions.canary.test.ts` ("RESIDUE:"),
+        // asserting the executor's invocation count rather than a row status.
+        //
+        // TAKING THIS LOCK IN `restore` WOULD NOT CLOSE IT. The two writes
+        // touch DIFFERENT rows, so serialising them changes nothing: `restore`
+        // never asks whether a colliding open row exists, and after it returns
+        // both rows are `pending` however the two were ordered. Closing this
+        // needs either a collapse at approve time or a `restore` that declines
+        // to reopen over a colliding row — both are rulings on what undo
+        // MEANS, and both are somebody's decision to make rather than a
+        // side effect of this one. Filed as its own card.
         //
         // It is held for the two statements below and released by COMMIT or
         // ROLLBACK whatever happens — the transaction-scoped variant cannot be

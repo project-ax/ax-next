@@ -233,9 +233,17 @@ export function createPreCallSubscriber(deps: PreCallDeps): PreCallSubscriber {
     if (!created) {
       // The row we hold on is the one already on the queue — a DIFFERENT id
       // from the one minted above, and possibly raised in another of this
-      // person's threads. The id travels back to the runner structurally, and
-      // the delivery on approval follows the stored row, so both halves stay
-      // consistent with whichever thread asked first.
+      // person's threads.
+      //
+      // WHICH COSTS THE SECOND THREAD ITS NARRATION when the two threads have
+      // different attendance. The row carries the attendance of the thread
+      // that RAISED it, and `decisions:approve` routes on that: a hold raised
+      // by a routine and reused by a live web thread is replayed by the host,
+      // so the warm agent watching the second thread is never told its call
+      // went through. The call still runs exactly once and the person still
+      // sees exactly one card on the Today queue, which is not per-thread —
+      // what is lost is the in-thread telling, and it is lost in the direction
+      // `attendance.ts` argues for. Pinned in `decisions.canary.test.ts`.
       ctx.logger.info('decision_hold_reused', {
         plugin: PLUGIN_NAME,
         decisionId: raised.id,

@@ -1414,9 +1414,10 @@ describe('decisions store — one OPEN question per (agent, call shape)', () => 
 
   it('scopes to the OWNER — a shared agent is not a shared queue', async () => {
     // Reads are owner-scoped, so handing u2 the id of u1's row would give u2 a
-    // question they cannot see or answer. Two rows that collide at approval
-    // time (loudly, since TASK-253) beat one row that is invisible to the
-    // person being asked.
+    // question they cannot see or answer, which is worse than two rows that
+    // collide at approval time. Not a free trade: that collision has the same
+    // two outcomes as the `restore` race below — refused out loud where
+    // nothing has gone out, a second send where the host already replayed.
     for (const s of await both()) {
       await s.createOrReuseOpen(base());
       const out = await s.createOrReuseOpen(base({ id: 'dec_2', ownerUserId: 'u2' }));
@@ -1443,9 +1444,15 @@ describe('decisions store — one OPEN question per (agent, call shape)', () => 
     // unique index over the open statuses, letting the database refuse the
     // duplicate. Dismiss, the agent tries the identical call, undo: two open
     // rows for one (agent, call shape), which such an index would have turned
-    // into a THROWN undo. It leaves two cards instead, and the second approval
-    // of them is refused out loud by `claimForApproval` — the residue this
-    // collapse knowingly leaves, and much the cheaper of the two.
+    // into a THROWN undo on an ordinary sequence, every time it happened.
+    //
+    // What it leaves instead is NOT harmless, and the canary says so out loud
+    // rather than this file implying otherwise: approving BOTH of those rows
+    // refuses audibly on the attended/parked/deferred paths but SENDS TWICE on
+    // the reversible unattended one, where the first replay frees the index
+    // slot (see `decisions.canary.test.ts`, "RESIDUE:"). The index was never
+    // the fix for that — it is a different bug on a path a person hits without
+    // approving anything. Closing the residue properly is its own card.
     for (const s of await both()) {
       await s.createOrReuseOpen(base());
       await s.markDismissed('dec_1', T_SOON);

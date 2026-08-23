@@ -353,10 +353,12 @@ describe('tool:pre-call subscriber — one call, one question', () => {
   // TASK-254. Two PENDING rows for the same (agent, call shape) used to be
   // reachable: the gate wrote a row every time it held, and only the
   // AUTHORISING statuses are covered by the partial unique index. The human
-  // then got two cards for one call, and approving the second died on that
-  // index — loudly since TASK-253, but still a question nobody should have
-  // been asked. The gate collapses it now, so that refusal is unreachable
-  // from here.
+  // then got two cards for one call, and approving the second either died on
+  // that index (loudly, since TASK-253) or — where the host had already
+  // replayed the first and freed the slot — quietly ran the call A SECOND
+  // TIME. The gate collapses the duplicate now, so neither is reachable from
+  // an agent retrying its call. `decisions.canary.test.ts` carries both, and
+  // the residue that survives via undo.
 
   it('raises ONE row for two identical held calls, and hands back the same decision', async () => {
     const { sub, store } = build(HOLD);
