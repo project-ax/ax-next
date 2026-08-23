@@ -28,6 +28,7 @@ import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testconta
 import pg from 'pg';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { UNDO_WINDOW_MS } from '../machine.js';
+import { CLAIM_REFUSED_DETAIL } from '../templates.js';
 import { createDecisionsPlugin, type DecisionsPluginOptions } from '../plugin.js';
 import type {
   Decision,
@@ -1868,6 +1869,63 @@ describe('decisions canary — a replay stranded by a host crash', () => {
     // ONCE. Not the reclaim plus this one.
     expect(exec.calls).toHaveLength(1);
     expect(exec.calls[0]).toEqual(CALL);
+  });
+
+  it('reports a TRANSIENT write failure as a fault, never as "already approved"', async () => {
+    // The refusal branch this card added says something specific — an
+    // identical request is already approved and has not been carried out —
+    // and for a while it said it for EVERY way the claim could throw.
+    //
+    // Under the turbulence this whole feature exists for (eviction, failover,
+    // load) that write can fail with a deadlock or a lock timeout, and those
+    // are gone by the time the handler re-reads the row. The person would be
+    // told their approval was not recorded because an identical one is
+    // pending, and the correct recovery — press it again — is exactly what
+    // that sentence talks them out of. A confident sentence about a cause
+    // nobody checked is this epic's signature defect wearing our own uniform.
+    //
+    // Simulated with a trigger that raises a real `40P01`, so the store sees
+    // the driver error a genuine deadlock produces. Nothing is mocked.
+    const h = await boot({ now: () => T_CRASH });
+    const exec = recordExecutor(h, HOLD_RULE.match.tool);
+    const id = await holdAndId(h, routineCtx(h), CALL);
+
+    const client = new pg.Client({ connectionString });
+    await client.connect();
+    let thrown: unknown;
+    try {
+      await client.query(`
+        CREATE OR REPLACE FUNCTION decisions_v1_canary_boom() RETURNS trigger AS $$
+        BEGIN RAISE EXCEPTION 'deadlock detected' USING ERRCODE = '40P01'; END;
+        $$ LANGUAGE plpgsql
+      `);
+      await client.query(`
+        CREATE TRIGGER decisions_v1_canary_boom_trg
+          BEFORE UPDATE ON decisions_v1_decisions
+          FOR EACH ROW WHEN (NEW.status = 'executed')
+          EXECUTE FUNCTION decisions_v1_canary_boom()
+      `);
+      thrown = await approve(h, routineCtx(h), id).then(
+        () => null,
+        (err: unknown) => err,
+      );
+    } finally {
+      await client
+        .query('DROP TRIGGER IF EXISTS decisions_v1_canary_boom_trg ON decisions_v1_decisions')
+        .catch(() => {});
+      await client.end().catch(() => {});
+    }
+
+    // It must FAIL, not resolve. Before the fix it resolved with the standing
+    // authorisation sentence, so `thrown` was null here.
+    expect(thrown).toBeInstanceOf(Error);
+    expect((thrown as Error).message).toContain('deadlock detected');
+    expect((thrown as Error).message).not.toContain(CLAIM_REFUSED_DETAIL);
+
+    // And the decision is still an open question with nothing run, which is
+    // what makes pressing approve again the right recovery.
+    expect(exec.calls).toEqual([]);
+    expect((await readDecision(h, routineCtx(h), id)).status).toBe('pending');
   });
 
   it('never reclaims a row that is not in flight at all, however long it sits', async () => {

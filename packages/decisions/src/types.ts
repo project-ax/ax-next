@@ -248,7 +248,9 @@ export interface Decision {
    *
    * Set only by the stranded-flight reclaim (TASK-253), and only on a row that
    * is `failed`: the host stamped `replayClaimedAt`, died inside the call, and
-   * nothing was left to record what happened. The reclaim frees the standing
+   * nothing was left to record what happened. A host that was merely FROZEN
+   * can still thaw and finish; `markReplayed` clears this stamp when it does,
+   * so "set" never coexists with a call that went out. The reclaim frees the standing
    * authorisation the dead flight was holding, so the same call can be held and
    * approved again.
    *

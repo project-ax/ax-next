@@ -26,7 +26,11 @@ import { runDecisionsMigration, type DecisionsDatabase } from './migrations.js';
 import { createPreCallSubscriber, PLUGIN_NAME, type PolicyAnswer } from './pre-call.js';
 import { receiptFor } from './receipts.js';
 import { replayContext, settleReplay } from './replay.js';
-import { createDecisionsStore, type DecisionStore } from './store.js';
+import {
+  createDecisionsStore,
+  DuplicateAuthorisationError,
+  type DecisionStore,
+} from './store.js';
 import { CLAIM_REFUSED_DETAIL } from './templates.js';
 import {
   DecisionsApproveOutputSchema,
@@ -552,6 +556,25 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           // nothing about that is an internal error. We absorb it and report
           // what is stored, exactly as we do when we lose the claim race.
           //
+          // AND IT IS THE ONLY THROW THIS BRANCH SPEAKS FOR. `claimForApproval`
+          // translates the index's refusal into `DuplicateAuthorisationError`
+          // and lets every other failure through as itself, so the check below
+          // is a real test of the cause rather than an assumption about it.
+          // The first cut of this branch assumed: it answered "an identical
+          // request is already approved" for anything the write threw. Under
+          // exactly the turbulence this whole area exists for — eviction,
+          // failover, load — that write can fail with a deadlock, a lock
+          // timeout or a statement timeout, all of which are gone by the time
+          // the re-read below runs. The person would then be told their
+          // approval was not recorded because an identical one is pending,
+          // and the correct recovery — press it again — is precisely what
+          // that sentence talks them out of. A confident sentence about a
+          // cause nobody checked is the defect this epic keeps producing.
+          //
+          // So a fault reaches the caller as a fault: it propagates, the bus
+          // wraps it, and it surfaces as a 500 an operator can see. Losing an
+          // approval loudly beats keeping it and lying about why.
+          //
           // WHAT WE NO LONGER DO IS ABSORB IT IN SILENCE (TASK-253). The
           // benign reading above is not the only one: a replay stranded by a
           // host crash occupies the same slot and nothing will ever cash it,
@@ -582,6 +605,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
               replayClaimedAt: immediate ? nowIso : null,
             });
           } catch (err) {
+            if (!(err instanceof DuplicateAuthorisationError)) throw err;
             ctx.logger.warn('decision_claim_refused', {
               plugin: PLUGIN_NAME,
               decisionId,
@@ -589,7 +613,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
             });
             return {
               ...(await settle(null)),
-              // AUTHORED, and never the database's own words. A unique-violation
+              // AUTHORED, and never the driver's own words. A unique-violation
               // message names the index, the table and the conflicting values —
               // one of which is a call fingerprint derived from model output.
               error: CLAIM_REFUSED_DETAIL,

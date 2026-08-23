@@ -9,7 +9,7 @@
  * stay fast and hermetic, not to stand in for either of those.
  */
 import { RECEIPT_STATUSES } from '../receipts.js';
-import type { DecisionStore } from '../store.js';
+import { DuplicateAuthorisationError, type DecisionStore } from '../store.js';
 import { AUTHORISING_STATUSES, type Decision, type DecisionStatus } from '../types.js';
 
 const OPEN: readonly DecisionStatus[] = ['pending', 'stale'];
@@ -113,7 +113,10 @@ export function createFakeStore(): FakeStore {
           other.consumedAt === null &&
           other.replayedAt === null
         ) {
-          throw new Error('fake store: duplicate unconsumed authorisation');
+          // The SAME typed error the real store translates a `23505` into.
+          // A plain `Error` here would let a caller's test pass over a handler
+          // that cannot tell the index's refusal from a deadlock.
+          throw new DuplicateAuthorisationError(decisionId, null);
         }
       }
       const next: Decision = {
@@ -163,6 +166,8 @@ export function createFakeStore(): FakeStore {
         resolvedAt: row.resolvedAt ?? nowIso,
         replayedAt: nowIso,
         replayDueAt: null,
+        // The row came back, so it is no longer abandoned — see the real store.
+        replayAbandonedAt: null,
         replayError: null,
       };
       rows.set(decisionId, next);

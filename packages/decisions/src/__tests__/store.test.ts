@@ -1,10 +1,14 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { stopPostgresContainer } from '@ax/test-harness';
-import { Kysely, PostgresDialect } from 'kysely';
+import { Kysely, PostgresDialect, sql } from 'kysely';
 import { PostgreSqlContainer, type StartedPostgreSqlContainer } from '@testcontainers/postgresql';
 import pg from 'pg';
 import { runDecisionsMigration, type DecisionsDatabase } from '../migrations.js';
-import { createDecisionsStore, type DecisionStore } from '../store.js';
+import {
+  createDecisionsStore,
+  DuplicateAuthorisationError,
+  type DecisionStore,
+} from '../store.js';
 import { receiptFor } from '../receipts.js';
 import { createFakeStore } from './fake-store.js';
 import { DecisionStatusSchema, type Decision, type DecisionStatus } from '../types.js';
@@ -191,7 +195,48 @@ describe('decisions store — the standing authorisation', () => {
     await s.create(base({ id: 'dec_2' }));
     // The partial unique index is the guarantee: two approvals of the same
     // call shape cannot both leave an authorisation standing.
-    await expect(s.claimForApproval('dec_2', { nowIso: T_SOON, status: 'executed' })).rejects.toThrow();
+    //
+    // And it refuses with a TYPED error, not just any error. `decisions:approve`
+    // reports this refusal to a person as a sentence and every other write
+    // failure to an operator as a fault, so the two have to be distinguishable
+    // at the seam rather than guessed at from a driver code the caller sniffs.
+    await expect(
+      s.claimForApproval('dec_2', { nowIso: T_SOON, status: 'executed' }),
+    ).rejects.toThrow(DuplicateAuthorisationError);
+  });
+
+  it('lets a NON-unique write failure through as itself', async () => {
+    // The other half, and the one that matters more. A deadlock, a lock
+    // timeout or a statement timeout under load is a fault; translating it
+    // into "already approved" is what stops a person retrying.
+    //
+    // Simulated against real Postgres with a trigger that raises a real
+    // `40P01`, so the store sees exactly the driver error a deadlock produces —
+    // no mocking of the layer under test.
+    const db = makeKysely();
+    await runDecisionsMigration(db);
+    const s = createDecisionsStore(db);
+    await s.create(base());
+    await sql`
+      CREATE OR REPLACE FUNCTION decisions_v1_test_boom() RETURNS trigger AS $$
+      BEGIN RAISE EXCEPTION 'deadlock detected' USING ERRCODE = '40P01'; END;
+      $$ LANGUAGE plpgsql
+    `.execute(db);
+    await sql`
+      CREATE TRIGGER decisions_v1_test_boom_trg
+        BEFORE UPDATE ON decisions_v1_decisions
+        FOR EACH ROW WHEN (NEW.status = 'executed')
+        EXECUTE FUNCTION decisions_v1_test_boom()
+    `.execute(db);
+
+    const err = await s
+      .claimForApproval('dec_1', { nowIso: T_SOON, status: 'executed' })
+      .then(() => null, (e: unknown) => e);
+    expect(err).toBeInstanceOf(Error);
+    expect(err).not.toBeInstanceOf(DuplicateAuthorisationError);
+    expect((err as Error).message).toContain('deadlock detected');
+    // Nothing was written, so a retry is the right recovery.
+    expect((await s.get('dec_1'))!.status).toBe('pending');
   });
 
   it('allows a new approval once the first is consumed', async () => {
@@ -1234,6 +1279,24 @@ describe('decisions store — reclaiming a stranded flight', () => {
       );
       expect(await reclaim(s, T_OUTSIDE)).toEqual([]);
       expect((await s.get('dec_1'))!.status).toBe('executed');
+    }
+  });
+
+  it('a FROZEN host that thaws writes the truth back, stamp and all', async () => {
+    // The sweep gave up; the host had not. `markReplayed` is unconditional on
+    // status precisely so the world wins over the row, and this pins that what
+    // it leaves behind is coherent: an `executed` row that went out, with no
+    // "we gave up on this" marker still attached to it.
+    for (const s of await stranded('immediate')) {
+      expect(await reclaim(s, T_OUTSIDE)).toHaveLength(1);
+      const back = await s.markReplayed('dec_1', T_LATE);
+      expect(back!.status).toBe('executed');
+      expect(back!.replayedAt).toBe(T_LATE);
+      expect(back!.replayAbandonedAt).toBeNull();
+      // And the receipt is the success one, with no trace of the abandonment.
+      const receipt = receiptFor((await s.get('dec_1'))!)!;
+      expect(receipt.outcome).toBe('executed');
+      expect(receipt.receipt).toBe((await s.get('dec_1'))!.approvedText);
     }
   });
 

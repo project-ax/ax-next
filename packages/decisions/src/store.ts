@@ -30,6 +30,54 @@ import {
 /** The two statuses a human can still act on. */
 const OPEN_STATUSES: readonly DecisionStatus[] = ['pending', 'stale'];
 
+/**
+ * SQLSTATE for a unique-violation. The one storage code this file translates.
+ */
+const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * `claimForApproval` refused because a standing authorisation for this
+ * (agent, call shape) ALREADY EXISTS — the partial unique index doing its job.
+ *
+ * A TYPED ERROR RATHER THAN A DRIVER CODE THE CALLER SNIFFS, and the reason is
+ * invariant 1. `decisions:approve` has to tell this refusal apart from every
+ * other way a write can fail, because it reports the two differently — a
+ * standing authorisation is a sentence for a person, and a deadlock is a fault
+ * for an operator. Letting the caller read `err.code === '23505'` would put
+ * Postgres vocabulary in the plugin and quietly make every alternate store
+ * impl responsible for reproducing a pg SQLSTATE. So the store, which is the
+ * only file allowed to know what backs it, says what happened in the
+ * vocabulary of the decision.
+ *
+ * EVERYTHING ELSE PROPAGATES UNTRANSLATED. That asymmetry is the point: a
+ * deadlock, a lock timeout, a statement timeout or a dropped table is a fault,
+ * and a fault that is renamed "already approved" tells the person the exact
+ * thing that will stop them retrying — under precisely the turbulence
+ * (eviction, failover, load) this whole area exists for.
+ */
+export class DuplicateAuthorisationError extends Error {
+  constructor(decisionId: string, cause: unknown) {
+    super(`a standing authorisation already exists for decision '${decisionId}'`, {
+      cause,
+    });
+    this.name = 'DuplicateAuthorisationError';
+  }
+}
+
+/** Does this driver error say "you broke a unique index"? */
+function isUniqueViolation(err: unknown): boolean {
+  // Duck-typed rather than `instanceof pg.DatabaseError`: this file talks to
+  // Kysely, and importing the driver's error class to read one string would be
+  // a dependency on the dialect rather than on the database. Only one unique
+  // index can be violated by the UPDATE below — `decisions_v1_decisions`'
+  // primary key is never rewritten by it — so the code alone is unambiguous.
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
+  );
+}
+
 /** The statuses `restore()` (undo) can walk back from. */
 const UNDOABLE_STATUSES: readonly DecisionStatus[] = [
   ...AUTHORISING_STATUSES,
@@ -107,8 +155,13 @@ export interface DecisionStore {
    * has run or is about to, `'approved-pending-agent'` when the host cannot
    * replay it and the agent will perform it on its next run. Both carry a
    * standing authorisation, so both live under the partial unique index — and
-   * this throws if one already exists for this (agent, call fingerprint).
-   * Refusing loudly is the point.
+   * this throws `DuplicateAuthorisationError` if one already exists for this
+   * (agent, call fingerprint). Refusing loudly is the point.
+   *
+   * ANY OTHER FAILURE COMES BACK AS ITSELF. Only the index's refusal is
+   * translated; a deadlock, a lock timeout or an unreachable database is a
+   * fault and must reach the caller as one, because the caller reports the two
+   * differently and the wrong label is what stops a person retrying.
    *
    * `replayDueAt` defers the host replay until the undo window closes, for an
    * irreversible call. `replayClaimedAt` is its opposite number: the host is
@@ -325,6 +378,35 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
     return row === undefined ? null : toDecision(row);
   }
 
+  /** The claim itself, unwrapped. `claimForApproval` owns the translation. */
+  function claim(
+    decisionId: string,
+    opts: {
+      nowIso: string;
+      status: 'executed' | 'approved-pending-agent';
+      replayDueAt?: string | null | undefined;
+      replayClaimedAt?: string | null | undefined;
+    },
+  ): Promise<Decision | null> {
+    const { nowIso, status, replayDueAt, replayClaimedAt } = opts;
+    return transition(decisionId, OPEN_STATUSES, {
+      status,
+      resolved_at: new Date(nowIso),
+      // The guard passed, so whatever it said last time is no longer true.
+      stale_reason: null,
+      replay_due_at:
+        replayDueAt === undefined || replayDueAt === null ? null : new Date(replayDueAt),
+      replay_claimed_at:
+        replayClaimedAt === undefined || replayClaimedAt === null
+          ? null
+          : new Date(replayClaimedAt),
+      // A re-approval after an undo starts clean; a leftover failure detail
+      // from a previous attempt would describe a run that is no longer the
+      // one this row is about.
+      replay_error: null,
+    });
+  }
+
   return {
     async create(decision) {
       await db.insertInto(table).values(fromDecision(decision)).execute();
@@ -384,23 +466,16 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       return rows.map(toDecision);
     },
 
-    claimForApproval(decisionId, { nowIso, status, replayDueAt, replayClaimedAt }) {
-      return transition(decisionId, OPEN_STATUSES, {
-        status,
-        resolved_at: new Date(nowIso),
-        // The guard passed, so whatever it said last time is no longer true.
-        stale_reason: null,
-        replay_due_at:
-          replayDueAt === undefined || replayDueAt === null ? null : new Date(replayDueAt),
-        replay_claimed_at:
-          replayClaimedAt === undefined || replayClaimedAt === null
-            ? null
-            : new Date(replayClaimedAt),
-        // A re-approval after an undo starts clean; a leftover failure detail
-        // from a previous attempt would describe a run that is no longer the
-        // one this row is about.
-        replay_error: null,
-      });
+    async claimForApproval(decisionId, { nowIso, status, replayDueAt, replayClaimedAt }) {
+      try {
+        return await claim(decisionId, { nowIso, status, replayDueAt, replayClaimedAt });
+      } catch (err) {
+        // Translate ONLY the index's refusal. `throw err` for everything else
+        // is not a fallthrough — it is the branch that keeps a transient write
+        // failure from being reported as a standing authorisation.
+        if (isUniqueViolation(err)) throw new DuplicateAuthorisationError(decisionId, err);
+        throw err;
+      }
     },
 
     async claimReplayFlight(decisionId, nowIso) {
@@ -434,6 +509,19 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
           replayed_at: new Date(nowIso),
           replay_due_at: null,
           replay_error: null,
+          // AND THE ROW IS NO LONGER ABANDONED, because it just came back.
+          //
+          // The race is real rather than theoretical: a host frozen long enough
+          // for the sweep to give up on it (`reclaimStrandedFlights` wrote
+          // `failed` + `replay_abandoned_at`) can still thaw and land this
+          // write, which is unconditional on status precisely so the world wins.
+          // Leaving the stamp behind would produce an `executed` row carrying a
+          // marker whose whole meaning is "we gave up on this" — harmless to
+          // `receiptFor`, which keys the abandoned sentence on `failed`, and a
+          // straight contradiction of what `Decision.replayAbandonedAt` says
+          // about itself. Same rule as the two clears above: the call went out,
+          // so nothing about this row is pending, failed, or given up on.
+          replay_abandoned_at: null,
           // Keep the ORIGINAL resolution instant. Overwriting it would restart
           // the undo window AFTER the outward action, which is the one thing
           // the deferral exists to prevent.
