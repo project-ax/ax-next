@@ -191,8 +191,12 @@ function TheirDescription({ row }: { row: PermissionRow }) {
  */
 export function PermissionLine({ row }: { row: PermissionRow }) {
   const frame = row.described
-    ? frameCapability({ verdict: row.verdict, capability: row.capability })
-    : { ...verdictFrame(row.verdict), clause: null };
+    ? frameCapability({
+        verdict: row.verdict,
+        capability: row.capability,
+        conditional: row.conditional,
+      })
+    : { ...verdictFrame(row.verdict, row.conditional), clause: null };
   return (
     <div className="flex items-start gap-2.5 py-1 text-[13px]">
       <VerdictMark verdict={row.verdict} />
@@ -266,7 +270,10 @@ export function GrantLine({
   busy: boolean;
   onRevoke: (row: GrantRow) => void;
 }) {
-  const frame = verdictFrame(row.verdict);
+  // Never conditional: a grant is a thing a person did, not a rule with a
+  // predicate over a call's arguments. It applies to every call or it does not
+  // exist.
+  const frame = verdictFrame(row.verdict, false);
   return (
     <div className="flex items-start gap-2.5 py-1 text-[13px]">
       <VerdictMark verdict={row.verdict} />

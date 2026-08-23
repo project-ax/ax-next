@@ -119,6 +119,20 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
   let catalog: Array<{ name: string; description?: string; executesIn?: string }>;
   let policyRows: unknown[];
   let policyThrows: Error | null;
+  /**
+   * Tools the mock table describes for EVERY call, over and above the ones
+   * `evaluate` matches on an empty input.
+   *
+   * Usually empty, because the two coincide: `evaluate` against `{}` matches
+   * exactly the UNCONDITIONAL rules, which is the same set. It exists so a test
+   * can state the coverage answer directly instead of implying it.
+   */
+  let policyFullyDescribes: Set<string>;
+  /** 1-based call number of `list-capabilities` that throws, for a TRANSIENT read. */
+  let policyThrowsOnCall: number | null;
+  let policyCalls: number;
+  /** Tool names whose `tool-policy:evaluate` throws. One row's worth of loss. */
+  let evaluateThrowsFor: Set<string>;
   /** What the route last told the policy plugin this agent cannot reach. */
   let lastOutOfReach: string[] | null;
   let ruledTools: Map<string, { verdict: string; ruleId: string }>;
@@ -154,7 +168,9 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
 
   function registerPolicy(): void {
     bus.registerService('tool-policy:list-capabilities', 'policy', async (_c, i: unknown) => {
+      policyCalls += 1;
       if (policyThrows !== null) throw policyThrows;
+      if (policyThrowsOnCall === policyCalls) throw new Error('transient');
       /*
         The real registrar applies `outOfReach` (@ax/tool-policy's
         `applyReach`). Mirrored here — a stub that ignored the field would let
@@ -170,10 +186,33 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
           const tool = RULE_TOOL[String(r.source)];
           return tool === undefined || !unreachable.has(tool);
         }),
+        /*
+          Coverage, not display: which tools the TABLE speaks for on EVERY call.
+          Deliberately not filtered by `outOfReach` — a row dropped as out of
+          reach is a row about a tool this agent cannot see, and the caller has
+          already excluded that tool from its own pass.
+
+          Derived from the `ruledTools` entries that carry a rule id, so the
+          mock cannot disagree with itself. That derivation is the real
+          plugin's identity, not a convenience: `evaluate` on an empty input
+          matches only rules with no predicate, so "a rule matched `{}`" and
+          "an unconditional rule exists" are the same statement. A tool named
+          only by a `when` rule is therefore in NEITHER — which is exactly how
+          a test writes that case: leave it out of `ruledTools`.
+        */
+        fullyDescribedTools: [
+          ...new Set([
+            ...[...ruledTools.entries()]
+              .filter(([, ruled]) => ruled.ruleId !== null)
+              .map(([tool]) => tool),
+            ...policyFullyDescribes,
+          ]),
+        ],
       };
     });
     bus.registerService('tool-policy:evaluate', 'policy', async (_c, i: unknown) => {
       const { call } = i as { call: { name: string } };
+      if (evaluateThrowsFor.has(call.name)) throw new Error('evaluator down');
       const ruled = ruledTools.get(call.name);
       return ruled === undefined
         ? { verdict: 'allow', ruleId: null, capability: null, irreversible: false }
@@ -245,6 +284,10 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     catalog = [];
     policyRows = [];
     policyThrows = null;
+    policyFullyDescribes = new Set();
+    policyThrowsOnCall = null;
+    policyCalls = 0;
+    evaluateThrowsFor = new Set();
     lastOutOfReach = null;
     ruledTools = new Map();
     siteGrants = new Map();
@@ -379,6 +422,129 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(body.permissions.rows[0]?.described).toBe(true);
   });
 
+  it('states BOTH truths for a tool only a `when`-predicate rule names', async () => {
+    /*
+      TASK-267, and the review finding on its first cut — the two halves are
+      one test because getting either wrong renders a different lie.
+
+      The original bug: the rail asked `tool-policy:evaluate` about a call
+      nobody was making — `{ name, input: {} }` — and read `ruleId !== null` off
+      the answer to decide whether a rule already described the tool. A rule
+      whose `match.when` predicate reads the call's ARGUMENTS cannot match an
+      input that has none, so its tool came back "unruled" and picked up a
+      mechanical row carrying the UNCONDITIONAL verdict, standing next to a
+      described row that says it asks first. Two rows, one tool, and one of the
+      claims invented.
+
+      The mirror-image bug, which the first fix shipped: skip every tool the
+      table merely NAMES, and this tool renders ONLY "asks you first, in some
+      cases". Nothing then states what the calls the predicate misses do, which
+      is run on their own — and a reader completes an unstated complement with
+      the safer guess. Silence about reach is design H4, the direction never to
+      be wrong in.
+
+      So the honest rail says both: the conditional gate in our own words, and
+      the base reach mechanically. The verdict on the base row comes from the
+      evaluator's answer for an input no predicate can match, which is the
+      table's fall-through — not a guess this route made.
+    */
+    registerPolicy();
+    registerCatalog();
+    policyRows = [
+      {
+        verdict: 'hold',
+        capability: 'delete a folder and everything in it',
+        source: 'rule:files.delete-recursive',
+        provenance: 'rule',
+        described: true,
+        conditional: true,
+      },
+    ];
+    catalog = [{ name: 'delete_file', executesIn: 'host' }];
+    // `delete_file` is deliberately absent from `ruledTools`: its only rule is
+    // predicated on `{ recursive: true }`, so a real `evaluate` neither matches
+    // it on an empty input nor counts it as fully described.
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.permissions.rows).toHaveLength(2);
+
+    // Reading order is allow-then-hold, so the base reach comes first.
+    expect(body.permissions.rows[0]).toMatchObject({
+      verdict: 'allow',
+      described: false,
+      conditional: false,
+      mechanicalLabel: 'delete_file',
+      source: 'tool:delete_file',
+      // Our authored clause describes the CONDITIONAL case; putting it on this
+      // row would label the unconditional half with the wrong sentence.
+      capability: '',
+    });
+    expect(body.permissions.rows[1]).toMatchObject({
+      verdict: 'hold',
+      described: true,
+      conditional: true,
+      capability: 'delete a folder and everything in it',
+      source: 'rule:files.delete-recursive',
+    });
+  });
+
+  it('gives a tool with an unconditional rule only authored rows, never a mechanical one', async () => {
+    /*
+      The other side of the same boundary, and why "always emit a base row"
+      would be wrong. Here the table speaks for every call already: the narrow
+      `when` rule holds the recursive ones and the broad rule allows the rest,
+      both authored, both rendered. A mechanical row on top would be a third
+      claim about one tool, in nobody's words, saying what the second row
+      already says.
+    */
+    registerPolicy();
+    registerCatalog();
+    policyRows = [
+      {
+        verdict: 'allow',
+        capability: 'delete a file it made',
+        source: 'rule:files.delete',
+        provenance: 'rule',
+        described: true,
+        conditional: false,
+      },
+      {
+        verdict: 'hold',
+        capability: 'delete a folder and everything in it',
+        source: 'rule:files.delete-recursive',
+        provenance: 'rule',
+        described: true,
+        conditional: true,
+      },
+    ];
+    catalog = [{ name: 'delete_file', executesIn: 'host' }];
+    // The broad rule is what `evaluate` matches on an empty input, and what
+    // makes the tool fully described.
+    ruledTools.set('delete_file', { verdict: 'allow', ruleId: 'files.delete' });
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.permissions.rows.every((r) => r.described)).toBe(true);
+    expect(body.permissions.rows.map((r) => r.source)).toEqual([
+      'rule:files.delete',
+      'rule:files.delete-recursive',
+    ]);
+  });
+
+  it('leaves a tool no rule names as an unconditional mechanical row', async () => {
+    // The other half of the same fix: `conditional` is a claim too, and a
+    // catalog row has no rule behind it to be conditional about.
+    registerPolicy();
+    registerCatalog();
+    catalog = [{ name: 'some_unmapped_tool', executesIn: 'host' }];
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.permissions.rows[0]).toMatchObject({
+      described: false,
+      conditional: false,
+      mechanicalLabel: 'some_unmapped_tool',
+    });
+  });
+
   it('does not render an authored skill as a rail row of its own', async () => {
     /*
       Authored skills are zero-reach by construction: a skill manifest declares
@@ -498,11 +664,21 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(body.permissions.unrestrictedTools).toBe(true);
   });
 
-  it('drops nothing when the catalog could not be read — overstating is the survivable direction', async () => {
+  it('subtracts nothing when the catalog could not be read — we proved no tool unreachable', async () => {
+    /*
+      The catalog is the only thing that can establish "this agent cannot reach
+      that tool". When the read throws we have PROVED nothing, so the
+      subtraction sent to the policy plugin must be empty rather than guessed —
+      guessing one away would drop a true reach claim off a blast-radius
+      surface.
+
+      TASK-284 changed what the reader SEES on this path (the section is now
+      `failed` and shows nothing rather than a partial list under an `ok`
+      headline), which is asserted in its own test below. This one is about the
+      request we send on the way there: it stays honest whatever the section
+      does with the answer.
+    */
     registerPolicy();
-    // Registered, and it throws: we have PROVED nothing about what this agent
-    // cannot reach, so no reach claim is subtracted and the list says it may be
-    // incomplete rather than quietly getting shorter.
     bus.registerService('tool:list', 'catalog', async () => {
       throw new Error('catalog down');
     });
@@ -511,9 +687,121 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     ];
     agents.set('a1', agent({ id: 'a1', allowedTools: ['Read'], mcpConfigIds: [] }));
 
+    await railFor();
+    expect(lastOutOfReach).toEqual([]);
+  });
+
+  it('a throwing tool:list is a FAILED read, not a successful partial one', async () => {
+    /*
+      TASK-284, the same shape TASK-264 fixed in `readGrants`: one producer
+      threw and the section folded it into `incomplete` while still calling
+      itself `ok`. "We could not look" then renders as "we looked and there was
+      less" — the headline is the claim and `incomplete` is a footnote under it.
+
+      Milder here than it was for grants, because the permissions empty state
+      already refuses to make a claim ("we can't tell you — not that there
+      isn't any"). The STATUS was still wrong, and a copy change would re-arm
+      it.
+    */
+    registerPolicy();
+    bus.registerService('tool:list', 'catalog', async () => {
+      throw new Error('catalog down');
+    });
+    policyRows = [
+      { verdict: 'allow', capability: 'search the web', source: 'rule:web.search', provenance: 'catalog', described: true },
+    ];
+
     const body = (await railFor()).body as AgentRailData;
-    expect(body.permissions.rows.map((r) => r.source)).toContain('rule:web.search');
+    expect(body.permissions).toMatchObject({
+      status: 'failed',
+      // Zeroed with the status, the same way `readGrants` zeroes its rows: the
+      // rail gates on `status` before it maps rows, but the NEXT consumer might
+      // not, and a short list under a failure is this bug one level out.
+      rows: [],
+      incomplete: true,
+    });
+  });
+
+  it('a coverage read that throws fails the section, even when the retry answers', async () => {
+    /*
+      The second producer inside the catalog half: the rail asks the policy
+      plugin which tools its table already describes, so it never has to invent
+      a call to find out. That read is asked BEFORE the one that fetches the
+      described rows, and a transient failure of the first with a clean second
+      is exactly the case a shared success flag would have swallowed — the rows
+      arrive, the section says `ok`, and every tool the table describes is
+      quietly re-listed as an undescribed one.
+    */
+    registerPolicy();
+    registerCatalog();
+    catalog = [{ name: 'web_search', executesIn: 'host' }];
+    ruledTools.set('web_search', { verdict: 'allow', ruleId: 'web.search' });
+    policyRows = [
+      { verdict: 'allow', capability: 'search the web', source: 'rule:web.search', provenance: 'catalog', described: true },
+    ];
+    policyThrowsOnCall = 1;
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(policyCalls).toBeGreaterThan(1);
+    expect(body.permissions).toMatchObject({ status: 'failed', rows: [], incomplete: true });
+  });
+
+  it('treats a coverage answer with no fullyDescribedTools as a failed read, never as “nothing is described”', async () => {
+    /*
+      A duck-typed hook (I2), and this is the trust boundary. @ax/tool-policy
+      declares the field required in its `returns` schema, so a conforming impl
+      cannot omit it — but an alternate impl registered with no schema can, and
+      reading a missing field as an empty set is the overstatement this whole
+      read exists to prevent: every tool the table describes would be re-listed
+      as an undescribed one, each with a mechanical row asserting the verdict
+      for a call nobody made.
+    */
+    bus.registerService('tool-policy:list-capabilities', 'policy', async () => ({
+      rows: [
+        {
+          verdict: 'allow',
+          capability: 'search the web',
+          source: 'rule:web.search',
+          provenance: 'catalog',
+          described: true,
+        },
+      ],
+    }));
+    bus.registerService('tool-policy:evaluate', 'policy', async () => ({
+      verdict: 'allow',
+      ruleId: null,
+      capability: null,
+      irreversible: false,
+    }));
+    registerCatalog();
+    catalog = [{ name: 'web_search', executesIn: 'host' }];
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.permissions).toMatchObject({ status: 'failed', rows: [] });
+  });
+
+  it('one tool the evaluator cannot answer for costs that row and says so — not the section', async () => {
+    /*
+      Deliberately NOT `failed`, and the difference is the point. A wholesale
+      producer failure leaves us unable to bound what is missing; this failure
+      is one named tool out of a list we otherwise read completely, and the
+      surface already refuses the completeness claim in so many words ("this
+      list may be missing something"). Failing the whole section here would
+      replace a mostly-true list with nothing, which costs the reader more than
+      it protects them.
+    */
+    registerPolicy();
+    registerCatalog();
+    catalog = [
+      { name: 'good_tool', executesIn: 'host' },
+      { name: 'flaky_tool', executesIn: 'host' },
+    ];
+    evaluateThrowsFor = new Set(['flaky_tool']);
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.permissions.status).toBe('ok');
     expect(body.permissions.incomplete).toBe(true);
+    expect(body.permissions.rows.map((r) => r.mechanicalLabel)).toEqual(['good_tool']);
   });
 
   it('tells "no producer" apart from "read failed" apart from "nothing there"', async () => {
@@ -949,6 +1237,48 @@ describe('rail projections', () => {
     expect(row.described).toBe(false);
     expect(row.capability).toBe('');
     expect(row.provenance).toBe('unmapped');
+  });
+
+  it('carries `conditional` through, and normalises a missing one to false', () => {
+    // The wire row is what the renderer switches on, and `undefined` there
+    // would render as unconditional while meaning "the producer did not say".
+    // A duck-typed hook (I2) can omit the field; the wire never does.
+    expect(
+      toWirePermission({
+        verdict: 'hold',
+        capability: 'delete a folder and everything in it',
+        source: 'rule:files.delete-recursive',
+        provenance: 'rule',
+        described: true,
+        conditional: true,
+      }).conditional,
+    ).toBe(true);
+    expect(
+      toWirePermission({
+        verdict: 'allow',
+        capability: 'search the web',
+        source: 'rule:web.search',
+        provenance: 'catalog',
+        described: true,
+      }).conditional,
+    ).toBe(false);
+  });
+
+  it('keeps `conditional` on a described row that demotes to mechanical', () => {
+    // Losing the clause loses our sentence, not the rule behind it. A row that
+    // dropped its conditionality on the way down would render "Can use `x` —
+    // on its own" for a tool the table only sometimes allows.
+    const row = toWirePermission({
+      verdict: 'hold',
+      capability: '\u200B',
+      source: 'rule:x',
+      provenance: 'rule',
+      described: true,
+      conditional: true,
+      mechanicalLabel: 'delete_file',
+    });
+    expect(row.described).toBe(false);
+    expect(row.conditional).toBe(true);
   });
 
   it('caps a capability clause by CODE POINTS, never by UTF-16 units', () => {

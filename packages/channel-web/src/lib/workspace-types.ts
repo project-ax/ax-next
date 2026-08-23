@@ -282,6 +282,17 @@ export interface PermissionRow {
   source: string;
   provenance: CapabilityProvenance;
   described: boolean;
+  /**
+   * The rule behind this row applies to SOME calls and not others — it carries
+   * a predicate over the call's arguments.
+   *
+   * A separate flag from the verdict on purpose. "Asks you first" and "asks you
+   * first, in some cases" are different claims about what we enforce, and a
+   * reader told the first about a rule that does the second has been promised a
+   * gate that is not always there. False for every row with no rule behind it:
+   * a catalog, MCP or grant row has no predicate to be conditional on.
+   */
+  conditional: boolean;
   /** `described: false` only — what we DO control: the tool's own name. */
   mechanicalLabel: string | null;
   /** `described: false` only — the third party's words, fenced and attributed. */

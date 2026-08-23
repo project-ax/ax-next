@@ -154,6 +154,8 @@ interface PolicyCapabilityRow {
   source: string;
   provenance: CapabilityProvenance;
   described: boolean;
+  /** The rule applies to some calls and not others. Absent is read as `false`. */
+  conditional?: boolean;
   theirDescription?: string;
   mechanicalLabel?: string;
 }
@@ -164,14 +166,26 @@ interface ToolPolicyListCapabilitiesInput {
 }
 interface ToolPolicyListCapabilitiesOutput {
   rows: PolicyCapabilityRow[];
+  /**
+   * Tools the rule table describes for EVERY call — @ax/tool-policy's
+   * `fullyDescribedTools`, whose doc carries the reasoning.
+   *
+   * `unknown` rather than `string[]` because this is a duck-typed hook and this
+   * is the trust boundary. The registrar's `returns` schema declares it
+   * required, so a conforming impl cannot omit it and a non-conforming one
+   * fails the call outright; an impl registered with no schema at all could
+   * still answer without it, and `catalogPermissions` checks rather than
+   * assuming. Reading a missing field as "nothing is described" would put a
+   * second, mechanical row beside every rule the table does describe.
+   */
+  fullyDescribedTools?: unknown;
 }
 
 /**
- * `tool-policy:evaluate`, used here for exactly two facts about a catalog tool:
- * what verdict the enforced table gives it, and whether a rule already
- * describes it (`ruleId !== null`). Asking the evaluator rather than
- * re-deriving either is the whole point — the rail's verdict is the enforced
- * verdict or it is decoration.
+ * `tool-policy:evaluate`, asked here for ONE fact: the verdict a tool gets when
+ * no rule's predicate catches the call. The rail's verdict is the enforced
+ * verdict or it is decoration. See `catalogPermissions` for what it is NOT
+ * asked — coverage — and why that mattered (TASK-267).
  */
 interface ToolPolicyEvaluateInput {
   call: { name: string; input: unknown };
@@ -217,6 +231,15 @@ interface ToolListOutput {
  */
 interface CatalogPermissions {
   rows: PermissionRow[];
+  /**
+   * A producer of this half THREW. Set inside each catch, never from a success
+   * path — a success flag has to be set somewhere, and every place it is set is
+   * a chance to set it for the wrong producer (TASK-264's bug, one function
+   * over). The caller turns this into `status: 'failed'`, which is a different
+   * answer from `incomplete`: "we could not look" versus "we looked and one
+   * named thing is missing".
+   */
+  failed: boolean;
   incomplete: boolean;
   outOfReach: string[];
 }
@@ -2091,6 +2114,21 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     // this agent's. See `outOfReach`.
     const catalog = await catalogPermissions(agent, scope);
 
+    // THE SECOND ASK of `tool-policy:list-capabilities` in one render, and it
+    // is deliberate rather than an oversight, so here is the trade.
+    //
+    // The two asks are different questions: this one wants the display ROWS,
+    // filtered by `outOfReach`; the catalog half's wants COVERAGE — which tools
+    // some rule speaks for on EVERY call — which it needs before it can decide
+    // which catalog entries still want a row of their own. The catalog half computes
+    // `outOfReach` before it asks, so it COULD have passed it, taken these rows
+    // too, and saved a call. It does not, because that would move the
+    // described-rows read inside the catalog half and merge two failure states
+    // this pair keeps separable — "the tool catalog half broke" and "the rule
+    // table would not answer" become one catch, on the surface where telling
+    // one unreadable thing from another is the entire job. The hook is a pure
+    // read over an immutable in-memory table, so the second ask costs a map
+    // over a few dozen rules.
     let described: PermissionRow[];
     try {
       const out = await bus.call<
@@ -2115,8 +2153,21 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     }
 
     return {
-      status: 'ok',
-      rows: byVerdict([...described, ...catalog.rows]),
+      // A producer of the catalog half that THREW makes this `failed`, not an
+      // `ok` list with a footnote — TASK-284, the same shape TASK-264 fixed in
+      // `readGrants`. `incomplete` renders under the headline and the headline
+      // is the claim. It matters less here than it did there, because this
+      // section's empty state already refuses to make one ("we can't tell you —
+      // not that there isn't any"), but the status was still wrong and a copy
+      // change would re-arm it.
+      //
+      // The described rows go with it even though each is individually true,
+      // for the same reason `readGrants` drops its partial rows: the rail gates
+      // on `status`, so this costs nothing today, and a next consumer that read
+      // `rows` without reading `status` would render a short list under a
+      // failure and turn it back into a claim.
+      status: catalog.failed ? 'failed' : 'ok',
+      rows: catalog.failed ? [] : byVerdict([...described, ...catalog.rows]),
       incomplete: catalog.incomplete,
       unrestrictedTools: scope.unrestricted,
     };
@@ -2125,18 +2176,45 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   /**
    * The catalog half: every tool this agent can see that no rule describes.
    *
-   * The verdict comes from `tool-policy:evaluate`, not from a copy of the rule
-   * table — and `ruleId !== null` is what tells us a described row already
-   * covers this tool, so the two halves cannot double up.
+   * Three producers, and each one's failure is tracked separately (`failed` on
+   * `CatalogPermissions`) rather than folded into one flag between them.
    *
-   * KNOWN LIMIT, written down because it is a security surface: a rule carrying
-   * a `when` predicate is evaluated here against an EMPTY input, so a
-   * conditional `hold` would fall through to whatever the unconditional answer
-   * is. No rule in the table carries a `when` today (`rules.ts` says so
-   * explicitly). When the first one lands, this has to read the strictest
-   * verdict for the tool rather than the verdict for a call we are not making —
-   * which needs `list-capabilities` to expose the tool it belongs to. See the
-   * PR's follow-ups.
+   *   1. `tool:list` — which tools exist. Also the only thing that can prove a
+   *      tool is out of this agent's reach.
+   *   2. `tool-policy:list-capabilities` — which of them the rule table already
+   *      describes COMPLETELY, so this half never has to invent a call to find
+   *      out.
+   *   3. `tool-policy:evaluate` — the base verdict for the ones it does not,
+   *      which is the policy plugin's to state and not ours to assume.
+   *
+   * WHY COVERAGE IS ASKED FOR RATHER THAN DERIVED, because this is the security
+   * bug this function had (TASK-267). It used to call `evaluate` with
+   * `{ name, input: {} }` and read `ruleId !== null` to mean "a rule already
+   * describes this tool". An empty input is not a neutral default — it is a
+   * fabricated argument set, and reading a rule's IDENTITY off an answer about
+   * a call nobody is making is reading the wrong thing. A rule whose predicate
+   * reads the call's arguments could never match it, so its tool came back
+   * "unruled" and got a second, mechanical row asserting the unconditional
+   * verdict — "Can use `delete_file` — on its own" standing beside the
+   * described row that says it sometimes asks first. Two rows, one tool, and
+   * the louder of the two was the invented one.
+   *
+   * THE MIRROR-IMAGE MISTAKE, which the first cut of this fix made and review
+   * caught. Skipping every tool the table merely NAMES silences a tool named
+   * only by conditional rules: the rail then says "asks you first, in some
+   * cases" and never states what the other calls do, which is run on their own.
+   * A reader completes an unstated complement with the safer guess, so silence
+   * there understates reach — the direction design H4 says never to be wrong
+   * in. Hence `fullyDescribedTools`, which counts a tool as accounted for only
+   * when some rule speaks for EVERY call; a `when`-only tool gets both truths,
+   * its conditional described row and a base row of its own.
+   *
+   * `evaluate`'s empty input is honest for exactly the tools that reach it, and
+   * the reason is structural rather than a convention: a `PredicateSpec`
+   * matches only an own property holding a primitive, so an input with no own
+   * properties matches no predicate that exists or could be written. The answer
+   * is the table's fall-through verdict — what happens to every call the
+   * predicates miss — which is the claim the base row makes.
    */
   async function catalogPermissions(
     agent: ResolvedAgent,
@@ -2146,12 +2224,17 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     // a rule already covers. Guessing either would put a made-up security claim
     // on the surface, so we say the list is incomplete instead.
     //
+    // NOT `failed`: no producer here was asked and none broke. This deployment
+    // does not load one, which is a different fact and the caller's `status`
+    // has one slot — spending it here would hide the described rows, which were
+    // read and are true. `incomplete` is what says the rest is unknown.
+    //
     // `outOfReach` is EMPTY on every early return here, which is the
     // overstating direction on purpose: with no catalog we have proved nothing
     // about what this agent cannot reach, so we drop no reach claim and the
     // caller says the list may be incomplete.
     if (!bus.hasService('tool:list') || !bus.hasService('tool-policy:evaluate')) {
-      return { rows: [], incomplete: true, outOfReach: [] };
+      return { rows: [], failed: false, incomplete: true, outOfReach: [] };
     }
 
     let tools: ToolCatalogEntry[];
@@ -2167,12 +2250,18 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         agentId: agent.id,
         error: err instanceof Error ? err.message : String(err),
       });
-      return { rows: [], incomplete: true, outOfReach: [] };
+      return { rows: [], failed: true, incomplete: true, outOfReach: [] };
     }
 
-    const rows: PermissionRow[] = [];
+    /*
+      PASS 1 — the scope subtraction, and nothing else. Pure: no bus, no policy.
+      Which tools exist and which of them this agent can see are both catalog
+      facts, and keeping them in their own pass means the policy reads below
+      face a settled list, rather than one loop deciding scope, coverage and
+      verdicts at once.
+    */
+    const inScope: Array<{ tool: ToolCatalogEntry; name: string }> = [];
     const outOfReach: string[] = [];
-    let incomplete = false;
     for (const tool of tools) {
       const name = typeof tool?.name === 'string' ? tool.name : '';
       if (name.length === 0) continue;
@@ -2192,20 +2281,87 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         outOfReach.push(name);
         continue;
       }
+      inScope.push({ tool, name });
+    }
+
+    // The coverage read. `tool-policy:list-capabilities` is registered — the
+    // caller's own guard above returned `unavailable` otherwise — so a throw
+    // here is a real failure of a producer that answers for the whole half, not
+    // an absent one. We cannot bound what we would be missing, so the section
+    // fails rather than shipping a list that re-describes every ruled tool as
+    // an undescribed one.
+    //
+    // `outOfReach` still rides out: the catalog read succeeded, so those tools
+    // ARE proved unreachable, and it is the caller's business what it does with
+    // a proof from a half that failed elsewhere.
+    let fullyDescribed: Set<string>;
+    try {
+      const out = await bus.call<
+        ToolPolicyListCapabilitiesInput,
+        ToolPolicyListCapabilitiesOutput
+      >('tool-policy:list-capabilities', initCtx, { agentId: agent.id });
+      // Re-checked rather than trusted, like every other duck-typed answer on
+      // this surface. An impl registered without a `returns` schema can answer
+      // without the field, and reading that as "nothing is described" is the
+      // exact overstatement this read exists to prevent — so it is a failed
+      // read instead.
+      if (!Array.isArray(out.fullyDescribedTools)) {
+        throw new Error(
+          'tool-policy:list-capabilities answered without fullyDescribedTools',
+        );
+      }
+      fullyDescribed = new Set(
+        out.fullyDescribedTools.filter((name): name is string => typeof name === 'string'),
+      );
+    } catch (err) {
+      initCtx.logger.warn('workspace_rail_coverage_failed', {
+        agentId: agent.id,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return { rows: [], failed: true, incomplete: true, outOfReach };
+    }
+
+    /*
+      PASS 2 — a row for every in-scope tool no described row fully accounts
+      for. A tool with an unconditional rule is skipped: that rule's row is
+      authored on the thing that enforces it, it speaks for every call, and a
+      mechanical row beside it would be two claims about one tool.
+
+      A tool named ONLY by conditional rules is NOT skipped, and that is the
+      point of `fullyDescribedTools`. Its described rows cover the calls their
+      predicates catch; this row covers the rest, which is the reach a reader
+      would otherwise have to infer from silence.
+    */
+    const rows: PermissionRow[] = [];
+    let incomplete = false;
+    for (const { tool, name } of inScope) {
+      if (fullyDescribed.has(name)) continue;
 
       let verdict: CapabilityVerdict;
-      let ruled: boolean;
       try {
         const ev = await bus.call<ToolPolicyEvaluateInput, ToolPolicyEvaluateOutput>(
           'tool-policy:evaluate',
           initCtx,
+          // The empty input is not a stand-in for a real call's arguments —
+          // it is the one input that no predicate can match, because a
+          // `PredicateSpec` needs an own property holding a primitive and this
+          // has none. So the answer is precisely the table's fall-through
+          // verdict: what this tool does on every call the predicates miss,
+          // which is the claim this row is about to make.
           { call: { name, input: {} }, agentId: agent.id },
         );
         verdict = ev.verdict;
-        ruled = ev.ruleId !== null;
       } catch (err) {
         // One unreadable tool costs us that row, and the list says so. It never
         // costs us the other rows, and it is never quietly dropped.
+        //
+        // Deliberately not `failed`, unlike the two producers above, and the
+        // difference is what the reader can do with it. A wholesale producer
+        // failure leaves us unable to bound what is missing; this is one named
+        // tool out of a list we otherwise read completely, and `incomplete`
+        // already tells the reader in so many words that the list may be short.
+        // Failing the section over it would replace a mostly-true list with
+        // nothing, which costs them more than it protects them.
         incomplete = true;
         initCtx.logger.warn('workspace_rail_evaluate_failed', {
           agentId: agent.id,
@@ -2213,9 +2369,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         });
         continue;
       }
-      // A rule already describes this tool in our own words. One row per
-      // capability, and the described one is the better row.
-      if (ruled) continue;
 
       const mcp = parseMcpToolName(name);
       const label = fenceLine(name, RAIL_LABEL_MAX_CHARS);
@@ -2226,12 +2379,19 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       rows.push({
         verdict,
         // Never our words for a row we cannot describe. The empty string is
-        // the contract, not an oversight.
+        // the contract, not an oversight. It holds for a `when`-only tool too:
+        // its authored clause describes the CONDITIONAL case and would be a
+        // false label on the base row beside it.
 
         capability: '',
         source: mcp === null ? `tool:${name}` : `mcp:${name}`,
         provenance: mcp === null ? 'unmapped' : 'mcp',
         described: false,
+        // Always false, including for a `when`-only tool. This row is the
+        // UNCONDITIONAL half — the fall-through verdict that applies whenever
+        // the predicates miss — and marking it "in some cases" would qualify
+        // the one claim here that has no condition on it.
+        conditional: false,
         mechanicalLabel: label,
         // The vendor's own prose, for MCP tools only, and only as attributed
         // evidence. A native tool's `description` is written to steer an LLM
@@ -2242,7 +2402,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         theirName: mcp === null ? null : fenceLine(mcp.serverId, RAIL_LABEL_MAX_CHARS),
       });
     }
-    return { rows, incomplete, outOfReach };
+    return { rows, failed: false, incomplete, outOfReach };
   }
 
   /**
@@ -3502,6 +3662,12 @@ export function toWirePermission(row: PolicyCapabilityRow): PermissionRow {
     source: fenceLine(row.source, RAIL_LABEL_MAX_CHARS) ?? 'unknown',
     provenance: described ? row.provenance : row.provenance === 'mcp' ? 'mcp' : 'unmapped',
     described,
+    // Survives the demotion above. Losing the clause loses OUR SENTENCE, not
+    // the rule behind it — a row that dropped its conditionality on the way
+    // down would render "Can use `x` — on its own" for a tool the table only
+    // sometimes allows. `=== true` because the field is optional on a
+    // duck-typed row and `undefined` must not render as a claim either way.
+    conditional: row.conditional === true,
     mechanicalLabel: described ? null : mechanicalLabel,
     theirDescription: described
       ? null

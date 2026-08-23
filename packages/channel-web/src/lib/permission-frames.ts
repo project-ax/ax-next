@@ -50,9 +50,42 @@ const FRAMES: Record<CapabilityVerdict, VerdictFrame> = {
   deny: { icon: 'deny', prefix: 'Cannot', suffix: null },
 };
 
-/** The frame for a verdict, with no clause attached — the mechanical rows' half. */
-export function verdictFrame(verdict: CapabilityVerdict): VerdictFrame {
-  return { ...FRAMES[verdict] };
+/**
+ * The same table for a rule whose verdict applies to SOME calls and not others
+ * — one carrying a `when` predicate over the call's arguments (TASK-267).
+ *
+ * It is a second table rather than a suffix somebody appends at the call site,
+ * for the reason the first one exists: the qualifier is part of the claim, and
+ * a claim assembled by whoever happens to be rendering is a claim that can be
+ * assembled wrong. Every verdict has an entry, including `deny`, which
+ * otherwise has no suffix at all — "Cannot X" with nothing after it reads as
+ * *never*, and a conditional deny is not never.
+ *
+ * The qualifier says only that the rule is conditional, never on WHAT. The
+ * condition is a key out of the tool's own argument schema; turning
+ * `{ recursive: true }` into English would be us writing the tool vendor's
+ * words in our voice, and this surface keeps those apart everywhere else.
+ */
+const CONDITIONAL_FRAMES: Record<CapabilityVerdict, VerdictFrame> = {
+  allow: { icon: 'allow', prefix: 'Can', suffix: 'on its own, in some cases' },
+  hold: { icon: 'hold', prefix: 'Can', suffix: 'asks you first, in some cases' },
+  deny: { icon: 'deny', prefix: 'Cannot', suffix: 'in some cases' },
+};
+
+/**
+ * The frame for a verdict, with no clause attached — the mechanical rows' half.
+ *
+ * `conditional` is a required argument, not an optional one. A catalog row is
+ * never conditional and would pass `false` either way; the row this exists for
+ * is a DESCRIBED row that lost its clause to the fence and demoted, and that
+ * one can be. An optional parameter is a parameter a call site forgets, and
+ * forgetting it here silently upgrades a sometimes-claim into an always-claim.
+ */
+export function verdictFrame(
+  verdict: CapabilityVerdict,
+  conditional: boolean,
+): VerdictFrame {
+  return { ...(conditional ? CONDITIONAL_FRAMES : FRAMES)[verdict] };
 }
 
 /**
@@ -65,8 +98,9 @@ export function verdictFrame(verdict: CapabilityVerdict): VerdictFrame {
 export function frameCapability(row: {
   verdict: CapabilityVerdict;
   capability: string;
+  conditional: boolean;
 }): CapabilityFrame {
-  return { ...FRAMES[row.verdict], clause: row.capability };
+  return { ...verdictFrame(row.verdict, row.conditional), clause: row.capability };
 }
 
 /**

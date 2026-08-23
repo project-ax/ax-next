@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { capabilityRows } from '../plugin.js';
+import { capabilityRows, fullyDescribedTools } from '../plugin.js';
 import type { PolicyRule } from '../types.js';
 
 const RULES: PolicyRule[] = [
@@ -91,6 +91,7 @@ describe('capabilityRows — outOfReach (the scope subtraction)', () => {
     for (const row of capabilityRows(RULES, { outOfReach: ['a2'] })) {
       expect(Object.keys(row).sort()).toEqual([
         'capability',
+        'conditional',
         'described',
         'provenance',
         'source',
@@ -141,5 +142,97 @@ describe('capabilityRows', () => {
     const before = JSON.stringify(RULES);
     capabilityRows(RULES);
     expect(JSON.stringify(RULES)).toBe(before);
+  });
+});
+
+/*
+  TASK-267. Two facts about a rule that the rail cannot get from
+  `tool-policy:evaluate`, because `evaluate` answers about ONE CALL and the rail
+  is not making one.
+
+    - `conditional` — this rule's verdict applies to some calls and not others.
+      A row that renders "Can X — asks you first" for a rule that only holds
+      when an argument takes a particular value is asserting a restriction the
+      table does not enforce.
+    - `fullyDescribedTools` — which tools some rule describes for EVERY call,
+      i.e. which have an unconditional rule. NOT "which tools the table names":
+      a tool named only by a `when` rule is deliberately absent, because its
+      rows say nothing about the calls the predicate misses, and a caller that
+      treated it as covered would leave that reach unstated. See
+      `ListCapabilitiesOutput.fullyDescribedTools` for the whole argument, and
+      `OMITS a tool every one of whose rules is conditional` below for the
+      assertion.
+*/
+const WHEN_RULES: PolicyRule[] = [
+  {
+    id: 'files.delete-recursive',
+    match: { tool: 'delete_file', when: { field: 'recursive', equals: true } },
+    verdict: 'hold',
+    capability: 'delete a folder and everything in it',
+    subject: 'agent',
+  },
+  {
+    id: 'files.delete',
+    match: { tool: 'delete_file' },
+    verdict: 'allow',
+    capability: 'delete a file it made',
+    subject: 'agent',
+  },
+  {
+    id: 'net.reach',
+    match: { tool: 'web_search' },
+    verdict: 'allow',
+    capability: 'search the web',
+    subject: 'agent',
+  },
+];
+
+describe('capabilityRows — conditional', () => {
+  it('marks a row whose rule carries a predicate, and only that row', () => {
+    const rows = capabilityRows(WHEN_RULES);
+    const bySource = new Map(rows.map((r) => [r.source, r]));
+    expect(bySource.get('rule:files.delete-recursive')?.conditional).toBe(true);
+    expect(bySource.get('rule:files.delete')?.conditional).toBe(false);
+    expect(bySource.get('rule:net.reach')?.conditional).toBe(false);
+  });
+
+  it('is false on every rule in a table with no predicates — not undefined', () => {
+    // `undefined` would render the same as `false` today and differently the
+    // day a renderer switches on it. The field is a boolean on every row.
+    for (const row of capabilityRows(RULES)) {
+      expect(row.conditional).toBe(false);
+    }
+  });
+});
+
+describe('fullyDescribedTools', () => {
+  it('names a tool that has an unconditional rule, predicate rules or not', () => {
+    // `delete_file` carries both a `when` rule and a broad one; the broad one
+    // is what speaks for every call, so the table accounts for the tool.
+    expect(fullyDescribedTools(WHEN_RULES).sort()).toEqual(['delete_file', 'web_search']);
+  });
+
+  it('OMITS a tool every one of whose rules is conditional', () => {
+    /*
+      The distinction the whole field exists for. Such a tool IS named by the
+      table, and its row says what happens to the calls the predicate catches —
+      but nothing says what happens to the rest, which for an exception table
+      over an allow baseline is the tool running on its own. A caller told this
+      tool was accounted for would render the gate and swallow the reach.
+    */
+    const onlyConditional: PolicyRule[] = [WHEN_RULES[0] as PolicyRule];
+    expect(fullyDescribedTools(onlyConditional)).toEqual([]);
+  });
+
+  it('deduplicates — two unconditional rules for one tool is one entry', () => {
+    const twice: PolicyRule[] = [
+      { id: 'a', match: { tool: 't' }, verdict: 'allow', capability: 'do a thing', subject: 'agent' },
+      { id: 'b', match: { tool: 't' }, verdict: 'deny', capability: 'do another thing', subject: 'agent' },
+    ];
+    expect(fullyDescribedTools(twice)).toEqual(['t']);
+  });
+
+  it('is empty for an empty table', () => {
+    expect(fullyDescribedTools([])).toEqual([]);
   });
 });

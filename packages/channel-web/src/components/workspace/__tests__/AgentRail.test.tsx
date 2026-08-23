@@ -194,6 +194,39 @@ describe('AgentRail — "What it may do alone"', () => {
     expect(container.textContent).not.toMatch(/Cannot/);
   });
 
+  it('says out loud when a rule only applies in some cases (TASK-267)', async () => {
+    /*
+      "Can delete a folder and everything in it — asks you first" tells the
+      reader every such call stops for them. If the rule's predicate only holds
+      the recursive ones, the rest do not stop for anybody. The qualifier is the
+      difference between a claim we enforce and one we do not.
+    */
+    railMock.mockResolvedValue(
+      rail({
+        permissions: {
+          status: 'ok',
+          incomplete: false,
+          unrestrictedTools: false,
+          rows: [
+            describedRow({
+              verdict: 'hold',
+              capability: 'delete a folder and everything in it',
+              source: 'rule:files.delete-recursive',
+              provenance: 'rule',
+              conditional: true,
+            }),
+          ],
+        },
+      }),
+    );
+    const { container } = renderRail();
+
+    await screen.findByText(/delete a folder and everything in it/);
+    expect(container.textContent).toMatch(
+      /Can delete a folder and everything in it — asks you first, in some cases/,
+    );
+  });
+
   it('renders an MCP tool mechanically and attributes the vendor prose', async () => {
     railMock.mockResolvedValue(
       rail({
@@ -246,6 +279,7 @@ describe('AgentRail — "What it may do alone"', () => {
               source: 'tool:some_unmapped_tool',
               provenance: 'unmapped',
               described: false,
+              conditional: false,
               mechanicalLabel: 'some_unmapped_tool',
               theirDescription: null,
               theirName: null,
@@ -280,6 +314,7 @@ describe('AgentRail — "What it may do alone"', () => {
               source: 'rule:mystery',
               provenance: 'unmapped',
               described: false,
+              conditional: false,
               mechanicalLabel: null,
               theirDescription: null,
               theirName: null,
