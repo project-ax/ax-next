@@ -2,6 +2,10 @@ import { createHoldLatch, resolveAttachmentPaths, resolveGovernedPaths } from '@
 import type { IpcClient } from '@ax/ipc-protocol';
 import { describe, expect, it, vi } from 'vitest';
 import { createPreToolUseHook } from '../pre-tool-use.js';
+import {
+  DISABLED_BUILTINS,
+  DISABLED_BUILTIN_REASONS,
+} from '../tool-names.js';
 
 // PreToolUse is the primary `tool.pre-call` forwarder: the SDK fires it
 // for EVERY tool invocation, including built-ins the CLI auto-approves
@@ -152,9 +156,34 @@ describe('createPreToolUseHook', () => {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: 'tool disabled by policy',
+        permissionDecisionReason: DISABLED_BUILTIN_REASONS.WebFetch,
       },
     });
+  });
+
+  // TASK-238. `disallowedTools` keeps all four out of the model's context, so
+  // this branch is defence in depth and does not run in a healthy session (see
+  // pre-tool-use.ts). What is pinned here is that when it DOES run, the four
+  // causes are distinguishable instead of collapsed into one string.
+  it('gives each disabled built-in a distinguishable deny reason', async () => {
+    const { client, calls } = mkClient(async () => {
+      throw new Error('IPC should not be reached for disabled tools');
+    });
+    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', idGen: () => 'id-5b' });
+    const reasons: string[] = [];
+    for (const name of DISABLED_BUILTINS) {
+      const out = await hook(
+        preToolUseInput({ tool_name: name, tool_input: {} }),
+        'tu_abc',
+        HOOK_OPTS,
+      );
+      const hso = (out as { hookSpecificOutput: Record<string, string> })
+        .hookSpecificOutput;
+      expect(hso.permissionDecision).toBe('deny');
+      reasons.push(hso.permissionDecisionReason!);
+    }
+    expect(calls).toEqual([]);
+    expect(new Set(reasons).size).toBe(DISABLED_BUILTINS.length);
   });
 
   // TASK-239. `permissionDecisionReason` is not an internal channel: the SDK

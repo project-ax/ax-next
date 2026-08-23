@@ -1,6 +1,10 @@
 import type { IpcClient } from '@ax/ipc-protocol';
 import { describe, expect, it } from 'vitest';
 import { createCanUseTool } from '../can-use-tool.js';
+import {
+  DISABLED_BUILTINS,
+  DISABLED_BUILTIN_REASONS,
+} from '../tool-names.js';
 
 // As of Week 6.5d Task 14 the canUseTool adapter is a belt-and-suspenders
 // allow-path: the real `tool:pre-call` forwarding lives in the PreToolUse
@@ -61,7 +65,7 @@ describe('createCanUseTool', () => {
     const result = await canUseTool('WebFetch', { url: 'https://x' }, OPTS);
     expect(result).toStrictEqual({
       behavior: 'deny',
-      message: 'tool disabled by policy',
+      message: DISABLED_BUILTIN_REASONS.WebFetch,
     });
   });
 
@@ -71,8 +75,26 @@ describe('createCanUseTool', () => {
     const result = await canUseTool('Task', { whatever: true }, OPTS);
     expect(result).toStrictEqual({
       behavior: 'deny',
-      message: 'tool disabled by policy',
+      message: DISABLED_BUILTIN_REASONS.Task,
     });
+  });
+
+  // TASK-238. This path is defence in depth behind `disallowedTools` (see
+  // can-use-tool.ts) — in a healthy session the SDK never routes a disabled
+  // built-in here at all. What this pins is the debugging affordance: IF the
+  // fallback fires, the four causes are told apart rather than collapsed into
+  // one string.
+  it('gives each disabled built-in a distinguishable deny message', async () => {
+    const { client } = mkClient();
+    const canUseTool = createCanUseTool({ client });
+    const messages = await Promise.all(
+      DISABLED_BUILTINS.map(async (name) => {
+        const result = await canUseTool(name, {}, OPTS);
+        expect(result.behavior).toBe('deny');
+        return (result as { message: string }).message;
+      }),
+    );
+    expect(new Set(messages).size).toBe(DISABLED_BUILTINS.length);
   });
 
   it('does not inspect the input object (opaque pass-through)', async () => {
