@@ -9,9 +9,10 @@ import type { AgentMessage, IpcClient } from '@ax/ipc-protocol';
 // with its current cursor. The host blocks for up to 30 s waiting for a
 // new entry (see @ax/ipc-protocol IPC_TIMEOUTS_MS). When the host times out
 // with no entry, it returns `{ type: 'timeout', cursor: <echo> }` — the
-// runner then re-polls with the same cursor. Cursor advances only on a real
-// delivery (`user-message` / `cancel` / `decision-resolved`), never on
-// timeout.
+// runner then re-polls with the same cursor. Of the wire variants, only a
+// real delivery (`user-message` / `cancel` / `decision-resolved`) advances
+// the cursor — never `timeout`. (The defence-in-depth branch below can also
+// advance it, forward-only, but nothing on the real wire reaches that.)
 //
 // `next()` transparently swallows timeouts. Callers see only real entries.
 //
