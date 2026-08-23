@@ -107,7 +107,7 @@ export function wrapWithPolicy(
       // Choice 1 above. Deliberately NOT a throw, and deliberately not marked
       // as an error: the model is meant to read this and act on it — by trying
       // a permitted approach when a rule blocked the call, or by retrying when
-      // the gate simply could not be reached. `verdict.cause` is what tells the
+      // the check could not be completed. `verdict.cause` is what tells the
       // two apart; see `denialText`.
       return denialText(verdict.reason, verdict.cause);
     }
@@ -206,8 +206,8 @@ export function denialText(reason: string, cause: DenyCause): string {
       // is unreachable: the `never` assignment turns a new cause into a build
       // error. The runtime arm asserts nothing at all, so if it is somehow
       // reached it cannot be wrong.
-      const exhaustive: never = cause;
-      void exhaustive;
+      const _exhaustive: never = cause;
+      void _exhaustive;
       return `Tool call not run: ${reason}`;
     }
   }

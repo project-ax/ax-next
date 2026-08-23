@@ -53,12 +53,13 @@ export type DenyCause = 'policy' | 'unavailable';
  * answered with something we could not parse. Both surface as a throw from the
  * same `call()`. "Reached" would be false for the second.
  *
- * Paraphrased from `GATE_FAILURE_SENTENCE` in `@ax/decisions` (the host-side
- * twin of this situation) — NOT verbatim: that one is a whole two-sentence
- * instruction, this is only the reason fragment. It is deliberately a
- * paraphrase rather than an import because this package is runner-side and
- * must not depend on a host plugin (invariant 2), so the two can drift; if you
- * change one, neither is automatically the other.
+ * This string is, right now, VERBATIM the reason clause of
+ * `GATE_FAILURE_SENTENCE` in `@ax/decisions` (the host-side twin of this
+ * situation), which reads "Not allowed: the approval check could not be
+ * completed, so the call did not run. …". It is duplicated rather than
+ * imported because this package is runner-side and must not depend on a host
+ * plugin (invariant 2). Nothing keeps the two in sync — editing one does not
+ * touch the other, and they are free to drift.
  */
 const GATE_FAILED_REASON = 'the approval check could not be completed';
 

@@ -59,7 +59,7 @@ describe('createToolPolicy', () => {
     expect(verdict).toMatchObject({ cause: 'unavailable' });
     const reason = (verdict as { reason: string }).reason;
     // The literal is spelled out rather than compared against the module's own
-    // constant on purpose: asserting `reason === GATE_UNREACHABLE_REASON` would
+    // constant on purpose: asserting `reason === GATE_FAILED_REASON` would
     // restate the implementation and pass no matter what that constant said.
     expect(reason).toBe('the approval check could not be completed');
     expect(reason).not.toContain('ECONNREFUSED');
@@ -82,6 +82,30 @@ describe('createToolPolicy', () => {
     // An operator reading a pod log needs to know which tool was refused.
     expect(logged).toContain('Bash');
     expect(logged).toContain('tool.pre-call');
+  });
+
+  it('closes the gate even when the operator logger itself throws', async () => {
+    // `warn` is a public option, so the logger is caller-supplied code running
+    // between the catch and the fail-closed return. If it throws and we do not
+    // swallow it, the throw leaves `preToolUse` — and the claude-sdk adapter's
+    // hook has no catch of its own, which is the fail-OPEN direction at the one
+    // gate whose whole job is stopping calls. Losing a log line is survivable;
+    // losing the deny is not.
+    const client = { call: vi.fn().mockRejectedValue(new Error('connect failed: ECONNREFUSED')) } as never;
+    const warn = vi.fn(() => {
+      throw new Error('logger blew up');
+    });
+    const policy = createToolPolicy({ client, workspaceRoot: '/agent', warn });
+
+    const verdict = await policy.preToolUse('Bash', { command: 'ls' }, 'call-w');
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    // The broken logger costs nothing: same deny, same cause, same safe reason.
+    expect(verdict).toEqual({
+      decision: 'deny',
+      reason: 'the approval check could not be completed',
+      cause: 'unavailable',
+    });
   });
 
   it('prefers the host modifiedCall input over our re-rooted input', async () => {
