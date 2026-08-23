@@ -124,10 +124,13 @@ export function AgentConversation({
             draw a conclusion from. A banner at the top would be answering a
             question they have not asked yet.
 
-            Only `failed` gets one. `unavailable` means this deployment has no
-            decisions producer at all, so no decision can exist and a thread
-            without approval cards is COMPLETE, not short; a notice there would
-            be raising doubt about a thread we can vouch for.
+            The two states we cannot see through get one — `failed`, which is
+            ours to retry, and `expired`, which is the reader's to sign back
+            into. `ok` and `unavailable` get nothing, and `unavailable` is the
+            one worth spelling out: it means this deployment has no decisions
+            producer at all, so no decision can exist and a thread without
+            approval cards is COMPLETE, not short. A notice there would raise
+            doubt about a thread we can vouch for.
           */}
           {(approvalRead === 'failed' || approvalRead === 'expired') && (
             /*
