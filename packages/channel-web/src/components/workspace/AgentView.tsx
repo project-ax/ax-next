@@ -22,8 +22,9 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { workspaceApi, type AgentDetail, type Decision } from '@/lib/workspace-api';
+import type { DecisionReadError } from '@/lib/workspace-decisions';
 import { ActivityFeed } from './ActivityFeed';
-import { AgentConversation } from './AgentConversation';
+import { AgentConversation, type ApprovalRead } from './AgentConversation';
 import { AgentFiles } from './AgentFiles';
 import { AgentMemory } from './AgentMemory';
 import { AgentRail } from './AgentRail';
@@ -60,8 +61,10 @@ interface Props {
   busyIds?: ReadonlySet<string>;
   notices?: ReadonlyMap<string, string>;
   /**
-   * Non-null means the shell's QUEUE READ failed, so `decisions` above is empty
-   * for a reason that has nothing to do with what is waiting on this person.
+   * Non-null means we do not have the QUEUE, so `decisions` above is empty for
+   * a reason that has nothing to do with what is waiting on this person. Its
+   * `kind` decides which sentence the reader gets — a blip we can retry, or a
+   * session that ran out and needs them to sign in.
    *
    * REQUIRED. Every other piece of the queue — the rows, the three handlers,
    * `busyIds`, `notices` — was already threaded down here, and this one was
@@ -70,7 +73,7 @@ interface Props {
    * would restore that silence for the next caller who forgets, so a caller has
    * to state the answer even when it is "the read was fine".
    */
-  decisionsError: string | null;
+  decisionsError: DecisionReadError | null;
   /**
    * The agent stopped mid-turn to ask for something. Fired from the live SSE
    * stream so the card appears in the thread as it happens rather than on the
@@ -396,17 +399,26 @@ export function AgentView({
     `unavailable` is not a failure and is not folded in: no decisions producer
     means no decision can exist, so a thread with no approval cards is true.
 
+    An EXPIRED session outranks a failed server read, and the order is the
+    point rather than a tie-break: a 401 says this reader is signed out, so
+    every read behind this thread will keep coming back empty until they sign
+    in. Telling them a read failed and handing them "Try again" would be a
+    button that cannot work — the exact offer TASK-276 took off the other two
+    decision surfaces.
+
     And nothing is claimed while an excerpt is still opening: the pane is a
     placeholder, not a thread, so there is no conversation on screen for "this
     conversation" to be about yet. The answer arrives with the excerpt.
   */
   const excerptOpening = past !== null && pastDetail === null && pastError === null;
   const shownRead = (past !== null ? pastDetail : detail)?.decisions.status ?? 'ok';
-  const approvalRead = excerptOpening
+  const approvalRead: ApprovalRead = excerptOpening
     ? 'ok'
-    : shownRead === 'failed' || decisionsError !== null
-      ? 'failed'
-      : shownRead;
+    : decisionsError?.kind === 'expired'
+      ? 'expired'
+      : shownRead === 'failed' || decisionsError !== null
+        ? 'failed'
+        : shownRead;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">

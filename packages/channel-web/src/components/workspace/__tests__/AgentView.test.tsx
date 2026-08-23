@@ -23,7 +23,10 @@ import {
   type WorkspaceAgent,
 } from '@/lib/workspace-api';
 import { AgentView } from '../AgentView';
-import { DECISION_THREAD_READ_FAILED } from '../decision-copy';
+import {
+  DECISION_SESSION_EXPIRED,
+  DECISION_THREAD_READ_FAILED,
+} from '../decision-copy';
 import { rail as railFixture } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -366,6 +369,42 @@ describe('AgentView — the approval read', () => {
     );
   });
 
+  it('offers a sign-in, not a retry, when the session ran out', async () => {
+    agentMock.mockResolvedValue(detail({ decisions: { status: 'ok' } }));
+
+    renderView({
+      decisions: [],
+      decisionsError: { kind: 'expired', detail: 'workspace /decisions \u2192 401' },
+    });
+
+    /*
+      A 401 is not a blip. Every retry returns the same 401 until the reader
+      signs in, so "Try again" here would be a button that cannot work — and
+      "we could not read the approvals" would apologise for a failure that did
+      not happen. The same line TASK-276 drew on Today and on the in-thread
+      card; this surface has to draw it too or it becomes the one place that
+      still points at the dead button.
+    */
+    expect(await screen.findByText(DECISION_SESSION_EXPIRED)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
+    expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  it('lets an expired session outrank a failed server read', async () => {
+    agentMock.mockResolvedValue(detail({ decisions: { status: 'failed' } }));
+
+    renderView({
+      decisions: [],
+      decisionsError: { kind: 'expired', detail: 'workspace /decisions \u2192 401' },
+    });
+
+    // Both are true at once and only one is worth telling them: signed out is
+    // the fact that explains the other and the only one they can act on.
+    expect(await screen.findByText(DECISION_SESSION_EXPIRED)).toBeTruthy();
+    expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull();
+  });
+
   it('says it when the QUEUE read failed, even though the server read was fine', async () => {
     agentMock.mockResolvedValue(
       detail({
@@ -381,7 +420,10 @@ describe('AgentView — the approval read', () => {
     // Without the notice this thread reads exactly like a settled one — the
     // client-side half of the same lie, and the half the shell used to cause
     // by passing the queue's rows down here without its error.
-    renderView({ decisions: [], decisionsError: 'decisions → 503' });
+    renderView({
+      decisions: [],
+      decisionsError: { kind: 'failed', detail: 'workspace /decisions → 503' },
+    });
 
     expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
   });

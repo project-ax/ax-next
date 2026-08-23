@@ -13,6 +13,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
+import { signInWithGoogle } from '@/lib/auth';
 import type {
   Decision,
   ThreadMessage,
@@ -21,7 +22,22 @@ import type {
 } from '@/lib/workspace-api';
 import { AgentTile } from './bits';
 import { ApprovalCard } from './ApprovalCard';
-import { DECISION_THREAD_READ_FAILED } from './decision-copy';
+import {
+  DECISION_SESSION_EXPIRED,
+  DECISION_THREAD_READ_FAILED,
+} from './decision-copy';
+
+/**
+ * What this thread can honestly say about its approvals.
+ *
+ * The three WIRE answers, plus one that never crosses the wire. `expired` is a
+ * 401 on the client's queue read — a fact about the reader's SESSION, not about
+ * the read — and it is the only one of the four where "Try again" is the wrong
+ * offer, because every retry returns the same 401 until they sign in. Same line
+ * TASK-276 drew on Today and on the in-thread card; drawing it differently here
+ * would leave one surface pointing at a button that cannot work.
+ */
+export type ApprovalRead = WorkspaceReadStatus | 'expired';
 
 interface Props {
   agent: WorkspaceAgent;
@@ -55,7 +71,7 @@ interface Props {
    * passed the queue's rows and handlers and quietly left its error behind, and
    * an optional prop is how the next such omission would stay invisible.
    */
-  approvalRead: WorkspaceReadStatus;
+  approvalRead: ApprovalRead;
   /** Re-runs every read behind `approvalRead` — see `AgentView`, which owns the list. */
   onRetryApprovals: () => void;
 }
@@ -113,15 +129,43 @@ export function AgentConversation({
             without approval cards is COMPLETE, not short; a notice there would
             be raising doubt about a thread we can vouch for.
           */}
-          {approvalRead === 'failed' && (
-            <Alert variant="destructive">
+          {(approvalRead === 'failed' || approvalRead === 'expired') && (
+            /*
+              THE REGISTER FOLLOWS THE FACT, the same way it does on Today.
+              `destructive` is the red one and it says something has gone wrong,
+              which is true of a blip and untrue of a session that simply ran
+              out. And the offer follows the fact too: a blip is ours to retry,
+              an expired session is not retryable at all.
+            */
+            <Alert variant={approvalRead === 'expired' ? 'default' : 'destructive'}>
               <AlertDescription className="flex flex-col items-start gap-2.5">
                 <span className="text-[13px] leading-relaxed">
-                  {DECISION_THREAD_READ_FAILED}
+                  {approvalRead === 'expired'
+                    ? DECISION_SESSION_EXPIRED
+                    : DECISION_THREAD_READ_FAILED}
                 </span>
-                <Button variant="secondary" size="sm" onClick={onRetryApprovals}>
-                  Try again
-                </Button>
+                {approvalRead === 'expired' ? (
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onClick={() => {
+                      // Fire-and-forget, exactly as Today and the in-thread
+                      // card do it: on success it navigates away, and a
+                      // misconfigured provider throws with nowhere here to say
+                      // why. Caught so that is a console line, not an unhandled
+                      // rejection.
+                      void signInWithGoogle().catch((err: unknown) => {
+                        console.warn('[decisions] could not start sign-in', err);
+                      });
+                    }}
+                  >
+                    Sign in
+                  </Button>
+                ) : (
+                  <Button variant="secondary" size="sm" onClick={onRetryApprovals}>
+                    Try again
+                  </Button>
+                )}
               </AlertDescription>
             </Alert>
           )}
