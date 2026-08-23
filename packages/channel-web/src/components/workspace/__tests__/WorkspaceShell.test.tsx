@@ -4,7 +4,7 @@
  * STATE, not a fixture. These tests pin both halves of that — what the shell
  * shows comes from the API, and what the API has nothing for says so.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
@@ -342,20 +342,36 @@ describe('WorkspaceShell', () => {
   back past local midnight — which is exactly what these pin. TASK-252.
 */
 describe('the "done today" count', () => {
-  const midnight = (): number => {
-    const now = new Date();
-    return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-  };
+  /*
+    A PINNED clock. Every instant below — the fixture rows and each test's
+    cursor — is derived from this one local date, and so is the "today" the
+    component computes while it renders. On the real clock those are read at
+    three different moments, and a run straddling local midnight would have
+    the fixture and the component disagree about which day today is.
+
+    Mid-afternoon, so "a second before midnight" and "thirty seconds after it"
+    are both unambiguously in the past. `shouldAdvanceTime` keeps Testing
+    Library's `findBy*` polling alive under fake timers.
+  */
+  const NOW = new Date(2026, 7, 23, 14, 30, 0);
+  const midnight = new Date(2026, 7, 23).getTime();
   const iso = (ms: number): string => new Date(ms).toISOString();
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
 
   /** A `done` row — the only kind the count looks at. */
   function doneEvent(n: number): ActivityEvent {
     return {
       id: `e-${n}`,
       agentId: 'a-quill',
-      // A minute past midnight: unambiguously today for any reader in this
-      // process's timezone, which is the one the component reads too.
-      at: iso(midnight() + 60_000),
+      // This morning: today by the pinned clock, and comfortably before it.
+      at: iso(midnight + 9 * 60 * 60 * 1000),
       text: `Swept the inbox (${n})`,
       kind: 'done',
       detail: null,
@@ -396,9 +412,9 @@ describe('the "done today" count', () => {
     // The cursor sits a second before midnight, so every one of today's rows
     // is already in hand — even though there is plainly more history behind
     // it. More pages existing is not a reason to withhold a day's count.
-    await landPage({ events: busyDay, nextBefore: iso(midnight() - 1_000) });
+    await landPage({ events: busyDay, nextBefore: iso(midnight - 1_000) });
 
-    expect(await screen.findByText(/51 done today/)).toBeTruthy();
+    expect(await screen.findByText('51 done today')).toBeTruthy();
   });
 
   it('shows the count when the feed has nothing older left to give', async () => {
@@ -406,7 +422,7 @@ describe('the "done today" count', () => {
     // definition.
     await landPage({ events: busyDay, nextBefore: null });
 
-    expect(await screen.findByText(/51 done today/)).toBeTruthy();
+    expect(await screen.findByText('51 done today')).toBeTruthy();
   });
 
   it('hides the count while the fetched window stops short of midnight', async () => {
@@ -416,7 +432,7 @@ describe('the "done today" count', () => {
       state a number we cannot back — the bug this card fixes. An absent line
       is the honest answer.
     */
-    await landPage({ events: busyDay, nextBefore: iso(midnight() + 30_000) });
+    await landPage({ events: busyDay, nextBefore: iso(midnight + 30_000) });
 
     expect(screen.queryByText(/done today/)).toBeNull();
   });
@@ -427,7 +443,7 @@ describe('the "done today" count', () => {
       sources, so a row sharing that millisecond can be cut from the page and
       never appear on the next one. Conservative on purpose.
     */
-    await landPage({ events: busyDay, nextBefore: iso(midnight()) });
+    await landPage({ events: busyDay, nextBefore: iso(midnight) });
 
     expect(screen.queryByText(/done today/)).toBeNull();
   });
