@@ -120,14 +120,14 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
   let policyRows: unknown[];
   let policyThrows: Error | null;
   /**
-   * Tools the mock rule table NAMES, over and above the ones `evaluate` matches.
+   * Tools the mock table describes for EVERY call, over and above the ones
+   * `evaluate` matches on an empty input.
    *
-   * The two are different questions and TASK-267 is the gap between them: a
-   * rule with a `when` predicate names its tool but does not match a call whose
-   * arguments the rail invented. A test that only had `ruledTools` could not
-   * express that case at all.
+   * Usually empty, because the two coincide: `evaluate` against `{}` matches
+   * exactly the UNCONDITIONAL rules, which is the same set. It exists so a test
+   * can state the coverage answer directly instead of implying it.
    */
-  let policyDescribes: Set<string>;
+  let policyFullyDescribes: Set<string>;
   /** 1-based call number of `list-capabilities` that throws, for a TRANSIENT read. */
   let policyThrowsOnCall: number | null;
   let policyCalls: number;
@@ -187,22 +187,25 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
           return tool === undefined || !unreachable.has(tool);
         }),
         /*
-          Coverage, not display: which tools the TABLE names. Deliberately not
-          filtered by `outOfReach` — a row dropped as out of reach is a row
-          about a tool this agent cannot see, and the caller has already
-          excluded that tool from its own pass.
+          Coverage, not display: which tools the TABLE speaks for on EVERY call.
+          Deliberately not filtered by `outOfReach` — a row dropped as out of
+          reach is a row about a tool this agent cannot see, and the caller has
+          already excluded that tool from its own pass.
 
-          Derived from the `ruledTools` entries that carry a rule id, plus
-          `policyDescribes`, so the mock cannot disagree with itself: a tool
-          `evaluate` MATCHED A RULE for is by definition named by one, and a
-          tool named only by a `when` rule is one `evaluate` does not match.
+          Derived from the `ruledTools` entries that carry a rule id, so the
+          mock cannot disagree with itself. That derivation is the real
+          plugin's identity, not a convenience: `evaluate` on an empty input
+          matches only rules with no predicate, so "a rule matched `{}`" and
+          "an unconditional rule exists" are the same statement. A tool named
+          only by a `when` rule is therefore in NEITHER — which is exactly how
+          a test writes that case: leave it out of `ruledTools`.
         */
-        describedTools: [
+        fullyDescribedTools: [
           ...new Set([
             ...[...ruledTools.entries()]
               .filter(([, ruled]) => ruled.ruleId !== null)
               .map(([tool]) => tool),
-            ...policyDescribes,
+            ...policyFullyDescribes,
           ]),
         ],
       };
@@ -281,7 +284,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     catalog = [];
     policyRows = [];
     policyThrows = null;
-    policyDescribes = new Set();
+    policyFullyDescribes = new Set();
     policyThrowsOnCall = null;
     policyCalls = 0;
     evaluateThrowsFor = new Set();
@@ -419,20 +422,31 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(body.permissions.rows[0]?.described).toBe(true);
   });
 
-  it('carries a `when`-predicate rule as one conditional row, never as a second mechanical one', async () => {
+  it('states BOTH truths for a tool only a `when`-predicate rule names', async () => {
     /*
-      TASK-267. The rail used to ask `tool-policy:evaluate` about a call nobody
-      was making — `{ name, input: {} }` — and read `ruleId !== null` off the
-      answer to decide whether a rule already described the tool. A rule whose
-      `match.when` predicate reads the call's ARGUMENTS cannot match a fabricated
-      empty input, so its tool came back unruled and picked up a SECOND,
-      mechanical row asserting `allow`: "Can use `delete_file` — on its own",
-      standing next to the described row that says it asks first. Two rows, one
-      tool, two different claims, one of them made up.
+      TASK-267, and the review finding on its first cut — the two halves are
+      one test because getting either wrong renders a different lie.
 
-      Coverage now comes from the table itself (`describedTools`), which is a
-      property of the rules and not of any call, so no argument set can change
-      it.
+      The original bug: the rail asked `tool-policy:evaluate` about a call
+      nobody was making — `{ name, input: {} }` — and read `ruleId !== null` off
+      the answer to decide whether a rule already described the tool. A rule
+      whose `match.when` predicate reads the call's ARGUMENTS cannot match an
+      input that has none, so its tool came back "unruled" and picked up a
+      mechanical row carrying the UNCONDITIONAL verdict, standing next to a
+      described row that says it asks first. Two rows, one tool, and one of the
+      claims invented.
+
+      The mirror-image bug, which the first fix shipped: skip every tool the
+      table merely NAMES, and this tool renders ONLY "asks you first, in some
+      cases". Nothing then states what the calls the predicate misses do, which
+      is run on their own — and a reader completes an unstated complement with
+      the safer guess. Silence about reach is design H4, the direction never to
+      be wrong in.
+
+      So the honest rail says both: the conditional gate in our own words, and
+      the base reach mechanically. The verdict on the base row comes from the
+      evaluator's answer for an input no predicate can match, which is the
+      table's fall-through — not a guess this route made.
     */
     registerPolicy();
     registerCatalog();
@@ -447,19 +461,73 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
       },
     ];
     catalog = [{ name: 'delete_file', executesIn: 'host' }];
-    // The rule's predicate is over `{ recursive: true }`, so a real `evaluate`
-    // answers "no rule" for the empty input the rail used to invent — which is
-    // why `ruledTools` stays empty here. The table still NAMES the tool.
-    policyDescribes = new Set(['delete_file']);
+    // `delete_file` is deliberately absent from `ruledTools`: its only rule is
+    // predicated on `{ recursive: true }`, so a real `evaluate` neither matches
+    // it on an empty input nor counts it as fully described.
 
     const body = (await railFor()).body as AgentRailData;
-    expect(body.permissions.rows).toHaveLength(1);
+    expect(body.permissions.rows).toHaveLength(2);
+
+    // Reading order is allow-then-hold, so the base reach comes first.
     expect(body.permissions.rows[0]).toMatchObject({
+      verdict: 'allow',
+      described: false,
+      conditional: false,
+      mechanicalLabel: 'delete_file',
+      source: 'tool:delete_file',
+      // Our authored clause describes the CONDITIONAL case; putting it on this
+      // row would label the unconditional half with the wrong sentence.
+      capability: '',
+    });
+    expect(body.permissions.rows[1]).toMatchObject({
+      verdict: 'hold',
       described: true,
       conditional: true,
-      verdict: 'hold',
+      capability: 'delete a folder and everything in it',
       source: 'rule:files.delete-recursive',
     });
+  });
+
+  it('gives a tool with an unconditional rule exactly one row — the authored one', async () => {
+    /*
+      The other side of the same boundary, and why "always emit a base row"
+      would be wrong. Here the table speaks for every call already: the narrow
+      `when` rule holds the recursive ones and the broad rule allows the rest,
+      both authored, both rendered. A mechanical row on top would be a third
+      claim about one tool, in nobody's words, saying what the second row
+      already says.
+    */
+    registerPolicy();
+    registerCatalog();
+    policyRows = [
+      {
+        verdict: 'allow',
+        capability: 'delete a file it made',
+        source: 'rule:files.delete',
+        provenance: 'rule',
+        described: true,
+        conditional: false,
+      },
+      {
+        verdict: 'hold',
+        capability: 'delete a folder and everything in it',
+        source: 'rule:files.delete-recursive',
+        provenance: 'rule',
+        described: true,
+        conditional: true,
+      },
+    ];
+    catalog = [{ name: 'delete_file', executesIn: 'host' }];
+    // The broad rule is what `evaluate` matches on an empty input, and what
+    // makes the tool fully described.
+    ruledTools.set('delete_file', { verdict: 'allow', ruleId: 'files.delete' });
+
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.permissions.rows.every((r) => r.described)).toBe(true);
+    expect(body.permissions.rows.map((r) => r.source)).toEqual([
+      'rule:files.delete',
+      'rule:files.delete-recursive',
+    ]);
   });
 
   it('leaves a tool no rule names as an unconditional mechanical row', async () => {
@@ -678,7 +746,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(body.permissions).toMatchObject({ status: 'failed', rows: [], incomplete: true });
   });
 
-  it('treats a coverage answer with no describedTools as a failed read, never as “nothing is described”', async () => {
+  it('treats a coverage answer with no fullyDescribedTools as a failed read, never as “nothing is described”', async () => {
     /*
       A duck-typed hook (I2), and this is the trust boundary. @ax/tool-policy
       declares the field required in its `returns` schema, so a conforming impl

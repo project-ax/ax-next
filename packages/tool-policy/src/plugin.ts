@@ -31,8 +31,8 @@ const VERDICT_ORDER: readonly PolicyVerdict[] = ['allow', 'hold', 'deny'];
  *
  * The `tool` half is never copied onto the row — it exists so `capabilityRows`
  * can apply `outOfReach`. See `ListCapabilitiesInput.outOfReach` for why the
- * identifier stays off the row; `describedTools` answers the coverage question
- * separately, in a field nothing renders.
+ * identifier stays off the row; `fullyDescribedTools` answers the coverage
+ * question separately, in a field nothing renders.
  */
 interface IndexedRow {
   row: CapabilityRow;
@@ -73,14 +73,25 @@ function indexRules(rules: readonly PolicyRule[]): IndexedRow[] {
 }
 
 /**
- * Every tool the table names — see `ListCapabilitiesOutput.describedTools`.
+ * Tools some rule describes for EVERY call — see
+ * `ListCapabilitiesOutput.fullyDescribedTools`, which carries the reasoning.
  *
- * Order follows the table so the answer is stable across calls; a `Set` gives
- * the deduplication, since narrow-plus-broad rules for one tool are the normal
- * shape rather than the exception.
+ * The filter is the whole point: a tool every one of whose rules carries a
+ * `when` predicate is left OUT, because no row then says what happens to the
+ * calls those predicates miss. Narrow-plus-broad rules for one tool are the
+ * normal shape (`rules.ts` orders them that way), so such a tool is in the list
+ * on the strength of its broad rule; a `when`-only tool is the case this
+ * distinction exists for.
+ *
+ * Order follows the table so the answer is stable across calls; the `Set` is
+ * for the dedupe that shape implies.
  */
-export function describedTools(rules: readonly PolicyRule[]): string[] {
-  return [...new Set(rules.map((rule) => rule.match.tool))];
+export function fullyDescribedTools(rules: readonly PolicyRule[]): string[] {
+  return [
+    ...new Set(
+      rules.filter((rule) => rule.match.when === undefined).map((rule) => rule.match.tool),
+    ),
+  ];
 }
 
 export interface CapabilityRowsOptions {
@@ -165,14 +176,14 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         // can reach, and a rail that showed the first as the second would
         // assert reach the agent does not have.
         //
-        // `describedTools` is COVERAGE and is not filtered: see its doc on
-        // `ListCapabilitiesOutput`. Computed per call rather than hoisted next
-        // to `indexed` only because it is a map over an immutable table of a
-        // few dozen rules, and a second frozen module-level cache to keep in
-        // step with the first is the kind of thing that drifts.
+        // `fullyDescribedTools` is COVERAGE and is not filtered: see its doc
+        // on `ListCapabilitiesOutput`. Computed per call rather than hoisted
+        // next to `indexed` only because it is a filter over an immutable table
+        // of a few dozen rules, and a second frozen module-level cache to keep
+        // in step with the first is the kind of thing that drifts.
         async (_ctx, input) => ({
           rows: applyReach(indexed, input?.outOfReach),
-          describedTools: describedTools(rules),
+          fullyDescribedTools: fullyDescribedTools(rules),
         }),
         { returns: ListCapabilitiesOutputSchema },
       );

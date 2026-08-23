@@ -142,9 +142,10 @@ export interface ListCapabilitiesInput {
    * this plugin applies the subtraction to the rows it owns. `match.tool` never
    * rides out ON A ROW: an identifier on a display row is one a renderer may
    * reach for, and this surface's mechanical rows ARE tool names, so the two
-   * would be one typo apart. `describedTools` answers the coverage question
-   * with the same names in a field nothing renders, which is the distinction
-   * that matters — the caller already holds the whole tool catalog.
+   * would be one typo apart. `fullyDescribedTools` answers the coverage
+   * question with the same names in a field nothing renders, which is the
+   * distinction that matters — the caller already holds the whole tool
+   * catalog.
    *
    * ONLY `allow` AND `hold` ROWS ARE DROPPED. A `deny` for a tool the agent
    * could not reach anyway is still true, and it is reassurance rather than
@@ -161,28 +162,51 @@ export interface ListCapabilitiesInput {
 export interface ListCapabilitiesOutput {
   rows: CapabilityRow[];
   /**
-   * Every tool name this table names, predicate or no predicate.
+   * Tools this table describes COMPLETELY — every one that has at least one
+   * rule with no `when` predicate, so some returned row states what happens to
+   * a call the predicates do not catch.
    *
    * COVERAGE, NOT DISPLAY. Nothing renders it. It exists so a caller holding
-   * the tool catalog can tell which catalog entries a described row already
-   * covers, WITHOUT asking `evaluate` about a call nobody is making. That was
+   * the tool catalog can tell which catalog entries the rows already account
+   * for, WITHOUT asking `evaluate` about a call nobody is making. That was
    * TASK-267: the rail evaluated `{ name, input: {} }` and read `ruleId !==
    * null` off the answer, so a rule keyed on a `when` predicate over the
    * arguments never matched, its tool came back "unruled", and the rail put a
-   * second, mechanical `allow` row beside the described one.
+   * second, mechanical row beside the described one asserting the
+   * unconditional verdict.
    *
-   * The contract that makes it useful: a tool ABSENT from this list is one no
-   * rule in this table can match, so its verdict is the table's no-rule answer
-   * for every possible input. That is what lets a caller ask `evaluate` about
-   * such a tool with an empty input and still be asking an honest question —
-   * there is no predicate left that could have consulted the arguments.
+   * WHY "FULLY", AND NOT SIMPLY "NAMED". A tool named ONLY by conditional
+   * rules is deliberately ABSENT from this list, even though the table plainly
+   * names it. Its rows say what happens to the calls the predicates catch and
+   * NOTHING says what happens to the rest — which, for an exception table over
+   * an allow baseline, is the tool running on its own. A caller that skipped
+   * such a tool would render "asks you first, in some cases" and leave the
+   * complement unstated, and a reader completes an unstated complement with
+   * the safer guess. Understating reach on a blast-radius surface is the one
+   * direction design H4 says never to be wrong in, so the caller is told to
+   * give that tool a base row of its own.
+   *
+   * The caller gets that base verdict from `evaluate` with an EMPTY input, and
+   * this type is what makes the answer honest rather than fabricated: a
+   * `PredicateSpec` matches only an OWN property holding a primitive, so an
+   * input with no own properties matches no predicate that exists or could be
+   * written. What comes back is therefore precisely the table's fall-through
+   * verdict — the answer for every call the predicates miss — which is exactly
+   * the reach the base row has to state.
    *
    * Deliberately NOT filtered by `outOfReach`: that filter decides which rows a
    * particular agent may be SHOWN, and this answers what the table covers.
    * A caller doing the scope subtraction has already excluded the out-of-reach
    * tools from its own pass.
+   *
+   * The values are ax-native tool names out of the in-repo rule table —
+   * author-controlled, and the same vocabulary the caller sends back in
+   * `outOfReach`. They are kept off the rows and out of the renderer not
+   * because they are untrusted but because this surface's MECHANICAL ROWS ARE
+   * TOOL NAMES: an identifier sitting on a display row is one a renderer will
+   * eventually print, and it would print as a capability nobody authored.
    */
-  describedTools: string[];
+  fullyDescribedTools: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -228,5 +252,5 @@ export const ListCapabilitiesOutputSchema = z.object({
   // caller's catch treats the whole read as failed — which shows "we could not
   // read this" rather than silently re-listing every described tool as an
   // undescribed one.
-  describedTools: z.array(z.string()),
+  fullyDescribedTools: z.array(z.string()),
 });

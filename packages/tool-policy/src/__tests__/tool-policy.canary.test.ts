@@ -101,7 +101,7 @@ describe('tool-policy canary', () => {
     }
   });
 
-  it('carries describedTools ACROSS THE BUS, covering every tool the table names', async () => {
+  it('carries fullyDescribedTools ACROSS THE BUS, covering every tool a broad rule names', async () => {
     /*
       Same hazard as the `outOfReach` canary above, in the other direction: a
       `z.object` STRIPS what it does not declare, so a field the handler returns
@@ -110,10 +110,10 @@ describe('tool-policy canary', () => {
       one — a second, mechanical `allow` row for a tool a rule holds or denies,
       with every unit test still green.
 
-      It must also cover a tool only a `when` rule names, which is the case
-      TASK-267 was about: `evaluate` cannot see that tool for a call whose
-      arguments are invented, and coverage is the answer that does not depend
-      on a call.
+      Asserted against the LIVE table, so it also pins the shipped table's own
+      shape: no builtin rule carries a `when` today (`rules.ts` says so), so
+      every tool it names is fully described, and the day one does the two sets
+      stop matching and this test says which tool went conditional-only.
     */
     const h = await boot();
     const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(
@@ -121,8 +121,10 @@ describe('tool-policy canary', () => {
       h.ctx(),
       { agentId: 'a1' },
     );
-    expect(new Set(caps.describedTools)).toEqual(
-      new Set(BUILTIN_RULES.map((r) => r.match.tool)),
+    expect(new Set(caps.fullyDescribedTools)).toEqual(
+      new Set(
+        BUILTIN_RULES.filter((r) => r.match.when === undefined).map((r) => r.match.tool),
+      ),
     );
   });
 
@@ -229,6 +231,6 @@ describe('tool-policy canary', () => {
         conditional: false,
       },
     ]);
-    expect(caps.describedTools).toEqual(['only']);
+    expect(caps.fullyDescribedTools).toEqual(['only']);
   });
 });

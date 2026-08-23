@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { capabilityRows, describedTools } from '../plugin.js';
+import { capabilityRows, fullyDescribedTools } from '../plugin.js';
 import type { PolicyRule } from '../types.js';
 
 const RULES: PolicyRule[] = [
@@ -201,24 +201,34 @@ describe('capabilityRows — conditional', () => {
   });
 });
 
-describe('describedTools', () => {
-  it('names every tool the table names, including one only a predicate rule names', () => {
-    expect(describedTools(WHEN_RULES).sort()).toEqual(['delete_file', 'web_search']);
+describe('fullyDescribedTools', () => {
+  it('names a tool that has an unconditional rule, predicate rules or not', () => {
+    // `delete_file` carries both a `when` rule and a broad one; the broad one
+    // is what speaks for every call, so the table accounts for the tool.
+    expect(fullyDescribedTools(WHEN_RULES).sort()).toEqual(['delete_file', 'web_search']);
   });
 
-  it('names a tool that only a predicate rule mentions', () => {
-    // The case the rail got wrong: `evaluate` against an empty input answers
-    // "no rule" for this tool, because the predicate reads an argument that is
-    // not there. Coverage does not depend on any call.
+  it('OMITS a tool every one of whose rules is conditional', () => {
+    /*
+      The distinction the whole field exists for. Such a tool IS named by the
+      table, and its row says what happens to the calls the predicate catches —
+      but nothing says what happens to the rest, which for an exception table
+      over an allow baseline is the tool running on its own. A caller told this
+      tool was accounted for would render the gate and swallow the reach.
+    */
     const onlyConditional: PolicyRule[] = [WHEN_RULES[0] as PolicyRule];
-    expect(describedTools(onlyConditional)).toEqual(['delete_file']);
+    expect(fullyDescribedTools(onlyConditional)).toEqual([]);
   });
 
-  it('deduplicates — two rules for one tool is one described tool', () => {
-    expect(describedTools(WHEN_RULES).filter((t) => t === 'delete_file')).toHaveLength(1);
+  it('deduplicates — two unconditional rules for one tool is one entry', () => {
+    const twice: PolicyRule[] = [
+      { id: 'a', match: { tool: 't' }, verdict: 'allow', capability: 'do a thing', subject: 'agent' },
+      { id: 'b', match: { tool: 't' }, verdict: 'deny', capability: 'do another thing', subject: 'agent' },
+    ];
+    expect(fullyDescribedTools(twice)).toEqual(['t']);
   });
 
   it('is empty for an empty table', () => {
-    expect(describedTools([])).toEqual([]);
+    expect(fullyDescribedTools([])).toEqual([]);
   });
 });
