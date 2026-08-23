@@ -212,16 +212,18 @@ function Message({
       resolved in one place is resolved in the other without a second fetch and
       without two versions of one row disagreeing on screen.
 
-      A message whose decision is not in that array renders nothing, and that is
-      now the honest outcome for exactly ONE cause: the row was resolved and
-      dropped from the open list. Better than a card built from a stale copy,
-      which would offer buttons for a decision that may already be closed.
+      A message whose decision is not in that array renders nothing. What is
+      left after `approvalRead` is a TIMING gap between two fetches — the row
+      was resolved and dropped from the open list, or it was raised after the
+      queue was last read and the next refresh will bring it. Both settle on
+      their own, and silence beats a card built from a stale copy, which would
+      offer buttons for a decision that may already be closed.
 
-      It used to stand for a failed queue read as well, and those are opposite
-      facts wearing the same silence — one means the question is answered, the
-      other means we cannot see the question. The failed read is announced by
-      the notice at the foot of the thread (`approvalRead`), so it no longer
-      arrives here as a card that quietly does not appear.
+      What this silence no longer stands for is a FAILED read. That was an
+      opposite fact wearing the same silence — one means the question is
+      answered, the other means we cannot see the question — and it is now
+      announced by the notice at the foot of the thread instead of arriving
+      here as a card that quietly does not appear.
     */
     const d = decisions.find((x) => x.id === m.decisionId);
     if (!d) return null;
