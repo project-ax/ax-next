@@ -32,12 +32,15 @@ afterEach(() => vi.restoreAllMocks());
 
 describe('what a shape failure is allowed to SAY', () => {
   /*
-    `TodayView` renders `queue.error` verbatim in the alert, so this message is
-    user-facing copy whether it was written as copy or not. The single-row
+    `TodayView` used to render `queue.error` verbatim in the alert, which made
+    this message user-facing copy whether it was written as copy or not.
+    TASK-276 replaced that with authored copy, so it now reaches a
+    `console.warn` instead — and the rule holds regardless. The single-row
     re-read's path is `/decisions/dec_…`, so a message built from the path
-    would put an internal decision id in front of a person — the same id
-    TASK-260 spent a card removing from the transcript. Server-issued, so this
-    is hygiene rather than injection; a person still cannot act on it.
+    carries an internal decision id, the same id TASK-260 spent a card removing
+    from the transcript, into a string these surfaces have already once put in
+    front of a person. Server-issued, so this is hygiene rather than injection;
+    a person still cannot act on it.
   */
   it('carries no request path or decision id in its message', async () => {
     respondWith({});

@@ -104,6 +104,25 @@ export const DECISION_READ_FAILED =
   'We could not load what is waiting on you. Nothing has been decided without you — we just could not read the list back right now.';
 
 /**
+ * The read was REFUSED, not failed — the session ran out (401).
+ *
+ * A separate pair from `DECISION_READ_FAILED` because the two need different
+ * people to act. A blip is ours to retry; an expired session is nobody’s to
+ * retry — the reader has to sign in again, and until they do, every retry
+ * returns the same 401. Offering “try again” there is a button that cannot
+ * work, which is how someone ends up clicking at a thing that will never move.
+ *
+ * The title claims nothing about approvals on purpose. `DECISION_READ_FAILED_TITLE`
+ * says an assistant is waiting, and that is only sayable with evidence that one
+ * is; this line is about the reader’s session, which the 401 IS the evidence for.
+ * Registered like `ConnectorOAuthConnect`’s reconnect copy: plain, blameless,
+ * one thing to do next.
+ */
+export const DECISION_SESSION_EXPIRED_TITLE = 'You’ve been signed out';
+export const DECISION_SESSION_EXPIRED =
+  'Sign in to pick up where you left off. Nothing has been decided without you.';
+
+/**
  * How close an expiry has to be before the row mentions it. A deadline three
  * days out is not a fact anybody needs while triaging, and a line on every row
  * is a line nobody reads.

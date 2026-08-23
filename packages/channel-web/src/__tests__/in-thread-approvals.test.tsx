@@ -14,10 +14,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { InThreadApprovals } from '../components/InThreadApprovals';
 import { decisionRaisedActions } from '../lib/decision-raised-store';
-import { workspaceApi, type Decision } from '../lib/workspace-api';
+import {
+  workspaceApi,
+  WorkspaceApiError,
+  type Decision,
+} from '../lib/workspace-api';
 import {
   DECISION_READ_FAILED_TITLE,
+  DECISION_SESSION_EXPIRED,
+  DECISION_SESSION_EXPIRED_TITLE,
 } from '../components/workspace/decision-copy';
+import { signInWithGoogle } from '../lib/auth';
+
+// The Sign in button starts the one sign-in this app has. The real thing
+// navigates the window, which a jsdom test cannot survive.
+vi.mock('../lib/auth', () => ({
+  signInWithGoogle: vi.fn(async () => undefined),
+}));
 import {
   decisionFixture,
   resolvedFixture,
@@ -182,6 +195,100 @@ describe('InThreadApprovals', () => {
     expect(await screen.findByTestId('approval-d-marcus')).toBeInTheDocument();
     expect(readAgain).toHaveBeenCalled();
     expect(screen.queryByText(DECISION_READ_FAILED_TITLE)).toBeNull();
+  });
+
+  /*
+    TASK-276. One warning covered two facts that call for opposite outcomes: a
+    read that FAILED, and a read that was REFUSED because the session ran out.
+    `WorkspaceApiError` has carried `.status` since the Files tab needed it;
+    `useDecisionQueue` flattened it to `e.message` and threw the status away, so
+    the 401 survived only as text inside "workspace /decisions → 401".
+
+    These tests pin the two apart at both ends: what an operator reads in the
+    console, and what the person in front of the screen is asked to do.
+  */
+  describe('a session that ran out is not a blip', () => {
+    function serve401() {
+      return vi
+        .spyOn(workspaceApi, 'decisions')
+        .mockRejectedValue(new WorkspaceApiError('/decisions', 401));
+    }
+
+    /*
+      Not gated on a `decisionRaised` frame, and there is none here. That gate
+      exists so an outage cannot put APPROVAL copy in front of people who have
+      no approvals; the signed-out line makes no approval claim — it reports the
+      reader's own session, which the 401 is direct evidence of. The blip line
+      is still gated, which the 500 case below pins.
+    */
+    it('asks the reader to sign in, and never offers a retry that cannot work', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      serve401();
+      render(<InThreadApprovals />);
+
+      expect(
+        await screen.findByText(DECISION_SESSION_EXPIRED_TITLE),
+      ).toBeInTheDocument();
+      expect(screen.getByText(DECISION_SESSION_EXPIRED)).toBeInTheDocument();
+      // The blip copy asks people to try again. Every retry here returns the
+      // same 401, so it is absent — and so is the title that would claim an
+      // assistant is waiting, which a 401 is no evidence for.
+      expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+      expect(screen.queryByText(DECISION_READ_FAILED_TITLE)).toBeNull();
+    });
+
+    it('starts sign-in when that button is pressed', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.mocked(signInWithGoogle).mockClear();
+      serve401();
+      render(<InThreadApprovals />);
+
+      fireEvent.click(await screen.findByRole('button', { name: 'Sign in' }));
+      expect(signInWithGoogle).toHaveBeenCalledTimes(1);
+    });
+
+    it('tells an operator WHICH of the two happened', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const read = serve401();
+      render(<InThreadApprovals />);
+
+      await waitFor(() => expect(read).toHaveBeenCalled());
+      await waitFor(() => expect(warn).toHaveBeenCalled());
+      const line = String(warn.mock.calls[0]?.[0]);
+      // The sentence names the cause. An operator who reads "could not read"
+      // for a 401 goes hunting for a broken route; there is not one.
+      expect(line).toContain('[decisions]');
+      expect(line).toContain('session has expired');
+      expect(line).not.toContain('could not read what is waiting for approval');
+    });
+
+    it('and says the other thing for a read that really did fail', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const read = vi
+        .spyOn(workspaceApi, 'decisions')
+        .mockRejectedValue(new WorkspaceApiError('/decisions', 500));
+      render(<InThreadApprovals />);
+
+      await waitFor(() => expect(read).toHaveBeenCalled());
+      await waitFor(() => expect(warn).toHaveBeenCalled());
+      const line = String(warn.mock.calls[0]?.[0]);
+      expect(line).toContain('could not read what is waiting for approval');
+      expect(line).not.toContain('session has expired');
+      // A 500 with no frame vouching for an approval stays quiet on screen —
+      // that gate is untouched.
+      expect(screen.queryByText(DECISION_SESSION_EXPIRED_TITLE)).toBeNull();
+      expect(screen.queryByText(DECISION_READ_FAILED_TITLE)).toBeNull();
+    });
+
+    it('never prints the thrown message at the reader', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      serve401();
+      const { container } = render(<InThreadApprovals />);
+
+      await screen.findByText(DECISION_SESSION_EXPIRED_TITLE);
+      expect(container.textContent).not.toContain('workspace /decisions');
+      expect(container.textContent).not.toContain('401');
+    });
   });
 
   it('the primary button reaches the approve route and applies the row it returns', async () => {
