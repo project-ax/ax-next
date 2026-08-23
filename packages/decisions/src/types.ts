@@ -319,6 +319,53 @@ export interface DecisionsListOutput {
   decisions: Decision[];
 }
 
+/**
+ * "How many decisions did this agent raise for this person, in this window?"
+ *
+ * ONE QUESTION, and it exists because `decisions:list` cannot be asked it.
+ * That hook takes ONE exact status (omitted means the open ones), so the
+ * workspace rail's counter — "brought to you in the last 7 days, whatever you
+ * decided" — was seven reads walking the status union, each of which swept the
+ * expiry table on its way past. Seven table writes to draw one integer, every
+ * time the rail rendered (TASK-266).
+ *
+ * THE WINDOW IS A TIME RANGE OVER WHEN THE DECISION WAS RAISED, and it is
+ * trailing: a `since` and no other end. That is the shape of the question a
+ * counter asks — "recently" is always "between then and now" — and a decision
+ * cannot be raised in the future, so the missing end would filter nothing.
+ * Whoever wants a historical window can add the other end when they have one;
+ * guessing at it now would ship a second field nobody passes.
+ *
+ * `since` IS REQUIRED, which is a decision rather than an oversight. Omitting
+ * it would have to mean "count everything", and that is two bad things at
+ * once: an unbounded scan of a table that only grows, and a number with no
+ * stated period beside it. The caller states the window it is about to print.
+ *
+ * THERE IS NO STATUS FILTER, deliberately and load-bearingly. The rail's
+ * question spans every status, and a count that names none is the one kind of
+ * count the expiry sweep CANNOT change — expiry rewrites `status` and stamps
+ * `resolvedAt`, it never touches `createdAt` and never deletes a row. That is
+ * precisely what lets this read skip the sweep `decisions:list` still carries.
+ * Adding a status filter here would kill that argument, and whoever adds one
+ * inherits the question of what a stale count is worth.
+ */
+export interface DecisionsCountInput {
+  /** A SCOPE, not a hint — the same owner rule `decisions:list` enforces. */
+  userId: string;
+  /** Omitted counts across every agent this person has. */
+  agentId?: string | undefined;
+  /** ISO instant, INCLUSIVE — decisions raised at or after it. */
+  since: string;
+}
+
+export interface DecisionsCountOutput {
+  /**
+   * How many. Never a page and never a sample, so a caller can print it beside
+   * a sentence that says what it counted and have the sentence be true.
+   */
+  count: number;
+}
+
 export interface DecisionsGetInput {
   decisionId: string;
   userId: string;
@@ -571,6 +618,14 @@ export const DecisionSchema = z.object({
 export const DecisionsListOutputSchema = z.object({
   decisions: z.array(DecisionSchema),
 }) as unknown as z.ZodType<DecisionsListOutput>;
+
+export const DecisionsCountOutputSchema = z.object({
+  // The WHOLE shape, and it has to stay that way: a `z.object` STRIPS keys it
+  // does not declare, so a field added to the output and not added here leaves
+  // on the bus as `undefined` with nothing logged. One field today — the rule
+  // is for whatever it grows into.
+  count: z.number(),
+}) as unknown as z.ZodType<DecisionsCountOutput>;
 
 export const DecisionReceiptSchema = z.object({
   decisionId: z.string(),

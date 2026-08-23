@@ -34,6 +34,7 @@ import {
 import { CLAIM_REFUSED_DETAIL } from './templates.js';
 import {
   DecisionsApproveOutputSchema,
+  DecisionsCountOutputSchema,
   DecisionsDismissOutputSchema,
   DecisionsGetOutputSchema,
   DecisionsListOutputSchema,
@@ -44,6 +45,8 @@ import {
   type Decision,
   type DecisionsApproveInput,
   type DecisionsApproveOutput,
+  type DecisionsCountInput,
+  type DecisionsCountOutput,
   type DecisionsDismissInput,
   type DecisionsDismissOutput,
   type DecisionsGetInput,
@@ -134,6 +137,30 @@ function requireField(value: string | undefined, name: string): string {
   return value;
 }
 
+/**
+ * A field that has to be an instant — checked HERE, never at the database.
+ *
+ * `decisions:count`'s window arrives from a caller that computed it, and the
+ * one caller today is careful. A hook is reachable by everything on the bus
+ * though, and an unparseable string becomes an `Invalid Date` on its way into
+ * the query: the driver may throw, or may serialise it into a bound that
+ * matches everything. The second outcome is the bad one — a window that
+ * silently becomes "all of history" is the unbounded read a required `since`
+ * exists to prevent, and it would report as a plausible number rather than as
+ * a failure. Refused by name, before it can get near SQL.
+ */
+function requireInstant(value: string | undefined, name: string): string {
+  const raw = requireField(value, name);
+  if (Number.isNaN(Date.parse(raw))) {
+    throw new PluginError({
+      code: 'invalid-field',
+      plugin: PLUGIN_NAME,
+      message: `${name} must be an ISO instant`,
+    });
+  }
+  return raw;
+}
+
 export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
   const now = opts?.now ?? (() => new Date());
   const idGen = opts?.idGen ?? newDecisionId;
@@ -162,6 +189,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
       version: '0.0.0',
       registers: [
         'decisions:list',
+        'decisions:count',
         'decisions:get',
         'decisions:recent-receipts-for-agent',
         'decisions:approve',
@@ -335,6 +363,49 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           };
         },
         { returns: DecisionsListOutputSchema },
+      );
+
+      /**
+       * HOW MANY this agent raised for this person in a window — one read.
+       *
+       * THE WHOLE POINT IS THE ARITHMETIC ABOVE IT (TASK-266). The workspace
+       * rail draws one integer: "brought to you in the last 7 days, whatever
+       * you decided, including the ones that expired." `decisions:list` takes
+       * ONE exact status, so the rail answered that by walking all seven — and
+       * every one of those reads swept the expiry table before returning.
+       * Seven writes to draw one number, every time somebody opened an agent's
+       * rail.
+       *
+       * AND THIS ONE DOES NOT SWEEP, which is the half worth reading twice.
+       * Skipping it is not a speed-for-freshness trade here, because there is
+       * no freshness to trade: the sweep rewrites `status` and stamps
+       * `resolvedAt`, it never touches `createdAt` and never deletes a row, and
+       * this count filters on `createdAt` and names no status. A row that
+       * expired one millisecond ago is counted identically before and after the
+       * sweep that moves it. The number is exact, not bounded-stale, and
+       * `store.test.ts` pins that by counting either side of an `expireDue`.
+       *
+       * That is a property of THIS query, not a general licence: a count that
+       * ever filters by status is a count expiry can move, and whoever adds one
+       * has to answer the staleness question this read gets to skip.
+       *
+       * Expiry itself is unaffected. It runs on the maintenance timer
+       * (`DEFAULT_SWEEP_INTERVAL_MS`), on `decisions:sweep` for an operator or
+       * a test, and still on `decisions:list` — the queue read, where a
+       * `pending` card that has actually expired is a button that lies about
+       * what it will do. Nothing depended on the counter's incidental sweeps.
+       */
+      bus.registerService<DecisionsCountInput, DecisionsCountOutput>(
+        'decisions:count',
+        PLUGIN_NAME,
+        async (_ctx, input) => ({
+          count: await store!.count({
+            ownerUserId: requireField(input.userId, 'userId'),
+            agentId: input.agentId,
+            since: requireInstant(input.since, 'since'),
+          }),
+        }),
+        { returns: DecisionsCountOutputSchema },
       );
 
       bus.registerService<DecisionsGetInput, DecisionsGetOutput>(

@@ -675,6 +675,11 @@ describe('@ax/channel-web server plugin (integration)', () => {
         {
           hook: 'decisions:list',
           degradation:
+            'the chat surface renders no approval cards and the decisions queue is empty (nothing records decisions here)',
+        },
+        {
+          hook: 'decisions:count',
+          degradation:
             'the rail renders no "This week" counters (nothing records decisions here)',
         },
       ],

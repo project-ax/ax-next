@@ -52,7 +52,12 @@ export { deliverResolution, SESSION_QUEUE_HOOK } from './delivery.js';
 export type { DeliveryResult, ResolutionOutcome } from './delivery.js';
 export type { PolicyAnswer, PreCallDeps, PreCallSubscriber } from './pre-call.js';
 export { createDecisionsStore } from './store.js';
-export type { DecisionListFilter, DecisionReceiptFilter, DecisionStore } from './store.js';
+export type {
+  DecisionCountFilter,
+  DecisionListFilter,
+  DecisionReceiptFilter,
+  DecisionStore,
+} from './store.js';
 export {
   decisionApprovedNote,
   decisionDismissedNote,
@@ -74,6 +79,7 @@ export {
   DecisionReceiptSchema,
   DecisionSchema,
   DecisionsApproveOutputSchema,
+  DecisionsCountOutputSchema,
   DecisionsDismissOutputSchema,
   DecisionsGetOutputSchema,
   DecisionsListOutputSchema,
@@ -98,6 +104,8 @@ export type {
   DecisionStatus,
   DecisionsApproveInput,
   DecisionsApproveOutput,
+  DecisionsCountInput,
+  DecisionsCountOutput,
   DecisionsDismissInput,
   DecisionsDismissOutput,
   DecisionsGetInput,

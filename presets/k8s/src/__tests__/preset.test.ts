@@ -258,12 +258,16 @@ describe('@ax/preset-k8s wiring', () => {
     expect(tp!.manifest.subscribes).toEqual([]);
   });
 
-  it('loads @ax/decisions and registers its seven hooks (TASK-225/TASK-226/TASK-279)', () => {
+  it('loads @ax/decisions and registers its eight hooks (TASK-225/TASK-226/TASK-279/TASK-266)', () => {
     const plugins = createK8sPlugins(stubConfig);
     const d = plugins.find((p) => p.manifest.name === '@ax/decisions');
     expect(d).toBeDefined();
     expect(d!.manifest.registers).toEqual([
       'decisions:list',
+      // TASK-266: the workspace rail's counter, in ONE read. Its caller is
+      // @ax/channel-web's rail route, in this preset, which is what keeps this
+      // list honest — every hook in it has a caller here.
+      'decisions:count',
       'decisions:get',
       // TASK-279: the Activity feed's second source. It REPLACED the
       // `decisions:executed` fire, which was registered by nobody and
