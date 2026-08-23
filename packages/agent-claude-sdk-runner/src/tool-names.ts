@@ -28,9 +28,20 @@
 //      blob). Disabling it forces the model to ask in plain chat instead,
 //      which renders normally and is answerable in the ordinary turn flow
 //      (the runner's clarifying-questions system-prompt note steers this —
-//      see system-prompt.ts). The runner sets these in `disallowedTools`
-//      too; the classifier provides defense in depth so `canUseTool`
-//      refuses even if the disallow list ever slips.
+//      see system-prompt.ts).
+//
+//      WHERE THE ENFORCEMENT ACTUALLY LIVES: `main.ts` passes these four
+//      names as `disallowedTools`, and the SDK's own typing for that option
+//      says the tools "will be removed from the model's context and cannot
+//      be used" (@anthropic-ai/claude-agent-sdk 0.2.119, sdk.d.ts:1185-1189
+//      and :3209-3212). So in a healthy session the model never sees one,
+//      never emits a call for one, and `kind: 'disabled'` never comes back
+//      from this function at runtime. The classification — and the two
+//      call-site refusals it drives (pre-tool-use.ts, can-use-tool.ts) — are
+//      defence in depth for the day `disallowedTools` regresses or the SDK
+//      changes what it means. `DISABLED_BUILTIN_REASONS` below gives each of
+//      the four its own sentence so that, if that day comes, the refusal says
+//      WHICH of four different things was refused instead of one flat string.
 //
 //      NOTE on `Skill`: previously also denied here on the same
 //      "bypass our hook bus" rationale, but Phase 0 of the skill-install
@@ -63,18 +74,61 @@ export const DISABLED_BUILTINS = [
   'AskUserQuestion',
 ] as const;
 
+export type DisabledBuiltin = (typeof DISABLED_BUILTINS)[number];
+
+/**
+ * One sentence per disabled built-in, naming the sanctioned alternative where
+ * there is one. These are NOT the strings the model or a person reads in the
+ * normal course of a turn: `disallowedTools` keeps all four out of the model's
+ * context, so no call for them is ever emitted and neither refusal site runs
+ * (see the header comment). They exist so that when defence in depth is the
+ * thing that fires — a regressed `disallowedTools`, a changed SDK — whoever is
+ * reading the transcript or the pod log can tell the four causes apart.
+ *
+ * Written out longhand on purpose. `@ax/tool-policy`'s `BUILTIN_RULES` carries
+ * the human-facing rail sentences for the same four tools, but importing them
+ * here would be a cross-plugin import (invariant 2) — and in the direction
+ * `rules.ts` already refuses to import THIS module. That makes this the third
+ * place the four names are written down; TASK-245 owns reconciling the copies.
+ */
+export const DISABLED_BUILTIN_REASONS: Record<DisabledBuiltin, string> = {
+  WebFetch:
+    'WebFetch is disabled: it reaches websites outside the recorded connection. ' +
+    'Use the web_extract tool instead.',
+  WebSearch:
+    'WebSearch is disabled: it searches the web outside the recorded connection. ' +
+    'Use the web_search tool instead.',
+  Task:
+    'Task is disabled: it would start a helper agent no one here can see or ' +
+    'approve. There is no substitute — do the work in this session.',
+  AskUserQuestion:
+    'AskUserQuestion is disabled: this session has no way to hand a chosen ' +
+    'answer back. Ask in your reply instead, list the options, and wait.',
+};
+
 export type SdkToolClass =
   | { kind: 'builtin'; axName: string }
   | { kind: 'mcp-host'; axName: string }
   | { kind: 'mcp-sandbox'; axName: string }
-  | { kind: 'disabled' };
+  // No `axName`: a disabled built-in is refused by name at the call site and
+  // never reaches `tool:pre-call`, so there is no ax-native name to carry.
+  // `reason` is the per-cause sentence from `DISABLED_BUILTIN_REASONS`.
+  | { kind: 'disabled'; name: DisabledBuiltin; reason: string };
 
 const MCP_HOST_PREFIX = `mcp__${MCP_HOST_SERVER_NAME}__`;
 const MCP_SANDBOX_PREFIX = `mcp__${MCP_SANDBOX_SERVER_NAME}__`;
 
+function isDisabledBuiltin(sdkName: string): sdkName is DisabledBuiltin {
+  return (DISABLED_BUILTINS as readonly string[]).includes(sdkName);
+}
+
 export function classifySdkToolName(sdkName: string): SdkToolClass {
-  if ((DISABLED_BUILTINS as readonly string[]).includes(sdkName)) {
-    return { kind: 'disabled' };
+  if (isDisabledBuiltin(sdkName)) {
+    return {
+      kind: 'disabled',
+      name: sdkName,
+      reason: DISABLED_BUILTIN_REASONS[sdkName],
+    };
   }
   if (sdkName.startsWith(MCP_HOST_PREFIX)) {
     return { kind: 'mcp-host', axName: sdkName.slice(MCP_HOST_PREFIX.length) };

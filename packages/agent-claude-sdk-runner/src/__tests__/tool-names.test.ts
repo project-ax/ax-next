@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DISABLED_BUILTINS,
+  DISABLED_BUILTIN_REASONS,
   MCP_HOST_SERVER_NAME,
   MCP_SANDBOX_SERVER_NAME,
   classifySdkToolName,
@@ -19,8 +20,34 @@ describe('classifySdkToolName', () => {
     expect(classifySdkToolName('Read')).toEqual({ kind: 'builtin', axName: 'Read' });
   });
 
-  it.each(DISABLED_BUILTINS)('classifies %s as disabled', (name) => {
-    expect(classifySdkToolName(name)).toEqual({ kind: 'disabled' });
+  it.each(DISABLED_BUILTINS)('classifies %s as disabled, carrying its own reason', (name) => {
+    expect(classifySdkToolName(name)).toEqual({
+      kind: 'disabled',
+      name,
+      reason: DISABLED_BUILTIN_REASONS[name],
+    });
+  });
+
+  it('gives each disabled built-in a DISTINCT reason', () => {
+    // The point of the record. `disallowedTools` means neither the model nor a
+    // person meets these strings in a healthy session (see tool-names.ts) — but
+    // the two refusal sites are defence in depth, and a defence that fires
+    // should say which of four different things it caught. One shared string
+    // could not.
+    const reasons = DISABLED_BUILTINS.map(
+      (name) => DISABLED_BUILTIN_REASONS[name],
+    );
+    expect(new Set(reasons).size).toBe(DISABLED_BUILTINS.length);
+  });
+
+  it('names the sanctioned alternative for the three tools that have one', () => {
+    // WebFetch/WebSearch have host-side replacements; AskUserQuestion has plain
+    // chat. `Task` deliberately has none — it is refused outright — so this
+    // pins the asymmetry rather than pretending all four route somewhere.
+    expect(DISABLED_BUILTIN_REASONS.WebFetch).toContain('web_extract');
+    expect(DISABLED_BUILTIN_REASONS.WebSearch).toContain('web_search');
+    expect(DISABLED_BUILTIN_REASONS.AskUserQuestion).toContain('reply');
+    expect(DISABLED_BUILTIN_REASONS.Task).toContain('no substitute');
   });
 
   it('classifies AskUserQuestion as disabled — no headless answer path', () => {
@@ -32,7 +59,11 @@ describe('classifySdkToolName', () => {
     // chat instead (rendered + answerable in the normal turn flow — see the
     // clarifying-questions system-prompt note). This pins the classification
     // so a revert that drops it from DISABLED_BUILTINS fails loudly here.
-    expect(classifySdkToolName('AskUserQuestion')).toEqual({ kind: 'disabled' });
+    expect(classifySdkToolName('AskUserQuestion')).toEqual({
+      kind: 'disabled',
+      name: 'AskUserQuestion',
+      reason: DISABLED_BUILTIN_REASONS.AskUserQuestion,
+    });
   });
 
   it('classifies Skill as builtin (allowed) — I-P0-1 skill discovery', () => {

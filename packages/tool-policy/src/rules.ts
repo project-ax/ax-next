@@ -28,13 +28,12 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   // Denies — rail rows for what `DISABLED_BUILTINS` already enforces (AW-1 E7).
   //
   // THESE FOUR WILL NEVER FIRE IN THE EVALUATOR, AND THAT IS EXPECTED. They are
-  // rail rows, not enforcement. `classifySdkToolName` returns
-  // `{ kind: 'disabled' }` with NO `axName`, and the claude-sdk runner's
-  // `pre-tool-use.ts:35-44` denies before `policy.preToolUse` runs — so a
-  // disabled builtin never reaches `tool:pre-call` to be matched. On the aisdk
-  // runner the four are not registered at all. Do not "verify" them with an
-  // evaluator test asserting a deny from a live call; `DISABLED_BUILTINS`
-  // stays the enforcement.
+  // rail rows, not enforcement. `classifySdkToolName` returns a `disabled`
+  // class carrying NO `axName`, and the claude-sdk runner's `pre-tool-use.ts`
+  // denies on it before `policy.preToolUse` runs — so a disabled builtin never
+  // reaches `tool:pre-call` to be matched. On the aisdk runner the four are not
+  // registered at all. Do not "verify" them with an evaluator test asserting a
+  // deny from a live call; `DISABLED_BUILTINS` stays the enforcement.
   //
   // AW-1 suggested DERIVING these four from `DISABLED_BUILTINS` for one source
   // of truth. That is not available: the constant lives in

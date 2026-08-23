@@ -57,12 +57,24 @@ export function createPreToolUseHook(
 
     const klass = classifySdkToolName(input.tool_name);
     if (klass.kind === 'disabled') {
-      // Belt-and-braces: disallowedTools should already block these.
+      // Defence in depth, not the enforcement path. `main.ts` passes these
+      // four names as `disallowedTools`, which the SDK documents as removing
+      // them from the model's context entirely (sdk.d.ts:1185-1189) — so the
+      // model cannot emit a call for one and this branch does not run in a
+      // healthy session. It is here for the session where that list has
+      // regressed or the SDK's semantics have moved, and it fails closed.
+      //
+      // The reason is per-tool (`DISABLED_BUILTIN_REASONS`) rather than one
+      // flat string. If this branch ever DOES fire, its reason travels the
+      // same route as any other deny — the SDK turns `permissionDecisionReason`
+      // into an `is_error` tool_result that is persisted and rendered in the
+      // web transcript (TASK-239) — so it names which of four things was
+      // refused, and what to do instead, in plain language.
       return {
         hookSpecificOutput: {
           hookEventName: 'PreToolUse',
           permissionDecision: 'deny',
-          permissionDecisionReason: 'tool disabled by policy',
+          permissionDecisionReason: klass.reason,
         },
       };
     }
