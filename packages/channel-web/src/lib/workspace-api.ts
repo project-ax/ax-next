@@ -235,12 +235,14 @@ export class WorkspaceShapeError extends Error {
   /** The request that answered badly. For LOGS — never for the message. */
   readonly path: string;
   constructor(path: string) {
-    // NO PATH IN THE MESSAGE. `TodayView` renders `queue.error` verbatim, so
-    // whatever goes in here is a sentence a person reads — and the path for a
-    // single-row re-read is `/decisions/dec_…`, i.e. an internal identifier on
-    // a user-facing surface. TASK-260 spent a whole card taking `dec_` ids off
-    // surfaces people read; putting one back through an error string would have
-    // two cards in one wave disagreeing about whether that id is fit to show.
+    // NO PATH IN THE MESSAGE. The path for a single-row re-read is
+    // `/decisions/dec_…`, i.e. an internal identifier — and `TodayView` used to
+    // print this message on screen verbatim, which is how one would have got
+    // there. TASK-276 replaced that with authored copy, so today this message
+    // only reaches a `console.warn`; the rule stands because the decisions
+    // surfaces have already demonstrated they will render a thrown message at a
+    // reader, and TASK-260 spent a whole card taking `dec_` ids off the
+    // surfaces people read.
     //
     // Not an injection concern — the id is server-issued, not user input. It is
     // hygiene: a person cannot act on a decision id, so it is noise at best.

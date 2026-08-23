@@ -21,7 +21,7 @@
  * "is this open" and the only one asking a different way. Reserve it for prose.
  */
 import { useEffect, useMemo, useRef } from 'react';
-import { useDecisionQueue } from './workspace-decisions';
+import { useDecisionQueue, type DecisionReadError } from './workspace-decisions';
 import { useConversationId } from './use-conversation-id';
 import { decisionRaisedActions, useDecisionRaised } from './decision-raised-store';
 import { isOpenDecision } from './workspace-types';
@@ -59,8 +59,11 @@ export interface ConversationDecisions {
   settled: Decision[];
   /** The thread these belong to. `null` on the welcome state. */
   conversationId: string | null;
-  /** Non-null means the READ failed. Never rendered as an empty queue. */
-  error: string | null;
+  /**
+   * Non-null means we do not have the queue. Passed straight through from
+   * `useDecisionQueue` — `kind` is what decides which sentence the card shows.
+   */
+  error: DecisionReadError | null;
   /** `decisionRaised` frames seen this page-load. Evidence, not a row. */
   raised: number;
   busyIds: ReadonlySet<string>;

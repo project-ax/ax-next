@@ -22,10 +22,15 @@
 import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
+import { signInWithGoogle } from '@/lib/auth';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
+import type { DecisionReadError } from '@/lib/workspace-decisions';
 import { isOpenDecision } from '@/lib/workspace-types';
 import { DecisionRow } from './DecisionRow';
-import { DECISION_READ_FAILED } from './decision-copy';
+import {
+  DECISION_READ_FAILED,
+  DECISION_SESSION_EXPIRED,
+} from './decision-copy';
 import { Elapsed, StateDot } from './bits';
 
 const WORDS = [
@@ -68,8 +73,13 @@ interface Props {
   busyIds?: ReadonlySet<string>;
   /** Per-row line from an action that failed or was refused. */
   notices?: ReadonlyMap<string, string>;
-  /** Non-null means the QUEUE READ failed. Never rendered as an empty queue. */
-  error?: string | null;
+  /**
+   * Non-null means we do not have the QUEUE. Never rendered as an empty queue,
+   * and `kind` picks which of two sentences — and which button — the reader
+   * gets. Not a string: a raw thrown message used to be printed on this page
+   * verbatim, which is how "workspace /decisions → 401" ended up being copy.
+   */
+  error?: DecisionReadError | null;
   /** True while the first read is still in flight — not the same as empty. */
   loading?: boolean;
   onRetry?: () => void;
@@ -205,29 +215,58 @@ export function TodayView({
         )}
       </div>
 
-      {!readable && (
+      {error !== null && (
         <Alert variant="destructive" className="mb-4">
           <AlertDescription className="flex flex-col items-start gap-2.5">
-            <span className="text-[13px] leading-relaxed">
-              {DECISION_READ_FAILED}
-            </span>
-            {onRetry && (
-              <Button variant="secondary" size="sm" onClick={onRetry}>
-                Try again
-              </Button>
-            )}
             {/*
-              RENDERED VERBATIM. Whatever a thrown error puts in its `message`
-              is a sentence a person reads, here, in this box. So an error on
-              this path must carry no internal identifier and no raw request
-              path — a `/decisions/dec_…` would put the exact id TASK-260 took
-              off the transcript back in front of a user, and nobody can act on
-              a decision id anyway. Debug detail belongs in a `console.warn` at
-              the throw site (see `checkedRead` in `workspace-api.ts`), not here.
+              NOTHING RAW IS RENDERED HERE ANY MORE.
+
+              This box used to end with `{error}` — the thrown message, in mono,
+              verbatim. On a 401 that read "workspace /decisions → 401" to a
+              person, which is a request path and a status code standing in for
+              a sentence, on the one screen whose own comment already forbade
+              exactly that. The message now goes to a `console.warn` (see
+              `InThreadApprovals`) and the reader gets authored copy instead.
+
+              Two branches, because the two need different people to act. A blip
+              is ours to retry. An expired session is not retryable at all —
+              every retry returns the same 401 — so the offer is to sign in.
             */}
-            <span className="font-mono text-[11px] text-muted-foreground">
-              {error}
+            <span className="text-[13px] leading-relaxed">
+              {error.kind === 'expired'
+                ? DECISION_SESSION_EXPIRED
+                : DECISION_READ_FAILED}
             </span>
+            {error.kind === 'expired' ? (
+              <Button
+                variant="secondary"
+                size="sm"
+                onClick={() => {
+                  /*
+                    Fire-and-forget, like the LoginPage CTA: on success it
+                    navigates away, and on a misconfigured provider it throws
+                    with nowhere here to show why. Caught so that is a console
+                    line rather than an unhandled rejection.
+
+                    Called directly rather than through a prop: there is exactly
+                    one way into this app, the in-thread card does the same, and
+                    an optional `onSignIn` would be how a no-op default gets
+                    added later and swallows the click.
+                  */
+                  void signInWithGoogle().catch((err: unknown) => {
+                    console.warn('[decisions] could not start sign-in', err);
+                  });
+                }}
+              >
+                Sign in
+              </Button>
+            ) : (
+              onRetry && (
+                <Button variant="secondary" size="sm" onClick={onRetry}>
+                  Try again
+                </Button>
+              )
+            )}
           </AlertDescription>
         </Alert>
       )}

@@ -39,7 +39,7 @@
  * than sitting there until the ten seconds run out on the clock alone.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { workspaceApi, type Decision } from './workspace-api';
+import { workspaceApi, WorkspaceApiError, type Decision } from './workspace-api';
 import {
   DECISION_ACTION_FAILED,
   DECISION_UNDO_TOO_LATE,
@@ -63,11 +63,50 @@ const UNDO_POLL_MS = 1000;
  */
 const POLL_FAILURES_BEFORE_NOTE = 3;
 
+/**
+ * Why the queue could not be read — in the two shapes that call for different
+ * sentences.
+ *
+ * `expired` is a 401. The read did not fail, it was REFUSED: the session this
+ * tab is holding is no longer valid, and it will go on being refused until the
+ * reader signs in again. "Try again" is the wrong offer there — it points at a
+ * button that cannot work — and "something went wrong" is the wrong sentence,
+ * because nothing did. The person is signed out, which is both knowable and
+ * fixable, and only the status can tell us.
+ *
+ * `failed` is everything else: an unreachable host, a 500, a body we could not
+ * parse. Those are blips, and trying again is exactly right for them.
+ *
+ * Modelled on `FilesError` in `workspace-files.ts`, which draws the same line
+ * at 503 for the same reason. The route answers 401 from `authOr401` alone —
+ * i.e. `auth:require-user` rejected — so a 401 is evidence about the SESSION
+ * and never about this route's own authority.
+ *
+ * `detail` is the raw message and it is for LOGS. No surface renders it: it
+ * reads `workspace /decisions → 401`, which is a request path, not a sentence
+ * anybody can act on.
+ */
+export interface DecisionReadError {
+  kind: 'expired' | 'failed';
+  detail: string;
+}
+
+function toDecisionReadError(e: unknown): DecisionReadError {
+  const detail = e instanceof Error ? e.message : String(e);
+  if (e instanceof WorkspaceApiError && e.status === 401) {
+    return { kind: 'expired', detail };
+  }
+  return { kind: 'failed', detail };
+}
+
 export interface DecisionQueue {
   decisions: Decision[];
   loading: boolean;
-  /** Non-null means the READ failed. Never rendered as an empty queue. */
-  error: string | null;
+  /**
+   * Non-null means we do not have the queue. Never rendered as an empty queue,
+   * and `kind` decides which of two sentences the reader gets.
+   */
+  error: DecisionReadError | null;
   /** Rows with a POST in flight. Their controls are disabled, not hidden. */
   busyIds: ReadonlySet<string>;
   /** Per-row line from the last action that failed or was refused. */
@@ -87,7 +126,7 @@ function isRecord(v: unknown): v is Record<string, unknown> {
 export function useDecisionQueue(): DecisionQueue {
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<DecisionReadError | null>(null);
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
   const [notices, setNotices] = useState<ReadonlyMap<string, string>>(new Map());
 
@@ -119,7 +158,7 @@ export function useDecisionQueue(): DecisionQueue {
       setError(null);
     } catch (e) {
       if (readId.current !== id) return;
-      setError(e instanceof Error ? e.message : String(e));
+      setError(toDecisionReadError(e));
     } finally {
       if (readId.current === id) setLoading(false);
     }

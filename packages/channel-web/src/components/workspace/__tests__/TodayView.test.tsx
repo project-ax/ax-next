@@ -10,6 +10,17 @@ import { render, screen } from '@testing-library/react';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import { TodayView } from '../TodayView';
 import { decisionFixture } from './decision-fixture';
+import {
+  DECISION_READ_FAILED,
+  DECISION_SESSION_EXPIRED,
+} from '../decision-copy';
+import { signInWithGoogle } from '../../../lib/auth';
+
+// The Sign in button's only job is to start the one sign-in this app has. The
+// real thing navigates the window, which a jsdom test cannot survive.
+vi.mock('../../../lib/auth', () => ({
+  signInWithGoogle: vi.fn(async () => undefined),
+}));
 
 /** The reassuring green tick that must not sit over a row of zeros. */
 const CHECK_ICON = 'svg[class*="check"]';
@@ -148,7 +159,9 @@ describe('the empty queue', () => {
 */
 describe('a queue we could not read', () => {
   it('never says nothing is waiting on you', () => {
-    const { container } = renderToday({ error: 'workspace /decisions → 503' });
+    const { container } = renderToday({
+      error: { kind: 'failed', detail: 'workspace /decisions → 503' },
+    });
 
     expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
     expect(
@@ -159,22 +172,79 @@ describe('a queue we could not read', () => {
     expect(container.textContent).not.toMatch(/wants your OK on/);
   });
 
-  it('offers a way to try again and shows what went wrong', () => {
+  it('offers a way to try again', () => {
     const onRetry = vi.fn();
-    renderToday({ error: 'workspace /decisions → 503', onRetry });
+    renderToday({
+      error: { kind: 'failed', detail: 'workspace /decisions → 503' },
+      onRetry,
+    });
 
     const retry = screen.getByRole('button', { name: 'Try again' });
     retry.click();
     expect(onRetry).toHaveBeenCalledTimes(1);
-    expect(screen.getByText('workspace /decisions → 503')).toBeTruthy();
+    expect(screen.getByText(DECISION_READ_FAILED)).toBeTruthy();
+  });
+
+  /*
+    This page printed the thrown message in mono under the alert, so a person
+    read "workspace /decisions → 401": a request path and a status code standing
+    in for a sentence — on the one screen whose own comment already forbade
+    internal identifiers and raw request paths.
+  */
+  it('never prints the thrown message at the reader', () => {
+    const { container } = renderToday({
+      error: { kind: 'failed', detail: 'workspace /decisions → 503' },
+      onRetry: vi.fn(),
+    });
+
+    expect(container.textContent).not.toContain('workspace /decisions');
+    expect(container.textContent).not.toContain('503');
   });
 
   it('does not count rows it could not read into the summary line', () => {
     const { container } = renderToday({
-      error: 'boom',
+      error: { kind: 'failed', detail: 'boom' },
       decisions: [decision(), decision({ id: 'd2' })],
     });
     expect(container.textContent).not.toMatch(/waiting on you\b.*\d/);
+  });
+});
+
+/*
+  A 401 is not a blip, and the difference is the whole of TASK-276. The read was
+  not lost, it was REFUSED — the session ran out — so "try again" is a button
+  that returns the same 401 for as long as anyone is willing to press it. The
+  only thing that moves is signing in, so that is the only thing offered.
+*/
+describe('a queue we were not allowed to read', () => {
+  const expired = { kind: 'expired', detail: 'workspace /decisions → 401' } as const;
+
+  it('says the reader is signed out rather than that something went wrong', () => {
+    renderToday({ error: expired, onRetry: vi.fn() });
+
+    expect(screen.getByText(DECISION_SESSION_EXPIRED)).toBeTruthy();
+    expect(screen.queryByText(DECISION_READ_FAILED)).toBeNull();
+  });
+
+  it('offers sign-in and NOT a retry that cannot work', () => {
+    // `onRetry` is supplied, so the retry button's absence is the branch's
+    // doing and not a missing handler.
+    renderToday({ error: expired, onRetry: vi.fn() });
+
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    screen.getByRole('button', { name: 'Sign in' }).click();
+    expect(signInWithGoogle).toHaveBeenCalledTimes(1);
+  });
+
+  it('still never prints the thrown message at the reader', () => {
+    const { container } = renderToday({ error: expired });
+    expect(container.textContent).not.toContain('workspace /decisions');
+    expect(container.textContent).not.toContain('401');
+  });
+
+  it('still refuses to claim nothing is waiting on you', () => {
+    renderToday({ error: expired, decisions: [decision()] });
+    expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();
   });
 });
 
