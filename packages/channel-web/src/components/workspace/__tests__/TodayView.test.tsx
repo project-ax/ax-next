@@ -242,6 +242,23 @@ describe('a queue we were not allowed to read', () => {
     expect(container.textContent).not.toContain('401');
   });
 
+  /*
+    Red is a claim too. `destructive` reads "something has gone wrong", which is
+    true of a blip and false of a session that ran out — and it would put this
+    page in a different register from the in-thread card, which draws the same
+    sentence neutral. Both halves are pinned, so deleting the branch fails one
+    of them whichever way it is deleted.
+  */
+  it('does not dress a signed-out session up as something going wrong', () => {
+    renderToday({ error: expired });
+    expect(screen.getByRole('alert').className).not.toContain('destructive');
+  });
+
+  it('and a read that really did fail still reads as a failure', () => {
+    renderToday({ error: { kind: 'failed', detail: 'boom' } });
+    expect(screen.getByRole('alert').className).toContain('destructive');
+  });
+
   it('still refuses to claim nothing is waiting on you', () => {
     renderToday({ error: expired, decisions: [decision()] });
     expect(screen.queryByText('Nothing is waiting on you.')).toBeNull();

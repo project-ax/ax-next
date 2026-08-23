@@ -216,7 +216,17 @@ export function TodayView({
       </div>
 
       {error !== null && (
-        <Alert variant="destructive" className="mb-4">
+        /*
+          THE REGISTER FOLLOWS THE FACT. `destructive` is the red one and it
+          says "something has gone wrong" — true of a blip, and not true of a
+          session that simply ran out. Sitting the signed-out sentence in red
+          would contradict the sentence itself, and it would contradict the
+          in-thread card, which draws this same line in the neutral variant.
+        */
+        <Alert
+          variant={error.kind === 'expired' ? 'default' : 'destructive'}
+          className="mb-4"
+        >
           <AlertDescription className="flex flex-col items-start gap-2.5">
             {/*
               NOTHING RAW IS RENDERED HERE ANY MORE.
