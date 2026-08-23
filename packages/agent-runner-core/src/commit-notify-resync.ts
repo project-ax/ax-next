@@ -23,6 +23,23 @@ export const MAX_RESYNC_ATTEMPTS = 3;
 export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
 
 /**
+ * What a commit-notify attempt ended in, plus — on `rolled-back` — the host's
+ * own words for WHY it refused the bundle (the pre-apply subscriber's veto
+ * reason, or the re-sync-exhausted message).
+ *
+ * `rejectionReason` exists so the refusal is legible to the agent instead of
+ * dying inside this function: a hard-reset veto wipes the turn's work, and a
+ * bare `rolled-back` gives the model nothing to correct. Absent on every
+ * non-rejection outcome. It is host-authored prose, not a machine code —
+ * callers surface it, they don't branch on it.
+ */
+export interface CommitNotifyResult {
+  parentVersion: string | null;
+  outcome: CommitNotifyOutcome;
+  rejectionReason?: string;
+}
+
+/**
  * Commit-notify a turn bundle, recovering from a concurrent-writer advance by
  * rebasing onto the storage tier's new head and retrying — bounded. Shared by
  * the per-turn `result` handler AND the post-`result` final commit so both
@@ -34,7 +51,8 @@ export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
  *  - concurrent-writer      → resyncBaselineAndReplay + re-bundle + retry, up to
  *    envelope                 MAX_RESYNC_ATTEMPTS. An empty re-bundle (turn
  *                             absorbed) → promote parentVersion to the new head ('accepted').
- *  - true veto / exhausted  → rollbackToBaseline ('rolled-back'); parentVersion unchanged.
+ *  - true veto / exhausted  → rollbackToBaseline ('rolled-back'); parentVersion unchanged,
+ *                             and the host's stated reason comes back as `rejectionReason`.
  *  - network/5xx/resync-fail→ keep the working tree ('kept'); parentVersion unchanged.
  */
 export async function commitNotifyWithResync(input: {
@@ -48,7 +66,7 @@ export async function commitNotifyWithResync(input: {
   bundleBytes: string;
   parentVersion: string | null;
   reason: string;
-}): Promise<{ parentVersion: string | null; outcome: CommitNotifyOutcome }> {
+}): Promise<CommitNotifyResult> {
   const { client, root, reason } = input;
   let bundleB64 = input.bundleBytes;
   let currentParentVersion: string | null = input.parentVersion;
@@ -194,7 +212,14 @@ export async function commitNotifyWithResync(input: {
     commitTrace(
       `[commit-trace] outcome=rolled-back (actualParent=${resp.actualParent ?? '-'} attempt=${attempt} mode=${mode})\n`,
     );
-    return { parentVersion: input.parentVersion, outcome: 'rolled-back' };
+    // Hand the host's stated reason back to the caller. Everything else on this
+    // path is write-only (a stderr line and an off-by-default commit trace), so
+    // this is the only channel by which the agent can learn what it did wrong.
+    return {
+      parentVersion: input.parentVersion,
+      outcome: 'rolled-back',
+      rejectionReason: resp.reason,
+    };
   }
 }
 
@@ -227,12 +252,62 @@ export async function commitNotifyWithResync(input: {
  */
 export type FlushOutcome = 'accepted' | 'noop' | CommitNotifyOutcome;
 
+/**
+ * A flush's outcome plus, on `rolled-back`, the host's reason for refusing —
+ * see {@link CommitNotifyResult.rejectionReason}. The tool-call path renders it
+ * into the error it hands the model, so a veto reads as "the host refused
+ * because X" rather than an unexplained `rolled-back`.
+ */
+export interface FlushResult {
+  parentVersion: string | null;
+  outcome: FlushOutcome;
+  rejectionReason?: string;
+}
+
+/**
+ * What `flushWorkspaceForHostTool` hands a loop's tool forwarder: the flush
+ * outcome and, on a refusal, the host's reason. `parentVersion` is deliberately
+ * NOT part of this — the runner shell owns the commit chain and threads the new
+ * parent internally; a loop has no business seeing a workspace token.
+ */
+export type HostToolFlush = Omit<FlushResult, 'parentVersion'>;
+
+/**
+ * The message a loop hands the model when a pre-call workspace flush did NOT
+ * sync the host mirror. Shared by both runners so they stay
+ * host-indistinguishable: same words, and the same reason, whichever loop is
+ * driving.
+ *
+ * `outcome` widens past {@link FlushOutcome} to include `'error'`, which the
+ * loops use for a flush that threw — that is not a commit-notify outcome, so it
+ * lives here rather than in the type.
+ *
+ * When the host stated a reason, we say what it was and tell the model the
+ * commit was rolled back, because "please try again" is useless advice against
+ * a policy veto — the identical retry gets vetoed identically.
+ */
+export function flushPreconditionMessage(
+  toolName: string,
+  flush: { outcome: FlushOutcome | 'error'; rejectionReason?: string },
+): string {
+  const head =
+    `Could not sync your just-authored workspace files to the host before ` +
+    `'${toolName}' (flush outcome: ${flush.outcome}).`;
+  if (flush.rejectionReason !== undefined && flush.rejectionReason !== '') {
+    return (
+      `${head} The host refused the change: ${flush.rejectionReason} ` +
+      `The turn's commit was rolled back — address that objection before retrying.`
+    );
+  }
+  return `${head} The files are not visible to the installer yet — please try again.`;
+}
+
 export async function flushWorkspaceToHost(input: {
   client: Pick<IpcClient, 'call' | 'callBinary'>;
   root: string;
   parentVersion: string | null;
   reason: string;
-}): Promise<{ parentVersion: string | null; outcome: FlushOutcome }> {
+}): Promise<FlushResult> {
   const { client, root, parentVersion, reason } = input;
   const bundleB64 = await commitTurnAndBundle({ root, reason });
   if (bundleB64 === null) {
@@ -246,5 +321,11 @@ export async function flushWorkspaceToHost(input: {
     parentVersion,
     reason,
   });
-  return { parentVersion: result.parentVersion, outcome: result.outcome };
+  return {
+    parentVersion: result.parentVersion,
+    outcome: result.outcome,
+    ...(result.rejectionReason !== undefined
+      ? { rejectionReason: result.rejectionReason }
+      : {}),
+  };
 }

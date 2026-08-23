@@ -223,9 +223,9 @@ describe('buildHostToolEntries', () => {
       order.push('forward');
       return { output: 'ok' };
     });
-    const flushWorkspace = async (): Promise<'accepted'> => {
+    const flushWorkspace = async () => {
       order.push('flush');
-      return 'accepted';
+      return { outcome: 'accepted' as const };
     };
     const entries = buildHostToolEntries(
       client,
@@ -240,7 +240,7 @@ describe('buildHostToolEntries', () => {
 
   it('forwards on a no-op flush (already synced on a prior turn)', async () => {
     const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-    const flushWorkspace = async (): Promise<'noop'> => 'noop';
+    const flushWorkspace = async () => ({ outcome: 'noop' as const });
     const entries = buildHostToolEntries(
       client,
       [HOST_TOOL_FLUSH],
@@ -258,9 +258,9 @@ describe('buildHostToolEntries', () => {
   it('does NOT flush for a host tool without flushWorkspaceBeforeCall', async () => {
     let flushed = false;
     const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-    const flushWorkspace = async (): Promise<'accepted'> => {
+    const flushWorkspace = async () => {
       flushed = true;
-      return 'accepted';
+      return { outcome: 'accepted' as const };
     };
     const entries = buildHostToolEntries(
       client,
@@ -296,9 +296,9 @@ describe('buildHostToolEntries', () => {
         order.push('forward');
         return { output: 'host-ok' };
       });
-      const flushWorkspace = async (): Promise<typeof outcome> => {
+      const flushWorkspace = async () => {
         order.push('flush');
-        return outcome;
+        return { outcome };
       };
       const entries = buildHostToolEntries(
         client,
@@ -317,13 +317,48 @@ describe('buildHostToolEntries', () => {
     },
   );
 
+  // TASK-240: a veto rolls the turn back — under `recoverable: false` with a
+  // HARD reset, so the file the agent just wrote is gone. A bare `rolled-back`
+  // tells the model that something failed but not what to change, and the
+  // reason reaches no other channel it can read. It must ride the tool result.
+  it('puts the host\'s veto reason in the isError tool result', async () => {
+    const { client, calls } = mkClient(async () => ({ output: 'host-ok' }));
+    const flushWorkspace = async () => ({
+      outcome: 'rolled-back' as const,
+      rejectionReason:
+        '.claude/settings.json: agent writes to the SDK config are refused',
+    });
+    const entries = buildHostToolEntries(
+      client,
+      [HOST_TOOL_FLUSH],
+      () => 'id-1',
+      flushWorkspace,
+    );
+    const result = (await (entries[0] as ToolEntry).handler({}, {})) as {
+      content: Array<{ type: string; text: string }>;
+      isError?: boolean;
+    };
+    expect(calls.map((c) => c.action)).toEqual([]);
+    expect(result.isError).toBe(true);
+    const text = result.content[0]?.text ?? '';
+    // The reason itself, verbatim — not a summary and not just the outcome.
+    expect(text).toContain(
+      '.claude/settings.json: agent writes to the SDK config are refused',
+    );
+    // And we tell the model the turn was rolled back rather than "try again",
+    // which is useless advice against a policy veto: the same retry is vetoed
+    // the same way.
+    expect(text).toContain('rolled back');
+    expect(text).not.toContain('please try again');
+  });
+
   it('does NOT forward and returns isError when the flush throws', async () => {
     const order: string[] = [];
     const { client } = mkClient(async () => {
       order.push('forward');
       return { output: 'host-ok' };
     });
-    const flushWorkspace = async (): Promise<'accepted'> => {
+    const flushWorkspace = async (): Promise<{ outcome: 'accepted' }> => {
       order.push('flush-throw');
       throw new Error('commit-notify unreachable');
     };

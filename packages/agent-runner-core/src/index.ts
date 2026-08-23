@@ -30,8 +30,17 @@ export {
   scaffoldSdkProjectsSymlink,
   scaffoldWorkspaceGitignore,
 } from './git-workspace.js';
-export { commitNotifyWithResync, flushWorkspaceToHost } from './commit-notify-resync.js';
-export type { FlushOutcome } from './commit-notify-resync.js';
+export {
+  commitNotifyWithResync,
+  flushPreconditionMessage,
+  flushWorkspaceToHost,
+} from './commit-notify-resync.js';
+export type {
+  CommitNotifyResult,
+  FlushOutcome,
+  FlushResult,
+  HostToolFlush,
+} from './commit-notify-resync.js';
 export { setupProxy } from './proxy-startup.js';
 export { createInboxLoop } from './inbox-loop.js';
 export type { InboxLoop, InboxLoopEntry, InboxLoopOptions } from './inbox-loop.js';

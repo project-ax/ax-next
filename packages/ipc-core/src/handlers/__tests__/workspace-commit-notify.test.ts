@@ -394,4 +394,59 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ accepted: false, recoverable: false });
   });
+
+  it('logs the veto reason and the plugin that vetoed', async () => {
+    // The wire response is not a channel anyone watches: the runner writes the
+    // reason to stderr (k8s: `kubectl logs` on an ephemeral pod) and, on this
+    // branch, hard-resets the turn. Without a host-side log line an operator
+    // asking "why did that agent's work vanish?" has nowhere to look — two of
+    // the three pre-apply rejecters (@ax/validator-skill, @ax/validator-routine)
+    // log nothing of their own.
+    prepareScratchRepoMock.mockResolvedValueOnce({
+      ...DEFAULT_SCRATCH,
+      dispose: vi.fn().mockResolvedValue(undefined),
+    });
+    verifyBundleAuthorMock.mockResolvedValueOnce(undefined);
+    walkBundleChangesMock.mockResolvedValueOnce([]);
+
+    const probe = makePhase3Probe('@ax/test-pre-apply-veto-log-probe');
+    const bus = new HookBus();
+    await bootstrap({ bus, plugins: [probe], config: {} });
+    bus.subscribe(
+      'workspace:pre-apply',
+      '@ax/validator-routine',
+      async () => reject({ reason: '.ax/routines/nightly.md: schedule is not a valid cron expression' }),
+    );
+
+    const warn = vi.fn();
+    const ctx = makeAgentContext({
+      sessionId: 'wcn-test-veto-log',
+      agentId: 'wcn-agent-veto-log',
+      userId: 'wcn-user-veto-log',
+      logger: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn,
+        error: vi.fn(),
+        child: vi.fn(),
+      } as unknown as AgentContext['logger'],
+    });
+
+    const result = await workspaceCommitNotifyHandler(
+      { parentVersion: null, reason: 'turn', bundleBytes: 'UEFDSwAAAAA=' },
+      ctx,
+      bus,
+    );
+
+    expect(result.status).toBe(200);
+    expect(warn).toHaveBeenCalledWith(
+      'workspace_pre_apply_rejected',
+      expect.objectContaining({
+        action: 'workspace.commit-notify',
+        // Which plugin refused, and in its own words why.
+        rejectedBy: '@ax/validator-routine',
+        reason: '.ax/routines/nightly.md: schedule is not a valid cron expression',
+      }),
+    );
+  });
 });

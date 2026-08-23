@@ -33,7 +33,7 @@ import {
   type ToolDescriptor,
 } from '@ax/ipc-protocol';
 import { z } from 'zod';
-import type { FlushOutcome } from '@ax/agent-runner-core';
+import { flushPreconditionMessage, type HostToolFlush } from '@ax/agent-runner-core';
 import { MCP_HOST_SERVER_NAME } from './tool-names.js';
 
 export interface CreateHostMcpServerOptions {
@@ -45,11 +45,12 @@ export interface CreateHostMcpServerOptions {
   /**
    * Flush the live workspace (commit + push to the host mirror) before
    * forwarding a host tool whose descriptor declares
-   * `flushWorkspaceBeforeCall`, returning the flush outcome. Omitted in
-   * deployments without a workspace (the flag then simply has no effect).
-   * See the precondition gate in the per-tool handler below.
+   * `flushWorkspaceBeforeCall`, returning the flush outcome plus, on a
+   * refusal, the host's stated reason. Omitted in deployments without a
+   * workspace (the flag then simply has no effect). See the precondition gate
+   * in the per-tool handler below.
    */
-  flushWorkspace?: () => Promise<FlushOutcome>;
+  flushWorkspace?: () => Promise<HostToolFlush>;
 }
 
 /**
@@ -113,7 +114,7 @@ export function buildHostToolEntries(
   client: IpcClient,
   tools: ToolDescriptor[],
   idGen: () => string = () => randomUUID(),
-  flushWorkspace?: () => Promise<FlushOutcome>,
+  flushWorkspace?: () => Promise<HostToolFlush>,
 ): Array<SdkMcpToolDefinition> {
   const hostTools = tools.filter((t) => t.executesIn === 'host');
   return hostTools.map((t) =>
@@ -142,25 +143,24 @@ export function buildHostToolEntries(
           //     and the mirror still lacks it — forwarding could even install
           //     an OLDER committed draft with the freshly-requested grants.
           //   - thrown: git/IPC error mid-flush.
-          // In those cases we surface a clear, retryable tool error instead of
-          // forwarding into a stale read (BUG-W2 follow-up; Codex review).
+          // In those cases we surface a clear tool error instead of forwarding
+          // into a stale read (BUG-W2 follow-up; Codex review) — carrying the
+          // host's own reason for the refusal when it gave one, so a veto is
+          // something the model can act on rather than a bare `rolled-back`.
           if (t.flushWorkspaceBeforeCall === true && flushWorkspace !== undefined) {
-            let outcome: FlushOutcome | 'error';
+            let flush: { outcome: HostToolFlush['outcome'] | 'error'; rejectionReason?: string };
             try {
-              outcome = await flushWorkspace();
+              flush = await flushWorkspace();
             } catch (flushErr) {
               process.stderr.write(
                 `runner: workspace flush before '${t.name}' failed: ${flushErr instanceof Error ? flushErr.message : String(flushErr)}\n`,
               );
-              outcome = 'error';
+              flush = { outcome: 'error' };
             }
-            if (outcome !== 'accepted' && outcome !== 'noop') {
+            if (flush.outcome !== 'accepted' && flush.outcome !== 'noop') {
               return {
                 content: [
-                  {
-                    type: 'text',
-                    text: `Could not sync your just-authored workspace files to the host before '${t.name}' (flush outcome: ${outcome}). The files are not visible to the installer yet — please try again.`,
-                  },
+                  { type: 'text', text: flushPreconditionMessage(t.name, flush) },
                 ],
                 isError: true,
               };

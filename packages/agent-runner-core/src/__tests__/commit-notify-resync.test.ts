@@ -191,7 +191,11 @@ describe('commitNotifyWithResync', () => {
     expect(advanceBaselineMock).not.toHaveBeenCalled();
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
     expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
-    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+    expect(result).toEqual({
+      parentVersion: 'v1',
+      outcome: 'rolled-back',
+      rejectionReason: 'security veto',
+    });
   });
 
   it('network/IPC throw → keeps the working tree; outcome "kept", parentVersion unchanged', async () => {
@@ -351,7 +355,7 @@ describe('commitNotifyWithResync', () => {
     expect(result).toEqual({ parentVersion: null, outcome: 'rolled-back' });
   });
 
-  it('recoverable:false rejection → hard rollback', async () => {
+  it('recoverable:false rejection → hard rollback, and the host reason comes back', async () => {
     const call = vi.fn().mockResolvedValue({ accepted: false, reason: 'SDK-config', recoverable: false });
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
@@ -361,10 +365,17 @@ describe('commitNotifyWithResync', () => {
       reason: 'turn',
     });
     expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'hard');
-    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+    // A hard rollback discards the turn's work. If the reason died here, the
+    // agent would only ever learn that something was thrown away, never what
+    // the host objected to — so it must ride out with the outcome.
+    expect(result).toEqual({
+      parentVersion: 'v1',
+      outcome: 'rolled-back',
+      rejectionReason: 'SDK-config',
+    });
   });
 
-  it('rejection without recoverable → mixed rollback (preserve work)', async () => {
+  it('rejection without recoverable → mixed rollback (preserve work), reason still carried', async () => {
     const call = vi.fn().mockResolvedValue({ accepted: false, reason: 'baseline drift' });
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
@@ -374,7 +385,27 @@ describe('commitNotifyWithResync', () => {
       reason: 'turn',
     });
     expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
-    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+    expect(result).toEqual({
+      parentVersion: 'v1',
+      outcome: 'rolled-back',
+      rejectionReason: 'baseline drift',
+    });
+  });
+
+  it('an accepted commit-notify carries NO rejectionReason', async () => {
+    // The field means "the host refused, and here is why". On a success there
+    // is nothing to explain, and a caller that renders it unconditionally must
+    // not find stale prose sitting there.
+    const call = vi.fn().mockResolvedValue({ accepted: true, version: 'v2' });
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundleBytes: 'B',
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(result).toEqual({ parentVersion: 'v2', outcome: 'accepted' });
+    expect(result.rejectionReason).toBeUndefined();
   });
 });
 
@@ -440,10 +471,19 @@ describe('flushWorkspaceToHost', () => {
       parentVersion: 'v1',
       reason: 'turn',
     });
-    // The live tree was reset to baseline (the just-authored file is gone), so
+    // The turn's commit was rolled back and nothing reached the host mirror, so
     // the forwarder must surface an error rather than install an older draft.
+    // (This rejection is recoverable, so the reset is `--mixed` — the agent's
+    // file survives in the working tree; on a `recoverable: false` veto the
+    // reset is `--hard` and the file really is gone.)
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
     expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
-    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+    // The host's words travel with the outcome — this is what the forwarder
+    // renders into the tool error the model reads.
+    expect(result).toEqual({
+      parentVersion: 'v1',
+      outcome: 'rolled-back',
+      rejectionReason: 'security veto',
+    });
   });
 });
