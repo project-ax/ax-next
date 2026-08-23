@@ -19,7 +19,7 @@ import { useActivityFeed } from '@/lib/workspace-activity';
 import { useDecisionQueue } from '@/lib/workspace-decisions';
 import { WorkspaceProvider, useWorkspace } from '@/lib/workspace-context';
 import { hydrateTheme } from '@/lib/theme';
-import { isOpenDecision } from '@/lib/workspace-types';
+import { isOpenDecision, type ActivityEvent } from '@/lib/workspace-types';
 import { ActivityFeed } from './ActivityFeed';
 import { AgentView, type AgentTab } from './AgentView';
 import { HomeComposer } from './HomeComposer';
@@ -51,6 +51,50 @@ function isLocalToday(at: string): boolean {
     d.getMonth() === now.getMonth() &&
     d.getDate() === now.getDate()
   );
+}
+
+/**
+ * The instant the reader's local day began — the floor `isLocalToday` accepts,
+ * as a number so a feed cursor can be compared against it.
+ */
+function startOfLocalToday(): number {
+  const now = new Date();
+  return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+}
+
+/**
+ * How many `done` rows landed today — or `undefined` when the pages we hold
+ * cannot back that number.
+ *
+ * `feed.events` is only what has been fetched, and on Today nothing ever calls
+ * `loadMore`, so it is page one: fifty rows. A day busier than that used to
+ * report whatever fraction fitted, as a flat fact, with nothing on screen to
+ * say it was a floor.
+ *
+ * The feed is strictly newest-first, so the count is true the moment the
+ * fetched window reaches back PAST local midnight — every row from today is
+ * then already in hand. That is the gate. `null` (nothing older exists) counts
+ * as reaching past it; a cursor sitting exactly ON midnight does not, because
+ * the cursor is exclusive and a row at that same instant can be cut.
+ *
+ * Deliberately NOT gated on `!feed.hasMore`. Exhaustion is the right test for
+ * Activity's "N entries", which claims the whole record — but the
+ * workspace-wide feed on a busy account essentially never exhausts, so reusing
+ * it here would hide the line permanently instead of only while the window is
+ * short. That trades an undercount for a disappearance.
+ *
+ * `undefined` rather than `0`: a zero is a claim too, and this is the case
+ * where we have none to make. `TodayView` drops the line for either.
+ */
+function doneTodayFrom(feed: {
+  events: ActivityEvent[];
+  nextBefore: string | null;
+}): number | undefined {
+  const reachesPastMidnight =
+    feed.nextBefore === null || Date.parse(feed.nextBefore) < startOfLocalToday();
+  if (!reachesPastMidnight) return undefined;
+  return feed.events.filter((e) => e.kind === 'done' && isLocalToday(e.at))
+    .length;
 }
 
 export function WorkspaceShell() {
@@ -100,6 +144,14 @@ function Inner() {
   }, []);
 
   const bump = () => setVersion((v) => v + 1);
+
+  /**
+   * `undefined` when the pages we hold cannot back the number — see
+   * `doneTodayFrom`. Passed as an ABSENT prop rather than an explicit
+   * `undefined` (`exactOptionalPropertyTypes`), which is the same thing to
+   * `TodayView` and the shape the rest of this file already uses.
+   */
+  const doneToday = doneTodayFrom(feed);
 
   if (error) {
     return (
@@ -204,11 +256,7 @@ function Inner() {
                   loading={queue.loading}
                   onRetry={() => void queue.refresh()}
                   onSeeActivity={() => setRoute({ kind: 'activity' })}
-                  doneToday={
-                    feed.events.filter(
-                      (e) => e.kind === 'done' && isLocalToday(e.at),
-                    ).length
-                  }
+                  {...(doneToday !== undefined ? { doneToday } : {})}
                 />
               </div>
               <HomeComposer
@@ -235,8 +283,12 @@ function Inner() {
                 into — at which point the two numbers are the same one. While
                 more is loadable the count is simply absent, along with the
                 zero that shows briefly on every mount before the first page
-                lands. Same rule as Today's summary line: a count is rendered
-                only when it is both positive and true.
+                lands. Same rule as Today's summary line — a count is rendered
+                only when it is both positive and true — but a different test
+                for "true". This number claims the whole record, so only
+                exhaustion settles it; Today's claims a single day, and
+                `doneTodayFrom` settles that the moment the fetched window
+                reaches back past local midnight.
               */}
               <WorkspaceHeader
                 title="Activity"

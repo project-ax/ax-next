@@ -5,12 +5,13 @@
  * shows comes from the API, and what the API has nothing for says so.
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { DECISION_THREAD_READ_FAILED } from '../decision-copy';
 import { decisionFixture } from './decision-fixture';
+import type { ActivityEvent } from '@/lib/workspace-types';
 
 import { rail as railFixture } from './rail-fixture';
 
@@ -333,3 +334,101 @@ describe('WorkspaceShell', () => {
   The ActivityFeed's own tests moved to `ActivityFeed.test.tsx` when the feed
   grew a real collection behind it (AW-10). They were never about the shell.
 */
+
+/*
+  Today's "N done today" is a claim about the whole local day, and the shell
+  only ever holds page ONE of the activity feed (fifty rows; Today never calls
+  `loadMore`). So the count is honest only while the fetched window reaches
+  back past local midnight — which is exactly what these pin. TASK-252.
+*/
+describe('the "done today" count', () => {
+  const midnight = (): number => {
+    const now = new Date();
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  };
+  const iso = (ms: number): string => new Date(ms).toISOString();
+
+  /** A `done` row — the only kind the count looks at. */
+  function doneEvent(n: number): ActivityEvent {
+    return {
+      id: `e-${n}`,
+      agentId: 'a-quill',
+      // A minute past midnight: unambiguously today for any reader in this
+      // process's timezone, which is the one the component reads too.
+      at: iso(midnight() + 60_000),
+      text: `Swept the inbox (${n})`,
+      kind: 'done',
+      detail: null,
+      tag: null,
+      decisionId: null,
+    };
+  }
+
+  /** More than the server's fifty-row page — the case the count got wrong. */
+  const busyDay = Array.from({ length: 51 }, (_, i) => doneEvent(i));
+
+  /**
+   * Renders Today and lands ONE activity page, deterministically: the fetch is
+   * held open until the shell is up, so a negative assertion below cannot pass
+   * merely because the response had not arrived yet.
+   */
+  async function landPage(page: {
+    events: ActivityEvent[];
+    nextBefore: string | null;
+  }): Promise<void> {
+    let release: (() => void) | undefined;
+    activityMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(page);
+        }),
+    );
+    boardMock.mockResolvedValue({ agents: [] });
+
+    renderShell();
+    await screen.findByText('Nothing is waiting on you.');
+    await act(async () => {
+      release?.();
+    });
+  }
+
+  it('shows the count once the fetched window reaches back past midnight', async () => {
+    // The cursor sits a second before midnight, so every one of today's rows
+    // is already in hand — even though there is plainly more history behind
+    // it. More pages existing is not a reason to withhold a day's count.
+    await landPage({ events: busyDay, nextBefore: iso(midnight() - 1_000) });
+
+    expect(await screen.findByText(/51 done today/)).toBeTruthy();
+  });
+
+  it('shows the count when the feed has nothing older left to give', async () => {
+    // `nextBefore: null` — the record ends here, so the window covers today by
+    // definition.
+    await landPage({ events: busyDay, nextBefore: null });
+
+    expect(await screen.findByText(/51 done today/)).toBeTruthy();
+  });
+
+  it('hides the count while the fetched window stops short of midnight', async () => {
+    /*
+      The cursor is still inside today: rows from earlier this morning have not
+      been fetched, so 51 is a FLOOR, not the day's total. Rendering it would
+      state a number we cannot back — the bug this card fixes. An absent line
+      is the honest answer.
+    */
+    await landPage({ events: busyDay, nextBefore: iso(midnight() + 30_000) });
+
+    expect(screen.queryByText(/done today/)).toBeNull();
+  });
+
+  it('hides the count when the cursor sits exactly on midnight', async () => {
+    /*
+      Exactly on the boundary is NOT past it. The cursor is exclusive on both
+      sources, so a row sharing that millisecond can be cut from the page and
+      never appear on the next one. Conservative on purpose.
+    */
+    await landPage({ events: busyDay, nextBefore: iso(midnight()) });
+
+    expect(screen.queryByText(/done today/)).toBeNull();
+  });
+});

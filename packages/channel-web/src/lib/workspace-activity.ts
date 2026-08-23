@@ -22,6 +22,24 @@ export interface ActivityFeedState {
   /** Separate from an empty `events`: "we could not read it" is not "there is nothing". */
   error: string | null;
   hasMore: boolean;
+  /**
+   * How far back the fetched window provably reaches: the instant of the
+   * oldest row the server CONSIDERED, exclusive — or `null` once there is
+   * nothing older left to ask for.
+   *
+   * `hasMore` says only WHETHER another page exists; this says WHERE the
+   * window we already hold ends, which is what a caller needs before it can
+   * turn `events` into a claim about a span of time. Today's "N done today"
+   * is that caller: the feed is newest-first, so once this cursor has passed
+   * local midnight (or gone `null`) every one of today's rows is already in
+   * `events` and the count is true.
+   *
+   * "Considered", not "rendered": a silenced fire takes a slot in the page and
+   * moves the cursor without producing an event, so this can sit older than
+   * the last row on screen. See `ActivityResponse` in
+   * `server/routes-workspace.ts`.
+   */
+  nextBefore: string | null;
   loadMore: () => void;
 }
 
@@ -82,5 +100,12 @@ export function useActivityFeed(agentId?: string): ActivityFeedState {
     fetchPage(nextBefore, false);
   }, [fetchPage, loading, nextBefore]);
 
-  return { events, loading, error, hasMore: nextBefore !== null, loadMore };
+  return {
+    events,
+    loading,
+    error,
+    hasMore: nextBefore !== null,
+    nextBefore,
+    loadMore,
+  };
 }

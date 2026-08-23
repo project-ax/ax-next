@@ -84,7 +84,12 @@ interface Props {
   loading?: boolean;
   onRetry?: () => void;
   onSeeActivity: () => void;
-  /** From the real activity feed — how many `done` rows landed today, local time. */
+  /**
+   * From the real activity feed — how many `done` rows landed today, local
+   * time. `undefined` when the pages the shell holds cannot back that number
+   * (see `doneTodayFrom` in `WorkspaceShell`); the line is then simply absent,
+   * never a zero standing in for "we did not look far enough".
+   */
   doneToday?: number;
 }
 
