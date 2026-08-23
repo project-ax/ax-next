@@ -1049,10 +1049,14 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     ];
     const body = (await railFor()).body as AgentRailData;
 
-    // Matched against EVERY string on the row — id, label, and the written
-    // definition — not just `id`. The way this regresses is somebody adding
-    // §4.4's counter back under a fresh id, and an id-only assertion would
-    // wave that straight through.
+    // Every string on EVERY row — id, label, and the written definition — not
+    // just `id`. The way this regresses is somebody adding §4.4's counter back
+    // under a fresh id, and an id-only assertion would wave that through.
+    //
+    // Scanning the BACKED row's strings too is deliberate: the thing being
+    // guarded is a sentence the surface says, and it does not matter which row
+    // says it. If `brought-to-you` is ever reworded into one of these words
+    // this goes red — a prompt worth having, not a false alarm.
     const said = body.counters.rows.flatMap((r) => [r.id, r.label, r.definition]);
 
     // Nothing counts the tool calls an agent handled alone. `tool:pre-call`
@@ -1068,9 +1072,23 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     // overruled me" from a read that could not have found out either way.
     expect(said.some((s) => /overrul/i.test(s))).toBe(false);
 
-    // …and the one number that DOES have a producer still ships, so this test
-    // cannot be satisfied by dropping the panel altogether.
-    expect(body.counters.rows.map((r) => r.id)).toContain('brought-to-you');
+    // AND THE LINE THAT ACTUALLY CLOSES IT — name the backed set.
+    //
+    // The two regexes above catch the two phrasings we happened to think of.
+    // `{id:'autonomy', label:'Ran without asking', definition:'Autonomous tool
+    // calls this agent made this week.'}` is the same unbacked claim wearing a
+    // synonym, and it sails past both. Keeping the keywords is what makes a
+    // failure message say WHY; this is what makes the test a guard. The
+    // invariant is "only counters we can substantiate render", and the only
+    // way to state that is to list the ones that are backed — an id is a
+    // schema detail and a label is a wording, but the SET is the claim.
+    //
+    // So if you are reading this because you added a counter and this went
+    // red: that is the tripwire doing its job. It is an invitation to say what
+    // produces your number — then add its id here and carry on — not an
+    // obstacle to delete. The test is named for two counters that have no
+    // producer; whether yours does is exactly the question worth stopping on.
+    expect(body.counters.rows.map((r) => r.id)).toEqual(['brought-to-you']);
     expect(body.counters.rows.find((r) => r.id === 'brought-to-you')?.value).toBe(2);
   });
 
