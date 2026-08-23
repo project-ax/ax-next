@@ -29,7 +29,7 @@
 //      fire `postToolUse` first so the audit event records the failed call.
 // ---------------------------------------------------------------------------
 
-import type { HoldLatch, ToolPolicy } from '@ax/agent-runner-core';
+import type { DenyCause, HoldLatch, ToolPolicy } from '@ax/agent-runner-core';
 
 /**
  * Marker set on every wrapped `execute`. `assertAllToolsWrapped` (and the test
@@ -105,9 +105,11 @@ export function wrapWithPolicy(
 
     if (verdict.decision === 'deny') {
       // Choice 1 above. Deliberately NOT a throw, and deliberately not marked
-      // as an error: the model is meant to read this, adapt, and try a
-      // permitted approach on the next call.
-      return denialText(verdict.reason);
+      // as an error: the model is meant to read this and act on it — by trying
+      // a permitted approach when a rule blocked the call, or by retrying when
+      // the check could not be completed. `verdict.cause` is what tells the
+      // two apart; see `denialText`.
+      return denialText(verdict.reason, verdict.cause);
     }
 
     if (verdict.decision === 'hold') {
@@ -169,9 +171,46 @@ export function wrapWithPolicy(
  * transcript can tell a policy denial from a tool's own "permission denied"
  * output, and phrased as an instruction because that is what makes models
  * switch approach rather than retry verbatim.
+ *
+ * It branches on `cause` because the two situations warrant OPPOSITE advice,
+ * and only one of them is a policy decision at all. Telling the model
+ * "retrying the same call will be denied again" after the gate timed out is a
+ * claim we cannot back: no rule blocked anything, the host blipped, and a
+ * retry probably WOULD succeed. The model then relays that invented certainty
+ * to the person as "I'm not allowed to do that", and the real cause is gone.
  */
-export function denialText(reason: string): string {
-  return `Tool call denied by policy: ${reason}\n\nThis is a policy decision, not a transient failure — retrying the same call will be denied again. Adjust your approach.`;
+export function denialText(reason: string, cause: DenyCause): string {
+  switch (cause) {
+    case 'unavailable':
+      // Deliberately says "may", not "will" or "shortly". One of the two
+      // failures folded into `unavailable` is a response we could not parse,
+      // which a retry reproduces exactly; promising a timescale here would be
+      // a smaller version of the very claim this function stopped making.
+      return (
+        `Tool call not run: ${reason}\n\n` +
+        'No rule blocked this. The check itself did not finish, so nothing was ' +
+        'decided about this call — it may succeed if you try again. If it keeps ' +
+        'failing, tell the user the approval check needs looking at, then stop.'
+      );
+    case 'policy':
+      return (
+        `Tool call denied by policy: ${reason}\n\n` +
+        'This is a policy decision, not a transient failure — retrying the same ' +
+        'call will be denied again. Adjust your approach.'
+      );
+    default: {
+      // A third `DenyCause` has to make its own call about transience HERE.
+      // Letting it fall through to the `policy` text would hand it "retrying
+      // is futile" by default — the same silent inheritance that `DenyCause`
+      // is required (rather than optional) to prevent one hop upstream. This
+      // is unreachable: the `never` assignment turns a new cause into a build
+      // error. The runtime arm asserts nothing at all, so if it is somehow
+      // reached it cannot be wrong.
+      const _exhaustive: never = cause;
+      void _exhaustive;
+      return `Tool call not run: ${reason}`;
+    }
+  }
 }
 
 /**

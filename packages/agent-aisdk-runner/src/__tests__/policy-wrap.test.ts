@@ -3,6 +3,7 @@ import type { IpcClient, ToolDescriptor } from '@ax/ipc-protocol';
 import {
   createHoldLatch,
   createLocalDispatcher,
+  createToolPolicy,
   type PreToolVerdict,
   type ToolPolicy,
 } from '@ax/agent-runner-core';
@@ -66,6 +67,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       preToolUse: vi.fn(async () => ({
         decision: 'deny' as const,
         reason: 'npm is not on the egress allowlist; use pnpm',
+        cause: 'policy' as const,
       })),
     } as never);
     const run = vi.fn(async () => 'must not run');
@@ -150,18 +152,93 @@ describe('wrapWithPolicy — the one choke point', () => {
 
   it('is fail-closed: a pre-call IPC failure denies (inherited from the policy)', async () => {
     // createToolPolicy converts a thrown IPC error into decision:'deny'. The
-    // wrapper must surface that as a denial result, not run the tool.
+    // wrapper must surface that as a denial result, not run the tool. Scoped
+    // to exactly that — a hand-built verdict cannot say anything about what
+    // the REAL policy puts in `reason` or `cause`; the two TASK-239 tests
+    // below drive `createToolPolicy` itself for that.
     const policy = fakePolicy({
       preToolUse: vi.fn(async () => ({
         decision: 'deny' as const,
-        reason: 'host returned 503',
+        reason: 'the approval check could not be completed',
+        cause: 'unavailable' as const,
       })),
     } as never);
     const run = vi.fn(async () => 'ran anyway');
     const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() }, run);
 
-    await expect(execute({ command: 'ls' }, OPTS)).resolves.toContain('503');
+    await expect(execute({ command: 'ls' }, OPTS)).resolves.toContain(
+      'approval check could not be completed',
+    );
     expect(run).not.toHaveBeenCalled();
+  });
+
+  // ---------------------------------------------------------------------
+  // TASK-239. These two drive the REAL createToolPolicy through the REAL
+  // wrapper, because the whole defect lived in the seam between them: the
+  // policy produced a reason, the wrapper appended a claim about it, and no
+  // test ever ran both. A `fakePolicy` supplying its own reason keeps every
+  // assertion below green no matter what the runner actually says.
+  // ---------------------------------------------------------------------
+
+  it('tells the model a gate outage MIGHT clear, and never that a rule blocked the call', async () => {
+    const client = {
+      call: vi.fn().mockRejectedValue(new Error('connect failed: ECONNREFUSED')),
+    } as never as IpcClient;
+    const policy = createToolPolicy({
+      client,
+      workspaceRoot: '/agent',
+      warn: vi.fn(),
+    });
+    const run = vi.fn(async () => 'ran anyway');
+    const execute = wrapWithPolicy(
+      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
+      run,
+    );
+
+    const text = await execute({ command: 'ls' }, OPTS);
+
+    expect(run).not.toHaveBeenCalled();
+    // 1. The internal error string is not the model's (or the reader's) problem.
+    expect(text).not.toContain('ECONNREFUSED');
+    expect(text).not.toContain('connect failed');
+    // 2. The false causal claim. Nothing adjudicated this call, so asserting a
+    //    retry is futile is something the runner simply does not know.
+    expect(text).not.toContain('retrying the same call will be denied again');
+    expect(text).not.toContain('denied by policy');
+    // 3. What it should say instead: no rule fired, and a retry may work.
+    expect(text).toContain('No rule blocked this');
+    expect(text).toMatch(/try again/i);
+    // 4. But it must not overcorrect into a second unbacked claim. One of the
+    //    two failures behind `unavailable` is a response we could not parse,
+    //    which a retry reproduces exactly — so no timescale, and no promise.
+    expect(text).not.toContain('shortly');
+    expect(text).not.toMatch(/will succeed|may well/i);
+  });
+
+  it('still tells the model a real policy denial is final', async () => {
+    // The other side of the branch. Softening THIS case would be its own bug:
+    // a model that thinks a standing rule is a blip retries it all turn.
+    const client = {
+      call: vi.fn().mockResolvedValue({
+        verdict: 'reject',
+        reason: 'npm is not on the egress allowlist; use pnpm',
+      }),
+    } as never as IpcClient;
+    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+    const run = vi.fn(async () => 'ran anyway');
+    const execute = wrapWithPolicy(
+      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
+      run,
+    );
+
+    const text = await execute({ command: 'npm i' }, OPTS);
+
+    expect(run).not.toHaveBeenCalled();
+    // The host's own reason still reaches the model verbatim — it was written
+    // for the model, unlike an Error.message.
+    expect(text).toContain('npm is not on the egress allowlist');
+    expect(text).toContain('retrying the same call will be denied again');
+    expect(text).not.toContain('try again');
   });
 
   it('marks the returned execute so a bypass is detectable', () => {

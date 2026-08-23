@@ -153,6 +153,7 @@ describe('buildSkillTool', () => {
       preToolUse: vi.fn(async () => ({
         decision: 'deny' as const,
         reason: 'skills are disabled for this session',
+        cause: 'policy' as const,
       })),
     } as never);
     const tools = buildSkillTool({ policy, skills: [skill()], holdLatch });

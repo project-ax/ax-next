@@ -47,6 +47,7 @@ export { createToolPolicy } from './tool-policy.js';
 export type {
   ToolPolicy,
   PreToolVerdict,
+  DenyCause,
   CreateToolPolicyOptions,
 } from './tool-policy.js';
 export { decisionResolvedTurn, sanitizeDecisionNote } from './decision-turn.js';

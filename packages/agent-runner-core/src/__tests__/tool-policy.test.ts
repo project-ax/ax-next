@@ -35,15 +35,77 @@ describe('createToolPolicy', () => {
     const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
 
     await expect(policy.preToolUse('Bash', { command: 'npm i' }, 'call-2'))
-      .resolves.toEqual({ decision: 'deny', reason: 'npm not permitted' });
+      .resolves.toEqual({
+        decision: 'deny',
+        reason: 'npm not permitted',
+        // A subscriber actually looked at this call and said no, so this is
+        // the one case where a runner may tell the model a retry is futile.
+        cause: 'policy',
+      });
   });
 
-  it('denies (fail-closed) when the IPC call throws', async () => {
-    const client = { call: vi.fn().mockRejectedValue(new Error('socket closed')) } as never;
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+  // TASK-239. The reason on this path used to be `err.message` verbatim, which
+  // is how `connect failed: ECONNREFUSED` reached the model as policy prose —
+  // and, through the persisted tool_result, a person reading the transcript.
+  it('denies (fail-closed) when the IPC call throws, without leaking the error to the model', async () => {
+    const client = { call: vi.fn().mockRejectedValue(new Error('connect failed: ECONNREFUSED')) } as never;
+    const warn = vi.fn();
+    const policy = createToolPolicy({ client, workspaceRoot: '/agent', warn });
 
-    await expect(policy.preToolUse('Bash', { command: 'ls' }, 'call-3'))
-      .resolves.toEqual({ decision: 'deny', reason: 'socket closed' });
+    const verdict = await policy.preToolUse('Bash', { command: 'ls' }, 'call-3');
+
+    expect(verdict.decision).toBe('deny');
+    // Nothing was adjudicated, so the verdict must not claim a rule did it.
+    expect(verdict).toMatchObject({ cause: 'unavailable' });
+    const reason = (verdict as { reason: string }).reason;
+    // The literal is spelled out rather than compared against the module's own
+    // constant on purpose: asserting `reason === GATE_FAILED_REASON` would
+    // restate the implementation and pass no matter what that constant said.
+    expect(reason).toBe('the approval check could not be completed');
+    expect(reason).not.toContain('ECONNREFUSED');
+    expect(reason).not.toContain('connect failed');
+  });
+
+  it('hands the real error to the operator instead of dropping it', async () => {
+    // The other half of not showing it to the model: before this, the error was
+    // logged nowhere at all — it existed only in the model's context window, so
+    // sanitizing the model-facing string would have destroyed it outright.
+    const client = { call: vi.fn().mockRejectedValue(new Error('connect failed: ECONNREFUSED')) } as never;
+    const warn = vi.fn();
+    const policy = createToolPolicy({ client, workspaceRoot: '/agent', warn });
+
+    await policy.preToolUse('Bash', { command: 'ls' }, 'call-3');
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    const logged = warn.mock.calls[0]![0] as string;
+    expect(logged).toContain('ECONNREFUSED');
+    // An operator reading a pod log needs to know which tool was refused.
+    expect(logged).toContain('Bash');
+    expect(logged).toContain('tool.pre-call');
+  });
+
+  it('closes the gate even when the operator logger itself throws', async () => {
+    // `warn` is a public option, so the logger is caller-supplied code running
+    // between the catch and the fail-closed return. If it throws and we do not
+    // swallow it, the throw leaves `preToolUse` — and the claude-sdk adapter's
+    // hook has no catch of its own, which is the fail-OPEN direction at the one
+    // gate whose whole job is stopping calls. Losing a log line is survivable;
+    // losing the deny is not.
+    const client = { call: vi.fn().mockRejectedValue(new Error('connect failed: ECONNREFUSED')) } as never;
+    const warn = vi.fn(() => {
+      throw new Error('logger blew up');
+    });
+    const policy = createToolPolicy({ client, workspaceRoot: '/agent', warn });
+
+    const verdict = await policy.preToolUse('Bash', { command: 'ls' }, 'call-w');
+
+    expect(warn).toHaveBeenCalledTimes(1);
+    // The broken logger costs nothing: same deny, same cause, same safe reason.
+    expect(verdict).toEqual({
+      decision: 'deny',
+      reason: 'the approval check could not be completed',
+      cause: 'unavailable',
+    });
   });
 
   it('prefers the host modifiedCall input over our re-rooted input', async () => {
@@ -96,13 +158,26 @@ describe('createToolPolicy', () => {
     expect(sentId.length).toBeGreaterThan(0);
   });
 
-  it('denies (fail-closed) when the host response fails schema validation', async () => {
+  // Defence in depth, and this test can only reach it because `fakeClient`
+  // skips validation: the real IpcClient parses the body against this SAME
+  // schema before `call()` returns, so on the production wire the in-policy
+  // `.parse` cannot throw. What is genuinely covered is the behaviour a
+  // non-validating client (a double, a future transport) would get — it must
+  // fail CLOSED, and it must not hand the model a ZodError dump.
+  it('denies (fail-closed) when a non-validating client returns an unparseable response', async () => {
     const client = fakeClient({ verdict: 'not-a-real-verdict' });
-    const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
+    const warn = vi.fn();
+    const policy = createToolPolicy({ client, workspaceRoot: '/agent', warn });
 
     const verdict = await policy.preToolUse('Bash', { command: 'ls' }, 'call-5');
 
     expect(verdict.decision).toBe('deny');
+    // A malformed response means the gate never decided anything either, so
+    // this is `unavailable` for the same reason a timeout is — not `policy`.
+    expect(verdict).toMatchObject({ cause: 'unavailable' });
+    expect((verdict as { reason: string }).reason).not.toContain('not-a-real-verdict');
+    // Schema drift has to be audible somewhere, or it reads as a mystery deny.
+    expect(warn).toHaveBeenCalledTimes(1);
   });
 
   it('maps a hold response to a hold verdict, not a deny', async () => {

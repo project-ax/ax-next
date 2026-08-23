@@ -219,6 +219,7 @@ describe('buildSandboxTools', () => {
       preToolUse: vi.fn(async () => ({
         decision: 'deny' as const,
         reason: 'not on the allowlist',
+        cause: 'policy' as const,
       })),
     } as never);
     const tools = buildSandboxTools({ policy, dispatcher, tools: [sampleSandboxDescriptor], holdLatch });

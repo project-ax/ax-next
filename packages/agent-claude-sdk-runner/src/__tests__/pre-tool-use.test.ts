@@ -1,6 +1,6 @@
 import { createHoldLatch, resolveAttachmentPaths, resolveGovernedPaths } from '@ax/agent-runner-core';
 import type { IpcClient } from '@ax/ipc-protocol';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createPreToolUseHook } from '../pre-tool-use.js';
 
 // PreToolUse is the primary `tool.pre-call` forwarder: the SDK fires it
@@ -157,11 +157,21 @@ describe('createPreToolUseHook', () => {
     });
   });
 
-  it('translates IPC errors into a deny so the SDK surfaces the failure', async () => {
+  // TASK-239. `permissionDecisionReason` is not an internal channel: the SDK
+  // turns it into an `is_error` tool_result, which is persisted and rendered in
+  // the web transcript. It used to be the raw `Error.message`, so one click in
+  // the UI showed a non-technical person `connect failed: ECONNREFUSED`.
+  it('translates IPC errors into a deny without putting the raw error in the transcript', async () => {
     const { client } = mkClient(async () => {
-      throw new Error('host unavailable');
+      throw new Error('connect failed: ECONNREFUSED');
     });
-    const hook = createPreToolUseHook({ client, workspaceRoot: '/agent', idGen: () => 'id-6' });
+    const warn = vi.fn();
+    const hook = createPreToolUseHook({
+      client,
+      workspaceRoot: '/agent',
+      idGen: () => 'id-6',
+      warn,
+    });
     const out = await hook(
       preToolUseInput({ tool_name: 'Bash', tool_input: { command: 'ls' } }),
       'tu_abc',
@@ -171,9 +181,12 @@ describe('createPreToolUseHook', () => {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: 'host unavailable',
+        permissionDecisionReason: 'the approval check could not be completed',
       },
     });
+    // Still recoverable by whoever operates the thing, just not by the reader.
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]![0] as string).toContain('ECONNREFUSED');
   });
 
   it('re-roots a home-prefixed .ax/uploads path AND lets the host adjudicate the resolved path', async () => {
