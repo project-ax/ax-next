@@ -131,33 +131,68 @@ digraph review {
 }
 ```
 
-- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `main`** (merge-base `main...HEAD`) — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly (`git diff main...HEAD`) and the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in `decisions.md`. The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and runs read-only, so there's no model/effort to tier and nothing to pre-authorize. **It can still hang — see the deadline protocol below. Never assume "async" means "it will come back."**
+- **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `main`** (merge-base `main...HEAD`) — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly (`git diff main...HEAD`) and the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in `decisions.md`. The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and runs read-only, so there's no model/effort to tier and nothing to pre-authorize. **Dispatch it in the plain shape — see the dispatch contract below. An apparently hung reviewer is usually a DELIVERY problem, not a liveness one.**
 - **When to skip:** docs/comment/config-only or other non-code diffs — the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in `decisions.md`. Any code change gets reviewed.
 - **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in `decisions.md` any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-dispatch the reviewer** on the updated branch — each run re-reads the current `main...HEAD` diff — until it returns `APPROVE` / no actionable findings.
 - The reviewer is a **peer, not an authority** — treat its claims critically: push back on wrong ones (model names, recent APIs, anything you can verify) rather than blindly deferring.
 - Only when the review is clean do you proceed to Phase 6 and open the PR.
 - **Progress:** `⚠ review flagged <M> — addressing` when you start fixing, then `review clean` once the loop closes.
 
-#### The reviewer can hang — deadline protocol (REQUIRED)
+#### The reviewer dispatch contract (REQUIRED — read before you dispatch)
 
-The `ax-code-reviewer` subagent has hung and never returned on **6 of 6 large cards**
-in one auto-ship run (TASK-247). On three of them the missing review was hiding a real
-blocking bug that would otherwise have auto-merged. **A silent review gate is worse
-than no gate, because the merge is automated.** It is *not* diff size and *not* the
-agent type — the same agent on the same large diffs, dispatched fresh, returned in
-13–17 min. It correlates with being spawned by a builder **deep into a long session**.
-So treat every dispatch as fallible:
+**The reviewer that "hung" on 6 of 6 large cards was never hung. Its findings had
+nowhere to go** (TASK-268, confirmed by two independent builders plus the orchestrator
+in one run). One `SendMessage` asking a supposedly-hung reviewer to deliver returned a
+complete review *instantly* — it had existed the whole time.
 
-1. **Note the wall-clock time when you dispatch.** Successful passes land in 13–17 min;
-   the confirmed hang ran 40+ min with no return.
+**The variable is `name`, not difficulty and not diff size.** An agent dispatched with
+`name` is an interactive teammate: its plain final text is **not** delivered to its
+parent, and it must call `SendMessage` to say anything. An agent dispatched **without**
+`name` returns normally through the ordinary completion path. That is the entire
+difference, and it explains the one thing the size theory never could — why the *same*
+agent on the *same* diffs returned in 13–17 min for the orchestrator and "hung" for
+builders. The earlier "hung on large, returned on small" correlation was an artifact:
+the large cards happened to have builders dispatching in the teammate shape.
+
+**So: dispatch the reviewer with NO `name`.** Pass `subagent_type`, the prompt, and
+nothing else identity-shaped.
+
+> **Do NOT reach for `isolation: "worktree"` here**, even though it also returns
+> normally. It hands the agent a *fresh* worktree — so a reviewer would inspect an
+> empty branch instead of the tree you built in, and review the wrong thing. Worktree
+> isolation is right for parallel *builders*, wrong for a reviewer. Name the builder's
+> absolute worktree path in the prompt instead.
+
+**If you ever do need a named teammate**, the contract is two-part and the second half
+is load-bearing: instruct it to reply via `SendMessage` to the from-address, **and then
+send it one message so it has that address.** Telling it to use `SendMessage` without
+giving it somewhere to send is not sufficient.
+
+Evidence (2026-08-22 follow-up run): seven dispatches — three builders and four
+reviewers — all in the plain no-`name` shape. **7/7 returned normally**, reviewers in
+13–17 minutes, zero hangs, against 6/6 "hangs" in the run that used the teammate shape.
+
+#### Deadline protocol — the backstop (REQUIRED)
+
+The contract above is the remedy; this is what catches a *genuine* stall. It stays in
+force — it is what made the TASK-247 run fail loudly instead of silently self-reviewing
+— but it is no longer the first thing you reach for:
+
+1. **Note the wall-clock time when you dispatch.** Successful passes land in 13–17 min.
+   Anything past that is *silence*, which the contract above says to read as undelivered
+   findings first — the 40+ min "hangs" on record were all that, not stalls.
 2. **Deadline: 25 minutes.** Poll with `ScheduleWakeup`/short sleeps — do **not**
-   busy-spin. **Ping the agent at most once.** If it has not returned by the deadline,
-   the pass has **failed**; stop waiting.
-3. **First recovery — one fresh re-dispatch.** Launch a *new* `ax-code-reviewer` with a
-   **minimal, self-contained prompt** (the diff range, the worktree path, the focus —
-   nothing else). Never ping into the hung one; never re-send a long prompt. Same
-   25-minute deadline.
-4. **If the fresh dispatch also blows the deadline, fail LOUDLY — never quietly
+   busy-spin. If it has not returned by the deadline, stop waiting and go to step 3.
+3. **First recovery — TRY RETRIEVAL, NOT RE-DISPATCH.** `SendMessage` to the agent's id
+   and ask it to deliver its findings. If it finished and could not hand them back, they
+   come straight out — that is the single most likely explanation, and it costs one
+   message. **Re-dispatching first is the expensive mistake:** it duplicates a review
+   that has already completed and doubles the stall on a 25-minute clock.
+4. **Second recovery — one fresh re-dispatch.** Only after retrieval comes back empty.
+   Launch a *new* `ax-code-reviewer` in the plain no-`name` shape with a **minimal,
+   self-contained prompt** (the diff range, the worktree path, the focus — nothing
+   else). Never re-send a long prompt. Same 25-minute deadline.
+5. **If the fresh dispatch also blows the deadline, fail LOUDLY — never quietly
    self-review and call it clean:**
    - **Orchestrated mode:** return `reviewer: hung` in the handoff. auto-ship then
      orders an independent review pass **before** it merges (this is the mitigation
@@ -165,12 +200,15 @@ So treat every dispatch as fallible:
    - **Standalone mode:** run `/code-review high` inline as a fallback, and say
      plainly in the PR body that the deep reviewer never returned and what stood in
      for it. Do not write "review clean".
-5. **Honesty rule.** `reviewer: clean` means an `ax-code-reviewer` **returned** and its
-   actionable findings are addressed. A reviewer that never returned is
-   `reviewer: hung` — always. Log the hang (times, diff size, which dispatch) in
-   `decisions.md` so TASK-247 keeps accumulating evidence.
-- **Progress on a hang:** `⚠ reviewer hung — re-dispatching`, then
-  `⚠ reviewer hung ×2 — <fallback>` if the second one also blows the deadline.
+6. **Honesty rule.** `reviewer: clean` means an `ax-code-reviewer` **returned** and its
+   actionable findings are addressed — *including* when what returned it was a
+   retrieval message rather than the ordinary completion path. A reviewer that never
+   produced findings at all is `reviewer: hung` — always. Log any stall (times, dispatch
+   shape, whether retrieval recovered it) in `decisions.md` so this keeps accumulating
+   evidence.
+- **Progress on a stall:** `⚠ reviewer silent — retrieving`, then
+  `⚠ reviewer hung — re-dispatching` if retrieval came back empty, then
+  `⚠ reviewer hung ×2 — <fallback>` if the re-dispatch also blows the deadline.
 
 ### Phase 6 — Ship: open the PR + drive CI green
 The branch is already reviewed and clean, so there is **no hosted-reviewer wait** here. Open the PR and take CI to green.
@@ -233,6 +271,8 @@ reporting), then report the merge. Then you are done.
 | "CI will probably pass, I'll wrap up" | Not done until `gh pr checks` is actually green. Verify, don't assume. |
 | "I'll skip the review, lint+test passed" | The pre-PR gate *includes* a deep review (the `ax-code-reviewer` subagent). Tests prove behavior; the review catches design/security/convention issues tests don't. |
 | "The review is taking a while, I'll skip it" | A whole-branch Opus-4.8 / max-effort review takes minutes — that's expected, not a hang. The subagent runs async; let it finish. Don't skip the gate on impatience. |
+| "The reviewer is hung, I'll re-dispatch" | Ask it for its findings first. A silent subagent is a **delivery** question before it is a **liveness** one — the review is usually already written. Re-dispatching first duplicates it and doubles the stall. |
+| "I'll give the reviewer a `name` so I can talk to it" | A `name` makes it a teammate whose final text is never delivered to you. That is the whole bug. Dispatch with no `name`; if you truly need one, you must also send it a message so it has an address to reply to. |
 | "Docs-only tweak, but I'll run the full review to be safe" | Skip the review for docs/comment/config-only diffs (CodeRabbit/CodeQL/semgrep/gitleaks cover those) and log the skip. The reviewer is fixed at Opus 4.8 / max effort — there's no tier to pad, just don't review non-code. |
 | "The review flagged it but I think it's fine" | Verify each finding (receiving-code-review). Fix real ones; log rejected ones in `decisions.md` with the reason. Silent dismissal isn't allowed. |
 | "I'll review locally after I open the PR" | The review is the gate *before* the PR. Open it only once the review is clean. |
@@ -249,7 +289,7 @@ reporting), then report the merge. Then you are done.
 | Design | superpowers:writing-plans, ax-conventions, security-checklist |
 | Implement | superpowers:subagent-driven-development, superpowers:test-driven-development |
 | Verify | superpowers:verification-before-completion, superpowers:requesting-code-review |
-| Review (pre-PR) | `ax-code-reviewer` subagent (`subagent_type: ax-code-reviewer`; Opus 4.8, max effort, whole branch vs `main`), superpowers:receiving-code-review. **It can hang — 25-min deadline, one fresh re-dispatch, then fail loudly (`reviewer: hung`); never self-review and call it clean.** |
+| Review (pre-PR) | `ax-code-reviewer` subagent (`subagent_type: ax-code-reviewer`; Opus 4.8, max effort, whole branch vs `main`), superpowers:receiving-code-review. **Dispatch with NO `name`** — a named teammate cannot hand its findings back, which is what every past "hang" actually was. If it does go silent: retrieve via `SendMessage` FIRST, re-dispatch second, then fail loudly (`reviewer: hung`); never self-review and call it clean. |
 | Ship | commit-commands:commit-push-pr, superpowers:systematic-debugging, `gh`, `ScheduleWakeup` |
 | Merge (Phase 7) | `gh pr merge --squash`, `git pull --ff-only` (standalone); hand off to auto-ship (orchestrated) |
 | Progress (every phase) | `append_progress` heartbeat to the card's progress block — auto-ship `references/github-project.md` §6; best-effort, shell-side, own card only |
