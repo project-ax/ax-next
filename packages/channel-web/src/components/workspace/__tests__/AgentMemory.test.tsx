@@ -160,7 +160,7 @@ describe('AgentMemory', () => {
   });
 
   it('refuses to show an empty editor when no rules row came back', () => {
-    // The destructive case: an unreadable rules file must NOT render as a
+    // The dangerous case: an unreadable rules file must NOT render as a
     // blank box, or the next Save overwrites rules the user still has.
     render(<AgentMemory agentName="Quill" docs={[]} onSaveRules={vi.fn()} />);
     expect(screen.getByText('Rules you gave me')).toBeInTheDocument();
@@ -169,6 +169,28 @@ describe('AgentMemory', () => {
     expect(
       screen.getByText(/We could not read your rules just now/u),
     ).toBeInTheDocument();
+  });
+
+  /*
+    THIS ROW IS THE WORKED EXAMPLE FOR `lib/read-register.ts`'s third clause,
+    and it is the one that clause exists to protect.
+
+    By the first two clauses of that rule a failed read with no retry armed is
+    `destructive` — so a reader applying the rule literally would "correct" this
+    notice to red. They would be wrong, and nothing here said so: the row above
+    pins that the editor is withheld but never pinned the REGISTER, so the
+    repaint would have stayed green.
+
+    Neutral is right because this is not a failure report, it is a withheld
+    control. The editor is removed so nobody types into a blank box and saves
+    over rules that are still safely on disk; nothing the reader holds is at
+    risk, no obligation of theirs is going unmet, and the next read may work.
+    Contrast `:192`, a failed WRITE, which IS red — and which the first two
+    clauses predict correctly.
+  */
+  it('does not dress a withheld editor up as something having gone wrong', () => {
+    render(<AgentMemory agentName="Quill" docs={[]} onSaveRules={vi.fn()} />);
+    expect(screen.getByRole('alert').className).not.toContain('destructive');
   });
 
   it('renders read-only when the caller has no write path', () => {

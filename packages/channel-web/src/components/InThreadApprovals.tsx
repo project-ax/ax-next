@@ -38,6 +38,7 @@ import {
 } from '@/components/workspace/decision-copy';
 import { useConversationDecisions } from '@/lib/conversation-decisions';
 import { SignInAgainButton } from '@/components/SignInAgainButton';
+import { readAlertVariant } from '@/lib/read-register';
 
 export function InThreadApprovals() {
   const {
@@ -206,7 +207,7 @@ export function InThreadApprovals() {
         <ApprovalCard key={next.id} decision={next} {...cardProps(next.id)} />
       )}
       {showExpired && (
-        <Alert>
+        <Alert variant={readAlertVariant('expired')}>
           <AlertTitle>{DECISION_SESSION_EXPIRED_TITLE}</AlertTitle>
           <AlertDescription className="flex flex-col items-start gap-2">
             <span>{DECISION_SESSION_EXPIRED}</span>
@@ -216,7 +217,22 @@ export function InThreadApprovals() {
         </Alert>
       )}
       {showReadFailure && (
-        <Alert>
+        /*
+          THE REGISTER FOLLOWS WHETHER ANYTHING IS STILL COMING (TASK-290).
+
+          This box used to be neutral in both states, and that was half right.
+          While `retrying` is true an attempt really is on its way and the state
+          resolves itself — neutral. Once the budget is spent nothing further
+          happens unless the reader clicks, which is the identical state Today
+          is in on its FIRST failure, because `useDecisionQueue` has no
+          automatic retry at all. Same state, same register: red.
+
+          Yes, that reddens the title too — `ui/alert.tsx` recolours the whole
+          body. The red is not a claim about the hold, which is normal; it is a
+          claim about the queue we cannot read. `lib/read-register.ts` records
+          the argument in full.
+        */
+        <Alert variant={readAlertVariant('failed', { retrying })}>
           <AlertTitle>{DECISION_READ_FAILED_TITLE}</AlertTitle>
           <AlertDescription className="flex flex-col items-start gap-2">
             {/*

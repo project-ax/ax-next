@@ -289,6 +289,65 @@ describe('InThreadApprovals', () => {
         screen.getByRole('button', { name: 'Try again' }),
       ).toBeInTheDocument();
     });
+
+    /*
+      TASK-290. The register has to move with the sentence, and it did not.
+
+      This box was neutral in BOTH states. Neutral is honest while an attempt is
+      coming — the state resolves itself and nothing is asked of the reader —
+      and it stops being honest the moment the budget is spent, because then the
+      reader is in exactly the state a `TodayView` reader is in on their FIRST
+      failure: a hold exists, we cannot read it, and nothing further happens
+      until they click. `TodayView` draws that red (pinned at
+      `TodayView.test.tsx`), and it draws it red on the first failure precisely
+      because `useDecisionQueue` has no automatic retry to wait on. Same state,
+      two colours, was the one genuine disagreement between the three surfaces.
+
+      Both halves are asserted, so flattening the branch either way fails one of
+      them. The rule that decides it is `lib/read-register.ts`.
+    */
+    it('goes red only once nothing further is coming', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.useFakeTimers();
+      vi.spyOn(workspaceApi, 'decisions').mockRejectedValue(new Error('boom'));
+      decisionRaisedActions.raise();
+      render(<InThreadApprovals />);
+
+      await settle();
+      // An attempt is genuinely on its way. Red would overstate a state that is
+      // about to fix itself without the reader lifting a finger.
+      expect(screen.getByText(DECISION_READ_RETRYING)).toBeInTheDocument();
+      expect(screen.getByRole('alert').className).not.toContain('destructive');
+
+      const past = Math.max(...READ_RETRY_DELAYS_MS) + 1;
+      for (let i = 0; i <= READ_RETRY_DELAYS_MS.length; i += 1) await tick(past);
+
+      // Budget spent: terminal until the reader acts, which is what red means.
+      expect(screen.getByText(DECISION_READ_FAILED)).toBeInTheDocument();
+      expect(screen.getByRole('alert').className).toContain('destructive');
+      // The heading stays. It is evidenced by the live frame either way, and
+      // the red is about the queue underneath it, not about the hold.
+      expect(screen.getByText(DECISION_READ_FAILED_TITLE)).toBeInTheDocument();
+    });
+
+    /*
+      The other kind keeps its own answer. A session that ran out is not a
+      malfunction and no retry is armed for it, so the "nothing further is
+      coming" clause must NOT drag it red — the exception is the reader's action
+      being sign-in rather than repair.
+    */
+    it('never reddens a signed-out session, which has no retry either', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.useFakeTimers();
+      vi.spyOn(workspaceApi, 'decisions').mockRejectedValue(
+        new WorkspaceApiError('workspace /decisions', 401),
+      );
+      render(<InThreadApprovals />);
+
+      await settle();
+      expect(screen.getByText(DECISION_SESSION_EXPIRED_TITLE)).toBeInTheDocument();
+      expect(screen.getByRole('alert').className).not.toContain('destructive');
+    });
   });
 
   /*

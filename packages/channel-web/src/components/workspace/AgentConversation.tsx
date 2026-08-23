@@ -14,6 +14,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { signInWithGoogle } from '@/lib/auth';
+import { readAlertVariant } from '@/lib/read-register';
 import type {
   Decision,
   ThreadMessage,
@@ -139,8 +140,13 @@ export function AgentConversation({
               which is true of a blip and untrue of a session that simply ran
               out. And the offer follows the fact too: a blip is ours to retry,
               an expired session is not retryable at all.
+
+              `readAlertVariant` owns the branch since TASK-290; behaviour here
+              is unchanged. No `retrying` is passed because there is no
+              automatic retry behind this read — `useDecisionQueue` never got
+              one — so the failure is terminal until the reader clicks.
             */
-            <Alert variant={approvalRead === 'expired' ? 'default' : 'destructive'}>
+            <Alert variant={readAlertVariant(approvalRead)}>
               <AlertDescription className="flex flex-col items-start gap-2.5">
                 <span className="text-[13px] leading-relaxed">
                   {approvalRead === 'expired'

@@ -22,6 +22,13 @@
  *     written for (design H1), and a constant cannot be assembled out of
  *     anything.
  *
+ * WORDS ONLY — the REGISTER lives in `lib/read-register.ts` (TASK-290). Which
+ * variant an error alert takes, and whether it may carry a title at all, is one
+ * rule shared by every surface in the app; the sentences below are deliberately
+ * NOT shared, for the reason spelled out at `DECISION_THREAD_READ_FAILED`. Two
+ * files because the two answers pull in opposite directions. A surface outside
+ * decisions should import the register and none of this.
+ *
  * The one line in here that is load-bearing above all others is
  * `DECISION_PENDING_AGENT`. When the host physically cannot make the call
  * itself — a tool that only runs inside the sandbox, and the turn has ended —
@@ -96,6 +103,11 @@ export const DECISION_ACTION_FAILED =
  * — rather than with our plumbing. The body (below) does the apologising. This
  * pair is only ever shown when a live `decisionRaised` frame says a hold really
  * does exist, so it is safe for it to state that as a fact.
+ *
+ * That precondition is now the general rule, not a local habit: a title needs
+ * positive evidence for what it asserts, or the surface goes without one. See
+ * `lib/read-register.ts`. It is why `TodayView` has no heading over the same
+ * failure and why adding one would be a regression, not a tidy-up.
  */
 export const DECISION_READ_FAILED_TITLE = 'Your assistant is waiting on you';
 
