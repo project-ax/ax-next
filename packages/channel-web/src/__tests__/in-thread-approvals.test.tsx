@@ -11,7 +11,7 @@
  * an empty queue; a click reaches the route) live in the seam between them.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { InThreadApprovals } from '../components/InThreadApprovals';
 import { decisionRaisedActions } from '../lib/decision-raised-store';
 import {
@@ -20,10 +20,13 @@ import {
   type Decision,
 } from '../lib/workspace-api';
 import {
+  DECISION_READ_FAILED,
   DECISION_READ_FAILED_TITLE,
+  DECISION_READ_RETRYING,
   DECISION_SESSION_EXPIRED,
   DECISION_SESSION_EXPIRED_TITLE,
 } from '../components/workspace/decision-copy';
+import { READ_RETRY_DELAYS_MS } from '../lib/conversation-decisions';
 import { signInWithGoogle } from '../lib/auth';
 
 // The Sign in button starts the one sign-in this app has. The real thing
@@ -58,6 +61,9 @@ describe('InThreadApprovals', () => {
     decisionRaisedActions.resetForTest();
   });
   afterEach(() => {
+    // The retry tests below run on fake timers; a test that threw before its
+    // own restore must not leave them installed for the next one.
+    vi.useRealTimers();
     vi.restoreAllMocks();
     decisionRaisedActions.resetForTest();
   });
@@ -195,6 +201,94 @@ describe('InThreadApprovals', () => {
     expect(await screen.findByTestId('approval-d-marcus')).toBeInTheDocument();
     expect(readAgain).toHaveBeenCalled();
     expect(screen.queryByText(DECISION_READ_FAILED_TITLE)).toBeNull();
+  });
+
+  /*
+    TASK-274. Nothing here polls, so a failed read used to be the end of it: the
+    list was re-read only when a frame landed, the thread changed, or somebody
+    clicked. A blip while a hold was actually open therefore hid the card until
+    the reader happened to act — and a person who can see nothing waiting on
+    them has no reason to.
+
+    The retry lives in `useConversationDecisions` and is pinned there. What
+    these two hold is the part that is this component's call: the retry must not
+    become a way around the frame gate, and the sentence on screen must only
+    promise an attempt while one is actually coming.
+  */
+  describe('a failed read is no longer the end of it', () => {
+    /** Let a read settle without moving any retry timer. */
+    const settle = () =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+    const tick = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+
+    it('reads again on its own, and the screen stays quiet while it does', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.useFakeTimers();
+      const read = vi
+        .spyOn(workspaceApi, 'decisions')
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValue({ decisions: [decisionFixture()] });
+      const { container } = render(<InThreadApprovals />);
+
+      await settle();
+      /*
+        THE SILENCE IS NOT WEAKENED. With no live frame vouching for a hold,
+        a failed read still puts nothing on screen — this fetch is ambient, and
+        an error line keyed on the failure alone would hand approval copy to
+        thousands of people who have no approvals. The retry is a second look,
+        not a new claim.
+      */
+      expect(container.firstChild).toBeNull();
+      expect(screen.queryByText(DECISION_READ_FAILED_TITLE)).toBeNull();
+      expect(read).toHaveBeenCalledTimes(1);
+
+      await tick(READ_RETRY_DELAYS_MS[0]!);
+
+      // Nobody clicked, nobody switched threads, no frame landed. The hold is
+      // on screen because the read came back by itself — which is the entire
+      // point, and what "terminal until an unrelated user action" meant.
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(screen.getByTestId('approval-d-marcus')).toBeInTheDocument();
+      // Quiet on screen was never silent to an operator.
+      expect(warn).toHaveBeenCalled();
+    });
+
+    it('promises another attempt only while one is coming', async () => {
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      vi.useFakeTimers();
+      vi.spyOn(workspaceApi, 'decisions').mockRejectedValue(new Error('boom'));
+      // The frame is what makes this box sayable at all; without it the case
+      // above applies and there is no sentence to get right.
+      decisionRaisedActions.raise();
+      render(<InThreadApprovals />);
+
+      await settle();
+      expect(screen.getByText(DECISION_READ_RETRYING)).toBeInTheDocument();
+      expect(screen.queryByText(DECISION_READ_FAILED)).toBeNull();
+      // Same action either way, and available now rather than after a back-off.
+      expect(
+        screen.getByRole('button', { name: 'Try again' }),
+      ).toBeInTheDocument();
+
+      // Past the whole ladder, however the attempts fall.
+      const past = Math.max(...READ_RETRY_DELAYS_MS) + 1;
+      for (let i = 0; i <= READ_RETRY_DELAYS_MS.length; i += 1) await tick(past);
+
+      // The attempts are spent, so the sentence stops claiming them. A line
+      // that went on saying "trying again" over a queue nothing is reading any
+      // more is the unbacked promise this copy was held back for.
+      expect(screen.queryByText(DECISION_READ_RETRYING)).toBeNull();
+      expect(screen.getByText(DECISION_READ_FAILED)).toBeInTheDocument();
+      expect(
+        screen.getByRole('button', { name: 'Try again' }),
+      ).toBeInTheDocument();
+    });
   });
 
   /*

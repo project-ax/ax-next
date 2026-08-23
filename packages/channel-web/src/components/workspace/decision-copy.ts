@@ -99,9 +99,40 @@ export const DECISION_ACTION_FAILED =
  */
 export const DECISION_READ_FAILED_TITLE = 'Your assistant is waiting on you';
 
-/** `GET /api/workspace/decisions` failed. NOT an empty queue. */
+/**
+ * `GET /api/workspace/decisions` failed and nothing is coming on its own right
+ * now, so the offer is a button. NOT an empty queue.
+ *
+ * "Nothing coming" is the state, not a claim about attempts having been made —
+ * this constant is shared, and there are three ways to be in it. `/workspace`
+ * (`TodayView`) has no automatic retry at all, so it shows this on the FIRST
+ * failure. The in-thread card shows it before there is a conversation (no
+ * retry is armed then, deliberately) and again once `READ_RETRY_DELAYS_MS` is
+ * spent. Only the last of those has attempts behind it, which is why the
+ * sentence promises nothing about them — see `DECISION_READ_RETRYING` for the
+ * one that does, and only while it is true.
+ */
 export const DECISION_READ_FAILED =
   'We could not load what is waiting on you. Nothing has been decided without you — we just could not read the list back right now.';
+
+/**
+ * The same failed read, while another attempt is still coming.
+ *
+ * "Trying again" is a claim about the code, so it may only be on screen while
+ * the code is actually doing it — `useConversationDecisions` retries a failed
+ * read a bounded number of times and says so through `retrying`. This sentence
+ * was written for TASK-276 and deliberately NOT shipped there, because the
+ * retry did not exist yet and a promise with no mechanism behind it is the
+ * exact failure this epic keeps finding. It lands here, with the mechanism.
+ *
+ * It keeps the reassurance the other two lines carry — nothing was decided
+ * while we could not see the list — because that is the fact a person actually
+ * needs, and the one an unread queue puts in doubt. Shorter than
+ * `DECISION_READ_FAILED` on purpose: this state resolves itself, so it is a
+ * status line rather than an apology.
+ */
+export const DECISION_READ_RETRYING =
+  'We couldn’t check what’s waiting. Trying again. Nothing has been decided without you.';
 
 /**
  * The read was REFUSED, not failed — the session ran out (401).

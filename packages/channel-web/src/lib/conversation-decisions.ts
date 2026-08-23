@@ -20,7 +20,7 @@
  * function; using it as a status test would make this the fourth consumer of
  * "is this open" and the only one asking a different way. Reserve it for prose.
  */
-import { useEffect, useMemo, useRef } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useDecisionQueue, type DecisionReadError } from './workspace-decisions';
 import { useConversationId } from './use-conversation-id';
 import { decisionRaisedActions, useDecisionRaised } from './decision-raised-store';
@@ -52,6 +52,46 @@ import type { Decision } from './workspace-api';
  */
 export const SETTLED_CAP = 3;
 
+/**
+ * How long to wait before each automatic re-read after a failed one, in order.
+ * Three attempts, then we stop and the reader gets a button.
+ *
+ * A failed read used to be TERMINAL. Nothing on this surface polls: the queue
+ * is fetched once and afterwards only a `decisionRaised` frame, a thread
+ * switch, or a click reads it again. So a single blip while a hold was actually
+ * open left the card off the screen until the reader happened to do something
+ * else — and the one thing they are least likely to do is act, because as far
+ * as they can tell nothing is waiting on them. That is the hole this closes.
+ *
+ * Bounded, and deliberately not a poll. This read is ambient — every page load,
+ * every user, on the default surface — so an interval would multiply an outage
+ * by every open tab, for a queue that is otherwise event-driven. Three attempts
+ * over fifteen seconds covers the blip this exists for (a boot race, a dropped
+ * connection, a host restarting) and stops well short of hammering a route that
+ * is genuinely down.
+ *
+ * Spaced rather than uniform for the same reason: the first attempt is quick
+ * because most failures are momentary and a person may be looking at the screen
+ * right now, and the later ones back off because a failure that survives four
+ * seconds is not a blip any more.
+ *
+ * The budget is per OUTAGE, not per trigger. NO CLICK AND NO FRAME REFILLS IT:
+ * a person pressing `Try again`, or a new `decisionRaised` frame, still fires a
+ * read (they always did), and it neither refills the budget nor spends from it —
+ * the attempt is counted when a timer FIRES, so an outside read that cancels a
+ * pending wait just restarts that same rung. Both directions matter: a click
+ * must not buy three more attempts, and it must not burn one that never
+ * happened.
+ *
+ * What DOES reset it is a read that succeeds, or leaving the state this budget
+ * is about at all — the reset branch below also zeroes on a null conversation
+ * and on the error turning out to be an expired session. So navigating out to
+ * the welcome state and back into a thread mid-outage does start a fresh
+ * ladder. That is deliberate and still bounded: it costs a deliberate
+ * navigation per ladder, which is a person, not a loop.
+ */
+export const READ_RETRY_DELAYS_MS = [1000, 4000, 10_000] as const;
+
 export interface ConversationDecisions {
   /** Still questions (`pending` | `stale`), oldest first. */
   open: Decision[];
@@ -64,6 +104,12 @@ export interface ConversationDecisions {
    * `useDecisionQueue` — `kind` is what decides which sentence the card shows.
    */
   error: DecisionReadError | null;
+  /**
+   * Another read is coming on its own. True from the moment a failed read is
+   * scheduled for retry until the attempt that resolves it — so a surface can
+   * say "trying again" only while that is true of the code.
+   */
+  retrying: boolean;
   /** `decisionRaised` frames seen this page-load. Evidence, not a row. */
   raised: number;
   busyIds: ReadonlySet<string>;
@@ -137,6 +183,74 @@ export function useConversationDecisions(): ConversationDecisions {
     void refresh();
   }, [conversationId, refresh]);
 
+  /*
+    A failed read tries itself again, up to `READ_RETRY_DELAYS_MS.length` times.
+
+    GATED ON A KNOWN CONVERSATION, which is the whole point of it living here
+    rather than in `useDecisionQueue`. While `conversationId` is null this hook
+    returns `open: []` no matter what the queue holds, so there is nothing a
+    retry could put on screen — and the id IS null on every reload until the
+    first sidebar click or sent message. Retrying there would spend attempts on
+    a window with nothing in it and leave none for the window that matters: a
+    read that failed while a card genuinely should be up.
+
+    NOT FOR AN EXPIRED SESSION. A bounded retry against a 401 is three more
+    guaranteed 401s — the session is gone until the reader signs in, which is
+    why `DecisionReadError` carries `kind` at all (TASK-276).
+
+    Re-arming is what makes this bounded rather than recursive: `error` holds a
+    fresh object per failed read, so a retry that fails runs this effect again
+    and schedules the next delay, while a retry that succeeds clears `error` and
+    resets the budget. `refresh` is stable for the life of the hook
+    (`useCallback(…, [])` in `useDecisionQueue`), so nothing else re-runs it.
+
+    NOTHING NEW APPEARS ON SCREEN BECAUSE OF THIS. A retry can only fill the
+    queue in, or fail again; the decision about what a failed read is allowed to
+    SAY is `InThreadApprovals`', and it is unchanged — still gated on a live
+    frame vouching that a hold exists.
+  */
+  const retriesSpent = useRef(0);
+  const [retrying, setRetrying] = useState(false);
+  const { error } = queue;
+  useEffect(() => {
+    if (conversationId === null || error === null || error.kind !== 'failed') {
+      retriesSpent.current = 0;
+      setRetrying(false);
+      return;
+    }
+    const delay = READ_RETRY_DELAYS_MS[retriesSpent.current];
+    if (delay === undefined) {
+      // Budget spent. The surface stops saying "trying again" — because we are
+      // not — and offers the manual retry instead.
+      setRetrying(false);
+      return;
+    }
+    setRetrying(true);
+    /*
+      The tally moves when an attempt is actually MADE, not when one is
+      scheduled, and both halves of that matter.
+
+      Scheduling is not idempotent, and the reason is ordinary rather than
+      exotic: React re-runs this effect whenever `error` changes identity, which
+      a `Try again` click or a `decisionRaised` frame landing mid-wait does on
+      every failure. Counting at schedule time would let those spend an
+      automatic attempt that never happened — three clicks and the retry is
+      "exhausted" without a single one having fired, for exactly the person most
+      likely to be watching. Counting at fire time makes a cancelled timer cost
+      nothing, which is what a cancelled timer did.
+
+      (It would also survive StrictMode's deliberate double-invoke, the hazard
+      `FirstRunAutoCreate` guards against. That is a bonus and not the reason:
+      this app's root is NOT wrapped in `<StrictMode>` — see `main.tsx` — so
+      nothing here depends on it.)
+    */
+    const timer = setTimeout(() => {
+      retriesSpent.current += 1;
+      void refresh();
+    }, delay);
+    return () => clearTimeout(timer);
+  }, [conversationId, error, refresh]);
+
   const { open, settled } = useMemo(() => {
     // No conversation, no rows. On the welcome state there is nothing an
     // approval could be attached to, and "waiting on you" is a claim we have
@@ -167,7 +281,8 @@ export function useConversationDecisions(): ConversationDecisions {
     open,
     settled,
     conversationId,
-    error: queue.error,
+    error,
+    retrying,
     raised,
     busyIds: queue.busyIds,
     notices: queue.notices,
