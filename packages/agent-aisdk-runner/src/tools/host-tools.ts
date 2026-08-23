@@ -28,7 +28,12 @@ import {
   type IpcClient,
   type ToolDescriptor,
 } from '@ax/ipc-protocol';
-import type { FlushOutcome, HoldLatch, ToolPolicy } from '@ax/agent-runner-core';
+import {
+  flushPreconditionMessage,
+  type HoldLatch,
+  type HostToolFlush,
+  type ToolPolicy,
+} from '@ax/agent-runner-core';
 import { wrapWithPolicy } from './policy-wrap.js';
 
 export interface BuildHostToolsOptions {
@@ -39,11 +44,12 @@ export interface BuildHostToolsOptions {
   /**
    * Flush the live workspace (commit + push to the host mirror) before
    * forwarding a host tool whose descriptor declares
-   * `flushWorkspaceBeforeCall`, returning the flush outcome. Omitted in
-   * deployments without a workspace (the flag then simply has no effect).
-   * See the precondition gate below.
+   * `flushWorkspaceBeforeCall`, returning the flush outcome plus, on a
+   * refusal, the host's stated reason. Omitted in deployments without a
+   * workspace (the flag then simply has no effect). See the precondition gate
+   * below.
    */
-  flushWorkspace?: () => Promise<FlushOutcome>;
+  flushWorkspace?: () => Promise<HostToolFlush>;
   /** Test seam: override the per-call id generator. */
   idGen?: () => string;
   /** The one latch shared by every tool this turn — see WrapWithPolicyOptions. */
@@ -99,8 +105,10 @@ export function buildHostTools(opts: BuildHostToolsOptions): Record<string, Tool
           //     install an OLDER committed draft with the freshly-requested
           //     grants.
           //   - thrown: git/IPC error mid-flush.
-          // In those cases we surface a clear, retryable message instead of
-          // forwarding into a stale read (BUG-W2 follow-up; Codex review).
+          // In those cases we surface a clear message instead of forwarding
+          // into a stale read (BUG-W2 follow-up; Codex review) — carrying the
+          // host's own reason for the refusal when it gave one, so a veto is
+          // something the model can act on rather than a bare `rolled-back`.
           //
           // This THROWS rather than returning a plain string, and the
           // difference is about parity, not style. The SDK runner's shim
@@ -119,19 +127,17 @@ export function buildHostTools(opts: BuildHostToolsOptions): Record<string, Tool
           // refused before the tool ran, not a precondition failing on a
           // permitted call.
           if (descriptor.flushWorkspaceBeforeCall === true && flushWorkspace !== undefined) {
-            let outcome: FlushOutcome | 'error';
+            let flush: { outcome: HostToolFlush['outcome'] | 'error'; rejectionReason?: string };
             try {
-              outcome = await flushWorkspace();
+              flush = await flushWorkspace();
             } catch (flushErr) {
               process.stderr.write(
                 `runner: workspace flush before '${descriptor.name}' failed: ${flushErr instanceof Error ? flushErr.message : String(flushErr)}\n`,
               );
-              outcome = 'error';
+              flush = { outcome: 'error' };
             }
-            if (outcome !== 'accepted' && outcome !== 'noop') {
-              throw new Error(
-                `Could not sync your just-authored workspace files to the host before '${descriptor.name}' (flush outcome: ${outcome}). The files are not visible to the installer yet — please try again.`,
-              );
+            if (flush.outcome !== 'accepted' && flush.outcome !== 'noop') {
+              throw new Error(flushPreconditionMessage(descriptor.name, flush));
             }
           }
 

@@ -23,6 +23,40 @@ export const MAX_RESYNC_ATTEMPTS = 3;
 export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
 
 /**
+ * What a commit-notify attempt ended in, plus — on a NON-RECOVERABLE refusal —
+ * the host's own words for why.
+ *
+ * `rejectionReason` exists so that refusal is legible to the agent instead of
+ * dying inside this function: it is exactly the case where the rollback is
+ * `--hard`, so the turn's work is destroyed and a bare `rolled-back` gives the
+ * model nothing to correct. It is host-authored prose, not a machine code —
+ * callers surface it, they don't branch on it.
+ *
+ * It is carried iff `recoverable === false` — the same wire field that picks
+ * `--hard` over `--mixed`. Two host branches set it, and both state a
+ * self-contained objection: the `workspace:pre-apply` veto (a validator's
+ * reason) and bundle-author verification (a sanitized fixed string).
+ *
+ * Everything else stays silent, deliberately. A concurrent-writer or
+ * baseline-drift rejection is a RACE, not an objection: it leaves the working
+ * tree alone (`--mixed`) and a plain retry may well clear it. Its reason is
+ * either a `parent-mismatch:` line naming two storage-tier commit ids —
+ * backend vocabulary we must not put in front of the model — or the sanitized
+ * catch-all `'bundle prerequisite not satisfied (baseline drift)'`, which
+ * leaks nothing but tells the agent nothing either. Neither is actionable.
+ * `actualParent` is NOT the discriminator for this: the
+ * host attaches it only when it could resolve a head, so a race can and does
+ * arrive without one (an empty-repo mismatch, or a git-core integrity guard
+ * that throws with no cause). `recoverable` is set on the branch itself and
+ * has no such gap.
+ */
+export interface CommitNotifyResult {
+  parentVersion: string | null;
+  outcome: CommitNotifyOutcome;
+  rejectionReason?: string;
+}
+
+/**
  * Commit-notify a turn bundle, recovering from a concurrent-writer advance by
  * rebasing onto the storage tier's new head and retrying — bounded. Shared by
  * the per-turn `result` handler AND the post-`result` final commit so both
@@ -34,7 +68,8 @@ export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
  *  - concurrent-writer      → resyncBaselineAndReplay + re-bundle + retry, up to
  *    envelope                 MAX_RESYNC_ATTEMPTS. An empty re-bundle (turn
  *                             absorbed) → promote parentVersion to the new head ('accepted').
- *  - true veto / exhausted  → rollbackToBaseline ('rolled-back'); parentVersion unchanged.
+ *  - true veto / exhausted  → rollbackToBaseline ('rolled-back'); parentVersion unchanged,
+ *                             and the host's stated reason comes back as `rejectionReason`.
  *  - network/5xx/resync-fail→ keep the working tree ('kept'); parentVersion unchanged.
  */
 export async function commitNotifyWithResync(input: {
@@ -48,7 +83,7 @@ export async function commitNotifyWithResync(input: {
   bundleBytes: string;
   parentVersion: string | null;
   reason: string;
-}): Promise<{ parentVersion: string | null; outcome: CommitNotifyOutcome }> {
+}): Promise<CommitNotifyResult> {
   const { client, root, reason } = input;
   let bundleB64 = input.bundleBytes;
   let currentParentVersion: string | null = input.parentVersion;
@@ -194,7 +229,22 @@ export async function commitNotifyWithResync(input: {
     commitTrace(
       `[commit-trace] outcome=rolled-back (actualParent=${resp.actualParent ?? '-'} attempt=${attempt} mode=${mode})\n`,
     );
-    return { parentVersion: input.parentVersion, outcome: 'rolled-back' };
+    // Hand the host's stated reason back to the caller when — and only when —
+    // we just destroyed the agent's work. Everything else on this path is
+    // write-only (a stderr line and an off-by-default commit trace), so this is
+    // the only channel by which the agent can learn what it did wrong.
+    //
+    // Keyed off the SAME `mode` that decided the reset, so the two can't drift:
+    // `hard` ⟺ `recoverable === false` ⟺ the host refused on the merits and
+    // stated a self-contained objection. A `mixed` rollback is a race
+    // (concurrent writer, baseline drift) whose reason is either commit-id
+    // noise or a sanitized catch-all — no objection to address either way, and
+    // the forwarder's retry message is the right advice. See CommitNotifyResult.
+    return {
+      parentVersion: input.parentVersion,
+      outcome: 'rolled-back',
+      ...(mode === 'hard' ? { rejectionReason: resp.reason } : {}),
+    };
   }
 }
 
@@ -227,12 +277,71 @@ export async function commitNotifyWithResync(input: {
  */
 export type FlushOutcome = 'accepted' | 'noop' | CommitNotifyOutcome;
 
+/**
+ * A flush's outcome plus, on `rolled-back`, the host's reason for refusing —
+ * see {@link CommitNotifyResult.rejectionReason}. The tool-call path renders it
+ * into the error it hands the model, so a veto reads as "the host refused
+ * because X" rather than an unexplained `rolled-back`.
+ */
+export interface FlushResult {
+  parentVersion: string | null;
+  outcome: FlushOutcome;
+  rejectionReason?: string;
+}
+
+/**
+ * What `flushWorkspaceForHostTool` hands a loop's tool forwarder: the flush
+ * outcome and, on a refusal, the host's reason. `parentVersion` is deliberately
+ * NOT part of this — the runner shell owns the commit chain and threads the new
+ * parent internally; a loop has no business seeing a workspace token.
+ */
+export type HostToolFlush = Omit<FlushResult, 'parentVersion'>;
+
+/**
+ * The message a loop hands the model when a pre-call workspace flush did NOT
+ * sync the host mirror. Shared by both runners so they stay
+ * host-indistinguishable: same words, and the same reason, whichever loop is
+ * driving.
+ *
+ * `outcome` widens past {@link FlushOutcome} to include `'error'`, which the
+ * loops use for a flush that threw — that is not a commit-notify outcome, so it
+ * lives here rather than in the type.
+ *
+ * When the host stated a reason we say what it was and drop the "please try
+ * again" tail: against a policy veto the identical retry is vetoed identically.
+ * We do NOT replace it with "fix this and retry" either — the reason is the
+ * payload; what to do with it is the model's call.
+ *
+ * The "rolled back" clause is gated on the outcome rather than on the reason's
+ * presence. Only a `rolled-back` carries a reason today, but that is a caller
+ * convention the parameter type cannot enforce, and this sentence must never
+ * assert a rollback that did not happen.
+ */
+export function flushPreconditionMessage(
+  toolName: string,
+  flush: { outcome: FlushOutcome | 'error'; rejectionReason?: string },
+): string {
+  const head =
+    `Could not sync your just-authored workspace files to the host before ` +
+    `'${toolName}' (flush outcome: ${flush.outcome}).`;
+  const stated = flush.rejectionReason?.trim() ?? '';
+  if (stated !== '') {
+    // Host reasons are prose from a plugin and are not required to end in a
+    // period; without this the next sentence runs straight on from theirs.
+    const sentence = /[.!?]$/.test(stated) ? stated : `${stated}.`;
+    const rolledBack =
+      flush.outcome === 'rolled-back' ? ` The turn's commit was rolled back.` : '';
+    return `${head} The host refused the change: ${sentence}${rolledBack}`;
+  }
+  return `${head} The files are not visible to the installer yet — please try again.`;
+}
+
 export async function flushWorkspaceToHost(input: {
   client: Pick<IpcClient, 'call' | 'callBinary'>;
   root: string;
   parentVersion: string | null;
   reason: string;
-}): Promise<{ parentVersion: string | null; outcome: FlushOutcome }> {
+}): Promise<FlushResult> {
   const { client, root, parentVersion, reason } = input;
   const bundleB64 = await commitTurnAndBundle({ root, reason });
   if (bundleB64 === null) {
@@ -246,5 +355,11 @@ export async function flushWorkspaceToHost(input: {
     parentVersion,
     reason,
   });
-  return { parentVersion: result.parentVersion, outcome: result.outcome };
+  return {
+    parentVersion: result.parentVersion,
+    outcome: result.outcome,
+    ...(result.rejectionReason !== undefined
+      ? { rejectionReason: result.rejectionReason }
+      : {}),
+  };
 }

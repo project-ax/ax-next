@@ -286,11 +286,26 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
       { changes: policyChanges, parent, reason },
     );
     if (pre.rejected) {
-      // Today the ONLY pre-apply rejecter is @ax/validator-skill's SDK-config
-      // veto (the SKILL.md content veto became accept-but-annotate in Phase 2).
-      // An SDK-config write must be CLEARED, not preserved, or it re-vetoes the
-      // atomic transcript bundle every turn (wedge). A future *recoverable*
-      // pre-apply veto would need per-subscriber plumbing (see the spec).
+      // Three plugins reject on `workspace:pre-apply`: @ax/validator-skill's
+      // SDK-config veto (its SKILL.md *content* veto became accept-but-annotate
+      // in Phase 2; the SDK-config one did not), @ax/validator-identity, and
+      // @ax/validator-routine.
+      //
+      // `recoverable: false` is unconditional on this branch, so the runner
+      // hard-resets the turn. An SDK-config write must be CLEARED, not
+      // preserved, or it re-vetoes the atomic transcript bundle every turn
+      // (wedge). A future *recoverable* pre-apply veto would need
+      // per-subscriber plumbing (see the spec).
+      //
+      // Log the reason on the way out. Of the three rejecters only
+      // @ax/validator-identity logs its own vetoes, and it logs the offending
+      // path (plus a scan category), never the reason text — so without this
+      // line the host discards a turn's work with no account of why.
+      ctx.logger.warn('workspace_pre_apply_rejected', {
+        action: 'workspace.commit-notify',
+        rejectedBy: pre.source ?? 'unknown',
+        reason: pre.reason,
+      });
       const body = { accepted: false as const, reason: pre.reason, recoverable: false as const };
       const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
       if (!checked.success) {

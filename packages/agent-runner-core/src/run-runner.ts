@@ -20,7 +20,7 @@ import {
 import {
   commitNotifyWithResync,
   flushWorkspaceToHost,
-  type FlushOutcome,
+  type HostToolFlush,
 } from './commit-notify-resync.js';
 import { commitTrace } from './commit-trace.js';
 import { readRunnerEnv, type RunnerEnv } from './env.js';
@@ -106,7 +106,7 @@ export interface RunnerDeps {
    * Mid-turn workspace flush for host tools that declare
    * `flushWorkspaceBeforeCall`. Serialized internally.
    */
-  flushWorkspaceForHostTool: () => Promise<FlushOutcome>;
+  flushWorkspaceForHostTool: () => Promise<HostToolFlush>;
   /** Proxy bootstrap result — the env the loop must pass to its SDK. */
   proxyStartup: ProxyStartup;
   /** True once the session Python venv exists (created or pre-present). */
@@ -607,7 +607,7 @@ async function runRunnerInner(
   // read-flush-write critical section atomic. The turn-end commit runs at the
   // turn boundary (after all tool calls), so it never overlaps a flush.
   let flushChain: Promise<unknown> = Promise.resolve();
-  const flushWorkspaceForHostTool = (): Promise<FlushOutcome> => {
+  const flushWorkspaceForHostTool = (): Promise<HostToolFlush> => {
     const run = flushChain.then(async () => {
       const result = await flushWorkspaceToHost({
         client,
@@ -616,7 +616,14 @@ async function runRunnerInner(
         reason: 'turn',
       });
       parentVersion = result.parentVersion;
-      return result.outcome;
+      // Pass the host's refusal reason through to the forwarder; it is what the
+      // model reads when a veto discards the file it just wrote.
+      return {
+        outcome: result.outcome,
+        ...(result.rejectionReason !== undefined
+          ? { rejectionReason: result.rejectionReason }
+          : {}),
+      };
     });
     // Keep the chain alive whether this run resolves or rejects, so one failed
     // flush doesn't permanently wedge the next.

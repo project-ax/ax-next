@@ -382,7 +382,9 @@ describe('flushWorkspaceBeforeCall host tool (BUG-W2 real path)', () => {
         reason: 'turn',
       });
       parentVersion = r.parentVersion;
-      return r.outcome;
+      // The whole result: the forwarder gates on `outcome` and renders
+      // `rejectionReason` when the host refused.
+      return r;
     };
     const entries = buildHostToolEntries(client, [FLUSH_TOOL], () => 'id-1', flushWorkspace);
     const result = await (entries[0] as ToolEntry).handler({ path: 'foo.txt' }, {});
@@ -408,7 +410,9 @@ describe('flushWorkspaceBeforeCall host tool (BUG-W2 real path)', () => {
     const flushWorkspace = async () => {
       const r = await flushWorkspaceToHost({ client, root: runnerRoot, parentVersion, reason: 'turn' });
       parentVersion = r.parentVersion;
-      return r.outcome;
+      // The whole result: the forwarder gates on `outcome` and renders
+      // `rejectionReason` when the host refused.
+      return r;
     };
     const entries = buildHostToolEntries(client, [FLUSH_TOOL], () => 'id-1', flushWorkspace);
 
@@ -616,7 +620,9 @@ describe('TASK-137 — gitWithRetry settle seam (transient-git resilience)', () 
     const flushWorkspace = async () => {
       const r = await flushWorkspaceToHost({ client, root: runnerRoot, parentVersion, reason: 'turn' });
       parentVersion = r.parentVersion;
-      return r.outcome;
+      // The whole result: the forwarder gates on `outcome` and renders
+      // `rejectionReason` when the host refused.
+      return r;
     };
     const entries = buildHostToolEntries(client, [FLUSH_TOOL], () => 'id-1', flushWorkspace);
 

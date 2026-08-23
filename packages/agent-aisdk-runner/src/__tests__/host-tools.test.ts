@@ -301,9 +301,9 @@ describe('buildHostTools', () => {
         order.push('forward');
         return { output: 'ok' };
       });
-      const flushWorkspace = async (): Promise<'accepted'> => {
+      const flushWorkspace = async () => {
         order.push('flush');
-        return 'accepted';
+        return { outcome: 'accepted' as const };
       };
       const tools = buildHostTools({
         policy: fakePolicy(),
@@ -318,7 +318,7 @@ describe('buildHostTools', () => {
 
     it('forwards on a no-op flush (already synced on a prior turn)', async () => {
       const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-      const flushWorkspace = async (): Promise<'noop'> => 'noop';
+      const flushWorkspace = async () => ({ outcome: 'noop' as const });
       const tools = buildHostTools({
         policy: fakePolicy(),
         client,
@@ -334,9 +334,9 @@ describe('buildHostTools', () => {
     it('does NOT flush for a host tool without flushWorkspaceBeforeCall', async () => {
       let flushed = false;
       const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-      const flushWorkspace = async (): Promise<'accepted'> => {
+      const flushWorkspace = async () => {
         flushed = true;
-        return 'accepted';
+        return { outcome: 'accepted' as const };
       };
       const tools = buildHostTools({
         policy: fakePolicy(),
@@ -371,9 +371,9 @@ describe('buildHostTools', () => {
           order.push('forward');
           return { output: 'host-ok' };
         });
-        const flushWorkspace = async (): Promise<typeof outcome> => {
+        const flushWorkspace = async () => {
           order.push('flush');
-          return outcome;
+          return { outcome };
         };
         const tools = buildHostTools({
           policy: fakePolicy(),
@@ -394,13 +394,44 @@ describe('buildHostTools', () => {
       },
     );
 
+    // TASK-240: parity with the SDK runner — the host's veto reason must reach
+    // the model, not die in the runner. Both loops render the same sentence, so
+    // an agent gets the same account of why its work was refused either way.
+    it("puts the host's veto reason in the thrown tool error", async () => {
+      const { client, calls } = mkClient(async () => ({ output: 'host-ok' }));
+      const flushWorkspace = async () => ({
+        outcome: 'rolled-back' as const,
+        rejectionReason:
+          '.claude/settings.json: agent writes to the SDK config are refused',
+      });
+      const tools = buildHostTools({
+        policy: fakePolicy(),
+        client,
+        tools: [HOST_TOOL_FLUSH],
+        flushWorkspace,
+        holdLatch,
+      });
+      const err = await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS).then(
+        () => null,
+        (e: unknown) => e as Error,
+      );
+      expect(err?.message).toContain(
+        '.claude/settings.json: agent writes to the SDK config are refused',
+      );
+      expect(err?.message).toContain("The turn's commit was rolled back.");
+      // Same omission as the SDK runner's twin: retrying an identical vetoed
+      // change gets vetoed identically, so we do not tell the model to.
+      expect(err?.message).not.toContain('please try again');
+      expect(calls.map((c) => c.action)).toEqual([]);
+    });
+
     it('does NOT forward and raises a retryable tool error when the flush throws', async () => {
       const order: string[] = [];
       const { client } = mkClient(async () => {
         order.push('forward');
         return { output: 'host-ok' };
       });
-      const flushWorkspace = async (): Promise<'accepted'> => {
+      const flushWorkspace = async (): Promise<{ outcome: 'accepted' }> => {
         order.push('flush-throw');
         throw new Error('commit-notify unreachable');
       };
