@@ -2269,7 +2269,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
     const rows: GrantRow[] = [];
     let incomplete = false;
-    let read = false;
+    // Set by any producer that THREW. It is deliberately not "did anything
+    // read": a section with two producers had one flag between them, so a
+    // vacuous success on one half could speak for a failure on the other.
+    let failed = false;
 
     if (hasSites) {
       const revocable = bus.hasService('host-grants:revoke');
@@ -2279,7 +2282,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           initCtx,
           { ownerUserId: userId, agentId: agent.id },
         );
-        read = true;
         for (const row of out.hosts ?? []) {
           const label = fenceLine(row?.host, RAIL_LABEL_MAX_CHARS);
           if (label === null) {
@@ -2299,6 +2301,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           });
         }
       } catch (err) {
+        failed = true;
         incomplete = true;
         initCtx.logger.warn('workspace_rail_site_grants_failed', {
           agentId: agent.id,
@@ -2318,6 +2321,10 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           .filter((id): id is string => typeof id === 'string' && id.length > 0)
           .map((id) => ({ kind: 'connection' as const, id })),
       ];
+      // Zero subjects means the loop below never runs, and that is the end of
+      // it: nothing asked, nothing thrown, nothing claimed. It used to mark the
+      // whole SECTION successfully read, which is the defect TASK-264 fixes —
+      // the wall's vacuous success spoke for the site read above it.
       for (const subject of subjects) {
         try {
           const out = await bus.call<ApprovedCapsListInput, ApprovedCapsListOutput>(
@@ -2331,7 +2338,6 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
                 : { connectorId: subject.id }),
             },
           );
-          read = true;
           for (const cap of out.capabilities ?? []) {
             if (!APPROVED_CAP_KINDS.includes(cap?.kind)) {
               // A kind we have no authored phrase for. Counting it as a gap is
@@ -2364,6 +2370,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
             });
           }
         } catch (err) {
+          failed = true;
           incomplete = true;
           initCtx.logger.warn('workspace_rail_wall_grants_failed', {
             agentId: agent.id,
@@ -2371,15 +2378,15 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
           });
         }
       }
-      // No subjects is not a failed read: an agent with no skills and no
-      // connections genuinely has no wall grants.
-      if (subjects.length === 0) read = true;
     }
 
     return {
-      // Nothing readable at all is `failed`, not an empty list. An empty list
-      // here says "you have granted this agent nothing", which is a claim.
-      status: read ? 'ok' : 'failed',
+      // ANY producer that threw makes this `failed`, not an empty-or-short
+      // list. The rows are still carried — they are true — but the status is
+      // the section's claim, and "you have granted this agent nothing" (or
+      // "…only these") is a claim we cannot make from a read that broke. H7:
+      // "we don't know" must never render as "there is nothing here".
+      status: failed ? 'failed' : 'ok',
       rows: dedupeGrants(rows),
       incomplete,
     };
