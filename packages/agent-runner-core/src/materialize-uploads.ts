@@ -52,7 +52,13 @@ export interface MaterializeUploadsDeps {
    * key the model is told to open (see system-prompt.ts `workspaceNote`).
    */
   workspaceRoot: string;
-  /** Optional logger; defaults to console.error for warnings. */
+  /**
+   * Optional warning logger. Defaults to a stderr line, matching the rest of
+   * the runner — `console.error` appears nowhere in this package. Runner
+   * stderr is captured out-of-band (a host debug log under the subprocess
+   * sandbox, pod logs under k8s), and nothing parses it, so the text is
+   * free-form.
+   */
   warn?: (msg: string) => void;
 }
 

@@ -1,7 +1,8 @@
 /**
  * Auth providers wire client — typed wrappers around `/admin/auth/providers/*`.
  *
- * The route handlers live in `@ax/auth-better` (see `plugin.ts:670-784`).
+ * The route handlers live in `@ax/auth-better` — `registerAdminRoutes` in
+ * `plugin.ts`.
  * Secrets are stripped server-side on read; the UI never sees `clientSecret`
  * after submit.
  *

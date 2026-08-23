@@ -6,8 +6,10 @@
  * holds. Exposed via a tiny module-level subscription so deep components
  * (AttachmentChip / ArtifactChip) don't have to prop-drill it.
  *
- * Uses `useSyncExternalStore` so React 18 concurrent rendering tears
- * correctly and components re-render when the active conversation flips.
+ * Uses `useSyncExternalStore` so a concurrent render cannot TEAR — every
+ * component in one render pass sees the same id, which a plain module
+ * variable would not guarantee under the concurrent root `main.tsx` creates.
+ * It is also what makes components re-render when the conversation flips.
  */
 import { useSyncExternalStore } from 'react';
 
