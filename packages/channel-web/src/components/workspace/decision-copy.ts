@@ -99,9 +99,32 @@ export const DECISION_ACTION_FAILED =
  */
 export const DECISION_READ_FAILED_TITLE = 'Your assistant is waiting on you';
 
-/** `GET /api/workspace/decisions` failed. NOT an empty queue. */
+/**
+ * `GET /api/workspace/decisions` failed and we are NOT going to try again on
+ * our own — the automatic attempts (`READ_RETRY_DELAYS_MS`) are spent. NOT an
+ * empty queue.
+ */
 export const DECISION_READ_FAILED =
   'We could not load what is waiting on you. Nothing has been decided without you — we just could not read the list back right now.';
+
+/**
+ * The same failed read, while another attempt is still coming.
+ *
+ * "Trying again" is a claim about the code, so it may only be on screen while
+ * the code is actually doing it — `useConversationDecisions` retries a failed
+ * read a bounded number of times and says so through `retrying`. This sentence
+ * was written for TASK-276 and deliberately NOT shipped there, because the
+ * retry did not exist yet and a promise with no mechanism behind it is the
+ * exact failure this epic keeps finding. It lands here, with the mechanism.
+ *
+ * It keeps the reassurance the other two lines carry — nothing was decided
+ * while we could not see the list — because that is the fact a person actually
+ * needs, and the one an unread queue puts in doubt. Shorter than
+ * `DECISION_READ_FAILED` on purpose: this state resolves itself, so it is a
+ * status line rather than an apology.
+ */
+export const DECISION_READ_RETRYING =
+  'We couldn’t check what’s waiting. Trying again. Nothing has been decided without you.';
 
 /**
  * The read was REFUSED, not failed — the session ran out (401).

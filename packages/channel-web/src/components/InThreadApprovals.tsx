@@ -32,6 +32,7 @@ import { ApprovalCard } from '@/components/workspace/ApprovalCard';
 import {
   DECISION_READ_FAILED,
   DECISION_READ_FAILED_TITLE,
+  DECISION_READ_RETRYING,
   DECISION_SESSION_EXPIRED,
   DECISION_SESSION_EXPIRED_TITLE,
 } from '@/components/workspace/decision-copy';
@@ -43,6 +44,7 @@ export function InThreadApprovals() {
     open,
     settled,
     error,
+    retrying,
     raised,
     busyIds,
     notices,
@@ -68,9 +70,21 @@ export function InThreadApprovals() {
     the agent is waiting, nothing to act on, and no operator any the wiser.
     That is this card's own dead end, reborn on the error path.
 
-    The hole this still leaves is narrower and known: with no live frame to
-    corroborate it, the reader sees nothing until the next read succeeds. That
-    wants a bounded retry inside `useDecisionQueue`, not a scarier line here.
+    THE NEXT READ NOW COMES ON ITS OWN (TASK-274). A failed read used to be
+    terminal — nothing here polls, so the list was re-read only when a frame
+    landed, the thread changed, or somebody clicked — which meant a blip while a
+    hold was open hid the card until the reader happened to act, and they had no
+    reason to. `useConversationDecisions` now retries it a bounded number of
+    times (`READ_RETRY_DELAYS_MS`), and `retrying` is how this box knows whether
+    another attempt is genuinely coming before it says one is.
+
+    That belongs there, not in `useDecisionQueue`: it is gated on a
+    known conversation, because until there is one this surface has nothing to
+    show whatever the queue says.
+
+    None of which changes the gate above. The retry can only fill the queue in
+    or fail again; it never makes an approval claim, so it is not evidence, and
+    a person with no approvals still sees nothing during an outage.
 
     AN EXPIRED SESSION IS NOT GATED, and that is deliberate. The gate above
     exists to stop us making an APPROVAL claim we have no evidence for. The
@@ -216,7 +230,20 @@ export function InThreadApprovals() {
         <Alert>
           <AlertTitle>{DECISION_READ_FAILED_TITLE}</AlertTitle>
           <AlertDescription className="flex flex-col items-start gap-2">
-            <span>{DECISION_READ_FAILED}</span>
+            {/*
+              The sentence follows what the code is actually doing. While an
+              automatic attempt is still coming it says so; once the budget is
+              spent it stops saying so, because it would no longer be true.
+
+              THE BUTTON STAYS IN BOTH STATES, and that is not an oversight. It
+              is the same action either way — read the list again — and it is
+              never a lie: a person who is watching for an approval can have the
+              answer now instead of waiting out a back-off, which is the whole
+              reason they are looking at this box. Hiding it while we retry
+              would take the only control away at the exact moment somebody
+              wants it, then pop it back a few seconds later.
+            */}
+            <span>{retrying ? DECISION_READ_RETRYING : DECISION_READ_FAILED}</span>
             <Button size="sm" variant="outline" onClick={() => void refresh()}>
               Try again
             </Button>

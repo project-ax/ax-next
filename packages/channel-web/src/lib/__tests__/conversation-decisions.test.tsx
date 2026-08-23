@@ -8,10 +8,14 @@
  * screen.
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { renderHook, waitFor } from '@testing-library/react';
-import { useConversationDecisions, SETTLED_CAP } from '../conversation-decisions';
+import { act, renderHook, waitFor } from '@testing-library/react';
+import {
+  useConversationDecisions,
+  READ_RETRY_DELAYS_MS,
+  SETTLED_CAP,
+} from '../conversation-decisions';
 import { decisionRaisedActions } from '../decision-raised-store';
-import { workspaceApi, type Decision } from '../workspace-api';
+import { workspaceApi, WorkspaceApiError, type Decision } from '../workspace-api';
 import { decisionFixture } from '@/components/workspace/__tests__/decision-fixture';
 
 let mockConversationId: string | null = 'c1';
@@ -36,6 +40,9 @@ describe('useConversationDecisions', () => {
     decisionRaisedActions.resetForTest();
   });
   afterEach(() => {
+    // The retry tests below run on fake timers; a test that threw before its
+    // own restore must not leave them installed for the next one.
+    vi.useRealTimers();
     vi.restoreAllMocks();
     decisionRaisedActions.resetForTest();
   });
@@ -256,5 +263,113 @@ describe('useConversationDecisions', () => {
     expect(result.current.settled.map((d) => d.id)).not.toContain(
       'd-stale-undoable',
     );
+  });
+
+  /*
+    TASK-274. A failed read was TERMINAL. Nothing on this surface polls — the
+    list is fetched once and afterwards re-read only when a `decisionRaised`
+    frame lands, the thread changes, or somebody clicks — so a blip while a hold
+    was genuinely open kept the card off the screen until the reader happened to
+    do something else, which is exactly what a person with no visible approval
+    has no reason to do.
+
+    These pin the mechanism (it fires, it is bounded, it knows what not to
+    retry). What a failed read is allowed to SAY is `InThreadApprovals`' call
+    and is pinned there — unchanged, and deliberately so.
+  */
+  describe('a failed read tries itself again', () => {
+    /** Let a read settle without moving any retry timer. */
+    const settle = () =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(0);
+      });
+
+    const tick = (ms: number) =>
+      act(async () => {
+        await vi.advanceTimersByTimeAsync(ms);
+      });
+
+    /** Longer than the whole ladder, so "and then it stops" is a real claim. */
+    const PAST_THE_END_MS =
+      READ_RETRY_DELAYS_MS.reduce((a, b) => a + b, 0) + 60_000;
+
+    it('re-reads on its own, and gives up after a bounded number of tries', async () => {
+      vi.useFakeTimers();
+      const read = vi
+        .spyOn(workspaceApi, 'decisions')
+        .mockRejectedValue(new Error('boom'));
+      const { result } = renderHook(() => useConversationDecisions());
+
+      await settle();
+      // Nobody has done anything yet: this is the mount read alone.
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(result.current.retrying).toBe(true);
+
+      for (const [i, delay] of READ_RETRY_DELAYS_MS.entries()) {
+        await tick(delay);
+        expect(read).toHaveBeenCalledTimes(i + 2);
+      }
+
+      // And then it stops. An ambient read on the default surface must not turn
+      // into a poll that multiplies an outage by every open tab.
+      await tick(PAST_THE_END_MS);
+      expect(read).toHaveBeenCalledTimes(READ_RETRY_DELAYS_MS.length + 1);
+      // It also stops CLAIMING to try, so the surface can stop saying so.
+      expect(result.current.retrying).toBe(false);
+    });
+
+    it('puts the rows up when a retry succeeds, with nobody having acted', async () => {
+      vi.useFakeTimers();
+      const read = vi
+        .spyOn(workspaceApi, 'decisions')
+        .mockRejectedValueOnce(new Error('boom'))
+        .mockResolvedValue({ decisions: [decisionFixture()] });
+      const { result } = renderHook(() => useConversationDecisions());
+
+      await settle();
+      expect(result.current.open).toEqual([]);
+
+      await tick(READ_RETRY_DELAYS_MS[0]!);
+      // The hold is on screen because the queue re-read itself — no frame, no
+      // thread switch, no click. That is the whole card.
+      expect(result.current.open.map((d) => d.id)).toEqual(['d-marcus']);
+      // Two reads: the one that failed and the one that fixed it. Nothing else
+      // fired, which is what "with nobody having acted" has to mean.
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(result.current.error).toBeNull();
+      expect(result.current.retrying).toBe(false);
+    });
+
+    it('never retries a session that ran out — every attempt is the same 401', async () => {
+      vi.useFakeTimers();
+      const read = vi
+        .spyOn(workspaceApi, 'decisions')
+        .mockRejectedValue(new WorkspaceApiError('/decisions', 401));
+      renderHook(() => useConversationDecisions());
+
+      await settle();
+      await tick(PAST_THE_END_MS);
+      // One read, and no promise of another: the reader has to sign in, and
+      // three more refusals would only delay them being told so.
+      expect(read).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not spend its attempts before there is a conversation to show them in', async () => {
+      mockConversationId = null;
+      vi.useFakeTimers();
+      const read = vi
+        .spyOn(workspaceApi, 'decisions')
+        .mockRejectedValue(new Error('boom'));
+      const { result } = renderHook(() => useConversationDecisions());
+
+      await settle();
+      await tick(PAST_THE_END_MS);
+      // With no conversation this hook returns `open: []` whatever the queue
+      // holds, so a retry here could not put anything on screen — and the id is
+      // null on every reload until the first click or sent message. Spending
+      // the budget there would leave none for the window that matters.
+      expect(read).toHaveBeenCalledTimes(1);
+      expect(result.current.retrying).toBe(false);
+    });
   });
 });
