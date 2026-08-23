@@ -33,6 +33,30 @@ export function createFakeStore(): FakeStore {
     return row !== undefined && OPEN.includes(row.status) ? row : null;
   }
 
+  /**
+   * The raw write, shared by `create` and `createOrReuseOpen` so the fake has
+   * one insert rather than two that can drift.
+   */
+  function insert(decision: Decision): Decision {
+    trip('create');
+    // Mirrors the partial unique index closely enough to catch a caller that
+    // forgets it exists.
+    for (const row of rows.values()) {
+      if (
+        row.agentId === decision.agentId &&
+        row.callFingerprint === decision.callFingerprint &&
+        AUTHORISING_STATUSES.includes(row.status) &&
+        row.consumedAt === null &&
+        row.replayedAt === null &&
+        AUTHORISING_STATUSES.includes(decision.status)
+      ) {
+        throw new Error('fake store: duplicate unconsumed authorisation');
+      }
+    }
+    rows.set(decision.id, decision);
+    return decision;
+  }
+
   return {
     rows,
     failNext(method) {
@@ -40,23 +64,34 @@ export function createFakeStore(): FakeStore {
     },
 
     async create(decision) {
-      trip('create');
-      // Mirrors the partial unique index closely enough to catch a caller that
-      // forgets it exists.
-      for (const row of rows.values()) {
-        if (
-          row.agentId === decision.agentId &&
-          row.callFingerprint === decision.callFingerprint &&
-          AUTHORISING_STATUSES.includes(row.status) &&
-          row.consumedAt === null &&
-          row.replayedAt === null &&
-          AUTHORISING_STATUSES.includes(decision.status)
-        ) {
-          throw new Error('fake store: duplicate unconsumed authorisation');
-        }
-      }
-      rows.set(decision.id, decision);
-      return decision;
+      return insert(decision);
+    },
+
+    /**
+     * TASK-254's collapse, with the same predicates the real store pushes into
+     * SQL: this person, this agent, this call shape, and only the OPEN
+     * statuses. No lock — one JS thread cannot race itself, and the atomicity
+     * the real store needs is proved against real Postgres in `store.test.ts`
+     * rather than pretended at here.
+     */
+    async createOrReuseOpen(decision) {
+      const existing = [...rows.values()]
+        .filter(
+          (r) =>
+            r.agentId === decision.agentId &&
+            r.ownerUserId === decision.ownerUserId &&
+            r.callFingerprint === decision.callFingerprint &&
+            OPEN.includes(r.status),
+        )
+        .sort((a, b) =>
+          a.createdAt === b.createdAt
+            ? a.id.localeCompare(b.id)
+            : a.createdAt < b.createdAt
+              ? -1
+              : 1,
+        )[0];
+      if (existing !== undefined) return { decision: existing, created: false };
+      return { decision: insert(decision), created: true };
     },
 
     async get(decisionId, ownerUserId) {

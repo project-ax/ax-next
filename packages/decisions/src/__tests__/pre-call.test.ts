@@ -1,4 +1,11 @@
-import { isHold, isRejection, makeAgentContext, type AgentContext, type ToolCall } from '@ax/core';
+import {
+  HookBus,
+  isHold,
+  isRejection,
+  makeAgentContext,
+  type AgentContext,
+  type ToolCall,
+} from '@ax/core';
 import { describe, expect, it } from 'vitest';
 import { callFingerprint } from '../fingerprint.js';
 import {
@@ -339,5 +346,165 @@ describe('tool:pre-call subscriber — decisionId', () => {
       input: { id: 'dec_pwned' },
     })) as { hold: { decisionId: string } };
     expect(r.hold.decisionId).not.toContain('pwned');
+  });
+});
+
+describe('tool:pre-call subscriber — one call, one question', () => {
+  // TASK-254. Two PENDING rows for the same (agent, call shape) used to be
+  // reachable: the gate wrote a row every time it held, and only the
+  // AUTHORISING statuses are covered by the partial unique index. The human
+  // then got two cards for one call, and approving the second either died on
+  // that index (loudly, since TASK-253) or — where the host had already
+  // replayed the first and freed the slot — quietly ran the call A SECOND
+  // TIME. The gate collapses the duplicate now, so neither is reachable from
+  // an agent retrying its call. `decisions.canary.test.ts` carries both, and
+  // the residue that survives via undo.
+
+  it('raises ONE row for two identical held calls, and hands back the same decision', async () => {
+    const { sub, store } = build(HOLD);
+    const a = await sub(ctx(), CALL);
+    // A retry is a NEW call id and the same call — `callFingerprint` excludes
+    // the id for exactly this reason.
+    const b = await sub(ctx(), { ...CALL, id: 'call-retry' });
+
+    expect(isHold(a)).toBe(true);
+    expect(isHold(b)).toBe(true);
+    expect((b as { hold: { decisionId: string } }).hold.decisionId).toBe(
+      (a as { hold: { decisionId: string } }).hold.decisionId,
+    );
+    expect(store.rows.size).toBe(1);
+  });
+
+  it('reuses a STALE row — a re-opened question is still the same question', async () => {
+    // `markStale` re-opens a decision whose freshness guard tripped. It is
+    // waiting on the same human for the same call, so a second hold of that
+    // call must land on it rather than beside it.
+    const { sub, store } = build(HOLD);
+    const first = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
+    await store.markStale(first.hold.decisionId, {
+      staleReason: 'the draft changed',
+      freshness: null,
+    });
+
+    const second = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
+    expect(second.hold.decisionId).toBe(first.hold.decisionId);
+    expect(store.rows.size).toBe(1);
+  });
+
+  it('asks AGAIN once the standing question was dismissed', async () => {
+    // A dismissal answers this question; it does not answer the next one. The
+    // agent trying the same call again is a new question for the human, and
+    // silently reviving the dismissed row would put a "no" back on the queue
+    // as though it had never been answered.
+    const { sub, store } = build(HOLD);
+    const first = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
+    await store.markDismissed(first.hold.decisionId, NOW.toISOString());
+
+    const second = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
+    expect(second.hold.decisionId).not.toBe(first.hold.decisionId);
+    expect(store.rows.size).toBe(2);
+  });
+
+  it('asks AGAIN once the standing question has expired', async () => {
+    const { sub, store } = build(HOLD);
+    const first = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
+    await store.markExpired(first.hold.decisionId, NOW.toISOString());
+
+    const second = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
+    expect(second.hold.decisionId).not.toBe(first.hold.decisionId);
+    expect(store.rows.size).toBe(2);
+  });
+
+  it('holds a SECOND row when the call differs by one character', async () => {
+    const { sub, store } = build(HOLD);
+    const first = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
+    const second = (await sub(ctx(), {
+      ...CALL,
+      input: { reason: 'I need the Linear key.' },
+    })) as { hold: { decisionId: string } };
+
+    expect(second.hold.decisionId).not.toBe(first.hold.decisionId);
+    expect(store.rows.size).toBe(2);
+  });
+
+  it('does not collapse two AGENTS asking the same thing', async () => {
+    // The standing authorisation is keyed on (agent, fingerprint), so one
+    // agent's yes never authorises another's call — and one agent's question
+    // must not stand in for another's either.
+    const { sub, store } = build(HOLD);
+    const first = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
+    const second = (await sub(ctx({ agentId: 'a2' }), CALL)) as {
+      hold: { decisionId: string };
+    };
+
+    expect(second.hold.decisionId).not.toBe(first.hold.decisionId);
+    expect(store.rows.size).toBe(2);
+  });
+
+  it('does not collapse two OWNERS of one shared agent', async () => {
+    // A team agent's rows are keyed (agent, fingerprint) in the index but READ
+    // back scoped by owner. Handing u2 the id of u1's row would give u2 a hold
+    // they cannot see, cannot answer, and cannot dismiss — a lost question,
+    // which is strictly worse than the duplicate this collapse exists to stop.
+    const { sub, store } = build(HOLD);
+    const first = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
+    const second = (await sub(ctx({ userId: 'u2' }), CALL)) as {
+      hold: { decisionId: string };
+    };
+
+    expect(second.hold.decisionId).not.toBe(first.hold.decisionId);
+    expect(store.rows.size).toBe(2);
+  });
+
+  it('DOES collapse across two of one person’s conversations', async () => {
+    // Deliberate, and the one place the collapse is wider than the thread the
+    // call came from: the authorisation this question leads to is keyed
+    // (agent, fingerprint) with no conversation in it, so two open rows in two
+    // threads are two cards for ONE authorisation — and approving the second
+    // is exactly the refusal this card removes. The person answers it from the
+    // Today queue, which is not per-thread; only the in-thread card stays in
+    // the thread that asked first.
+    const { sub, store } = build(HOLD);
+    const first = (await sub(ctx(), CALL)) as { hold: { decisionId: string } };
+    const second = (await sub(ctx({ conversationId: 'c2' }), CALL)) as {
+      hold: { decisionId: string };
+    };
+
+    expect(second.hold.decisionId).toBe(first.hold.decisionId);
+    expect(store.rows.size).toBe(1);
+    // …and the row still belongs to the thread that raised it. Rewriting it to
+    // point at the second thread would move a card out from under the person
+    // already looking at it.
+    expect((await store.get(first.hold.decisionId))!.conversationId).toBe('c1');
+  });
+
+  it('does not fire decisions:raised a second time for a question already asked', async () => {
+    // `decisions:raised` means "a new question is waiting", and the SSE
+    // subscriber turns it into a card in the thread. Re-firing it for a row
+    // that is already on the queue draws the same card again.
+    const bus = new HookBus();
+    const raised: unknown[] = [];
+    bus.subscribe('decisions:raised', 'test', async (_c, p) => {
+      raised.push(p);
+      return undefined;
+    });
+    const store = createFakeStore();
+    const sub = createPreCallSubscriber({
+      evaluate: async () => HOLD,
+      store,
+      now: () => NOW,
+      idGen: () => `dec_${(ids += 1)}`,
+      ttlMs: TTL_MS,
+      attendanceFor: async () => 'attended',
+      bus,
+    });
+
+    await sub(ctx(), CALL);
+    await sub(ctx(), CALL);
+    // `fire` is deliberately not awaited by the gate (a slow subscriber must
+    // not eat the pre-call ceiling), so let the microtasks it queued run.
+    await new Promise((r) => setImmediate(r));
+
+    expect(raised).toHaveLength(1);
   });
 });
