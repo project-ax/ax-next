@@ -90,7 +90,7 @@ function startOfLocalToday(): number {
  * cursor is still its initial `null`, so the gate passes over an empty list and
  * this returns 0. What keeps that off screen is `TodayView`'s own positive
  * test, not this function — the honesty guard is genuinely split across the
- * two, and the transient zero is the same one the Activity subtitle below
+ * two, and it is the same unlanded-page zero the Activity subtitle below
  * mentions. Folding it in here would mean a `loading` branch no rendered output
  * can distinguish from this one, i.e. a behaviour no test could hold.
  */
