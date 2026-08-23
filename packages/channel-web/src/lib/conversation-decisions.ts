@@ -215,9 +215,24 @@ export function useConversationDecisions(): ConversationDecisions {
       setRetrying(false);
       return;
     }
-    retriesSpent.current += 1;
     setRetrying(true);
-    const timer = setTimeout(() => void refresh(), delay);
+    /*
+      The tally moves when an attempt is actually MADE, not when one is
+      scheduled, and both halves of that matter.
+
+      Scheduling is not idempotent — React re-runs this effect whenever `error`
+      changes identity, and would double-invoke it outright under StrictMode
+      (the double-mount `FirstRunAutoCreate` guards against). Counting at
+      schedule time would let a `Try again` click, or a frame landing mid-wait,
+      spend an automatic attempt that never happened; three clicks and the
+      retry is "exhausted" without a single one having fired. Counting at fire
+      time makes a cancelled timer cost nothing, which is what a cancelled timer
+      did.
+    */
+    const timer = setTimeout(() => {
+      retriesSpent.current += 1;
+      void refresh();
+    }, delay);
     return () => clearTimeout(timer);
   }, [conversationId, error, refresh]);
 

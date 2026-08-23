@@ -340,6 +340,32 @@ describe('useConversationDecisions', () => {
       expect(result.current.retrying).toBe(false);
     });
 
+    it('does not let a read somebody else asked for spend one of its attempts', async () => {
+      vi.useFakeTimers();
+      const read = vi
+        .spyOn(workspaceApi, 'decisions')
+        .mockRejectedValue(new Error('boom'));
+      const { result } = renderHook(() => useConversationDecisions());
+
+      await settle();
+      expect(read).toHaveBeenCalledTimes(1);
+
+      // `Try again`, or a `decisionRaised` frame, while the first automatic
+      // attempt is still waiting. It re-reads — it always did — and the timer
+      // it cancels was never an attempt, so it costs nothing.
+      await act(async () => {
+        await result.current.refresh();
+      });
+      expect(read).toHaveBeenCalledTimes(2);
+
+      // The ladder still has every one of its rungs. Counting a cancelled
+      // timer would let three clicks exhaust a retry that never fired once.
+      for (const [i, delay] of READ_RETRY_DELAYS_MS.entries()) {
+        await tick(delay);
+        expect(read).toHaveBeenCalledTimes(i + 3);
+      }
+    });
+
     it('never retries a session that ran out — every attempt is the same 401', async () => {
       vi.useFakeTimers();
       const read = vi
