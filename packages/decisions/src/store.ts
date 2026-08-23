@@ -30,6 +30,54 @@ import {
 /** The two statuses a human can still act on. */
 const OPEN_STATUSES: readonly DecisionStatus[] = ['pending', 'stale'];
 
+/**
+ * SQLSTATE for a unique-violation. The one storage code this file translates.
+ */
+const PG_UNIQUE_VIOLATION = '23505';
+
+/**
+ * `claimForApproval` refused because a standing authorisation for this
+ * (agent, call shape) ALREADY EXISTS — the partial unique index doing its job.
+ *
+ * A TYPED ERROR RATHER THAN A DRIVER CODE THE CALLER SNIFFS, and the reason is
+ * invariant 1. `decisions:approve` has to tell this refusal apart from every
+ * other way a write can fail, because it reports the two differently — a
+ * standing authorisation is a sentence for a person, and a deadlock is a fault
+ * for an operator. Letting the caller read `err.code === '23505'` would put
+ * Postgres vocabulary in the plugin and quietly make every alternate store
+ * impl responsible for reproducing a pg SQLSTATE. So the store, which is the
+ * only file allowed to know what backs it, says what happened in the
+ * vocabulary of the decision.
+ *
+ * EVERYTHING ELSE PROPAGATES UNTRANSLATED. That asymmetry is the point: a
+ * deadlock, a lock timeout, a statement timeout or a dropped table is a fault,
+ * and a fault that is renamed "already approved" tells the person the exact
+ * thing that will stop them retrying — under precisely the turbulence
+ * (eviction, failover, load) this whole area exists for.
+ */
+export class DuplicateAuthorisationError extends Error {
+  constructor(decisionId: string, cause: unknown) {
+    super(`a standing authorisation already exists for decision '${decisionId}'`, {
+      cause,
+    });
+    this.name = 'DuplicateAuthorisationError';
+  }
+}
+
+/** Does this driver error say "you broke a unique index"? */
+function isUniqueViolation(err: unknown): boolean {
+  // Duck-typed rather than `instanceof pg.DatabaseError`: this file talks to
+  // Kysely, and importing the driver's error class to read one string would be
+  // a dependency on the dialect rather than on the database. Only one unique
+  // index can be violated by the UPDATE below — `decisions_v1_decisions`'
+  // primary key is never rewritten by it — so the code alone is unambiguous.
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    (err as { code?: unknown }).code === PG_UNIQUE_VIOLATION
+  );
+}
+
 /** The statuses `restore()` (undo) can walk back from. */
 const UNDOABLE_STATUSES: readonly DecisionStatus[] = [
   ...AUTHORISING_STATUSES,
@@ -107,8 +155,13 @@ export interface DecisionStore {
    * has run or is about to, `'approved-pending-agent'` when the host cannot
    * replay it and the agent will perform it on its next run. Both carry a
    * standing authorisation, so both live under the partial unique index — and
-   * this throws if one already exists for this (agent, call fingerprint).
-   * Refusing loudly is the point.
+   * this throws `DuplicateAuthorisationError` if one already exists for this
+   * (agent, call fingerprint). Refusing loudly is the point.
+   *
+   * ANY OTHER FAILURE COMES BACK AS ITSELF. Only the index's refusal is
+   * translated; a deadlock, a lock timeout or an unreachable database is a
+   * fault and must reach the caller as one, because the caller reports the two
+   * differently and the wrong label is what stops a person retrying.
    *
    * `replayDueAt` defers the host replay until the undo window closes, for an
    * irreversible call. `replayClaimedAt` is its opposite number: the host is
@@ -240,15 +293,59 @@ export interface DecisionStore {
    *   * it cannot be undone (`restore` refuses a claimed row);
    *   * it keeps occupying its `(agent, fingerprint)` slot in the partial
    *     unique index, so a fresh hold of the same call cannot be approved —
-   *     the claim collides and `decisions:approve` absorbs it with a
-   *     `decision_claim_refused` warning, which from the outside looks like an
-   *     approve button that does nothing.
+   *     the claim collides and `decisions:approve` absorbs it, saying why
+   *     (`CLAIM_REFUSED_DETAIL`) but resolving nothing.
    *
    * All of that is wrong in the SAFE direction — visible inaction rather than a
-   * silent double-send, which is what a lease-and-reaper scheme risks. A
-   * follow-up card owns the recovery path.
+   * silent double-send, which is what a lease-and-reaper scheme risks. What
+   * TASK-253 added is not a retry, for exactly that reason: see
+   * `reclaimStrandedFlights`, which gives the row up rather than re-running it,
+   * and hands the slot back.
    */
   claimDueReplays(nowIso: string, limit: number): Promise<Decision[]>;
+
+  /**
+   * GIVE UP on flights nobody is flying — the recovery `claimDueReplays` above
+   * describes the need for (TASK-253).
+   *
+   * A stranded row is `executed`, claimed, un-replayed and unconsumed, left by a
+   * host that died between taking the flight and recording what happened. Three
+   * paths can produce one, and all three end at the same shape: the `immediate`
+   * claim in `decisions:approve`, this file's `claimDueReplays`, and TASK-277's
+   * `claimReplayFlight` on the attended fallback.
+   *
+   * IT MOVES THE ROW TO `failed`. IT DOES NOT RETRY IT, AND THAT IS THE ENTIRE
+   * SAFETY ARGUMENT. We cannot know which side of the tool's own side effect
+   * the crash landed on — the executor may have returned microseconds before
+   * the process died — so re-running the call is a coin-flip on a double send,
+   * which on this surface is strictly worse than the bug being fixed. Because
+   * nothing here runs anything, reclaiming a row EARLY cannot execute a call
+   * twice on its own: the worst it can do is release an authorisation a
+   * still-running flight was holding, and even then a human has to approve the
+   * same call again before a second one goes out.
+   *
+   * `claimedBeforeIso` is the caller's age cutoff and it is belt to that
+   * braces: `HookBus` bounds every service call at 120 s by default, so a flight
+   * older than a cutoff comfortably past that ceiling cannot still be inside its
+   * `bus.call` in any host, this one or another replica. See
+   * `STRANDED_REPLAY_TIMEOUT_MS`.
+   *
+   * The predicates are the same three columns `restore`, `takeApproval` and
+   * `claimReplayFlight` guard, for the same reason — plus the age comparison,
+   * which is also what keeps every ATTENDED approval out of reach: those are
+   * `executed`, unconsumed, un-replayed and arbitrarily old, they carry no
+   * flight, and nothing is wrong with them.
+   *
+   * `replay_error` is deliberately left alone. It carries the TOOL's words, and
+   * no tool ever spoke here.
+   */
+  reclaimStrandedFlights(opts: {
+    /** Stamped as `replayAbandonedAt`, which is what the receipt reads. */
+    nowIso: string;
+    /** INCLUSIVE — a flight taken at this instant has been out long enough. */
+    claimedBeforeIso: string;
+    limit: number;
+  }): Promise<Decision[]>;
 
   /**
    * Consume the standing authorisation for this (agent, call shape), if there
@@ -279,6 +376,35 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       .returningAll()
       .executeTakeFirst();
     return row === undefined ? null : toDecision(row);
+  }
+
+  /** The claim itself, unwrapped. `claimForApproval` owns the translation. */
+  function claim(
+    decisionId: string,
+    opts: {
+      nowIso: string;
+      status: 'executed' | 'approved-pending-agent';
+      replayDueAt?: string | null | undefined;
+      replayClaimedAt?: string | null | undefined;
+    },
+  ): Promise<Decision | null> {
+    const { nowIso, status, replayDueAt, replayClaimedAt } = opts;
+    return transition(decisionId, OPEN_STATUSES, {
+      status,
+      resolved_at: new Date(nowIso),
+      // The guard passed, so whatever it said last time is no longer true.
+      stale_reason: null,
+      replay_due_at:
+        replayDueAt === undefined || replayDueAt === null ? null : new Date(replayDueAt),
+      replay_claimed_at:
+        replayClaimedAt === undefined || replayClaimedAt === null
+          ? null
+          : new Date(replayClaimedAt),
+      // A re-approval after an undo starts clean; a leftover failure detail
+      // from a previous attempt would describe a run that is no longer the
+      // one this row is about.
+      replay_error: null,
+    });
   }
 
   return {
@@ -340,23 +466,16 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       return rows.map(toDecision);
     },
 
-    claimForApproval(decisionId, { nowIso, status, replayDueAt, replayClaimedAt }) {
-      return transition(decisionId, OPEN_STATUSES, {
-        status,
-        resolved_at: new Date(nowIso),
-        // The guard passed, so whatever it said last time is no longer true.
-        stale_reason: null,
-        replay_due_at:
-          replayDueAt === undefined || replayDueAt === null ? null : new Date(replayDueAt),
-        replay_claimed_at:
-          replayClaimedAt === undefined || replayClaimedAt === null
-            ? null
-            : new Date(replayClaimedAt),
-        // A re-approval after an undo starts clean; a leftover failure detail
-        // from a previous attempt would describe a run that is no longer the
-        // one this row is about.
-        replay_error: null,
-      });
+    async claimForApproval(decisionId, { nowIso, status, replayDueAt, replayClaimedAt }) {
+      try {
+        return await claim(decisionId, { nowIso, status, replayDueAt, replayClaimedAt });
+      } catch (err) {
+        // Translate ONLY the index's refusal. `throw err` for everything else
+        // is not a fallthrough — it is the branch that keeps a transient write
+        // failure from being reported as a standing authorisation.
+        if (isUniqueViolation(err)) throw new DuplicateAuthorisationError(decisionId, err);
+        throw err;
+      }
     },
 
     async claimReplayFlight(decisionId, nowIso) {
@@ -390,6 +509,19 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
           replayed_at: new Date(nowIso),
           replay_due_at: null,
           replay_error: null,
+          // AND THE ROW IS NO LONGER ABANDONED, because it just came back.
+          //
+          // The race is real rather than theoretical: a host frozen long enough
+          // for the sweep to give up on it (`reclaimStrandedFlights` wrote
+          // `failed` + `replay_abandoned_at`) can still thaw and land this
+          // write, which is unconditional on status precisely so the world wins.
+          // Leaving the stamp behind would produce an `executed` row carrying a
+          // marker whose whole meaning is "we gave up on this" — harmless to
+          // `receiptFor`, which keys the abandoned sentence on `failed`, and a
+          // straight contradiction of what `Decision.replayAbandonedAt` says
+          // about itself. Same rule as the two clears above: the call went out,
+          // so nothing about this row is pending, failed, or given up on.
+          replay_abandoned_at: null,
           // Keep the ORIGINAL resolution instant. Overwriting it would restart
           // the undo window AFTER the outward action, which is the one thing
           // the deferral exists to prevent.
@@ -522,6 +654,63 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       return rows.map(toDecision);
     },
 
+    async reclaimStrandedFlights({ nowIso, claimedBeforeIso, limit }) {
+      // Select then update, the same two steps `claimDueReplays` takes and for
+      // the same reason: Postgres has no `UPDATE ... LIMIT`, and a maintenance
+      // sweep that can rewrite an unbounded number of rows in one statement is
+      // a sweep that eventually takes the table with it.
+      const stale = await db
+        .selectFrom(table)
+        .select('decision_id')
+        .where('status', '=', 'executed')
+        // THE PREDICATE THAT MAKES THIS A STRANDED FLIGHT and not simply an old
+        // approval. An attended `executed` row waits for its warm agent with
+        // `replay_claimed_at` NULL, for as long as it takes — and `NULL <=
+        // anything` is unknown, so this comparison excludes every one of them
+        // as well as every flight that is merely too recent. Failing an
+        // attended row would cancel a yes nobody withdrew; `store.test.ts`
+        // pins both halves.
+        .where('replay_claimed_at', '<=', new Date(claimedBeforeIso))
+        // Nothing went out under it…
+        .where('replayed_at', 'is', null)
+        // …and the agent did not spend it either. Unreachable together with a
+        // flight through this file's own writes today; the predicate is here so
+        // that a fourth path producing the shape cannot cancel an authorisation
+        // that has already been cashed.
+        .where('consumed_at', 'is', null)
+        .orderBy('replay_claimed_at', 'asc')
+        .limit(limit)
+        .execute();
+      if (stale.length === 0) return [];
+
+      const rows = await db
+        .updateTable(table)
+        .set({
+          status: 'failed',
+          replay_abandoned_at: new Date(nowIso),
+          // A stranded row never has one, but mirroring `markFailed` keeps
+          // "a terminal row has nothing pending" true on every terminal write
+          // rather than on nearly every one.
+          replay_due_at: null,
+        })
+        .where(
+          'decision_id',
+          'in',
+          stale.map((d) => d.decision_id),
+        )
+        // Re-stated, not assumed: between the read above and this write another
+        // replica's sweep, a returning executor's `markReplayed`, or a
+        // consuming agent could have moved the row. Whoever moved it owns what
+        // it says, and this write must then match nothing.
+        .where('status', '=', 'executed')
+        .where('replay_claimed_at', '<=', new Date(claimedBeforeIso))
+        .where('replayed_at', 'is', null)
+        .where('consumed_at', 'is', null)
+        .returningAll()
+        .execute();
+      return rows.map(toDecision);
+    },
+
     async takeApproval(agentId, callFingerprint, nowIso) {
       const row = await db
         .updateTable(table)
@@ -588,6 +777,8 @@ function fromDecision(d: Decision): DecisionRow {
     replay_claimed_at:
       d.replayClaimedAt === null ? null : new Date(d.replayClaimedAt),
     replayed_at: d.replayedAt === null ? null : new Date(d.replayedAt),
+    replay_abandoned_at:
+      d.replayAbandonedAt === null ? null : new Date(d.replayAbandonedAt),
     replay_error: d.replayError,
   };
 }
@@ -629,6 +820,8 @@ function toDecision(row: DecisionRow): Decision {
     replayClaimedAt:
       row.replay_claimed_at === null ? null : row.replay_claimed_at.toISOString(),
     replayedAt: row.replayed_at === null ? null : row.replayed_at.toISOString(),
+    replayAbandonedAt:
+      row.replay_abandoned_at === null ? null : row.replay_abandoned_at.toISOString(),
     replayError: row.replay_error,
   };
 }

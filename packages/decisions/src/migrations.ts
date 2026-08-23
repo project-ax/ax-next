@@ -62,6 +62,22 @@ export async function runDecisionsMigration<DB>(db: Kysely<DB>): Promise<void> {
       ADD COLUMN IF NOT EXISTS replay_error  TEXT
   `.execute(db);
 
+  // TASK-253. When a sweep gave up on a flight the host never came back from.
+  // Additive and nullable, so every existing row reads back as "never
+  // abandoned", which is what it was.
+  //
+  // A COLUMN AND NOT AN INFERENCE. The obvious alternative — spotting an
+  // abandoned row by the columns already here — does not work: every `failed`
+  // row carries `replay_claimed_at` set and `replayed_at` null, because a
+  // replay that threw was in flight too. The two kinds of failure are only
+  // distinguishable if one of them says so, and they have to be
+  // distinguishable, because the receipt for an ordinary failure asserts that
+  // nothing was completed and the receipt for this one must not.
+  await sql`
+    ALTER TABLE decisions_v1_decisions
+      ADD COLUMN IF NOT EXISTS replay_abandoned_at TIMESTAMPTZ
+  `.execute(db);
+
   // THE idempotency guarantee, at the storage layer rather than in application
   // code: at most one standing authorisation per (agent, call shape). Two
   // concurrent approvals of the same call cannot both leave an unconsumed
@@ -99,6 +115,22 @@ export async function runDecisionsMigration<DB>(db: Kysely<DB>): Promise<void> {
       ON decisions_v1_decisions (replay_due_at)
       WHERE replay_due_at IS NOT NULL
   `.execute(db);
+
+  // The stranded-flight sweep's read path (TASK-253) — every replay currently
+  // in flight, which in a healthy host is a handful at most and usually none.
+  //
+  // The `status = 'executed'` half of the predicate is what keeps it that way:
+  // without it, a `failed` row would stay in the index forever, since a replay
+  // that threw also leaves `replay_claimed_at` set and `replayed_at` null. The
+  // index would then grow with every failure and the sweep would page through
+  // history looking for the present.
+  await sql`
+    CREATE INDEX IF NOT EXISTS decisions_v1_replay_in_flight
+      ON decisions_v1_decisions (replay_claimed_at)
+      WHERE status = 'executed'
+        AND replay_claimed_at IS NOT NULL
+        AND replayed_at IS NULL
+  `.execute(db);
 }
 
 /** Row shape returned by postgres. */
@@ -131,6 +163,7 @@ export interface DecisionRow {
   replay_due_at: Date | null;
   replay_claimed_at: Date | null;
   replayed_at: Date | null;
+  replay_abandoned_at: Date | null;
   replay_error: string | null;
 }
 

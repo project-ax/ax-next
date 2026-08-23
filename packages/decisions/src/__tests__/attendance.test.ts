@@ -100,6 +100,7 @@ function decision(over: Partial<Decision> = {}): Decision {
     replayDueAt: null,
     replayClaimedAt: null,
     replayedAt: null,
+    replayAbandonedAt: null,
     replayError: null,
     ...over,
   };

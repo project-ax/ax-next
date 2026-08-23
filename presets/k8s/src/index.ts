@@ -1069,11 +1069,15 @@ export function createK8sPlugins(config: K8sPresetConfig): Plugin[] {
   // on its next run. @ax/skill-broker's `request_capability` (pushed
   // unconditionally above) is the host-executed case the canary exercises.
   //
-  // `decisions:sweep` runs on a timer inside the plugin: it expires decisions
-  // nobody answered, and it runs the deferred replay of an `irreversible` rule
-  // once the 10-second undo window has closed — which is what makes that undo a
-  // real grace period before the outward action rather than a button that
-  // cannot undo anything.
+  // `decisions:sweep` runs on a timer inside the plugin and does three things:
+  // it expires decisions nobody answered; it runs the deferred replay of an
+  // `irreversible` rule once the 10-second undo window has closed — which is
+  // what makes that undo a real grace period before the outward action rather
+  // than a button that cannot undo anything; and (TASK-253) it gives up on a
+  // replay this host took ownership of and never came back from, releasing the
+  // standing authorisation a crash left it holding. That last one never RUNS
+  // anything: which side of the tool's side effect the crash landed on is
+  // unknowable, so the row is failed rather than retried.
   //
   // TASK-227 (AW-6) makes ATTENDANCE a property of the conversation's CHANNEL
   // rather than of the turn: `conversations:get-metadata` reports the row's

@@ -49,6 +49,7 @@ function base(over: Partial<Decision> = {}): Decision {
     replayDueAt: null,
     replayClaimedAt: null,
     replayedAt: null,
+    replayAbandonedAt: null,
     replayError: null,
     ...over,
   };
@@ -103,6 +104,30 @@ describe('receiptFor — the three outcomes that have one', () => {
     // The executor's own words are AUDIT TRAIL, carried beside the receipt and
     // never as it.
     expect(r?.error).toBe('upstream 503');
+  });
+
+  it('an ABANDONED replay never claims that nothing was completed', () => {
+    // TASK-253. The host took the flight and died inside it, and the sweep
+    // reclaimed the row so the slot it was holding could be used again. That
+    // is a failure of the SYSTEM, not a report from the tool: the crash could
+    // have landed either side of the tool's own side effect, so we do not know
+    // whether the call went out. `FAILED_RECEIPT` says "Nothing was completed",
+    // which is a claim we have no standing to make — and one that would send a
+    // person off to redo an action that may already have happened.
+    const decision = base({
+      status: 'failed',
+      replayClaimedAt: T_RESOLVED,
+      replayAbandonedAt: T_RAN,
+    });
+    const r = receiptFor(decision);
+    expect(r?.outcome).toBe('failed');
+    expect(r?.receipt).not.toBe(FAILED_RECEIPT);
+    expect(r?.receipt).not.toContain('Nothing was completed');
+    expect(r?.receipt.length).toBeGreaterThan(0);
+    // Still never the approved line, which is the one that claims success.
+    expect(r?.receipt).not.toContain(decision.approvedText);
+    // No executor ever reported anything, so there is no audit detail to carry.
+    expect(r?.error).toBeNull();
   });
 });
 

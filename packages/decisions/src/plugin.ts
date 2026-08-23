@@ -13,7 +13,7 @@ import {
   CONVERSATION_METADATA_HOOK,
 } from './attendance.js';
 import { deliverResolution, SESSION_QUEUE_HOOK } from './delivery.js';
-import { runDueReplays, sweepExpired } from './expiry.js';
+import { reclaimStrandedReplays, runDueReplays, sweepExpired } from './expiry.js';
 import { auditFreshnessPairs, checkFreshness } from './freshness.js';
 import {
   approveDecision,
@@ -26,7 +26,12 @@ import { runDecisionsMigration, type DecisionsDatabase } from './migrations.js';
 import { createPreCallSubscriber, PLUGIN_NAME, type PolicyAnswer } from './pre-call.js';
 import { receiptFor } from './receipts.js';
 import { replayContext, settleReplay } from './replay.js';
-import { createDecisionsStore, type DecisionStore } from './store.js';
+import {
+  createDecisionsStore,
+  DuplicateAuthorisationError,
+  type DecisionStore,
+} from './store.js';
+import { CLAIM_REFUSED_DETAIL } from './templates.js';
 import {
   DecisionsApproveOutputSchema,
   DecisionsDismissOutputSchema,
@@ -289,6 +294,17 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         }
         return {
           expired: await sweepExpired(store!, now()),
+          // BEFORE the due replays, not after, and the order is not cosmetic.
+          // A stranded flight holds the `(agent, fingerprint)` slot its own
+          // decision needs; releasing it first means a re-held call approved
+          // in the same window is already unblocked by the time anything else
+          // in this pass runs. Nothing here runs a call, so putting it first
+          // costs nothing and cannot reorder any outward action.
+          reclaimed: await reclaimStrandedReplays({
+            store: store!,
+            now: now(),
+            logCtx: ctx,
+          }),
           replayed: await runDueReplays({
             store: store!,
             bus,
@@ -539,6 +555,42 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           // be the worst reading of it — the call is already authorised, and
           // nothing about that is an internal error. We absorb it and report
           // what is stored, exactly as we do when we lose the claim race.
+          //
+          // AND IT IS THE ONLY THROW THIS BRANCH SPEAKS FOR. `claimForApproval`
+          // translates the index's refusal into `DuplicateAuthorisationError`
+          // and lets every other failure through as itself, so the check below
+          // is a real test of the cause rather than an assumption about it.
+          // The first cut of this branch assumed: it answered "an identical
+          // request is already approved" for anything the write threw. Under
+          // exactly the turbulence this whole area exists for — eviction,
+          // failover, load — that write can fail with a deadlock, a lock
+          // timeout or a statement timeout, all of which are gone by the time
+          // the re-read below runs. The person would then be told their
+          // approval was not recorded because an identical one is pending,
+          // and the correct recovery — press it again — is precisely what
+          // that sentence talks them out of. A confident sentence about a
+          // cause nobody checked is the defect this epic keeps producing.
+          //
+          // So a fault reaches the caller as a fault: it propagates, the bus
+          // wraps it, and it surfaces as a 500 an operator can see. Losing an
+          // approval loudly beats keeping it and lying about why.
+          //
+          // WHAT WE NO LONGER DO IS ABSORB IT IN SILENCE (TASK-253). The
+          // benign reading above is not the only one: a replay stranded by a
+          // host crash occupies the same slot and nothing will ever cash it,
+          // so the refusal reached a person as an approve button that did
+          // nothing and said nothing. The click is still absorbed — the row
+          // stays open, because a decision this handler could not claim has
+          // not been answered — but the answer now carries WHY. The reclaim
+          // sweep is what eventually clears the stranded case; until it runs,
+          // saying so is the difference between a slow recovery and an
+          // invisible one.
+          //
+          // We do NOT try to tell the two apart here by reading the row that
+          // holds the slot. That row is keyed on `(agent, fingerprint)` and
+          // not on the owner, so on a team agent it can belong to somebody
+          // else — and this handler has already established only that the
+          // caller owns THIS decision.
           let claimed: Decision | null;
           try {
             claimed = await store!.claimForApproval(decisionId, {
@@ -553,12 +605,19 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
               replayClaimedAt: immediate ? nowIso : null,
             });
           } catch (err) {
+            if (!(err instanceof DuplicateAuthorisationError)) throw err;
             ctx.logger.warn('decision_claim_refused', {
               plugin: PLUGIN_NAME,
               decisionId,
               err: err instanceof Error ? err : new Error(String(err)),
             });
-            return settle(null);
+            return {
+              ...(await settle(null)),
+              // AUTHORED, and never the driver's own words. A unique-violation
+              // message names the index, the table and the conflicting values —
+              // one of which is a call fingerprint derived from model output.
+              error: CLAIM_REFUSED_DETAIL,
+            };
           }
           // We LOST the race. That is not "no such decision" — it is "somebody
           // else already resolved this one", and the honest answer is their
