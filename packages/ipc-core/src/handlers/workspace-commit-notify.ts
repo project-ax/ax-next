@@ -249,6 +249,12 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
         reason: 'bundle author verification failed',
         // A tampered / bypassed-env bundle is not recoverable agent work — the
         // runner discards it with --hard.
+        //
+        // Deliberately NOT scoped with `discardPaths` (TASK-287), unlike the
+        // pre-apply veto below. There is no trustworthy path set to name here:
+        // we could not establish who authored the bundle, so nothing it claims
+        // to contain can be believed, and "keep the rest" is not a coherent
+        // offer. This branch keeps the whole-tree reset on purpose.
         recoverable: false as const,
       };
       const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
@@ -268,8 +274,10 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
       return internalError();
     }
 
-    // Filter to policy-visible paths (`.ax/**` + `.claude/**`) for the
-    // pre-apply hook. Subscribers (skill validator, SDK-config veto,
+    // Filter to policy-visible paths for the pre-apply hook — the `.ax/**` and
+    // `.claude/**` prefixes PLUS the root exact paths (`CLAUDE.md`,
+    // `CLAUDE.local.md`), which is the pair that catches the ordinary
+    // agent-writes-CLAUDE.md case. See POLICY_EXACT_PATHS in @ax/core. Subscribers (skill validator, SDK-config veto,
     // future identity validator) only see agent-managed memory and
     // SDK setting-source paths; user-code changes are not policy-
     // checked.
@@ -291,22 +299,58 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
       // in Phase 2; the SDK-config one did not), @ax/validator-identity, and
       // @ax/validator-routine.
       //
-      // `recoverable: false` is unconditional on this branch, so the runner
-      // hard-resets the turn. An SDK-config write must be CLEARED, not
-      // preserved, or it re-vetoes the atomic transcript bundle every turn
-      // (wedge). A future *recoverable* pre-apply veto would need
-      // per-subscriber plumbing (see the spec).
+      // `recoverable: false` is unconditional on this branch, so the vetoed
+      // write must not survive into the next turn: the runner re-stages its
+      // whole tree every turn, so a preserved refused file would be
+      // re-submitted and re-refused forever — the agent wedges (B1).
+      //
+      // TASK-287 bounds the collateral of that rule without loosening it. A
+      // rejecter that knows WHICH path offended says so via
+      // `Rejection.offendingPaths`; we hand those to the runner as
+      // `discardPaths`, and it undoes exactly those instead of resetting the
+      // whole tree (reverting each to its baseline state, or deleting it when
+      // the baseline had no such file). The wedge is then answered by
+      // construction — the refused content is gone, so the next turn's
+      // re-stage cannot re-submit it — while everything else the agent wrote
+      // (this turn AND every earlier turn still sitting above the last
+      // accepted baseline) survives.
+      //
+      // We only forward paths that were actually in the batch we sent. A
+      // subscriber is plugin code, and this field decides which files get
+      // taken back off the agent in the sandbox; an unrecognised path means we
+      // have lost track of what the veto is about, so we fail CLOSED to the
+      // whole-tree reset rather than act on it.
       //
       // Log the reason on the way out. Of the three rejecters only
       // @ax/validator-identity logs its own vetoes, and it logs the offending
       // path (plus a scan category), never the reason text — so without this
       // line the host discards a turn's work with no account of why.
+      const changedPaths = new Set(policyChanges.map((c) => c.path));
+      const named = pre.offendingPaths ?? [];
+      const discardPaths = named.filter((p) => changedPaths.has(p));
+      const scoped = named.length > 0 && discardPaths.length === named.length;
+      if (named.length > 0 && !scoped) {
+        ctx.logger.warn('workspace_pre_apply_discard_paths_unrecognized', {
+          action: 'workspace.commit-notify',
+          rejectedBy: pre.source ?? 'unknown',
+          // The paths themselves, not just a count: this fires when a
+          // subscriber names something outside the batch, and the whole point
+          // of the log line is being able to see which one.
+          unrecognized: named.filter((p) => !changedPaths.has(p)),
+        });
+      }
       ctx.logger.warn('workspace_pre_apply_rejected', {
         action: 'workspace.commit-notify',
         rejectedBy: pre.source ?? 'unknown',
         reason: pre.reason,
+        scoped,
       });
-      const body = { accepted: false as const, reason: pre.reason, recoverable: false as const };
+      const body = {
+        accepted: false as const,
+        reason: pre.reason,
+        recoverable: false as const,
+        ...(scoped ? { discardPaths } : {}),
+      };
       const checked = WorkspaceCommitNotifyResponseSchema.safeParse(body);
       if (!checked.success) {
         logInternalError(

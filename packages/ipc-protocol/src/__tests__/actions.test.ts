@@ -46,6 +46,53 @@ describe('WorkspaceCommitNotifyResponse recoverable', () => {
     expect(r.success && (r.data as { recoverable?: boolean }).recoverable).toBe(false);
   });
 
+  it('TASK-287: discardPaths rides alongside recoverable:false', () => {
+    const r = WorkspaceCommitNotifyResponseSchema.safeParse({
+      accepted: false,
+      reason: 'CLAUDE.md: SDK-config paths are host-only',
+      recoverable: false,
+      discardPaths: ['CLAUDE.md'],
+    });
+    expect(r.success).toBe(true);
+    expect(r.success && (r.data as { discardPaths?: string[] }).discardPaths).toEqual([
+      'CLAUDE.md',
+    ]);
+  });
+
+  it('TASK-287: absent discardPaths still parses (older host, older runner)', () => {
+    // The field is additive and optional in BOTH directions: a host that never
+    // sends it leaves the runner on its previous whole-tree behaviour, and a
+    // runner that has never heard of it ignores one that arrives. Neither side
+    // needs the other deployed first.
+    const r = WorkspaceCommitNotifyResponseSchema.safeParse({
+      accepted: false,
+      reason: 'bundle author verification failed',
+      recoverable: false,
+    });
+    expect(r.success).toBe(true);
+    expect(r.success && (r.data as { discardPaths?: unknown }).discardPaths).toBeUndefined();
+  });
+
+  it('TASK-287: rejects an unbounded or empty-string discardPaths', () => {
+    // These become `rm` targets in the sandbox. Bound them at the wire.
+    expect(
+      WorkspaceCommitNotifyResponseSchema.safeParse({
+        accepted: false,
+        reason: 'x',
+        recoverable: false,
+        discardPaths: [''],
+      }).success,
+    ).toBe(false);
+    expect(
+      WorkspaceCommitNotifyResponseSchema.safeParse({
+        accepted: false,
+        reason: 'x',
+        recoverable: false,
+        discardPaths: Array.from({ length: 257 }, (_, i) => `p${i}`),
+      }).success,
+    ).toBe(false);
+  });
+
   it('absent recoverable still parses (runner defaults to preserve)', () => {
     const r = WorkspaceCommitNotifyResponseSchema.safeParse({
       accepted: false,

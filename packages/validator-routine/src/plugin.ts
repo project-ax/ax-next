@@ -39,7 +39,12 @@ export function createValidatorRoutinePlugin(): Plugin {
             if (!ROUTINE_PATH.test(c.path)) continue;
             const r = parseRoutineFrontmatterBytes(c.content);
             if (!r.ok) {
-              return reject({ reason: `${c.path}: ${r.reason}` });
+              // TASK-287: name the file so the runner discards this routine
+              // rather than the whole turn.
+              return reject({
+                reason: `${c.path}: ${r.reason}`,
+                offendingPaths: [c.path],
+              });
             }
             if (r.fields.trigger.kind === 'webhook') {
               const triggerPath = r.fields.trigger.path;
@@ -47,6 +52,11 @@ export function createValidatorRoutinePlugin(): Plugin {
               if (prior !== undefined) {
                 return reject({
                   reason: `duplicate webhook trigger.path "${triggerPath}" in ${prior} and ${c.path}`,
+                  // Only the SECOND file (TASK-287). `prior` is a perfectly
+                  // valid routine that happened to get there first; discarding
+                  // it too would destroy work the agent was never told was
+                  // wrong, and dropping either one alone resolves the clash.
+                  offendingPaths: [c.path],
                 });
               }
               webhookPaths.set(triggerPath, c.path);
@@ -65,6 +75,7 @@ export function createValidatorRoutinePlugin(): Plugin {
                 if (actual !== expected) {
                   return reject({
                     reason: `${c.path}: hmac.secretRef "${actual}" does not match the canonical destination-derived ref "${expected}" (kind=routine-hmac, agentId=${ctx.agentId}, routinePath=${c.path})`,
+                    offendingPaths: [c.path],
                   });
                 }
               }

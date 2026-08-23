@@ -232,7 +232,11 @@ describe('post-bootstrap (no BOOTSTRAP.md at parent)', () => {
       reason: 'turn',
     });
     expect(decision.rejected).toBe(true);
-    if (decision.rejected) expect(decision.reason).toContain('host-seeded');
+    if (decision.rejected) {
+      expect(decision.reason).toContain('host-seeded');
+      // TASK-287: scoped to the bootstrap file, so the rest of the turn lives.
+      expect(decision.offendingPaths).toEqual(['.ax/BOOTSTRAP.md']);
+    }
   });
 });
 
@@ -295,7 +299,10 @@ describe('prompt-injection hard veto', () => {
       reason: 'turn',
     });
     expect(decision.rejected).toBe(true);
-    if (decision.rejected) expect(decision.reason).toContain('not valid UTF-8');
+    if (decision.rejected) {
+      expect(decision.reason).toContain('not valid UTF-8');
+      expect(decision.offendingPaths).toEqual(['.ax/SOUL.md']);
+    }
   });
 
   it('vetoes a hidden zero-width / bidi obfuscation in IDENTITY.md', async () => {
@@ -309,7 +316,10 @@ describe('prompt-injection hard veto', () => {
       reason: 'turn',
     });
     expect(decision.rejected).toBe(true);
-    if (decision.rejected) expect(decision.reason).toContain('obfuscation');
+    if (decision.rejected) {
+      expect(decision.reason).toContain('obfuscation');
+      expect(decision.offendingPaths).toEqual(['.ax/IDENTITY.md']);
+    }
   });
 });
 

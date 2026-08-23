@@ -464,24 +464,206 @@ export async function advanceBaseline(root: string): Promise<void> {
 /**
  * Roll HEAD back to `refs/heads/baseline` after the host vetoes a turn.
  *
- * - mode 'mixed' (recoverable veto — the default for everything except a hard
- *   security veto): `git reset --mixed baseline` moves HEAD/main + index to
- *   baseline but PRESERVES the working tree, so the agent's just-written files
- *   survive and it can fix them in place (kills the B1 blind-retry loop). The
- *   baseline ref is untouched, so the next turn re-stages + re-attempts —
- *   no baseline desync.
- * - mode 'hard' (SDK-config veto / tampered bundle): `git reset --hard baseline`
- *   ALSO wipes the working tree, clearing a write that must not persist (else it
- *   re-vetoes the atomic transcript bundle every turn).
+ * - mode 'mixed' (recoverable veto — the default): `git reset --mixed baseline`
+ *   moves HEAD/main + index to baseline but PRESERVES the working tree, so the
+ *   agent's just-written files survive and it can fix them in place (kills the
+ *   B1 blind-retry loop). The baseline ref is untouched, so the next turn
+ *   re-stages + re-attempts — no baseline desync.
+ * - mode 'hard' (a refusal with nothing specific to point at — a tampered
+ *   bundle): `git reset --hard baseline` ALSO wipes the working tree.
+ *
+ * `discardPaths` scopes that second case (TASK-287). A refusal the host CAN
+ * pin to specific paths arrives as mode 'mixed' plus those paths: we keep the
+ * rest of the tree and undo only the named ones — restored from `baseline` if
+ * the baseline had them, deleted if it did not. The refused content still
+ * must not persist — the next turn re-stages everything, so leaving it would
+ * re-submit it and earn the same refusal forever, wedging the agent — but that
+ * argument only ever applied to the refused file, never to the unrelated work
+ * sitting beside it (or to earlier turns' work still above the baseline).
+ *
+ * Entries are treated as untrusted: absolutes, parent-escapes, pathspec magic
+ * (a leading `:`), anything under `.git/`, and anything whose real parent
+ * directory resolves outside `root`. One unusable entry escalates the WHOLE
+ * rollback to `--hard` — see the fail-closed note in the body.
+ *
+ * Before a reset that destroys content, HEAD is parked under
+ * `refs/ax-vetoed/` — the turn commit already exists (commitTurnAndBundle
+ * commits BEFORE the host is asked), so a reset only de-references it. The
+ * park keeps a name on it for the session's lifetime, which makes a vetoed
+ * turn inspectable instead of merely reflog-archaeology. It is never shipped:
+ * the turn bundle is built from `baseline..main main` and touches no other ref.
+ *
+ * These refs are NOT reaped, so each one pins its commit against gc. The bound
+ * is one ref per vetoed turn per session, in a clone that is re-made from
+ * scratch every session (materializeWorkspace) — small, and it dies with the
+ * pod. If a long-lived workspace ever replaces the per-session clone, this
+ * needs a reaper.
  */
 export async function rollbackToBaseline(
   root: string,
   mode: 'mixed' | 'hard',
+  discardPaths: readonly string[] = [],
 ): Promise<void> {
+  // Validate the whole discard set BEFORE resetting anything, and fail CLOSED
+  // if any entry is unusable: fall back to the whole-tree reset rather than
+  // scope to the subset we happen to understand.
+  //
+  // Skipping the bad entry and scoping to the rest looks kinder and is worse.
+  // We have already reset `--mixed` by then, so the entry we could not act on
+  // stays in the working tree, gets re-staged next turn, and re-earns the same
+  // refusal — forever. That is the wedge this card exists to kill, re-entering
+  // through the error path. The host takes the same stance for the same reason
+  // (see `workspace_pre_apply_discard_paths_unrecognized`), and the two agreeing
+  // is what makes a host/runner disagreement about a path safe rather than
+  // silently degrading.
+  const rootReal = await fs.realpath(root);
+  const targets: Array<{ resolved: string; rel: string }> = [];
+  let effectiveMode = mode;
+  for (const p of discardPaths) {
+    const inside = await validateDiscardPath(rootReal, p);
+    if (inside === null) {
+      process.stderr.write(
+        `runner: unusable discard path ${p}; falling back to a whole-tree reset\n`,
+      );
+      effectiveMode = 'hard';
+      targets.length = 0;
+      break;
+    }
+    targets.push(inside);
+  }
+
+  const destructive = effectiveMode === 'hard' || targets.length > 0;
+  if (destructive) {
+    // Best-effort by design: failing to park must never block the rollback,
+    // because NOT resetting is the outcome that wedges the agent.
+    const parked = await runGit([
+      '-C',
+      root,
+      'update-ref',
+      `refs/ax-vetoed/${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      'HEAD',
+    ]);
+    if (parked.code !== 0) {
+      process.stderr.write(
+        `runner: could not park vetoed HEAD (${parked.stderr.trim()})\n`,
+      );
+    }
+  }
+
   await expectOk(
-    await runGit(['-C', root, 'reset', `--${mode}`, 'baseline']),
-    `git reset --${mode} baseline`,
+    await runGit(['-C', root, 'reset', `--${effectiveMode}`, 'baseline']),
+    `git reset --${effectiveMode} baseline`,
   );
+
+  if (targets.length === 0) return;
+
+  // `--mixed` left the refused files on disk (that is the whole point of using
+  // it); undo exactly the named ones now.
+  //
+  // "Undo" is not always "delete". A refused write can be a MODIFICATION of a
+  // file the baseline already had — `.ax/BOOTSTRAP.md` is the sharp example:
+  // it is host-seeded, an agent rewriting it is vetoed, and deleting it is
+  // itself a meaningful act (removing it is how bootstrap completes). Deleting
+  // a refused edit would turn "you may not change this" into "…so it is gone
+  // now", which is a worse outcome than the one this card set out to fix.
+  //
+  // So: restore from `baseline` when the path exists there, delete when it does
+  // not. Both leave the path with nothing to re-submit, which is what closes
+  // the wedge; they differ only in what the agent is left holding.
+  let unexpected: string | null = null;
+  for (const t of targets) {
+    // ONE PATH PER CALL. A batched `git checkout baseline -- <all paths>` fails
+    // atomically the moment any one of them is new to the baseline (unmatched
+    // pathspec), restoring none — so a mixed batch of new and edited files
+    // would silently undo nothing at all.
+    //
+    // `:(literal)` disables pathspec globbing. Without it a filename holding
+    // `*` or `[` would match OTHER files and revert them out of the agent's
+    // tree — the very data loss this card exists to stop, re-entering through
+    // the fix.
+    const restored = await runGit([
+      '-C',
+      root,
+      'checkout',
+      'baseline',
+      '--',
+      `:(literal)${t.rel}`,
+    ]);
+
+    // EXIT 1 SPECIFICALLY, not "non-zero". Exit 1 is git's "pathspec did not
+    // match any file(s)" — the path is not in the baseline, i.e. the agent
+    // created it this turn, i.e. the delete case. Every other failure (128:
+    // bad object, lock contention, IO) means we do not know what the path is,
+    // and treating those as "newly created, delete it" would silently delete a
+    // BASELINE-tracked file on an error path — the same silent-deletion class
+    // this card exists to fix, re-entering one level down.
+    if (restored.code === 1) {
+      // These are file changes, never a subtree — say so rather than leaning on
+      // the default.
+      await fs.rm(t.resolved, { force: true, recursive: false });
+    } else if (restored.code !== 0) {
+      // Fail closed, same as an unusable path above: we cannot undo this path
+      // precisely, so undo everything. Leaving it would let the refused content
+      // re-stage next turn and re-veto forever.
+      unexpected = `${t.rel}: ${restored.stderr.trim()}`;
+      break;
+    }
+  }
+
+  if (unexpected !== null) {
+    process.stderr.write(
+      `runner: could not undo discard path (${unexpected}); falling back to a whole-tree reset\n`,
+    );
+    await expectOk(
+      await runGit(['-C', root, 'reset', '--hard', 'baseline']),
+      'git reset --hard baseline',
+    );
+  }
+}
+
+/**
+ * Resolve a host-supplied workspace-relative path, or `null` if it is not one.
+ *
+ * Rejects absolute paths, NUL bytes, anything that escapes `root` via `..`,
+ * and anything inside `.git/` (the repo's own machinery is not agent content
+ * and touching it could corrupt the workspace outright). Also rejects a
+ * leading `:`, which git would read as pathspec magic rather than a filename.
+ *
+ * Then re-checks containment against the parent directory's REAL location,
+ * because a symlinked ancestor can make a textually-in-root path resolve
+ * somewhere else entirely. A parent that does not exist is fine and NOT a
+ * rejection — there is nothing on disk to escape through, and the restore
+ * branch recreates directories under `root` on its own.
+ *
+ * Returns both forms because both are needed: `resolved` to touch the file,
+ * and the NORMALISED `rel` to hand to git — never the caller's original
+ * string, which may carry `./` segments git would take literally.
+ */
+async function validateDiscardPath(
+  rootReal: string,
+  p: string,
+): Promise<{ resolved: string; rel: string } | null> {
+  if (p === '' || p.includes('\u0000') || p.startsWith(':') || path.isAbsolute(p)) {
+    return null;
+  }
+  const resolved = path.resolve(rootReal, p);
+  const rel = path.relative(rootReal, resolved);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    return null;
+  }
+  const first = rel.split(path.sep)[0];
+  if (first === '.git') return null;
+
+  let parentReal: string;
+  try {
+    parentReal = await fs.realpath(path.dirname(resolved));
+  } catch {
+    return { resolved, rel }; // Parent does not exist yet — nothing to escape.
+  }
+  if (parentReal !== rootReal && !parentReal.startsWith(rootReal + path.sep)) {
+    return null;
+  }
+  return { resolved: path.join(parentReal, path.basename(resolved)), rel };
 }
 
 /**

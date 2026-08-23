@@ -181,6 +181,12 @@ export function createValidatorIdentityPlugin(): Plugin {
                   path: c.path,
                 });
                 return reject({
+                  // TASK-287: `c.path` (not BOOTSTRAP_PATH) — the runner needs
+                  // the path as it appeared in the change set to find the file
+                  // on disk. They are equal on this branch today; keeping them
+                  // sourced from the same place is what stops that from being
+                  // a silent trap if the match ever widens.
+                  offendingPaths: [c.path],
                   reason:
                     `${BOOTSTRAP_PATH}: the bootstrap script is host-seeded only ` +
                     `(it runs verbatim as the system prompt with no safety floor). ` +
@@ -206,6 +212,7 @@ export function createValidatorIdentityPlugin(): Plugin {
                 ctx.logger.warn('identity_non_utf8_vetoed', { path: c.path });
                 return reject({
                   reason: `${c.path}: identity file is not valid UTF-8; refusing to inject undecodable bytes into the system prompt.`,
+                  offendingPaths: [c.path],
                 });
               }
 
@@ -218,7 +225,10 @@ export function createValidatorIdentityPlugin(): Plugin {
                   path: c.path,
                   category: scanHit.category,
                 });
-                return reject({ reason: `${c.path}: ${scanHit.reason}` });
+                return reject({
+                  reason: `${c.path}: ${scanHit.reason}`,
+                  offendingPaths: [c.path],
+                });
               }
 
               if (!inBootstrapWindow) {

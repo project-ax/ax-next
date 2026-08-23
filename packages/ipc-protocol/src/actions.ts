@@ -245,10 +245,31 @@ export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
       actualParent: z.string().optional(),
       // Phase 2: whether the agent's working tree should be PRESERVED on rollback.
       // Absent ⟹ recoverable (runner uses `git reset --mixed`, keeping the
-      // agent's files). `false` ⟹ a hard security veto (SDK-config write,
-      // tampered bundle) the runner clears with `git reset --hard` so it can't
-      // wedge the atomic transcript bundle. A semantic, not backend vocabulary.
+      // agent's files). `false` ⟹ a hard security veto (a refused config write,
+      // a tampered bundle) whose content must NOT survive into the next turn:
+      // the runner re-stages the whole tree each turn, so a preserved refused
+      // file would be re-submitted and re-refused forever, wedging the agent.
+      // A semantic, not backend vocabulary.
       recoverable: z.boolean().optional(),
+      // TASK-287: which paths, specifically, the refusal is about. Meaningful
+      // only alongside `recoverable: false`, and OPTIONAL — a host that omits
+      // it (or an older host that has never heard of it) leaves the runner on
+      // its previous whole-tree behaviour, so the two sides deploy
+      // independently in either order.
+      //
+      // Present ⟹ the refusal is scoped: the runner keeps the rest of the
+      // turn's work and removes exactly these paths, which is what stops the
+      // re-submit loop above without taking unrelated files down with it.
+      // Workspace-relative, in the same vocabulary the pre-apply payload
+      // already speaks: the `.ax/**` and `.claude/**` prefixes PLUS the root
+      // exact paths that policy also covers (`CLAUDE.md`, `CLAUDE.local.md`) —
+      // which is where the common case lands. No storage-backend terms.
+      //
+      // The runner treats every entry as untrusted: it refuses absolutes,
+      // parent-escapes and anything resolving outside the workspace. Bounded
+      // here too, since this is a wire-driven instruction to take files back
+      // off the agent.
+      discardPaths: z.array(z.string().min(1).max(1024)).max(256).optional(),
     }),
   ],
 );

@@ -84,6 +84,9 @@ describe('SDK-config hard veto (workspace:pre-apply)', () => {
       if (decision.rejected) {
         expect(decision.reason).toContain(protectedPath);
         expect(decision.reason).toContain(AUDIT_DOC);
+        // TASK-287: naming the path is what lets the runner drop this file
+        // instead of the agent's whole turn. The veto itself is unchanged.
+        expect(decision.offendingPaths).toEqual([protectedPath]);
       }
     });
   }
@@ -105,9 +108,29 @@ describe('SDK-config hard veto (workspace:pre-apply)', () => {
       if (decision.rejected) {
         expect(decision.reason).toContain(sample);
         expect(decision.reason).toContain(AUDIT_DOC);
+        expect(decision.offendingPaths).toEqual([sample]);
       }
     });
   }
+
+  it('TASK-287: names ONLY the refused path out of a mixed batch', async () => {
+    // The realistic turn: the agent wrote some real work and also CLAUDE.md.
+    // Everything the veto does not name survives the rollback.
+    const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
+    const decision = await bus.fire('workspace:pre-apply', ctx, {
+      changes: [
+        { path: '.ax/notes/keep.md', kind: 'put', content: enc.encode('notes') },
+        { path: 'CLAUDE.md', kind: 'put', content: enc.encode('# agent-authored') },
+        { path: '.ax/notes/also-keep.md', kind: 'put', content: enc.encode('more') },
+      ],
+      parent: null,
+      reason: 'turn',
+    });
+    expect(decision.rejected).toBe(true);
+    if (decision.rejected) {
+      expect(decision.offendingPaths).toEqual(['CLAUDE.md']);
+    }
+  });
 
   it('vetoes nested writes under .claude/agents/ subdirectories', async () => {
     const { bus, ctx } = await bootstrapWith([createValidatorSkillPlugin()]);
