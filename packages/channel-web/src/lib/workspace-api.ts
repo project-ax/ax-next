@@ -42,7 +42,6 @@ import type {
   ActivityEvent,
   AgentRailData,
   CounterRow,
-  RailReadStatus,
   Decision,
   GrantRef,
   GrantRow,
@@ -54,13 +53,13 @@ import type {
   WorkspaceAgent,
   WorkspaceFileBody,
   WorkspaceFileSummary,
+  WorkspaceReadStatus,
 } from '@/lib/workspace-types';
 
 export type {
   ActivityEvent,
   AgentRailData,
   CounterRow,
-  RailReadStatus,
   Decision,
   GrantRef,
   GrantRow,
@@ -72,6 +71,7 @@ export type {
   WorkspaceAgent,
   WorkspaceFileBody,
   WorkspaceFileSummary,
+  WorkspaceReadStatus,
 };
 
 /**
@@ -185,6 +185,18 @@ export interface AgentDetail {
   conversationId: string | null;
   /** Reconstructed from the real turns of that conversation. */
   thread: ThreadMessage[];
+  /**
+   * How the server's approval read for this thread went.
+   *
+   * `failed` means the thread's approval cards are MISSING, not absent — the
+   * panel must not let a shorter thread pass for "nothing is waiting on you".
+   * `unavailable` means this deployment has no decisions producer, so nothing
+   * could ever be waiting and the thread is complete as it stands.
+   *
+   * No rows here on purpose: `workspaceApi.decisions()` is the one producer,
+   * and the cards in the thread render off that same array.
+   */
+  decisions: { status: WorkspaceReadStatus };
   /** Older conversations, newest first. Pointers only — see `PastConversation`. */
   past: PastConversation[];
   /**

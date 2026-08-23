@@ -103,6 +103,7 @@ import type {
   RailActivity,
   ThreadMessage,
   WorkspaceAgent,
+  WorkspaceReadStatus,
 } from '../lib/workspace-types.js';
 import { isOpenDecision } from '../lib/workspace-types.js';
 import { byVerdict } from '../lib/permission-frames.js';
@@ -711,6 +712,19 @@ export interface AgentDetail {
   conversationId: string | null;
   /** Reconstructed from that conversation's turns. */
   thread: ThreadMessage[];
+  /**
+   * How the approval read behind `thread` went — the read that decides whether
+   * the thread carries approval cards at all.
+   *
+   * There is a `status` here and NO rows, and both halves are deliberate. The
+   * rows come from `GET /api/workspace/decisions`, the one producer, and a
+   * second copy riding along here is the two-producers bug (see the splice in
+   * `agentDetail`). But without the status a failed read left the thread simply
+   * shorter, and a thread with no approval card is read as "nothing is waiting
+   * on you" — which is the one thing this surface must never say when it does
+   * not know.
+   */
+  decisions: { status: WorkspaceReadStatus };
   /** Older conversations, newest first, excluding the current one. */
   past: PastConversation[];
   /**
@@ -2014,13 +2028,27 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    * queue on its own route, so the person still sees it and can still act;
    * taking the whole detail panel down over this would cost them the
    * transcript as well, to save a card they have another way to reach.
+   *
+   * But it costs the cards OUT LOUD. The `status` rides back with the messages
+   * because a thread that is merely shorter is indistinguishable from a thread
+   * with nothing waiting in it, and on this surface those are opposite facts.
+   * The two non-`ok` answers are different facts too, so they stay apart:
+   *
+   *   - `failed` — there is a producer and we could not read it. The panel does
+   *     not know whether anything is waiting, and says so.
+   *   - `unavailable` — this deployment has no decisions producer, so a
+   *     decision cannot exist and an approval-free thread is TRUE. Same
+   *     reasoning the queue route already applies when it answers `[]` for a
+   *     deployment without the plugin; the panel renders nothing extra.
    */
   async function approvalMessages(
     userId: string,
     agentId: string,
     conversationId: string,
-  ): Promise<ThreadMessage[]> {
-    if (!bus.hasService('decisions:list')) return [];
+  ): Promise<{ status: WorkspaceReadStatus; messages: ThreadMessage[] }> {
+    if (!bus.hasService('decisions:list')) {
+      return { status: 'unavailable', messages: [] };
+    }
     try {
       const out = await bus.call<DecisionsListInput, DecisionsListOutput>(
         'decisions:list',
@@ -2031,16 +2059,19 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         const t = Date.parse(iso);
         return Number.isNaN(t) ? 0 : t;
       };
-      return (out.decisions ?? [])
-        .filter((d) => d.conversationId === conversationId && isOpenDecision(d))
-        .sort((a, b) => stamp(a.createdAt) - stamp(b.createdAt))
-        .map((d) => ({ kind: 'approval', id: `decision-${d.id}`, decisionId: d.id }));
+      return {
+        status: 'ok',
+        messages: (out.decisions ?? [])
+          .filter((d) => d.conversationId === conversationId && isOpenDecision(d))
+          .sort((a, b) => stamp(a.createdAt) - stamp(b.createdAt))
+          .map((d) => ({ kind: 'approval', id: `decision-${d.id}`, decisionId: d.id })),
+      };
     } catch (err) {
       initCtx.logger.warn('workspace_thread_decisions_failed', {
         agentId,
         error: err instanceof Error ? err.message : String(err),
       });
-      return [];
+      return { status: 'failed', messages: [] };
     }
   }
 
@@ -3102,12 +3133,17 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         already has every row from GET /api/workspace/decisions, and a second
         copy travelling on a second route is precisely the two-producers bug
         this task exists to avoid.
+
+        What DOES travel is how that read went. `decisionsRead` starts at `ok`
+        for the no-conversation case and that is not a shrug: with no
+        conversation there is no conversationId for a decision to belong to, so
+        "nothing is waiting in this conversation" is true rather than unread.
       */
+      let decisionsRead: WorkspaceReadStatus = 'ok';
       if (threadConversationId !== null) {
-        thread = [
-          ...thread,
-          ...(await approvalMessages(userId, agentId, threadConversationId)),
-        ];
+        const approvals = await approvalMessages(userId, agentId, threadConversationId);
+        decisionsRead = approvals.status;
+        thread = [...thread, ...approvals.messages];
       }
 
       res.status(200).json({
@@ -3120,6 +3156,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // when it looks wrong.
         conversationId: threadConversationId,
         thread,
+        decisions: { status: decisionsRead },
         past,
         memory: await readMemory(agentId, userId),
       } satisfies AgentDetail);

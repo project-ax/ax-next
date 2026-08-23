@@ -370,14 +370,19 @@ export interface CounterRow {
 }
 
 /**
- * How a rail section's read went.
+ * How one of this surface's reads went.
  *
  * On this surface an empty array is a CLAIM, so "nothing" is not one state.
- * `unavailable` means this deployment has no producer for that section at all;
+ * `unavailable` means this deployment has no producer for that read at all;
  * `failed` means it has one and we could not read it. Both are answers a human
  * can act on; a bare `[]` standing in for either is a quiet lie.
+ *
+ * Deliberately NOT named `Rail*`. It started on the rail's three blocks and
+ * the detail panel's approval read needed exactly the same three answers — a
+ * `Rail`-prefixed name on a field that is not a rail section is how a second,
+ * identical copy of this union gets written six weeks from now.
  */
-export type RailReadStatus = 'ok' | 'unavailable' | 'failed';
+export type WorkspaceReadStatus = 'ok' | 'unavailable' | 'failed';
 
 /** The "Right now" line — see `@ax/agent-activity`'s `AgentActivity`. */
 export interface RailActivity {
@@ -397,9 +402,9 @@ export interface RailActivity {
 
 /** `GET /api/workspace/agents/:agentId/rail`. */
 export interface AgentRailData {
-  activity: { status: RailReadStatus; activity: RailActivity | null };
+  activity: { status: WorkspaceReadStatus; activity: RailActivity | null };
   permissions: {
-    status: RailReadStatus;
+    status: WorkspaceReadStatus;
     rows: PermissionRow[];
     /**
      * True when at least one source of reach could not be read, so this list is
@@ -420,9 +425,9 @@ export interface AgentRailData {
      */
     unrestrictedTools: boolean;
   };
-  grants: { status: RailReadStatus; rows: GrantRow[]; incomplete: boolean };
+  grants: { status: WorkspaceReadStatus; rows: GrantRow[]; incomplete: boolean };
   counters: {
-    status: RailReadStatus;
+    status: WorkspaceReadStatus;
     rows: CounterRow[];
     /** How many days back the numbers cover. */
     windowDays: number;

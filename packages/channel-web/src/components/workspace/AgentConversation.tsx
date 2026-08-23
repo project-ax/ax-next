@@ -9,6 +9,7 @@
  */
 import { useState } from 'react';
 import { ArrowUp, ChevronRight, Layers, ListChecks } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
@@ -16,9 +17,11 @@ import type {
   Decision,
   ThreadMessage,
   WorkspaceAgent,
+  WorkspaceReadStatus,
 } from '@/lib/workspace-api';
 import { AgentTile } from './bits';
 import { ApprovalCard } from './ApprovalCard';
+import { DECISION_THREAD_READ_FAILED } from './decision-copy';
 
 interface Props {
   agent: WorkspaceAgent;
@@ -42,6 +45,19 @@ interface Props {
   busyIds?: ReadonlySet<string>;
   /** Per-row line from an action that failed or was refused. */
   notices?: ReadonlyMap<string, string>;
+  /**
+   * How the approval set behind this thread was read — see `AgentView`, which
+   * folds the two reads that stand behind it into this one answer.
+   *
+   * REQUIRED, and deliberately not optional-with-an-`'ok'`-default. The default
+   * would be the exact claim this prop exists to stop us making by accident:
+   * "nothing is waiting on you". That claim once got made because a caller
+   * passed the queue's rows and handlers and quietly left its error behind, and
+   * an optional prop is how the next such omission would stay invisible.
+   */
+  approvalRead: WorkspaceReadStatus;
+  /** Re-runs both reads behind `approvalRead`. */
+  onRetryApprovals: () => void;
 }
 
 export function AgentConversation({
@@ -56,6 +72,8 @@ export function AgentConversation({
   onUndo,
   busyIds,
   notices,
+  approvalRead,
+  onRetryApprovals,
 }: Props) {
   const [draft, setDraft] = useState('');
 
@@ -83,6 +101,30 @@ export function AgentConversation({
               {...(notices !== undefined ? { notices } : {})}
             />
           ))}
+
+          {/*
+            The notice sits where the missing cards would have been — the foot
+            of the thread — because that is the spot the reader is about to
+            draw a conclusion from. A banner at the top would be answering a
+            question they have not asked yet.
+
+            Only `failed` gets one. `unavailable` means this deployment has no
+            decisions producer at all, so no decision can exist and a thread
+            without approval cards is COMPLETE, not short; a notice there would
+            be raising doubt about a thread we can vouch for.
+          */}
+          {approvalRead === 'failed' && (
+            <Alert variant="destructive">
+              <AlertDescription className="flex flex-col items-start gap-2.5">
+                <span className="text-[13px] leading-relaxed">
+                  {DECISION_THREAD_READ_FAILED}
+                </span>
+                <Button variant="secondary" size="sm" onClick={onRetryApprovals}>
+                  Try again
+                </Button>
+              </AlertDescription>
+            </Alert>
+          )}
         </div>
       </div>
 
@@ -170,11 +212,16 @@ function Message({
       resolved in one place is resolved in the other without a second fetch and
       without two versions of one row disagreeing on screen.
 
-      A message whose decision is not in that array renders nothing. That is the
-      honest outcome for a row we do not have — the queue read failed, or it was
-      resolved and dropped from the open list — and it is strictly better than a
-      card built from a stale copy, which would offer buttons for a decision
-      that may already be closed.
+      A message whose decision is not in that array renders nothing, and that is
+      now the honest outcome for exactly ONE cause: the row was resolved and
+      dropped from the open list. Better than a card built from a stale copy,
+      which would offer buttons for a decision that may already be closed.
+
+      It used to stand for a failed queue read as well, and those are opposite
+      facts wearing the same silence — one means the question is answered, the
+      other means we cannot see the question. The failed read is announced by
+      the notice at the foot of the thread (`approvalRead`), so it no longer
+      arrives here as a card that quietly does not appear.
     */
     const d = decisions.find((x) => x.id === m.decisionId);
     if (!d) return null;

@@ -23,6 +23,7 @@ import {
   type WorkspaceAgent,
 } from '@/lib/workspace-api';
 import { AgentView } from '../AgentView';
+import { DECISION_THREAD_READ_FAILED } from '../decision-copy';
 import { rail as railFixture } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -62,6 +63,7 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
     agent: quill,
     conversationId: 'c-now',
     thread: [{ kind: 'user', id: 't1', text: 'what is on today' }],
+    decisions: { status: 'ok' },
     past: [],
     memory: [],
     ...over,
@@ -93,6 +95,7 @@ function renderView(over: Partial<ComponentProps<typeof AgentView>> = {}) {
       activity={[]}
       agents={[quill]}
       onBack={vi.fn()}
+      decisionsError={null}
       version={0}
       onChanged={vi.fn()}
       {...over}
@@ -254,5 +257,76 @@ describe('the "What it did" tab', () => {
 
     expect(await screen.findByText(/could not load the record/i)).toBeTruthy();
     expect(screen.queryByText(/Nothing recorded yet/)).toBeNull();
+  });
+});
+
+/*
+  The approval notice.
+
+  The panel shows approval cards by POINTER: the server decides which of this
+  conversation's decisions are still open, and the shell's queue carries the
+  rows those pointers name. Either read can fail, and when one does the thread
+  simply comes up short — which on this surface is a sentence: "nothing is
+  waiting on you." These tests exist because that sentence was being said by
+  accident, from both sides.
+*/
+describe('AgentView — the approval read', () => {
+  it('says we could not check, rather than showing a thread with no cards', async () => {
+    agentMock.mockResolvedValue(detail({ decisions: { status: 'failed' } }));
+
+    renderView();
+
+    // The reader is told the panel does not know. Before this, an unreadable
+    // approval set and a conversation with nothing waiting in it looked
+    // identical on screen.
+    expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
+    // And the panel stays up around it — losing the approval read costs the
+    // cards, never the transcript.
+    expect(screen.getByText('what is on today')).toBeTruthy();
+  });
+
+  it('offers a retry that actually re-reads', async () => {
+    const onChanged = vi.fn();
+    agentMock.mockResolvedValue(detail({ decisions: { status: 'failed' } }));
+
+    renderView({ onChanged });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+    // `onChanged` is the one call that re-pulls BOTH reads behind the notice:
+    // the shell's queue, and this panel's own detail. A notice whose button
+    // swallowed the click would be worse than no button at all.
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  it('stays quiet when this deployment has no decisions producer at all', async () => {
+    agentMock.mockResolvedValue(detail({ decisions: { status: 'unavailable' } }));
+
+    renderView();
+
+    expect(await screen.findByText('what is on today')).toBeTruthy();
+    // `unavailable` is not a failure. Nothing can raise a decision here, so a
+    // thread with no approval cards is COMPLETE — and a notice would have the
+    // panel cast doubt on a thread it can vouch for.
+    expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull();
+  });
+
+  it('says it when the QUEUE read failed, even though the server read was fine', async () => {
+    agentMock.mockResolvedValue(
+      detail({
+        decisions: { status: 'ok' },
+        thread: [
+          { kind: 'user', id: 't1', text: 'what is on today' },
+          { kind: 'approval', id: 'decision-d1', decisionId: 'd1' },
+        ],
+      }),
+    );
+
+    // The rows those pointers name never arrived, so the card renders nothing.
+    // Without the notice this thread reads exactly like a settled one — the
+    // client-side half of the same lie, and the half the shell used to cause
+    // by passing the queue's rows down here without its error.
+    renderView({ decisions: [], decisionsError: 'decisions → 503' });
+
+    expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
   });
 });

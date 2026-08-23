@@ -275,6 +275,14 @@ function Inner() {
               onUndo={queue.undo}
               busyIds={queue.busyIds}
               notices={queue.notices}
+              /*
+                The queue's error travels with its rows. Today has always taken
+                both; this tab took the rows and left the error behind, so a
+                failed queue read reached it as an empty `decisions` array and
+                the thread simply showed no approval cards — the same silence a
+                conversation with nothing waiting in it shows.
+              */
+              decisionsError={queue.error}
               onDecisionRaised={() => void queue.refresh()}
               activity={feed.events}
               activityHasMore={feed.hasMore}

@@ -9,6 +9,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
+import { DECISION_THREAD_READ_FAILED } from '../decision-copy';
 
 import { rail as railFixture } from './rail-fixture';
 
@@ -186,6 +187,7 @@ describe('WorkspaceShell', () => {
       },
       conversationId: null,
       thread: [],
+      decisions: { status: 'ok' },
       past: [],
       memory: [],
     });
@@ -199,6 +201,59 @@ describe('WorkspaceShell', () => {
     await waitFor(() =>
       expect(activityMock).toHaveBeenCalledWith({ agentId: 'a-quill' }),
     );
+  });
+
+  it('carries a failed queue read INTO the agent tab, not just onto Today', async () => {
+    boardMock.mockResolvedValue({
+      agents: [
+        {
+          id: 'a-quill',
+          name: 'Quill',
+          state: 'resting',
+          now: null,
+          counter: null,
+          startedAt: null,
+          stoppedReason: null,
+        },
+      ],
+    });
+    activityMock.mockResolvedValue({ events: [], nextBefore: null });
+    decisionsMock.mockRejectedValue(new Error('decisions → 503'));
+    agentMock.mockResolvedValue({
+      agent: {
+        id: 'a-quill',
+        name: 'Quill',
+        state: 'resting',
+        now: null,
+        counter: null,
+        startedAt: null,
+        stoppedReason: null,
+      },
+      conversationId: 'c-now',
+      // The server's own approval read was fine — it is the QUEUE, the one
+      // that carries the rows this pointer names, that never came back.
+      thread: [
+        { kind: 'user', id: 't1', text: 'what is on today' },
+        { kind: 'approval', id: 'decision-d1', decisionId: 'd1' },
+      ],
+      decisions: { status: 'ok' },
+      past: [],
+      memory: [],
+    });
+
+    renderShell();
+
+    fireEvent.click(await screen.findByRole('button', { name: /Quill/ }));
+
+    /*
+      This assertion is about the SHELL, not the panel. Every other piece of
+      the queue was already threaded into the agent tab — the rows, the three
+      handlers, `busyIds`, `notices` — and the error was not, so a failed queue
+      read arrived here as an empty array and the thread showed no approval
+      card and no explanation. The panel can only tell the reader what it is
+      handed.
+    */
+    expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
   });
 
   it('says what we know and what to try when the board will not load', async () => {

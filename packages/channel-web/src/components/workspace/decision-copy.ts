@@ -123,6 +123,27 @@ export const DECISION_SESSION_EXPIRED =
   'Sign in to pick up where you left off. Nothing has been decided without you.';
 
 /**
+ * The approval read behind ONE conversation failed — the notice at the foot of
+ * that agent's thread.
+ *
+ * A separate string from `DECISION_READ_FAILED` above, and not a rewording of
+ * it for variety's sake. That one is the whole-queue sentence: it stands over
+ * the Today page and speaks about everything waiting on this person. This one
+ * stands inside a single conversation, where the honest claim is narrower — we
+ * do not know whether THIS conversation is waiting — and where the reader can
+ * still go and look at Today. Sharing one string would have meant one of the
+ * two surfaces overstating what it actually knows.
+ *
+ * Two different reads can put it on screen: the server's per-thread read, and
+ * the client's queue read that carries the rows the thread's cards point at.
+ * They fail differently and cost the reader the same thing, so they say the
+ * same thing — a person cannot act on which fetch it was, and telling them
+ * would be plumbing dressed up as information.
+ */
+export const DECISION_THREAD_READ_FAILED =
+  'We could not check whether this conversation is waiting on you. Nothing has been decided without you — we just could not read the approvals back right now.';
+
+/**
  * How close an expiry has to be before the row mentions it. A deadline three
  * days out is not a fact anybody needs while triaging, and a line on every row
  * is a line nobody reads.

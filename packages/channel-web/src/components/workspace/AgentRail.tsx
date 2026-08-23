@@ -39,7 +39,7 @@ import type {
   AgentRailData,
   AgentDetail,
   GrantRow,
-  RailReadStatus,
+  WorkspaceReadStatus,
 } from '@/lib/workspace-api';
 import { Elapsed, GrantLine, PermissionLine, SectionLabel } from './bits';
 
@@ -70,7 +70,7 @@ function Note({ children }: { children: React.ReactNode }) {
  * the difference: nothing to read from, versus something that would not answer.
  * Neither is ever rendered as an empty list.
  */
-function ReadFailure({ status, what }: { status: RailReadStatus; what: string }) {
+function ReadFailure({ status, what }: { status: WorkspaceReadStatus; what: string }) {
   if (status === 'unavailable') {
     return <Note>This deployment doesn&apos;t keep {what}, so there&apos;s nothing to show.</Note>;
   }
