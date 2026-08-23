@@ -56,7 +56,7 @@ interface Props {
    * an optional prop is how the next such omission would stay invisible.
    */
   approvalRead: WorkspaceReadStatus;
-  /** Re-runs both reads behind `approvalRead`. */
+  /** Re-runs every read behind `approvalRead` — see `AgentView`, which owns the list. */
   onRetryApprovals: () => void;
 }
 

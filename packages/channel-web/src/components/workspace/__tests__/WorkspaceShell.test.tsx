@@ -10,6 +10,7 @@ import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { DECISION_THREAD_READ_FAILED } from '../decision-copy';
+import { decisionFixture } from './decision-fixture';
 
 import { rail as railFixture } from './rail-fixture';
 
@@ -254,6 +255,66 @@ describe('WorkspaceShell', () => {
       handed.
     */
     expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
+  });
+
+  it('clears that notice — and shows the card — when the retry gets the queue back', async () => {
+    boardMock.mockResolvedValue({
+      agents: [
+        {
+          id: 'a-quill',
+          name: 'Quill',
+          state: 'resting',
+          now: null,
+          counter: null,
+          startedAt: null,
+          stoppedReason: null,
+        },
+      ],
+    });
+    activityMock.mockResolvedValue({ events: [], nextBefore: null });
+    // Down for the first read, back for every one after it.
+    decisionsMock.mockRejectedValueOnce(new Error('decisions → 503'));
+    decisionsMock.mockResolvedValue({
+      decisions: [decisionFixture({ id: 'd1', agentId: 'a-quill', conversationId: 'c-now' })],
+    });
+    agentMock.mockResolvedValue({
+      agent: {
+        id: 'a-quill',
+        name: 'Quill',
+        state: 'resting',
+        now: null,
+        counter: null,
+        startedAt: null,
+        stoppedReason: null,
+      },
+      conversationId: 'c-now',
+      thread: [
+        { kind: 'user', id: 't1', text: 'what is on today' },
+        { kind: 'approval', id: 'decision-d1', decisionId: 'd1' },
+      ],
+      decisions: { status: 'ok' },
+      past: [],
+      memory: [],
+    });
+
+    renderShell();
+    fireEvent.click(await screen.findByRole('button', { name: /Quill/ }));
+    expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
+
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    /*
+      The notice going away is only half of it, and on its own it would be the
+      weaker half — a notice can disappear because the retry succeeded or
+      because something stopped rendering it. What proves the retry did its job
+      is the CARD the failed read was hiding: the pointer in the thread finally
+      finds its row, so the question the agent stopped to ask is on screen and
+      answerable.
+    */
+    expect(
+      await screen.findByText('Move your 1:1 with Marcus to Thursday 9:30?'),
+    ).toBeTruthy();
+    expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull();
   });
 
   it('says what we know and what to try when the board will not load', async () => {
