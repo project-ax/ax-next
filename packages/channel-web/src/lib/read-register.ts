@@ -3,10 +3,11 @@
  *
  * `lib/http.ts` decided what a failed request SAYS. This decides what it LOOKS
  * LIKE. They are deliberately two files: the sentence has to differ per surface
- * (a whole-queue outage and a single thread's outage are not the same claim,
- * and `decision-copy.ts:156-166` argues at length against sharing strings
- * between surfaces that know different things), while the register has to be
- * the SAME everywhere or a reader learns that red means nothing.
+ * (a whole-queue outage and a single thread's outage are not the same claim —
+ * `DECISION_THREAD_READ_FAILED` in `decision-copy.ts` argues at length against
+ * sharing strings between surfaces that know different things), while the
+ * register has to be the SAME everywhere or a reader learns that red means
+ * nothing.
  *
  * WHY THIS FILE EXISTS. Three surfaces drew the same two facts in two different
  * registers: `TodayView` and `AgentConversation` painted a failed read
@@ -31,12 +32,15 @@
  *
  *   - `failed` with a retry genuinely armed → `default`. Something IS still
  *     coming; the state resolves itself. Only `useConversationDecisions` has
- *     this (`READ_RETRY_DELAYS_MS`, TASK-274), so only it may claim it.
+ *     this (`READ_RETRY_DELAYS_MS`, TASK-274 / PR #456), so only it may claim
+ *     it. (TASK-274 is the retry. The earlier TASK-276 is a different event —
+ *     it split `DecisionReadError` into `expired` vs `failed` in the first
+ *     place, which is what gave the retry something to key on.)
  *
  *   - `failed` with no retry, or a retry budget spent → `destructive`. The read
  *     is terminal until the reader clicks. That is `TodayView` and
  *     `AgentConversation` on their FIRST failure — `useDecisionQueue` has no
- *     automatic retry at all, and #456 deliberately did not give it one.
+ *     automatic retry at all, and TASK-274 deliberately did not give it one.
  *
  *   - `gone` → `destructive`, and NO retry affordance. A 404: deleted, or never
  *     yours. Nothing further happens and no action repairs it, so it fails the
@@ -89,11 +93,22 @@
  * things: `expired` is the reader's to sign back into, `failed` is ours to
  * retry, and `gone` is nobody's — the thing is not there.
  *
- * Maps onto `HttpError.status` from `lib/http.ts`: 401 → `expired`, 403 and
- * 404 → `gone`, everything else → `failed`. 403 lands on `gone` because the
- * consequence is identical from where the reader sits — there is nothing here
- * for you and no retry changes that — even though `http.ts` keeps a separate
- * SENTENCE for it. Register and copy split here on purpose.
+ * THE TARGET MAPPING onto `HttpError.status` from `lib/http.ts` (which
+ * `WorkspaceApiError` extends) is: 401 → `expired`, 403 and 404 → `gone`,
+ * everything else → `failed`. 403 joins `gone` because the consequence is
+ * identical from where the reader sits — there is nothing here for you and no
+ * retry changes that — even though `http.ts` keeps a separate SENTENCE for it.
+ * Register and copy split here on purpose.
+ *
+ * TARGET, NOT PRESENT TENSE — and the gap is known debt, not a claim.
+ * `gone` HAS NO PRODUCER YET. The only status-to-kind classifier that exists,
+ * `toDecisionReadError` in `workspace-decisions.ts`, does `401 → expired` and
+ * `everything else → failed`, so today a 403 and a 404 both arrive as `failed`
+ * and get drawn red WITH a "Try again" — a control that cannot work, which is
+ * exactly what the `gone` arm below exists to stop. Nothing is broken by that
+ * (no decisions route answers 404 for a queue read), but do not read the
+ * paragraph above as describing wiring that is already there. Wiring it is
+ * TASK-296's, alongside the surfaces that need the kind.
  */
 export type ReadOutcome = 'expired' | 'gone' | 'failed';
 

@@ -244,10 +244,21 @@ describe('a queue we were not allowed to read', () => {
 
   /*
     Red is a claim too. `destructive` reads "something has gone wrong", which is
-    true of a blip and false of a session that ran out — and it would put this
-    page in a different register from the in-thread card, which draws the same
-    sentence neutral. Both halves are pinned, so deleting the branch fails one
-    of them whichever way it is deleted.
+    true of a blip and false of a session that ran out. The in-thread card draws
+    THIS sentence — the signed-out one — neutral as well, so the two surfaces
+    agree here.
+
+    The comparison stops at the signed-out sentence, and that is the part
+    TASK-290 corrected. This comment used to claim red would put the page in a
+    "different register from the in-thread card" full stop; for a BLIP that is
+    no longer true. The in-thread card is neutral only while an automatic
+    attempt is genuinely still coming, and goes `destructive` once the retry
+    budget is spent — the same register this page uses on its first failure,
+    because `useDecisionQueue` has no automatic retry to wait on. `expired` is
+    the axis where the two agree unconditionally. See `lib/read-register.ts`.
+
+    Both halves are pinned, so deleting the branch fails one of them whichever
+    way it is deleted.
   */
   it('does not dress a signed-out session up as something going wrong', () => {
     renderToday({ error: expired });
