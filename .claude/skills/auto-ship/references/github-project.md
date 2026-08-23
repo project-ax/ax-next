@@ -127,16 +127,41 @@ cat > .claude/auto-ship-board.sh <<'SH'
 #!/usr/bin/env bash
 # Batched GitHub Projects v2 helpers — keep GraphQL call volume low (5000 pts/hr).
 BOARD_CACHE=.claude/auto-ship-board.json
-# board_snapshot — fetch the WHOLE board once, cache to disk, echo the path. Non-zero on
-# a rate-limited/empty read so callers don't act on garbage. Reuse the cache all pass.
+# BOARD_LIMIT must stay comfortably ABOVE the board's item count. The board passed 300
+# items in Aug 2026; the helper shipped `--limit 200` and silently handed back a
+# HALF BOARD. Keep headroom and re-raise this when the board grows.
+BOARD_LIMIT=700
+# board_snapshot — fetch the WHOLE board once, cache to disk, echo the path.
+# The guard asserts NON-TRUNCATION, not non-emptiness. A `length>0` check passes
+# happily on a truncated array, and the orchestrator then derives its ready set, dep
+# review and reconciliation from a partial board — cards it cannot see look absent.
+# A snapshot that exactly HITS the limit is indistinguishable from a truncated one,
+# so `>= LIMIT` is fatal, not a warning. (`a9343fd9` fixed this same blindness in the
+# poller; it regressed straight back into this helper.)
 board_snapshot() {
-  local j
-  j=$(gh project item-list 1 --owner project-ax --format json --limit 200 2>/dev/null) || return 1
-  printf '%s' "$j" | jq -e '.items | type=="array" and length>0' >/dev/null 2>&1 || return 1
+  local j n
+  # No 2>/dev/null: a rate-limit or auth error must reach the operator, not vanish.
+  j=$(gh project item-list 1 --owner project-ax --format json --limit "$BOARD_LIMIT") || return 1
+  n=$(printf '%s' "$j" | jq -r '.items | if type=="array" then length else -1 end') || return 1
+  # An empty/non-integer $n makes BOTH tests below error out (return 2) rather than
+  # fire, and the function would then fall through to cache garbage and return 0 —
+  # a silent-success path. Close it before the arithmetic.
+  case "$n" in ''|*[!0-9-]*) echo "FATAL: board_snapshot got a non-numeric item count ('$n')" >&2; return 1;; esac
+  [ "$n" -le 0 ] && { echo "FATAL: board_snapshot read no items (rate-limited or bad JSON)" >&2; return 1; }
+  [ "$n" -ge "$BOARD_LIMIT" ] && { echo "FATAL: board_snapshot hit --limit ($n of $BOARD_LIMIT) — board truncated; raise BOARD_LIMIT" >&2; return 1; }
   printf '%s' "$j" > "$BOARD_CACHE"; echo "$BOARD_CACHE"
 }
 # board_batch <projectId> <op>...  — ONE aliased mutation for many writes.
 #   op: "<itemId>|<fieldId>|single|<optionId>"  or  "<itemId>|<fieldId>|text|<value>"
+#
+# BRACE EVERY $i THAT PRECEDES A ':'. The Bash tool runs **zsh** on this machine, and
+# zsh applies history-style modifiers to a bare `$var:x`. The load-bearing sites are
+# the two alias prefixes `a${i}:update…` — unbraced, zsh reads `:u` as the *upcase*
+# modifier and EATS THE `u`, yielding `a1pdateProjectV2ItemFieldValue`, which GitHub
+# rejects as `undefinedField`. `\$it${i}:ID!` and `\$v${i}:String!` are NOT affected
+# (`:I` and `:S` are not modifiers) but are braced anyway so the rule is "always brace"
+# with no per-letter judgement call to get wrong. Verified byte-identical under bash.
+# `bash -c` is NOT needed — bracing alone is sufficient (§2c proves it every run start).
 board_batch() {
   local proj="$1"; shift
   [ "$#" -eq 0 ] && { echo "board_batch: no ops"; return 2; }
@@ -144,20 +169,100 @@ board_batch() {
   local op item field kind val
   for op in "$@"; do
     i=$((i+1)); item=${op%%|*}; op=${op#*|}; field=${op%%|*}; op=${op#*|}; kind=${op%%|*}; val=${op#*|}
-    decl+=",\$it$i:ID!,\$fd$i:ID!,\$v$i:String!"
-    args+=(-f "it$i=$item" -f "fd$i=$field" -f "v$i=$val")
+    decl+=",\$it${i}:ID!,\$fd${i}:ID!,\$v${i}:String!"
+    args+=(-f "it${i}=$item" -f "fd${i}=$field" -f "v${i}=$val")
     if [ "$kind" = "single" ]; then
-      sel+=" a$i:updateProjectV2ItemFieldValue(input:{projectId:\$p,itemId:\$it$i,fieldId:\$fd$i,value:{singleSelectOptionId:\$v$i}}){projectV2Item{id}}"
+      sel+=" a${i}:updateProjectV2ItemFieldValue(input:{projectId:\$p,itemId:\$it${i},fieldId:\$fd${i},value:{singleSelectOptionId:\$v${i}}}){projectV2Item{id}}"
     else
-      sel+=" a$i:updateProjectV2ItemFieldValue(input:{projectId:\$p,itemId:\$it$i,fieldId:\$fd$i,value:{text:\$v$i}}){projectV2Item{id}}"
+      sel+=" a${i}:updateProjectV2ItemFieldValue(input:{projectId:\$p,itemId:\$it${i},fieldId:\$fd${i},value:{text:\$v${i}}}){projectV2Item{id}}"
     fi
   done
-  gh api graphql -f query="${decl}){${sel} }" "${args[@]}" >/dev/null 2>&1 \
-    && echo "board_batch: $i write(s) in 1 request" || { echo "board_batch: FAILED"; return 1; }
+  # NEVER swallow this stderr. The zsh bug above survived run after run because
+  # `2>&1`-to-nowhere reduced `undefinedField 'a1pdateProjectV2ItemFieldValue'` —
+  # which names the bug on sight — to the single word FAILED.
+  local err
+  if err=$(gh api graphql -f query="${decl}){${sel} }" "${args[@]}" 2>&1 >/dev/null); then
+    echo "board_batch: $i write(s) in 1 request"
+  else
+    echo "board_batch: FAILED — $err" >&2
+    return 1
+  fi
+}
+# board_batch_query_preview <n> — the exact query string board_batch WOULD send for n
+# ops, with no network call. Exists solely so the run-start shell-parity self-test
+# (§2c) can diff it between bash and zsh; the two must be byte-identical.
+#
+# ⚠ THIS IS A HAND-MAINTAINED TWIN of board_batch's decl/sel construction above. If you
+# edit those two `+=` lines, edit these too or the parity test silently stops testing
+# the real function. The static scan in
+# scripts/__tests__/autoship-skill-shell-hazards.test.js covers BOTH copies for the
+# brace hazard, which is the failure that actually matters — but it cannot tell you
+# the twins have drifted in some other way.
+board_batch_query_preview() {
+  local n="$1" decl="mutation(\$p:ID!" sel="" i=0
+  while [ "$i" -lt "$n" ]; do
+    i=$((i+1))
+    decl+=",\$it${i}:ID!,\$fd${i}:ID!,\$v${i}:String!"
+    sel+=" a${i}:updateProjectV2ItemFieldValue(input:{projectId:\$p,itemId:\$it${i},fieldId:\$fd${i},value:{singleSelectOptionId:\$v${i}}}){projectV2Item{id}}"
+  done
+  printf '%s){%s }\n' "$decl" "$sel"
 }
 SH
 chmod +x .claude/auto-ship-board.sh
 ```
+
+### 2c. Run-start self-tests — THREE fatal checks before the first dispatch
+
+Every defect this section documents was regenerated from these very code blocks at
+some later run start and then failed *quietly*. Run all three immediately after
+writing the helpers, in one Bash call, and **do not dispatch anything until they
+pass**. None of them costs a GraphQL point (`gh api rate_limit` is exempt from the quota it reports).
+
+```bash
+FATAL=0
+
+# (1) SHELL PARITY — the Bash tool runs zsh; the helpers are written in bash syntax.
+# An unbraced `$i:` silently mutates the GraphQL alias under zsh (§2b). Diff the
+# query the helper WOULD send, under both shells; they must be byte-identical.
+if command -v zsh >/dev/null 2>&1; then
+  pb=$(bash -c '. .claude/auto-ship-board.sh && board_batch_query_preview 3')
+  pz=$(zsh  -c '. .claude/auto-ship-board.sh && board_batch_query_preview 3')
+  if [ "$pb" != "$pz" ]; then
+    echo "FATAL: board_batch is NOT shell-parity safe — bash and zsh disagree:"; echo "  bash: $pb"; echo "  zsh : $pz"; FATAL=1
+  fi
+  case "$pz" in *" a1:updateProjectV2ItemFieldValue"*) ;;
+    *) echo "FATAL: zsh mangled the alias (expected ' a1:updateProjectV2ItemFieldValue'): $pz"; FATAL=1;; esac
+fi
+
+# (2) HELPER COMPLETENESS — a stale on-disk .claude/auto-ship-progress.sh can predate
+# a function. This has already caused one real regression (§8.3): the triage agent's
+# set_needs_input call silently no-op'd and it hand-rolled a mangled Q&A block. The
+# guard existed; nothing ran it. It is now fatal, and it runs here.
+. .claude/auto-ship-progress.sh
+for f in append_progress set_needs_input append_learnings; do
+  type "$f" >/dev/null 2>&1 || { echo "FATAL: STALE HELPER — $f missing from .claude/auto-ship-progress.sh; re-write the cat blocks (§6/§8.3 — the first \`cat >\` truncates, so a full rewrite is safe)"; FATAL=1; }
+done
+
+# (3) GRAPHQL BUDGET PRE-FLIGHT — the budget is 5000 pts/hr, shared with the poller,
+# every heartbeat and the merge queue. A dispatch round you cannot afford strands its
+# builders mid-flight (this happened: 95/5000 remaining right after three dispatches).
+REM=$(gh api rate_limit --jq '.resources.graphql.remaining')
+[ "${REM:-0}" -lt 500 ] && { echo "FATAL: GraphQL budget $REM/5000 — too low to start a run; wait for the hourly reset"; FATAL=1; }
+
+[ "$FATAL" -eq 0 ] && echo "run-start self-tests: OK" || echo "run-start self-tests: FAILED — do not dispatch"
+```
+
+**Budget arithmetic, so the pre-flight is not a mystery number.** `gh project
+item-list` is ~102 points. Under the mandatory 3-way parallelism a round in which each
+builder queries the board for its own card body costs ~306 points *before any work
+happens* — which is why the dispatch template hands each builder its card body inline
+or as a local file path and **never** as a board query (`references/templates.md` ›
+Code-lane dispatch prompt). The orchestrator has already read every body in `$ITEMS`;
+re-fetching it per builder buys nothing.
+
+A tracked regression guard for (1) and the `--limit` in §2b/§3 lives at
+`scripts/__tests__/autoship-skill-shell-hazards.test.js` — CI runs it on every PR, so
+these two defects cannot silently return to the doc the way they did before.
 
 ## 3. Read the board (each loop pass) — ONE read, reuse it
 
@@ -169,7 +274,14 @@ stalled for ~6 min). **Read the whole board exactly once per pass** and derive
 everything from that single JSON:
 
 ```bash
-ITEMS=$(gh project item-list "$PNUM" --owner "$OWNER" --format json --limit 200)   # the ONLY board read this pass
+BOARD_LIMIT=700   # keep in lockstep with board_snapshot's BOARD_LIMIT (§2b) — one number, two call sites
+ITEMS=$(gh project item-list "$PNUM" --owner "$OWNER" --format json --limit "$BOARD_LIMIT")   # the ONLY board read this pass
+# Both failure modes are silent and both poison the ready set, so assert BOTH — a
+# truncated read and an empty one are different bugs with the same symptom (a card
+# that is simply never dispatched). This mirrors board_snapshot; prefer calling it.
+n=$(printf '%s' "$ITEMS" | jq '.items|length')
+[ "${n:-0}" -le 0 ]             && echo "FATAL: board read came back empty (rate-limited?)"
+[ "${n:-0}" -ge "$BOARD_LIMIT" ] && echo "FATAL: board truncated at --limit $BOARD_LIMIT — raise it"
 # ready set + deps:
 printf '%s' "$ITEMS" | jq -r '.items[] | select(.status=="To Do") | "\(.title)\tdeps=\(."depends on" // "")"'
 # an item's node id AND its body come from the SAME JSON — never re-query for them:
@@ -399,8 +511,18 @@ each line, so it must **never** be read into the model's context. `append_progre
 fetches the body, splices the block, and writes it back **entirely in shell**,
 surfacing only `progress: …` / `skip` to the model. Write it next to the poller at
 run start (`.claude/auto-ship-progress.sh`, gitignored); the orchestrator sources it
-for its terminal writes, and the dispatch prompt passes its **absolute path** to each
-agent.
+for its terminal writes, and **dispatched agents call the `auto-ship-hb.sh` wrapper
+below by absolute path** (never `source` a relative one — see the worktree hazard).
+
+**The worktree hazard — why builders need the wrapper, not the raw helper.** The
+helper is gitignored (`.gitignore:47`), so `git worktree add` does **not** carry it
+into a dispatched builder's worktree: `ls .claude/` there comes back empty. A builder
+that copies the orchestrator-side `source .claude/auto-ship-progress.sh` line — the
+relative form, which is what every runnable example in this file used to show —
+gets **exit 127** and no heartbeat. Two builders in one run independently worked
+around it by copying the helper *into* their worktree with a `$(dirname "$0")` shim
+and a hardcoded item id. Two people inventing the same workaround is a documentation
+failure, not a coincidence, so the wrapper is now the documented path for agents:
 
 ```bash
 cat > .claude/auto-ship-progress.sh <<'SH'
@@ -466,11 +588,65 @@ append_learnings() {
 SH
 ```
 
-Shell state does **not** persist across Bash calls, so `source` + call go in the
-**same** invocation each time:
+**The heartbeat wrapper — `.claude/auto-ship-hb.sh`.** Write it at run start next to
+the helper and hand every dispatched agent its **absolute path**. Agents **CALL** it;
+they never `source` anything. Three properties matter: a `#!/usr/bin/env bash`
+shebang (so the Bash tool's zsh cannot mis-parse a bash-syntax helper), an absolute
+helper path derived from the wrapper's own location (so it works from any worktree),
+and a **loud** exit — because a heartbeat that fails quietly stays dead for a whole
+run, which is exactly what happened.
 
 ```bash
-source .claude/auto-ship-progress.sh && append_progress "$ITEM_ID" "merged #$PR ✅"
+cat > .claude/auto-ship-hb.sh <<'SH'
+#!/usr/bin/env bash
+# Worktree-safe progress heartbeat. CALL it (do not `source` it):
+#   /abs/path/.claude/auto-ship-hb.sh <PVTI-item-id> "<line>"
+#
+# LOUD BY DESIGN, and the two failure classes are NOT the same thing:
+#   * helper missing / unsourceable  -> a SETUP bug. Exit 3/4. The heartbeat can
+#     never work this run; the operator must fix it. Report progress: FAILED-setup.
+#   * GraphQL read/write failed      -> TRANSIENT (rate limit, blip). Exit 1. Still
+#     best-effort: it must never block the ship.
+# Neither aborts the ship. Both are visible. Silence is the only unacceptable outcome.
+set -uo pipefail
+HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/auto-ship-progress.sh"
+if [ ! -r "$HELPER" ]; then
+  echo "HEARTBEAT-FAILED(setup): helper not readable at $HELPER" >&2; exit 3
+fi
+# shellcheck source=/dev/null
+. "$HELPER" || { echo "HEARTBEAT-FAILED(setup): could not source $HELPER" >&2; exit 4; }
+type append_progress >/dev/null 2>&1 || {
+  echo "HEARTBEAT-FAILED(setup): append_progress undefined — stale helper (§2c check 2)" >&2; exit 5; }
+if [ "$#" -lt 2 ]; then
+  echo "HEARTBEAT-FAILED(setup): usage: $0 <item-id> \"<line>\"" >&2; exit 2
+fi
+out="$(append_progress "$1" "$2" 2>&1)"; rc=$?
+echo "$out"
+# append_progress returns 0 on every path by design, so detect its "skip (...)" text.
+if [ $rc -ne 0 ] || printf '%s' "$out" | grep -q 'skip ('; then
+  echo "HEARTBEAT-FAILED(transient): $out" >&2; exit 1
+fi
+SH
+chmod +x .claude/auto-ship-hb.sh
+```
+
+Verify it once from a real worktree at run start — that is the environment it exists
+for, and a green check in the orchestrator's own checkout proves nothing about it.
+
+**Handoff field.** Because nothing machine-reads the progress block (below), a dead
+heartbeat is invisible unless the agent says so. Every dispatched agent therefore
+returns a **required** `progress: live | FAILED-<reason>` field alongside `reviewer:`.
+`FAILED-*` never blocks the merge, but the orchestrator journals it — so a dead
+heartbeat surfaces within one card instead of at the end of a whole run.
+
+**Orchestrator-side, `source` is still correct and still relative.** The orchestrator
+runs in the primary checkout where the helper exists, and shell state does **not**
+persist across Bash calls, so `source` + call go in the **same** invocation:
+
+```bash
+source .claude/auto-ship-progress.sh && append_progress "$ITEM_ID" "merged #$PR ✅"   # ORCHESTRATOR ONLY
+# From a dispatched agent's worktree, the equivalent is a CALL to the absolute wrapper:
+#   /abs/path/to/repo/.claude/auto-ship-hb.sh "$ITEM_ID" "PR #$PR opened"
 ```
 
 (Cards are **draft issues** — auto-ship creates them with `gh project item-create
@@ -519,15 +695,39 @@ gh pr list --state open --search "[$TASK_ID] in:title" \
 **Abandoned-branch cleanup** (no-PR reset only — never when a PR exists, that work
 ships):
 
+Agent worktrees are **harness-locked** (`git worktree list --porcelain` shows
+`locked claude agent … (pid NNNNN)`), and a single `--force` will not remove a locked
+worktree: `git worktree remove --force` exits **128** with *"cannot remove a locked
+working tree… use 'remove -f -f'"*. `git branch -D` then exits 1 because the worktree
+is still there, and `git worktree prune` will not touch a still-present one. The old
+form suppressed all three errors with `2>/dev/null` and checked no exit code, so it
+accomplished only the remote delete and reported success. Two `-f`, no blanket
+suppression, and a `continue` so a second error's real cause is not masked by the
+first:
+
 ```bash
 for b in $(git branch --list "auto-ship/$TASK_ID-*" --format '%(refname:short)'); do
   wt=$(git worktree list --porcelain | awk -v b="$b" '/^worktree /{w=$2} /^branch /{if($2=="refs/heads/"b) print w}')
-  [ -n "$wt" ] && git worktree remove --force "$wt" 2>/dev/null
-  git branch -D "$b" 2>/dev/null
-  git push origin --delete "$b" 2>/dev/null || true   # harmless if never pushed
+  if [ -n "$wt" ]; then
+    # -f -f: the second -f is what defeats the harness lock. One -f exits 128.
+    git worktree remove -f -f "$wt" || { echo "⚠ CLEANUP FAILED: worktree $wt still present" >&2; continue; }
+  fi
+  git branch -D "$b" || { echo "⚠ CLEANUP FAILED: local branch $b survives" >&2; continue; }
+  # Suppressed on purpose: deleting a ref that was never pushed is the common case and
+  # is not a failure. Be honest that this also eats auth/network errors — if remote
+  # branches are visibly piling up, re-run this line WITHOUT the redirect to see why.
+  git push origin --delete "$b" 2>/dev/null || true
 done
 git worktree prune
 ```
+
+A `⚠ CLEANUP FAILED` line is **non-fatal** — a lingering worktree does not endanger the
+merge queue (it does redden `pnpm lint`, so sweep at session end). It must still be
+*visible*: this block silently accomplishing nothing is how stale worktrees accumulated
+across a whole run. And do **not** gate cleanup on a `kill -0` liveness check of the
+lock pid: that pid is the **Claude Code session** pid, shared by every agent worktree
+and alive until the session ends, so it would always say "in use" and never authorize
+anything.
 
 Reconciliation keys off the **`Status` lane + PR ground truth**, not the progress
 block — so a crash mid-body-write is tolerated. The journal
@@ -653,12 +853,16 @@ SH
 `append_progress` + `append_learnings` (§6). A *stale* on-disk file can predate a function
 — an early run that wrote only `append_progress` was the cause of a real regression: the
 triage agent's `set_needs_input` call silently no-op'd and it hand-rolled a mangled Q&A
-block. After (re)writing the helper at run start, confirm it is whole:
+block. **This check is now check (2) of the §2c run-start self-tests and is FATAL** —
+it is not advisory and it does not wait for a caller to trip over the gap. It caught a
+missing `set_needs_input` again on 2026-08-23; the only reason that one was not another
+silent no-op is that a human ran the guard by hand. Run it automatically, at run start,
+before the first dispatch:
 
 ```bash
 source .claude/auto-ship-progress.sh
 for f in append_progress set_needs_input append_learnings; do
-  type "$f" >/dev/null 2>&1 || echo "STALE HELPER: $f missing — re-write the cat blocks (§6/§8.3; the first cat > truncates, so a full rewrite is safe)"
+  type "$f" >/dev/null 2>&1 || echo "FATAL: STALE HELPER — $f missing; re-write the cat blocks (§6/§8.3; the first cat > truncates, so a full rewrite is safe)"
 done
 ```
 

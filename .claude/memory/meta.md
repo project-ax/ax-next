@@ -46,13 +46,23 @@ Behaviors (not project facts). Name a behavior, name the better alternative. Tag
   with better reasons (required-vs-optional `cause`; keeping a redundant `.parse` inside the `try`
   because moving it out would be fail-OPEN). Accepted both. The measure-the-premise rule applies to
   instructions I wrote this morning, not only to cards inherited from a prior session.
-- **Orchestration findings this run** (all first-hand, all filed as TASK-298): `board_batch` is
-  bash-only and fails silently under zsh; the progress helper cannot be `source`d under worktree
-  isolation, so the live per-card heartbeat was dead for every builder all run; the merge-queue
-  one-liner's `--delete-branch` always fails against worktree-isolated builders; and the 25-minute
-  reviewer deadline discards slow-but-healthy reviews (measured: 4 and 7.5 min of work delivered
-  ~40 min apart, one holding a real blocker). Three of the four fail SILENTLY, which is why they
-  survive run after run — prefer making them loud over making them quietly correct.
+- **Orchestration findings this run** (all first-hand, filed as TASK-298 — then **re-measured
+  before building, which corrected three of the four and found two more**; fixed in the skills
+  2026-08-23). What survived measurement: `board_batch` mangles its GraphQL alias under zsh; the
+  merge-queue one-liner's `--delete-branch` always exits 1 against worktree-isolated builders; and
+  the reviewer deadline discards slow-but-healthy reviews (4 and 7.5 min of work delivered ~40 min
+  apart, one holding a real blocker). What did NOT survive: the zsh bug is at `a$i:update…`
+  (`:u` = upcase), **not** at `\$it$i:ID!` — `:I` is not a modifier, so a builder braced the line
+  the card named and would have left the real bug in place; the progress helper *can* be `source`d
+  from a worktree by absolute path — the real cause is that it is **gitignored**, so
+  `git worktree add` never carries it in and the *relative* form every example taught exits 127;
+  and the "25-minute deadline" fix had already merged in `b5041298`. Two more found by the sweep:
+  `board_snapshot` read `--limit 200` against a 300+ item board and guarded only `length>0`, and
+  the cleanup block used a single `-f` that cannot remove a harness-locked worktree. **The
+  generalisable bit: every one of these was regenerated at run start from a doc code-block that no
+  test had ever read.** Prefer making them loud over making them quietly correct — and put a real
+  guard on the doc (`scripts/__tests__/autoship-skill-shell-hazards.test.js`), because a fix that
+  lives only in prose gets re-broken by the next edit.
 - **Builders comply when told; they do not infer.** 3 of 3 skipped their handoff (and its
   `reviewer:` field, the merge gate) until the dispatch prompt explicitly said "return at PR-open,
   report `ci: pending`, do not wait on CI." Then 5 of 5 complied. The knowledge was in project
