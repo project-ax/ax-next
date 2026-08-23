@@ -9,15 +9,22 @@ import type { AgentMessage, IpcClient } from '@ax/ipc-protocol';
 // with its current cursor. The host blocks for up to 30 s waiting for a
 // new entry (see @ax/ipc-protocol IPC_TIMEOUTS_MS). When the host times out
 // with no entry, it returns `{ type: 'timeout', cursor: <echo> }` — the
-// runner then re-polls with the same cursor. Cursor advances only on
-// delivery (`user-message` / `cancel`), never on timeout.
+// runner then re-polls with the same cursor. Cursor advances only on a real
+// delivery (`user-message` / `cancel` / `decision-resolved`), never on
+// timeout.
 //
 // `next()` transparently swallows timeouts. Callers see only real entries.
 //
-// It also transparently swallows delivery variants it does not recognise
-// (AW-6): the union is open now — a host newer than this runner may deliver
-// something this build predates — so an unknown type is reported and re-polled
-// rather than thrown. See the branch at the end of `next()`.
+// It also re-polls past a delivery variant it does not recognise instead of
+// throwing (AW-6). That branch is DEFENCE IN DEPTH, not a forward-compat
+// path: the wire union (`SessionNextMessageResponseSchema` in
+// @ax/ipc-protocol) is a closed `z.discriminatedUnion` — four arms, no
+// catch-all — and `createIpcClient` validates every 2xx body against it, so
+// an unrecognised `type` is rejected in the client and surfaces as a
+// non-retryable error before `next()` ever sees it. The branch only earns
+// its keep for a client that does NOT validate: a hand-rolled one, or some
+// future transport that skips the schema. See the branch at the end of
+// `next()`.
 //
 // Terminal errors from the client (SessionInvalidError, exhausted-retry
 // HostUnavailableError) propagate out — the runner decides what to do.
@@ -175,22 +182,33 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
           note: resp.note,
         };
       }
-      // BEHAVIOUR CHANGE (AW-6). This used to `throw`, which killed the turn.
+      // DEFENCE IN DEPTH (AW-6). This used to `throw`, which killed the turn.
       //
-      // The throw was defensible while the union was closed: an unrecognised
-      // type meant protocol drift and drift should be loud. It stopped being
-      // defensible the moment the union started GROWING — a host newer than
-      // this runner now legitimately delivers variants this build has never
-      // heard of, and the old behaviour turned a forward-compatible addition
-      // into a crashed turn on every runner in the fleet that had not been
-      // rebuilt yet.
+      // Be precise about what this branch is, because it is easy to overclaim.
+      // It is NOT a forward-compat path for a host newer than this runner:
       //
-      // Advancing the cursor and re-polling loses nothing this runner could
-      // have acted on. It is reported, not swallowed: the operator sees the
-      // variant name and the version gap it implies. (The ipc-client's schema
-      // validation would reject a genuinely malformed response upstream and
-      // that error still propagates — this branch is reached only by a
-      // well-formed variant we do not know.)
+      //   - The wire union is CLOSED. `SessionNextMessageResponseSchema`
+      //     (@ax/ipc-protocol `actions.ts`) is a `z.discriminatedUnion('type',
+      //     …)` over four arms with no catch-all, so a well-formed variant we
+      //     do not know is exactly what it REJECTS — see the `rejects an
+      //     unknown type` case in that package's `schemas.test.ts`.
+      //   - `createIpcClient` runs every 2xx body for this action through that
+      //     schema (`parseSuccessBody`), and a failure becomes
+      //     `IpcRequestError('INTERNAL', 0, …)`. `classifyRetry` returns 'no'
+      //     for it (status 0 is not >= 500, and it is not a transient errno),
+      //     so it propagates straight out of `callGet` and out of `next()`.
+      //     Nothing the runner's own client hands us can land here.
+      //   - Version skew cannot manufacture one either. `container/agent/
+      //     Dockerfile` builds ONE image shared by the host pod and the
+      //     per-session runner pods, and the helm chart sets `K8S_POD_IMAGE`
+      //     from the same `ax-next.image` helper as the host container's own
+      //     `image:`. There is no unrebuilt-runner fleet to be kind to.
+      //
+      // What it IS: a soft landing for a caller whose client does not
+      // validate — a hand-rolled one, or a future transport that skips the
+      // schema. For such a caller, re-polling past a variant we could not have
+      // acted on anyway beats crashing an otherwise healthy turn. And it is
+      // reported, not swallowed: the operator sees the variant name.
       onUnknownDelivery(String((resp as { type?: unknown }).type));
       const advanced = (resp as { cursor?: unknown }).cursor;
       if (typeof advanced === 'number' && Number.isInteger(advanced) && advanced > cursor) {

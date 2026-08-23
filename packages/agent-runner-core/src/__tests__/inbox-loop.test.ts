@@ -8,7 +8,13 @@ import { createInboxLoop } from '../inbox-loop.js';
 // We mock IpcClient with a bare object whose `callGet` returns pre-queued
 // responses in order. That's all the inbox-loop contract needs: it reads
 // the discriminated union out of `callGet` and loops on `timeout`, returns
-// on `user-message` / `cancel`.
+// on `user-message` / `cancel` / `decision-resolved`.
+//
+// Worth knowing before you read the queued fixtures: this mock returns them
+// RAW. The real `createIpcClient` parses every 2xx body through
+// `SessionNextMessageResponseSchema` first, so a fixture the schema would
+// reject is a shape no production caller can produce. Where that matters,
+// the test says so.
 // ---------------------------------------------------------------------------
 
 interface MockCall {
@@ -185,7 +191,17 @@ describe('inbox-loop idle floor', () => {
   });
 
   // -------------------------------------------------------------------------
-  // AW-6 — the fourth delivery variant, and the open union it implies.
+  // AW-6 — the fourth delivery variant (`decision-resolved`), and the
+  // defence-in-depth branch sitting behind it.
+  //
+  // The wire union is CLOSED: `SessionNextMessageResponseSchema` is a
+  // `z.discriminatedUnion` with four arms and no catch-all, and the real
+  // ipc-client validates every 2xx body against it (see `rejects an unknown
+  // type` in @ax/ipc-protocol's `schemas.test.ts`). So the two unknown-type
+  // tests below are NOT production paths — `makeMockClient` returns queued
+  // objects raw, bypassing the schema, which is the only reason they can reach
+  // that branch at all. They pin defence-in-depth behaviour for a client that
+  // does not validate, and nothing more. Their names say so on purpose.
   // -------------------------------------------------------------------------
 
   it('surfaces a decision-resolved delivery and advances the cursor', async () => {
@@ -209,10 +225,10 @@ describe('inbox-loop idle floor', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('re-polls past an unknown delivery type instead of crashing the turn', async () => {
-    // BEHAVIOUR CHANGE. This used to throw. A host newer than this runner
-    // delivering a variant it predates must not kill an otherwise healthy
-    // turn — see the comment at the end of `next()`.
+  it('defence-in-depth (non-validating client only): re-polls past an unknown delivery type instead of crashing the turn', async () => {
+    // Reachable only because this mock skips schema validation. Against the
+    // real ipc-client the response below is rejected upstream and the error
+    // propagates — see the comment at the end of `next()`.
     const seen: string[] = [];
     const { client } = makeMockClient([
       { type: 'something-from-the-future', cursor: 3 },
@@ -225,8 +241,10 @@ describe('inbox-loop idle floor', () => {
     expect(seen).toEqual(['something-from-the-future']);
   });
 
-  it('never rewinds the cursor on an unknown delivery with a bogus cursor', async () => {
-    // Skipping an entry we cannot act on is fine. REPLAYING one we already
+  it('defence-in-depth (non-validating client only): never rewinds the cursor on an unknown delivery with a bogus cursor', async () => {
+    // Same caveat as above — the mock is what makes these two entries
+    // reachable. Given that they ARE reachable for a non-validating client:
+    // skipping an entry we cannot act on is fine, but REPLAYING one we already
     // delivered is not — a rewound cursor would re-deliver a user message and
     // the agent would answer it twice.
     const { client } = makeMockClient([
