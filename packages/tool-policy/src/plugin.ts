@@ -29,9 +29,10 @@ const VERDICT_ORDER: readonly PolicyVerdict[] = ['allow', 'hold', 'deny'];
  * re-sorting inside a group would make the rail's reading order an accident of
  * the sort algorithm.
  *
- * The `tool` half never leaves this module — it exists so `capabilityRows` can
- * apply `outOfReach`. See `ListCapabilitiesInput.outOfReach` for why the
- * identifier stays in here rather than riding out on the row.
+ * The `tool` half is never copied onto the row — it exists so `capabilityRows`
+ * can apply `outOfReach`. See `ListCapabilitiesInput.outOfReach` for why the
+ * identifier stays off the row; `describedTools` answers the coverage question
+ * separately, in a field nothing renders.
  */
 interface IndexedRow {
   row: CapabilityRow;
@@ -61,8 +62,25 @@ function indexRules(rules: readonly PolicyRule[]): IndexedRow[] {
         // words (an MCP tool, an unmapped grant) is `described: false`, and this
         // plugin never produces one — see the PR's security note.
         described: true,
+        // The predicate itself never leaves the plugin — only the fact that
+        // there is one. A renderer handed `{ field: 'recursive', equals: true }`
+        // would have to turn a tool's argument name into English, and it is the
+        // TOOL's vocabulary, not ours. What the reader needs from it is that
+        // this row does not apply to every call, and that is a boolean.
+        conditional: rule.match.when !== undefined,
       } satisfies CapabilityRow,
     }));
+}
+
+/**
+ * Every tool the table names — see `ListCapabilitiesOutput.describedTools`.
+ *
+ * Order follows the table so the answer is stable across calls; a `Set` gives
+ * the deduplication, since narrow-plus-broad rules for one tool are the normal
+ * shape rather than the exception.
+ */
+export function describedTools(rules: readonly PolicyRule[]): string[] {
+  return [...new Set(rules.map((rule) => rule.match.tool))];
 }
 
 export interface CapabilityRowsOptions {
@@ -146,7 +164,16 @@ export function createToolPolicyPlugin(opts?: ToolPolicyPluginOptions): Plugin {
         // table says what the product enforces, an agent's wiring says what it
         // can reach, and a rail that showed the first as the second would
         // assert reach the agent does not have.
-        async (_ctx, input) => ({ rows: applyReach(indexed, input?.outOfReach) }),
+        //
+        // `describedTools` is COVERAGE and is not filtered: see its doc on
+        // `ListCapabilitiesOutput`. Computed per call rather than hoisted next
+        // to `indexed` only because it is a map over an immutable table of a
+        // few dozen rules, and a second frozen module-level cache to keep in
+        // step with the first is the kind of thing that drifts.
+        async (_ctx, input) => ({
+          rows: applyReach(indexed, input?.outOfReach),
+          describedTools: describedTools(rules),
+        }),
         { returns: ListCapabilitiesOutputSchema },
       );
     },

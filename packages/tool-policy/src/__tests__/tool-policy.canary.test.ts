@@ -89,9 +89,41 @@ describe('tool-policy canary', () => {
     );
     for (const row of caps.rows) {
       expect(Object.keys(row).sort()).toEqual(
-        ['capability', 'described', 'provenance', 'source', 'verdict'].sort(),
+        [
+          'capability',
+          'conditional',
+          'described',
+          'provenance',
+          'source',
+          'verdict',
+        ].sort(),
       );
     }
+  });
+
+  it('carries describedTools ACROSS THE BUS, covering every tool the table names', async () => {
+    /*
+      Same hazard as the `outOfReach` canary above, in the other direction: a
+      `z.object` STRIPS what it does not declare, so a field the handler returns
+      and the schema forgets vanishes silently on the way out. The caller then
+      sees NO tool as described and re-lists every ruled tool as an undescribed
+      one — a second, mechanical `allow` row for a tool a rule holds or denies,
+      with every unit test still green.
+
+      It must also cover a tool only a `when` rule names, which is the case
+      TASK-267 was about: `evaluate` cannot see that tool for a call whose
+      arguments are invented, and coverage is the answer that does not depend
+      on a call.
+    */
+    const h = await boot();
+    const caps = await h.bus.call<unknown, ListCapabilitiesOutput>(
+      'tool-policy:list-capabilities',
+      h.ctx(),
+      { agentId: 'a1' },
+    );
+    expect(new Set(caps.describedTools)).toEqual(
+      new Set(BUILTIN_RULES.map((r) => r.match.tool)),
+    );
   });
 
   it('hands each caller its own rows — one caller cannot rewrite another’s', async () => {
@@ -194,7 +226,9 @@ describe('tool-policy canary', () => {
         source: 'rule:test.only',
         provenance: 'rule',
         described: true,
+        conditional: false,
       },
     ]);
+    expect(caps.describedTools).toEqual(['only']);
   });
 });

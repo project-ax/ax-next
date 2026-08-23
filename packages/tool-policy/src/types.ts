@@ -89,6 +89,21 @@ export interface CapabilityRow {
    * row (design H4: understating reach is worse than overstating it).
    */
   described: boolean;
+  /**
+   * True when the rule behind this row carries a `when` predicate, so its
+   * verdict applies to SOME calls and not others.
+   *
+   * The renderer needs this because the row is a claim and the two claims are
+   * different: "Can delete a folder — asks you first" says every such call
+   * stops for you, while a rule predicated on `recursive: true` lets the rest
+   * through without stopping for anybody. Framing the second as the first
+   * asserts a restriction the table does not enforce, which is the same class
+   * of error as asserting reach it does not grant.
+   *
+   * A row with no rule behind it (mcp, unmapped, grant) is never conditional —
+   * there is no predicate to be conditional on.
+   */
+  conditional: boolean;
   /** Only set when `described` is false: the third party's own words, attributed. */
   theirDescription?: string | undefined;
   /** Only set when `described` is false: what we DO control — the tool name. */
@@ -125,8 +140,11 @@ export interface ListCapabilitiesInput {
    * agent can see is the tool catalog's business, and the catalog lives on the
    * other side of the bus. So the caller — which holds both — subtracts, and
    * this plugin applies the subtraction to the rows it owns. `match.tool` never
-   * leaves the plugin: exposing it would put an identifier on a display row
-   * that a renderer must not render, which is a foot-gun on this surface.
+   * rides out ON A ROW: an identifier on a display row is one a renderer may
+   * reach for, and this surface's mechanical rows ARE tool names, so the two
+   * would be one typo apart. `describedTools` answers the coverage question
+   * with the same names in a field nothing renders, which is the distinction
+   * that matters — the caller already holds the whole tool catalog.
    *
    * ONLY `allow` AND `hold` ROWS ARE DROPPED. A `deny` for a tool the agent
    * could not reach anyway is still true, and it is reassurance rather than
@@ -142,6 +160,29 @@ export interface ListCapabilitiesInput {
 
 export interface ListCapabilitiesOutput {
   rows: CapabilityRow[];
+  /**
+   * Every tool name this table names, predicate or no predicate.
+   *
+   * COVERAGE, NOT DISPLAY. Nothing renders it. It exists so a caller holding
+   * the tool catalog can tell which catalog entries a described row already
+   * covers, WITHOUT asking `evaluate` about a call nobody is making. That was
+   * TASK-267: the rail evaluated `{ name, input: {} }` and read `ruleId !==
+   * null` off the answer, so a rule keyed on a `when` predicate over the
+   * arguments never matched, its tool came back "unruled", and the rail put a
+   * second, mechanical `allow` row beside the described one.
+   *
+   * The contract that makes it useful: a tool ABSENT from this list is one no
+   * rule in this table can match, so its verdict is the table's no-rule answer
+   * for every possible input. That is what lets a caller ask `evaluate` about
+   * such a tool with an empty input and still be asking an honest question —
+   * there is no predicate left that could have consulted the arguments.
+   *
+   * Deliberately NOT filtered by `outOfReach`: that filter decides which rows a
+   * particular agent may be SHOWN, and this answers what the table covers.
+   * A caller doing the scope subtraction has already excluded the out-of-reach
+   * tools from its own pass.
+   */
+  describedTools: string[];
 }
 
 // ---------------------------------------------------------------------------
@@ -175,10 +216,17 @@ export const CapabilityRowSchema = z.object({
   source: z.string(),
   provenance: CapabilityProvenanceSchema,
   described: z.boolean(),
+  conditional: z.boolean(),
   theirDescription: z.string().optional(),
   mechanicalLabel: z.string().optional(),
 });
 
 export const ListCapabilitiesOutputSchema = z.object({
   rows: z.array(CapabilityRowSchema),
+  // Required, not optional, and that is the safe direction on this surface. An
+  // impl that answers without it fails the bus's `returns` parse, and the
+  // caller's catch treats the whole read as failed — which shows "we could not
+  // read this" rather than silently re-listing every described tool as an
+  // undescribed one.
+  describedTools: z.array(z.string()),
 });
