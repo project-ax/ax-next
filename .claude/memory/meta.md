@@ -17,3 +17,43 @@ Behaviors (not project facts). Name a behavior, name the better alternative. Tag
 - `2026-05-25` `active` — **FAULTA-3: I burned ~45min because I ran the codex CLI review as a FREEFORM PROMPT (`codex exec "<long review instructions>"`) instead of the `codex exec review --base main` SUBCOMMAND.** The freeform invocation HUNG (42min elapsed, 0.05s CPU = blocked, zero output) — I killed it and fell back to a manual self-review. THEN I read meta.md and saw the ARCH-11 note (above) that names `codex exec review --base main` as the correct Phase-5 CLI form; re-ran it and it completed cleanly in ~6min with a real verdict ("no actionable introduced bugs"). Lesson: the structured `review` subcommand is purpose-built (loads memory, diffs vs base, emits a verdict) and reliable; a giant freeform `codex exec "<prompt>"` can wedge. ALWAYS use `codex exec review --base main` for Phase 5 — AND read meta.md's `active` codex notes BEFORE the first codex attempt, not after the first one fails. (Also: codex's own run reported 2 proxy-startup.test.ts 5s-timeout flakes — those are the TASK-5/#146 load-induced class under codex's parallel workspace-write sandbox, NOT my diff; codex correctly tagged them "outside this diff" and CI's test job was green.)
 - `2026-05-25` `active` — **TASK-25: the local `pnpm test` gate reports ~25 FAILs in `@ax/agent-claude-sdk-runner/src/__tests__/git-workspace.test.ts`, ALL with `git lfs install --local failed (exit=1): git: 'lfs' is not a git command` — a LOCAL ENV artifact (git-lfs not installed in this shell), NOT a code defect.** Confirmed by `git lfs version` → "not a git command" and by the fact my diff touched only `credential-proxy` + a docs file (zero git-lfs relation). The agent Dockerfile + CI install git-lfs, so CI's `test` job is green. Lesson: when the full-suite gate shows failures, GREP the failure signature first — if every failure shares one env-tool-missing message (`git-lfs`, `docker`, a testcontainer image pull) and is confined to packages your diff didn't touch, it's an env artifact: confirm by checking the tool's presence + that your touched packages are independently green (`pnpm --filter <yours> test`), don't chase it. This is the load-induced-flake note's cousin (mistakes 2026-05-25 TASK-5) but for a MISSING binary, not contention.
 - `2026-05-25` `active` — **TASK-25 (orchestrated worktree): the worktree had NO `node_modules` on entry — `pnpm <...> test` failed with `vitest: not found` / `ERR_PNPM_RECURSIVE_RUN_FIRST_FAIL spawn ENOENT`.** `git worktree add` carries the tracked files but not the (gitignored) `node_modules`, and tsc-built `dist/` is also absent. Fix at Phase 0/3 boundary: `pnpm install --frozen-lockfile` (≈1.4s, store is shared so it's just linking) THEN `pnpm build` (tsc --build) BEFORE running any cross-package test — `@ax/core` and siblings resolve via `dist/` exports, so an unbuilt tree fails import resolution ("Failed to resolve entry for package @ax/core") even though the test logic is fine. Lesson: in a fresh orchestrated worktree, run `pnpm install --frozen-lockfile && pnpm build` once up front; a "Failed to resolve entry for package @ax/*" error is almost always "not built yet", not a real break.
+
+## 2026-08-23 (session 4, Wave-3 drain) — measuring the cards before building them is now load-bearing, not optional
+
+- **4 of 8 cards were wrong about their own bug** — the same rate as Wave 2 (3 of 6). This is no
+  longer an anomaly to note; it is the base rate for cards written during a *previous* session's
+  review pass. Two failure shapes recur: (a) the card describes the symptom the reviewer saw, not
+  the defect (TASK-239 — the leak was real but the load-bearing bug was a false causal claim in a
+  different package); (b) the card's premise was fixed, or was never true, and the card was never
+  re-checked (TASK-238's branch is dead behind `disallowedTools`; TASK-274's two factual claims both
+  failed on contact with the test file they described).
+- **The measurement pass paid for itself twice over and cost ~20 minutes.** Four read-only agents,
+  dispatched in parallel before any builder, against a written brief that said "do not paraphrase the
+  card; read the code and state what is true." Direct outputs: 4 corrected cards, 2 rulings that
+  changed scope, 1 un-carded live defect found (TASK-272's twin), and 3 new cards. Without it,
+  TASK-238 would have shipped tests asserting behaviour no production path executes — the exact
+  defect TASK-256 was open to fix, one package over.
+- **Rewrite the card, do not just act on the measurement.** Struck the false acceptance bullets in
+  place (`~~...~~` + why) rather than deleting them, so a later session cannot rebuild them. Two
+  cards were retitled because their titles asserted false premises. This is what makes the
+  measurement durable instead of session-local.
+- **Sequencing discovered by measurement beat the filed dep graph.** TASK-274 was filed dep-free but
+  actually depended on a type TASK-276 had not written yet. Setting that edge produced a chain where
+  276 deliberately WITHHELD a user-facing sentence ("...Trying again.") because no retry existed to
+  back it, and 274 landed the sentence with the mechanism. Neither card asked for that; it fell out
+  of ordering them correctly.
+- **My own card was wrong within four hours.** TASK-239's builder overrode two of my prescriptions
+  with better reasons (required-vs-optional `cause`; keeping a redundant `.parse` inside the `try`
+  because moving it out would be fail-OPEN). Accepted both. The measure-the-premise rule applies to
+  instructions I wrote this morning, not only to cards inherited from a prior session.
+- **Orchestration findings this run** (all first-hand, all filed as TASK-298): `board_batch` is
+  bash-only and fails silently under zsh; the progress helper cannot be `source`d under worktree
+  isolation, so the live per-card heartbeat was dead for every builder all run; the merge-queue
+  one-liner's `--delete-branch` always fails against worktree-isolated builders; and the 25-minute
+  reviewer deadline discards slow-but-healthy reviews (measured: 4 and 7.5 min of work delivered
+  ~40 min apart, one holding a real blocker). Three of the four fail SILENTLY, which is why they
+  survive run after run — prefer making them loud over making them quietly correct.
+- **Builders comply when told; they do not infer.** 3 of 3 skipped their handoff (and its
+  `reviewer:` field, the merge gate) until the dispatch prompt explicitly said "return at PR-open,
+  report `ci: pending`, do not wait on CI." Then 5 of 5 complied. The knowledge was in project
+  memory; it was not in the template agents actually read.
