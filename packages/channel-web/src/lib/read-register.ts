@@ -9,6 +9,11 @@
  * register has to be the same for the same STATE or a reader learns that red
  * means nothing.
  *
+ * IT ALSO NAMES THE STATE (`toReadOutcome`, TASK-296) — you cannot draw a state
+ * consistently while every surface decides for itself which one it is in. That
+ * is still not choosing words: the outcome is a name, and each surface writes
+ * its own sentence from it.
+ *
  * WHAT THIS GOVERNS, EXACTLY: an alert that REPORTS A FAILED READ. That is a
  * narrower claim than "every alert in the app", and the narrowing is load
  * bearing rather than a hedge — see the third clause below, which names the
@@ -123,6 +128,8 @@
  * them that freedom.
  */
 
+import { HttpError } from './http';
+
 /**
  * Why a read did not produce what the surface asked for.
  *
@@ -137,17 +144,48 @@
  * retry changes that — even though `http.ts` keeps a separate SENTENCE for it.
  * Register and copy split here on purpose.
  *
- * TARGET, NOT PRESENT TENSE — and the gap is known debt, not a claim.
- * `gone` HAS NO PRODUCER YET. The only status-to-kind classifier that exists,
- * `toDecisionReadError` in `workspace-decisions.ts`, does `401 → expired` and
- * `everything else → failed`, so today a 403 and a 404 both arrive as `failed`
- * and get drawn red WITH a "Try again" — a control that cannot work, which is
- * exactly what the `gone` arm below exists to stop. Nothing is broken by that
- * (no decisions route answers 404 for a queue read), but do not read the
- * paragraph above as describing wiring that is already there. Wiring it is
- * TASK-296's, alongside the surfaces that need the kind.
+ * AND IT IS NOW WIRED. `toReadOutcome` below is that mapping, and `AgentView`
+ * is the first surface to branch on all three kinds (TASK-296). The classifier
+ * lives here, immediately under the paragraph that rules it, so the rule and
+ * the code implementing it cannot drift — the previous revision of this
+ * comment described the 403/404 arm in the PRESENT TENSE while nothing
+ * produced it, which is the exact defect this epic keeps closing.
+ *
+ * ONE CLASSIFIER STILL HAND-ROLLS ITS OWN, deliberately rather than by
+ * oversight. `toDecisionReadError` in `workspace-decisions.ts` narrows to a
+ * two-kind `DecisionReadError` (`expired` | `failed`), because no decisions
+ * route answers 403 or 404 for a queue read — a `gone` arm there would be a
+ * branch nothing can reach, and every decisions consumer (`TodayView`,
+ * `InThreadApprovals`, `AgentConversation`) would have to grow copy for a
+ * state none of them can be shown. It stays two-kind until a route produces a
+ * third.
  */
 export type ReadOutcome = 'expired' | 'gone' | 'failed';
+
+/**
+ * A caught error → the outcome a surface reports. The producer for the mapping
+ * ruled above.
+ *
+ * ONLY AN `HttpError` CARRIES A STATUS, so nothing else can classify as
+ * anything but `failed`. Everything else arriving here is a browser string
+ * (`Failed to fetch`), a `WorkspaceShapeError` (a 200 whose body we could not
+ * read), or a bug in our own code — and each of those is a blip worth
+ * offering to retry, which is what `failed` means.
+ *
+ * WHY THE `expired` ARM IS WORTH HAVING EVEN THOUGH IT RARELY PAINTS.
+ * `httpFetch` latches `sessionExpiredActions.expired()` on any 401 RESPONSE,
+ * and `App.tsx` swaps the whole app for `<LoginPage />` once that latch is set,
+ * so a surface usually never gets to draw its expired state. Classifying it
+ * anyway is not belt-and-braces for its own sake: the alternative is reporting
+ * a signed-out session as a server blip with a "Try again" on it, which is the
+ * wrong answer at precisely the moment the latch has failed to reach us.
+ */
+export function toReadOutcome(e: unknown): ReadOutcome {
+  if (!(e instanceof HttpError)) return 'failed';
+  if (e.status === 401) return 'expired';
+  if (e.status === 403 || e.status === 404) return 'gone';
+  return 'failed';
+}
 
 /** The two variants `ui/alert.tsx` offers. There is no warning tier. */
 export type AlertRegister = 'default' | 'destructive';

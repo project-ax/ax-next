@@ -150,6 +150,28 @@ export async function httpJson<T>(
 }
 
 /**
+ * Put the operator's half of a failed request in the console, and nowhere else.
+ *
+ * Split out of `userFacingMessage` so a caller that wants the STATUS rather
+ * than the sentence — anything branching on `toReadOutcome` to pick its own
+ * per-surface copy — can still leave the same line in the console. Before
+ * this, the only way to get that log was to call `userFacingMessage` and throw
+ * its return value away, which reads as a mistake every time somebody meets
+ * it.
+ *
+ * `detail` and nothing else, because `detail` is the whole point: a request
+ * path and a status are exactly what an operator needs and exactly what a
+ * reader cannot act on.
+ */
+export function logRequestFailure(e: unknown, context: string): void {
+  if (e instanceof HttpError) {
+    console.warn(`[${context}] ${e.detail}`);
+    return;
+  }
+  console.warn(`[${context}] unexpected failure`, e);
+}
+
+/**
  * The sentence to put in front of a person for a caught error.
  *
  * An `HttpError` already carries authored copy, so it speaks for itself.
@@ -158,12 +180,8 @@ export async function httpJson<T>(
  * they help, rather than onto a screen, where they do not.
  */
 export function userFacingMessage(e: unknown, context: string): string {
-  if (e instanceof HttpError) {
-    console.warn(`[${context}] ${e.detail}`);
-    return e.message;
-  }
-  console.warn(`[${context}] unexpected failure`, e);
-  return HTTP_FAILED;
+  logRequestFailure(e, context);
+  return e instanceof HttpError ? e.message : HTTP_FAILED;
 }
 
 /** `httpJson` for a call whose body we do not read. */

@@ -19,6 +19,7 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import {
   workspaceApi,
+  WorkspaceApiError,
   type AgentDetail,
   type WorkspaceAgent,
 } from '@/lib/workspace-api';
@@ -180,6 +181,217 @@ describe('the agent will not load', () => {
     fireEvent.click(retry);
     expect(await screen.findByText('what is on today')).toBeTruthy();
   });
+
+  /*
+    THE CARD'S HEADLINE DEFECT. This alert's own copy said the agent "may have
+    been removed" — so it knew a 404 was reachable — and offered "Try again"
+    anyway, which a 404 makes useless. `lib/read-register.ts` rules `gone` gets
+    no retry affordance; this is the surface that ruling was written for.
+
+    A branch with NO control would be the same trap in a different hat, because
+    this alert replaces the whole pane including the header's Back button. So
+    `gone` gets a way off the dead pane instead of a way to re-run a request
+    that will fail identically.
+  */
+  it('does not offer to retry an agent that is not there', async () => {
+    agentMock.mockRejectedValue(new WorkspaceApiError('/agents/ag_x', 404));
+
+    renderView();
+
+    expect(await screen.findByText(/may have been removed/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+    // Not stranded: an escape hatch is not a retry, so the ruling permits it.
+    expect(screen.getByRole('button', { name: 'Back to agents' })).toBeTruthy();
+  });
+
+  /*
+    The other half of the same defect: the deletion story was told
+    UNCONDITIONALLY, so a 500 sent the reader hunting for a removal that never
+    happened. Retrying is exactly right for a blip, and the reassurance about
+    work and memory is only true here — an agent that really was removed did not
+    keep its memory.
+  */
+  it('does not blame a deletion for a server blip', async () => {
+    agentMock.mockRejectedValue(new WorkspaceApiError('/agents/ag_x', 500));
+
+    renderView();
+
+    expect(await screen.findByRole('button', { name: 'Try again' })).toBeTruthy();
+    expect(screen.queryByText(/may have been removed/)).toBeNull();
+    expect(screen.queryByText(/belong to someone else/)).toBeNull();
+    expect(screen.getByText(/work and its memory are safe/)).toBeTruthy();
+  });
+
+  /*
+    A 401 is not a deletion and not a blip, and it is the case the pre-TASK-296
+    copy got most wrong: it told a signed-out reader their agent might have been
+    removed. No local "Sign in" button, deliberately — the 401 latch in
+    `lib/http.ts` flips the app to `<LoginPage />`, which holds the real one.
+  */
+  it('says the session ended rather than guessing at a deletion', async () => {
+    agentMock.mockRejectedValue(new WorkspaceApiError('/agents/ag_x', 401));
+
+    renderView();
+
+    expect(await screen.findByText(/session has ended/i)).toBeTruthy();
+    expect(screen.queryByText(/may have been removed/)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+});
+
+/*
+  The read-only excerpt's alert.
+
+  It was the only alert on this surface with NO WAY OUT AT ALL — no retry, no
+  sign-in, not even a dismiss — over a pane deliberately blanked while the error
+  is set. And its one sentence claimed a deletion on every failure mode.
+
+  The 401 test here is the one the card called for by name: the pre-existing
+  excerpt test threw a plain `Error`, which classifies as `failed` no matter how
+  the status branch is written, so it could not have caught a broken one.
+*/
+describe('AgentView — an excerpt that will not open', () => {
+  function withFailingExcerpt(err: unknown) {
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) => {
+      if (conversationId === 'c-old') throw err;
+      return detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] });
+    });
+  }
+
+  async function openMarch() {
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
+  }
+
+  /*
+    A REAL `WorkspaceApiError`, which is the whole point of this test. Its
+    `detail` is `workspace /agents/ag_quill?conversationId=cnv_… → 401`, and
+    that string used to be flattened onto the screen — a request path, a status,
+    AND a conversation id, the same class of identifier TASK-260 spent a card
+    removing from the surfaces people read. It belongs in the console.
+  */
+  it('never prints the request behind the failure', async () => {
+    withFailingExcerpt(
+      new WorkspaceApiError('/agents/ag_quill?conversationId=cnv_march', 401),
+    );
+
+    await openMarch();
+
+    expect(await screen.findByText(/session has ended/i)).toBeTruthy();
+    expect(screen.queryByText(/workspace \//)).toBeNull();
+    expect(document.body.textContent).not.toMatch(/cnv_march|ag_quill|401|→/);
+  });
+
+  /* The sentence that was always right — now firing only where it is true. */
+  it('keeps the deletion story for the one status that supports it', async () => {
+    withFailingExcerpt(new WorkspaceApiError('/agents/ag_x', 404));
+
+    await openMarch();
+
+    expect(await screen.findByText(/deleted since this list was drawn/)).toBeTruthy();
+    // Nothing brings a deleted conversation back.
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  /*
+    The alert's missing action. `retryApprovals` was already bumping
+    `pastReload` — the exact re-read this needs — but it was wired only to
+    `AgentConversation`'s approval notice, so a reader whose excerpt failed on a
+    blip was stranded until they happened to click a different rail row.
+  */
+  it('offers a Try again that actually re-opens the excerpt', async () => {
+    let failing = true;
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) => {
+      if (conversationId === 'c-old') {
+        if (failing) throw new WorkspaceApiError('/agents/ag_x', 500);
+        return detail({
+          conversationId: 'c-old',
+          thread: [{ kind: 'user', id: 'o1', text: 'the March question' }],
+        });
+      }
+      return detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] });
+    });
+
+    await openMarch();
+
+    expect(await screen.findByText(/could not open that conversation/)).toBeTruthy();
+    // No fabricated cause on a blip.
+    expect(screen.queryByText(/deleted since this list was drawn/)).toBeNull();
+
+    failing = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    expect(await screen.findByText('the March question')).toBeTruthy();
+    expect(screen.queryByText(/could not open that conversation/)).toBeNull();
+  });
+
+  /*
+    THE NULL-GATE PIN the card asked for.
+
+    `pastError` moved from `string` to `ReadOutcome`, and every gate on it is an
+    explicit `!== null` / `=== null` check rather than a truthiness test — so the
+    swap is behaviour-preserving. That is worth one test rather than a reading,
+    because the failure mode is silent: `'expired'` and `'gone'` are both truthy,
+    but so was every string, and a future `if (pastError)` would keep working
+    right up until somebody introduced a falsy member. What must hold is that a
+    failed excerpt renders NEITHER a transcript nor the "Opening…" placeholder —
+    an empty thread is a claim about the content, and the placeholder is a claim
+    that a fetch is still running.
+  */
+  it('blanks the pane rather than claiming the conversation was empty or is still opening', async () => {
+    withFailingExcerpt(new WorkspaceApiError('/agents/ag_x', 500));
+
+    await openMarch();
+
+    expect(await screen.findByText(/could not open that conversation/)).toBeTruthy();
+    expect(screen.queryByText('Opening…')).toBeNull();
+    // The CURRENT conversation's turn must not leak into the excerpt pane.
+    expect(screen.queryByText('what is on today')).toBeNull();
+  });
+});
+
+/*
+  A send that fails because the conversation it aimed at is gone.
+
+  Two controls cannot work in that state and both used to be offered: "Resend",
+  which re-fires into the same 404, and — less obviously — the composer itself,
+  because `conversationRef` was left pointing at the vanished row, so every
+  following message failed the same way for the rest of the session.
+*/
+describe('a send into a conversation that is gone', () => {
+  it('withdraws Resend and lets the next message start somewhere new', async () => {
+    agentMock.mockResolvedValue(detail());
+    sendMock.mockRejectedValueOnce(new WorkspaceApiError('/chat/messages', 404));
+
+    renderView();
+    const box = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box, { target: { value: 'summarise the roof quote' } });
+    fireEvent.keyDown(box, { key: 'Enter' });
+
+    expect(await screen.findByText(/no longer available/)).toBeTruthy();
+    // A Resend would re-target the same missing row.
+    expect(screen.queryByRole('button', { name: 'Resend' })).toBeNull();
+    // Dismiss survives: the strip sits over a conversation still worth reading.
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy();
+    // And no plumbing on screen.
+    expect(document.body.textContent).not.toMatch(/404|→/);
+
+    // The composer is not dead for the rest of the session: the next message
+    // starts a fresh conversation instead of re-aiming at the missing one.
+    sendMock.mockResolvedValue({ conversationId: 'c-new', reqId: 'r2' });
+    streamMock.mockResolvedValue(undefined as never);
+    fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }));
+
+    const box2 = await screen.findByPlaceholderText('Message Quill');
+    fireEvent.change(box2, { target: { value: 'try again from scratch' } });
+    fireEvent.keyDown(box2, { key: 'Enter' });
+
+    await waitFor(() =>
+      expect(sendMock).toHaveBeenLastCalledWith(
+        expect.objectContaining({ conversationId: null }),
+      ),
+    );
+  });
 });
 
 describe('a reply that did not finish', () => {
@@ -198,11 +410,24 @@ describe('a reply that did not finish', () => {
     fireEvent.keyDown(box, { key: 'Enter' });
 
     const line = await screen.findByText(/didn’t finish/);
-    // One statement about one event — the raw code lives below the prose, and
-    // "send it again" is a button, not an instruction repeated twice.
+    // One statement about one event, and "send it again" is a button rather
+    // than an instruction repeated twice.
     expect(line.textContent).not.toMatch(/500/);
     expect(line.textContent).not.toMatch(/send it again/i);
-    expect(screen.getByText('the reply stream would not open (500)')).toBeTruthy();
+    /*
+      TASK-296 — the transport's own string used to be asserted PRESENT here, on
+      its own line under the prose. Splitting it out of the paragraph was right;
+      leaving it on screen was not. Two of its three producers only restate the
+      prose ("the reply stream ended without finishing" under "that reply didn't
+      finish") and the third is whatever the host wrote into an SSE error frame —
+      arbitrary text on the one surface that has promised not to print plumbing.
+      The assertion is inverted, and `(500)` in the fixture is the point: that is
+      what a status reaching the screen through this conduit looks like.
+    */
+    expect(
+      screen.queryByText('the reply stream would not open (500)'),
+    ).toBeNull();
+    expect(document.body.textContent).not.toMatch(/500/);
 
     sendMock.mockClear();
     fireEvent.click(screen.getByRole('button', { name: 'Resend' }));
