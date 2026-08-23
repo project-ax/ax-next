@@ -1036,17 +1036,42 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(body.counters.rows[0]?.value).toBe(1);
   });
 
-  it('ships NO counter it has no source for — a zero would be a claim', async () => {
+  it('ships NO "Handled on its own" and NO "You overruled it" — neither has a producer (TASK-265)', async () => {
     registerPolicy();
     registerDecisions();
+    // Decisions in the window INCLUDING a dismissed one, because "dismissals
+    // are half of the overrule definition" is exactly the temptation this
+    // pins against: the half we can count is not the number the label
+    // promises.
+    decisions = [
+      { id: 'd1', agentId: 'a1', status: 'dismissed', createdAt: iso(-1) },
+      { id: 'd2', agentId: 'a1', status: 'executed', createdAt: iso(-2) },
+    ];
     const body = (await railFor()).body as AgentRailData;
-    const ids = body.counters.rows.map((r) => r.id);
-    // "Handled on its own" counts allow-verdict tool calls: nothing counts
-    // them. "You overruled it" is dismissals PLUS undone executions, and an
-    // undo restores the row to `pending` leaving no trace — so the second half
-    // is not derivable and the row waits for a real source.
-    expect(ids).not.toContain('handled-alone');
-    expect(ids).not.toContain('overruled');
+
+    // Matched against EVERY string on the row — id, label, and the written
+    // definition — not just `id`. The way this regresses is somebody adding
+    // §4.4's counter back under a fresh id, and an id-only assertion would
+    // wave that straight through.
+    const said = body.counters.rows.flatMap((r) => [r.id, r.label, r.definition]);
+
+    // Nothing counts the tool calls an agent handled alone. `tool:pre-call`
+    // fires, but @ax/decisions returns without writing a row as soon as the
+    // verdict is `allow`, and @ax/agent-activity keeps one in-memory snapshot
+    // that it deletes at `chat:end`. There is no history to roll up, so any
+    // "Handled on its own" number would be invented.
+    expect(said.some((s) => /on its own|handled[- ]alone/i.test(s))).toBe(false);
+
+    // `decisions:undo` restores the row to `pending` and clears `resolved_at`,
+    // so an override leaves NO trace. This number is not merely zero today —
+    // it is underivable, and rendering it would state "you have never
+    // overruled me" from a read that could not have found out either way.
+    expect(said.some((s) => /overrul/i.test(s))).toBe(false);
+
+    // …and the one number that DOES have a producer still ships, so this test
+    // cannot be satisfied by dropping the panel altogether.
+    expect(body.counters.rows.map((r) => r.id)).toContain('brought-to-you');
+    expect(body.counters.rows.find((r) => r.id === 'brought-to-you')?.value).toBe(2);
   });
 
   it('says the counter read failed rather than showing a zero', async () => {

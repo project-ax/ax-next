@@ -377,9 +377,35 @@ function Grants({
  * "This week" — design §4.4.
  *
  * ONE number ships, and its written definition ships underneath it. The design
- * names three; the other two have no source and a fabricated number is worse
- * than a missing row, so they are absent rather than zeroed. "You overruled it:
- * 0" would be a claim, and we are not counting overrules.
+ * names three. The other two are ABSENT — not `0`, not an em-dash, not a
+ * tooltip admitting we don't know — because nothing produces either one, and
+ * the next person to notice the gap should find this note rather than close it
+ * with a zero:
+ *
+ *   - *Handled on its own* — allow-verdict tool calls — would need a
+ *     `tool:pre-call` rollup. The hook fires and has two subscribers, and
+ *     neither leaves anything to roll up for THESE calls: `@ax/decisions`
+ *     returns without writing a row the moment the verdict is `allow` (that is
+ *     the point — an allowed call is not a decision), and `@ax/agent-activity`
+ *     keeps one in-memory snapshot of the call in flight and deletes it at
+ *     `chat:end`. A call the agent handled alone leaves no trace, so the number
+ *     would be invented.
+ *   - *You overruled it* would need an undo trace in `@ax/decisions`.
+ *     `decisions:undo` restores the row to `pending` and clears `resolved_at`,
+ *     so an override leaves no record at all. Its zero would not be a true
+ *     number that happens to be small — it would be unfalsifiable, which is
+ *     the worse of the two failures: "you have never overruled me" is a
+ *     statement about someone's own history, made from a read that could not
+ *     have found out either way.
+ *
+ * Building either producer was considered and declined (TASK-265). An undo
+ * trace means durably recording that a person changed their mind — a schema
+ * change and a privacy question — and that trade should be made deliberately,
+ * not as a side effect of filling in a rail. The layout gap is the honest cost.
+ *
+ * This component renders whatever counter rows it is handed, so the pin that
+ * both stay absent lives with their producer: see `readCounters` and
+ * `__tests__/server/routes-workspace-rail.test.ts`.
  *
  * The whole block disappears when there is no number to show, rather than
  * standing there empty. A heading over nothing is a promise the surface is not
