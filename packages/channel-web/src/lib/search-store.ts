@@ -50,7 +50,11 @@ const apply = (next: SearchState): void => {
   notify();
 };
 
-/** SSR-safe default — closed bar, empty query. */
+/**
+ * The `getServerSnapshot` value React would use when server-rendering or
+ * hydrating. This app is client-only (`main.tsx` uses `createRoot`, and
+ * `hydrateRoot` appears nowhere), so that slot never runs.
+ */
 const ssrSnapshot: SearchState = { query: '', open: false };
 
 export function useSearchStore(): SearchState {

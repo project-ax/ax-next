@@ -14,8 +14,15 @@ import { agentStoreActions } from '../../lib/agent-store';
  * figures out who it is through conversation (the runner injects BOOTSTRAP.md).
  * This replaces the retired 3-field name→soul→purpose wizard.
  *
- * A `ran` ref guards React 18 StrictMode's intentional double-invoke of effects
- * in dev, so we never create two agents from one mount.
+ * A `ran` ref makes the create idempotent: once it has fired, a re-invocation
+ * of the effect returns early, so we never create two agents from one mount.
+ * The re-invocation that actually happens here is dev Fast Refresh
+ * (`@vitejs/plugin-react`, see `vite.config.ts`), which re-runs effects on a
+ * hot update while preserving refs. The ref would equally cover StrictMode's
+ * deliberate double-invoke, but this app never enables it — `main.tsx` renders
+ * a bare `createRoot`, and `lib/conversation-decisions.ts` says the same. The
+ * ref is not dead code either way: the "Try again" handler below resets it on
+ * purpose so a retry can re-run the effect.
  */
 export function FirstRunAutoCreate({
   agentName,

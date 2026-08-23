@@ -37,7 +37,12 @@ const notify = (): void => {
   for (const l of listeners) l();
 };
 
-/** SSR-safe default of `'auto'`; the real value is read on hydrate. */
+/**
+ * The third argument is `getServerSnapshot`, which React calls only when
+ * server-rendering or hydrating server-rendered markup. This app is
+ * client-only (`main.tsx` uses `createRoot`, and `hydrateRoot` appears
+ * nowhere), so it never runs — `getSnapshot` supplies every value.
+ */
 export function useTheme(): Theme {
   return useSyncExternalStore(subscribe, getSnapshot, () => 'auto');
 }
