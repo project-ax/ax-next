@@ -488,7 +488,7 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     });
   });
 
-  it('gives a tool with an unconditional rule exactly one row — the authored one', async () => {
+  it('gives a tool with an unconditional rule only authored rows, never a mechanical one', async () => {
     /*
       The other side of the same boundary, and why "always emit a base row"
       would be wrong. Here the table speaks for every call already: the narrow

@@ -2119,8 +2119,8 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
     //
     // The two asks are different questions: this one wants the display ROWS,
     // filtered by `outOfReach`; the catalog half's wants COVERAGE — which tools
-    // the table names at all — which it needs before it can decide which
-    // catalog entries still want a row of their own. The catalog half computes
+    // some rule speaks for on EVERY call — which it needs before it can decide
+    // which catalog entries still want a row of their own. The catalog half computes
     // `outOfReach` before it asks, so it COULD have passed it, taken these rows
     // too, and saved a call. It does not, because that would move the
     // described-rows read inside the catalog half and merge two failure states

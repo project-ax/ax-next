@@ -101,7 +101,7 @@ describe('tool-policy canary', () => {
     }
   });
 
-  it('carries fullyDescribedTools ACROSS THE BUS, covering every tool a broad rule names', async () => {
+  it('carries fullyDescribedTools ACROSS THE BUS, naming every tool an unconditional rule covers', async () => {
     /*
       Same hazard as the `outOfReach` canary above, in the other direction: a
       `z.object` STRIPS what it does not declare, so a field the handler returns

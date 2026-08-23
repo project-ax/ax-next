@@ -154,10 +154,14 @@ describe('capabilityRows', () => {
       A row that renders "Can X — asks you first" for a rule that only holds
       when an argument takes a particular value is asserting a restriction the
       table does not enforce.
-    - `describedTools` — which tools the table names AT ALL, predicate or no
-      predicate. This is what tells a caller "a described row already covers
-      this tool", and it is a property of the TABLE, so no fabricated argument
-      set can change the answer.
+    - `fullyDescribedTools` — which tools some rule describes for EVERY call,
+      i.e. which have an unconditional rule. NOT "which tools the table names":
+      a tool named only by a `when` rule is deliberately absent, because its
+      rows say nothing about the calls the predicate misses, and a caller that
+      treated it as covered would leave that reach unstated. See
+      `ListCapabilitiesOutput.fullyDescribedTools` for the whole argument, and
+      `OMITS a tool every one of whose rules is conditional` below for the
+      assertion.
 */
 const WHEN_RULES: PolicyRule[] = [
   {
