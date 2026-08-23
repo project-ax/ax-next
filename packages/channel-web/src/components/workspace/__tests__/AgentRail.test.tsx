@@ -493,13 +493,19 @@ describe('AgentRail — "Granted by you"', () => {
   });
 });
 
+/*
+  WHICH counters exist is the route's contract, not this component's — the panel
+  renders whatever rows it is handed. So the pin that "Handled on its own" and
+  "You overruled it" never ship (TASK-265) lives with their producer, in
+  `__tests__/server/routes-workspace-rail.test.ts`. Asserting their absence here
+  instead would only prove that a mock we wrote never mentioned them, which is
+  the kind of green that reads as a guarantee and is not one.
+*/
 describe('AgentRail — "This week"', () => {
   it('renders no panel at all when there is no number to put in it', async () => {
     renderRail();
     await screen.findByText(/Granted by you/);
     expect(screen.queryByText('This week')).toBeNull();
-    // "you overruled it: 0" is a claim, and we are not counting overrules.
-    expect(screen.queryByText(/overruled/i)).toBeNull();
   });
 
   it('prints each counter’s written definition beside its number', async () => {
@@ -537,6 +543,8 @@ describe('AgentRail — a rail that would not load', () => {
     await waitFor(() => {
       expect(container.textContent).toMatch(/unknown rather than empty/);
     });
-    expect(container.textContent).not.toMatch(/on its own/);
+    // And no "This week" panel standing beside the error. A number read
+    // before the failure would be the stale claim this test is named for.
+    expect(screen.queryByText('This week')).toBeNull();
   });
 });
