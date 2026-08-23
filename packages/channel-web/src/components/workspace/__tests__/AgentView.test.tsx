@@ -310,6 +310,62 @@ describe('AgentView — the approval read', () => {
     expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull();
   });
 
+  it('describes the EXCERPT on screen, not the conversation behind it', async () => {
+    // The current conversation read fine; the past one we are looking at did
+    // not. A notice taken off the current conversation would call this excerpt
+    // trustworthy, and a reader deciding whether anything is waiting in it
+    // would be reading an answer about a different thread.
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) =>
+      conversationId === 'c-old'
+        ? detail({
+            conversationId: 'c-old',
+            thread: [{ kind: 'user', id: 'o1', text: 'the March question' }],
+            decisions: { status: 'failed' },
+          })
+        : detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] }),
+    );
+
+    renderView();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
+
+    expect(await screen.findByText('the March question')).toBeTruthy();
+    expect(screen.getByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
+  });
+
+  it('retries the EXCERPT too, not just the current conversation', async () => {
+    let excerptFails = true;
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) =>
+      conversationId === 'c-old'
+        ? detail({
+            conversationId: 'c-old',
+            thread: [{ kind: 'user', id: 'o1', text: 'the March question' }],
+            decisions: { status: excerptFails ? 'failed' : 'ok' },
+          })
+        : detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] }),
+    );
+
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
+    expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
+
+    // The read recovers, and the reader presses the button we gave them.
+    excerptFails = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    /*
+      The excerpt has its OWN read, and the shell's `version` bump does not
+      reach it — that effect keys on `[agentId, pastId, pastReload]` so a stray
+      approval elsewhere cannot blank an open excerpt back to "Opening…". So a
+      retry wired only to `onChanged` re-read everything EXCEPT the read the
+      notice was reporting, and the notice could never clear: the only way out
+      was "Back to current" and reopening.
+    */
+    await waitFor(() =>
+      expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull(),
+    );
+  });
+
   it('says it when the QUEUE read failed, even though the server read was fine', async () => {
     agentMock.mockResolvedValue(
       detail({

@@ -213,11 +213,12 @@ function Message({
       without two versions of one row disagreeing on screen.
 
       A message whose decision is not in that array renders nothing. What is
-      left after `approvalRead` is a TIMING gap between two fetches — the row
-      was resolved and dropped from the open list, or it was raised after the
-      queue was last read and the next refresh will bring it. Both settle on
-      their own, and silence beats a card built from a stale copy, which would
-      offer buttons for a decision that may already be closed.
+      left after `approvalRead` is SKEW between two independent fetches — the
+      row was resolved and dropped from the open list, or the queue read has
+      simply not landed yet (first mount, or a `decisionRaised` frame whose
+      thread re-read beat its queue refresh). Every one of those settles on its
+      own, and silence beats a card built from a stale copy, which would offer
+      buttons for a decision that may already be closed.
 
       What this silence no longer stands for is a FAILED read. That was an
       opposite fact wearing the same silence — one means the question is

@@ -122,6 +122,17 @@ export function AgentView({
    */
   const [pastDetail, setPastDetail] = useState<AgentDetail | null>(null);
   const [pastError, setPastError] = useState<string | null>(null);
+  /**
+   * Bumped to re-fetch the excerpt on demand.
+   *
+   * `version` deliberately does NOT drive the excerpt's effect: it is a frozen
+   * read-only view, and re-pulling it every time somebody approves a row would
+   * blank it back to "Opening…" for no reason. But the approval notice can be
+   * reporting the EXCERPT's failed read, and a retry that only re-ran the
+   * current conversation's read would leave that notice on screen with nothing
+   * on the page able to clear it. This is the retry's way in.
+   */
+  const [pastReload, setPastReload] = useState(0);
 
   /** The turn in flight: what we sent, what has streamed back, how it ended. */
   const [sent, setSent] = useState<string | null>(null);
@@ -177,7 +188,22 @@ export function AgentView({
     return () => {
       cancelled = true;
     };
-  }, [agentId, pastId]);
+  }, [agentId, pastId, pastReload]);
+
+  /**
+   * The approval notice's "Try again", for whichever read is behind it.
+   *
+   * Three reads can put that notice on screen and the reader cannot be asked
+   * which, so the retry re-runs all of them: `onChanged` re-pulls the shell's
+   * queue and bumps `version` (which re-runs this panel's current-conversation
+   * read), and `pastReload` re-fetches the read-only excerpt, which `version`
+   * deliberately does not reach. Miss that last one and the notice over an
+   * excerpt has a button that cannot clear it.
+   */
+  const retryApprovals = useCallback(() => {
+    setPastReload((n) => n + 1);
+    onChanged();
+  }, [onChanged]);
 
   useEffect(() => {
     setPastId(null);
@@ -369,10 +395,18 @@ export function AgentView({
 
     `unavailable` is not a failure and is not folded in: no decisions producer
     means no decision can exist, so a thread with no approval cards is true.
+
+    And nothing is claimed while an excerpt is still opening: the pane is a
+    placeholder, not a thread, so there is no conversation on screen for "this
+    conversation" to be about yet. The answer arrives with the excerpt.
   */
+  const excerptOpening = past !== null && pastDetail === null && pastError === null;
   const shownRead = (past !== null ? pastDetail : detail)?.decisions.status ?? 'ok';
-  const approvalRead =
-    shownRead === 'failed' || decisionsError !== null ? 'failed' : shownRead;
+  const approvalRead = excerptOpening
+    ? 'ok'
+    : shownRead === 'failed' || decisionsError !== null
+      ? 'failed'
+      : shownRead;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -510,13 +544,7 @@ export function AgentView({
                 {...(busyIds !== undefined ? { busyIds } : {})}
                 {...(notices !== undefined ? { notices } : {})}
                 approvalRead={approvalRead}
-                /*
-                  One retry for both reads. `onChanged` re-pulls the shell's
-                  queue AND bumps `version`, which re-runs this panel's own
-                  detail read — so whichever of the two failed gets another go
-                  without the reader having to know which one it was.
-                */
-                onRetryApprovals={onChanged}
+                onRetryApprovals={retryApprovals}
               />
             </>
           )}
