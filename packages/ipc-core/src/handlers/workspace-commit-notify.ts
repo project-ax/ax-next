@@ -305,17 +305,19 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
       // TASK-287 bounds the collateral of that rule without loosening it. A
       // rejecter that knows WHICH path offended says so via
       // `Rejection.offendingPaths`; we hand those to the runner as
-      // `discardPaths`, and it removes exactly those instead of resetting the
-      // whole tree. The wedge is then answered by construction — the offending
-      // file is gone, so the next turn's re-stage cannot re-submit it — while
-      // everything else the agent wrote (this turn AND every earlier turn
-      // still sitting above the last accepted baseline) survives.
+      // `discardPaths`, and it undoes exactly those instead of resetting the
+      // whole tree (reverting each to its baseline state, or deleting it when
+      // the baseline had no such file). The wedge is then answered by
+      // construction — the refused content is gone, so the next turn's
+      // re-stage cannot re-submit it — while everything else the agent wrote
+      // (this turn AND every earlier turn still sitting above the last
+      // accepted baseline) survives.
       //
       // We only forward paths that were actually in the batch we sent. A
-      // subscriber is plugin code, and this field ends up as `rm` targets in
-      // the sandbox; an unrecognised path means we have lost track of what the
-      // veto is about, so we fail CLOSED to the whole-tree reset rather than
-      // act on it.
+      // subscriber is plugin code, and this field decides which files get
+      // taken back off the agent in the sandbox; an unrecognised path means we
+      // have lost track of what the veto is about, so we fail CLOSED to the
+      // whole-tree reset rather than act on it.
       //
       // Log the reason on the way out. Of the three rejecters only
       // @ax/validator-identity logs its own vetoes, and it logs the offending

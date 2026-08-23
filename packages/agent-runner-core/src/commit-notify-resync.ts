@@ -38,7 +38,7 @@ export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
  * string).
  *
  * Note it is NOT keyed off the reset mode, which it once was. Since TASK-287 a
- * refusal the host can pin to specific paths resets `--mixed` and deletes only
+ * refusal the host can pin to specific paths resets `--mixed` and undoes only
  * those — still `recoverable === false`, and still very much something the
  * agent needs told about. Keying off `--hard` would silence exactly that case.
  *
@@ -232,12 +232,13 @@ export async function commitNotifyWithResync(input: {
     // again forever, wedging the agent.
     //
     // TASK-287: when the host can say WHICH paths it refused (`discardPaths`),
-    // that argument only reaches those paths. Reset `--mixed` and delete
-    // exactly them: the refused content is gone — so it cannot be re-submitted,
-    // and the wedge is answered by construction — while unrelated work from
-    // this turn (and from every earlier turn still sitting above the last
-    // accepted baseline) survives. Only a refusal with no paths to point at
-    // still takes the whole tree down.
+    // that argument only reaches those paths. Reset `--mixed` and undo exactly
+    // them (rollbackToBaseline reverts them to their baseline state, or deletes
+    // them if the baseline had no such file): the refused content is gone — so
+    // it cannot be re-submitted, and the wedge is answered by construction —
+    // while unrelated work from this turn, and from every earlier turn still
+    // sitting above the last accepted baseline, survives. Only a refusal with
+    // no paths to point at still takes the whole tree down.
     const scopedDiscards =
       resp.recoverable === false ? (resp.discardPaths ?? []) : [];
     const mode: 'mixed' | 'hard' =
@@ -261,7 +262,7 @@ export async function commitNotifyWithResync(input: {
     // for as long as the two were synonyms, and stopped the moment a refusal
     // could be scoped (TASK-287): a scoped veto resets `--mixed`, so keying off
     // the mode would have silently dropped the reason on exactly the path the
-    // agent most needs it — refused, a file deleted under it, and told nothing.
+    // agent most needs it — refused, a file taken back under it, told nothing.
     // That would have reverted TASK-240 without a single test going red, which
     // is why the two are decoupled here rather than left to drift.
     // See CommitNotifyResult.

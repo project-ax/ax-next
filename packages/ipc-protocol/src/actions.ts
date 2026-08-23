@@ -265,7 +265,8 @@ export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
       //
       // The runner treats every entry as untrusted: it refuses absolutes,
       // parent-escapes and anything resolving outside the workspace. Bounded
-      // here too, since this is a wire-driven instruction to delete files.
+      // here too, since this is a wire-driven instruction to take files back
+      // off the agent.
       discardPaths: z.array(z.string().min(1).max(1024)).max(256).optional(),
     }),
   ],

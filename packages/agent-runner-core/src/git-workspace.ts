@@ -474,15 +474,16 @@ export async function advanceBaseline(root: string): Promise<void> {
  *
  * `discardPaths` scopes that second case (TASK-287). A refusal the host CAN
  * pin to specific paths arrives as mode 'mixed' plus those paths: we keep the
- * rest of the tree and delete only the named files. The refused content still
+ * rest of the tree and undo only the named ones — restored from `baseline` if
+ * the baseline had them, deleted if it did not. The refused content still
  * must not persist — the next turn re-stages everything, so leaving it would
  * re-submit it and earn the same refusal forever, wedging the agent — but that
  * argument only ever applied to the refused file, never to the unrelated work
  * sitting beside it (or to earlier turns' work still above the baseline).
  *
- * Entries are treated as untrusted: absolutes, parent-escapes, anything under
- * `.git/`, and anything whose real parent directory resolves outside `root`
- * are skipped rather than acted on.
+ * Entries are treated as untrusted: absolutes, parent-escapes, pathspec magic
+ * (a leading `:`), anything under `.git/`, and anything whose real parent
+ * directory resolves outside `root` are skipped rather than acted on.
  *
  * Before a reset that destroys content, HEAD is parked under
  * `refs/ax-vetoed/` — the turn commit already exists (commitTurnAndBundle
@@ -522,28 +523,56 @@ export async function rollbackToBaseline(
   if (discardPaths.length === 0) return;
 
   // `--mixed` left the refused files on disk (that is the whole point of using
-  // it); remove exactly the named ones now.
+  // it); undo exactly the named ones now.
+  //
+  // "Undo" is not always "delete". A refused write can be a MODIFICATION of a
+  // file the baseline already had — `.ax/BOOTSTRAP.md` is the sharp example:
+  // it is host-seeded, an agent rewriting it is vetoed, and deleting it is
+  // itself a meaningful act (removing it is how bootstrap completes). Deleting
+  // a refused edit would turn "you may not change this" into "…so it is gone
+  // now", which is a worse outcome than the one this card set out to fix.
+  //
+  // So: restore from `baseline` when the path exists there, delete when it does
+  // not. Both leave the path with nothing to re-submit, which is what closes
+  // the wedge; they differ only in what the agent is left holding.
   const rootReal = await fs.realpath(root);
   for (const p of discardPaths) {
-    const resolved = resolveInsideWorkspace(rootReal, p);
-    if (resolved === null) {
+    const inside = resolveInsideWorkspace(rootReal, p);
+    if (inside === null) {
       process.stderr.write(`runner: refusing to discard out-of-workspace path ${p}\n`);
       continue;
     }
-    // A symlinked ancestor could point the textual path outside the workspace,
-    // so re-check containment against the parent's REAL location before
-    // unlinking. `recursive: false` — these are file changes, never a subtree.
+    // A symlinked ancestor could point a textually-in-root path outside the
+    // workspace, so re-check containment against the parent's REAL location
+    // before touching anything.
     let parentReal: string;
     try {
-      parentReal = await fs.realpath(path.dirname(resolved));
+      parentReal = await fs.realpath(path.dirname(inside.resolved));
     } catch {
-      continue; // Parent is gone; nothing to remove.
+      continue; // Parent is gone; nothing on disk to undo.
     }
     if (parentReal !== rootReal && !parentReal.startsWith(rootReal + path.sep)) {
       process.stderr.write(`runner: refusing to discard out-of-workspace path ${p}\n`);
       continue;
     }
-    await fs.rm(path.join(parentReal, path.basename(resolved)), { force: true });
+
+    // `:(literal)` disables pathspec globbing. Without it a filename holding
+    // `*` or `[` would match OTHER files and revert them out of the agent's
+    // tree — the very data loss this card exists to stop, re-entering through
+    // the fix. A non-zero exit here means the path is not in the baseline
+    // (a newly-created file), which is the delete case.
+    const restored = await runGit([
+      '-C',
+      root,
+      'checkout',
+      'baseline',
+      '--',
+      `:(literal)${inside.rel}`,
+    ]);
+    if (restored.code !== 0) {
+      // `recursive: false` — these are file changes, never a subtree.
+      await fs.rm(path.join(parentReal, path.basename(inside.resolved)), { force: true });
+    }
   }
 }
 
@@ -552,10 +581,20 @@ export async function rollbackToBaseline(
  *
  * Rejects absolute paths, NUL bytes, anything that escapes `root` via `..`,
  * and anything inside `.git/` (the repo's own machinery is not agent content
- * and a delete there could corrupt the workspace outright).
+ * and touching it could corrupt the workspace outright). Also rejects a
+ * leading `:`, which would read as pathspec magic rather than a filename.
+ *
+ * Returns both forms because both are needed: `resolved` to touch the file,
+ * and the NORMALISED `rel` to hand to git — never the caller's original
+ * string, which may carry `./` segments git would take literally.
  */
-function resolveInsideWorkspace(rootReal: string, p: string): string | null {
-  if (p === '' || p.includes('\u0000') || path.isAbsolute(p)) return null;
+function resolveInsideWorkspace(
+  rootReal: string,
+  p: string,
+): { resolved: string; rel: string } | null {
+  if (p === '' || p.includes('\u0000') || p.startsWith(':') || path.isAbsolute(p)) {
+    return null;
+  }
   const resolved = path.resolve(rootReal, p);
   const rel = path.relative(rootReal, resolved);
   if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
@@ -563,7 +602,7 @@ function resolveInsideWorkspace(rootReal: string, p: string): string | null {
   }
   const first = rel.split(path.sep)[0];
   if (first === '.git') return null;
-  return resolved;
+  return { resolved, rel };
 }
 
 /**
