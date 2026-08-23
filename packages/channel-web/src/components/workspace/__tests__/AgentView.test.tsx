@@ -165,11 +165,17 @@ describe('the agent will not load', () => {
 
     renderView();
     const retry = await screen.findByRole('button', { name: 'Try again' });
-    // The code is present, but on its own line — never inside the sentence a
-    // non-technical reader has to parse.
+    /*
+      TASK-288 — the raw detail used to be asserted PRESENT here, on its own
+      mono line: `workspace /agents/ag_x → 404`. Keeping it off the sentence
+      was the right instinct; keeping it on the screen at all was not. A
+      request path and a status code are an internal identifier, and this is
+      the screen where someone learns their session ended by reading `401`.
+      It goes to the console now, so the assertion is inverted.
+    */
     const prose = screen.getByText(/We could not load this agent/);
     expect(prose.textContent).not.toMatch(/ag_x/);
-    expect(screen.getByText('workspace /agents/ag_x → 404')).toBeTruthy();
+    expect(document.body.textContent).not.toMatch(/ag_x|404|→/);
 
     fireEvent.click(retry);
     expect(await screen.findByText('what is on today')).toBeTruthy();

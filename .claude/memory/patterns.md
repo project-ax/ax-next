@@ -807,3 +807,38 @@ Related walk techniques that paid off:
 - `2026-08-23` (TASK-256) — **Dead-branch triage needs both halves: "can the wire produce it" AND "can deployment skew produce it".** The false framing here leaned on a newer-host/older-runner fleet. `container/agent/Dockerfile` builds ONE image for the host pod and the runner pods, and the chart sets `K8S_POD_IMAGE` from the same `ax-next.image` helper as the host's own `image:` — so version skew is structurally impossible in the shipped deployment, and any comment reasoning about it is fiction. Worth stating inline once rather than re-deriving: a "forward compatibility" argument is only as real as the deployment topology that could produce the skew.
 - `2026-08-23` (TASK-256, both reviewers) — **When you correct a stale comment, fix it in the file your correction CITES as the authority.** The PR fixed "three-variant" in `ipc-core/src/handlers/session-next-message.ts` and wrote fresh four-arm claims into `inbox-loop.ts` — both of which point the reader at `ipc-protocol/src/actions.ts` as the schema's home. That file's own section header still said "the three variants", 347 lines above the four-arm schema it describes. Two independently-dispatched reviewers found it and nobody else had. A truthfulness fix that leaves the cited source contradicting the citation is worse than no fix: it hands the next reader a breadcrumb trail ending in the falsehood. After editing a comment, grep the identifying phrase (`three variant`, the schema name) across the repo — the stale twin is usually in the file you just told people to go read.
 - `2026-08-23` (TASK-256, reviewer clear) — **The "one image, so no version skew" argument covers the EPHEMERAL wire, not DURABLE host-side rows.** `session-postgres/src/inbox.ts:557` ("a row written by a NEWER host than this one") looks like exactly the framing this card deleted, and is correctly left alone: a persisted row written by host N survives a rollback to host N-1, so cross-version reads are real there. Same repo, same epic, opposite verdict — before deleting a "newer host" comment, ask whether the thing being read is a transient message or a stored row.
+
+## Post-boot 401 → signed-out state (TASK-288, 2026-08-23)
+
+`packages/channel-web/src/lib/http.ts` is the SPA's shared request helper.
+`httpFetch(path, init?, fetchImpl?)` sets `credentials: 'include'` and latches
+`sessionExpiredActions.expired()` on a **401 response** — before any caller
+`.catch()` can swallow it. `App.tsx` reads `useSessionExpired()` and renders
+`<LoginPage />`.
+
+- **Boot is deliberately asymmetric.** `App.tsx` routes *any* thrown boot
+  failure to `unauthenticated` (offline at first load ⇒ LoginPage), pinned by
+  `__tests__/auth-gate.test.tsx`. Post-boot, **only a 401** signs you out. Boot
+  modules (`auth.ts`, `bootstrap-status.ts`, `features.ts`) deliberately do NOT
+  use `httpFetch`, so the two rules cannot bleed together.
+- **`HttpError.message` is authored copy; `.detail` (`path → status`) is for
+  logs.** `WorkspaceApiError extends HttpError`. Never interpolate
+  `res.statusText` into anything a person reads — it is the HTTP/1.1
+  reason-phrase and **HTTP/2 has none**, so a jsdom test asserting
+  `"401 Unauthorized"` passes locally and means nothing in the cluster.
+- **`turn-error.ts` has an allow-list.** The agent-status row above the
+  composer publishes a message only if it is an `HttpError` or matches the
+  FIRST LINE of a transport constant (`CONNECTION_LOST`, `DEFAULT_TURN_ERROR`,
+  an `ERROR_LABELS` value — Fault A appends `\ndetail`). Everything else gets
+  `DEFAULT_TURN_ERROR` on screen and a `console.warn`.
+- **Gotcha:** `turn-error.ts` reads those constants at *module load*, so any
+  `vi.mock('../lib/transport', …)` must return them (see
+  `runtime-conversation-ref.test.tsx`) or the whole suite fails at import.
+- **Deferred, still open:** the ~40 admin/settings surfaces (group B),
+  `lib/title-events.ts` 401-reconnect storm, and the silent-on-401 paths
+  (`SessionRow` DELETE never checks `res.ok`).
+- **Copy split that matters:** `httpErrorMessage(status)` only ever sees a real
+  response, so `>= 500` returns `HTTP_SERVER_ERROR` ("the server ran into a
+  problem"). `HTTP_FAILED` ("we could not reach the server") is reserved for
+  `userFacingMessage`'s non-`HttpError` fallback — the case where there was no
+  response at all. Conflating them sends people to check their wifi over our bug.

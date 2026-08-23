@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { HTTP_SERVER_ERROR } from '../lib/http';
 import { PermissionCard } from '../components/PermissionCard';
 import {
   getPermissionCardSnapshot,
@@ -527,7 +528,13 @@ describe('PermissionCard — host grant (TASK-37)', () => {
     render(<PermissionCard />);
     permissionCardActions.show({ kind: 'host', host: 'status.example.com', sessionId: 's1' });
     fireEvent.click(await screen.findByRole('button', { name: /just this once/i }));
-    expect(await screen.findByText(/allow-host failed: 500/i)).toBeInTheDocument();
+    /*
+      TASK-288 — this used to assert the Alert read `allow-host failed: 500`.
+      A route name and a status code are not a sentence, and this Alert is the
+      only thing the person gets. What matters is that the failure is SAID and
+      the card stays open to retry; the status goes to the console.
+    */
+    expect(await screen.findByText(HTTP_SERVER_ERROR)).toBeInTheDocument();
     // Still pending — the user can retry.
     expect(getPermissionCardSnapshot().request).not.toBeNull();
   });

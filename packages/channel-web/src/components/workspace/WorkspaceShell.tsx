@@ -174,9 +174,11 @@ function Inner() {
             they were doing, and this page only reads.
           </p>
           <Button onClick={() => void refresh()}>Try again</Button>
-          <p className="font-mono text-[11.5px] text-muted-foreground">
-            {error}
-          </p>
+          {/*
+            The raw detail used to print here (`workspace /board → 401`). It is
+            a request path and a number — nothing a reader can act on — and
+            `lib/http.ts` sends it to the console for operators now (TASK-288).
+          */}
         </div>
       </div>
     );

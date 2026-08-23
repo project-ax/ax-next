@@ -32,6 +32,7 @@ import {
   useState,
   type ReactNode,
 } from 'react';
+import { userFacingMessage } from './http';
 import { workspaceApi, type BoardState } from './workspace-api';
 
 interface WorkspaceContextValue {
@@ -54,7 +55,7 @@ export function WorkspaceProvider({ children }: { children: ReactNode }) {
       setBoard(await workspaceApi.board());
       setError(null);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(userFacingMessage(e, 'workspace-board'));
     } finally {
       setLoading(false);
     }

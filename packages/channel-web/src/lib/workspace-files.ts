@@ -12,6 +12,7 @@
  * reader can look at one document would be a strange way to save a round trip.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { userFacingMessage } from './http';
 import { workspaceApi, WorkspaceApiError } from './workspace-api';
 import type { WorkspaceFileBody, WorkspaceFileSummary } from './workspace-types';
 
@@ -29,7 +30,7 @@ export interface FilesError {
 }
 
 function toFilesError(e: unknown): FilesError {
-  const detail = e instanceof Error ? e.message : String(e);
+  const detail = userFacingMessage(e, 'workspace-files');
   if (e instanceof WorkspaceApiError && e.status === 503) {
     return { kind: 'unavailable', detail };
   }

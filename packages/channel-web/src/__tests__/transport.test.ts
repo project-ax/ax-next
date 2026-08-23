@@ -12,6 +12,7 @@
  * only care about chunk parsing.
  */
 import { afterEach, beforeEach, describe, it, test, expect, vi } from 'vitest';
+import { HttpError, HTTP_NO_ACCESS, HTTP_SERVER_ERROR } from '../lib/http';
 import {
   AxChatTransport,
   toContentBlocksForTesting,
@@ -1027,17 +1028,37 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     ).rejects.toThrow(/agentId is required/);
   });
 
-  test('throws on POST failure', async () => {
+  /*
+    TASK-288 — this used to assert `/chat-flow POST failed/`, i.e. the message
+    with `${status} ${statusText}` interpolated into it. That string went
+    straight to the banner above the composer, so a reader met
+    `chat-flow POST failed: 401 Unauthorized` — or, on the cluster, the same
+    line with a trailing space, because HTTP/2 has no reason-phrase.
+
+    So the assertion is now on the STATUS (which the caller can branch on) and
+    on the message being authored copy. Deliberately compared against the
+    exported constant rather than a literal: a test that hard-codes the words
+    would pass while the words themselves were nonsense.
+  */
+  test('throws an HttpError carrying the status, with authored copy', async () => {
     const { fetchFn } = makeFetchMock({ postStatus: 500 });
     const transport = new AxChatTransport({
       fetch: fetchFn,
       getAgentId: () => 'agent-1',
     });
-    await expect(
-      transport.sendMessages({
+    const err = await transport
+      .sendMessages({
         messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
-      } as unknown as Parameters<typeof transport.sendMessages>[0]),
-    ).rejects.toThrow(/chat-flow POST failed/);
+      } as unknown as Parameters<typeof transport.sendMessages>[0])
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(HttpError);
+    expect((err as HttpError).status).toBe(500);
+    expect((err as HttpError).message).toBe(HTTP_SERVER_ERROR);
+    // The bug in one line: no status, no path, no reason-phrase on screen.
+    expect((err as HttpError).message).not.toMatch(/500|chat-flow|Internal/);
   });
 
   // TASK-84 / TASK-88 — the cold-respawn SSE-open race. The browser opens GET
@@ -1237,7 +1258,7 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
       transport.sendMessages({
         messages: [{ id: 'm1', role: 'user', parts: [{ type: 'text', text: 'hi' }] }],
       } as unknown as Parameters<typeof transport.sendMessages>[0]),
-    ).rejects.toThrow(/SSE open failed/);
+    ).rejects.toMatchObject({ status: 403, message: HTTP_NO_ACCESS });
     // A real client error is NOT a cold-boot race — one attempt only.
     expect(sseOpens).toBe(1);
   });

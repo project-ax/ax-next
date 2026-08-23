@@ -17,6 +17,7 @@ import { Lock, Sparkles } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Textarea } from '@/components/ui/textarea';
+import { userFacingMessage } from '@/lib/http';
 import type { MemoryDoc } from '@/lib/workspace-api';
 import { SectionLabel } from './bits';
 
@@ -155,7 +156,9 @@ function RulesEditor({
       // Say so. A Save that failed quietly is how a hand-written rule goes
       // missing, which is the failure this whole tier exists to prevent.
       setState('idle');
-      setError(err instanceof Error ? err.message : String(err));
+      // Was `err.message`, i.e. `workspace /agents/…/memory → 401` glued into
+      // the middle of an authored sentence (TASK-288).
+      setError(userFacingMessage(err, 'agent-memory'));
     }
   }
 

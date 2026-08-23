@@ -134,9 +134,13 @@ export function AgentFiles({
                 {loading ? 'Trying\u2026' : 'Try again'}
               </Button>
             )}
-            <span className="font-mono text-[11px] text-muted-foreground">
-              {error.detail}
-            </span>
+            {/*
+              The raw detail used to be printed here: `workspace /board → 401`,
+              `send message → 401`. It said nothing a reader could act on, and
+              a status code in a mono span is how someone learns their session
+              expired by reading a number. `lib/http.ts` logs it to the console
+              for operators instead (TASK-288).
+            */}
           </AlertDescription>
         </Alert>
       </div>
@@ -231,9 +235,6 @@ export function AgentFiles({
                   <span>
                     We could not open that file. It may have been rewritten or
                     deleted since this list was drawn.
-                  </span>
-                  <span className="font-mono text-[11px] text-muted-foreground">
-                    {openError.detail}
                   </span>
                 </AlertDescription>
               </Alert>

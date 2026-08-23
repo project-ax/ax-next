@@ -22,7 +22,7 @@
 import { ArrowRight, CheckCircle2 } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
-import { signInWithGoogle } from '@/lib/auth';
+import { SignInAgainButton } from '@/components/SignInAgainButton';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
 import { isOpenDecision } from '@/lib/workspace-types';
@@ -253,28 +253,17 @@ export function TodayView({
                 : DECISION_READ_FAILED}
             </span>
             {error.kind === 'expired' ? (
-              <Button
-                variant="secondary"
-                size="sm"
-                onClick={() => {
-                  /*
-                    Fire-and-forget, like the LoginPage CTA: on success it
-                    navigates away, and on a misconfigured provider it throws
-                    with nowhere here to show why. Caught so that is a console
-                    line rather than an unhandled rejection.
+              /*
+                A console line was all a failed sign-in used to produce, on the
+                one screen where this is the only way forward (TASK-288). The
+                shared button owns the failure now.
 
-                    Called directly rather than through a prop: there is exactly
-                    one way into this app, the in-thread card does the same, and
-                    an optional `onSignIn` would be how a no-op default gets
-                    added later and swallows the click.
-                  */
-                  void signInWithGoogle().catch((err: unknown) => {
-                    console.warn('[decisions] could not start sign-in', err);
-                  });
-                }}
-              >
-                Sign in
-              </Button>
+                Rendered directly rather than through an `onSignIn` prop: there
+                is exactly one way into this app, the in-thread card uses the
+                same component, and an optional prop would be how a no-op
+                default gets added later and swallows the click.
+              */
+              <SignInAgainButton variant="secondary" />
             ) : (
               onRetry && (
                 <Button variant="secondary" size="sm" onClick={onRetry}>

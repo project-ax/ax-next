@@ -7,6 +7,8 @@
  * Wraps `GET /api/chat/agents`, which channel-web already serves (the AgentMenu
  * consumes the same route).
  */
+import { httpJson } from './http';
+
 export interface ChatAgentSummary {
   agentId: string;
   displayName: string;
@@ -14,7 +16,7 @@ export interface ChatAgentSummary {
 }
 
 export async function listChatAgents(): Promise<ChatAgentSummary[]> {
-  const res = await fetch('/api/chat/agents', { credentials: 'include' });
-  if (!res.ok) throw new Error(`list agents: ${res.status}`);
-  return (await res.json()) as ChatAgentSummary[];
+  // Through `lib/http.ts` (TASK-288): a 401 here ends the session instead of
+  // becoming the string `list agents: 401` on somebody's screen.
+  return httpJson<ChatAgentSummary[]>('/api/chat/agents');
 }

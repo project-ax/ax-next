@@ -8,6 +8,8 @@
  * server forces the user scope from the cookie — these calls never send a user
  * id.
  */
+import { HttpError, httpFetch } from './http';
+
 const csrfHeader = { 'x-requested-with': 'ax-admin' } as const;
 const writeHeaders = {
   'content-type': 'application/json',
@@ -26,19 +28,19 @@ export interface ConnectionsResponse {
 }
 
 export async function getConnections(agentId: string): Promise<ConnectionsResponse> {
-  const res = await fetch(`/api/chat/connections/${encodeURIComponent(agentId)}`, {
+  const res = await httpFetch(`/api/chat/connections/${encodeURIComponent(agentId)}`, {
     credentials: 'include',
   });
-  if (!res.ok) throw new Error(`connections: ${res.status}`);
+  if (!res.ok) throw new HttpError('/api/chat/connections', res.status);
   return (await res.json()) as ConnectionsResponse;
 }
 
 export async function detachConnectionSkill(agentId: string, skillId: string): Promise<void> {
-  const res = await fetch(
+  const res = await httpFetch(
     `/api/chat/connections/${encodeURIComponent(agentId)}/skills/${encodeURIComponent(skillId)}`,
     { method: 'DELETE', headers: csrfHeader, credentials: 'include' },
   );
-  if (!res.ok && res.status !== 204) throw new Error(`detach: ${res.status}`);
+  if (!res.ok && res.status !== 204) throw new HttpError('/api/chat/connections', res.status);
 }
 
 // TASK-126 — Skills app-store. The "Not installed · available in your workspace"
@@ -57,8 +59,8 @@ export interface CatalogSkillListing {
 
 /** List the workspace's global catalog as installable listings (every user). */
 export async function listCatalogSkills(): Promise<CatalogSkillListing[]> {
-  const res = await fetch('/api/chat/catalog-skills', { credentials: 'include' });
-  if (!res.ok) throw new Error(`catalog-skills: ${res.status}`);
+  const res = await httpFetch('/api/chat/catalog-skills', { credentials: 'include' });
+  if (!res.ok) throw new HttpError('/api/chat/catalog-skills', res.status);
   const body = (await res.json()) as { skills: CatalogSkillListing[] };
   return body.skills;
 }
@@ -73,7 +75,7 @@ export async function attachConnectionSkill(
   agentId: string,
   skillId: string,
 ): Promise<{ created: boolean }> {
-  const res = await fetch(
+  const res = await httpFetch(
     `/api/chat/connections/${encodeURIComponent(agentId)}/skills`,
     {
       method: 'POST',
@@ -82,7 +84,7 @@ export async function attachConnectionSkill(
       body: JSON.stringify({ skillId }),
     },
   );
-  if (!res.ok) throw new Error(`attach: ${res.status}`);
+  if (!res.ok) throw new HttpError('/api/chat/connections', res.status);
   return (await res.json()) as { created: boolean };
 }
 
@@ -100,10 +102,10 @@ export interface AllowedSitesResponse {
 }
 
 export async function getAllowedSites(agentId: string): Promise<AllowedSitesResponse> {
-  const res = await fetch(`/api/chat/allowed-sites/${encodeURIComponent(agentId)}`, {
+  const res = await httpFetch(`/api/chat/allowed-sites/${encodeURIComponent(agentId)}`, {
     credentials: 'include',
   });
-  if (!res.ok) throw new Error(`allowed-sites: ${res.status}`);
+  if (!res.ok) throw new HttpError('/api/chat/allowed-sites', res.status);
   return (await res.json()) as AllowedSitesResponse;
 }
 
@@ -134,7 +136,7 @@ export async function addAllowedSite(
   agentId: string,
   host: string,
 ): Promise<{ created: boolean }> {
-  const res = await fetch(`/api/chat/allowed-sites/${encodeURIComponent(agentId)}`, {
+  const res = await httpFetch(`/api/chat/allowed-sites/${encodeURIComponent(agentId)}`, {
     method: 'POST',
     headers: writeHeaders,
     credentials: 'include',
@@ -158,11 +160,11 @@ export async function addAllowedSite(
  * "always" grant — design P6). Idempotent: a 204 even if no row existed.
  */
 export async function revokeAllowedSite(agentId: string, host: string): Promise<void> {
-  const res = await fetch(
+  const res = await httpFetch(
     `/api/chat/allowed-sites/${encodeURIComponent(agentId)}/${encodeURIComponent(host)}`,
     { method: 'DELETE', headers: csrfHeader, credentials: 'include' },
   );
-  if (!res.ok && res.status !== 204) throw new Error(`revoke-site: ${res.status}`);
+  if (!res.ok && res.status !== 204) throw new HttpError('/api/chat/allowed-sites', res.status);
 }
 
 // --- Allowed sites: the flat, all-agents view ------------------------------
@@ -180,8 +182,8 @@ export interface AllAllowedSite {
 
 /** Every allowed-site grant the user owns across all their agents. */
 export async function listAllAllowedSites(): Promise<AllAllowedSite[]> {
-  const res = await fetch('/api/chat/allowed-sites', { credentials: 'include' });
-  if (!res.ok) throw new Error(`allowed-sites: ${res.status}`);
+  const res = await httpFetch('/api/chat/allowed-sites', { credentials: 'include' });
+  if (!res.ok) throw new HttpError('/api/chat/allowed-sites', res.status);
   const body = (await res.json()) as { grants: AllAllowedSite[] };
   return body.grants;
 }

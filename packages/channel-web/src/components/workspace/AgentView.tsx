@@ -21,6 +21,7 @@ import { Archive, ArrowRight, ChevronLeft } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { userFacingMessage } from '@/lib/http';
 import { workspaceApi, type AgentDetail, type Decision } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
 import { ActivityFeed } from './ActivityFeed';
@@ -154,7 +155,7 @@ export function AgentView({
       setLoadError(null);
     } catch (e) {
       setDetail(null);
-      setLoadError(e instanceof Error ? e.message : String(e));
+      setLoadError(userFacingMessage(e, 'workspace-agent'));
     }
   }, [agentId]);
 
@@ -184,7 +185,7 @@ export function AgentView({
         if (!cancelled) setPastDetail(excerpt);
       } catch (e) {
         if (!cancelled) {
-          setPastError(e instanceof Error ? e.message : String(e));
+          setPastError(userFacingMessage(e, 'workspace-agent-past'));
         }
       }
     })();
@@ -329,9 +330,13 @@ export function AgentView({
             <Button variant="secondary" size="sm" onClick={() => void load()}>
               Try again
             </Button>
-            <span className="font-mono text-[11px] text-muted-foreground">
-              {loadError}
-            </span>
+            {/*
+              The raw detail used to be printed here: `workspace /board → 401`,
+              `send message → 401`. It said nothing a reader could act on, and
+              a status code in a mono span is how someone learns their session
+              expired by reading a number. `lib/http.ts` logs it to the console
+              for operators instead (TASK-288).
+            */}
           </AlertDescription>
         </Alert>
       </div>
@@ -503,9 +508,7 @@ export function AgentView({
                         That reply didn&rsquo;t finish — we may have lost the
                         connection. Nothing you sent was lost.
                       </span>
-                      <span className="font-mono text-[11px] text-muted-foreground">
-                        {turnError}
-                      </span>
+                      <span>{turnError}</span>
                       <div className="flex items-center gap-2">
                         {sent !== null && (
                           <Button
@@ -535,9 +538,6 @@ export function AgentView({
                       <span>
                         We could not open that conversation. It may have been
                         deleted since this list was drawn.
-                      </span>
-                      <span className="font-mono text-[11px] text-muted-foreground">
-                        {pastError}
                       </span>
                     </AlertDescription>
                   </Alert>

@@ -1,4 +1,5 @@
 import type { Agent } from '../../mock/agents';
+import { httpFetch } from './http';
 import { agentStoreActions } from './agent-store';
 
 /**
@@ -15,7 +16,7 @@ import { agentStoreActions } from './agent-store';
  */
 export async function hydrateAgentsOnce(): Promise<void> {
   try {
-    const res = await fetch('/api/chat/agents', { credentials: 'include' });
+    const res = await httpFetch('/api/chat/agents');
     if (!res.ok) {
       agentStoreActions.setAgentsError();
       return;
