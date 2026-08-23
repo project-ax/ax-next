@@ -63,7 +63,11 @@ function skillDocs() {
 // different things depending on which shell sourced it. `:I` and `:S` are
 // deliberately absent: they are NOT modifiers, which is why `$it$i:ID!` and
 // `$v$i:String!` were always safe and bracing them is belt-and-braces only.
-const ZSH_MODIFIERS = 'aAcefghlpqQrstuUwWxX';
+// `P` (absolute-path modifier, zsh 5.9) belongs here: nothing in the doc uses `$var:P`
+// today, but a future one would slip a scan that omits it. The set over-includes a few
+// letters that are not modifiers -- that direction only costs a false positive on a
+// string nobody writes, whereas omitting a real modifier costs a silent miscompile.
+const ZSH_MODIFIERS = 'aAcefghlpPqQrstuUwWxX';
 
 /**
  * Find `$name:` (unbraced) immediately followed by a zsh modifier letter.
@@ -189,9 +193,25 @@ describe('board reads assert non-truncation, not non-emptiness', () => {
   // mysteriously never dispatched.
   const MIN_LIMIT = 700;
 
-  it('every `gh project item-list --limit N` in the doc has N >= 700', () => {
-    const limits = [...md.matchAll(/item-list[^\n]*--limit (\d+)/g)].map((m) => Number(m[1]));
-    expect(limits.length, 'expected the doc to still contain item-list limits').toBeGreaterThan(0);
+  it('every board-read limit in the doc is >= 700', () => {
+    // Two shapes count: a literal `item-list … --limit 250`, and the `BOARD_LIMIT=250`
+    // assignment the call sites interpolate. Following only one of them lets the other
+    // regress -- and the doc has moved between the two forms once already.
+    const literals = [...md.matchAll(/item-list[^\n]*--limit (\d+)/g)].map((m) => Number(m[1]));
+    const vars = [...md.matchAll(/^BOARD_LIMIT=(\d+)/gm)].map((m) => Number(m[1]));
+    const limits = [...literals, ...vars];
+    expect(
+      limits.length,
+      'expected the doc to still declare a board-read limit, as a literal --limit or ' +
+        'a BOARD_LIMIT= assignment. Zero matches means this guard has gone vacuous -- ' +
+        'the doc changed shape and the regex no longer follows it.',
+    ).toBeGreaterThan(0);
+    // Every interpolated `--limit "$BOARD_LIMIT"` must resolve to a checked variable.
+    const interpolated = [...md.matchAll(/item-list[^\n]*--limit "\$([A-Z_]+)"/g)].map((m) => m[1]);
+    for (const name of interpolated) {
+      expect(vars.length, `${name} is interpolated but never assigned a literal`).toBeGreaterThan(0);
+      expect(name).toBe('BOARD_LIMIT');
+    }
     const tooSmall = limits.filter((n) => n < MIN_LIMIT);
     expect(
       tooSmall,
@@ -246,6 +266,10 @@ describe('findZshModifierHazards', () => {
 
   it('does not flag the braced fix', () => {
     expect(findZshModifierHazards('sel+=" a${i}:updateProjectV2ItemFieldValue("')).toEqual([]);
+  });
+
+  it('flags the `:P` absolute-path modifier (zsh 5.9)', () => {
+    expect(findZshModifierHazards('echo $dir:Pa')).toHaveLength(1);
   });
 
   it('does not flag a colon followed by a non-modifier letter', () => {

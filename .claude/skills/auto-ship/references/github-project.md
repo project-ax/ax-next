@@ -143,6 +143,10 @@ board_snapshot() {
   # No 2>/dev/null: a rate-limit or auth error must reach the operator, not vanish.
   j=$(gh project item-list 1 --owner project-ax --format json --limit "$BOARD_LIMIT") || return 1
   n=$(printf '%s' "$j" | jq -r '.items | if type=="array" then length else -1 end') || return 1
+  # An empty/non-integer $n makes BOTH tests below error out (return 2) rather than
+  # fire, and the function would then fall through to cache garbage and return 0 —
+  # a silent-success path. Close it before the arithmetic.
+  case "$n" in ''|*[!0-9-]*) echo "FATAL: board_snapshot got a non-numeric item count ('$n')" >&2; return 1;; esac
   [ "$n" -le 0 ] && { echo "FATAL: board_snapshot read no items (rate-limited or bad JSON)" >&2; return 1; }
   [ "$n" -ge "$BOARD_LIMIT" ] && { echo "FATAL: board_snapshot hit --limit ($n of $BOARD_LIMIT) — board truncated; raise BOARD_LIMIT" >&2; return 1; }
   printf '%s' "$j" > "$BOARD_CACHE"; echo "$BOARD_CACHE"
@@ -187,6 +191,13 @@ board_batch() {
 # board_batch_query_preview <n> — the exact query string board_batch WOULD send for n
 # ops, with no network call. Exists solely so the run-start shell-parity self-test
 # (§2c) can diff it between bash and zsh; the two must be byte-identical.
+#
+# ⚠ THIS IS A HAND-MAINTAINED TWIN of board_batch's decl/sel construction above. If you
+# edit those two `+=` lines, edit these too or the parity test silently stops testing
+# the real function. The static scan in
+# scripts/__tests__/autoship-skill-shell-hazards.test.js covers BOTH copies for the
+# brace hazard, which is the failure that actually matters — but it cannot tell you
+# the twins have drifted in some other way.
 board_batch_query_preview() {
   local n="$1" decl="mutation(\$p:ID!" sel="" i=0
   while [ "$i" -lt "$n" ]; do
@@ -205,7 +216,7 @@ chmod +x .claude/auto-ship-board.sh
 Every defect this section documents was regenerated from these very code blocks at
 some later run start and then failed *quietly*. Run all three immediately after
 writing the helpers, in one Bash call, and **do not dispatch anything until they
-pass**. They cost no GraphQL points except the last one, which costs one.
+pass**. None of them costs a GraphQL point (`gh api rate_limit` is exempt from the quota it reports).
 
 ```bash
 FATAL=0
@@ -263,9 +274,14 @@ stalled for ~6 min). **Read the whole board exactly once per pass** and derive
 everything from that single JSON:
 
 ```bash
-ITEMS=$(gh project item-list "$PNUM" --owner "$OWNER" --format json --limit 700)   # the ONLY board read this pass
-# Truncation is silent and poisons the ready set — assert it, exactly as board_snapshot does:
-[ "$(printf '%s' "$ITEMS" | jq '.items|length')" -ge 700 ] && echo "FATAL: board truncated at --limit 700 — raise it"
+BOARD_LIMIT=700   # keep in lockstep with board_snapshot's BOARD_LIMIT (§2b) — one number, two call sites
+ITEMS=$(gh project item-list "$PNUM" --owner "$OWNER" --format json --limit "$BOARD_LIMIT")   # the ONLY board read this pass
+# Both failure modes are silent and both poison the ready set, so assert BOTH — a
+# truncated read and an empty one are different bugs with the same symptom (a card
+# that is simply never dispatched). This mirrors board_snapshot; prefer calling it.
+n=$(printf '%s' "$ITEMS" | jq '.items|length')
+[ "${n:-0}" -le 0 ]             && echo "FATAL: board read came back empty (rate-limited?)"
+[ "${n:-0}" -ge "$BOARD_LIMIT" ] && echo "FATAL: board truncated at --limit $BOARD_LIMIT — raise it"
 # ready set + deps:
 printf '%s' "$ITEMS" | jq -r '.items[] | select(.status=="To Do") | "\(.title)\tdeps=\(."depends on" // "")"'
 # an item's node id AND its body come from the SAME JSON — never re-query for them:
@@ -697,7 +713,10 @@ for b in $(git branch --list "auto-ship/$TASK_ID-*" --format '%(refname:short)')
     git worktree remove -f -f "$wt" || { echo "⚠ CLEANUP FAILED: worktree $wt still present" >&2; continue; }
   fi
   git branch -D "$b" || { echo "⚠ CLEANUP FAILED: local branch $b survives" >&2; continue; }
-  git push origin --delete "$b" 2>/dev/null || true   # genuinely harmless if never pushed
+  # Suppressed on purpose: deleting a ref that was never pushed is the common case and
+  # is not a failure. Be honest that this also eats auth/network errors — if remote
+  # branches are visibly piling up, re-run this line WITHOUT the redirect to see why.
+  git push origin --delete "$b" 2>/dev/null || true
 done
 git worktree prune
 ```
