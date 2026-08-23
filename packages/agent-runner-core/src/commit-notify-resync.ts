@@ -23,15 +23,22 @@ export const MAX_RESYNC_ATTEMPTS = 3;
 export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
 
 /**
- * What a commit-notify attempt ended in, plus — on `rolled-back` — the host's
- * own words for WHY it refused the bundle (the pre-apply subscriber's veto
- * reason, or the re-sync-exhausted message).
+ * What a commit-notify attempt ended in, plus — when the host REFUSED the
+ * bundle on its merits — the host's own words for why.
  *
- * `rejectionReason` exists so the refusal is legible to the agent instead of
+ * `rejectionReason` exists so a refusal is legible to the agent instead of
  * dying inside this function: a hard-reset veto wipes the turn's work, and a
- * bare `rolled-back` gives the model nothing to correct. Absent on every
- * non-rejection outcome. It is host-authored prose, not a machine code —
- * callers surface it, they don't branch on it.
+ * bare `rolled-back` gives the model nothing to correct. It is host-authored
+ * prose, not a machine code — callers surface it, they don't branch on it.
+ *
+ * It is absent on every non-rejection outcome, and deliberately absent on a
+ * concurrent-writer rollback (`actualParent` set: re-sync exhausted, or no
+ * baseline to re-sync from). That is a race, not an objection — the host's
+ * reason there is a `parent-mismatch:` line naming two storage-tier commit
+ * ids, which tells the agent nothing it can act on and would put backend
+ * vocabulary in front of the model. The caller shows the retry message for it
+ * instead, which is the correct advice: the same bundle may well land next
+ * time.
  */
 export interface CommitNotifyResult {
   parentVersion: string | null;
@@ -215,10 +222,16 @@ export async function commitNotifyWithResync(input: {
     // Hand the host's stated reason back to the caller. Everything else on this
     // path is write-only (a stderr line and an off-by-default commit trace), so
     // this is the only channel by which the agent can learn what it did wrong.
+    //
+    // ...but ONLY for a refusal on the merits. `actualParent` set means we got
+    // here from the concurrent-writer branch — re-sync exhausted, or no
+    // baseline to re-sync from — and its `reason` is a `parent-mismatch:` line
+    // naming two storage-tier commit ids. There is no objection to address, so
+    // we leave the field off and the forwarder shows the retry message.
     return {
       parentVersion: input.parentVersion,
       outcome: 'rolled-back',
-      rejectionReason: resp.reason,
+      ...(resp.actualParent !== undefined ? {} : { rejectionReason: resp.reason }),
     };
   }
 }
@@ -282,12 +295,15 @@ export type HostToolFlush = Omit<FlushResult, 'parentVersion'>;
  * loops use for a flush that threw — that is not a commit-notify outcome, so it
  * lives here rather than in the type.
  *
- * When the host stated a reason we say what it was, and we drop the "please try
+ * When the host stated a reason we say what it was and drop the "please try
  * again" tail: against a policy veto the identical retry is vetoed identically.
- * We do NOT replace it with "fix this and retry" either — the same branch also
- * carries a re-sync-exhausted rejection, which the agent cannot fix and which a
- * plain retry may well clear. The reason is the payload; what to do with it is
- * the model's call.
+ * We do NOT replace it with "fix this and retry" either — the reason is the
+ * payload; what to do with it is the model's call.
+ *
+ * The "rolled back" clause is gated on the outcome rather than on the reason's
+ * presence. Only a `rolled-back` carries a reason today, but that is a caller
+ * convention the parameter type cannot enforce, and this sentence must never
+ * assert a rollback that did not happen.
  */
 export function flushPreconditionMessage(
   toolName: string,
@@ -296,11 +312,14 @@ export function flushPreconditionMessage(
   const head =
     `Could not sync your just-authored workspace files to the host before ` +
     `'${toolName}' (flush outcome: ${flush.outcome}).`;
-  if (flush.rejectionReason !== undefined && flush.rejectionReason !== '') {
-    return (
-      `${head} The host refused the change: ${flush.rejectionReason} ` +
-      `The turn's commit was rolled back.`
-    );
+  const stated = flush.rejectionReason?.trim() ?? '';
+  if (stated !== '') {
+    // Host reasons are prose from a plugin and are not required to end in a
+    // period; without this the next sentence runs straight on from theirs.
+    const sentence = /[.!?]$/.test(stated) ? stated : `${stated}.`;
+    const rolledBack =
+      flush.outcome === 'rolled-back' ? ` The turn's commit was rolled back.` : '';
+    return `${head} The host refused the change: ${sentence}${rolledBack}`;
   }
   return `${head} The files are not visible to the installer yet — please try again.`;
 }

@@ -411,14 +411,17 @@ describe('buildHostTools', () => {
         flushWorkspace,
         holdLatch,
       });
-      await expect(
-        unwrap(tools['host_reads_workspace']?.execute)({}, OPTS),
-      ).rejects.toThrow(
-        /\.claude\/settings\.json: agent writes to the SDK config are refused/,
+      const err = await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS).then(
+        () => null,
+        (e: unknown) => e as Error,
       );
-      await expect(
-        unwrap(tools['host_reads_workspace']?.execute)({}, OPTS),
-      ).rejects.toThrow(/rolled back/);
+      expect(err?.message).toContain(
+        '.claude/settings.json: agent writes to the SDK config are refused',
+      );
+      expect(err?.message).toContain("The turn's commit was rolled back.");
+      // Same omission as the SDK runner's twin: retrying an identical vetoed
+      // change gets vetoed identically, so we do not tell the model to.
+      expect(err?.message).not.toContain('please try again');
       expect(calls.map((c) => c.action)).toEqual([]);
     });
 
