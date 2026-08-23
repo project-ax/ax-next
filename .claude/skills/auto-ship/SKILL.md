@@ -86,8 +86,12 @@ yolo-shipped** — see Cluster-walk lane.
 
 At run start: resolve the board, ensure the 7-lane `Status` set + the `Depends on`
 field exist (`references/github-project.md` §1–2), write the poller, the progress +
-needs-input + learnings helpers (`.claude/auto-ship-progress.sh`, §6/§8), **and** the
-batched board helper (`.claude/auto-ship-board.sh`, §2b) + take the owner lock (§7),
+needs-input + learnings helpers (`.claude/auto-ship-progress.sh`, §6/§8), the
+worktree-safe heartbeat wrapper agents call (`.claude/auto-ship-hb.sh`, §6), **and**
+the batched board helper (`.claude/auto-ship-board.sh`, §2b), **run the three §2c
+run-start self-tests and do not dispatch anything until they pass** (shell parity,
+helper completeness, GraphQL budget — every one of them guards a defect that has
+already shipped silently), take the owner lock (§7),
 **reconcile any orphaned in-flight cards** (§7 — this is the crash/resume recovery
 step), print the plan, launch the poller, then idle. **If invoked with `--design
 <path>`**, run the **Design-intake mode** pre-pass right after the lock + reconcile (it
@@ -227,9 +231,13 @@ card). For each:
 2. Launch a **background** `general-purpose` agent running `yolo-ship` in
    **orchestrated mode** on that one card (`Agent`, `run_in_background: true`,
    **`isolation: "worktree"`**), using the **code-lane dispatch prompt** in
-   `references/templates.md` — pass the card's `[TASK-ID]`, title, body, its **item
-   node id** (`<ITEM-ID>`), and the **absolute path** to `.claude/auto-ship-progress.sh`
-   so it reports progress live on its card. **`isolation: "worktree"` is mandatory** —
+   `references/templates.md` — pass the card's `[TASK-ID]`, title, **body inline or as
+   a local file path** (never "go read your card" — `item-list` is ~102 GraphQL points
+   × 3 builders; see the template's `<TASK-BODY>` note), its **item node id**
+   (`<ITEM-ID>`), and the **absolute path** to `.claude/auto-ship-hb.sh` — the wrapper
+   agents CALL to report progress. Do **not** hand them `.claude/auto-ship-progress.sh`
+   to `source`: it is gitignored, so it is not in their worktree, and the relative form
+   exits 127 with a dead heartbeat for the whole run (§6). **`isolation: "worktree"` is mandatory** —
    it gives each agent its own git worktree so no agent ever works in the shared main
    checkout (concurrent agents on the main checkout clobber each other's HEAD/working
    tree + `.claude/memory` — the ARCH-2 incident). The orchestrator's own checkout
@@ -254,9 +262,26 @@ git fetch origin
 gh pr view <n> --json mergeable,statusCheckRollup     # confirm green + mergeable
 # if NOT mergeable (main moved): check out the branch, rebase onto main,
 #   resolve conflicts, push, wait for CI to re-green, then continue.
-gh pr merge <n> --squash --delete-branch
+
+# NEVER `--delete-branch` here. Every builder is dispatched with isolation:"worktree",
+# so the PR branch is ALWAYS checked out in a worktree by the time you merge; `gh` then
+# fails the local-delete step and propagates exit 1 — AFTER the merge already landed.
+# A successful merge that exits non-zero is the worst possible signal: it reads as
+# failure and invites a retry of a merge that has already happened. (Hit on 2/2 merges
+# in the 2026-08-23 run.) So assert merge SUCCESS positively and treat cleanup as
+# separate, optional, and non-fatal:
+gh pr merge <n> --squash                                     # no --delete-branch
+state=$(gh pr view <n> --json state --jq .state)
+[ "$state" = "MERGED" ] || { echo "MERGE-FAILED #<n> state=$state"; exit 1; }
+echo "MERGE-OK #<n>"                                         # required token
 git checkout main && git pull --ff-only
+git push origin --delete <branch> || echo "⚠ cleanup failed (non-fatal): remote branch <branch>"
 ```
+
+**`MERGE-OK #<n>` is the gate.** Its absence halts the queue; a `⚠ cleanup` line never
+does. Leave the local branch + worktree alone during the run — a lingering one is
+harmless to the queue — and sweep them at session end (`references/github-project.md`
+§7 cleanup block, which needs `remove -f -f` for harness-locked worktrees).
 
 **Review gate (blocking — check BEFORE `gh pr merge`).** Read the handoff's
 `reviewer:` field. If it is anything other than `clean` — `hung`, `skipped-…`, or
@@ -265,13 +290,30 @@ for one (the three worst bugs of the agent-workspace run were invisible to CI).
 **Dispatch your own independent `ax-code-reviewer`** on that PR's diff
 (`git diff main...<branch>`) with a **short, self-contained prompt**, from a fresh
 agent and with **no `name`** (yolo-ship Phase 5 › dispatch contract). The reason
-orchestrator-dispatched passes returned reliably in 13–17 min where builder-spawned
-ones "hung" was the dispatch shape, not the diff — a named teammate cannot hand its
-findings back (TASK-268). Merge only once it returns and its actionable findings are
-addressed (hand fixes back to the builder, or file them as follow-up cards if they are
-non-blocking). If it goes silent, **retrieve via `SendMessage` before re-dispatching**.
-If a genuine pass *also* blows 25 minutes, **HALT that card and report** — do not merge
-an unreviewed code PR. Log it in the journal so this keeps accumulating evidence.
+orchestrator-dispatched passes returned where builder-spawned ones "hung" was the
+dispatch shape, not the diff — a named teammate cannot hand its findings back
+(TASK-268). Merge only once it returns and its actionable findings are addressed (hand
+fixes back to the builder, or file them as follow-up cards if they are non-blocking).
+
+**Reviewers are SLOW, and slow is not dead.** Measured 2026-08-23: reviews containing
+4 and 7.5 minutes of actual work were *delivered ~40 minutes apart*, one of them
+holding a real blocker. Delivery lag dominates work time, so ~40 min is the normal
+case, not a pathology. Run the same numbered protocol yolo-ship Phase 5 uses — it is
+the one you execute, so do not improvise a shorter version of it:
+
+1. **Note the dispatch time.** Nothing before ~40 min is evidence of anything.
+2. **At 25 min, retrieve — do not re-dispatch.** `SendMessage` the reviewer's id and
+   ask it to deliver. This has recovered a complete, finished review instantly.
+3. **Retrieval came back empty ≠ dead.** A reviewer still mid-work also answers
+   nothing. Re-retrieve at ~40 min and again at ~55 before concluding anything; given
+   the measured lag this is now the *dominant* case, and the one a bare "empty ⇒
+   re-dispatch" rule gets wrong.
+4. **Only after ~55 min with two empty retrievals: ONE fresh re-dispatch**, plain
+   no-`name` shape, minimal self-contained prompt (diff range, worktree path, focus).
+5. **If that also produces nothing, HALT that card and report** — do not merge an
+   unreviewed code PR, and never substitute your own reading of the diff for the
+   review. Log times, shape, and whether retrieval recovered it in the journal so this
+   keeps accumulating evidence.
 
 On a `pr-green` handoff (PR open, pre-merge): move the card → **In Review** (the agent
 already logged `PR #<n> opened` in its progress block — you no longer append a link).
@@ -394,7 +436,8 @@ Locally, gitignored only:
   merges, attempt counts, signatures, crash-recoveries). The loop-breakers read it; a
   resume rebuilds attempt history from it.
 - `.claude/auto-ship-todo-snapshot.txt` — the poller's last-seen To Do hash.
-- `.claude/auto-ship-progress.sh` — the shell-side body-RMW helpers `append_progress` (§6) + `set_needs_input` (§8) + `append_learnings` (§6).
+- `.claude/auto-ship-progress.sh` — the shell-side body-RMW helpers `append_progress` (§6) + `set_needs_input` (§8) + `append_learnings` (§6). All three must exist — §2c check (2) is fatal.
+- `.claude/auto-ship-hb.sh` — the worktree-safe heartbeat wrapper dispatched agents **call** by absolute path (§6). Loud on failure; agents report the outcome in the handoff's `progress:` field.
 - `.claude/auto-ship-board.sh` — the batched board helpers `board_snapshot` + `board_batch` (§2b).
 - `.claude/auto-ship-board.json` — the once-per-pass board snapshot cache (§3).
 - `.claude/auto-ship-owner.lock` — the single-instance heartbeat (§7).
@@ -441,6 +484,7 @@ in-flight, and any walk-filed follow-ups.
 | "This untagged To Do card looks ready, I'll dispatch it" | Un-triaged cards pass the triage gate first — ID assigned, walk-tagged, underspec routed to Needs Input. Never dispatch a card with no `triaged … clean` row. |
 | "Re-invoked after a crash — I'll just start dispatching" | Run the §7 reconcile **first**: orphaned In Progress / In Review cards (PR → merge queue; no PR → reset to To Do) before draining, or they wedge slots forever. |
 | "An In-Progress card looks stuck, I'll re-dispatch it" | Only on a **run-start** wake (no live agents). On a board-change/agent-done wake those agents are live — reconciling would double-dispatch. |
+| "The agent didn't mention its heartbeat, so it was fine" | `progress:` is a REQUIRED handoff field for the same reason `reviewer:` is: nothing machine-reads the progress block, so silence is indistinguishable from a heartbeat that was dead all run (it was, for every builder, on 2026-08-23). A missing or `FAILED-*` value never blocks the merge — journal it. |
 | "I'll poll the board myself each minute" | That burns model tokens. The background poller is model-token-free (it still spends ~1 GraphQL pt/poll — see §5; never `gh project item-list`, that's ~102 pt) and re-invokes you on change. |
 | "This walk card is ready, I'll yolo-ship it" | `(walk)` cards run via the serialized k8s-acceptance-loop, never yolo-ship. |
 | "Design-intake — I'll park the new cards in Backlog for review" | No. Cards go straight to **To Do** with their deps; the dep DAG sequences them and the plan-print + `--dry-run` are the review gate. |

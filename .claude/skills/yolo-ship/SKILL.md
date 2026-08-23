@@ -36,9 +36,14 @@ straight from the board. It's the same delimited-block + `append_progress` helpe
 documented in `.claude/skills/auto-ship/references/github-project.md` §6.
 
 - **Orchestrated** (auto-ship dispatched you): the card always exists. Its item id
-  (`<ITEM-ID>`) and the helper's absolute path arrive in your dispatch prompt. Write
-  in a SINGLE Bash call each time (shell state doesn't persist across calls):
-  `source <PATH> && append_progress "<ITEM-ID>" "<line>"`.
+  (`<ITEM-ID>`) and the **absolute path to `.claude/auto-ship-hb.sh`** arrive in your
+  dispatch prompt. **CALL the wrapper; do NOT `source` anything:**
+  `<ABS-PATH>/.claude/auto-ship-hb.sh "<ITEM-ID>" "<line>"` — one Bash call each time.
+  The raw helper is **gitignored**, so `git worktree add` does not carry it into your
+  worktree; a relative `source .claude/auto-ship-progress.sh` copied from the
+  orchestrator-side examples exits **127** and your heartbeat is dead for the whole
+  run. Do not hand-roll a copy of the helper inside your worktree either — two
+  builders independently did exactly that, which is why the wrapper exists.
 - **Standalone** (`/yolo-ship` run directly): resolve the card by its `[TASK-ID]`
   prefix (`gh project item-list 1 --owner project-ax --format json | jq …`, filtered
   in-shell to the item id). If no card exists or `gh` lacks the `project` scope,
@@ -46,7 +51,14 @@ documented in `.claude/skills/auto-ship/references/github-project.md` §6.
   board-free. If a card exists, copy the `append_progress` snippet from §6 into a temp
   script in your worktree and source it.
 
-**Rules:** *best-effort* — a failed progress write must **never** abort the ship.
+**Rules:** *best-effort but never silent* — a failed progress write must **never**
+abort the ship, and must **never** pass unreported either. The wrapper prints
+`HEARTBEAT-FAILED(setup)` for a broken installation (it will fail all run — say so)
+and `HEARTBEAT-FAILED(transient)` for a rate-limited or blipped write. Report the
+outcome in the **required** `progress:` handoff field — `live`, or
+`FAILED-<setup|transient>`. Nothing machine-reads the progress block, so if you do not
+report it, nobody learns the heartbeat was dead until the run is over. It is not a
+merge blocker.
 *Shell-side* — the helper does the read-modify-write in shell; never read the card
 body into your context (it grows every line). *Own card only* — append to your own
 card; never touch `Status` or `Depends on` (auto-ship owns routing). *Budget-frugal* —
@@ -150,7 +162,7 @@ complete review *instantly* — it had existed the whole time.
 parent, and it must call `SendMessage` to say anything. An agent dispatched **without**
 `name` returns normally through the ordinary completion path. That is the entire
 difference, and it explains the one thing the size theory never could — why the *same*
-agent on the *same* diffs returned in 13–17 min for the orchestrator and "hung" for
+agent on the *same* diffs returned promptly for the orchestrator and "hung" for
 builders. The earlier "hung on large, returned on small" correlation was an artifact:
 the large cards happened to have builders dispatching in the teammate shape.
 
@@ -169,8 +181,8 @@ send it one message so it has that address.** Telling it to use `SendMessage` wi
 giving it somewhere to send is not sufficient.
 
 Evidence (2026-08-22 follow-up run): seven dispatches — three builders and four
-reviewers — all in the plain no-`name` shape. **7/7 returned normally**, reviewers in
-13–17 minutes, zero hangs, against 6/6 "hangs" in the run that used the teammate shape.
+reviewers — all in the plain no-`name` shape. **7/7 returned normally**, zero hangs,
+against 6/6 "hangs" in the run that used the teammate shape.
 
 #### Deadline protocol — the backstop (REQUIRED)
 
@@ -178,21 +190,30 @@ The contract above is the remedy; this is what catches a *genuine* stall. It sta
 force — it is what made the TASK-247 run fail loudly instead of silently self-reviewing
 — but it is no longer the first thing you reach for:
 
-1. **Note the wall-clock time when you dispatch.** Successful passes land in 13–17 min.
-   Anything past that is *silence*, which the contract above says to read as undelivered
-   findings first — the 40+ min "hangs" on record were all that, not stalls.
-2. **Deadline: 25 minutes.** Poll with `ScheduleWakeup`/short sleeps — do **not**
-   busy-spin. If it has not returned by the deadline, stop waiting and go to step 3.
-3. **First recovery — TRY RETRIEVAL, NOT RE-DISPATCH.** `SendMessage` to the agent's id
-   and ask it to deliver its findings. If it finished and could not hand them back, they
-   come straight out — that is the single most likely explanation, and it costs one
-   message. **Re-dispatching first is the expensive mistake:** it duplicates a review
-   that has already completed and doubles the stall on a 25-minute clock.
-4. **Second recovery — one fresh re-dispatch.** Only after retrieval comes back empty.
-   Launch a *new* `ax-code-reviewer` in the plain no-`name` shape with a **minimal,
-   self-contained prompt** (the diff range, the worktree path, the focus — nothing
-   else). Never re-send a long prompt. Same 25-minute deadline.
-5. **If the fresh dispatch also blows the deadline, fail LOUDLY — never quietly
+> **Calibration — do not treat a slow reviewer as a broken one.** An earlier version of
+> this section said "successful passes land in 13–17 min". **That baseline is retired:**
+> measured 2026-08-23, two reviews containing 4 and 7.5 minutes of actual work were
+> *delivered ~40 minutes apart*, and one of them was holding a real blocker. Delivery
+> lag dominates work time. **~40 min is normal.** An agent that reads 40 min as
+> pathological abandons live reviewers and re-dispatches finished work.
+
+1. **Note the wall-clock time when you dispatch.** Expect delivery around ~40 min;
+   nothing before that is evidence of anything. Get on with other work meanwhile.
+2. **First check-in at 25 minutes — RETRIEVE, DO NOT RE-DISPATCH.** `SendMessage` to
+   the agent's id and ask it to deliver its findings. If it finished and could not hand
+   them back, they come straight out — that is the single most likely explanation, and
+   it costs one message. **Re-dispatching first is the expensive mistake:** it
+   duplicates a review that has already completed and doubles the stall.
+3. **An empty retrieval is NOT a death certificate.** A reviewer still mid-work returns
+   nothing too, and the protocol cannot tell that from dead — so *empty* means *ask
+   again later*, not *escalate*. Retrieve again at ~40 min and once more at ~55.
+   Given the measured lag this is now the dominant case, and it is exactly where the
+   old "empty ⇒ re-dispatch" rule burned a finished review.
+4. **Hard deadline: ~55 minutes with two empty retrievals. Then ONE fresh
+   re-dispatch.** Launch a *new* `ax-code-reviewer` in the plain no-`name` shape with a
+   **minimal, self-contained prompt** (the diff range, the worktree path, the focus —
+   nothing else). Never re-send a long prompt. Retrieve it on the same schedule.
+5. **If the fresh dispatch also produces nothing, fail LOUDLY — never quietly
    self-review and call it clean:**
    - **Orchestrated mode:** return `reviewer: hung` in the handoff. auto-ship then
      orders an independent review pass **before** it merges (this is the mitigation
@@ -248,8 +269,14 @@ How this phase behaves depends on **mode**:
 
 ```bash
 gh pr view <n> --json mergeable,statusCheckRollup    # must be green + mergeable
-gh pr merge <n> --squash --delete-branch
+# No --delete-branch: your own branch is checked out in your worktree, so gh's
+# local-delete step fails and it exits 1 AFTER the merge landed — a successful merge
+# that reads as a failure. Assert success positively; treat cleanup as non-fatal.
+gh pr merge <n> --squash
+[ "$(gh pr view <n> --json state --jq .state)" = "MERGED" ] || { echo "MERGE-FAILED #<n>"; exit 1; }
+echo "MERGE-OK #<n>"
 git checkout main && git pull --ff-only
+git push origin --delete <branch> || echo "⚠ cleanup failed (non-fatal)"
 ```
 
 If the PR is **not mergeable** because `main` moved while you worked: check out

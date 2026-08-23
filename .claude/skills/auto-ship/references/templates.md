@@ -4,9 +4,20 @@
 
 Dispatch via `Agent` with `run_in_background: true`,
 `subagent_type: "general-purpose"`. Substitute `<TASK-ID>`, `<TASK-TITLE>`,
-`<TASK-BODY>` (the card's title + body from the board), `<short-slug>`, `<ITEM-ID>`
-(the card's project-item node id), `<PROGRESS-HELPER-PATH>` (absolute path to the
-`.claude/auto-ship-progress.sh` written at run start):
+`<TASK-BODY>`, `<short-slug>`, `<ITEM-ID>` (the card's project-item node id), and
+`<HEARTBEAT-PATH>` (**absolute** path to the `.claude/auto-ship-hb.sh` written at run
+start — agents CALL it, they never `source` it).
+
+**`<TASK-BODY>` is handed over, never looked up.** Paste the body inline, or write it
+to a local file and pass that path. **Never** tell a builder to read its card from the
+board. `gh project item-list` is **~102 GraphQL points**; under the mandatory 3-way
+parallelism that is ~306 points per dispatch round on a 5000/hr budget already shared
+with the poller, every heartbeat and the merge queue. This is arithmetic, not risk —
+one 2026-08-23 round hit **95/5000 remaining** immediately after dispatching three
+builders and all three had to be redirected mid-flight to local copies. You already
+hold every body in `$ITEMS` (`references/github-project.md` §3); re-fetching per
+builder buys nothing. The §2c run-start budget pre-flight refuses a round you cannot
+afford — heed it rather than dispatching and hoping.
 
 > You are shipping ONE card from this repo's "TO DO" project board, end to end,
 > under orchestration by auto-ship.
@@ -33,29 +44,41 @@ Dispatch via `Agent` with `run_in_background: true`,
 >   **not** a failure (it doesn't count as an attempt); auto-ship routes the card to the
 >   Needs Input lane for the human. Reserve it for genuine human-owned decisions, not
 >   technical unknowns you can resolve by reading the code.
-> - **Learn from what merged before you.** Your card body may carry a `Predecessor
->   learnings` block — lessons from same-epic cards merged ahead of you. Re-read your card
->   body (item `<ITEM-ID>`) at the start, fold those lessons into your plan, and if one
+> - **Learn from what merged before you.** Your card body above may carry a `Predecessor
+>   learnings` block — lessons from same-epic cards merged ahead of you. Read it at the
+>   start from the body you were handed — **do NOT run `gh project item-list`** to fetch
+>   it (~102 GraphQL points; three builders doing that exhausts the shared hourly
+>   budget). Fold those lessons into your plan, and if one
 >   invalidates this card's premise (the design was built differently than this card
 >   assumed), return `outcome: blocked` with the scope question instead of guessing. When
 >   you finish, return the lessons YOUR work creates for later tasks in the `learnings:`
 >   handoff field (and commit durable ones to `.claude/memory/` as usual).
 > - **Report progress live on your card.** This card is item `<ITEM-ID>`. At each
->   yolo-ship phase boundary, append a one-line heartbeat to its progress block —
->   in a SINGLE Bash call: `source <PROGRESS-HELPER-PATH> && append_progress
->   "<ITEM-ID>" "<line>"`. Use the per-phase lines in yolo-ship's **Progress
->   reporting** section; prefix exceptions (review findings, CI red, blocked) with
->   `⚠`. Best-effort: a failed progress write must NEVER block the ship. The helper
->   does the read-modify-write in shell — do not read the card body into your context.
+>   yolo-ship phase boundary, append a one-line heartbeat — in a SINGLE Bash call, and
+>   **CALL the wrapper, do NOT `source` it**:
+>   `<HEARTBEAT-PATH> "<ITEM-ID>" "<line>"`.
+>   The underlying helper is gitignored, so it is **not** in your worktree and a
+>   relative `source` exits 127 — do not hand-roll your own copy of it, the wrapper
+>   already solves this. Use the per-phase lines in yolo-ship's **Progress reporting**
+>   section; prefix exceptions (review findings, CI red, blocked) with `⚠`. It does the
+>   read-modify-write in shell — never read the card body into your context.
+>   **Best-effort but never silent:** a failed heartbeat must NEVER block the ship, and
+>   must NEVER go unreported — the wrapper prints `HEARTBEAT-FAILED(setup)` (broken all
+>   run) or `HEARTBEAT-FAILED(transient)` (rate limit / blip). Report which in the
+>   required `progress:` handoff field. Nothing machine-reads the progress block, so
+>   your handoff is the only way a dead heartbeat is ever noticed.
 > - **Dispatch `ax-code-reviewer` with NO `name`** (yolo-ship Phase 5 › dispatch
 >   contract, TASK-268). A `name` makes it an interactive teammate whose final text is
 >   never delivered to you — that, not diff size, is what every past "hang" was. Do not
 >   use `isolation: "worktree"` for a reviewer either: it would get a fresh worktree and
 >   review the wrong tree. Name your worktree path in the prompt. **If it goes silent,
 >   `SendMessage` it for its findings BEFORE re-dispatching** — the review is usually
->   already written, and re-dispatching first doubles the stall. Only then the deadline
->   protocol: one fresh re-dispatch, and if that also blows 25 minutes, still open the
->   PR but return `reviewer: hung` — auto-ship orders an independent pass before it
+>   already written, and re-dispatching first doubles the stall. **Reviewers are slow
+>   and slow is not dead:** measured 2026-08-23, reviews holding 4 and 7.5 min of work
+>   were delivered ~40 min apart, one carrying a real blocker. Expect ~40 min; an empty
+>   retrieval means *ask again later*, not *escalate*. Only after ~55 min and two empty
+>   retrievals do one fresh re-dispatch, and if that also produces nothing, still open
+>   the PR but return `reviewer: hung` — auto-ship orders an independent pass before it
 >   merges. **Never** substitute your own self-review and report `reviewer: clean`; a
 >   reviewer that produced no findings is `hung`, always.
 > - Otherwise follow yolo-ship exactly: worktree, self-answering brainstorm,
@@ -73,6 +96,11 @@ Dispatch via `Agent` with `run_in_background: true`,
 > reviewer: clean | hung | skipped-<reason>        # REQUIRED. "clean" ONLY if an
 >                                                  # ax-code-reviewer actually RETURNED
 >                                                  # and its findings are addressed.
+> progress: live | FAILED-<setup|transient>        # REQUIRED. Did your card heartbeat
+>                                                  # actually land? Never blocks the
+>                                                  # merge; journalled so a dead
+>                                                  # heartbeat surfaces within ONE card
+>                                                  # instead of a whole run.
 > signature: <normalized failure signature> | -    # required iff outcome=failed
 > needs-input: | -                                  # required iff outcome=blocked
 >   - <one question per line — a decision only a human can make>
@@ -111,9 +139,11 @@ Dispatch ONE at a time (serialized). Substitute as above:
 
 Dispatch ONE `general-purpose` agent **without** a worktree (board-only, no code).
 Substitute `<CANDIDATES>` — one `"<ITEM-ID> <TASK-ID>"` per line — and
-`<PROGRESS-HELPER-PATH>` (absolute path to `.claude/auto-ship-progress.sh`, which
-carries `set_needs_input`). The agent fetches bodies itself; do **not** paste bodies
-into the prompt.
+`<PROGRESS-HELPER-PATH>` (**absolute** path to `.claude/auto-ship-progress.sh`, which
+carries `set_needs_input`; this agent has no worktree and does `source` the raw helper,
+unlike the code-lane builders who call the `auto-ship-hb.sh` wrapper). The agent
+fetches bodies **one at a time by node id** (~1 point each), never via
+`gh project item-list` (~102 points); do **not** paste bodies into the prompt.
 
 > You are the **triage agent** for auto-ship. For each candidate card below, fetch its
 > body from the board and judge two things. Do NOT write code, open a worktree, or
@@ -235,7 +265,8 @@ loop-breakers read (and a resume rebuilds attempt history from).
 <HH:MM:SS>  <TASK-ID>  id-assigned [TASK-n]                  # triage gave an untagged card an ID
 <HH:MM:SS>  <TASK-ID>  triaged clean | needs-input | walk    # triage verdict; `clean` skips re-triage
 <HH:MM:SS>  dispatch · <TASK-ID> <TASK-ID> …
-<HH:MM:SS>  <TASK-ID>  pr-green #<n> mergeable=<y|n>
+<HH:MM:SS>  <TASK-ID>  pr-green #<n> mergeable=<y|n> progress=<live|FAILED-...>
+<HH:MM:SS>  <TASK-ID>  MERGE-OK #<n>                        # positive merge assertion; absence halts the queue
 <HH:MM:SS>  <TASK-ID>  merged #<n> -> main (ff)
 <HH:MM:SS>  <TASK-ID>  walk-pass | walk-fail
 <HH:MM:SS>  <TASK-ID>  failed attempt=<N> sig=<signature> parent=<id|-> depth=<d> [-> PARKED]
