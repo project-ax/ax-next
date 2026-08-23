@@ -25,6 +25,7 @@ import { Button } from '@/components/ui/button';
 import { SignInAgainButton } from '@/components/SignInAgainButton';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
+import { readAlertVariant } from '@/lib/read-register';
 import { isOpenDecision } from '@/lib/workspace-types';
 import { DecisionRow } from './DecisionRow';
 import {
@@ -225,13 +226,18 @@ export function TodayView({
           THE REGISTER FOLLOWS THE FACT. `destructive` is the red one and it
           says "something has gone wrong" — true of a blip, and not true of a
           session that simply ran out. Sitting the signed-out sentence in red
-          would contradict the sentence itself, and it would contradict the
-          in-thread card, which draws this same line in the neutral variant.
+          would contradict the sentence itself.
+
+          The branch this comment used to spell out inline now lives in
+          `readAlertVariant` (TASK-290), unchanged in behaviour: this page has
+          no automatic retry, so it passes no `retrying` and a blip is terminal
+          until the reader clicks — `destructive`. The clause about the
+          in-thread card came off: that card draws a SPENT retry budget red now
+          too, for the same reason this one does, and it stays neutral only
+          while an attempt is genuinely still coming — a state this page is
+          never in.
         */
-        <Alert
-          variant={error.kind === 'expired' ? 'default' : 'destructive'}
-          className="mb-4"
-        >
+        <Alert variant={readAlertVariant(error.kind)} className="mb-4">
           <AlertDescription className="flex flex-col items-start gap-2.5">
             {/*
               NOTHING RAW IS RENDERED HERE ANY MORE.
