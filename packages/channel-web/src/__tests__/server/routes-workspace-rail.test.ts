@@ -1116,6 +1116,47 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(body.counters.rows.find((r) => r.id === 'brought-to-you')?.value).toBe(2);
   });
 
+  it('says "unavailable" when this deployment has nothing that counts decisions', async () => {
+    // THE THIRD STATE, and the one the other two counter tests cannot reach.
+    // "We have no producer for this" is not "we asked and the read broke", and
+    // neither of them is "we asked and the answer was none" — the panel is
+    // rendered differently for each, and an unpinned branch on that
+    // distinction is what the rest of this rail's defect family is made of.
+    registerPolicy();
+    // No decisions producer of any kind.
+    const body = (await railFor()).body as AgentRailData;
+    // Exhaustive rather than `toMatchObject`: `rows: []` is half the claim, and
+    // "there is no row here at all" is precisely what stops a zero being drawn.
+    expect(body.counters).toEqual({
+      status: 'unavailable',
+      rows: [],
+      windowDays: COUNTER_WINDOW_DAYS,
+    });
+  });
+
+  it('reads unavailable off the COUNTING hook, not off @ax/decisions being present', async () => {
+    // The guard has to name the hook the counter actually calls. A route that
+    // gated on `decisions:list` — as this one did until TASK-266 — and then
+    // called `decisions:count` would sail past the guard into a throw, and the
+    // person would be told the read FAILED in a deployment where nothing was
+    // ever going to answer it. Registering the sibling hook and no counter is
+    // the only arrangement that tells those two apart.
+    registerPolicy();
+    bus.registerService('decisions:list', 'decisions', async () => {
+      listCalls += 1;
+      return { decisions: [] };
+    });
+    const body = (await railFor()).body as AgentRailData;
+
+    expect(body.counters).toEqual({
+      status: 'unavailable',
+      rows: [],
+      windowDays: COUNTER_WINDOW_DAYS,
+    });
+    // And it did not go looking for an answer in the other hook on the way.
+    expect(listCalls).toBe(0);
+  });
+
   it('says the counter read failed rather than showing a zero', async () => {
     registerPolicy();
     bus.registerService('decisions:count', 'decisions', async () => {

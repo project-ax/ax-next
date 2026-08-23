@@ -196,42 +196,70 @@ describe('decisions store — scoping', () => {
  * "any status" was seven reads, each of which swept the expiry table first.
  */
 describe('decisions store — counting a window', () => {
-  it('counts every status inside the window and nothing outside it', async () => {
-    const s = await freshStore();
-    // One of each of the seven, all raised inside the window. If a status is
-    // ever added to the union, this list stops being exhaustive — and the
-    // count does NOT, which is the point: nothing here enumerates them.
-    for (const status of DecisionStatusSchema.options) {
-      await s.create(base({ id: `dec_${status}`, status, callFingerprint: `fp-${status}` }));
-    }
-    // Raised before the window opened. Same owner, same agent, still not the
-    // answer to "in the last seven days".
-    await s.create(
-      base({ id: 'dec_old', createdAt: '2026-08-01T09:00:00.000Z', callFingerprint: 'fp-old' }),
-    );
+  /**
+   * BOTH IMPLEMENTATIONS, seeded identically and asked the same question.
+   *
+   * `fake-store.ts` carries a second copy of `count`'s predicates so the
+   * pre-call, expiry and replay suites can run without Postgres — and two
+   * copies of a rule drift. TASK-254 is the precedent: reverting only the REAL
+   * store's predicate left all 33 pre-call tests green, because they run on the
+   * fake. This card already produced a smaller instance of the same thing (the
+   * fake first compared ISO instants as strings, where the query compares
+   * them as instants), which is why the fake is driven here rather than trusted
+   * to mirror.
+   */
+  async function bothStores(seed: (s: DecisionStore) => Promise<void>): Promise<DecisionStore[]> {
+    const stores = [await freshStore(), createFakeStore()];
+    for (const s of stores) await seed(s);
+    return stores;
+  }
 
-    expect(await s.count({ ownerUserId: 'u1', agentId: 'a1', since: '2026-08-19T09:00:00.000Z' })).toBe(
-      DecisionStatusSchema.options.length,
-    );
+  it('counts every status inside the window and nothing outside it', async () => {
+    const stores = await bothStores(async (s) => {
+      // One of each of the seven, all raised inside the window. If a status is
+      // ever added to the union, this list stops being exhaustive — and the
+      // count does NOT, which is the point: nothing here enumerates them.
+      for (const status of DecisionStatusSchema.options) {
+        await s.create(base({ id: `dec_${status}`, status, callFingerprint: `fp-${status}` }));
+      }
+      // Raised before the window opened. Same owner, same agent, still not the
+      // answer to "in the last seven days".
+      await s.create(
+        base({ id: 'dec_old', createdAt: '2026-08-01T09:00:00.000Z', callFingerprint: 'fp-old' }),
+      );
+    });
+
+    for (const s of stores) {
+      expect(
+        await s.count({ ownerUserId: 'u1', agentId: 'a1', since: '2026-08-19T09:00:00.000Z' }),
+      ).toBe(DecisionStatusSchema.options.length);
+    }
   });
 
   it('takes the window boundary as inclusive — a decision raised ON it is in', async () => {
-    const s = await freshStore();
-    await s.create(base({ id: 'dec_edge', createdAt: T0 }));
-    expect(await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 })).toBe(1);
-    expect(await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T_SOON })).toBe(0);
+    const stores = await bothStores(async (s) => {
+      await s.create(base({ id: 'dec_edge', createdAt: T0 }));
+    });
+
+    for (const s of stores) {
+      expect(await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 })).toBe(1);
+      expect(await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T_SOON })).toBe(0);
+    }
   });
 
   it('counts one owner and one agent — never somebody else\'s row', async () => {
-    const s = await freshStore();
-    await s.create(base({ id: 'dec_mine' }));
-    await s.create(base({ id: 'dec_theirs', ownerUserId: 'u2', callFingerprint: 'fp-2' }));
-    await s.create(base({ id: 'dec_other_agent', agentId: 'a2', callFingerprint: 'fp-3' }));
+    const stores = await bothStores(async (s) => {
+      await s.create(base({ id: 'dec_mine' }));
+      await s.create(base({ id: 'dec_theirs', ownerUserId: 'u2', callFingerprint: 'fp-2' }));
+      await s.create(base({ id: 'dec_other_agent', agentId: 'a2', callFingerprint: 'fp-3' }));
+    });
 
-    expect(await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 })).toBe(1);
-    // No agent named is a wider question, deliberately: everything this person
-    // was asked, across the roster. Still only this person.
-    expect(await s.count({ ownerUserId: 'u1', since: T0 })).toBe(2);
+    for (const s of stores) {
+      expect(await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 })).toBe(1);
+      // No agent named is a wider question, deliberately: everything this
+      // person was asked, across the roster. Still only this person.
+      expect(await s.count({ ownerUserId: 'u1', since: T0 })).toBe(2);
+    }
   });
 
   it('gives the same answer either side of a sweep — expiry cannot move it', async () => {
@@ -241,24 +269,28 @@ describe('decisions store — counting a window', () => {
     // A count over a `created_at` window that names no status therefore cannot
     // observe the difference — so sweeping before it would buy nothing and
     // cost a table write on every render of the rail.
-    const s = await freshStore();
-    await s.create(base({ id: 'dec_due', createdAt: T0, expiresAt: T0 }));
+    const stores = await bothStores(async (s) => {
+      await s.create(base({ id: 'dec_due', createdAt: T0, expiresAt: T0 }));
+    });
 
-    const before = await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 });
-    expect(await s.expireDue(T_LATE)).toBe(1);
-    expect((await s.get('dec_due'))!.status).toBe('expired');
-    const after = await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 });
+    for (const s of stores) {
+      const before = await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 });
+      expect(await s.expireDue(T_LATE)).toBe(1);
+      expect((await s.get('dec_due'))!.status).toBe('expired');
+      const after = await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 });
 
-    expect(before).toBe(1);
-    expect(after).toBe(before);
+      expect(before).toBe(1);
+      expect(after).toBe(before);
+    }
   });
 
   it('answers zero for a person who was never asked anything', async () => {
     // Zero is a real answer here and has to be distinguishable from a failure;
     // the rail renders the two differently and this is the read that has to be
     // able to say the first one.
-    const s = await freshStore();
-    expect(await s.count({ ownerUserId: 'u-nobody', agentId: 'a1', since: T0 })).toBe(0);
+    for (const s of await bothStores(async () => {})) {
+      expect(await s.count({ ownerUserId: 'u-nobody', agentId: 'a1', since: T0 })).toBe(0);
+    }
   });
 });
 
