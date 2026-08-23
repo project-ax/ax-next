@@ -282,9 +282,12 @@ export type HostToolFlush = Omit<FlushResult, 'parentVersion'>;
  * loops use for a flush that threw — that is not a commit-notify outcome, so it
  * lives here rather than in the type.
  *
- * When the host stated a reason, we say what it was and tell the model the
- * commit was rolled back, because "please try again" is useless advice against
- * a policy veto — the identical retry gets vetoed identically.
+ * When the host stated a reason we say what it was, and we drop the "please try
+ * again" tail: against a policy veto the identical retry is vetoed identically.
+ * We do NOT replace it with "fix this and retry" either — the same branch also
+ * carries a re-sync-exhausted rejection, which the agent cannot fix and which a
+ * plain retry may well clear. The reason is the payload; what to do with it is
+ * the model's call.
  */
 export function flushPreconditionMessage(
   toolName: string,
@@ -296,7 +299,7 @@ export function flushPreconditionMessage(
   if (flush.rejectionReason !== undefined && flush.rejectionReason !== '') {
     return (
       `${head} The host refused the change: ${flush.rejectionReason} ` +
-      `The turn's commit was rolled back — address that objection before retrying.`
+      `The turn's commit was rolled back.`
     );
   }
   return `${head} The files are not visible to the installer yet — please try again.`;
