@@ -93,10 +93,14 @@ export interface InboxLoopEntry {
 export interface InboxLoop {
   /**
    * Resolves when the next non-timeout entry arrives. On `user-message`,
-   * the entry carries the decoded payload. On `cancel`, no payload.
+   * the entry carries the decoded payload. On `cancel`, no payload. On
+   * `decision-resolved`, the decision id, outcome, and host-authored note.
    *
    * Rejects on terminal errors from the underlying client (e.g.
-   * SessionInvalidError, or HostUnavailableError after maxRetries).
+   * SessionInvalidError, HostUnavailableError after maxRetries, or an
+   * `IpcRequestError('INTERNAL', 0, …)` from response-schema validation —
+   * that last one is what makes the unknown-delivery branch below
+   * unreachable on the real wire, so it is load-bearing here).
    */
   next(): Promise<InboxLoopEntry>;
   /** Current cursor — the next value we'll send on the wire. */
@@ -199,11 +203,15 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
       //     for it (status 0 is not >= 500, and it is not a transient errno),
       //     so it propagates straight out of `callGet` and out of `next()`.
       //     Nothing the runner's own client hands us can land here.
-      //   - Version skew cannot manufacture one either. `container/agent/
-      //     Dockerfile` builds ONE image shared by the host pod and the
-      //     per-session runner pods, and the helm chart sets `K8S_POD_IMAGE`
-      //     from the same `ax-next.image` helper as the host container's own
-      //     `image:`. There is no unrebuilt-runner fleet to be kind to.
+      //   - Version skew cannot manufacture one either. Strictly this is
+      //     belt-and-braces — the check above already covers it, since the
+      //     runner validates against ITS OWN schema no matter who sent the
+      //     body — but it is recorded here so nobody re-derives it:
+      //     `container/agent/Dockerfile` builds ONE image shared by the host
+      //     pod and the per-session runner pods, and the helm chart sets
+      //     `K8S_POD_IMAGE` from the same `ax-next.image` helper as the host
+      //     container's own `image:`. There is no unrebuilt-runner fleet to
+      //     be kind to.
       //
       // What it IS: a soft landing for a caller whose client does not
       // validate — a hand-rolled one, or a future transport that skips the
