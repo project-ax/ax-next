@@ -23,6 +23,10 @@ import {
   type WorkspaceAgent,
 } from '@/lib/workspace-api';
 import { AgentView } from '../AgentView';
+import {
+  DECISION_SESSION_EXPIRED,
+  DECISION_THREAD_READ_FAILED,
+} from '../decision-copy';
 import { rail as railFixture } from './rail-fixture';
 
 vi.mock('@/lib/workspace-api', async () => {
@@ -62,6 +66,7 @@ function detail(over: Partial<AgentDetail> = {}): AgentDetail {
     agent: quill,
     conversationId: 'c-now',
     thread: [{ kind: 'user', id: 't1', text: 'what is on today' }],
+    decisions: { status: 'ok' },
     past: [],
     memory: [],
     ...over,
@@ -93,6 +98,7 @@ function renderView(over: Partial<ComponentProps<typeof AgentView>> = {}) {
       activity={[]}
       agents={[quill]}
       onBack={vi.fn()}
+      decisionsError={null}
       version={0}
       onChanged={vi.fn()}
       {...over}
@@ -254,5 +260,171 @@ describe('the "What it did" tab', () => {
 
     expect(await screen.findByText(/could not load the record/i)).toBeTruthy();
     expect(screen.queryByText(/Nothing recorded yet/)).toBeNull();
+  });
+});
+
+/*
+  The approval notice.
+
+  The panel shows approval cards by POINTER: the server decides which of this
+  conversation's decisions are still open, and the shell's queue carries the
+  rows those pointers name. Either read can fail, and when one does the thread
+  simply comes up short — which on this surface is a sentence: "nothing is
+  waiting on you." These tests exist because that sentence was being said by
+  accident, from both sides.
+*/
+describe('AgentView — the approval read', () => {
+  it('says we could not check, rather than showing a thread with no cards', async () => {
+    agentMock.mockResolvedValue(detail({ decisions: { status: 'failed' } }));
+
+    renderView();
+
+    // The reader is told the panel does not know. Before this, an unreadable
+    // approval set and a conversation with nothing waiting in it looked
+    // identical on screen.
+    expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
+    // And the panel stays up around it — losing the approval read costs the
+    // cards, never the transcript.
+    expect(screen.getByText('what is on today')).toBeTruthy();
+  });
+
+  it('offers a retry that actually re-reads', async () => {
+    const onChanged = vi.fn();
+    agentMock.mockResolvedValue(detail({ decisions: { status: 'failed' } }));
+
+    renderView({ onChanged });
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Try again' }));
+    // `onChanged` is the one call that re-pulls BOTH reads behind the notice:
+    // the shell's queue, and this panel's own detail. A notice whose button
+    // swallowed the click would be worse than no button at all.
+    await waitFor(() => expect(onChanged).toHaveBeenCalled());
+  });
+
+  it('stays quiet when this deployment has no decisions producer at all', async () => {
+    agentMock.mockResolvedValue(detail({ decisions: { status: 'unavailable' } }));
+
+    renderView();
+
+    expect(await screen.findByText('what is on today')).toBeTruthy();
+    // `unavailable` is not a failure. Nothing can raise a decision here, so a
+    // thread with no approval cards is COMPLETE — and a notice would have the
+    // panel cast doubt on a thread it can vouch for.
+    expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull();
+  });
+
+  it('describes the EXCERPT on screen, not the conversation behind it', async () => {
+    // The current conversation read fine; the past one we are looking at did
+    // not. A notice taken off the current conversation would call this excerpt
+    // trustworthy, and a reader deciding whether anything is waiting in it
+    // would be reading an answer about a different thread.
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) =>
+      conversationId === 'c-old'
+        ? detail({
+            conversationId: 'c-old',
+            thread: [{ kind: 'user', id: 'o1', text: 'the March question' }],
+            decisions: { status: 'failed' },
+          })
+        : detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] }),
+    );
+
+    renderView();
+
+    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
+
+    expect(await screen.findByText('the March question')).toBeTruthy();
+    expect(screen.getByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
+  });
+
+  it('retries the EXCERPT too, not just the current conversation', async () => {
+    let excerptFails = true;
+    agentMock.mockImplementation(async (_id: string, conversationId?: string) =>
+      conversationId === 'c-old'
+        ? detail({
+            conversationId: 'c-old',
+            thread: [{ kind: 'user', id: 'o1', text: 'the March question' }],
+            decisions: { status: excerptFails ? 'failed' : 'ok' },
+          })
+        : detail({ past: [{ id: 'c-old', title: 'March', meta: 'last week' }] }),
+    );
+
+    renderView();
+    fireEvent.click(await screen.findByRole('button', { name: 'March' }));
+    expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
+
+    // The read recovers, and the reader presses the button we gave them.
+    excerptFails = false;
+    fireEvent.click(screen.getByRole('button', { name: 'Try again' }));
+
+    /*
+      The excerpt has its OWN read, and the shell's `version` bump does not
+      reach it — that effect keys on `[agentId, pastId, pastReload]` so a stray
+      approval elsewhere cannot blank an open excerpt back to "Opening…". So a
+      retry wired only to `onChanged` re-read everything EXCEPT the read the
+      notice was reporting, and the notice could never clear: the only way out
+      was "Back to current" and reopening.
+    */
+    await waitFor(() =>
+      expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull(),
+    );
+  });
+
+  it('offers a sign-in, not a retry, when the session ran out', async () => {
+    agentMock.mockResolvedValue(detail({ decisions: { status: 'ok' } }));
+
+    renderView({
+      decisions: [],
+      decisionsError: { kind: 'expired', detail: 'workspace /decisions \u2192 401' },
+    });
+
+    /*
+      A 401 is not a blip. Every retry returns the same 401 until the reader
+      signs in, so "Try again" here would be a button that cannot work — and
+      "we could not read the approvals" would apologise for a failure that did
+      not happen. The same line TASK-276 drew on Today and on the in-thread
+      card; this surface has to draw it too or it becomes the one place that
+      still points at the dead button.
+    */
+    expect(await screen.findByText(DECISION_SESSION_EXPIRED)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Sign in' })).toBeTruthy();
+    expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull();
+    expect(screen.queryByRole('button', { name: 'Try again' })).toBeNull();
+  });
+
+  it('lets an expired session outrank a failed server read', async () => {
+    agentMock.mockResolvedValue(detail({ decisions: { status: 'failed' } }));
+
+    renderView({
+      decisions: [],
+      decisionsError: { kind: 'expired', detail: 'workspace /decisions \u2192 401' },
+    });
+
+    // Both are true at once and only one is worth telling them: signed out is
+    // the fact that explains the other and the only one they can act on.
+    expect(await screen.findByText(DECISION_SESSION_EXPIRED)).toBeTruthy();
+    expect(screen.queryByText(DECISION_THREAD_READ_FAILED)).toBeNull();
+  });
+
+  it('says it when the QUEUE read failed, even though the server read was fine', async () => {
+    agentMock.mockResolvedValue(
+      detail({
+        decisions: { status: 'ok' },
+        thread: [
+          { kind: 'user', id: 't1', text: 'what is on today' },
+          { kind: 'approval', id: 'decision-d1', decisionId: 'd1' },
+        ],
+      }),
+    );
+
+    // The rows those pointers name never arrived, so the card renders nothing.
+    // Without the notice this thread reads exactly like a settled one — the
+    // client-side half of the same lie, and the half the shell used to cause
+    // by passing the queue's rows down here without its error.
+    renderView({
+      decisions: [],
+      decisionsError: { kind: 'failed', detail: 'workspace /decisions → 503' },
+    });
+
+    expect(await screen.findByText(DECISION_THREAD_READ_FAILED)).toBeTruthy();
   });
 });

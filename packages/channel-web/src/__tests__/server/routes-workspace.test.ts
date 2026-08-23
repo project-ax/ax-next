@@ -2838,16 +2838,22 @@ describe('channel-web agent-workspace BFF', () => {
       const h = makeWorkspaceHandlers({ bus, initCtx });
       const { res, captured } = mkRes();
       await h.agentDetail(mkReq({ agentId: 'a1' }), res);
-      const body = captured.body as { thread: Array<Record<string, unknown>> };
+      const body = captured.body as {
+        thread: Array<Record<string, unknown>>;
+        decisions: unknown;
+      };
       expect(body.thread.map((m) => m.kind)).toEqual(['user', 'approval', 'approval']);
       expect(body.thread.slice(1)).toEqual([
         { kind: 'approval', id: 'decision-earlier', decisionId: 'earlier' },
         { kind: 'approval', id: 'decision-later', decisionId: 'later' },
       ]);
       // The card is a POINTER. The row itself arrives from the queue's one
-      // producer; a copy here would be the second one.
+      // producer; a copy here would be the second one. `decisions` on the
+      // response is that read's STATUS and nothing else — asserting the whole
+      // object, not just its status, is what keeps a rows array from being
+      // quietly added beside it later.
       expect(JSON.stringify(body.thread)).not.toContain('the drafted reply');
-      expect(Object.keys(body)).not.toContain('decisions');
+      expect(body.decisions).toEqual({ status: 'ok' });
     });
 
     it('leaves a resolved decision out of the thread', async () => {
@@ -2871,7 +2877,7 @@ describe('channel-web agent-workspace BFF', () => {
       expect(body.thread.map((m) => m.kind)).toEqual(['user']);
     });
 
-    it('degrades to a thread with no cards when the decisions read fails', async () => {
+    it('reports a FAILED approval read instead of a thread that looks settled', async () => {
       registerAuth({ id: 'u1', isAdmin: false });
       seedThread();
       bus.registerService('decisions:list', 'decisions', async () => {
@@ -2880,12 +2886,48 @@ describe('channel-web agent-workspace BFF', () => {
       const h = makeWorkspaceHandlers({ bus, initCtx });
       const { res, captured } = mkRes();
       await h.agentDetail(mkReq({ agentId: 'a1' }), res);
-      // Losing this read costs a card. The decision is still in the queue,
-      // which has its own route; taking the whole panel down would cost the
-      // transcript too.
+      const body = captured.body as {
+        thread: Array<Record<string, unknown>>;
+        decisions: unknown;
+      };
+
+      // Losing this read still costs only the CARDS. The decision is reachable
+      // through the queue's own route, and taking the whole panel down over it
+      // would cost the reader the transcript as well.
       expect(captured.statusCode).toBe(200);
-      const body = captured.body as { thread: Array<Record<string, unknown>> };
       expect(body.thread.map((m) => m.kind)).toEqual(['user']);
+
+      // And it costs them OUT LOUD. This is the assertion the test that used
+      // to sit here was missing: without it the response is byte-for-byte a
+      // conversation with nothing waiting in it, and the panel renders that
+      // reading — "nothing is waiting on you" — over a read that never came
+      // back. The 200 and the one-user thread above are both still true after
+      // the fix, so on their own they guard nothing.
+      expect(body.decisions).toEqual({ status: 'failed' });
+    });
+
+    it('reports UNAVAILABLE, not failed, when no decisions producer is registered', async () => {
+      registerAuth({ id: 'u1', isAdmin: false });
+      seedThread();
+      // No `registerReads()`: this is a deployment without @ax/decisions, so
+      // `decisions:list` is not a service anybody offers.
+      const h = makeWorkspaceHandlers({ bus, initCtx });
+      const { res, captured } = mkRes();
+      await h.agentDetail(mkReq({ agentId: 'a1' }), res);
+      const body = captured.body as {
+        thread: Array<Record<string, unknown>>;
+        decisions: unknown;
+      };
+      expect(captured.statusCode).toBe(200);
+      expect(body.thread.map((m) => m.kind)).toEqual(['user']);
+
+      // A DIFFERENT fact from the one above, and it has to stay different.
+      // Nothing can raise a decision here, so a thread with no approval cards
+      // is complete rather than short — the panel can vouch for it, and a
+      // `failed` answer would have it apologise for a thread that is fine.
+      // The same distinction the queue route already draws when it answers
+      // `[]` for a deployment without the plugin.
+      expect(body.decisions).toEqual({ status: 'unavailable' });
     });
   });
 });
