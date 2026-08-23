@@ -572,14 +572,16 @@ export type ConversationStoreRunnerSessionResponse = z.infer<
 // it is NOT Zod-validated at the protocol layer. The server-side parsing
 // of that query string is the IPC server's responsibility.
 //
-// Only the response body is protocol-level — the three variants are what
-// the sandbox inbox loop branches on.
+// Only the response body is protocol-level — the four variants are what
+// the sandbox inbox loop branches on. (`decision-resolved` joined the
+// original three in TASK-227.)
 //
 // Cursor semantics: the response `cursor` is the NEXT cursor the client
-// should request. On `user-message` / `cancel` it's the index of the
-// delivered entry + 1; on `timeout` it's the cursor the client sent
-// (echo — no entry was delivered, so no advancement). The sandbox inbox
-// loop stores this value verbatim and passes it back on the next GET.
+// should request. On a real delivery (`user-message` / `cancel` /
+// `decision-resolved`) it's the index of the delivered entry + 1; on
+// `timeout` it's the cursor the client sent (echo — no entry was
+// delivered, so no advancement). The sandbox inbox loop stores this value
+// verbatim and passes it back on the next GET.
 // ---------------------------------------------------------------------------
 
 // ---------------------------------------------------------------------------

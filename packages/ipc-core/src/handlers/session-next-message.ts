@@ -19,8 +19,18 @@ import type { HandlerResult } from './types.js';
 // by HTTP's and our body-reader's contract), so we validate it by hand.
 //
 // `session:claim-work` owns the actual wait. Its response matches the
-// SessionNextMessageResponseSchema directly (three-variant discriminated
-// union keyed on `type`).
+// SessionNextMessageResponseSchema directly — a FOUR-variant discriminated
+// union keyed on `type`: `user-message`, `cancel`, `timeout`, and
+// `decision-resolved` (the fourth arrived with TASK-227).
+//
+// We re-validate that response below before returning it. That check is the
+// host's own OUTBOUND drift guard, and it shares one constant with the
+// runner's INBOUND check in @ax/ipc-protocol's client — which is why the
+// union has to stay strict. Relaxing it with a catch-all arm to make unknown
+// types tolerable on the client side would blind this guard at the same time,
+// shipping a genuinely malformed `session:claim-work` answer to the runner
+// instead of catching it here. If tolerance is ever wanted, it belongs on a
+// client-only schema, split out from this one.
 // ---------------------------------------------------------------------------
 
 /**
