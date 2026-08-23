@@ -12,7 +12,7 @@
  * only care about chunk parsing.
  */
 import { afterEach, beforeEach, describe, it, test, expect, vi } from 'vitest';
-import { HttpError, HTTP_FAILED, HTTP_NO_ACCESS } from '../lib/http';
+import { HttpError, HTTP_NO_ACCESS, HTTP_SERVER_ERROR } from '../lib/http';
 import {
   AxChatTransport,
   toContentBlocksForTesting,
@@ -1056,7 +1056,7 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
       );
     expect(err).toBeInstanceOf(HttpError);
     expect((err as HttpError).status).toBe(500);
-    expect((err as HttpError).message).toBe(HTTP_FAILED);
+    expect((err as HttpError).message).toBe(HTTP_SERVER_ERROR);
     // The bug in one line: no status, no path, no reason-phrase on screen.
     expect((err as HttpError).message).not.toMatch(/500|chat-flow|Internal/);
   });

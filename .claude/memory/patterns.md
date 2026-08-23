@@ -837,3 +837,8 @@ Related walk techniques that paid off:
 - **Deferred, still open:** the ~40 admin/settings surfaces (group B),
   `lib/title-events.ts` 401-reconnect storm, and the silent-on-401 paths
   (`SessionRow` DELETE never checks `res.ok`).
+- **Copy split that matters:** `httpErrorMessage(status)` only ever sees a real
+  response, so `>= 500` returns `HTTP_SERVER_ERROR` ("the server ran into a
+  problem"). `HTTP_FAILED` ("we could not reach the server") is reserved for
+  `userFacingMessage`'s non-`HttpError` fallback — the case where there was no
+  response at all. Conflating them sends people to check their wifi over our bug.

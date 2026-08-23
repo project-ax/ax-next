@@ -57,14 +57,30 @@ export const HTTP_NO_ACCESS = 'This account does not have access to that.';
 export const HTTP_NOT_FOUND = 'We could not find that. It may have been deleted.';
 export const HTTP_UNAVAILABLE =
   'That part of the app is not running in this deployment.';
+/**
+ * A 5xx is the server telling us it broke. It is NOT the same event as not
+ * reaching one, and conflating them sends someone to check their wifi over a
+ * bug on our side.
+ */
+export const HTTP_SERVER_ERROR =
+  'The server ran into a problem. Please try again.';
+/** We never got an answer at all — offline, DNS, a connection that died. */
 export const HTTP_FAILED = 'We could not reach the server just now.';
 
-/** Status → the sentence a reader gets. Unknown statuses fall back to `HTTP_FAILED`. */
+/**
+ * Status → the sentence a reader gets.
+ *
+ * Everything reaching here came back from a real response, so the 5xx band
+ * gets its own sentence. `HTTP_FAILED` stays the fallback for a status we have
+ * no words for, and is what `userFacingMessage` uses when there was no
+ * response to read a status from.
+ */
 export function httpErrorMessage(status: number): string {
   if (status === 401) return HTTP_SESSION_ENDED;
   if (status === 403) return HTTP_NO_ACCESS;
   if (status === 404) return HTTP_NOT_FOUND;
   if (status === 503) return HTTP_UNAVAILABLE;
+  if (status >= 500) return HTTP_SERVER_ERROR;
   return HTTP_FAILED;
 }
 

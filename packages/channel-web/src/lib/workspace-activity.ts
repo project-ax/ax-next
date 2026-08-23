@@ -13,6 +13,7 @@
  * exactly that.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { userFacingMessage } from './http';
 import { workspaceApi } from './workspace-api';
 import type { ActivityEvent } from './workspace-types';
 
@@ -73,7 +74,10 @@ export function useActivityFeed(agentId?: string): ActivityFeedState {
           setError(null);
         } catch (e) {
           if (requestId.current !== id) return;
-          setError(e instanceof Error ? e.message : String(e));
+          // Its two siblings (`workspace-rail`, `workspace-files`) already go
+          // through this; leaving one raw is how `Failed to fetch` reaches a
+          // reader from the one path nobody converted.
+          setError(userFacingMessage(e, 'workspace-activity'));
         } finally {
           if (requestId.current === id) setLoading(false);
         }

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
-import { HTTP_FAILED } from '../lib/http';
+import { HTTP_SERVER_ERROR } from '../lib/http';
 import { PermissionCard } from '../components/PermissionCard';
 import {
   getPermissionCardSnapshot,
@@ -534,7 +534,7 @@ describe('PermissionCard — host grant (TASK-37)', () => {
       only thing the person gets. What matters is that the failure is SAID and
       the card stays open to retry; the status goes to the console.
     */
-    expect(await screen.findByText(HTTP_FAILED)).toBeInTheDocument();
+    expect(await screen.findByText(HTTP_SERVER_ERROR)).toBeInTheDocument();
     // Still pending — the user can retry.
     expect(getPermissionCardSnapshot().request).not.toBeNull();
   });

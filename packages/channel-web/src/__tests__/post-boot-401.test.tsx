@@ -23,9 +23,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from '../App';
+import { FirstRunAutoCreate } from '../components/onboard/FirstRunAutoCreate';
+import { autoCreateBareAgent } from '../lib/auto-create-agent';
 import { LoginPage, SIGN_IN_FAILED } from '../components/LoginPage';
 import {
   HTTP_FAILED,
+  HTTP_SERVER_ERROR,
   HTTP_SESSION_ENDED,
   HttpError,
   httpErrorMessage,
@@ -154,6 +157,21 @@ describe('lib/http — what a failed request is allowed to say', () => {
   it('falls back to the generic sentence for a status it has no words for', () => {
     expect(httpErrorMessage(418)).toBe(HTTP_FAILED);
   });
+
+  /*
+    A 500 means the server WAS reached and broke. Telling someone we could not
+    reach it sends them to check their wifi over a bug on our side.
+  */
+  it.each([500, 502, 504])('does not blame the network for a %i', (status) => {
+    expect(httpErrorMessage(status)).toBe(HTTP_SERVER_ERROR);
+    expect(httpErrorMessage(status)).not.toBe(HTTP_FAILED);
+  });
+
+  it('keeps 503 distinct from the rest of the 5xx band', () => {
+    // "no workspace backend in this deployment" is not "the server broke",
+    // and `workspace-files.ts` branches on exactly that difference.
+    expect(httpErrorMessage(503)).not.toBe(HTTP_SERVER_ERROR);
+  });
 });
 
 describe('App — a post-boot 401 returns to the sign-in page', () => {
@@ -250,6 +268,64 @@ describe('LoginPage — the sign-in button has a failure path', () => {
     signInMock.mockResolvedValueOnce(undefined);
     fireEvent.click(btn);
     await waitFor(() => expect(screen.queryByText(SIGN_IN_FAILED)).toBeNull());
+  });
+});
+
+/*
+  The second half of the fix, and the one with a user-visible wrong answer if
+  the ordering is off.
+
+  `FirstRunAutoCreate` catches a failed bootstrap and offers
+  "give it another go". On a dead session that retry can never work — every
+  attempt returns the same 401 — so it is a button that lies. The latch fires
+  inside `httpFetch`, on the response, BEFORE `autoCreateBareAgent` throws and
+  therefore before that catch runs, so `App` has already swapped to
+  `<LoginPage />` by the time the retry copy would render.
+
+  The harness below is `App`'s own ordering (`App.tsx:208-210`: the
+  `sessionExpired` check sits above `<AppContent />`, which is what mounts
+  `FirstRunAutoCreate`), reproduced around the real component so the assertion
+  is about the components and not about a mock of them.
+*/
+describe('first-run agent create on a dead session', () => {
+  function Gate({ children }: { children: React.ReactNode }) {
+    return useSessionExpired() ? <LoginPage /> : <>{children}</>;
+  }
+
+  it('throws with the status and latches, rather than reporting a retryable blip', async () => {
+    globalThis.fetch = (async () => res(401)) as unknown as typeof fetch;
+    await expect(autoCreateBareAgent('Scout')).rejects.toMatchObject({
+      status: 401,
+    });
+    expect(getSessionExpired()).toBe(true);
+  });
+
+  it('lands on the sign-in page instead of offering a retry that cannot work', async () => {
+    globalThis.fetch = (async () => res(401)) as unknown as typeof fetch;
+    render(
+      <Gate>
+        <FirstRunAutoCreate agentName="Scout" onDone={() => undefined} />
+      </Gate>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText(/Sign in with Google/i)).toBeTruthy(),
+    );
+    expect(screen.queryByText(/give it another go/i)).toBeNull();
+  });
+
+  /*
+    …and the retry copy is still right for a failure that IS retryable, which
+    is the half a latch-everything rule would have broken.
+  */
+  it('still offers the retry when the bootstrap fails for a reason retrying could fix', async () => {
+    globalThis.fetch = (async () => res(500)) as unknown as typeof fetch;
+    render(
+      <Gate>
+        <FirstRunAutoCreate agentName="Scout" onDone={() => undefined} />
+      </Gate>,
+    );
+    expect(await screen.findByText(/give it another go/i)).toBeTruthy();
+    expect(screen.queryByText(/Sign in with Google/i)).toBeNull();
   });
 });
 
