@@ -6,8 +6,13 @@
  * (a whole-queue outage and a single thread's outage are not the same claim —
  * `DECISION_THREAD_READ_FAILED` in `decision-copy.ts` argues at length against
  * sharing strings between surfaces that know different things), while the
- * register has to be the SAME everywhere or a reader learns that red means
- * nothing.
+ * register has to be the same for the same STATE or a reader learns that red
+ * means nothing.
+ *
+ * WHAT THIS GOVERNS, EXACTLY: an alert that REPORTS A FAILED READ. That is a
+ * narrower claim than "every alert in the app", and the narrowing is load
+ * bearing rather than a hedge — see the third clause below, which names the
+ * surface that would otherwise falsify this file.
  *
  * WHY THIS FILE EXISTS. Three surfaces drew the same two facts in two different
  * registers: `TodayView` and `AgentConversation` painted a failed read
@@ -51,6 +56,38 @@
  *     decisions surface produces this kind today. It is here because
  *     `AgentView` needs it next, and a kind invented at the call site is how a
  *     seventh register becomes an eighth.
+ *
+ * THE THIRD CLAUSE — a withheld control is not a failure report.
+ *
+ *   A notice that stands in for a control we deliberately REMOVED, where
+ *   nothing the reader holds is at risk and the read is still retryable, is
+ *   `default` — even though nothing further is coming.
+ *
+ * This clause is not a hedge added to make the rule unfalsifiable. It is here
+ * because a surface already in the tree contradicts the two clauses above, and
+ * it is not the surface in the wrong: `AgentMemory.tsx:95` draws a failed read
+ * of the rules editor NEUTRAL, with no retry armed. `RulesUnreadable`'s own
+ * docstring (`AgentMemory.tsx:76-84`) gives the reason — the editor is withheld
+ * so nobody types into a blank box and saves over rules that are still safely
+ * on disk. The same file draws a failed WRITE `destructive` at `:192`, which
+ * the first two clauses predict correctly. So the neutral one is deliberate.
+ *
+ * THE LINE BETWEEN THAT AND THE IN-THREAD CARD is an unmet OBLIGATION, and it
+ * is what keeps this clause from swallowing the ruling above. The spent-budget
+ * approvals card asserts that somebody is waiting on this reader: an obligation
+ * that is theirs, unmet, and now unreachable — `destructive`. The rules editor
+ * asserts nothing of the kind; there is no obligation, nothing at risk, and the
+ * next read may well work. So: neutral only when ALL of — a protective
+ * substitution, nothing the reader holds at risk, still retryable, and no
+ * obligation left unmet. Miss any one of those and it is a failure report.
+ *
+ * TWO MORE SURFACES SIT OUTSIDE THIS FILE ALTOGETHER, noted so the next reader
+ * does not mistake them for drift. `WorkspaceShell.tsx:168` is the only
+ * full-page error state and is not an `<Alert>` at all — a bare `div` + `h1`,
+ * so it has no variant to agree or disagree with. `AgentRail.tsx:298` is
+ * neutral-with-an-icon for a capability WARNING (nothing limits this agent's
+ * tools), which is not a failed read and has nowhere else to go: `ui/alert.tsx`
+ * offers no warning tier.
  *
  * THE HONEST COUNTERARGUMENT, recorded because it nearly won. Painting the
  * in-thread card red turns its heading — 'Your assistant is waiting on you' —
@@ -117,6 +154,13 @@ export type AlertRegister = 'default' | 'destructive';
 
 /**
  * The register for a failed read. See the rule at the top of this file.
+ *
+ * NO `withheld` PARAMETER, deliberately. The third clause decides whether a
+ * surface is reporting a failure AT ALL — i.e. whether it calls this function —
+ * so it cannot be an argument to it. A withheld-control notice just renders a
+ * neutral `<Alert>` and never comes here. (`AgentMemory` is the only one today
+ * and it is pinned by its own test.) A flag would invite the opposite reading:
+ * that a failure report can be talked down into neutral by passing `true`.
  *
  * `retrying` is a claim about the CODE, and may only be passed by a caller
  * whose code is actually doing it — the same discipline
