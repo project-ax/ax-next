@@ -37,7 +37,7 @@ export type DenyCause = 'policy' | 'unavailable';
 
 /**
  * What the model — and, through the tool result, the person — is told when the
- * pre-call gate could not be reached.
+ * pre-call gate did not produce a verdict.
  *
  * It deliberately carries no internal detail. The raw `Error.message` on this
  * path is whatever the IPC client happened to produce (`timeout`,
@@ -47,11 +47,20 @@ export type DenyCause = 'policy' | 'unavailable';
  * a message we authored, so we do not ship it as one. The operator gets the
  * real error through `warn` instead.
  *
- * Modelled on `GATE_FAILURE_SENTENCE` in `@ax/decisions` (the host-side twin of
- * this situation), and deliberately a copy rather than an import: this package
- * is runner-side and does not depend on that host plugin.
+ * "could not be COMPLETED" rather than "could not be reached" because this one
+ * sentence covers two different failures that the production wire cannot tell
+ * apart: the host was never reached (timeout, ECONNREFUSED) AND the host
+ * answered with something we could not parse. Both surface as a throw from the
+ * same `call()`. "Reached" would be false for the second.
+ *
+ * Paraphrased from `GATE_FAILURE_SENTENCE` in `@ax/decisions` (the host-side
+ * twin of this situation) — NOT verbatim: that one is a whole two-sentence
+ * instruction, this is only the reason fragment. It is deliberately a
+ * paraphrase rather than an import because this package is runner-side and
+ * must not depend on a host plugin (invariant 2), so the two can drift; if you
+ * change one, neither is automatically the other.
  */
-const GATE_UNREACHABLE_REASON = 'the approval check could not be reached';
+const GATE_FAILED_REASON = 'the approval check could not be completed';
 
 export type PreToolVerdict =
   | { decision: 'deny'; reason: string; cause: DenyCause }
@@ -134,17 +143,25 @@ export function createToolPolicy(opts: CreateToolPolicyOptions): ToolPolicy {
         // keeps a schema drift audible instead of a mystery denial.
         parsed = ToolPreCallResponseSchema.parse(raw) as ToolPreCallResponse;
       } catch (err) {
-        // Fail closed, and be honest about what happened. The gate did not
-        // adjudicate this call — it never ran — so the verdict says
-        // `unavailable`, and the two runner adapters use that to avoid telling
-        // the model a retry is pointless when we have no idea whether it is.
-        warn(
-          `runner: tool.pre-call failed for '${axToolName}'; failing closed: ` +
-            (err instanceof Error ? (err.stack ?? String(err)) : String(err)),
-        );
+        // Fail closed, and be honest about what happened. No verdict we can
+        // act on came back — either the host was never reached, or it answered
+        // with something we could not parse — so nothing adjudicated this call
+        // and the verdict says `unavailable`. The runner adapters use that to
+        // avoid telling the model a retry is pointless when we cannot know.
+        // Guarded: a caller-injected `warn` that throws would escape
+        // `preToolUse`, and the claude-sdk adapter's hook has no catch (see
+        // above). Losing a log line must never cost us the deny.
+        try {
+          warn(
+            `runner: tool.pre-call failed for '${axToolName}'; failing closed: ` +
+              (err instanceof Error ? (err.stack ?? String(err)) : String(err)),
+          );
+        } catch {
+          // Nothing safe to do here — the gate closes regardless.
+        }
         return {
           decision: 'deny',
-          reason: GATE_UNREACHABLE_REASON,
+          reason: GATE_FAILED_REASON,
           cause: 'unavailable',
         };
       }

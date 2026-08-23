@@ -61,7 +61,7 @@ describe('createToolPolicy', () => {
     // The literal is spelled out rather than compared against the module's own
     // constant on purpose: asserting `reason === GATE_UNREACHABLE_REASON` would
     // restate the implementation and pass no matter what that constant said.
-    expect(reason).toBe('the approval check could not be reached');
+    expect(reason).toBe('the approval check could not be completed');
     expect(reason).not.toContain('ECONNREFUSED');
     expect(reason).not.toContain('connect failed');
   });

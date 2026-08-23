@@ -181,7 +181,7 @@ describe('createPreToolUseHook', () => {
       hookSpecificOutput: {
         hookEventName: 'PreToolUse',
         permissionDecision: 'deny',
-        permissionDecisionReason: 'the approval check could not be reached',
+        permissionDecisionReason: 'the approval check could not be completed',
       },
     });
     // Still recoverable by whoever operates the thing, just not by the reader.

@@ -180,20 +180,37 @@ export function wrapWithPolicy(
  * to the person as "I'm not allowed to do that", and the real cause is gone.
  */
 export function denialText(reason: string, cause: DenyCause): string {
-  if (cause === 'unavailable') {
-    return (
-      `Tool call not run: ${reason}\n\n` +
-      'No rule blocked this. The check itself did not complete, so nothing was ' +
-      'decided about this call — it may well succeed if you try it again ' +
-      'shortly. If it keeps failing, tell the user the approval check needs ' +
-      'looking at, then stop.'
-    );
+  switch (cause) {
+    case 'unavailable':
+      // Deliberately says "may", not "will" or "shortly". One of the two
+      // failures folded into `unavailable` is a response we could not parse,
+      // which a retry reproduces exactly; promising a timescale here would be
+      // a smaller version of the very claim this function stopped making.
+      return (
+        `Tool call not run: ${reason}\n\n` +
+        'No rule blocked this. The check itself did not finish, so nothing was ' +
+        'decided about this call — it may succeed if you try again. If it keeps ' +
+        'failing, tell the user the approval check needs looking at, then stop.'
+      );
+    case 'policy':
+      return (
+        `Tool call denied by policy: ${reason}\n\n` +
+        'This is a policy decision, not a transient failure — retrying the same ' +
+        'call will be denied again. Adjust your approach.'
+      );
+    default: {
+      // A third `DenyCause` has to make its own call about transience HERE.
+      // Letting it fall through to the `policy` text would hand it "retrying
+      // is futile" by default — the same silent inheritance that `DenyCause`
+      // is required (rather than optional) to prevent one hop upstream. This
+      // is unreachable: the `never` assignment turns a new cause into a build
+      // error. The runtime arm asserts nothing at all, so if it is somehow
+      // reached it cannot be wrong.
+      const exhaustive: never = cause;
+      void exhaustive;
+      return `Tool call not run: ${reason}`;
+    }
   }
-  return (
-    `Tool call denied by policy: ${reason}\n\n` +
-    'This is a policy decision, not a transient failure — retrying the same ' +
-    'call will be denied again. Adjust your approach.'
-  );
 }
 
 /**
