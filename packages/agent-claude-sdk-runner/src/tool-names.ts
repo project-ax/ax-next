@@ -89,7 +89,10 @@ export type DisabledBuiltin = (typeof DISABLED_BUILTINS)[number];
  * the human-facing rail sentences for the same four tools, but importing them
  * here would be a cross-plugin import (invariant 2) — and in the direction
  * `rules.ts` already refuses to import THIS module. That makes this the third
- * place the four names are written down; TASK-245 owns reconciling the copies.
+ * place the four names are written down — though only two of the three can
+ * drift: this record's keys are `Record<DisabledBuiltin, string>`, so the
+ * compiler ties them to the array three lines up. The drift-prone copy is the
+ * hand-maintained one in `rules.ts`, which TASK-245 owns reconciling.
  */
 export const DISABLED_BUILTIN_REASONS: Record<DisabledBuiltin, string> = {
   WebFetch:

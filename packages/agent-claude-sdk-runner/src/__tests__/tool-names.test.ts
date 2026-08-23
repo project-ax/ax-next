@@ -46,7 +46,7 @@ describe('classifySdkToolName', () => {
     // pins the asymmetry rather than pretending all four route somewhere.
     expect(DISABLED_BUILTIN_REASONS.WebFetch).toContain('web_extract');
     expect(DISABLED_BUILTIN_REASONS.WebSearch).toContain('web_search');
-    expect(DISABLED_BUILTIN_REASONS.AskUserQuestion).toContain('reply');
+    expect(DISABLED_BUILTIN_REASONS.AskUserQuestion).toContain('in your reply');
     expect(DISABLED_BUILTIN_REASONS.Task).toContain('no substitute');
   });
 
