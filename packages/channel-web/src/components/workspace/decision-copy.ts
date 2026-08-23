@@ -100,9 +100,17 @@ export const DECISION_ACTION_FAILED =
 export const DECISION_READ_FAILED_TITLE = 'Your assistant is waiting on you';
 
 /**
- * `GET /api/workspace/decisions` failed and we are NOT going to try again on
- * our own — the automatic attempts (`READ_RETRY_DELAYS_MS`) are spent. NOT an
- * empty queue.
+ * `GET /api/workspace/decisions` failed and nothing is coming on its own right
+ * now, so the offer is a button. NOT an empty queue.
+ *
+ * "Nothing coming" is the state, not a claim about attempts having been made —
+ * this constant is shared, and there are three ways to be in it. `/workspace`
+ * (`TodayView`) has no automatic retry at all, so it shows this on the FIRST
+ * failure. The in-thread card shows it before there is a conversation (no
+ * retry is armed then, deliberately) and again once `READ_RETRY_DELAYS_MS` is
+ * spent. Only the last of those has attempts behind it, which is why the
+ * sentence promises nothing about them — see `DECISION_READ_RETRYING` for the
+ * one that does, and only while it is true.
  */
 export const DECISION_READ_FAILED =
   'We could not load what is waiting on you. Nothing has been decided without you — we just could not read the list back right now.';

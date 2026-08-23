@@ -77,8 +77,11 @@ export const SETTLED_CAP = 3;
  *
  * The budget is per OUTAGE, not per trigger — it refills on the first read that
  * succeeds, and nothing else refills it. A person clicking `Try again`, or a
- * new `decisionRaised` frame, still fires a read (they always did); they just
- * do not hand the automatic retry three more attempts each time.
+ * new `decisionRaised` frame, still fires a read (they always did), and it
+ * neither refills the budget nor spends from it: the attempt is counted when a
+ * timer FIRES, so an outside read that cancels a pending wait just restarts
+ * that same rung. Both directions matter — a click must not buy three more
+ * attempts, and it must not burn one that never happened.
  */
 export const READ_RETRY_DELAYS_MS = [1000, 4000, 10_000] as const;
 

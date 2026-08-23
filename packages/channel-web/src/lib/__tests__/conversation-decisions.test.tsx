@@ -366,6 +366,42 @@ describe('useConversationDecisions', () => {
       }
     });
 
+    /*
+      The other direction of the same contract, and the one the test above
+      cannot see. It clicks BEFORE any attempt has fired, so a budget that
+      wrongly refilled on a click would still produce the same read count. This
+      one clicks in the MIDDLE, with attempts already behind it: refill and
+      no-refill part company there.
+    */
+    it('does not let a click in the middle of an outage buy three more attempts', async () => {
+      vi.useFakeTimers();
+      const read = vi
+        .spyOn(workspaceApi, 'decisions')
+        .mockRejectedValue(new Error('boom'));
+      const { result } = renderHook(() => useConversationDecisions());
+
+      await settle();
+      await tick(READ_RETRY_DELAYS_MS[0]!);
+      await tick(READ_RETRY_DELAYS_MS[1]!);
+      // The mount read plus two automatic attempts. One rung left.
+      expect(read).toHaveBeenCalledTimes(3);
+
+      await act(async () => {
+        await result.current.refresh();
+      });
+      expect(read).toHaveBeenCalledTimes(4);
+
+      // Long enough for a refilled ladder to run end to end.
+      const past = Math.max(...READ_RETRY_DELAYS_MS) + 1;
+      for (let i = 0; i <= READ_RETRY_DELAYS_MS.length; i += 1) await tick(past);
+
+      // Five: the mount read, two automatic attempts, the click, and the ONE
+      // rung that was still owed. The budget belongs to the outage — a person
+      // leaning on the button cannot turn it into a poll.
+      expect(read).toHaveBeenCalledTimes(5);
+      expect(result.current.retrying).toBe(false);
+    });
+
     it('never retries a session that ran out — every attempt is the same 401', async () => {
       vi.useFakeTimers();
       const read = vi
