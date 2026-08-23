@@ -374,7 +374,9 @@ describe('@ax/onboarding POST /setup/model', () => {
       const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.href : (url as Request).url;
       if (urlStr.includes('api.anthropic.com')) {
         // Return a promise that respects the AbortController signal.
-        // The completion-tx will abort after 10s; the mock detects the signal.
+        // The completion-tx aborts after the injected `validationTimeoutMs` —
+        // 100ms for this stack, not the real 10s `VALIDATION_TIMEOUT_MS`
+        // (completion-tx.ts). The mock detects the signal.
         return new Promise<Response>((_resolve, reject) => {
           const signal = (init as RequestInit | undefined)?.signal;
           if (signal) {
@@ -393,6 +395,7 @@ describe('@ax/onboarding POST /setup/model', () => {
     };
 
     let res: Response;
+    const requestStartedAt = Date.now();
     try {
       res = await fetch(`http://127.0.0.1:${port}/setup/model`, {
         method: 'POST',
@@ -406,11 +409,28 @@ describe('@ax/onboarding POST /setup/model', () => {
     } finally {
       global.fetch = originalFetch;
     }
+    const requestElapsedMs = Date.now() - requestStartedAt;
 
     expect(res.status).toBe(200);
     const body = await res.json() as { ok: boolean; reason: string };
     expect(body.ok).toBe(false);
     expect(body.reason).toBe('credential-validation-timeout');
+
+    // Regression guard for the injected fast clock (added with the seam itself
+    // in e4808547). `bootStack()` passes `validationTimeoutMs: 100`, so this
+    // request must abort in ~100ms. If the injection seam ever breaks, the
+    // route silently falls back to the real 10s `VALIDATION_TIMEOUT_MS` and
+    // this assertion reddens.
+    //
+    // The budget is on the REQUEST, not on the test. It used to be a `, 5_000`
+    // per-test timeout, which measured stack boot (`dropTables` + an 8-plugin
+    // harness + migrations + `walkToModel`) alongside the ~100ms of real
+    // signal. That confounding is what made the test load-sensitive: machine
+    // load, not a broken seam, is what tripped it. Timing the request alone is
+    // a strictly tighter guard — 2s on the request beats 5s on request+boot —
+    // and the test now inherits the package's 60s config for the boot it
+    // cannot control.
+    expect(requestElapsedMs).toBeLessThan(2_000);
 
     // Verify bootstrap:status is NOT completed.
     const status = await stack.harness.bus.call<unknown, { status: string }>(
@@ -419,5 +439,5 @@ describe('@ax/onboarding POST /setup/model', () => {
       {},
     );
     expect(status.status).not.toBe('completed');
-  }, 5_000);
+  });
 });
