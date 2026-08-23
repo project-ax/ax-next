@@ -15,15 +15,20 @@ export interface CreatedAgent {
  * `displayName` is required — callers must collect a name from the user before
  * creating an agent (see NewAgentDialog) so the DB column is correct from the start.
  */
+import { HttpError, httpFetch } from './http';
+
 export async function autoCreateBareAgent(displayName: string): Promise<CreatedAgent> {
-  const res = await fetch('/api/agents/bootstrap', {
+  // Through `lib/http.ts` (TASK-288). `FirstRunAutoCreate` catches this with a
+  // bare `catch {}`, so on a dead session the first-run flow would otherwise
+  // just quietly not create an agent. The latch fires on the response, before
+  // that catch can swallow anything.
+  const res = await httpFetch('/api/agents/bootstrap', {
     method: 'POST',
-    credentials: 'include',
     headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
     body: JSON.stringify({ displayName }),
   });
   if (!res.ok) {
-    throw new Error(`auto-create agent: ${res.status}`);
+    throw new HttpError('/api/agents/bootstrap', res.status);
   }
   const body = (await res.json()) as { agent: CreatedAgent };
   return body.agent;
