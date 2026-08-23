@@ -38,6 +38,7 @@ import { hydrateTheme } from './lib/theme';
 import { useAgentStore } from './lib/agent-store';
 import { shouldShowAgentBootstrap } from './lib/agent-bootstrap-gate';
 import { sessionStoreActions } from './lib/session-store';
+import { useSessionExpired } from './lib/session-expired-store';
 import { bootstrapKickoff } from './lib/bootstrap-kickoff';
 import { useTitleEvents } from './lib/use-title-events';
 import { useHydrateAgents } from './components/AgentChip';
@@ -81,6 +82,24 @@ function isWorkspacePath(): boolean {
 
 export const App = () => {
   const [mode, setMode] = useState<AppMode>({ kind: 'loading' });
+  /*
+    Post-boot sign-out. `lib/http.ts` sets this latch when a request that had a
+    session comes back 401, and the only thing that happens as a result is the
+    branch further down: an authenticated app becomes `<LoginPage />`.
+
+    DELIBERATELY ASYMMETRIC WITH BOOT. The boot flow below treats ANY thrown
+    failure — a 500, DNS, being offline — as unauthenticated, because at first
+    load there is no session to distinguish losing from never having had. Here
+    there is one, so only a 401 ends it and every other failure stays a
+    per-surface error the reader can retry. Both halves are on purpose; see the
+    long note at the top of `lib/http.ts` before changing either.
+
+    The latch is read but never consulted in the `loading` or `wizard` branches,
+    which is what keeps the setup wizard's own legitimate pre-auth 401s
+    (`StepAdmin`, `StepGate`) from meaning anything here. Those surfaces do not
+    route through `lib/http.ts` either — belt and braces.
+  */
+  const sessionExpired = useSessionExpired();
 
   // Full-page OAuth return fallback (Task 12). Runs once on mount. The popup
   // case is already handled by the bridge in main.tsx before React mounts, so
@@ -182,6 +201,11 @@ export const App = () => {
     return <SetupWizard />;
   }
   if (mode.kind === 'unauthenticated') {
+    return <LoginPage />;
+  }
+  // Checked AFTER the loading/wizard branches on purpose — see the note where
+  // `sessionExpired` is read. A session can only end once it existed.
+  if (sessionExpired) {
     return <LoginPage />;
   }
   return <AppContent user={mode.user} features={mode.features} />;

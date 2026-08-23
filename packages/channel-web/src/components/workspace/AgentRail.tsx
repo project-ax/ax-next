@@ -132,7 +132,6 @@ export function AgentRail({ detail, openPastId, onOpenPast }: Props) {
       <Grants
         rail={rail}
         loading={loading}
-        error={error}
         revoking={revoking}
         notice={notice}
         onRevoke={onRevoke}
@@ -319,17 +318,20 @@ function Permissions({
  * "Granted by you" — the group a person can act on, and the one they are most
  * likely to have forgotten they created (design §4.3.4).
  */
+/*
+  No `error` prop any more (TASK-288). It existed only to glue the raw thrown
+  message into the sentence below; `rail === null && !loading` already says
+  everything this group can act on, and the cause is a console line now.
+*/
 function Grants({
   rail,
   loading,
-  error,
   revoking,
   notice,
   onRevoke,
 }: {
   rail: AgentRailData | null;
   loading: boolean;
-  error: string | null;
   revoking: ReadonlySet<string>;
   notice: string | null;
   onRevoke: (row: GrantRow) => void;
@@ -338,8 +340,13 @@ function Grants({
     if (loading) return <Note>Reading what you&apos;ve granted…</Note>;
     return (
       <Note>
-        We couldn&apos;t read this just now
-        {error === null ? '' : ` (${error})`}.
+        {/*
+          The raw detail used to ride in a parenthetical here — `We couldn't
+          read this just now (workspace /agents/ag_… → 401).` A request path
+          inside a sentence is the one shape a grep for a raw status never
+          finds. `workspace-rail.ts` logs it now (TASK-288).
+        */}
+        We couldn&apos;t read this just now.
       </Note>
     );
   }

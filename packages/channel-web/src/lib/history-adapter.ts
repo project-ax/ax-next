@@ -20,6 +20,7 @@
  */
 import type { ThreadHistoryAdapter } from '@assistant-ui/react';
 import type { ContentBlock } from '@ax/ipc-protocol';
+import { httpFetch } from './http';
 import { stripMcpToolPrefix } from './tool-name';
 
 /**
@@ -301,7 +302,7 @@ export const createAxHistoryAdapter = (
           }
 
           const qs = includeThinking ? '?includeThinking=true' : '';
-          const response = await fetch(
+          const response = await httpFetch(
             `/api/chat/conversations/${encodeURIComponent(conversationId)}${qs}`,
             { credentials: 'include' },
           );

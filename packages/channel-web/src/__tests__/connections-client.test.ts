@@ -24,9 +24,15 @@ describe('agents + connections wire clients', () => {
     expect(agents).toEqual([{ agentId: 'a1', displayName: 'Research', visibility: 'personal' }]);
   });
 
-  it('listChatAgents throws on a non-ok response', async () => {
+  /*
+    TASK-288 — these used to assert the thrown message MATCHED `/500/`, i.e.
+    that the status was baked into prose (`list agents: 500`). That prose was
+    then rendered at readers. The status now lives on the error as a field,
+    which is both what a caller can branch on and what keeps it off a screen.
+  */
+  it('listChatAgents throws an error carrying the status', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response(null, { status: 500 }));
-    await expect(listChatAgents()).rejects.toThrow(/500/);
+    await expect(listChatAgents()).rejects.toMatchObject({ status: 500 });
   });
 
   it('getConnections GETs /api/chat/connections/:agentId (url-encoded)', async () => {
@@ -54,7 +60,9 @@ describe('agents + connections wire clients', () => {
 
   it('detachConnectionSkill throws on a non-204 error', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response(null, { status: 500 }));
-    await expect(detachConnectionSkill('a1', 'linear')).rejects.toThrow(/500/);
+    await expect(detachConnectionSkill('a1', 'linear')).rejects.toMatchObject({
+      status: 500,
+    });
   });
 
   it('getAllowedSites GETs /api/chat/allowed-sites/:agentId (url-encoded)', async () => {
@@ -85,7 +93,9 @@ describe('agents + connections wire clients', () => {
 
   it('revokeAllowedSite throws on a non-204 error', async () => {
     vi.spyOn(global, 'fetch').mockResolvedValue(new Response(null, { status: 500 }));
-    await expect(revokeAllowedSite('a1', 'x.example.com')).rejects.toThrow(/500/);
+    await expect(revokeAllowedSite('a1', 'x.example.com')).rejects.toMatchObject({
+      status: 500,
+    });
   });
 
   it('listAllAllowedSites GETs /api/chat/allowed-sites and returns the flat grants', async () => {

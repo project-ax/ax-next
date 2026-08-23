@@ -1,3 +1,4 @@
+import { httpFetch } from './http';
 import { createAssistantStream } from 'assistant-stream';
 import type { RemoteThreadListAdapter } from '@assistant-ui/react';
 
@@ -98,7 +99,7 @@ export async function pollConversationTitle(
  */
 export const axThreadListAdapter: RemoteThreadListAdapter = {
   async list() {
-    const response = await fetch('/api/chat/conversations', {
+    const response = await httpFetch('/api/chat/conversations', {
       credentials: 'include',
     });
     if (!response.ok) {

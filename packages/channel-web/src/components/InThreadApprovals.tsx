@@ -37,7 +37,7 @@ import {
   DECISION_SESSION_EXPIRED_TITLE,
 } from '@/components/workspace/decision-copy';
 import { useConversationDecisions } from '@/lib/conversation-decisions';
-import { signInWithGoogle } from '@/lib/auth';
+import { SignInAgainButton } from '@/components/SignInAgainButton';
 
 export function InThreadApprovals() {
   const {
@@ -94,9 +94,14 @@ export function InThreadApprovals() {
     actionable, per-person fact because it arrived down the same pipe as an
     outage is the conflation this card exists to undo.
 
-    What it is NOT is a signed-out state for the app. Chat's own 401 still reads
-    as raw text and there is no interceptor anywhere post-boot; that is TASK-288.
-    This is one card on one surface, speaking only for the read it made.
+    IT IS NO LONGER THE WHOLE STORY, THOUGH. TASK-288 added the app-wide rule
+    this comment used to say did not exist: `lib/http.ts` latches any post-boot
+    401 and `App.tsx` renders `<LoginPage />`. So in practice the same 401 that
+    fills in the line below is also, within a render or two, replacing this
+    entire screen. The line is kept anyway — it is correct on its own terms, it
+    is what a reader sees if the decisions read is the only thing 401-ing, and
+    a surface that speaks accurately for the read it made does not become wrong
+    because something above it also acted.
   */
   const showExpired = error?.kind === 'expired';
   const showReadFailure = error?.kind === 'failed' && raised > 0;
@@ -205,24 +210,8 @@ export function InThreadApprovals() {
           <AlertTitle>{DECISION_SESSION_EXPIRED_TITLE}</AlertTitle>
           <AlertDescription className="flex flex-col items-start gap-2">
             <span>{DECISION_SESSION_EXPIRED}</span>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => {
-                /*
-                  Fire-and-forget, like the LoginPage CTA: on success this
-                  navigates away from the page entirely, and on a misconfigured
-                  provider it throws with no inline error surface here to put
-                  the reason in. Caught so that a dead provider is a console
-                  line for an operator rather than an unhandled rejection.
-                */
-                void signInWithGoogle().catch((err: unknown) => {
-                  console.warn('[decisions] could not start sign-in', err);
-                });
-              }}
-            >
-              Sign in
-            </Button>
+            {/* Shared with `TodayView`; it owns the failed-sign-in line. */}
+            <SignInAgainButton />
           </AlertDescription>
         </Alert>
       )}

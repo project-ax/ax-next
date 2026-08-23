@@ -37,6 +37,7 @@
  * route in front of the chat POST would be a second source of truth for
  * starting a turn (invariant 4).
  */
+import { HttpError, httpErrorMessage, httpFetch } from './http';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
   ActivityEvent,
@@ -221,15 +222,21 @@ const writeHeaders = {
  * surface that renders both as one generic blip is a surface that sends
  * someone hunting for a file that was never going to be there.
  *
- * `message` keeps the old text verbatim, so every existing `e.message` call
- * site reads exactly as it did before.
+ * It is now an `HttpError` (TASK-288), which changes one thing and keeps the
+ * rest: `status` is still here and every `instanceof WorkspaceApiError` still
+ * narrows, but `message` is authored copy instead of `workspace /board → 401`.
+ * That string was not a description of anything — it was a request path and a
+ * number — and six surfaces were printing it at readers in a mono span. The
+ * raw form survives as `detail`, for `console` only.
+ *
+ * Still its own class rather than a bare `HttpError` so `workspace-files.ts`
+ * can keep saying "a 503 from THIS api means no workspace backend" without
+ * that claim leaking to every other route in the app.
  */
-export class WorkspaceApiError extends Error {
-  readonly status: number;
+export class WorkspaceApiError extends HttpError {
   constructor(path: string, status: number) {
-    super(`workspace ${path} → ${status}`);
+    super(`workspace ${path}`, status);
     this.name = 'WorkspaceApiError';
-    this.status = status;
   }
 }
 
@@ -299,9 +306,8 @@ async function req<T>(
   path: string,
   init?: { method: string; body?: unknown },
 ): Promise<T> {
-  const res = await fetch(`/api/workspace${path}`, {
+  const res = await httpFetch(`/api/workspace${path}`, {
     method: init?.method ?? 'GET',
-    credentials: 'include',
     ...(init?.method !== undefined && init.method !== 'GET'
       ? { headers: writeHeaders }
       : {}),
@@ -538,10 +544,9 @@ export const workspaceApi = {
     conversationId,
     text,
   }: SendMessageInput): Promise<PostMessageResponse> {
-    const res = await fetch('/api/chat/messages', {
+    const res = await httpFetch('/api/chat/messages', {
       method: 'POST',
       headers: writeHeaders,
-      credentials: 'include',
       body: JSON.stringify({
         conversationId,
         agentId,
@@ -549,7 +554,8 @@ export const workspaceApi = {
       }),
     });
     if (!res.ok) {
-      throw new Error(`send message → ${res.status}`);
+      // Was `send message → ${res.status}`, which `AgentView` rendered.
+      throw new HttpError('/api/chat/messages', res.status);
     }
     const body = (await res.json()) as PostMessageResponse;
     if (!body.reqId || !body.conversationId) {
@@ -586,17 +592,23 @@ async function streamReply(
     const init: RequestInit = {
       method: 'GET',
       headers: { accept: 'text/event-stream' },
-      credentials: 'include',
     };
     if (signal) init.signal = signal;
-    res = await fetch(`/api/chat/stream/${encodeURIComponent(reqId)}`, init);
+    res = await httpFetch(`/api/chat/stream/${encodeURIComponent(reqId)}`, init);
   } catch (e) {
     if (signal?.aborted) return;
-    onError(e instanceof Error ? e.message : WORKSPACE_STREAM_LOST);
+    // A network-level throw carries a browser string (`Failed to fetch`), not
+    // a sentence. It goes to the console; the reader gets the authored line.
+    console.warn('[workspace] reply stream could not be opened', e);
+    onError(WORKSPACE_STREAM_LOST);
     return;
   }
   if (!res.ok || !res.body) {
-    onError(`the reply stream would not open (${res.status})`);
+    // The status used to be glued into this sentence — an authored line with a
+    // raw number inside it, which is the shape a grep for `statusText` never
+    // finds. It is a console line now, and the reader gets a whole sentence.
+    console.warn(`[workspace] reply stream would not open → ${res.status}`);
+    onError(httpErrorMessage(res.status));
     return;
   }
 
@@ -662,7 +674,8 @@ async function streamReply(
     }
   } catch (e) {
     if (signal?.aborted) return;
-    onError(e instanceof Error ? e.message : WORKSPACE_STREAM_LOST);
+    console.warn('[workspace] reply stream ended badly', e);
+    onError(WORKSPACE_STREAM_LOST);
   } finally {
     reader.releaseLock();
   }

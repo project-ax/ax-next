@@ -1,3 +1,4 @@
+import { HttpError, httpFetch } from './http';
 import type { Destination } from '@ax/credentials';
 
 /**
@@ -173,14 +174,17 @@ export async function setDestinationCredential(args: {
     kind: args.slot.kind,
     payloadB64: b64(args.payload),
   };
-  const res = await fetch(url, {
+  const res = await httpFetch(url, {
     method: 'POST',
     headers: writeHeaders,
-    credentials: 'include',
     body: JSON.stringify(body),
   });
   if (!res.ok) {
-    throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+    // The body used to be spliced into the message and rendered by
+    // `PermissionCard` (TASK-288). It is a server diagnostic; it goes to the
+    // console and the reader gets a sentence.
+    console.warn(`[credentials] ${url} → ${res.status}: ${await res.text()}`);
+    throw new HttpError(url, res.status);
   }
 }
 
@@ -200,11 +204,10 @@ export async function grantHost(input: {
   /** "Always for this agent" → durably persist a per-(user, agent) grant (TASK-44). */
   persist?: boolean;
 }): Promise<void> {
-  const res = await fetch('/api/chat/allow-host', {
+  const res = await httpFetch('/api/chat/allow-host', {
     method: 'POST',
     headers: writeHeaders,
-    credentials: 'include',
     body: JSON.stringify(input),
   });
-  if (!res.ok) throw new Error(`allow-host failed: ${res.status}`);
+  if (!res.ok) throw new HttpError('/api/chat/allow-host', res.status);
 }

@@ -10,6 +10,7 @@
  * on THIS surface the difference is a security claim.
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { userFacingMessage } from './http';
 import { workspaceApi } from './workspace-api';
 import type { AgentRailData, GrantRef } from './workspace-types';
 
@@ -65,7 +66,7 @@ export function useAgentRail(agentId: string | null): AgentRailState {
         // The rail is dropped, not kept: stale permissions rendered beside a
         // failure notice read as current ones.
         setRail(null);
-        setError(e instanceof Error ? e.message : String(e));
+        setError(userFacingMessage(e, 'workspace-rail'));
       } finally {
         if (requestId.current === id) setLoading(false);
       }

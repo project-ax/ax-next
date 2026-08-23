@@ -82,9 +82,11 @@ const POLL_FAILURES_BEFORE_NOTE = 3;
  * i.e. `auth:require-user` rejected — so a 401 is evidence about the SESSION
  * and never about this route's own authority.
  *
- * `detail` is the raw message and it is for LOGS. No surface renders it: it
- * reads `workspace /decisions → 401`, which is a request path, not a sentence
- * anybody can act on.
+ * `detail` is for LOGS. No surface renders it. It used to read
+ * `workspace /decisions → 401` — a request path, not a sentence anybody can
+ * act on — and since TASK-288 gave `WorkspaceApiError` authored copy it is a
+ * plain sentence instead. Still logs-only: the surfaces here choose their own
+ * words from `kind`, which is the whole point of splitting the two.
  */
 export interface DecisionReadError {
   kind: 'expired' | 'failed';

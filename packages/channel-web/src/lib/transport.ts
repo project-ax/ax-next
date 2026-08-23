@@ -49,6 +49,7 @@ import { agentStatusActions } from './agent-status-store';
 import { permissionCardActions } from './permission-card-store';
 import { stripMcpToolPrefix } from './tool-name';
 import { decisionRaisedActions } from './decision-raised-store';
+import { HttpError, httpFetch } from './http';
 
 const DEFAULT_USER = 'guest';
 
@@ -129,7 +130,7 @@ const SSE_OPEN_RETRYABLE_STATUS = new Set([404, 425, 429, 502, 503, 504]);
  * forward-compat with newer server builds that emit a code the client
  * doesn't yet recognize.
  */
-const ERROR_LABELS: Record<string, string> = {
+export const ERROR_LABELS: Record<string, string> = {
   'chat-run-timeout': 'The agent timed out. Retry to continue.',
   // TASK-160 — a declared dev service failed to start. The actionable
   // specifics (which service, which path) ride the optional `detail` field and
@@ -429,11 +430,13 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
       credentials: 'include',
     };
     if (abortSignal) postInit.signal = abortSignal;
-    const postResp = await this.fetchImpl(this.api, postInit);
+    // Through `httpFetch` so a 401 ends the session before this throw reaches
+    // anyone. The thrown `HttpError` carries authored copy — the old message
+    // interpolated `status` and `statusText`, and both went straight onto the
+    // banner above the composer (`turn-error.ts` → `AgentStatus`).
+    const postResp = await httpFetch(this.api, postInit, this.fetchImpl);
     if (!postResp.ok) {
-      throw new Error(
-        `chat-flow POST failed: ${postResp.status} ${postResp.statusText}`,
-      );
+      throw new HttpError(this.api, postResp.status);
     }
     const postOut = (await postResp.json()) as PostResponse;
     if (!postOut.reqId || !postOut.conversationId) {
@@ -520,7 +523,7 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
 
       let resp: Response;
       try {
-        resp = await this.fetchImpl(url, sseInit);
+        resp = await httpFetch(url, sseInit, this.fetchImpl);
       } catch (err) {
         // A network-level throw (connection refused / reset while the host is
         // still coming up) is transient — retry it like a retryable status.
@@ -555,7 +558,15 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
     if (!failFast) {
       throw new Error(CONNECTION_LOST);
     }
-    throw new Error(`chat-flow SSE open failed: ${lastStatus} ${lastStatusText}`);
+    // A fail-fast status is a real client error, and it used to keep its
+    // verbatim `401 Unauthorized` / `403 Forbidden` text — which the banner
+    // then showed a reader. `lastStatusText` is logged, not rendered: it is the
+    // HTTP/1.1 reason-phrase and HTTP/2 has none, so half the time it was an
+    // empty string glued onto a number.
+    console.warn(
+      `[chat] the reply stream would not open: ${url} → ${lastStatus} ${lastStatusText}`,
+    );
+    throw new HttpError(url, lastStatus);
   }
 
   /**

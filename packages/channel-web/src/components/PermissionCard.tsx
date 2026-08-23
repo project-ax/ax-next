@@ -50,6 +50,7 @@ import {
   permissionCardActions,
   usePermissionCardStore,
 } from '@/lib/permission-card-store';
+import { HttpError, httpFetch, userFacingMessage } from '@/lib/http';
 import { resumeActions } from '@/lib/resume-actions';
 import { useConversationId } from '@/lib/use-conversation-id';
 import type { Destination } from '@ax/credentials';
@@ -210,19 +211,19 @@ export function PermissionCard() {
         npm: request.packages?.npm ?? [],
         pypi: request.packages?.pypi ?? [],
       };
-      const resp = await fetch('/api/chat/permission-decision', {
+      const resp = await httpFetch('/api/chat/permission-decision', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
         body: JSON.stringify({ conversationId, skillId: request.skillId, shown }),
-        credentials: 'include',
       });
-      if (!resp.ok) throw new Error(`connect failed: ${resp.status}`);
+      if (!resp.ok) throw new HttpError('/api/chat/permission-decision', resp.status);
       close();
       // (TASK-36) re-issue the pending original turn -> fresh re-spawn + resume
       // -> the agent answers, with the now-attached skill (design §7).
       resumeActions.continueAfterGrant();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // `connect failed: 401` used to land in the Alert below (TASK-288).
+      setError(userFacingMessage(err, 'permission-card'));
     } finally {
       setBusy(false);
     }
@@ -271,19 +272,19 @@ export function PermissionCard() {
         npm: request.packages?.npm ?? [],
         pypi: request.packages?.pypi ?? [],
       };
-      const resp = await fetch('/api/chat/permission-decision', {
+      const resp = await httpFetch('/api/chat/permission-decision', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-requested-with': 'ax-admin' },
         body: JSON.stringify({ conversationId, connectorId: request.connectorId, shown }),
-        credentials: 'include',
       });
-      if (!resp.ok) throw new Error(`connect failed: ${resp.status}`);
+      if (!resp.ok) throw new HttpError('/api/chat/permission-decision', resp.status);
       close();
       // Re-issue the pending turn → fresh re-spawn + resume → the agent answers
       // with the now-active connector's reach present.
       resumeActions.continueAfterGrant();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // `connect failed: 401` used to land in the Alert below (TASK-288).
+      setError(userFacingMessage(err, 'permission-card'));
     } finally {
       setBusy(false);
     }
@@ -297,7 +298,8 @@ export function PermissionCard() {
       await grantHost({ sessionId: request.sessionId, host: request.host, persist });
       close();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      // `connect failed: 401` used to land in the Alert below (TASK-288).
+      setError(userFacingMessage(err, 'permission-card'));
     } finally {
       setBusy(false);
     }
