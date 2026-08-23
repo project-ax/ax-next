@@ -274,8 +274,10 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
       return internalError();
     }
 
-    // Filter to policy-visible paths (`.ax/**` + `.claude/**`) for the
-    // pre-apply hook. Subscribers (skill validator, SDK-config veto,
+    // Filter to policy-visible paths for the pre-apply hook — the `.ax/**` and
+    // `.claude/**` prefixes PLUS the root exact paths (`CLAUDE.md`,
+    // `CLAUDE.local.md`), which is the pair that catches the ordinary
+    // agent-writes-CLAUDE.md case. See POLICY_EXACT_PATHS in @ax/core. Subscribers (skill validator, SDK-config veto,
     // future identity validator) only see agent-managed memory and
     // SDK setting-source paths; user-code changes are not policy-
     // checked.

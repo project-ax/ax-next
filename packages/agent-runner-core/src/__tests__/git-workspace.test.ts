@@ -844,14 +844,22 @@ describe('rollbackToBaseline', () => {
     expect(blob.stdout).toContain('# agent-authored');
   }, REAL_GIT_TIMEOUT_MS);
 
-  it('TASK-287: refuses discard paths that escape the workspace', async () => {
-    // The path arrives over IPC. Treat it as untrusted: absolutes, `..`
-    // escapes and `.git/` internals are skipped, and the rest of the discard
-    // still happens.
+  it('TASK-287: an unusable discard path escalates to a whole-tree reset (fail closed)', async () => {
+    // The paths arrive over IPC. Treat them as untrusted — absolutes, `..`
+    // escapes, `.git/` internals and pathspec magic are all unusable — and
+    // fail CLOSED on any of them.
+    //
+    // Skipping the bad entry and scoping to the rest would look kinder and be
+    // worse: `--mixed` has already run, so the entry we could not act on stays
+    // in the tree, is re-staged next turn and re-earns the same refusal —
+    // forever. That is the wedge, re-entering through the error path. So the
+    // unrelated file is expected to be destroyed here: that IS the fail-closed
+    // behaviour, and the scoped path (tested above) is what preserves it.
     const { root } = await setupMaterializedWorkspace();
     const outside = path.join(scratchRoot, 'outside.txt');
     await fs.writeFile(outside, 'do not touch');
     await fs.writeFile(path.join(root, 'CLAUDE.md'), '# agent-authored');
+    await fs.writeFile(path.join(root, 'feature.ts'), 'export const x = 1;');
     await commitTurnAndBundle({ root, reason: 'turn' });
 
     await rollbackToBaseline(root, 'mixed', [
@@ -863,9 +871,31 @@ describe('rollbackToBaseline', () => {
       'CLAUDE.md',
     ]);
 
+    // Nothing outside the workspace was touched, and the repo's own machinery
+    // survives — those are the containment guarantees.
     expect(await fs.readFile(outside, 'utf8')).toBe('do not touch');
     expect(await fs.stat(path.join(root, '.git', 'config'))).toBeTruthy();
+    // ...and the reset went whole-tree, so the refused file cannot survive.
     await expect(fs.stat(path.join(root, 'CLAUDE.md'))).rejects.toThrow();
+    await expect(fs.stat(path.join(root, 'feature.ts'))).rejects.toThrow();
+  }, REAL_GIT_TIMEOUT_MS);
+
+  it('TASK-287: a `.git/`-adjacent name that is NOT `.git/` is still discardable', async () => {
+    // The guard rejects the first path component `.git`, not the substring —
+    // a file called `.gitignore` or a directory called `.github` is ordinary
+    // agent content and must not be swept into the fail-closed path.
+    const { root } = await setupMaterializedWorkspace();
+    await fs.mkdir(path.join(root, '.github'), { recursive: true });
+    await fs.writeFile(path.join(root, '.github', 'notes.md'), 'notes');
+    await fs.writeFile(path.join(root, 'feature.ts'), 'export const x = 1;');
+    await commitTurnAndBundle({ root, reason: 'turn' });
+
+    await rollbackToBaseline(root, 'mixed', ['.github/notes.md']);
+
+    await expect(fs.stat(path.join(root, '.github', 'notes.md'))).rejects.toThrow();
+    expect(await fs.readFile(path.join(root, 'feature.ts'), 'utf8')).toBe(
+      'export const x = 1;',
+    );
   }, REAL_GIT_TIMEOUT_MS);
 
   it('TASK-287: a discard path that does not exist is a no-op', async () => {

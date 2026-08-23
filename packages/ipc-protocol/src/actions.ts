@@ -260,8 +260,10 @@ export const WorkspaceCommitNotifyResponseSchema = z.discriminatedUnion(
       // Present ⟹ the refusal is scoped: the runner keeps the rest of the
       // turn's work and removes exactly these paths, which is what stops the
       // re-submit loop above without taking unrelated files down with it.
-      // Workspace-relative, in the same `.ax/**` / `.claude/**` vocabulary the
-      // pre-apply payload already speaks — no storage-backend terms.
+      // Workspace-relative, in the same vocabulary the pre-apply payload
+      // already speaks: the `.ax/**` and `.claude/**` prefixes PLUS the root
+      // exact paths that policy also covers (`CLAUDE.md`, `CLAUDE.local.md`) —
+      // which is where the common case lands. No storage-backend terms.
       //
       // The runner treats every entry as untrusted: it refuses absolutes,
       // parent-escapes and anything resolving outside the workspace. Bounded
