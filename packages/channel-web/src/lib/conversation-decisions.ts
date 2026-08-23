@@ -75,13 +75,20 @@ export const SETTLED_CAP = 3;
  * right now, and the later ones back off because a failure that survives four
  * seconds is not a blip any more.
  *
- * The budget is per OUTAGE, not per trigger — it refills on the first read that
- * succeeds, and nothing else refills it. A person clicking `Try again`, or a
- * new `decisionRaised` frame, still fires a read (they always did), and it
- * neither refills the budget nor spends from it: the attempt is counted when a
- * timer FIRES, so an outside read that cancels a pending wait just restarts
- * that same rung. Both directions matter — a click must not buy three more
- * attempts, and it must not burn one that never happened.
+ * The budget is per OUTAGE, not per trigger. NO CLICK AND NO FRAME REFILLS IT:
+ * a person pressing `Try again`, or a new `decisionRaised` frame, still fires a
+ * read (they always did), and it neither refills the budget nor spends from it —
+ * the attempt is counted when a timer FIRES, so an outside read that cancels a
+ * pending wait just restarts that same rung. Both directions matter: a click
+ * must not buy three more attempts, and it must not burn one that never
+ * happened.
+ *
+ * What DOES reset it is a read that succeeds, or leaving the state this budget
+ * is about at all — the reset branch below also zeroes on a null conversation
+ * and on the error turning out to be an expired session. So navigating out to
+ * the welcome state and back into a thread mid-outage does start a fresh
+ * ladder. That is deliberate and still bounded: it costs a deliberate
+ * navigation per ladder, which is a person, not a loop.
  */
 export const READ_RETRY_DELAYS_MS = [1000, 4000, 10_000] as const;
 
@@ -223,14 +230,19 @@ export function useConversationDecisions(): ConversationDecisions {
       The tally moves when an attempt is actually MADE, not when one is
       scheduled, and both halves of that matter.
 
-      Scheduling is not idempotent — React re-runs this effect whenever `error`
-      changes identity, and would double-invoke it outright under StrictMode
-      (the double-mount `FirstRunAutoCreate` guards against). Counting at
-      schedule time would let a `Try again` click, or a frame landing mid-wait,
-      spend an automatic attempt that never happened; three clicks and the
-      retry is "exhausted" without a single one having fired. Counting at fire
-      time makes a cancelled timer cost nothing, which is what a cancelled timer
-      did.
+      Scheduling is not idempotent, and the reason is ordinary rather than
+      exotic: React re-runs this effect whenever `error` changes identity, which
+      a `Try again` click or a `decisionRaised` frame landing mid-wait does on
+      every failure. Counting at schedule time would let those spend an
+      automatic attempt that never happened — three clicks and the retry is
+      "exhausted" without a single one having fired, for exactly the person most
+      likely to be watching. Counting at fire time makes a cancelled timer cost
+      nothing, which is what a cancelled timer did.
+
+      (It would also survive StrictMode's deliberate double-invoke, the hazard
+      `FirstRunAutoCreate` guards against. That is a bonus and not the reason:
+      this app's root is NOT wrapped in `<StrictMode>` — see `main.tsx` — so
+      nothing here depends on it.)
     */
     const timer = setTimeout(() => {
       retriesSpent.current += 1;
