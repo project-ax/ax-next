@@ -1183,6 +1183,29 @@ describe('decisions store — reclaiming a stranded flight', () => {
     }
   });
 
+  it('refuses a PARKED row that is somehow carrying an old flight', async () => {
+    // The two above are refused because a parked or open row has no flight at
+    // all, so the age comparison never reaches them — which means neither of
+    // them exercises the STATUS predicate. This one does.
+    //
+    // The shape is written directly because nothing produces it: `parkForAgent`
+    // clears `replay_claimed_at` precisely so a parked row cannot carry one.
+    // If it ever did, reclaiming it would drop an authorisation the agent was
+    // still going to perform — a call that runs zero times, which is the same
+    // failure `claimReplayFlight` refuses `approved-pending-agent` to avoid.
+    for (const s of [await freshStore(), createFakeStore()]) {
+      await s.create(
+        base({
+          status: 'approved-pending-agent',
+          resolvedAt: T0,
+          replayClaimedAt: T_SOON,
+        }),
+      );
+      expect(await reclaim(s, T_OUTSIDE)).toEqual([]);
+      expect((await s.get('dec_1'))!.status).toBe('approved-pending-agent');
+    }
+  });
+
   it('refuses a row whose call ALREADY went out', async () => {
     // The row the host replayed and then crashed before anything else. There
     // is nothing to abandon, and rewriting it to `failed` would replace a true

@@ -55,6 +55,7 @@ function decision(over: Partial<Decision> = {}): Decision {
     consumedAt: null,
     replayDueAt: null,
     replayClaimedAt: null,
+    replayAbandonedAt: null,
     replayError: null,
     ...over,
   };
