@@ -187,6 +187,81 @@ describe('decisions store — scoping', () => {
   });
 });
 
+/**
+ * TASK-266. The rail's counter, as one question.
+ *
+ * The counter's sentence is "decisions this agent raised for you in the last 7
+ * days, whatever you decided — including the ones that expired", and until this
+ * existed there was no read that answered it: `list` takes ONE exact status, so
+ * "any status" was seven reads, each of which swept the expiry table first.
+ */
+describe('decisions store — counting a window', () => {
+  it('counts every status inside the window and nothing outside it', async () => {
+    const s = await freshStore();
+    // One of each of the seven, all raised inside the window. If a status is
+    // ever added to the union, this list stops being exhaustive — and the
+    // count does NOT, which is the point: nothing here enumerates them.
+    for (const status of DecisionStatusSchema.options) {
+      await s.create(base({ id: `dec_${status}`, status, callFingerprint: `fp-${status}` }));
+    }
+    // Raised before the window opened. Same owner, same agent, still not the
+    // answer to "in the last seven days".
+    await s.create(
+      base({ id: 'dec_old', createdAt: '2026-08-01T09:00:00.000Z', callFingerprint: 'fp-old' }),
+    );
+
+    expect(await s.count({ ownerUserId: 'u1', agentId: 'a1', since: '2026-08-19T09:00:00.000Z' })).toBe(
+      DecisionStatusSchema.options.length,
+    );
+  });
+
+  it('takes the window boundary as inclusive — a decision raised ON it is in', async () => {
+    const s = await freshStore();
+    await s.create(base({ id: 'dec_edge', createdAt: T0 }));
+    expect(await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 })).toBe(1);
+    expect(await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T_SOON })).toBe(0);
+  });
+
+  it('counts one owner and one agent — never somebody else\'s row', async () => {
+    const s = await freshStore();
+    await s.create(base({ id: 'dec_mine' }));
+    await s.create(base({ id: 'dec_theirs', ownerUserId: 'u2', callFingerprint: 'fp-2' }));
+    await s.create(base({ id: 'dec_other_agent', agentId: 'a2', callFingerprint: 'fp-3' }));
+
+    expect(await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 })).toBe(1);
+    // No agent named is a wider question, deliberately: everything this person
+    // was asked, across the roster. Still only this person.
+    expect(await s.count({ ownerUserId: 'u1', since: T0 })).toBe(2);
+  });
+
+  it('gives the same answer either side of a sweep — expiry cannot move it', async () => {
+    // WHY `decisions:count` DOES NOT SWEEP FIRST, pinned as arithmetic rather
+    // than left as a claim in a comment. Expiry rewrites a `status` and stamps
+    // a `resolved_at`; it never touches `created_at` and never deletes a row.
+    // A count over a `created_at` window that names no status therefore cannot
+    // observe the difference — so sweeping before it would buy nothing and
+    // cost a table write on every render of the rail.
+    const s = await freshStore();
+    await s.create(base({ id: 'dec_due', createdAt: T0, expiresAt: T0 }));
+
+    const before = await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 });
+    expect(await s.expireDue(T_LATE)).toBe(1);
+    expect((await s.get('dec_due'))!.status).toBe('expired');
+    const after = await s.count({ ownerUserId: 'u1', agentId: 'a1', since: T0 });
+
+    expect(before).toBe(1);
+    expect(after).toBe(before);
+  });
+
+  it('answers zero for a person who was never asked anything', async () => {
+    // Zero is a real answer here and has to be distinguishable from a failure;
+    // the rail renders the two differently and this is the read that has to be
+    // able to say the first one.
+    const s = await freshStore();
+    expect(await s.count({ ownerUserId: 'u-nobody', agentId: 'a1', since: T0 })).toBe(0);
+  });
+});
+
 describe('decisions store — the standing authorisation', () => {
   it('refuses a second unconsumed approval for the same (agent, fingerprint)', async () => {
     const s = await freshStore();

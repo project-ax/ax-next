@@ -484,6 +484,26 @@ interface DecisionsListOutput {
   decisions: StoredDecision[];
 }
 
+/**
+ * `decisions:count` — how many decisions an agent raised for this person in a
+ * window, duck-typed like every other hook on this surface (I2).
+ *
+ * NO STATUS FIELD, and its absence is the contract rather than an omission.
+ * The counter's question spans every status ("whatever you decided"), and the
+ * plugin answers it by naming none — which is also what lets that read skip
+ * the expiry sweep. A `status` added here would be a different question with a
+ * different cost.
+ */
+interface DecisionsCountInput {
+  userId: string;
+  agentId?: string;
+  /** ISO instant, INCLUSIVE — decisions raised at or after it. */
+  since: string;
+}
+interface DecisionsCountOutput {
+  count: number;
+}
+
 interface DecisionsGetInput {
   decisionId: string;
   userId: string;
@@ -1117,25 +1137,6 @@ const APPROVED_CAP_KINDS: readonly ApprovedCapKind[] = [
   'npm',
   'pypi',
   'mcp',
-];
-
-/**
- * Every status a decision can hold.
- *
- * The counter below needs "created, ANY status" and `decisions:list` takes one
- * exact status at a time (omitted means the open ones only). So the list is
- * walked. If a status is ever added to @ax/decisions and not added here, the
- * counter UNDERCOUNTS — which is why it is spelled out rather than inferred,
- * and why `routes-workspace-rail.test.ts` pins it against the wire union.
- */
-export const ALL_DECISION_STATUSES: readonly DecisionStatus[] = [
-  'pending',
-  'executed',
-  'approved-pending-agent',
-  'dismissed',
-  'stale',
-  'expired',
-  'failed',
 ];
 
 /**
@@ -2577,38 +2578,61 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
    *     precisely the drift §4.4's table exists to prevent, so the row waits
    *     for a real source.
    *
-   * See the PR's follow-ups for both.
+   * Building either producer was considered and declined — TASK-265. Both
+   * rows stay hidden until something real counts them; the undo trace the
+   * second would have needed was rejected outright.
+   *
+   * `windowDays` rides the wire beside the rows and NOTHING RENDERS IT — the
+   * period is baked into the surviving row's `definition` sentence, which is
+   * where §4.4 wants it. It is kept anyway, and since TASK-266 it is no longer
+   * decorative: it is the parameter this function turns into the `since` it
+   * asks `decisions:count` for, so the field and the number now provably
+   * describe the same window. A second reader of this payload gets the period
+   * in a form it does not have to parse out of English.
    */
   async function readCounters(
     userId: string,
     agentId: string,
   ): Promise<AgentRailData['counters']> {
-    if (!bus.hasService('decisions:list')) {
+    if (!bus.hasService('decisions:count')) {
       return {
         status: 'unavailable',
         rows: [],
         windowDays: COUNTER_WINDOW_DAYS,
       };
     }
-    const since = now().getTime() - COUNTER_WINDOW_DAYS * 24 * 60 * 60 * 1000;
-    const seen = new Set<string>();
+    const since = new Date(
+      now().getTime() - COUNTER_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    ).toISOString();
+    let value: number;
     try {
-      // `decisions:list` takes ONE exact status and defaults to the open ones,
-      // so "any status" is a walk of the union. The ids are deduped because a
-      // row could legitimately move between two of these reads.
-      for (const status of ALL_DECISION_STATUSES) {
-        const out = await bus.call<DecisionsListInput, DecisionsListOutput>(
-          'decisions:list',
-          initCtx,
-          { userId, agentId, status },
-        );
-        for (const d of out.decisions ?? []) {
-          const at = Date.parse(d?.createdAt ?? '');
-          if (!Number.isNaN(at) && at >= since && typeof d.id === 'string') {
-            seen.add(d.id);
-          }
-        }
+      // ONE question (TASK-266). This used to be a walk of all seven decision
+      // statuses, because `decisions:list` takes one exact status at a time —
+      // seven round trips per render of one agent's rail, each of which ran an
+      // expiry sweep before answering. `decisions:count` names no status, so
+      // "whatever you decided" is asked once and swept zero times; the plugin's
+      // own registration explains why skipping the sweep costs this number
+      // nothing.
+      //
+      // It also closes a small hole the walk had: a decision raised WHILE the
+      // seven reads were in flight, into a status already walked, was missed.
+      // One statement cannot miss it — there is no "already walked" any more.
+      const out = await bus.call<DecisionsCountInput, DecisionsCountOutput>(
+        'decisions:count',
+        initCtx,
+        { userId, agentId, since },
+      );
+      if (typeof out?.count !== 'number' || !Number.isFinite(out.count)) {
+        // A producer that answered with something that is not a number has
+        // told us nothing, and `Number(undefined) || 0` would turn that into a
+        // confident zero — "this agent has not bothered you all week" is a
+        // claim, and we are not entitled to make it from a broken answer.
+        // Design H7, and the same shape as the coverage read above, which
+        // refuses an answer that arrived "without fullyDescribedTools" rather
+        // than reading the missing field as an empty one.
+        throw new Error('decisions:count answered without a numeric count');
       }
+      value = out.count;
     } catch (err) {
       initCtx.logger.warn('workspace_rail_counters_failed', {
         agentId,
@@ -2623,7 +2647,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         {
           id: 'brought-to-you',
           label: 'Brought to you',
-          value: seen.size,
+          value,
           // THE written definition, shipped with the number. §4.4's whole point
           // is that this sentence and that integer travel together.
           definition:

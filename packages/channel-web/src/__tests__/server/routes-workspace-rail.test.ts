@@ -19,7 +19,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { HookBus, PluginError, makeAgentContext, type AgentContext } from '@ax/core';
 import {
-  ALL_DECISION_STATUSES,
   COUNTER_WINDOW_DAYS,
   RAIL_DESCRIPTION_MAX_CHARS,
   RAIL_LABEL_MAX_CHARS,
@@ -140,6 +139,10 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
   let wallGrants: Map<string, Array<{ kind: string; value: string }>>;
   let revoked: unknown[];
   let decisions: StoredDecisionLike[];
+  /** Every input `decisions:count` was handed this render, in order. */
+  let countCalls: Array<Record<string, unknown>>;
+  /** How many times the route reached for `decisions:list`. */
+  let listCalls: number;
 
   function handlers() {
     return makeWorkspaceHandlers({ bus, initCtx, now: () => NOW });
@@ -252,21 +255,40 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     });
   }
 
+  /**
+   * The two decision reads this route could use, both registered on purpose.
+   *
+   * `decisions:count` is the one the counter asks. `decisions:list` is
+   * registered too and does nothing but TALLY ITS OWN CALLS, because the
+   * defect this counter used to carry was invisible in the answer it gave:
+   * walking the seven statuses produced the right number, and seven reads to
+   * get it — each of which swept the expiry table on its way past. A number
+   * cannot show that. Only the reads can, so the reads are counted.
+   */
   function registerDecisions(): void {
-    bus.registerService('decisions:list', 'decisions', async (_c, i: unknown) => {
-      const { userId, agentId, status } = i as {
+    bus.registerService('decisions:count', 'decisions', async (_c, i: unknown) => {
+      countCalls.push(i as Record<string, unknown>);
+      const { userId, agentId, since } = i as {
         userId: string;
         agentId?: string;
-        status?: DecisionStatus;
+        since: string;
       };
       expect(userId).toBe('u1');
+      const from = Date.parse(since);
       return {
-        decisions: decisions.filter(
+        // ANY status, because the input names none. That is the same rule the
+        // real store applies, and stating it here is what keeps this stub from
+        // agreeing with a route that started filtering again.
+        count: decisions.filter(
           (d) =>
             (agentId === undefined || d.agentId === agentId) &&
-            (status === undefined || d.status === status),
-        ),
+            Date.parse(d.createdAt) >= from,
+        ).length,
       };
+    });
+    bus.registerService('decisions:list', 'decisions', async () => {
+      listCalls += 1;
+      return { decisions: [] };
     });
   }
 
@@ -294,6 +316,8 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     wallGrants = new Map();
     revoked = [];
     decisions = [];
+    countCalls = [];
+    listCalls = 0;
 
     bus.registerService('agents:resolve', 'agents', async (_c, i: unknown) => {
       const { agentId, userId } = i as { agentId: string; userId: string };
@@ -1094,27 +1118,68 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
 
   it('says the counter read failed rather than showing a zero', async () => {
     registerPolicy();
-    bus.registerService('decisions:list', 'decisions', async () => {
+    bus.registerService('decisions:count', 'decisions', async () => {
       throw new Error('db down');
     });
     const body = (await railFor()).body as AgentRailData;
     expect(body.counters).toMatchObject({ status: 'failed', rows: [] });
   });
 
-  it('walks every status the wire union declares', () => {
-    // A status added to @ax/decisions and not added here would silently
-    // UNDERCOUNT, which on this row means quietly claiming an agent bothered
-    // you less than it did.
-    const declared: DecisionStatus[] = [
-      'pending',
-      'executed',
-      'approved-pending-agent',
-      'dismissed',
-      'stale',
-      'expired',
-      'failed',
+  it('reads a non-numeric answer as failed, never as a zero', async () => {
+    // The counter's own version of this file's third reason for existing: an
+    // empty answer here is a claim about how much an agent bothered you, and
+    // "the read broke" must never be printed as "nothing happened".
+    registerPolicy();
+    bus.registerService('decisions:count', 'decisions', async () => ({ count: null }));
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.counters).toMatchObject({ status: 'failed', rows: [] });
+  });
+
+  it('asks the decisions plugin ONE question per render, not one per status', async () => {
+    // THE CARD (TASK-266). The old counter had no way to say "any status" —
+    // `decisions:list` takes one exact status — so it walked all seven, and
+    // every one of those reads swept the expiry table before answering. Seven
+    // sweeps to draw one integer.
+    //
+    // Asserted as READS, not as elapsed time: a machine that happens to be
+    // fast would hide the same seven round trips, and the sweeps they trigger
+    // cost the same whoever is measuring.
+    registerPolicy();
+    registerDecisions();
+    decisions = [
+      { id: 'd1', agentId: 'a1', status: 'pending', createdAt: iso(-1) },
+      { id: 'd2', agentId: 'a1', status: 'expired', createdAt: iso(-2) },
     ];
-    expect([...ALL_DECISION_STATUSES].sort()).toEqual([...declared].sort());
+    const body = (await railFor()).body as AgentRailData;
+
+    // Zero, not "fewer": the walk is GONE, not supplemented by a faster read
+    // alongside it. A route that asked both would still sweep seven times.
+    // This assertion is FIRST so the failure it reports before the fix is the
+    // defect's own number — seven — rather than a wrong total downstream of it.
+    expect(listCalls).toBe(0);
+    expect(countCalls).toHaveLength(1);
+    expect(body.counters.rows[0]?.value).toBe(2);
+  });
+
+  it('names no status at all, so a status added later cannot go uncounted', async () => {
+    registerPolicy();
+    registerDecisions();
+    decisions = [{ id: 'd1', agentId: 'a1', status: 'failed', createdAt: iso(-1) }];
+    const body = (await railFor()).body as AgentRailData;
+
+    expect(body.counters.rows[0]?.value).toBe(1);
+    // What replaces the enumeration this route used to carry. It spelled out
+    // all seven statuses, and a status added to @ax/decisions and not added
+    // here would have UNDERCOUNTED — quietly claiming an agent bothered you
+    // less often than it did. Naming none deletes the list that could go
+    // stale, so this asserts the absence rather than the contents.
+    expect(countCalls[0]).not.toHaveProperty('status');
+    // The scope and the window are the other half of the same question: this
+    // agent, and exactly the seven days the shipped sentence promises.
+    expect(countCalls[0]?.agentId).toBe('a1');
+    expect(Date.parse(String(countCalls[0]?.since))).toBe(
+      NOW.getTime() - COUNTER_WINDOW_DAYS * DAY_MS,
+    );
   });
 
   // -------------------------------------------------------------------------

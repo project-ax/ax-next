@@ -35,6 +35,8 @@ import type {
   DecisionReceipt,
   DecisionRaisedPayload,
   DecisionsApproveOutput,
+  DecisionsCountInput,
+  DecisionsCountOutput,
   DecisionsDismissOutput,
   DecisionsGetOutput,
   DecisionsListOutput,
@@ -2145,5 +2147,111 @@ describe('decisions canary — a replay stranded by a host crash', () => {
     expect((await readDecision(later, routineCtx(later), parked)).status).toBe(
       'approved-pending-agent',
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TASK-266. The rail's counter, as ONE question.
+//
+// The number the workspace rail draws is "decisions this agent raised for you
+// in the last 7 days, whatever you decided — including the ones that expired".
+// `decisions:list` takes one exact status, so answering that meant walking all
+// seven — and every one of those reads swept the expiry table before it
+// answered. Seven table writes to draw one integer, on every render.
+// ---------------------------------------------------------------------------
+describe('decisions canary — counting a window', () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  /** The instant these tests pretend it is, so the window has a real edge. */
+  const T_ASKED = new Date('2026-08-21T12:00:00.000Z');
+
+  /** A second held call. A DIFFERENT input, so the gate does not collapse it
+   * into the first (TASK-254 keys the collapse on the call's fingerprint). */
+  function otherCall(id: string, to: string): ToolCall {
+    return { id, name: HOLD_RULE.match.tool, input: { to } };
+  }
+
+  function countFor(
+    h: TestHarness,
+    input: Partial<DecisionsCountInput> & { since: string },
+  ): Promise<DecisionsCountOutput> {
+    return h.bus.call<DecisionsCountInput, DecisionsCountOutput>(
+      'decisions:count',
+      userCtx(h),
+      { userId: 'u1', agentId: 'a1', ...input },
+    );
+  }
+
+  it('counts what this agent raised in the window, whatever became of it', async () => {
+    let clock = new Date(T_ASKED.getTime() - 8 * DAY);
+    // A TTL long enough that nothing here expires on its own — this test is
+    // about the WINDOW, and an expiry firing inside it would be a second
+    // variable.
+    const h = await boot({ now: () => clock, ttlMs: 30 * DAY });
+
+    const tooOld = await holdAndId(h, userCtx(h), otherCall('c-old', 'old@b.c'));
+    clock = new Date(T_ASKED.getTime() - 2 * DAY);
+    const answered = await holdAndId(h, userCtx(h), otherCall('c-answered', 'yes@b.c'));
+    clock = new Date(T_ASKED.getTime() - 1 * DAY);
+    const open = await holdAndId(h, userCtx(h), otherCall('c-open', 'open@b.c'));
+
+    await h.bus.call<unknown, DecisionsDismissOutput>('decisions:dismiss', userCtx(h), {
+      decisionId: answered,
+      userId: 'u1',
+    });
+
+    clock = T_ASKED;
+    const since = new Date(T_ASKED.getTime() - 7 * DAY).toISOString();
+    // Two: the one still waiting and the one already turned down. A dismissal
+    // is still a time this agent stopped and asked, which is what the shipped
+    // sentence promises to count.
+    expect((await countFor(h, { since })).count).toBe(2);
+    // The eight-day-old one is out, and it is out because of WHEN it was
+    // raised, not what became of it — it is `pending`, exactly like `open`.
+    expect((await readDecision(h, userCtx(h), tooOld)).status).toBe('pending');
+    expect((await readDecision(h, userCtx(h), open)).status).toBe('pending');
+  });
+
+  it('a count expires nothing — asking for a number changes no row', async () => {
+    // WHERE THE SWEEP LIVES, after this card. It rides `decisions:list` (still
+    // — TASK-246 is its own card) and the maintenance timer, and it does NOT
+    // ride the counter. The count is invariant under it: expiry rewrites a
+    // status, and a count over a `createdAt` window naming no status cannot
+    // see the difference. So the worst case of not sweeping here is a number
+    // that is correct.
+    const h = await boot({ ttlMs: 0 });
+    const id = await holdAndId(h, routineCtx(h), CALL);
+    const since = new Date(Date.now() - 7 * DAY).toISOString();
+
+    expect((await countFor(h, { since })).count).toBe(1);
+    // Past its TTL and still pending: the count did not sweep on its way past.
+    expect((await readDecision(h, userCtx(h), id)).status).toBe('pending');
+
+    // The queue read still does, which is the half this card deliberately
+    // leaves alone — a pending card that has actually expired is a button that
+    // lies, and that surface is where it matters.
+    await h.bus.call<unknown, DecisionsListOutput>('decisions:list', userCtx(h), {
+      userId: 'u1',
+    });
+    expect((await readDecision(h, userCtx(h), id)).status).toBe('expired');
+
+    // And the number did not move when the row's status did.
+    expect((await countFor(h, { since })).count).toBe(1);
+  });
+
+  it('counts one person\'s questions — a team-mate on the same agent gets zero', async () => {
+    // The same rule `decisions:list` and `decisions:get` enforce. Reaching a
+    // shared agent is not being entitled to know what it asked somebody else.
+    const h = await boot();
+    await holdAndId(h, userCtx(h), CALL);
+    const since = new Date(Date.now() - 7 * DAY).toISOString();
+
+    expect((await countFor(h, { since })).count).toBe(1);
+    expect((await countFor(h, { since, userId: 'u2' })).count).toBe(0);
+  });
+
+  it('refuses a window it cannot read, rather than handing it to the database', async () => {
+    const h = await boot();
+    await expect(countFor(h, { since: 'last tuesday' })).rejects.toThrow(/since/);
+    await expect(countFor(h, { since: '' })).rejects.toThrow(/since/);
   });
 });

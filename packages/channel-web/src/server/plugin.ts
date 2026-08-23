@@ -63,7 +63,7 @@ const PLUGIN_NAME = '@ax/channel-web';
 //     write answers 503 when nothing is there to keep the promise.
 //     TASK-235 (AW-14) adds no hard call either: the rail's four blocks read
 //     tool-policy:*, agent-activity:get, tool:list, the two grant records and
-//     decisions:list, every one of them optional and every one of them with a
+//     decisions:count, every one of them optional and every one of them with a
 //     degradation that says "unknown", never "empty". It CLOSES two half-wired
 //     windows in doing so — tool-policy:list-capabilities (opened by TASK-224)
 //     and agent-activity:get (opened by TASK-229) now have production
@@ -293,10 +293,19 @@ export function createChannelWebServerPlugin(
             'approved-capability grants render without a Revoke control (there is no writer to honour one)',
         },
         {
-          // TASK-235 — the "This week" counter reads the decision store. A
-          // deployment without @ax/decisions renders no counters panel at all
-          // rather than a zero, because a zero is a claim.
+          // TASK-235 — the open decisions behind the queue and the approval
+          // cards in a thread. NOT the counter any more: TASK-266 moved that
+          // to `decisions:count`, below.
           hook: 'decisions:list',
+          degradation:
+            'the chat surface renders no approval cards and the decisions queue is empty (nothing records decisions here)',
+        },
+        {
+          // TASK-266 — the "This week" counter, in one read. A deployment
+          // without @ax/decisions renders no counters panel at all rather than
+          // a zero, because a zero is a claim about how much an agent bothered
+          // you and a missing producer is not evidence for it.
+          hook: 'decisions:count',
           degradation:
             'the rail renders no "This week" counters (nothing records decisions here)',
         },

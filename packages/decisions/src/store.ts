@@ -118,6 +118,28 @@ export interface DecisionListFilter {
 }
 
 /**
+ * How many decisions were raised for this person in a window (TASK-266).
+ *
+ * A THIRD filter rather than a flag on `DecisionListFilter`, for the same
+ * reason the receipt filter is its own: this is a different question with a
+ * different answer shape. `list` fetches rows in one exact status; this
+ * fetches no rows at all and names no status, and the two things a caller
+ * would get wrong by sharing a type — asking for a count and paying for the
+ * rows, or asking for a window and quietly getting only the open ones — are
+ * exactly the mistakes separate types make unwritable.
+ *
+ * Note what is NOT here: a status. See `DecisionsCountInput` for why its
+ * absence is what makes skipping the expiry sweep on this read correct rather
+ * than merely faster.
+ */
+export interface DecisionCountFilter {
+  ownerUserId: string;
+  agentId?: string | undefined;
+  /** ISO instant, INCLUSIVE — raised at or after it. */
+  since: string;
+}
+
+/**
  * One agent's resolved decisions, newest first, one page at a time.
  *
  * A separate filter from `DecisionListFilter` rather than three optional fields
@@ -188,6 +210,19 @@ export interface DecisionStore {
   /** `ownerUserId`, when given, is a scope filter and not a hint. */
   get(decisionId: string, ownerUserId?: string): Promise<Decision | null>;
   list(filter: DecisionListFilter): Promise<Decision[]>;
+
+  /**
+   * HOW MANY were raised in the window — counted in the database, not fetched
+   * and measured here.
+   *
+   * `list(...).length` is the obvious alternative and it is the wrong one
+   * twice over. It cannot express the question at all (list takes one exact
+   * status, so "any status" is seven round trips), and even if it could it
+   * would drag every matching row across the wire — call inputs, previews,
+   * authored sentences — to produce an integer. The row a counter needs is the
+   * one it never reads.
+   */
+  count(filter: DecisionCountFilter): Promise<number>;
 
   /**
    * The rows a receipt can be derived from, newest resolution first.
@@ -582,6 +617,26 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       // waiting longest is the thing most likely to be about to expire.
       const rows = await q.orderBy('created_at', 'asc').orderBy('decision_id', 'asc').execute();
       return rows.map(toDecision);
+    },
+
+    async count({ ownerUserId, agentId, since }) {
+      let q = db
+        .selectFrom(table)
+        .select((eb) => eb.fn.countAll().as('n'))
+        .where('owner_user_id', '=', ownerUserId)
+        // WHEN IT WAS RAISED, not when it was answered. The counter's sentence
+        // is about the agent stopping to ask, and plenty of the rows it counts
+        // were never answered — an expired one has a `resolved_at` written by
+        // a sweep, which is a fact about the clock rather than about the
+        // person, and a pending one has none.
+        .where('created_at', '>=', new Date(since));
+      if (agentId !== undefined) q = q.where('agent_id', '=', agentId);
+      const row = await q.executeTakeFirstOrThrow();
+      // `count(*)` is a bigint, and node-postgres hands bigints back as
+      // STRINGS to avoid losing precision it cannot represent. `Number` of that
+      // string is the conversion; a row count that overflows a double is not a
+      // thing this table can reach.
+      return Number(row.n);
     },
 
     async listReceiptCandidates({ ownerUserId, agentId, limit, before }) {

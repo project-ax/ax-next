@@ -110,6 +110,24 @@ export function createFakeStore(): FakeStore {
     },
 
     /**
+     * TASK-266's count, with the same two predicates the real query has and no
+     * third one. NAMING NO STATUS is the whole shape of the thing: a fake that
+     * quietly counted only the open rows — the default `list` applies — would
+     * let a caller's test agree with a query that answers a different
+     * question. `store.test.ts` runs the cases that matter against real
+     * Postgres.
+     */
+    async count({ ownerUserId, agentId, since }) {
+      return [...rows.values()]
+        .filter((r) => r.ownerUserId === ownerUserId)
+        .filter((r) => agentId === undefined || r.agentId === agentId)
+        // Parsed, not compared as strings. Two ISO instants that differ only
+        // in offset order correctly as instants and wrongly as text, and the
+        // real query compares instants.
+        .filter((r) => Date.parse(r.createdAt) >= Date.parse(since)).length;
+    },
+
+    /**
      * The same rule the real store pushes into SQL, in the shape this fake
      * uses for everything else. It is kept honest by `store.test.ts`, which
      * runs the receipt-candidate cases against both this and real Postgres —
