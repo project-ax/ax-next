@@ -630,6 +630,72 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     expect(body.grants).toMatchObject({ status: 'failed', rows: [] });
   });
 
+  /*
+    The wall half must never speak for the site half. An agent with no skills
+    and no connections has nothing to ask the wall about, and that vacuous
+    "nothing to read" used to count as a successful read for the WHOLE section
+    — so a `host-grants:list` that threw landed under "you haven't granted
+    anything", which is a claim we had just failed to check (H7).
+  */
+  it('says failed when the site read throws and the agent has no wall subjects', async () => {
+    registerPolicy();
+    bus.registerService('host-grants:list', 'host-grants', async () => {
+      throw new Error('db down');
+    });
+    bus.registerService('skills:approved-caps-list', 'skills', async () => ({
+      capabilities: [],
+    }));
+    // a1 carries no skillAttachments and no connectorAttachments: the wall is
+    // never asked anything.
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.grants.status).toBe('failed');
+  });
+
+  it('says failed when the site read throws even though the wall answered', async () => {
+    registerPolicy();
+    agents.set('a1', agent({ id: 'a1', skillAttachments: [{ skillId: 'inbox-triage' }] }));
+    bus.registerService('host-grants:list', 'host-grants', async () => {
+      throw new Error('db down');
+    });
+    bus.registerService('skills:approved-caps-list', 'skills', async () => ({
+      capabilities: [{ kind: 'npm', value: 'left-pad' }],
+    }));
+    const body = (await railFor()).body as AgentRailData;
+    // Half an answer is not an answer. The rows we did read cannot make the
+    // section's status true, because the reader would be reading a list that
+    // silently omits every site grant — and they do not ride out under a
+    // `failed` status either, so no consumer that forgets to check `status`
+    // can turn a short list back into a claim.
+    expect(body.grants).toMatchObject({ status: 'failed', rows: [] });
+  });
+
+  it('says failed when the wall read throws and the site read was clean', async () => {
+    // The mirror image of the two above, and the one that pins the card's
+    // actual thesis: the flag is tracked PER PRODUCER. Without this, deleting
+    // `failed = true` from the wall's catch leaves the whole rail suite green,
+    // and the symmetric bug — an agent whose approved-capability wall is
+    // unreadable rendering as "you haven't granted anything" — is free to come
+    // back.
+    registerPolicy();
+    agents.set('a1', agent({ id: 'a1', skillAttachments: [{ skillId: 'inbox-triage' }] }));
+    bus.registerService('host-grants:list', 'host-grants', async () => ({ hosts: [] }));
+    bus.registerService('skills:approved-caps-list', 'skills', async () => {
+      throw new Error('wall down');
+    });
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.grants.status).toBe('failed');
+  });
+
+  it('still reports a genuinely empty grant set as ok', async () => {
+    // The other direction, and the reason this is not just "always failed":
+    // every producer answered, and both said nothing. "You have granted this
+    // agent nothing" is then a claim we are entitled to make.
+    registerPolicy();
+    registerGrants();
+    const body = (await railFor()).body as AgentRailData;
+    expect(body.grants).toMatchObject({ status: 'ok', rows: [], incomplete: false });
+  });
+
   it('offers no revoke control when this deployment has no writer for it', async () => {
     registerPolicy();
     bus.registerService('host-grants:list', 'host-grants', async () => ({
