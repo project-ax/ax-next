@@ -175,10 +175,14 @@ describe('commitNotifyWithResync', () => {
     expect(result).toEqual({ parentVersion: 'v2', outcome: 'accepted' });
   });
 
-  it('true veto (no actualParent) → rollbackToBaseline; outcome "rolled-back", parentVersion unchanged', async () => {
+  it('terminal rejection (no actualParent) → rollbackToBaseline; outcome "rolled-back", parentVersion unchanged', async () => {
+    // No `recoverable` on the wire ⟹ recoverable ⟹ `--mixed`, so this is NOT a
+    // security veto (those always send `recoverable: false`; see the case
+    // below). Naming it one used to make this fixture read as proof of
+    // something it never exercised.
     const call = vi
       .fn()
-      .mockResolvedValue({ accepted: false, reason: 'security veto' });
+      .mockResolvedValue({ accepted: false, reason: 'bundle prerequisite not satisfied (baseline drift)' });
 
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
@@ -192,11 +196,11 @@ describe('commitNotifyWithResync', () => {
     expect(advanceBaselineMock).not.toHaveBeenCalled();
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
     expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
-    expect(result).toEqual({
-      parentVersion: 'v1',
-      outcome: 'rolled-back',
-      rejectionReason: 'security veto',
-    });
+    // The working tree survived, and the host's words stay off the wire out:
+    // baseline drift is a race the agent cannot address, and a plain retry may
+    // well clear it.
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+    expect(result.rejectionReason).toBeUndefined();
   });
 
   it('network/IPC throw → keeps the working tree; outcome "kept", parentVersion unchanged', async () => {
@@ -376,7 +380,13 @@ describe('commitNotifyWithResync', () => {
     });
   });
 
-  it('rejection without recoverable → mixed rollback (preserve work), reason still carried', async () => {
+  it('rejection without recoverable → mixed rollback (preserve work), and NO reason surfaced', async () => {
+    // The reason rides out on exactly the condition that destroys the work.
+    // Here nothing was destroyed — the files are still in the working tree —
+    // and the rejections that land here are races (concurrent writer, baseline
+    // drift) whose host reason is a `parent-mismatch:` line naming storage-tier
+    // commit ids. Surfacing that would tell the agent to address an objection
+    // that does not exist and would suppress the retry advice that is correct.
     const call = vi.fn().mockResolvedValue({ accepted: false, reason: 'baseline drift' });
     const result = await commitNotifyWithResync({
       client: fakeClient(call),
@@ -386,11 +396,8 @@ describe('commitNotifyWithResync', () => {
       reason: 'turn',
     });
     expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
-    expect(result).toEqual({
-      parentVersion: 'v1',
-      outcome: 'rolled-back',
-      rejectionReason: 'baseline drift',
-    });
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+    expect(result.rejectionReason).toBeUndefined();
   });
 
   it('a concurrent-writer rollback carries NO rejectionReason (a race is not an objection)', async () => {
@@ -399,7 +406,8 @@ describe('commitNotifyWithResync', () => {
     // line naming two storage-tier commit ids: nothing the agent can act on,
     // and backend vocabulary we must not put in front of the model. The
     // forwarder shows the plain retry message for this instead — correctly, a
-    // retry may well land.
+    // retry may well land. The host marks it recoverable (no `recoverable`
+    // field), which is what keeps the reason off.
     const call = vi.fn().mockResolvedValue({
       accepted: false,
       actualParent: 'v2',
@@ -421,7 +429,7 @@ describe('commitNotifyWithResync', () => {
   it('a re-sync EXHAUSTED rollback also carries NO rejectionReason', async () => {
     // Same rule at the other entrance to the concurrent-writer branch: we
     // re-synced MAX_RESYNC_ATTEMPTS times and the head kept moving. Still a
-    // race, still nothing to address.
+    // race, still recoverable, still nothing to address.
     const call = vi.fn().mockResolvedValue({
       accepted: false,
       actualParent: 'v2',
@@ -436,6 +444,30 @@ describe('commitNotifyWithResync', () => {
       reason: 'turn',
     });
     expect(call).toHaveBeenCalledTimes(MAX_RESYNC_ATTEMPTS + 1);
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+    expect(result.rejectionReason).toBeUndefined();
+  });
+
+  it('a parent-mismatch WITHOUT actualParent still carries NO rejectionReason', async () => {
+    // The host attaches `actualParent` only when it could resolve a head, so a
+    // race genuinely arrives without one — an empty-repo mismatch (the server
+    // backend sends `actualParent: null`, which the host handler drops), or a
+    // git-core integrity guard that throws with no cause at all. Keying the
+    // gate off `actualParent` would have let exactly these through, commit ids
+    // and all. `recoverable` is set on the branch itself and has no such gap.
+    const call = vi.fn().mockResolvedValue({
+      accepted: false,
+      reason:
+        'parent-mismatch: bundle tip 9f2c1ab does not descend from baseline 3d4e5f6',
+    });
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundleBytes: 'B',
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
     expect(result.rejectionReason).toBeUndefined();
   });
@@ -510,9 +542,11 @@ describe('flushWorkspaceToHost', () => {
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'kept' });
   });
 
-  it('staged bundle → workspace veto → outcome "rolled-back" (caller must NOT forward)', async () => {
+  it('staged bundle → recoverable rejection → "rolled-back" (caller must NOT forward)', async () => {
     commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_MIDTURN');
-    const call = vi.fn().mockResolvedValue({ accepted: false, reason: 'security veto' });
+    const call = vi
+      .fn()
+      .mockResolvedValue({ accepted: false, reason: 'bundle prerequisite not satisfied (baseline drift)' });
     const result = await flushWorkspaceToHost({
       client: fakeClient(call),
       root: ROOT,
@@ -520,18 +554,37 @@ describe('flushWorkspaceToHost', () => {
       reason: 'turn',
     });
     // The turn's commit was rolled back and nothing reached the host mirror, so
-    // the forwarder must surface an error rather than install an older draft.
-    // (This rejection is recoverable, so the reset is `--mixed` — the agent's
-    // file survives in the working tree; on a `recoverable: false` veto the
-    // reset is `--hard` and the file really is gone.)
+    // the forwarder must surface an error rather than install an older draft —
+    // even though this reset is `--mixed` and the agent's file survives in the
+    // working tree. Recoverable ⟹ no reason travels; the forwarder shows the
+    // retry message.
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
     expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
-    // The host's words travel with the outcome — this is what the forwarder
-    // renders into the tool error the model reads.
+    expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
+    expect(result.rejectionReason).toBeUndefined();
+  });
+
+  it('staged bundle → NON-recoverable veto → the host\'s reason travels with the outcome', async () => {
+    commitTurnAndBundleMock.mockResolvedValueOnce('BUNDLE_MIDTURN');
+    const call = vi.fn().mockResolvedValue({
+      accepted: false,
+      reason: '.ax/routines/nightly.md: schedule is not a valid cron expression',
+      recoverable: false,
+    });
+    const result = await flushWorkspaceToHost({
+      client: fakeClient(call),
+      root: ROOT,
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    // `--hard`: the file the agent just wrote is GONE. This is the one case
+    // where the agent needs the reason, and it is what the forwarder renders
+    // into the tool error the model reads.
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'hard');
     expect(result).toEqual({
       parentVersion: 'v1',
       outcome: 'rolled-back',
-      rejectionReason: 'security veto',
+      rejectionReason: '.ax/routines/nightly.md: schedule is not a valid cron expression',
     });
   });
 });

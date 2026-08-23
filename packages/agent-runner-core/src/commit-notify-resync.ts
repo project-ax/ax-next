@@ -23,22 +23,30 @@ export const MAX_RESYNC_ATTEMPTS = 3;
 export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
 
 /**
- * What a commit-notify attempt ended in, plus — when the host REFUSED the
- * bundle on its merits — the host's own words for why.
+ * What a commit-notify attempt ended in, plus — on a NON-RECOVERABLE refusal —
+ * the host's own words for why.
  *
- * `rejectionReason` exists so a refusal is legible to the agent instead of
- * dying inside this function: a hard-reset veto wipes the turn's work, and a
- * bare `rolled-back` gives the model nothing to correct. It is host-authored
- * prose, not a machine code — callers surface it, they don't branch on it.
+ * `rejectionReason` exists so that refusal is legible to the agent instead of
+ * dying inside this function: it is exactly the case where the rollback is
+ * `--hard`, so the turn's work is destroyed and a bare `rolled-back` gives the
+ * model nothing to correct. It is host-authored prose, not a machine code —
+ * callers surface it, they don't branch on it.
  *
- * It is absent on every non-rejection outcome, and deliberately absent on a
- * concurrent-writer rollback (`actualParent` set: re-sync exhausted, or no
- * baseline to re-sync from). That is a race, not an objection — the host's
- * reason there is a `parent-mismatch:` line naming two storage-tier commit
- * ids, which tells the agent nothing it can act on and would put backend
- * vocabulary in front of the model. The caller shows the retry message for it
- * instead, which is the correct advice: the same bundle may well land next
- * time.
+ * It is carried iff `recoverable === false` — the same wire field that picks
+ * `--hard` over `--mixed`. Two host branches set it, and both state a
+ * self-contained objection: the `workspace:pre-apply` veto (a validator's
+ * reason) and bundle-author verification (a sanitized fixed string).
+ *
+ * Everything else stays silent, deliberately. A concurrent-writer or
+ * baseline-drift rejection is a RACE, not an objection: it leaves the working
+ * tree alone (`--mixed`), a plain retry may well clear it, and the host's
+ * reason for it is a `parent-mismatch:` line naming two storage-tier commit
+ * ids — nothing the agent can act on, and backend vocabulary we must not put
+ * in front of the model. `actualParent` is NOT the discriminator for this: the
+ * host attaches it only when it could resolve a head, so a race can and does
+ * arrive without one (an empty-repo mismatch, or a git-core integrity guard
+ * that throws with no cause). `recoverable` is set on the branch itself and
+ * has no such gap.
  */
 export interface CommitNotifyResult {
   parentVersion: string | null;
@@ -219,19 +227,21 @@ export async function commitNotifyWithResync(input: {
     commitTrace(
       `[commit-trace] outcome=rolled-back (actualParent=${resp.actualParent ?? '-'} attempt=${attempt} mode=${mode})\n`,
     );
-    // Hand the host's stated reason back to the caller. Everything else on this
-    // path is write-only (a stderr line and an off-by-default commit trace), so
-    // this is the only channel by which the agent can learn what it did wrong.
+    // Hand the host's stated reason back to the caller when — and only when —
+    // we just destroyed the agent's work. Everything else on this path is
+    // write-only (a stderr line and an off-by-default commit trace), so this is
+    // the only channel by which the agent can learn what it did wrong.
     //
-    // ...but ONLY for a refusal on the merits. `actualParent` set means we got
-    // here from the concurrent-writer branch — re-sync exhausted, or no
-    // baseline to re-sync from — and its `reason` is a `parent-mismatch:` line
-    // naming two storage-tier commit ids. There is no objection to address, so
-    // we leave the field off and the forwarder shows the retry message.
+    // Keyed off the SAME `mode` that decided the reset, so the two can't drift:
+    // `hard` ⟺ `recoverable === false` ⟺ the host refused on the merits and
+    // stated a self-contained objection. A `mixed` rollback is a race
+    // (concurrent writer, baseline drift) whose reason is a `parent-mismatch:`
+    // line full of commit ids — no objection to address, and the forwarder's
+    // retry message is the right advice for it. See CommitNotifyResult.
     return {
       parentVersion: input.parentVersion,
       outcome: 'rolled-back',
-      ...(resp.actualParent !== undefined ? {} : { rejectionReason: resp.reason }),
+      ...(mode === 'hard' ? { rejectionReason: resp.reason } : {}),
     };
   }
 }
