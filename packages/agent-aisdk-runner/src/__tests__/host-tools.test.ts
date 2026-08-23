@@ -263,6 +263,7 @@ describe('buildHostTools', () => {
       preToolUse: vi.fn(async () => ({
         decision: 'deny' as const,
         reason: 'not on the allowlist',
+        cause: 'policy' as const,
       })),
     } as never);
     const { client, calls } = mkClient(async () => ({ output: 'should not run' }));
