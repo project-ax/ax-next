@@ -39,10 +39,12 @@ export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
  *
  * Everything else stays silent, deliberately. A concurrent-writer or
  * baseline-drift rejection is a RACE, not an objection: it leaves the working
- * tree alone (`--mixed`), a plain retry may well clear it, and the host's
- * reason for it is a `parent-mismatch:` line naming two storage-tier commit
- * ids — nothing the agent can act on, and backend vocabulary we must not put
- * in front of the model. `actualParent` is NOT the discriminator for this: the
+ * tree alone (`--mixed`) and a plain retry may well clear it. Its reason is
+ * either a `parent-mismatch:` line naming two storage-tier commit ids —
+ * backend vocabulary we must not put in front of the model — or the sanitized
+ * catch-all `'bundle prerequisite not satisfied (baseline drift)'`, which
+ * leaks nothing but tells the agent nothing either. Neither is actionable.
+ * `actualParent` is NOT the discriminator for this: the
  * host attaches it only when it could resolve a head, so a race can and does
  * arrive without one (an empty-repo mismatch, or a git-core integrity guard
  * that throws with no cause). `recoverable` is set on the branch itself and
@@ -235,9 +237,9 @@ export async function commitNotifyWithResync(input: {
     // Keyed off the SAME `mode` that decided the reset, so the two can't drift:
     // `hard` ⟺ `recoverable === false` ⟺ the host refused on the merits and
     // stated a self-contained objection. A `mixed` rollback is a race
-    // (concurrent writer, baseline drift) whose reason is a `parent-mismatch:`
-    // line full of commit ids — no objection to address, and the forwarder's
-    // retry message is the right advice for it. See CommitNotifyResult.
+    // (concurrent writer, baseline drift) whose reason is either commit-id
+    // noise or a sanitized catch-all — no objection to address either way, and
+    // the forwarder's retry message is the right advice. See CommitNotifyResult.
     return {
       parentVersion: input.parentVersion,
       outcome: 'rolled-back',

@@ -618,6 +618,16 @@ describe('flushPreconditionMessage', () => {
     }
   });
 
+  it('a rolled-back flush with NO reason still gets the retry message', () => {
+    // A real production shape: a mid-turn flush hits a concurrent-writer race,
+    // rolls back `--mixed`, and carries no reason. The forwarder must show the
+    // retry sentence — not the veto one with an empty objection in it.
+    const text = flushPreconditionMessage('skill_install', { outcome: 'rolled-back' });
+    expect(text).toContain('flush outcome: rolled-back');
+    expect(text).toContain('please try again');
+    expect(text).not.toContain('The host refused the change');
+  });
+
   it('punctuates a reason that does not end in a sentence', () => {
     // Reasons are prose from a plugin; nothing forces a trailing period, and
     // without one the next sentence runs straight on from theirs.
