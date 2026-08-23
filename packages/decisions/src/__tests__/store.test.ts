@@ -93,6 +93,7 @@ function base(over: Partial<Decision> = {}): Decision {
     // Stamped when the HOST actually made the call — the other half of
     // `consumedAt`, which records the agent making it.
     replayedAt: null,
+    replayAbandonedAt: null,
     replayError: null,
     ...over,
   };
@@ -925,6 +926,19 @@ describe('decisions store — the rows a receipt is derived from', () => {
         name: 'failed',
         over: { status: 'failed', resolvedAt: T_SOON, replayError: 'upstream 503' },
       },
+      {
+        // TASK-253's reclaim. Same status, same selection — only the SENTENCE
+        // differs, because a crashed flight cannot honestly report that
+        // nothing was completed. It is listed here so the SQL/receiptFor pair
+        // is pinned across the shape, not only the status.
+        name: 'failed after a stranded flight was reclaimed',
+        over: {
+          status: 'failed',
+          resolvedAt: T_SOON,
+          replayClaimedAt: T_SOON,
+          replayAbandonedAt: T_LATE,
+        },
+      },
     ],
   } satisfies Record<DecisionStatus, ReadonlyArray<{ name: string; over: Partial<Decision> }>>;
 
@@ -1039,5 +1053,198 @@ describe('decisions store — the rows a receipt is derived from', () => {
       limit: 3,
     });
     expect(again.map((d) => d.id)).toEqual(first.map((d) => d.id));
+  });
+});
+
+/**
+ * TASK-253 — the rows a crashed host leaves behind, and the one write that
+ * gets them out of the way.
+ *
+ * A stranded flight is a row that is `executed`, claimed, un-replayed and
+ * unconsumed with nothing left running behind it. THREE paths can produce one,
+ * and each is built here the way the plugin builds it rather than by writing
+ * the columns out by hand — a fixture that sets `replay_claimed_at` directly
+ * would keep passing after the path that sets it stopped existing.
+ *
+ * The reclaim FAILS the row. It does not retry it. That is the whole safety
+ * argument: reclaiming early cannot re-run anything, because nothing here runs
+ * anything — the worst it can do is drop an authorisation nobody could cash in
+ * anyway, and even that is guarded by the age cutoff the caller passes.
+ */
+describe('decisions store — reclaiming a stranded flight', () => {
+  /** The flight is taken at `T_SOON` (09:00:05) on every path below. */
+  const T_INSIDE = '2026-08-20T09:00:04.000Z';
+  const T_OUTSIDE = '2026-08-20T09:20:00.000Z';
+  const T_RECLAIMED = '2026-08-20T09:20:01.000Z';
+
+  /** The three ways a row ends up `executed` with a flight nobody is flying. */
+  const PATHS = {
+    /** Unattended, reversible, host executor present: claimed WITH the flight. */
+    async immediate(s: DecisionStore): Promise<void> {
+      await s.create(base());
+      await s.claimForApproval('dec_1', {
+        nowIso: T_SOON,
+        status: 'executed',
+        replayClaimedAt: T_SOON,
+      });
+    },
+    /** Unattended, irreversible: the sweep claims it when the window closes. */
+    async deferred(s: DecisionStore): Promise<void> {
+      await s.create(base({ irreversible: true }));
+      await s.claimForApproval('dec_1', {
+        nowIso: T0,
+        status: 'executed',
+        replayDueAt: T0,
+      });
+      const claimed = await s.claimDueReplays(T_SOON, 10);
+      expect(claimed).toHaveLength(1);
+    },
+    /** Attended, delivery failed: TASK-277 takes the flight after the claim. */
+    async fallback(s: DecisionStore): Promise<void> {
+      await s.create(base());
+      await s.claimForApproval('dec_1', { nowIso: T0, status: 'executed' });
+      expect(await s.claimReplayFlight('dec_1', T_SOON)).not.toBeNull();
+    },
+  };
+
+  /** Both stores, driven into the stranded state by one of the three paths. */
+  async function stranded(path: keyof typeof PATHS): Promise<DecisionStore[]> {
+    const stores = [await freshStore(), createFakeStore()];
+    for (const s of stores) {
+      await PATHS[path](s);
+      const row = (await s.get('dec_1'))!;
+      expect(row).toMatchObject({
+        status: 'executed',
+        replayClaimedAt: T_SOON,
+        replayedAt: null,
+        consumedAt: null,
+      });
+    }
+    return stores;
+  }
+
+  const reclaim = (s: DecisionStore, claimedBeforeIso: string): Promise<Decision[]> =>
+    s.reclaimStrandedFlights({ nowIso: T_RECLAIMED, claimedBeforeIso, limit: 10 });
+
+  for (const path of Object.keys(PATHS) as Array<keyof typeof PATHS>) {
+    it(`recovers a flight stranded on the ${path} path, and frees its index slot`, async () => {
+      for (const s of await stranded(path)) {
+        const [row] = await reclaim(s, T_OUTSIDE);
+        expect(row!.status).toBe('failed');
+        expect(row!.replayAbandonedAt).toBe(T_RECLAIMED);
+        // The call was never made and this write does not pretend otherwise.
+        expect(row!.replayedAt).toBeNull();
+
+        // The point of the whole exercise: the slot is free, so the same call
+        // can be held and approved again.
+        await s.create(base({ id: 'dec_2' }));
+        expect(
+          await s.claimForApproval('dec_2', { nowIso: T_RECLAIMED, status: 'executed' }),
+        ).not.toBeNull();
+
+        // And the abandoned row authorises NOTHING. A reclaim that left a
+        // cashable yes behind would be the double-send it exists to avoid.
+        expect((await s.get('dec_1'))!.status).toBe('failed');
+      }
+    });
+  }
+
+  it('leaves a flight younger than the cutoff alone — it may still be running', async () => {
+    for (const s of await stranded('immediate')) {
+      expect(await reclaim(s, T_INSIDE)).toEqual([]);
+      expect((await s.get('dec_1'))!.status).toBe('executed');
+    }
+  });
+
+  it('refuses an executed row with NO flight, however old it is', async () => {
+    // An attended approval waiting for its warm agent. It is a live standing
+    // authorisation with no clock on it, and failing it would cancel a yes
+    // nobody withdrew.
+    for (const s of [await freshStore(), createFakeStore()]) {
+      await s.create(base());
+      await s.claimForApproval('dec_1', { nowIso: T0, status: 'executed' });
+      expect(await reclaim(s, T_OUTSIDE)).toEqual([]);
+      expect((await s.get('dec_1'))!.status).toBe('executed');
+    }
+  });
+
+  it('refuses a row parked for the agent, and one that is still open', async () => {
+    for (const s of [await freshStore(), createFakeStore()]) {
+      await s.create(base({ id: 'dec_parked' }));
+      await s.claimForApproval('dec_parked', {
+        nowIso: T0,
+        status: 'approved-pending-agent',
+      });
+      await s.create(base({ id: 'dec_open', callFingerprint: 'fp-open' }));
+
+      expect(await reclaim(s, T_OUTSIDE)).toEqual([]);
+      expect((await s.get('dec_parked'))!.status).toBe('approved-pending-agent');
+      expect((await s.get('dec_open'))!.status).toBe('pending');
+    }
+  });
+
+  it('refuses a row whose call ALREADY went out', async () => {
+    // The row the host replayed and then crashed before anything else. There
+    // is nothing to abandon, and rewriting it to `failed` would replace a true
+    // receipt with a false one.
+    for (const s of await stranded('immediate')) {
+      await s.markReplayed('dec_1', T_SOON);
+      expect(await reclaim(s, T_OUTSIDE)).toEqual([]);
+      expect((await s.get('dec_1'))!.status).toBe('executed');
+    }
+  });
+
+  it('refuses a row the AGENT consumed', async () => {
+    // Unreachable through the store's own writes today — `claimReplayFlight`
+    // and `takeApproval` each refuse what the other has taken — so the row is
+    // written directly. The predicate is here so that if a fourth path ever
+    // produces the shape, the reclaim cannot cancel an authorisation that has
+    // already been spent.
+    for (const s of [await freshStore(), createFakeStore()]) {
+      await s.create(
+        base({
+          status: 'executed',
+          resolvedAt: T0,
+          replayClaimedAt: T_SOON,
+          consumedAt: T_SOON,
+        }),
+      );
+      expect(await reclaim(s, T_OUTSIDE)).toEqual([]);
+      expect((await s.get('dec_1'))!.status).toBe('executed');
+    }
+  });
+
+  it('is one-shot — a second pass over the same row finds nothing', async () => {
+    for (const s of await stranded('immediate')) {
+      expect(await reclaim(s, T_OUTSIDE)).toHaveLength(1);
+      expect(await reclaim(s, T_OUTSIDE)).toEqual([]);
+    }
+  });
+
+  it('honours the batch limit and leaves the rest for the next pass', async () => {
+    for (const s of [await freshStore(), createFakeStore()]) {
+      for (const i of [1, 2, 3]) {
+        await s.create(base({ id: `dec_${i}`, callFingerprint: `fp-${i}` }));
+        await s.claimForApproval(`dec_${i}`, {
+          nowIso: T_SOON,
+          status: 'executed',
+          replayClaimedAt: T_SOON,
+        });
+      }
+      expect(
+        await s.reclaimStrandedFlights({
+          nowIso: T_RECLAIMED,
+          claimedBeforeIso: T_OUTSIDE,
+          limit: 2,
+        }),
+      ).toHaveLength(2);
+      expect(
+        await s.reclaimStrandedFlights({
+          nowIso: T_RECLAIMED,
+          claimedBeforeIso: T_OUTSIDE,
+          limit: 2,
+        }),
+      ).toHaveLength(1);
+    }
   });
 });

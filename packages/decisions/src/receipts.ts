@@ -32,7 +32,7 @@
  * sentences are constants for the reason `templates.ts` gives at length — a
  * constant cannot be regexed out of a different outcome's line.
  */
-import { FAILED_RECEIPT, PENDING_AGENT_RECEIPT } from './templates.js';
+import { ABANDONED_RECEIPT, FAILED_RECEIPT, PENDING_AGENT_RECEIPT } from './templates.js';
 import type { Decision, DecisionReceipt, DecisionStatus } from './types.js';
 
 /**
@@ -63,9 +63,10 @@ export const RECEIPT_STATUSES: readonly DecisionStatus[] = [
  *
  * The three receipt-bearing shapes, in the order they are checked:
  *
- *   1. `failed` — the host tried the call and the tool threw. Checked FIRST so
- *      that a row carrying both a failure and a spent authorisation can never
- *      be reported as a success.
+ *   1. `failed` — the host tried the call and it did not go through. Checked
+ *      FIRST so that a row carrying both a failure and a spent authorisation
+ *      can never be reported as a success. Two sentences live here, and which
+ *      one depends on whether the tool ever reported back: see the branch.
  *   2. The call was MADE — `replayedAt` (the host performed it) or `consumedAt`
  *      (the agent took the standing authorisation up at the gate). Both mean
  *      the same thing to a reader, so both carry the same authored line.
@@ -111,7 +112,19 @@ export function receiptFor(decision: Decision): DecisionReceipt | null {
       decisionId: decision.id,
       agentId: decision.agentId,
       outcome: 'failed',
-      receipt: FAILED_RECEIPT,
+      // TWO KINDS OF `failed`, AND ONLY ONE OF THEM CAN SAY WHAT DID NOT
+      // HAPPEN. An ordinary failure is a report from the executor: it threw, so
+      // "nothing was completed" is something we were told. An ABANDONED row is
+      // the absence of a report — the host took the flight and died inside it
+      // (TASK-253), and the crash could have landed either side of the tool's
+      // own side effect. Printing the ordinary line over that would send a
+      // person off to redo an action that may already have happened.
+      //
+      // The outcome stays `failed` for both, deliberately. It is the same thing
+      // to a reader deciding what to do next — this did not go through, look at
+      // it — and splitting the union would make every renderer choose a
+      // rendering for a case it has no different rendering for.
+      receipt: decision.replayAbandonedAt !== null ? ABANDONED_RECEIPT : FAILED_RECEIPT,
       at,
       // The executor's own message, already sanitised on the way onto the row.
       // It rides BESIDE the receipt and is never the receipt: a host tool's

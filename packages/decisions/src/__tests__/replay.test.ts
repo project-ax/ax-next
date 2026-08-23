@@ -62,6 +62,7 @@ function base(over: Partial<Decision> = {}): Decision {
     // `receiptFor` both test it against null — so every row this factory made
     // looked, to those two, like a call the host had already performed.
     replayedAt: null,
+    replayAbandonedAt: null,
     replayError: null,
     ...over,
   };

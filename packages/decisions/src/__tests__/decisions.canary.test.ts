@@ -549,6 +549,9 @@ describe('decisions canary', () => {
         'replayDueAt',
         'replayClaimedAt',
         'replayedAt',
+        // TASK-253's. Stripped here, an abandoned row would read back as an
+        // ordinary failure and the receipt would claim nothing was completed.
+        'replayAbandonedAt',
         'replayError',
         'freshness',
         'summary',
@@ -1679,5 +1682,214 @@ describe('decisions canary — the freshness guard', () => {
     expect(out.decision!.status).toBe('stale');
     expect(out.path).toBeNull();
     expect(h.delivered).toEqual([]);
+  });
+});
+
+/**
+ * TASK-253 — the host dies with a call already on its way out.
+ *
+ * Every host replay is bracketed by two writes: one that TAKES the flight
+ * (`replay_claimed_at`) and one that records what happened (`markReplayed`,
+ * `markFailed`, `parkForAgent`). Claim first, then act, is deliberate — acting
+ * first would leave an action that happened behind a row that says it did not.
+ * The cost is the window between them, and a host that dies inside it leaves a
+ * row that is `executed`, claimed, and un-replayed forever: nothing retries it,
+ * nothing consumes it, undo refuses it, and it goes on occupying its
+ * `(agent, fingerprint)` slot in the partial unique index — so approving the
+ * same call again collides and, before this card, was absorbed in silence.
+ *
+ * The crash is simulated by CRASHING, not by mocking the store: a host executor
+ * that never returns, an approval nobody waits for, and then the whole harness
+ * torn down with the call still out. The row the next host reads is the one a
+ * real `SIGKILL` would have left, written by the real claim.
+ */
+describe('decisions canary — a replay stranded by a host crash', () => {
+  /** When the host that dies takes the flight. */
+  const T_CRASH = new Date('2026-08-21T09:00:00.000Z');
+  /**
+   * The next host's clock, well past any flight the bus could still be holding
+   * open — `HookBus` bounds every service call at 120 s by default, so an hour
+   * is not a guess about how long a tool takes, it is a bound plus room.
+   */
+  const T_RECOVERED = new Date(T_CRASH.getTime() + 60 * 60_000);
+  /** A minute after the crash: too soon to say the flight is not still running. */
+  const T_TOO_SOON = new Date(T_CRASH.getTime() + 60_000);
+
+  /**
+   * A host executor that takes the call and NEVER answers.
+   *
+   * It is never released, on purpose. Releasing it would run the settle writes
+   * against a torn-down harness, which is not what a crashed process does — a
+   * crashed process's in-flight call is simply gone. The pending promise is
+   * garbage the moment the harness is closed.
+   */
+  function hangingExecutor(h: TestHarness, toolName: string): { calls: ToolCall[] } {
+    const calls: ToolCall[] = [];
+    h.bus.registerService<ToolCall, unknown>(
+      `tool:execute:${toolName}`,
+      '@ax/decisions/test/hanging-tool',
+      async (_ctx, call) => {
+        calls.push(call);
+        return new Promise<never>(() => {});
+      },
+    );
+    return { calls };
+  }
+
+  async function waitFor(condition: () => boolean, what: string): Promise<void> {
+    for (let i = 0; i < 500; i += 1) {
+      if (condition()) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`timed out waiting for ${what}`);
+  }
+
+  function sweep(h: TestHarness): Promise<DecisionsSweepOutput> {
+    return h.bus.call<unknown, DecisionsSweepOutput>('decisions:sweep', routineCtx(h), {});
+  }
+
+  /**
+   * Hold, approve, let the host take the flight — then kill it.
+   *
+   * `attended` picks WHICH of the two entry points takes the flight. Both end
+   * at the same row shape and both have to be recoverable:
+   *
+   *   * unattended + a host executor + reversible — `claimForApproval` stamps
+   *     the flight in the claim itself (the `immediate` path);
+   *   * attended, with the session queue refusing — the row is claimed with no
+   *     flight, the delivery fails, and `claimReplayFlight` takes it afterwards
+   *     (TASK-277's fallback, which did not exist when this card was written).
+   */
+  async function strandOnACrash(attended: boolean): Promise<string> {
+    const dead = attended
+      ? await boot({ now: () => T_CRASH }, undefined, liveChannels(), {
+          throws: 'the session ended under us',
+        })
+      : await boot({ now: () => T_CRASH });
+    const ctx = attended ? userCtx(dead) : routineCtx(dead);
+    const hung = hangingExecutor(dead, HOLD_RULE.match.tool);
+
+    const id = await holdAndId(dead, ctx, CALL);
+    // Nobody awaits this: the host is about to die underneath it.
+    void approve(dead, ctx, id).catch(() => {});
+    await waitFor(() => hung.calls.length === 1, 'the host to take the flight');
+
+    // The shape a crash leaves, read back off the real row before we pull the
+    // plug. Asserting it here is what makes the recovery below a test of
+    // recovery rather than of a fixture somebody wrote by hand.
+    const stranded = await readDecision(dead, ctx, id);
+    expect(stranded.status).toBe('executed');
+    expect(stranded.replayClaimedAt).not.toBeNull();
+    expect(stranded.replayedAt).toBeNull();
+    expect(stranded.consumedAt).toBeNull();
+
+    // THE CRASH.
+    await harnesses.pop()!.close({ onError: () => {} });
+    return id;
+  }
+
+  it('recovers a flight the immediate path took and never came back from', async () => {
+    const id = await strandOnACrash(false);
+
+    const h = await boot({ now: () => T_RECOVERED });
+    const exec = recordExecutor(h, HOLD_RULE.match.tool);
+    expect((await sweep(h)).reclaimed).toBe(1);
+
+    // THE ASSERTION THAT MATTERS. The reclaim does not re-run the call and
+    // cannot: a status is a claim about what happened, and this epic keeps
+    // producing rows that read `executed` with nothing behind them. The
+    // executor's invocation count is the only thing that cannot be faked.
+    expect(exec.calls).toEqual([]);
+
+    const row = await readDecision(h, routineCtx(h), id);
+    expect(row.status).toBe('failed');
+    expect(row.replayAbandonedAt).not.toBeNull();
+    expect(row.replayedAt).toBeNull();
+
+    // And the receipt does not tell the person something we cannot know. The
+    // crash could have landed either side of the tool's own side effect, so
+    // "Nothing was completed" — the ordinary failure line — would be a claim we
+    // have no standing to make.
+    const receipts = await readReceipts(h);
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0]!.outcome).toBe('failed');
+    expect(receipts[0]!.receipt).not.toContain('Nothing was completed');
+  });
+
+  it("recovers a flight the ATTENDED fallback took and never came back from", async () => {
+    const id = await strandOnACrash(true);
+
+    const h = await boot({ now: () => T_RECOVERED });
+    const exec = recordExecutor(h, HOLD_RULE.match.tool);
+    expect((await sweep(h)).reclaimed).toBe(1);
+    expect(exec.calls).toEqual([]);
+    expect((await readDecision(h, userCtx(h), id)).status).toBe('failed');
+  });
+
+  it('leaves a flight alone while it could still be running, and says so out loud', async () => {
+    // The other half of the acceptance: BEFORE recovery, re-approving must not
+    // be a silent no-op either. It cannot succeed — the stranded row still
+    // holds the standing authorisation, and taking it away from a flight that
+    // might genuinely still be in progress is how one approval becomes two
+    // sends — so it has to fail, and be seen to.
+    await strandOnACrash(false);
+
+    const h = await boot({ now: () => T_TOO_SOON });
+    const exec = recordExecutor(h, HOLD_RULE.match.tool);
+    // A minute is not long enough to conclude anything. Nothing is reclaimed.
+    expect((await sweep(h)).reclaimed).toBe(0);
+
+    // The agent asks again; the person says yes again.
+    const second = await holdAndId(h, routineCtx(h), CALL);
+    const out = await approve(h, routineCtx(h), second);
+
+    expect(exec.calls).toEqual([]);
+    expect(out.executed).toBe(false);
+    // THE BUG: this used to come back with `error: null` and a row still
+    // reading `pending` — a button that did nothing and said nothing.
+    expect(out.error).not.toBeNull();
+    expect(out.decision!.status).toBe('pending');
+  });
+
+  it('lets the same call be approved again — and actually run — once it is recovered', async () => {
+    await strandOnACrash(false);
+
+    const h = await boot({ now: () => T_RECOVERED });
+    const exec = recordExecutor(h, HOLD_RULE.match.tool);
+    expect((await sweep(h)).reclaimed).toBe(1);
+    expect(exec.calls).toEqual([]);
+
+    // The slot is free, so the second approval is a real one.
+    const second = await holdAndId(h, routineCtx(h), CALL);
+    const out = await approve(h, routineCtx(h), second);
+    expect(out.executed).toBe(true);
+    expect(out.path).toBe('host-replays');
+    expect(out.error).toBeNull();
+    // ONCE. Not the reclaim plus this one.
+    expect(exec.calls).toHaveLength(1);
+    expect(exec.calls[0]).toEqual(CALL);
+  });
+
+  it('never reclaims a row that is not in flight at all, however long it sits', async () => {
+    // The counter-control, and the one that would hurt most if it broke. An
+    // ATTENDED approval waits for its warm agent with no flight and no clock —
+    // `approved-pending-agent` waits the same way. Both are live standing
+    // authorisations. Failing one because it is old would cancel a yes nobody
+    // withdrew.
+    const h = await boot({ now: () => T_CRASH });
+    const waiting = await holdAndId(h, userCtx(h), CALL);
+    expect((await approve(h, userCtx(h), waiting)).path).toBe('agent-executes');
+
+    const parked = await holdAndId(h, routineCtx(h), SANDBOX_CALL);
+    expect((await approve(h, routineCtx(h), parked)).decision!.status).toBe(
+      'approved-pending-agent',
+    );
+
+    const later = await boot({ now: () => T_RECOVERED });
+    expect((await sweep(later)).reclaimed).toBe(0);
+    expect((await readDecision(later, userCtx(later), waiting)).status).toBe('executed');
+    expect((await readDecision(later, routineCtx(later), parked)).status).toBe(
+      'approved-pending-agent',
+    );
   });
 });

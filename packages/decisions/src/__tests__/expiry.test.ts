@@ -8,7 +8,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import { HookBus, makeAgentContext, type ToolCall } from '@ax/core';
-import { runDueReplays, sweepExpired } from '../expiry.js';
+import {
+  reclaimStrandedReplays,
+  runDueReplays,
+  STRANDED_REPLAY_TIMEOUT_MS,
+  sweepExpired,
+} from '../expiry.js';
 import type { Decision } from '../types.js';
 import { createFakeStore } from './fake-store.js';
 
@@ -50,6 +55,8 @@ function base(over: Partial<Decision> = {}): Decision {
     consumedAt: null,
     replayDueAt: null,
     replayClaimedAt: null,
+    replayedAt: null,
+    replayAbandonedAt: null,
     replayError: null,
     ...over,
   };
@@ -202,5 +209,62 @@ describe('runDueReplays', () => {
 
     expect(ran).toBe(0);
     expect(calls).toBe(0);
+  });
+});
+
+/**
+ * The cutoff arithmetic, and nothing else — the predicates it feeds are pinned
+ * against real Postgres in `store.test.ts`, and the whole path is driven
+ * through a real crash in the canary.
+ *
+ * What is worth a hermetic test is the DIRECTION and the BOUNDARY: a sign error
+ * here would reclaim every flight the instant it was taken, which is the one
+ * outcome worse than the bug — an approval cancelled while its call is still on
+ * its way out.
+ */
+describe('reclaimStrandedReplays', () => {
+  function strandedAt(claimedAt: Date): ReturnType<typeof createFakeStore> {
+    const store = createFakeStore();
+    store.rows.set(
+      'dec_stranded',
+      base({
+        id: 'dec_stranded',
+        status: 'executed',
+        resolvedAt: claimedAt.toISOString(),
+        replayClaimedAt: claimedAt.toISOString(),
+      }),
+    );
+    return store;
+  }
+
+  it('takes a flight that has been out for exactly the timeout, and leaves one a millisecond short', async () => {
+    // Inclusive at the boundary, the same way `claimDueReplays` treats a
+    // replay that is due to the millisecond. A flight taken exactly
+    // `STRANDED_REPLAY_TIMEOUT_MS` ago has been out for exactly the timeout,
+    // and the timeout is what "long enough" means.
+    const onTheLine = new Date(NOW.getTime() - STRANDED_REPLAY_TIMEOUT_MS);
+    const store = strandedAt(onTheLine);
+    expect(await reclaimStrandedReplays({ store, now: NOW, logCtx })).toBe(1);
+    const row = store.rows.get('dec_stranded')!;
+    expect(row.status).toBe('failed');
+    expect(row.replayAbandonedAt).toBe(NOW.toISOString());
+
+    // And a millisecond short of it is left alone — which is the assertion
+    // that would catch a sign error, the one mistake here that matters: a
+    // cutoff of `now + timeout` would reclaim every flight the instant it was
+    // taken.
+    const younger = strandedAt(new Date(onTheLine.getTime() + 1));
+    expect(await reclaimStrandedReplays({ store: younger, now: NOW, logCtx })).toBe(0);
+    expect(younger.rows.get('dec_stranded')!.status).toBe('executed');
+  });
+
+  it('runs nothing — recovery is never a retry', async () => {
+    // The safety property stated as a test. `reclaimStrandedReplays` takes no
+    // bus and cannot reach an executor even in principle; this pins that the
+    // signature stays that way.
+    const store = strandedAt(new Date(NOW.getTime() - STRANDED_REPLAY_TIMEOUT_MS - 1));
+    await reclaimStrandedReplays({ store, now: NOW, logCtx });
+    expect(store.rows.get('dec_stranded')!.replayedAt).toBeNull();
+    expect(store.rows.get('dec_stranded')!.consumedAt).toBeNull();
   });
 });

@@ -244,10 +244,32 @@ export interface Decision {
    */
   replayedAt: string | null;
   /**
+   * When a sweep GAVE UP on a flight this host never came back from.
+   *
+   * Set only by the stranded-flight reclaim (TASK-253), and only on a row that
+   * is `failed`: the host stamped `replayClaimedAt`, died inside the call, and
+   * nothing was left to record what happened. The reclaim frees the standing
+   * authorisation the dead flight was holding, so the same call can be held and
+   * approved again.
+   *
+   * It exists because the row cannot otherwise tell the two kinds of `failed`
+   * apart, and the receipt has to. An ordinary failure is a REPORT — the
+   * executor threw, so "nothing was completed" is something we know. This is an
+   * ABSENCE: the crash could have landed either side of the tool's own side
+   * effect, so the only honest receipt is that we cannot say. See
+   * `ABANDONED_RECEIPT`.
+   */
+  replayAbandonedAt: string | null;
+  /**
    * The host executor's failure detail, sanitised. Kept for the audit trail
    * ONLY — the receipt a human reads is always the authored failure line, never
    * this string, because a host tool's message can quote model-authored input
    * back at us.
+   *
+   * Null on an abandoned row, and that is not an oversight: no executor ever
+   * reported anything, so there is no detail to carry. The reclaim does not
+   * write its own prose here — this field is the TOOL's words, and filling it
+   * with ours would make the audit trail unreadable as either.
    */
   replayError: string | null;
 }
@@ -327,9 +349,18 @@ export interface DecisionsApproveOutput {
    */
   path: ExecutionPath | null;
   /**
-   * The host executor's failure detail when the replay threw, sanitised. NOT a
-   * receipt: a renderer shows the authored failure line and this decision's id,
-   * never this string. Null on every other path.
+   * WHY THIS APPROVAL DID NOT DO WHAT IT LOOKS LIKE IT DID. Two things reach it,
+   * and neither is ever a receipt — a renderer shows the authored failure line
+   * and this decision's id, never this string:
+   *
+   *   * the host executor's own failure detail when the replay threw, sanitised;
+   *   * `CLAIM_REFUSED_DETAIL`, when the partial unique index refused the claim
+   *     because an identical call from this agent is already authorised and has
+   *     not been carried out. That refusal used to be absorbed in silence, which
+   *     is what made a replay stranded by a crash look like an approve button
+   *     that does nothing (TASK-253).
+   *
+   * Null when nothing went wrong, which includes every ordinary success.
    */
   error: string | null;
   /**
@@ -413,6 +444,16 @@ export interface DecisionsSweepInput {
 export interface DecisionsSweepOutput {
   /** Open decisions moved to `expired`. */
   expired: number;
+  /**
+   * Stranded flights RECLAIMED in this pass — rows a host took ownership of and
+   * never came back from, moved to `failed` so the standing authorisation they
+   * were holding is released (TASK-253).
+   *
+   * A count of rows GIVEN UP ON, never of calls made: the reclaim runs nothing,
+   * which is what makes reclaiming an early row survivable. A non-zero number
+   * here means a host died mid-replay and is worth an operator's attention.
+   */
+  reclaimed: number;
   /**
    * Deferred replays claimed and SETTLED in this pass — attempted and recorded,
    * whichever way they went. A replay that failed still counts here, because
@@ -521,6 +562,7 @@ export const DecisionSchema = z.object({
   replayDueAt: z.string().nullable(),
   replayClaimedAt: z.string().nullable(),
   replayedAt: z.string().nullable(),
+  replayAbandonedAt: z.string().nullable(),
   replayError: z.string().nullable(),
 }) as unknown as z.ZodType<Decision>;
 
@@ -555,6 +597,7 @@ export const DecisionsApproveOutputSchema = z.object({
 
 export const DecisionsSweepOutputSchema = z.object({
   expired: z.number(),
+  reclaimed: z.number(),
   replayed: z.number(),
 }) as unknown as z.ZodType<DecisionsSweepOutput>;
 

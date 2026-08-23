@@ -13,7 +13,7 @@ import {
   CONVERSATION_METADATA_HOOK,
 } from './attendance.js';
 import { deliverResolution, SESSION_QUEUE_HOOK } from './delivery.js';
-import { runDueReplays, sweepExpired } from './expiry.js';
+import { reclaimStrandedReplays, runDueReplays, sweepExpired } from './expiry.js';
 import { auditFreshnessPairs, checkFreshness } from './freshness.js';
 import {
   approveDecision,
@@ -27,6 +27,7 @@ import { createPreCallSubscriber, PLUGIN_NAME, type PolicyAnswer } from './pre-c
 import { receiptFor } from './receipts.js';
 import { replayContext, settleReplay } from './replay.js';
 import { createDecisionsStore, type DecisionStore } from './store.js';
+import { CLAIM_REFUSED_DETAIL } from './templates.js';
 import {
   DecisionsApproveOutputSchema,
   DecisionsDismissOutputSchema,
@@ -289,6 +290,17 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
         }
         return {
           expired: await sweepExpired(store!, now()),
+          // BEFORE the due replays, not after, and the order is not cosmetic.
+          // A stranded flight holds the `(agent, fingerprint)` slot its own
+          // decision needs; releasing it first means a re-held call approved
+          // in the same window is already unblocked by the time anything else
+          // in this pass runs. Nothing here runs a call, so putting it first
+          // costs nothing and cannot reorder any outward action.
+          reclaimed: await reclaimStrandedReplays({
+            store: store!,
+            now: now(),
+            logCtx: ctx,
+          }),
           replayed: await runDueReplays({
             store: store!,
             bus,
@@ -539,6 +551,23 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           // be the worst reading of it — the call is already authorised, and
           // nothing about that is an internal error. We absorb it and report
           // what is stored, exactly as we do when we lose the claim race.
+          //
+          // WHAT WE NO LONGER DO IS ABSORB IT IN SILENCE (TASK-253). The
+          // benign reading above is not the only one: a replay stranded by a
+          // host crash occupies the same slot and nothing will ever cash it,
+          // so the refusal reached a person as an approve button that did
+          // nothing and said nothing. The click is still absorbed — the row
+          // stays open, because a decision this handler could not claim has
+          // not been answered — but the answer now carries WHY. The reclaim
+          // sweep is what eventually clears the stranded case; until it runs,
+          // saying so is the difference between a slow recovery and an
+          // invisible one.
+          //
+          // We do NOT try to tell the two apart here by reading the row that
+          // holds the slot. That row is keyed on `(agent, fingerprint)` and
+          // not on the owner, so on a team agent it can belong to somebody
+          // else — and this handler has already established only that the
+          // caller owns THIS decision.
           let claimed: Decision | null;
           try {
             claimed = await store!.claimForApproval(decisionId, {
@@ -558,7 +587,13 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
               decisionId,
               err: err instanceof Error ? err : new Error(String(err)),
             });
-            return settle(null);
+            return {
+              ...(await settle(null)),
+              // AUTHORED, and never the database's own words. A unique-violation
+              // message names the index, the table and the conflicting values —
+              // one of which is a call fingerprint derived from model output.
+              error: CLAIM_REFUSED_DETAIL,
+            };
           }
           // We LOST the race. That is not "no such decision" — it is "somebody
           // else already resolved this one", and the honest answer is their

@@ -240,15 +240,59 @@ export interface DecisionStore {
    *   * it cannot be undone (`restore` refuses a claimed row);
    *   * it keeps occupying its `(agent, fingerprint)` slot in the partial
    *     unique index, so a fresh hold of the same call cannot be approved —
-   *     the claim collides and `decisions:approve` absorbs it with a
-   *     `decision_claim_refused` warning, which from the outside looks like an
-   *     approve button that does nothing.
+   *     the claim collides and `decisions:approve` absorbs it, saying why
+   *     (`CLAIM_REFUSED_DETAIL`) but resolving nothing.
    *
    * All of that is wrong in the SAFE direction — visible inaction rather than a
-   * silent double-send, which is what a lease-and-reaper scheme risks. A
-   * follow-up card owns the recovery path.
+   * silent double-send, which is what a lease-and-reaper scheme risks. What
+   * TASK-253 added is not a retry, for exactly that reason: see
+   * `reclaimStrandedFlights`, which gives the row up rather than re-running it,
+   * and hands the slot back.
    */
   claimDueReplays(nowIso: string, limit: number): Promise<Decision[]>;
+
+  /**
+   * GIVE UP on flights nobody is flying — the recovery `claimDueReplays` above
+   * describes the need for (TASK-253).
+   *
+   * A stranded row is `executed`, claimed, un-replayed and unconsumed, left by a
+   * host that died between taking the flight and recording what happened. Three
+   * paths can produce one, and all three end at the same shape: the `immediate`
+   * claim in `decisions:approve`, this file's `claimDueReplays`, and TASK-277's
+   * `claimReplayFlight` on the attended fallback.
+   *
+   * IT MOVES THE ROW TO `failed`. IT DOES NOT RETRY IT, AND THAT IS THE ENTIRE
+   * SAFETY ARGUMENT. We cannot know which side of the tool's own side effect
+   * the crash landed on — the executor may have returned microseconds before
+   * the process died — so re-running the call is a coin-flip on a double send,
+   * which on this surface is strictly worse than the bug being fixed. Because
+   * nothing here runs anything, reclaiming a row EARLY cannot execute a call
+   * twice on its own: the worst it can do is release an authorisation a
+   * still-running flight was holding, and even then a human has to approve the
+   * same call again before a second one goes out.
+   *
+   * `claimedBeforeIso` is the caller's age cutoff and it is belt to that
+   * braces: `HookBus` bounds every service call at 120 s by default, so a flight
+   * older than a cutoff comfortably past that ceiling cannot still be inside its
+   * `bus.call` in any host, this one or another replica. See
+   * `STRANDED_REPLAY_TIMEOUT_MS`.
+   *
+   * The predicates are the same three columns `restore`, `takeApproval` and
+   * `claimReplayFlight` guard, for the same reason — plus the age comparison,
+   * which is also what keeps every ATTENDED approval out of reach: those are
+   * `executed`, unconsumed, un-replayed and arbitrarily old, they carry no
+   * flight, and nothing is wrong with them.
+   *
+   * `replay_error` is deliberately left alone. It carries the TOOL's words, and
+   * no tool ever spoke here.
+   */
+  reclaimStrandedFlights(opts: {
+    /** Stamped as `replayAbandonedAt`, which is what the receipt reads. */
+    nowIso: string;
+    /** INCLUSIVE — a flight taken at this instant has been out long enough. */
+    claimedBeforeIso: string;
+    limit: number;
+  }): Promise<Decision[]>;
 
   /**
    * Consume the standing authorisation for this (agent, call shape), if there
@@ -522,6 +566,63 @@ export function createDecisionsStore(db: Kysely<DecisionsDatabase>): DecisionSto
       return rows.map(toDecision);
     },
 
+    async reclaimStrandedFlights({ nowIso, claimedBeforeIso, limit }) {
+      // Select then update, the same two steps `claimDueReplays` takes and for
+      // the same reason: Postgres has no `UPDATE ... LIMIT`, and a maintenance
+      // sweep that can rewrite an unbounded number of rows in one statement is
+      // a sweep that eventually takes the table with it.
+      const stale = await db
+        .selectFrom(table)
+        .select('decision_id')
+        .where('status', '=', 'executed')
+        // THE PREDICATE THAT MAKES THIS A STRANDED FLIGHT and not simply an old
+        // approval. An attended `executed` row waits for its warm agent with
+        // `replay_claimed_at` NULL, for as long as it takes — and `NULL <=
+        // anything` is unknown, so this comparison excludes every one of them
+        // as well as every flight that is merely too recent. Failing an
+        // attended row would cancel a yes nobody withdrew; `store.test.ts`
+        // pins both halves.
+        .where('replay_claimed_at', '<=', new Date(claimedBeforeIso))
+        // Nothing went out under it…
+        .where('replayed_at', 'is', null)
+        // …and the agent did not spend it either. Unreachable together with a
+        // flight through this file's own writes today; the predicate is here so
+        // that a fourth path producing the shape cannot cancel an authorisation
+        // that has already been cashed.
+        .where('consumed_at', 'is', null)
+        .orderBy('replay_claimed_at', 'asc')
+        .limit(limit)
+        .execute();
+      if (stale.length === 0) return [];
+
+      const rows = await db
+        .updateTable(table)
+        .set({
+          status: 'failed',
+          replay_abandoned_at: new Date(nowIso),
+          // A stranded row never has one, but mirroring `markFailed` keeps
+          // "a terminal row has nothing pending" true on every terminal write
+          // rather than on nearly every one.
+          replay_due_at: null,
+        })
+        .where(
+          'decision_id',
+          'in',
+          stale.map((d) => d.decision_id),
+        )
+        // Re-stated, not assumed: between the read above and this write another
+        // replica's sweep, a returning executor's `markReplayed`, or a
+        // consuming agent could have moved the row. Whoever moved it owns what
+        // it says, and this write must then match nothing.
+        .where('status', '=', 'executed')
+        .where('replay_claimed_at', '<=', new Date(claimedBeforeIso))
+        .where('replayed_at', 'is', null)
+        .where('consumed_at', 'is', null)
+        .returningAll()
+        .execute();
+      return rows.map(toDecision);
+    },
+
     async takeApproval(agentId, callFingerprint, nowIso) {
       const row = await db
         .updateTable(table)
@@ -588,6 +689,8 @@ function fromDecision(d: Decision): DecisionRow {
     replay_claimed_at:
       d.replayClaimedAt === null ? null : new Date(d.replayClaimedAt),
     replayed_at: d.replayedAt === null ? null : new Date(d.replayedAt),
+    replay_abandoned_at:
+      d.replayAbandonedAt === null ? null : new Date(d.replayAbandonedAt),
     replay_error: d.replayError,
   };
 }
@@ -629,6 +732,8 @@ function toDecision(row: DecisionRow): Decision {
     replayClaimedAt:
       row.replay_claimed_at === null ? null : row.replay_claimed_at.toISOString(),
     replayedAt: row.replayed_at === null ? null : row.replayed_at.toISOString(),
+    replayAbandonedAt:
+      row.replay_abandoned_at === null ? null : row.replay_abandoned_at.toISOString(),
     replayError: row.replay_error,
   };
 }

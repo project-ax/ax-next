@@ -124,6 +124,7 @@ export function createFakeStore(): FakeStore {
         replayDueAt: replayDueAt ?? null,
         replayClaimedAt: replayClaimedAt ?? null,
         replayedAt: null,
+        replayAbandonedAt: null,
         replayError: null,
       };
       rows.set(decisionId, next);
@@ -272,6 +273,39 @@ export function createFakeStore(): FakeStore {
         }
       }
       return claimed;
+    },
+
+    /**
+     * Mirrors the real store's predicates, with the null check spelled out.
+     *
+     * SQL does not need it — `NULL <= anything` is unknown, so the age
+     * comparison already excludes every attended approval waiting for its warm
+     * agent. `Date.parse(null)` being NaN makes JS agree by a route nobody
+     * should have to reconstruct while reading a test double, so it is written
+     * down here. Stricter than the real store is safe; the reverse would not be.
+     */
+    async reclaimStrandedFlights({ nowIso, claimedBeforeIso, limit }) {
+      const reclaimed: Decision[] = [];
+      for (const [id, row] of rows) {
+        if (reclaimed.length >= limit) break;
+        if (
+          row.status === 'executed' &&
+          row.replayClaimedAt !== null &&
+          Date.parse(row.replayClaimedAt) <= Date.parse(claimedBeforeIso) &&
+          row.replayedAt === null &&
+          row.consumedAt === null
+        ) {
+          const next: Decision = {
+            ...row,
+            status: 'failed',
+            replayAbandonedAt: nowIso,
+            replayDueAt: null,
+          };
+          rows.set(id, next);
+          reclaimed.push(next);
+        }
+      }
+      return reclaimed;
     },
 
     async takeApproval(agentId, callFingerprint, nowIso) {

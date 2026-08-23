@@ -196,6 +196,47 @@ export const FAILED_RECEIPT =
   'It tried to do this, and it did not work. Nothing was completed.';
 
 /**
+ * The receipt when the host TOOK the call and never came back — it died with
+ * the replay in flight, and a later sweep reclaimed the row (TASK-253).
+ *
+ * IT IS NOT `FAILED_RECEIPT`, AND THE DIFFERENCE IS THE WHOLE REASON THIS
+ * CONSTANT EXISTS. That line ends "Nothing was completed", which is a report
+ * from the executor: the tool threw, so we know what did not happen. Here we
+ * know nothing of the kind. The process died somewhere inside the call, and
+ * the crash could have landed on either side of the tool's own side effect —
+ * the email may be sent, the invite may be out. Printing "nothing was
+ * completed" over that would be the same class of lie as claiming an unsent
+ * message was sent (design H1), pointed the other way, and it is the more
+ * expensive one: a person who believes it goes and does the thing again.
+ *
+ * So it says what we actually have, and it says what to do about it. Warm,
+ * plain, and honest about the limit — the house voice for "we do not know".
+ */
+export const ABANDONED_RECEIPT =
+  'This was interrupted while it was running, so we cannot tell you whether ' +
+  'it finished. Worth checking before you approve it again.';
+
+/**
+ * Why an approval did nothing, when it did nothing.
+ *
+ * `decisions:approve` absorbs the partial unique index's refusal — a second
+ * standing authorisation for the same (agent, call shape) — rather than
+ * turning it into a 500, because the usual cause is benign: the agent held the
+ * identical call twice and a person answered both cards. But absorbing it in
+ * SILENCE is what made a stranded flight look like an approve button that does
+ * nothing, which is the whole of TASK-253. The click is still absorbed; it just
+ * says why now.
+ *
+ * Deliberately vague about WHICH row is holding the slot. Naming it would mean
+ * reading a row this caller was never entitled to see — the standing
+ * authorisation is keyed on `(agent, fingerprint)`, not on the owner, so on a
+ * team agent it can belong to somebody else.
+ */
+export const CLAIM_REFUSED_DETAIL =
+  'An identical request from this agent is already approved and has not been ' +
+  'carried out yet, so this approval was not recorded.';
+
+/**
  * The receipt when the host cannot replay the call at all — a tool that only
  * runs inside the sandbox next to the agent, which the host has no way to
  * reach once the turn has ended. This is not a failure: nothing was
