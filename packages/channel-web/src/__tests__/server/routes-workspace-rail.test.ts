@@ -663,7 +663,26 @@ describe('GET /api/workspace/agents/:agentId/rail', () => {
     const body = (await railFor()).body as AgentRailData;
     // Half an answer is not an answer. The rows we did read cannot make the
     // section's status true, because the reader would be reading a list that
-    // silently omits every site grant.
+    // silently omits every site grant — and they do not ride out under a
+    // `failed` status either, so no consumer that forgets to check `status`
+    // can turn a short list back into a claim.
+    expect(body.grants).toMatchObject({ status: 'failed', rows: [] });
+  });
+
+  it('says failed when the wall read throws and the site read was clean', async () => {
+    // The mirror image of the two above, and the one that pins the card's
+    // actual thesis: the flag is tracked PER PRODUCER. Without this, deleting
+    // `failed = true` from the wall's catch leaves the whole rail suite green,
+    // and the symmetric bug — an agent whose approved-capability wall is
+    // unreadable rendering as "you haven't granted anything" — is free to come
+    // back.
+    registerPolicy();
+    agents.set('a1', agent({ id: 'a1', skillAttachments: [{ skillId: 'inbox-triage' }] }));
+    bus.registerService('host-grants:list', 'host-grants', async () => ({ hosts: [] }));
+    bus.registerService('skills:approved-caps-list', 'skills', async () => {
+      throw new Error('wall down');
+    });
+    const body = (await railFor()).body as AgentRailData;
     expect(body.grants.status).toBe('failed');
   });
 

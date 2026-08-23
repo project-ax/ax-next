@@ -2382,12 +2382,19 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
 
     return {
       // ANY producer that threw makes this `failed`, not an empty-or-short
-      // list. The rows are still carried — they are true — but the status is
-      // the section's claim, and "you have granted this agent nothing" (or
-      // "…only these") is a claim we cannot make from a read that broke. H7:
-      // "we don't know" must never render as "there is nothing here".
+      // list: "you have granted this agent nothing" (or "…only these") is a
+      // claim we cannot make from a read that broke. H7 — "we don't know" must
+      // never render as "there is nothing here".
+      //
+      // The partial rows go with it, even though each one is individually
+      // true. The rail already gates on `status`, so this costs nothing today;
+      // it is here so that the NEXT consumer — a second surface, a snapshot,
+      // anything reading `rows` without reading `status` — cannot render a
+      // short list under a failure and turn it back into a claim. Same
+      // discipline as `readPermissions`, which drops its catalog rows when the
+      // policy read fails.
       status: failed ? 'failed' : 'ok',
-      rows: dedupeGrants(rows),
+      rows: failed ? [] : dedupeGrants(rows),
       incomplete,
     };
   }
