@@ -134,6 +134,13 @@ export function createValidatorSkillPlugin(cfg: ValidatorSkillConfig = {}): Plug
                   `${c.path}: SDK-config paths are host-only; agent ` +
                   `writes would escalate SDK behavior. See ` +
                   `docs/notes/2026-05-17-sdk-setting-sources-audit.md.`,
+                // Name the one path we are refusing (TASK-287). The refusal is
+                // unchanged — this path is as forbidden as it ever was — but
+                // saying WHICH path lets the runner drop just this file
+                // instead of every file the agent wrote. `CLAUDE.md` is on
+                // this list and is an entirely ordinary thing for a coding
+                // agent to write, so the collateral was routine.
+                offendingPaths: [c.path],
               });
             }
           }

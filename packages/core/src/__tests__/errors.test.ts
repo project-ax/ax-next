@@ -112,3 +112,19 @@ describe('hold', () => {
     ).toBe(false);
   });
 });
+
+describe('reject() offendingPaths (TASK-287)', () => {
+  it('carries the paths a rejection is about', () => {
+    const r = reject({ reason: 'nope', offendingPaths: ['CLAUDE.md'] });
+    expect(r.offendingPaths).toEqual(['CLAUDE.md']);
+  });
+
+  it('omits the key entirely when absent or empty', () => {
+    // Absent and "present but empty" must not be two different things
+    // downstream: a consumer checks `length > 0` to decide whether a rejection
+    // can be scoped, and an empty array would read as "some paths, none of
+    // them" — which is the whole-batch case wearing the scoped case's clothes.
+    expect('offendingPaths' in reject({ reason: 'nope' })).toBe(false);
+    expect('offendingPaths' in reject({ reason: 'nope', offendingPaths: [] })).toBe(false);
+  });
+});

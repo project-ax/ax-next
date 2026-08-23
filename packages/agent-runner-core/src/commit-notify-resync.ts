@@ -27,15 +27,20 @@ export type CommitNotifyOutcome = 'accepted' | 'rolled-back' | 'kept';
  * the host's own words for why.
  *
  * `rejectionReason` exists so that refusal is legible to the agent instead of
- * dying inside this function: it is exactly the case where the rollback is
- * `--hard`, so the turn's work is destroyed and a bare `rolled-back` gives the
- * model nothing to correct. It is host-authored prose, not a machine code —
- * callers surface it, they don't branch on it.
+ * dying inside this function: something the agent wrote has just been taken
+ * away from it, and a bare `rolled-back` gives the model nothing to correct.
+ * It is host-authored prose, not a machine code — callers surface it, they
+ * don't branch on it.
  *
- * It is carried iff `recoverable === false` — the same wire field that picks
- * `--hard` over `--mixed`. Two host branches set it, and both state a
- * self-contained objection: the `workspace:pre-apply` veto (a validator's
- * reason) and bundle-author verification (a sanitized fixed string).
+ * It is carried iff `recoverable === false`. Two host branches set that, and
+ * both state a self-contained objection: the `workspace:pre-apply` veto (a
+ * validator's reason) and bundle-author verification (a sanitized fixed
+ * string).
+ *
+ * Note it is NOT keyed off the reset mode, which it once was. Since TASK-287 a
+ * refusal the host can pin to specific paths resets `--mixed` and deletes only
+ * those — still `recoverable === false`, and still very much something the
+ * agent needs told about. Keying off `--hard` would silence exactly that case.
  *
  * Everything else stays silent, deliberately. A concurrent-writer or
  * baseline-drift rejection is a RACE, not an objection: it leaves the working
@@ -221,29 +226,49 @@ export async function commitNotifyWithResync(input: {
       process.stderr.write(`runner: workspace rejected: ${resp.reason}\n`);
     }
     // Per-path rollback (Phase 2): preserve the agent's work by default
-    // (`--mixed`), only HARD-reset a non-recoverable rejection (SDK-config veto /
-    // tampered bundle, signaled by `recoverable: false`) so a perpetually-vetoed
-    // write can't wedge the atomic transcript bundle.
-    const mode: 'mixed' | 'hard' = resp.recoverable === false ? 'hard' : 'mixed';
-    await rollbackToBaseline(root, mode);
+    // (`--mixed`). A non-recoverable rejection (`recoverable: false`) is one
+    // whose content must NOT survive the turn — we re-stage the entire tree
+    // next turn, so a preserved refused file would be re-submitted and refused
+    // again forever, wedging the agent.
+    //
+    // TASK-287: when the host can say WHICH paths it refused (`discardPaths`),
+    // that argument only reaches those paths. Reset `--mixed` and delete
+    // exactly them: the refused content is gone — so it cannot be re-submitted,
+    // and the wedge is answered by construction — while unrelated work from
+    // this turn (and from every earlier turn still sitting above the last
+    // accepted baseline) survives. Only a refusal with no paths to point at
+    // still takes the whole tree down.
+    const scopedDiscards =
+      resp.recoverable === false ? (resp.discardPaths ?? []) : [];
+    const mode: 'mixed' | 'hard' =
+      resp.recoverable === false && scopedDiscards.length === 0 ? 'hard' : 'mixed';
+    await rollbackToBaseline(root, mode, scopedDiscards);
     commitTrace(
-      `[commit-trace] outcome=rolled-back (actualParent=${resp.actualParent ?? '-'} attempt=${attempt} mode=${mode})\n`,
+      `[commit-trace] outcome=rolled-back (actualParent=${resp.actualParent ?? '-'} attempt=${attempt} mode=${mode} discarded=${scopedDiscards.length})\n`,
     );
     // Hand the host's stated reason back to the caller when — and only when —
-    // we just destroyed the agent's work. Everything else on this path is
+    // the host refused on the merits. Everything else on this path is
     // write-only (a stderr line and an off-by-default commit trace), so this is
     // the only channel by which the agent can learn what it did wrong.
     //
-    // Keyed off the SAME `mode` that decided the reset, so the two can't drift:
-    // `hard` ⟺ `recoverable === false` ⟺ the host refused on the merits and
-    // stated a self-contained objection. A `mixed` rollback is a race
-    // (concurrent writer, baseline drift) whose reason is either commit-id
-    // noise or a sanitized catch-all — no objection to address either way, and
-    // the forwarder's retry message is the right advice. See CommitNotifyResult.
+    // Keyed off `recoverable === false`, which is the actual condition: the
+    // host objected to the content and said why. Everything else that lands
+    // here is a race (concurrent writer, baseline drift) whose reason is either
+    // commit-id noise or a sanitized catch-all — no objection to address, and
+    // the forwarder's retry message is the right advice.
+    //
+    // NOT keyed off `mode === 'hard'`, which it used to be. That read the same
+    // for as long as the two were synonyms, and stopped the moment a refusal
+    // could be scoped (TASK-287): a scoped veto resets `--mixed`, so keying off
+    // the mode would have silently dropped the reason on exactly the path the
+    // agent most needs it — refused, a file deleted under it, and told nothing.
+    // That would have reverted TASK-240 without a single test going red, which
+    // is why the two are decoupled here rather than left to drift.
+    // See CommitNotifyResult.
     return {
       parentVersion: input.parentVersion,
       outcome: 'rolled-back',
-      ...(mode === 'hard' ? { rejectionReason: resp.reason } : {}),
+      ...(resp.recoverable === false ? { rejectionReason: resp.reason } : {}),
     };
   }
 }

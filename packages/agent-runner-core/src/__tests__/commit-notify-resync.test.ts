@@ -195,7 +195,7 @@ describe('commitNotifyWithResync', () => {
     expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
     expect(advanceBaselineMock).not.toHaveBeenCalled();
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
-    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed', []);
     // The working tree survived, and the host's words stay off the wire out:
     // baseline drift is a race the agent cannot address, and a plain retry may
     // well clear it.
@@ -336,7 +336,7 @@ describe('commitNotifyWithResync', () => {
     expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
     expect(advanceBaselineMock).not.toHaveBeenCalled();
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
-    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed', []);
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
   });
 
@@ -356,7 +356,7 @@ describe('commitNotifyWithResync', () => {
 
     expect(resyncBaselineAndReplayMock).not.toHaveBeenCalled();
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
-    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed', []);
     expect(result).toEqual({ parentVersion: null, outcome: 'rolled-back' });
   });
 
@@ -369,7 +369,7 @@ describe('commitNotifyWithResync', () => {
       parentVersion: 'v1',
       reason: 'turn',
     });
-    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'hard');
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'hard', []);
     // A hard rollback discards the turn's work. If the reason died here, the
     // agent would only ever learn that something was thrown away, never what
     // the host objected to — so it must ride out with the outcome.
@@ -378,6 +378,53 @@ describe('commitNotifyWithResync', () => {
       outcome: 'rolled-back',
       rejectionReason: 'SDK-config',
     });
+  });
+
+  it('TASK-287: recoverable:false WITH discardPaths → scoped --mixed, and the reason still travels', async () => {
+    // The whole point of the change, and the trap inside it. Scoping the veto
+    // moves it off `--hard`; `rejectionReason` used to be keyed off exactly
+    // that, so this is the test that stops the fix from silently reverting
+    // TASK-240 and leaving the agent both wedged and uninformed.
+    const call = vi.fn().mockResolvedValue({
+      accepted: false,
+      reason: 'CLAUDE.md: SDK-config paths are host-only',
+      recoverable: false,
+      discardPaths: ['CLAUDE.md'],
+    });
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundleBytes: 'B',
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    // `--mixed` + a named path: everything else the agent wrote this turn (and
+    // in every earlier turn still above the baseline) stays on disk.
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed', ['CLAUDE.md']);
+    expect(result).toEqual({
+      parentVersion: 'v1',
+      outcome: 'rolled-back',
+      rejectionReason: 'CLAUDE.md: SDK-config paths are host-only',
+    });
+  });
+
+  it('TASK-287: discardPaths on a RECOVERABLE rejection is ignored', async () => {
+    // `discardPaths` only means anything alongside `recoverable: false`. A
+    // recoverable rejection is a race, and races do not get to delete files.
+    const call = vi.fn().mockResolvedValue({
+      accepted: false,
+      reason: 'baseline drift',
+      discardPaths: ['CLAUDE.md'],
+    });
+    const result = await commitNotifyWithResync({
+      client: fakeClient(call),
+      root: ROOT,
+      bundleBytes: 'B',
+      parentVersion: 'v1',
+      reason: 'turn',
+    });
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed', []);
+    expect(result.rejectionReason).toBeUndefined();
   });
 
   it('rejection without recoverable → mixed rollback (preserve work), and NO reason surfaced', async () => {
@@ -395,7 +442,7 @@ describe('commitNotifyWithResync', () => {
       parentVersion: 'v1',
       reason: 'turn',
     });
-    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed', []);
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
     expect(result.rejectionReason).toBeUndefined();
   });
@@ -421,7 +468,7 @@ describe('commitNotifyWithResync', () => {
       parentVersion: null,
       reason: 'turn',
     });
-    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed', []);
     expect(result).toEqual({ parentVersion: null, outcome: 'rolled-back' });
     expect(result.rejectionReason).toBeUndefined();
   });
@@ -467,7 +514,7 @@ describe('commitNotifyWithResync', () => {
       parentVersion: 'v1',
       reason: 'turn',
     });
-    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed', []);
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
     expect(result.rejectionReason).toBeUndefined();
   });
@@ -559,7 +606,7 @@ describe('flushWorkspaceToHost', () => {
     // working tree. Recoverable ⟹ no reason travels; the forwarder shows the
     // retry message.
     expect(rollbackToBaselineMock).toHaveBeenCalledTimes(1);
-    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed');
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'mixed', []);
     expect(result).toEqual({ parentVersion: 'v1', outcome: 'rolled-back' });
     expect(result.rejectionReason).toBeUndefined();
   });
@@ -580,7 +627,7 @@ describe('flushWorkspaceToHost', () => {
     // `--hard`: the file the agent just wrote is GONE. This is the one case
     // where the agent needs the reason, and it is what the forwarder renders
     // into the tool error the model reads.
-    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'hard');
+    expect(rollbackToBaselineMock).toHaveBeenCalledWith(ROOT, 'hard', []);
     expect(result).toEqual({
       parentVersion: 'v1',
       outcome: 'rolled-back',

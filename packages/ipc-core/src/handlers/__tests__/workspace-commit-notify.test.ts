@@ -354,10 +354,14 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
   it('a pre-apply veto returns accepted:false with recoverable:false', async () => {
     // Set up the bundler mocks to succeed so the handler reaches the
     // pre-apply stage. The workspace:pre-apply subscriber then rejects,
-    // which must surface as { accepted: false, recoverable: false } —
-    // an SDK-config veto must be CLEARED (hard-reset) not preserved
-    // (--mixed), otherwise the bad key re-vetoes every subsequent turn
-    // and wedges the agent permanently.
+    // which must surface as { accepted: false, recoverable: false } — a
+    // refused write must be CLEARED, not preserved, because the runner
+    // re-stages its whole tree every turn: a preserved refused file would be
+    // re-submitted and refused again forever, wedging the agent (B1).
+    //
+    // This subscriber names no offending path, so the runner has nothing to
+    // scope the clear to and falls back to the whole-tree reset. The scoped
+    // case is the next test.
     prepareScratchRepoMock.mockResolvedValueOnce({
       ...DEFAULT_SCRATCH,
       dispose: vi.fn().mockResolvedValue(undefined),
@@ -393,6 +397,149 @@ describe('workspace.commit-notify handler — pre-apply veto', () => {
     );
     expect(result.status).toBe(200);
     expect(result.body).toMatchObject({ accepted: false, recoverable: false });
+    // Nothing to scope to ⟹ no `discardPaths` ⟹ the runner keeps its
+    // whole-tree behaviour. `toMatchObject` would not have caught a stray one.
+    expect((result.body as { discardPaths?: unknown }).discardPaths).toBeUndefined();
+  });
+
+  it('TASK-287: a veto that names its path scopes the discard to that path', async () => {
+    // The realistic trigger: an agent writes CLAUDE.md (a policy-visible exact
+    // path, and one @ax/validator-skill refuses unconditionally) in the same
+    // turn it wrote real work. Before TASK-287 the whole turn — plus every
+    // earlier turn still above the last accepted baseline — went with it.
+    prepareScratchRepoMock.mockResolvedValueOnce({
+      ...DEFAULT_SCRATCH,
+      dispose: vi.fn().mockResolvedValue(undefined),
+    });
+    verifyBundleAuthorMock.mockResolvedValueOnce(undefined);
+    walkBundleChangesMock.mockResolvedValueOnce([
+      { path: 'CLAUDE.md', kind: 'put', content: new Uint8Array([1]) },
+      { path: '.ax/notes/keep.md', kind: 'put', content: new Uint8Array([2]) },
+    ]);
+
+    const probe = makePhase3Probe('@ax/test-scoped-veto-probe');
+    const bus = new HookBus();
+    await bootstrap({ bus, plugins: [probe], config: {} });
+    bus.subscribe(
+      'workspace:pre-apply',
+      '@ax/validator-skill',
+      async () =>
+        reject({
+          reason: 'CLAUDE.md: SDK-config paths are host-only',
+          offendingPaths: ['CLAUDE.md'],
+        }),
+    );
+    const ctx = makeAgentContext({
+      sessionId: 'wcn-scoped',
+      agentId: 'wcn-agent-scoped',
+      userId: 'wcn-user-scoped',
+    });
+
+    const result = await workspaceCommitNotifyHandler(
+      { parentVersion: null, reason: 'turn', bundleBytes: 'UEFDSwAAAAA=' },
+      ctx,
+      bus,
+    );
+
+    expect(result.status).toBe(200);
+    // Still refused, still non-recoverable — the veto is exactly as strict.
+    // What changed is that the runner is told WHICH file to drop, so
+    // `.ax/notes/keep.md` is not collateral.
+    expect(result.body).toMatchObject({
+      accepted: false,
+      recoverable: false,
+      discardPaths: ['CLAUDE.md'],
+    });
+  });
+
+  it('TASK-287: a path the batch never contained is refused, not forwarded', async () => {
+    // Fail CLOSED. `discardPaths` becomes `rm` targets inside the sandbox, and
+    // a subscriber naming something we did not send it means we have lost
+    // track of what the veto is about — so we drop the scoping entirely and
+    // take the whole-tree reset rather than act on an unrecognised path.
+    prepareScratchRepoMock.mockResolvedValueOnce({
+      ...DEFAULT_SCRATCH,
+      dispose: vi.fn().mockResolvedValue(undefined),
+    });
+    verifyBundleAuthorMock.mockResolvedValueOnce(undefined);
+    walkBundleChangesMock.mockResolvedValueOnce([
+      { path: 'CLAUDE.md', kind: 'put', content: new Uint8Array([1]) },
+    ]);
+
+    const probe = makePhase3Probe('@ax/test-unknown-path-probe');
+    const bus = new HookBus();
+    await bootstrap({ bus, plugins: [probe], config: {} });
+    bus.subscribe(
+      'workspace:pre-apply',
+      '@ax/test-rogue-subscriber',
+      async () =>
+        reject({
+          reason: 'nope',
+          offendingPaths: ['CLAUDE.md', '../../etc/passwd'],
+        }),
+    );
+    const warn = vi.fn();
+    const ctx = makeAgentContext({
+      sessionId: 'wcn-unknown',
+      agentId: 'wcn-agent-unknown',
+      userId: 'wcn-user-unknown',
+      logger: {
+        debug: vi.fn(),
+        info: vi.fn(),
+        warn,
+        error: vi.fn(),
+        child: vi.fn(),
+      } as unknown as AgentContext['logger'],
+    });
+
+    const result = await workspaceCommitNotifyHandler(
+      { parentVersion: null, reason: 'turn', bundleBytes: 'UEFDSwAAAAA=' },
+      ctx,
+      bus,
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({ accepted: false, recoverable: false });
+    expect((result.body as { discardPaths?: unknown }).discardPaths).toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(
+      'workspace_pre_apply_discard_paths_unrecognized',
+      expect.objectContaining({ unrecognized: ['../../etc/passwd'] }),
+    );
+  });
+
+  it('TASK-287: author-verify failure keeps the unscoped whole-tree reset', async () => {
+    // The two `recoverable: false` branches must NOT collapse into one. Here
+    // we could not establish who authored the bundle, so nothing it claims to
+    // contain can be believed and there is no trustworthy path set to name —
+    // "keep the rest" is not a coherent offer. This branch stays whole-tree.
+    prepareScratchRepoMock.mockResolvedValueOnce({
+      ...DEFAULT_SCRATCH,
+      dispose: vi.fn().mockResolvedValue(undefined),
+    });
+    verifyBundleAuthorMock.mockRejectedValueOnce(new Error('bad author: attacker <x@y>'));
+
+    const probe = makePhase3Probe('@ax/test-author-verify-probe');
+    const bus = new HookBus();
+    await bootstrap({ bus, plugins: [probe], config: {} });
+    const ctx = makeAgentContext({
+      sessionId: 'wcn-author',
+      agentId: 'wcn-agent-author',
+      userId: 'wcn-user-author',
+    });
+
+    const result = await workspaceCommitNotifyHandler(
+      { parentVersion: null, reason: 'turn', bundleBytes: 'UEFDSwAAAAA=' },
+      ctx,
+      bus,
+    );
+
+    expect(result.status).toBe(200);
+    expect(result.body).toMatchObject({
+      accepted: false,
+      reason: 'bundle author verification failed',
+      recoverable: false,
+    });
+    expect((result.body as { discardPaths?: unknown }).discardPaths).toBeUndefined();
   });
 
   it('logs the veto reason and the plugin that vetoed', async () => {

@@ -347,3 +347,23 @@ describe('HookBus — service-boundary enforcement', () => {
     }
   });
 });
+
+describe('HookBus — a scoped rejection survives the fire (TASK-287)', () => {
+  it('spreads offendingPaths through, like it does Hold', () => {
+    // Same mechanism `Hold` depends on. A bus that reconstructed
+    // `{rejected, reason, source}` would silently drop this field and the
+    // workspace veto would go back to being unscoped — with nothing going red.
+    const bus = new HookBus();
+    bus.subscribe('workspace:pre-apply', '@ax/test-scoped-rejecter', async () =>
+      reject({ reason: 'CLAUDE.md: host-only', offendingPaths: ['CLAUDE.md'] }),
+    );
+    return bus
+      .fire('workspace:pre-apply', silentCtx(), { changes: [] })
+      .then((result) => {
+        expect(isRejection(result)).toBe(true);
+        if (result.rejected !== true) return;
+        expect(result.offendingPaths).toEqual(['CLAUDE.md']);
+        expect(result.source).toBe('@ax/test-scoped-rejecter');
+      });
+  });
+});

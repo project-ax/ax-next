@@ -464,24 +464,106 @@ export async function advanceBaseline(root: string): Promise<void> {
 /**
  * Roll HEAD back to `refs/heads/baseline` after the host vetoes a turn.
  *
- * - mode 'mixed' (recoverable veto — the default for everything except a hard
- *   security veto): `git reset --mixed baseline` moves HEAD/main + index to
- *   baseline but PRESERVES the working tree, so the agent's just-written files
- *   survive and it can fix them in place (kills the B1 blind-retry loop). The
- *   baseline ref is untouched, so the next turn re-stages + re-attempts —
- *   no baseline desync.
- * - mode 'hard' (SDK-config veto / tampered bundle): `git reset --hard baseline`
- *   ALSO wipes the working tree, clearing a write that must not persist (else it
- *   re-vetoes the atomic transcript bundle every turn).
+ * - mode 'mixed' (recoverable veto — the default): `git reset --mixed baseline`
+ *   moves HEAD/main + index to baseline but PRESERVES the working tree, so the
+ *   agent's just-written files survive and it can fix them in place (kills the
+ *   B1 blind-retry loop). The baseline ref is untouched, so the next turn
+ *   re-stages + re-attempts — no baseline desync.
+ * - mode 'hard' (a refusal with nothing specific to point at — a tampered
+ *   bundle): `git reset --hard baseline` ALSO wipes the working tree.
+ *
+ * `discardPaths` scopes that second case (TASK-287). A refusal the host CAN
+ * pin to specific paths arrives as mode 'mixed' plus those paths: we keep the
+ * rest of the tree and delete only the named files. The refused content still
+ * must not persist — the next turn re-stages everything, so leaving it would
+ * re-submit it and earn the same refusal forever, wedging the agent — but that
+ * argument only ever applied to the refused file, never to the unrelated work
+ * sitting beside it (or to earlier turns' work still above the baseline).
+ *
+ * Entries are treated as untrusted: absolutes, parent-escapes, anything under
+ * `.git/`, and anything whose real parent directory resolves outside `root`
+ * are skipped rather than acted on.
+ *
+ * Before a reset that destroys content, HEAD is parked under
+ * `refs/ax-vetoed/` — the turn commit already exists (commitTurnAndBundle
+ * commits BEFORE the host is asked), so a reset only de-references it. The
+ * park keeps a name on it for the session's lifetime, which makes a vetoed
+ * turn inspectable instead of merely reflog-archaeology. It is never shipped:
+ * the turn bundle is built from `baseline..main main` and touches no other ref.
  */
 export async function rollbackToBaseline(
   root: string,
   mode: 'mixed' | 'hard',
+  discardPaths: readonly string[] = [],
 ): Promise<void> {
+  const destructive = mode === 'hard' || discardPaths.length > 0;
+  if (destructive) {
+    // Best-effort by design: failing to park must never block the rollback,
+    // because NOT resetting is the outcome that wedges the agent.
+    const parked = await runGit([
+      '-C',
+      root,
+      'update-ref',
+      `refs/ax-vetoed/${Date.now()}-${Math.random().toString(36).slice(2, 10)}`,
+      'HEAD',
+    ]);
+    if (parked.code !== 0) {
+      process.stderr.write(
+        `runner: could not park vetoed HEAD (${parked.stderr.trim()})\n`,
+      );
+    }
+  }
+
   await expectOk(
     await runGit(['-C', root, 'reset', `--${mode}`, 'baseline']),
     `git reset --${mode} baseline`,
   );
+
+  if (discardPaths.length === 0) return;
+
+  // `--mixed` left the refused files on disk (that is the whole point of using
+  // it); remove exactly the named ones now.
+  const rootReal = await fs.realpath(root);
+  for (const p of discardPaths) {
+    const resolved = resolveInsideWorkspace(rootReal, p);
+    if (resolved === null) {
+      process.stderr.write(`runner: refusing to discard out-of-workspace path ${p}\n`);
+      continue;
+    }
+    // A symlinked ancestor could point the textual path outside the workspace,
+    // so re-check containment against the parent's REAL location before
+    // unlinking. `recursive: false` — these are file changes, never a subtree.
+    let parentReal: string;
+    try {
+      parentReal = await fs.realpath(path.dirname(resolved));
+    } catch {
+      continue; // Parent is gone; nothing to remove.
+    }
+    if (parentReal !== rootReal && !parentReal.startsWith(rootReal + path.sep)) {
+      process.stderr.write(`runner: refusing to discard out-of-workspace path ${p}\n`);
+      continue;
+    }
+    await fs.rm(path.join(parentReal, path.basename(resolved)), { force: true });
+  }
+}
+
+/**
+ * Resolve a host-supplied workspace-relative path, or `null` if it is not one.
+ *
+ * Rejects absolute paths, NUL bytes, anything that escapes `root` via `..`,
+ * and anything inside `.git/` (the repo's own machinery is not agent content
+ * and a delete there could corrupt the workspace outright).
+ */
+function resolveInsideWorkspace(rootReal: string, p: string): string | null {
+  if (p === '' || p.includes('\u0000') || path.isAbsolute(p)) return null;
+  const resolved = path.resolve(rootReal, p);
+  const rel = path.relative(rootReal, resolved);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    return null;
+  }
+  const first = rel.split(path.sep)[0];
+  if (first === '.git') return null;
+  return resolved;
 }
 
 /**

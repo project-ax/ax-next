@@ -62,6 +62,9 @@ describe('@ax/validator-routine — workspace:pre-apply', () => {
     expect(r.rejected).toBe(true);
     if (!r.rejected) return;
     expect(r.reason).toMatch(/\.ax\/routines\/bad\.md/);
+    // TASK-287: naming the file lets the runner discard this routine rather
+    // than the agent's whole turn.
+    expect(r.offendingPaths).toEqual(['.ax/routines/bad.md']);
   });
 
   it('accepts webhook routine with valid path (Phase C K1 reject-flip)', async () => {
@@ -98,6 +101,11 @@ describe('@ax/validator-routine — workspace:pre-apply', () => {
     // know exactly which two files clash.
     expect(r.reason).toMatch(/\.ax\/routines\/a\.md/);
     expect(r.reason).toMatch(/\.ax\/routines\/b\.md/);
+    // ...but only the SECOND is discarded (TASK-287). `a.md` is a perfectly
+    // valid routine that happened to get there first; dropping either one
+    // alone resolves the clash, and dropping `a.md` too would destroy work the
+    // agent was never told was wrong.
+    expect(r.offendingPaths).toEqual(['.ax/routines/b.md']);
   });
 
   it('accepts two webhook routines in the same batch with different trigger.paths', async () => {
@@ -184,6 +192,7 @@ describe('@ax/validator-routine — workspace:pre-apply', () => {
     expect(r.reason).toMatch(/\.ax\/routines\/gh\.md/);
     expect(r.reason).toMatch(/hmac\.secretRef/);
     expect(r.reason).toMatch(/routine:agt-1:\.ax\/routines\/gh\.md:hmac/);
+    expect(r.offendingPaths).toEqual(['.ax/routines/gh.md']);
   });
 
   it('vetoes webhook routine whose hmac.secretRef references a different agentId', async () => {
