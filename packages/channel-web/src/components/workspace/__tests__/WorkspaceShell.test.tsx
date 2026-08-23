@@ -4,13 +4,14 @@
  * STATE, not a fixture. These tests pin both halves of that — what the shell
  * shows comes from the API, and what the API has nothing for says so.
  */
-import { describe, expect, it, vi, beforeEach } from 'vitest';
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi, beforeEach } from 'vitest';
+import { act, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { workspaceApi } from '@/lib/workspace-api';
 import { UserProvider } from '@/lib/user-context';
 import { WorkspaceShell } from '../WorkspaceShell';
 import { DECISION_THREAD_READ_FAILED } from '../decision-copy';
 import { decisionFixture } from './decision-fixture';
+import type { ActivityEvent } from '@/lib/workspace-types';
 
 import { rail as railFixture } from './rail-fixture';
 
@@ -333,3 +334,117 @@ describe('WorkspaceShell', () => {
   The ActivityFeed's own tests moved to `ActivityFeed.test.tsx` when the feed
   grew a real collection behind it (AW-10). They were never about the shell.
 */
+
+/*
+  Today's "N done today" is a claim about the whole local day, and the shell
+  only ever holds page ONE of the activity feed (fifty rows; Today never calls
+  `loadMore`). So the count is honest only while the fetched window reaches
+  back past local midnight — which is exactly what these pin. TASK-252.
+*/
+describe('the "done today" count', () => {
+  /*
+    A PINNED clock. Every instant below — the fixture rows and each test's
+    cursor — is derived from this one local date, and so is the "today" the
+    component computes while it renders. On the real clock those are read at
+    three different moments, and a run straddling local midnight would have
+    the fixture and the component disagree about which day today is.
+
+    Mid-afternoon, so "a second before midnight" and "thirty seconds after it"
+    are both unambiguously in the past. `shouldAdvanceTime` keeps Testing
+    Library's `findBy*` polling alive under fake timers.
+  */
+  const NOW = new Date(2026, 7, 23, 14, 30, 0);
+  const midnight = new Date(2026, 7, 23).getTime();
+  const iso = (ms: number): string => new Date(ms).toISOString();
+
+  beforeEach(() => {
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    vi.setSystemTime(NOW);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  /** A `done` row — the only kind the count looks at. */
+  function doneEvent(n: number): ActivityEvent {
+    return {
+      id: `e-${n}`,
+      agentId: 'a-quill',
+      // This morning: today by the pinned clock, and comfortably before it.
+      at: iso(midnight + 9 * 60 * 60 * 1000),
+      text: `Swept the inbox (${n})`,
+      kind: 'done',
+      detail: null,
+      tag: null,
+      decisionId: null,
+    };
+  }
+
+  /** More than the server's fifty-row page — the case the count got wrong. */
+  const busyDay = Array.from({ length: 51 }, (_, i) => doneEvent(i));
+
+  /**
+   * Renders Today and lands ONE activity page, deterministically: the fetch is
+   * held open until the shell is up, so a negative assertion below cannot pass
+   * merely because the response had not arrived yet.
+   */
+  async function landPage(page: {
+    events: ActivityEvent[];
+    nextBefore: string | null;
+  }): Promise<void> {
+    let release: (() => void) | undefined;
+    activityMock.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve(page);
+        }),
+    );
+    boardMock.mockResolvedValue({ agents: [] });
+
+    renderShell();
+    await screen.findByText('Nothing is waiting on you.');
+    await act(async () => {
+      release?.();
+    });
+  }
+
+  it('shows the count once the fetched window reaches back past midnight', async () => {
+    // The cursor sits a second before midnight, so every one of today's rows
+    // is already in hand — even though there is plainly more history behind
+    // it. More pages existing is not a reason to withhold a day's count.
+    await landPage({ events: busyDay, nextBefore: iso(midnight - 1_000) });
+
+    expect(await screen.findByText('51 done today')).toBeTruthy();
+  });
+
+  it('shows the count when the feed has nothing older left to give', async () => {
+    // `nextBefore: null` — the record ends here, so the window covers today by
+    // definition.
+    await landPage({ events: busyDay, nextBefore: null });
+
+    expect(await screen.findByText('51 done today')).toBeTruthy();
+  });
+
+  it('hides the count while the fetched window stops short of midnight', async () => {
+    /*
+      The cursor is still inside today: rows from earlier this morning have not
+      been fetched, so 51 is a FLOOR, not the day's total. Rendering it would
+      state a number we cannot back — the bug this card fixes. An absent line
+      is the honest answer.
+    */
+    await landPage({ events: busyDay, nextBefore: iso(midnight + 30_000) });
+
+    expect(screen.queryByText(/done today/)).toBeNull();
+  });
+
+  it('hides the count when the cursor sits exactly on midnight', async () => {
+    /*
+      Exactly on the boundary is NOT past it. The cursor is exclusive on both
+      sources, so a row sharing that millisecond can be cut from the page and
+      never appear on the next one. Conservative on purpose.
+    */
+    await landPage({ events: busyDay, nextBefore: iso(midnight) });
+
+    expect(screen.queryByText(/done today/)).toBeNull();
+  });
+});
