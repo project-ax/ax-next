@@ -864,8 +864,26 @@ describe('merge gates assert the ci.yml run EXISTS for the head', () => {
 
     it(`${name} treats an absent run as NOT green`, () => {
       const md = readFileSync(p, 'utf8');
-      const idx = md.search(/gh run list[^\n]*--workflow[^\n]*ci\.yml[^\n]*--commit/);
-      expect(idx, 'no per-commit ci.yml query found at all').toBeGreaterThan(-1);
+      // Locate the query with the SAME order-independent matcher the presence test
+      // uses. An order-dependent locator here would fail on a legitimate reword to
+      // short/reordered flags while the presence test passed -- and it would say "no
+      // per-commit ci.yml query found at all", which would be false and would send the
+      // reader hunting for a missing rule that is actually present. Half-applying the
+      // order-independence fix is its own defect class.
+      const queryLine = md
+        .split('\n')
+        .find(
+          (l) =>
+            /gh run list/.test(l) &&
+            /(--workflow|\s-w\s)/.test(l) &&
+            /ci\.yml/.test(l) &&
+            /(--commit|\s-c\s)/.test(l),
+        );
+      expect(
+        queryLine,
+        'no per-commit ci.yml query found (in any flag order or short form)',
+      ).toBeDefined();
+      const idx = md.indexOf(queryLine);
       const near = md.slice(idx, idx + 700);
       // Require a HALTING token, not merely a mention of the empty case. The earlier
       // version also accepted the words "no ci.yml run", which a WRONG fix would
