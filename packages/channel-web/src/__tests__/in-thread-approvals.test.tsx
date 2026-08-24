@@ -258,8 +258,8 @@ describe('InThreadApprovals', () => {
     // these two reads hold ids 1 and 2 before either promise settles; the
     // earlier rejection then hits `if (readId.current !== id) return` in the
     // catch and returns before `setError`. Its failure is DISCARDED by the
-    // stale-read guard. That guard is load-bearing — see its header in
-    // `lib/workspace-decisions.ts`, which is there so a slow first read cannot
+    // stale-read guard. That guard is load-bearing — see the header on `readId`
+    // in `workspace-decisions.ts`, which is there so a slow first read cannot
     // clobber a fast refresh — so do not read this count as "React merged
     // them" and go simplify it away.
     expect(read).toHaveBeenCalledTimes(2);
