@@ -400,6 +400,27 @@ It burns **no model tokens** while idle and `exit 0`s — re-invoking auto-ship 
 moment the To Do lane changes (a card added/removed/renamed, a dep edited, a
 Backlog→To Do promote). Re-launch it after every loop pass.
 
+> **⚠ KILL THE PREDECESSOR BEFORE EVERY RELAUNCH, AND ONCE AT RUN END.** The loop
+> relaunches this script after every pass and nothing reaps the old one, so each pass
+> **leaks a poller**. Measured 2026-08-24: two were still polling GitHub on a 60s
+> cadence *hours* after the drain finished — found only because a human asked about a
+> stale agent entry. Every leaked poller is an independent ~1 pt/60s drain that
+> outlives the run, so a long session silently multiplies its own idle cost and can
+> starve the next run's budget before it starts. The `REM < 500` pre-check does not
+> save you: it makes each leaked poller *quieter*, not gone, and N of them still race
+> for the same budget.
+>
+> ```bash
+> pkill -f auto-ship-board-poll.sh 2>/dev/null || true   # before EVERY relaunch
+> # … launch the poller (run_in_background: true) …
+> ```
+>
+> Run the same `pkill` **once when the run ends** — including when it ends on a
+> failure breaker, a spend limit, or a human stop. A run that dies without reaping is
+> exactly how the two survivors above got there. Verify with
+> `pgrep -fl auto-ship-board-poll.sh` — the correct steady state is **one** while
+> draining, **zero** afterwards.
+
 > **GraphQL budget — read this.** "Token-free" means **model** tokens. Each poll still
 > spends **GraphQL** points against the 5000/hr budget (§3). Do **not** poll with
 > `gh project item-list` — it fetches every item's every field value + body and cost
