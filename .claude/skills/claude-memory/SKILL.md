@@ -133,6 +133,8 @@ If a hygiene pass would materially change the file (not just whitespace), note i
 - **Date-stamped.** `YYYY-MM-DD` on every entry.
 - **No duplication.** Scan the target file before adding.
 - **No padding.** An entry that doesn't earn its place is noise.
+- **Cite the file, not the line — unless the line IS the point.** `packages/core/src/workspace-policy.ts` stays true across every edit above it; `workspace-policy.ts:162` is wrong the next time someone adds an import. Line numbers rot silently and they rot *precisely* — a wrong `file:line` reads as more authoritative than no line at all, which is why two PRs in one session shipped precise-looking-but-wrong refs while *fixing* false claims. Keep the line only when you are pinning that exact line (a specific regex, a magic default), and then quote what is on it so the reader can tell it moved.
+- **Name a path only if it exists.** `scripts/__tests__/memory-cited-paths-exist.test.js` fails if any repo path cited in these files is no longer tracked by git — it is what caught two rows still pointing at `@ax/agent-claude-sdk-runner` months after #395 moved them to `@ax/agent-runner-core`. If a sentence needs to name something that deliberately does *not* exist (a rejected alternative, a doc that never landed), write it so it does not read as a live file reference. Do not add an allowlist to that guard; an exceptions list is just the next thing to rot.
 
 When in doubt, the write test on each file is the arbiter: if the answer is no, don't write.
 
