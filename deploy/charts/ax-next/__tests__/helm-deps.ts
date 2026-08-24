@@ -94,6 +94,43 @@ export function findHelm(spawn: HelmSpawner = realSpawn): string | null {
   return spawn('helm', ['version', '--short']).status === 0 ? 'helm' : null;
 }
 
+/**
+ * The local name under which BITNAMI_URL is registered, or null if it isn't.
+ *
+ * We look the repo up by URL and refresh it by the name we find, because that is
+ * how helm itself resolves `Chart.yaml`'s `repository:` field — by URL, not by
+ * name. A machine that registered the same URL as `bitnami-mirror` needs
+ * `helm repo update bitnami-mirror`; assuming the name `bitnami` would fail with
+ * "no repositories found matching bitnami" on a setup that actually works.
+ *
+ * The URL comparison is exact (bar a trailing slash) and never a substring test.
+ * `stdout.includes(BITNAMI_URL)` would call
+ * `https://evil.example/charts.bitnami.com/bitnami` a match — CodeQL flags that
+ * shape as `js/incomplete-url-substring-sanitization`, and it flagged this
+ * function's first draft.
+ *
+ * A missing or unreadable repo list means "not registered", which routes to
+ * `repo add` — the correct answer on a fresh CI runner, where the config file
+ * does not exist yet and `helm repo list -o json` prints `[]` with exit 0.
+ */
+export function registeredBitnamiName(listed: HelmSpawnResult): string | null {
+  if (listed.status !== 0) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(listed.stdout ?? '');
+  } catch {
+    return null;
+  }
+  if (!Array.isArray(parsed)) return null;
+  for (const entry of parsed) {
+    if (entry === null || typeof entry !== 'object') continue;
+    const { name, url } = entry as { name?: unknown; url?: unknown };
+    if (typeof name !== 'string' || typeof url !== 'string') continue;
+    if (url.replace(/\/+$/, '') === BITNAMI_URL) return name;
+  }
+  return null;
+}
+
 let attemptedInThisProcess = false;
 
 /**
@@ -124,21 +161,20 @@ export function ensureChartDependencies(opts: SyncOptions = {}): SyncResult {
 
   // Registered already? `helm repo list` is read-only, so probing costs nothing
   // and tells us which of add/update is the right single call.
-  const listed = spawn(helm, ['repo', 'list', '-o', 'json']);
-  const registered =
-    listed.status === 0 && (listed.stdout ?? '').includes(BITNAMI_URL);
+  const existing = registeredBitnamiName(spawn(helm, ['repo', 'list', '-o', 'json']));
 
   // A fresh runner (CI) takes the `add` path, which registers the repo AND
-  // downloads its index. A developer box that already has bitnami takes
-  // `update`, which re-downloads just the index — and so also repairs a stale
-  // or empty cached one, the case `--force-update` used to cover.
-  const refresh = registered
-    ? spawn(helm, ['repo', 'update', BITNAMI_REPO])
-    : spawn(helm, ['repo', 'add', BITNAMI_REPO, BITNAMI_URL]);
+  // downloads its index. A developer box that already has it takes `update`,
+  // which re-downloads just the index — and so also repairs a stale or empty
+  // cached one, the case `--force-update` used to cover.
+  const refresh =
+    existing !== null
+      ? spawn(helm, ['repo', 'update', existing])
+      : spawn(helm, ['repo', 'add', BITNAMI_REPO, BITNAMI_URL]);
   if (refresh.status !== 0) {
     return {
       ok: false,
-      reason: `helm repo ${registered ? 'update' : 'add'} ${BITNAMI_REPO} exit ${refresh.status}: ${refresh.stderr ?? ''}`,
+      reason: `helm repo ${existing !== null ? `update ${existing}` : `add ${BITNAMI_REPO}`} exit ${refresh.status}: ${refresh.stderr ?? ''}`,
     };
   }
 

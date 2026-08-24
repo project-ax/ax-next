@@ -27,7 +27,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadAll } from 'js-yaml';
-import { describe, expect, it } from 'vitest';
+import { beforeAll, describe, expect, it } from 'vitest';
 
 import { HELM_REQUIRED_MESSAGE, resolveHelmGate } from './helm-required.js';
 
@@ -155,14 +155,56 @@ const EXTERNAL_READERS: ReadonlySet<string> = new Set([
   'LOG_LEVEL',
 ]);
 
-// The subchart fetch this file used to run in its own `beforeAll` — a copy of
-// render.test.ts's `helmRepoSync` (commit f01b2fcd), kept inline back then "so
-// the two test files stay independently isolated" — now happens once per run in
-// vitest's globalSetup. That independence is exactly what broke: three parallel
-// copies, each wrapped in a 3x retry, raced on the shared helm cache and turned
-// a flaky index into a 30s hook timeout. See __tests__/helm-deps.ts (TASK-316).
+// Bitnami's chart repo intermittently returns an empty index.yaml on CI
+// (late-2025 migration left the public endpoint flaky), so
+// `helm dependency build` fails with "error loading bitnami-index.yaml:
+// empty index.yaml file". Wrap the add+build sequence in a small retry —
+// a fresh `--force-update` re-pull usually returns a populated index on
+// the second attempt. Mirrors render.test.ts's helmRepoSync (commit
+// f01b2fcd); kept inline rather than extracted into a shared helper
+// because the two test files want independent isolation if either
+// changes its setup posture.
+function helmRepoSync(): { ok: true } | { ok: false; reason: string } {
+  if (HELM === null) return { ok: true };
+  const repoAdd = spawnSync(
+    HELM,
+    ['repo', 'add', '--force-update', 'bitnami', 'https://charts.bitnami.com/bitnami'],
+    { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] },
+  );
+  if (repoAdd.status !== 0) {
+    return {
+      ok: false,
+      reason: `helm repo add bitnami exit ${repoAdd.status}: ${repoAdd.stderr ?? ''}`,
+    };
+  }
+  const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'ignore', 'pipe'],
+  });
+  if (r.status !== 0) {
+    return {
+      ok: false,
+      reason: `helm dependency build exit ${r.status}: ${r.stderr ?? ''}`,
+    };
+  }
+  return { ok: true };
+}
 
 describeIfHelm('host deployment env vs preset loader', () => {
+  beforeAll(() => {
+    if (!HELM) return;
+    const attempts = 3;
+    let lastReason = '';
+    for (let i = 0; i < attempts; i += 1) {
+      const out = helmRepoSync();
+      if (out.ok) return;
+      lastReason = out.reason;
+    }
+    throw new Error(
+      `helm dependency build failed after ${attempts} attempts: ${lastReason}`,
+    );
+  });
+
   function renderHostDeployment(extraArgs: readonly string[] = []): K8sDoc {
     const docs = helmTemplate(['-f', KIND_DEV_VALUES, ...extraArgs]);
     const dep = docs.find(

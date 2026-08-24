@@ -135,7 +135,12 @@ describe('ensureChartDependencies: at most one fetch per run', () => {
 });
 
 describe('ensureChartDependencies: which single helm call it makes', () => {
+  /** `helm repo list -o json` output for the given entries. */
+  const repoList = (entries: Array<{ name: string; url: string }>) =>
+    JSON.stringify(entries);
+
   it('registers the repo when bitnami is absent (fresh CI runner)', () => {
+    // Measured: with no repositories.yaml at all, helm prints `[]` and exits 0.
     const { spawn, calls } = recordingSpawner({ stdout: '[]' });
     ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
     expect(calls[1]!.args).toEqual(['repo', 'add', BITNAMI_REPO, BITNAMI_URL]);
@@ -146,10 +151,52 @@ describe('ensureChartDependencies: which single helm call it makes', () => {
   // repairs the stale/empty cached index the old flag was covering for.
   it('refreshes the index when bitnami is already registered (dev box)', () => {
     const { spawn, calls } = recordingSpawner({
-      stdout: JSON.stringify([{ name: BITNAMI_REPO, url: BITNAMI_URL }]),
+      stdout: repoList([{ name: BITNAMI_REPO, url: BITNAMI_URL }]),
     });
     ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
     expect(calls[1]!.args).toEqual(['repo', 'update', BITNAMI_REPO]);
+  });
+
+  // helm resolves Chart.yaml's `repository:` by URL, not by name, so a box that
+  // registered the same URL under another name is a WORKING setup. Refreshing
+  // the hard-coded name `bitnami` there fails with "no repositories found
+  // matching bitnami" — refresh the name we actually found.
+  it('refreshes by the name the URL is registered under, not a fixed one', () => {
+    const { spawn, calls } = recordingSpawner({
+      stdout: repoList([
+        { name: 'other', url: 'https://charts.example.com/other' },
+        { name: 'bitnami-mirror', url: `${BITNAMI_URL}/` },
+      ]),
+    });
+    ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+    expect(calls[1]!.args).toEqual(['repo', 'update', 'bitnami-mirror']);
+  });
+
+  // The URL match is exact, never a substring — an attacker-controlled host can
+  // contain ours. This is the CodeQL js/incomplete-url-substring-sanitization
+  // shape, and it was in this function's first draft.
+  it('does not treat a host that merely CONTAINS the bitnami URL as registered', () => {
+    const { spawn, calls } = recordingSpawner({
+      stdout: repoList([
+        { name: 'decoy', url: 'https://evil.example/charts.bitnami.com/bitnami' },
+      ]),
+    });
+    ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+    expect(calls[1]!.args).toEqual(['repo', 'add', BITNAMI_REPO, BITNAMI_URL]);
+  });
+
+  it('treats unreadable or non-array repo output as "not registered"', () => {
+    for (const stdout of ['', 'not json', 'null', '{"name":"bitnami"}']) {
+      resetChartDependencyStateForTests();
+      const { spawn, calls } = recordingSpawner({ stdout });
+      ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+      expect(calls[1]!.args, `stdout ${JSON.stringify(stdout)}`).toEqual([
+        'repo',
+        'add',
+        BITNAMI_REPO,
+        BITNAMI_URL,
+      ]);
+    }
   });
 
   it('surfaces a repo-refresh failure with helm stderr, not a timeout', () => {
@@ -161,6 +208,17 @@ describe('ensureChartDependencies: which single helm call it makes', () => {
     expect(out.ok).toBe(false);
     expect(out.ok === false && out.reason).toBe(
       `helm repo add ${BITNAMI_REPO} exit 1: boom`,
+    );
+  });
+
+  it('names the update path in the failure reason too', () => {
+    const { spawn } = recordingSpawner({
+      stdout: repoList([{ name: 'bitnami-mirror', url: BITNAMI_URL }]),
+      failOn: (args) => args[0] === 'repo' && args[1] === 'update',
+    });
+    const out = ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+    expect(out.ok === false && out.reason).toBe(
+      'helm repo update bitnami-mirror exit 1: boom',
     );
   });
 
