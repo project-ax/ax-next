@@ -78,13 +78,13 @@ describe('InThreadApprovals', () => {
     LATENCY-BUDGET change, not a correctness one, and the distinction matters:
     those waits were checked by mutation and they do hold — though not for the
     tempting reason. `waitFor`'s FIRST check runs synchronously, before the
-    pending read has settled; what puts committed state behind the assertions
-    that follow it is that RTL will not resolve `waitFor` until it has awaited a
-    `setTimeout(…, 0)`. Either way they were asserting over real state, so this
-    is not a correctness fix. What they carried was RTL's 1000ms default on a
-    package whose suite has been measured several times slower than idle under
-    CI load. `settle()` takes the clock out of the question and pins an exact
-    call count while it is there.
+    read's `setState` has committed; what puts committed state behind the
+    assertions that follow it is that RTL will not resolve `waitFor` until it
+    has awaited a `setTimeout(…, 0)`. Either way they were asserting over real
+    state, so this is not a correctness fix. What they carried was RTL's 1000ms
+    default on a package whose suite has been measured several times slower
+    than idle under CI load. `settle()` takes the clock out of the question and
+    pins an exact call count while it is there.
   */
   /** Let a read settle without moving any retry timer. */
   const settle = () =>
