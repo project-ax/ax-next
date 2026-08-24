@@ -27,9 +27,14 @@ Fold each referenced connector's **resolved reach** into the hashed shape, gated
 1. **`capability-freshness.ts` — the reach fold.** (load-bearing)
    - `resolvedReach()`: filter ids by `CONNECTOR_ID_RE`, resolve **in parallel**, map a
      `PluginError{code:'not-found'}` to the `absent` sentinel and **re-throw everything else**.
-   - `reachShape()`: keyMode + sorted/deduped hosts, slot NAMES, npm, pypi + `mcpServers` +
-     `services` (both name-sorted; `args` order preserved).
-   - Gate: `hasService` false ⇒ the shape is byte-identical to today's. No `timeoutMs` change.
+   - `reachShape()`: keyMode + the shared-key consent bit + sorted/deduped hosts, credential slots
+     (name, kind, OAuth server, OAuth **scopes**), npm, pypi + `mcpServers` + `services` (both
+     name-sorted; `args` order preserved).
+   - Gate: `hasService` false ⇒ the shape is byte-identical to today's, so **no in-flight row in a
+     connector-less preset is staled**. A connectors-enabled preset takes a **one-time** stale on
+     the deploy (the `reach` key lands on every digest, `reach: []` included) — fail-safe, and
+     disclosed in the PR description rather than left to be discovered.
+   - No `timeoutMs` change.
 2. **Comments.** Rewrite the `WHAT IT DOES NOT GUARD` header block (`:21-27`) to say what is now
    guarded, what still is not, and that the executor's second card is the reach gate.
 3. **`plugin.ts` — correct the false degradation prose** (`:68-76`). It claims the card "shows only

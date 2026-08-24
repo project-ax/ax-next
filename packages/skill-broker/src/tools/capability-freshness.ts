@@ -21,11 +21,23 @@
  *
  * WHAT THE DIGEST COVERS (TASK-262). The catalog entry — its description and
  * the connector ids it references — AND, where `connectors:resolve` is on the
- * bus, what each of those ids actually resolves to for this owner: hosts, key
- * slot NAMES, npm/pypi packages, MCP servers and dev services. The ids are
- * stable; what they REACH is not, so digesting the entry alone let a connector
- * move under a stable id without the guard noticing. That was TASK-262, and
- * this is its fix.
+ * bus, what each of those ids actually resolves to for this owner: `keyMode`,
+ * the shared-key consent bit, hosts, credential slots (name, grant kind, OAuth
+ * server and OAuth SCOPES), npm/pypi packages, MCP servers (their own hosts,
+ * argv, url and env KEYS AND VALUES) and dev services (pinned image, ports, env,
+ * writable paths). The ids are stable; what they REACH is not, so digesting the
+ * entry alone let a connector move under a stable id without the guard
+ * noticing. That was TASK-262, and this is its fix.
+ *
+ * THE DIGEST IS A STRICT SUPERSET OF WHAT THE CARD DRAWS, and that is the safe
+ * direction but it is worth knowing. The executor's `PermissionRequestEvent`
+ * renders top-level hosts, slot names and packages — not `mcpServers`, not
+ * `services`, not env, not `keyMode`. So a change confined to one of those trips
+ * this guard and re-opens the decision under "asks for something different",
+ * while the re-fired card looks IDENTICAL to the one already approved. That is a
+ * re-ask, never a silent grant, and it partly compensates for the card omitting
+ * an MCP server's own hosts. The right fix for the confusion is to widen the
+ * CARD, not to narrow this digest.
  *
  * WHAT IT STILL DOES NOT GUARD, and why that is fine. This is not the reach
  * gate and was never meant to be. The gate is the executor's own permission
@@ -143,8 +155,21 @@ interface CatalogSkillDetail {
  * Today every field below is declared there, and `mcpServers` / `services` are
  * always present on a real resolve (`services` via `.default([])`).
  */
+/**
+ * A credential slot. Slot NAMES and the OAuth grant's own shape — never a
+ * value: a credential's VALUE does not cross this boundary and is not something
+ * this file could read if it wanted to.
+ *
+ * `kind`, `server` and `scopes` are here because an OAuth grant's reach is the
+ * SCOPES, not the slot name. `linear`'s `read` becoming `read,write` under a
+ * stable slot name is exactly the class of change this card exists to catch, so
+ * leaving it out would have re-created the bug one level down.
+ */
 interface ConnectorSlot {
   slot?: string;
+  kind?: string;
+  server?: string;
+  scopes?: string[];
 }
 interface ConnectorMcpServer {
   name?: string;
@@ -166,6 +191,8 @@ interface ConnectorService {
 interface ConnectorsResolveOutput {
   id?: string;
   keyMode?: string;
+  /** A first-class consent bit on `ResolveOutput` — a shared key being spent as one identity. */
+  requiresSharedKeyConsent?: boolean;
   capabilities?: {
     allowedHosts?: string[];
     credentials?: ConnectorSlot[];
@@ -201,6 +228,22 @@ function envPairs(env: Record<string, string> | undefined): [string, string][] {
 }
 
 /**
+ * Credential slots, sorted by name. Names, the grant kind, the OAuth server the
+ * slot names, and its SCOPES — because for an OAuth slot the scopes ARE the
+ * reach, and they move under a stable slot name.
+ */
+function slotShapes(credentials: ConnectorSlot[] | undefined): unknown[] {
+  return (credentials ?? [])
+    .map((c) => ({
+      slot: c.slot ?? '',
+      kind: c.kind ?? '',
+      server: c.server ?? '',
+      scopes: asSet(c.scopes),
+    }))
+    .sort((a, b) => byString(a.slot, b.slot));
+}
+
+/**
  * One connector's resolved reach, reduced to a stable shape.
  *
  * Note the one array whose ORDER is preserved: `args`. `['--allow', 'x']` and
@@ -211,11 +254,11 @@ function reachShape(resolved: ConnectorsResolveOutput): unknown {
   const caps = resolved.capabilities ?? {};
   return {
     keyMode: typeof resolved.keyMode === 'string' ? resolved.keyMode : '',
+    // Whether approving means spending a key that is not this person's. A
+    // consent bit, so a change to it is a changed question.
+    sharedKeyConsent: resolved.requiresSharedKeyConsent === true,
     hosts: asSet(caps.allowedHosts),
-    // Slot NAMES only. A credential's VALUE never crosses this boundary and is
-    // not something this file could read even if it wanted to — the predicate
-    // is about reach, not about secrets.
-    slots: asSet((caps.credentials ?? []).map((c) => c.slot)),
+    slots: slotShapes(caps.credentials),
     npm: asSet(caps.packages?.npm),
     pypi: asSet(caps.packages?.pypi),
     mcp: (caps.mcpServers ?? [])
@@ -227,7 +270,7 @@ function reachShape(resolved: ConnectorsResolveOutput): unknown {
         url: s.url ?? '',
         env: envPairs(s.env),
         hosts: asSet(s.allowedHosts),
-        slots: asSet((s.credentials ?? []).map((c) => c.slot)),
+        slots: slotShapes(s.credentials),
       }))
       .sort((a, b) => byString(a.name, b.name)),
     services: (caps.services ?? [])
@@ -308,12 +351,23 @@ async function resolvedReach(
  * `@ax/decisions` logs it and writes no predicate (the row then claims no
  * guard), and on the check side it counts as changed. Both are honest; silently
  * matching would not be.
+ *
+ * Returns `foldedReach` alongside the token so the CALLER's human-facing label
+ * cannot desync from the gate below. Reading `hasService` a second time up there
+ * would work today and rot the first time this condition changes.
  */
+interface CatalogToken {
+  value: string;
+  /** Whether the reach fold ran — i.e. whether the token covers connector reach. */
+  foldedReach: boolean;
+}
+
 async function catalogToken(
   bus: HookBus,
   ctx: AgentContext,
   skillId: string,
-): Promise<string> {
+): Promise<CatalogToken> {
+  const foldedReach = bus.hasService(CONNECTORS_RESOLVE_HOOK);
   let detail: CatalogSkillDetail;
   try {
     detail = await bus.call<{ skillId: string; scope: 'global' }, CatalogSkillDetail>(
@@ -323,7 +377,7 @@ async function catalogToken(
     );
   } catch (err) {
     if (err instanceof PluginError && err.code === 'skill-not-found') {
-      return `${skillId}@${ABSENT}`;
+      return { value: `${skillId}@${ABSENT}`, foldedReach };
     }
     throw err;
   }
@@ -336,19 +390,29 @@ async function catalogToken(
   // catalog entry, and guarding it is exactly what this producer did before
   // TASK-262. So a connector-less preset keeps the pre-TASK-262 shape BYTE FOR
   // BYTE (no reach key at all, not an empty one): the guard there is unchanged
-  // and no in-flight row is staled. The sibling producer in
+  // and no in-flight row THERE is staled. A connectors-ENABLED preset does take
+  // the one-time hit — the `reach` key lands on every digest, including a
+  // zero-connector skill's `reach: []` — so each in-flight `request_capability`
+  // row staled once on the deploy that shipped this, under the generic "asks for
+  // something different" sentence. Fail-safe (a re-ask, never an execute) and
+  // TTL-bounded, and it is in the PR description rather than left to be
+  // discovered. The sibling producer in
   // `@ax/tool-connector-propose` returns `{ predicate: null }` in this
   // situation because the registry is the ONLY world it reads; copying that
   // here would delete a working guard instead of narrowing it.
   //
-  // The hook set does not change after boot, so capture and check always agree
-  // on which branch they are in — the shapes can never cross mid-decision.
+  // The hook set is fixed for the life of a boot, so capture and check inside
+  // one process always agree on which branch they are in. A HELD decision is
+  // built to span hours, though, so a redeploy that adds or removes
+  // `@ax/connectors` between capture and check CAN flip the branch. That fails
+  // CLOSED — the digests cannot match, the row re-opens, and a human is asked
+  // again — which is the direction we want a deploy-shaped surprise to fall.
   //
   // The owner comes from the trusted ctx, NEVER from the model input — the same
   // posture the executor takes, and the reason capture (`ctx.userId`) and check
   // (`replayContext`'s `decision.ownerUserId`) read the same user's registry.
   const shape = JSON.stringify(
-    bus.hasService(CONNECTORS_RESOLVE_HOOK)
+    foldedReach
       ? { description, connectors, reach: await resolvedReach(bus, ctx, connectors) }
       : { description, connectors },
   );
@@ -356,7 +420,7 @@ async function catalogToken(
   // nothing authenticates on it and nothing is authorised by it — and a short
   // token keeps a durable row small.
   const digest = createHash('sha256').update(shape).digest('hex').slice(0, 16);
-  return `${skillId}@${digest}`;
+  return { value: `${skillId}@${digest}`, foldedReach };
 }
 
 /** `<skillId>@<digest>` → `skillId`, or null if the token is not one of ours. */
@@ -411,13 +475,23 @@ export function registerCapabilityFreshness(bus: HookBus): void {
       // value we refused to trust.
       if (!SKILL_ID_RE.test(skillId)) return { predicate: null };
 
+      const token = await catalogToken(bus, ctx, skillId);
       return {
         predicate: {
           kind: CATALOG_SKILL_KIND,
-          value: await catalogToken(bus, ctx, skillId),
+          value: token.value,
           // The only part a human reads. It completes the row's sentence:
           // "checked against: <label>".
-          label: `the "${skillId}" entry in the capability catalog`,
+          //
+          // It NAMES WHAT WAS ACTUALLY CHECKED, which means it follows the fold.
+          // When a connector moves and the catalog entry does not, a human told
+          // only "the entry in the capability catalog" would go and inspect the
+          // entry, find it untouched, and be left more confused than before.
+          // Branching here is not per-preset inconsistency — a connector-less
+          // preset genuinely checked less, and says so.
+          label: token.foldedReach
+            ? `the "${skillId}" capability and the connectors it reaches`
+            : `the "${skillId}" entry in the capability catalog`,
         },
       };
     },
@@ -450,7 +524,10 @@ export function registerCapabilityFreshness(bus: HookBus): void {
         });
       }
 
-      const after = await catalogToken(bus, ctx, skillId);
+      // `foldedReach` is deliberately unused here: check compares tokens, and a
+      // stale row's label is dropped by `@ax/decisions` anyway (the "checked
+      // against…" clause describes hold-time and is false once the guard trips).
+      const { value: after } = await catalogToken(bus, ctx, skillId);
       return after === before
         ? { value: after }
         : { value: after, changed: changedSentence(before, after, skillId) };

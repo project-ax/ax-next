@@ -21,9 +21,15 @@ const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 /** The subset of `connectors:resolve` output a test stub returns. */
 interface StubResolve {
   keyMode?: 'personal' | 'workspace';
+  requiresSharedKeyConsent?: boolean;
   capabilities?: {
     allowedHosts?: string[];
-    credentials?: Array<{ slot: string; kind?: 'api-key' }>;
+    credentials?: Array<{
+      slot: string;
+      kind?: 'api-key' | 'oauth';
+      server?: string;
+      scopes?: string[];
+    }>;
     mcpServers?: Array<Record<string, unknown>>;
     packages?: { npm?: string[]; pypi?: string[] };
     services?: Array<Record<string, unknown>>;
@@ -252,6 +258,9 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
         },
       },
       { keyMode: 'workspace', capabilities: REACH_CAPS },
+      // The shared-key consent bit is a first-class field on ResolveOutput, and
+      // approving means spending a key that is not this person's.
+      { requiresSharedKeyConsent: true, capabilities: REACH_CAPS },
     ];
     for (const moved of moves) {
       const catalog: Catalog = { linear: PRESENT, registry: { linear: REACHES } };
@@ -260,6 +269,51 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
       catalog.registry = { linear: moved };
       expect((await check(bus, predicate)).changed).toBeDefined();
     }
+  });
+
+  it('DISAGREES when an OAuth slot widens its SCOPES under a stable slot name', async () => {
+    // For an OAuth grant the scopes ARE the reach — `read` becoming
+    // `read,write` is exactly this card's bug one level down, so digesting slot
+    // NAMES alone would have re-created it.
+    const oauth = (scopes: string[]): StubResolve => ({
+      capabilities: {
+        allowedHosts: ['api.linear.app'],
+        credentials: [{ slot: 'OAUTH', kind: 'oauth', server: 'linear', scopes }],
+        packages: { npm: [], pypi: [] },
+      },
+    });
+    const catalog: Catalog = { linear: PRESENT, registry: { linear: oauth(['read']) } };
+    const bus = await bootWith(catalog);
+    const { predicate } = await capture(bus, 'linear');
+
+    catalog.registry = { linear: oauth(['read', 'write']) };
+    expect((await check(bus, predicate)).changed).toBeDefined();
+
+    // …and a reordered scope list is not a changed one.
+    const stable: Catalog = {
+      linear: PRESENT,
+      registry: { linear: oauth(['read', 'write']) },
+    };
+    const bus2 = await bootWith(stable);
+    const { predicate: p2 } = await capture(bus2, 'linear');
+    stable.registry = { linear: oauth(['write', 'read']) };
+    expect((await check(bus2, p2)).changed).toBeUndefined();
+  });
+
+  it('names what it actually checked: the label follows the fold', async () => {
+    // The label completes "checked against: …". A human told only "the entry in
+    // the capability catalog" after a CONNECTOR moved would inspect the entry,
+    // find it untouched, and be left more confused than before.
+    const folded = await bootWith({ linear: PRESENT, registry: { linear: REACHES } });
+    expect((await capture(folded, 'linear')).predicate).toMatchObject({
+      label: 'the "linear" capability and the connectors it reaches',
+    });
+
+    // A connector-less preset genuinely checked less, and says so.
+    const bare = await bootWith({ linear: PRESENT });
+    expect((await capture(bare, 'linear')).predicate).toMatchObject({
+      label: 'the "linear" entry in the capability catalog',
+    });
   });
 
   it('does NOT trip on a merely reordered host / slot / package list', async () => {
