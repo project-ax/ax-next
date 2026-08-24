@@ -75,15 +75,24 @@ const STARTS_CONTAINER = /new\s+[A-Za-z]*Container\s*\(|\bstartPostgresContainer
  * consumes the MAXIMUM over the package, and mis-attributing a value between two
  * hooks in the same package cannot change a maximum.
  *
- * It captures a NUMERIC literal only. Three other spellings of a hook timeout
- * exist and cannot be read by this pattern: a named constant (`}, TIMEOUT_MS)`,
- * a live idiom elsewhere in this repo — `agent-runner-core` uses
- * `REAL_GIT_TIMEOUT_MS`, `agent-claude-sdk-runner` uses `E2E_TIMEOUT_MS`), a
- * single-line hook with no newline before its `}`, and a brace-less arrow body.
- * None is used by a container package today. Rather than trust that to hold,
- * `UNREADABLE_HOOK_TIMEOUT` below reddens if one ever appears in one — because
- * every one of these misses fails in the SAME direction as the bug described
- * next, and this guard has already shipped one undocumented blind spot.
+ * It captures a NUMERIC literal only, on a multi-line hook body. Three other
+ * spellings exist and are NOT read by this pattern:
+ *
+ *   1. a named constant — `}, TIMEOUT_MS)`. A live idiom elsewhere in this repo:
+ *      `agent-runner-core` uses `REAL_GIT_TIMEOUT_MS`, `agent-claude-sdk-runner`
+ *      uses `E2E_TIMEOUT_MS`. Neither package starts a container.
+ *   2. a single-line hook — `beforeAll(() => { ... }, 120000);` with no newline
+ *      before the `}`.
+ *   3. a brace-less arrow body — `beforeAll(() => setup(), 120000);`.
+ *
+ * `UNREADABLE_HOOK_TIMEOUT` below covers **(1) only**, and being precise about
+ * that is the point: it shares this pattern's `\n\s*\}` prefix, so (2) and (3)
+ * are matched by NEITHER regex and remain silent blind spots of exactly the kind
+ * described next. They are stated here rather than implied away, the same way
+ * `ITERATION_POLL` states its own gaps — an earlier draft of this comment
+ * claimed all three were covered, which was wrong, and a confidently wrong
+ * comment in a guard is the failure this whole file exists to make harder.
+ * None of the three is used by a container package today.
  *
  * The closing brace is `\n\s*\}` — indentation-tolerant — and the leading `\s*`
  * is load-bearing. It was `\n\}` in this guard's first draft, which only matched
@@ -108,10 +117,26 @@ const HOOK_WITH_TIMEOUT =
  * describe-nested hooks, and a hook it cannot see contributes 0 to the package
  * maximum, so the guard PASSES a config that is too low — it went green on
  * `packages/cli`, the exact violation it was written to catch. Every remaining
- * blind spot fails the same way. So where the pattern above is unsure, this one
- * fails loudly and asks to be extended, rather than quietly reading the budget
- * as absent. Fail closed: a guard that under-reports is worse than no guard,
+ * blind spot fails the same way. So where this shape is recognisable, the guard
+ * fails loudly and asks to be extended rather than quietly reading the budget as
+ * absent. Fail closed: a guard that under-reports is worse than no guard,
  * because it also reports success.
+ *
+ * Scope, precisely: this covers the NAMED-CONSTANT spelling on a multi-line hook
+ * body. Single-line hooks and brace-less arrows are NOT covered — see
+ * HOOK_WITH_TIMEOUT above — so for those two shapes this assertion is green
+ * either way and buys nothing. Closing them means dropping the `\n` anchor,
+ * which widens the false-positive surface described next; that trade wasn't
+ * worth making for shapes no container package uses.
+ *
+ * Known false positive: the `[\s\S]*?` is not anchored to the hook's own call,
+ * so a match can start at a hook keyword and run PAST it to a later
+ * `\n}, <identifier>);` — an unrelated two-argument call such as
+ * `setTimeout(() => { ... }, DELAY_MS)` reads as an unreadable hook timeout. No
+ * file in any of the 21 container packages currently has both, so it cannot
+ * mis-fire today. If it ever does, the fix is this regex, NOT the config: check
+ * that the captured identifier is really a hook's timeout before believing the
+ * message below.
  */
 const UNREADABLE_HOOK_TIMEOUT =
   /\b(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n\s*\}\s*,\s*([A-Za-z_$][\w$]*)\s*\)\s*;/g;
@@ -240,8 +265,14 @@ describe('container-starting packages declare their own timeouts (TASK-323)', ()
   it('no container package declares a hook timeout this guard cannot read', () => {
     // Fail closed. See UNREADABLE_HOOK_TIMEOUT: a budget this file cannot parse
     // is counted as absent, which lowers the package maximum and makes the
-    // assertion below pass a config that is too low. If this reddens, the fix is
-    // to teach HOOK_WITH_TIMEOUT the new spelling — NOT to relax this.
+    // assertion below pass a config that is too low. Covers the named-constant
+    // spelling only — single-line hooks and brace-less arrows are documented,
+    // uncovered gaps, not silent ones.
+    //
+    // If this reddens: first check the captured identifier really IS a hook's
+    // timeout (the regex can escape past a hook into an unrelated two-argument
+    // call). If it is, teach HOOK_WITH_TIMEOUT the new spelling — do not relax
+    // this assertion, and do not lower the config to match.
     const unreadable = [];
     for (const pkg of containerPackages) {
       for (const f of pkg.files) {
