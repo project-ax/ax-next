@@ -396,7 +396,7 @@ Two conventions, both cheap, both from this session's evidence:
 | Card | Why this one, in this position |
 |---|---|
 | **TASK-314** | **Itself rot remediation** — five accuracy findings, one of which hides the load-bearing `readId` stale-read guard at `workspace-decisions.ts:162`. Belongs with steps 1–2, not with the general queue. |
-| **TASK-317** | Smallest of the infra three. Docker Hub blips cost this session two reruns. |
+| **TASK-317** | Smallest of the infra three. A Docker Hub **registry** blip cost this session **one** rerun (the auto-ship run log for this session has exactly one `registry-1.docker.io` incident, on PR #471). An earlier revision of this row said *two*, which conflated three separate classes: that registry timeout (317), a Docker-**contention** hook timeout (318), and a helm-index race whose container attribution was explicitly retracted in the log (316). Worth keeping straight — the three want different remedies, and the pre-pull only closes the registry one. |
 | **TASK-315** | Deps on TASK-310 (Done). Fixes the malformed-id-vs-transient ambiguity that cost the orchestrator ~an hour of misreading `skip (read)` as noise. |
 
 Then **302 / 318** — both need a measured wall-clock cost *before* choosing a remedy (318 especially:

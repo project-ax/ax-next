@@ -2191,3 +2191,28 @@ Deps: S3←S2, S4←S2, S5←S2,S3,S4, S6←S2,S5, S7←S3,S4,S5.
 | 2026-08-24 | **`skip (not a draft-issue card)` is left exactly as it is, and the card's claim that a malformed id can reach it is recorded as FALSE.** | Measured: that branch needs `gh` to exit **0** with an empty content id, i.e. a *resolvable* node of the wrong type (a linked real issue/PR card). An unresolvable or garbage id always errors rc=1 + `NOT_FOUND`, so a malformed id can only ever reach `skip (read)`. It is a documented deliberate harmless skip. | Fold it into the malformed class (rejected: it is a different condition, and folding it would break linked-issue cards). |
 | 2026-08-24 | The shape check, not the API error, is the signal. | `NOT_FOUND` also fires for a deleted card or one the token cannot see, so it means "not my card", not "malformed". The prefix/whitespace test is a positive signal and costs zero API calls. | Classify on the GraphQL error body (rejected: weaker signal, and costs a call to learn it). |
 | 2026-08-24 | Implemented inline rather than via per-task subagents. | The edits are byte-precise string surgery in a doc where a subagent misquoting the anchor text is the dominant risk, and the orchestrator's measurement pass had already done the exploration a subagent would exist to do. Deviation from yolo-ship Phase 3 logged deliberately. | One subagent per file (rejected: more context spent than saved, higher misquote risk). |
+
+
+## 2026-08-24 — TASK-317: pre-pull ONE tag, and let a source-shape guard keep the list honest
+
+| | |
+|---|---|
+| **Decision** | The CI pre-pull list is `postgres:16-alpine` and nothing else, and `scripts/__tests__/ci-prepull-covers-test-images.test.js` asserts set **equality** between that list and the image tags the test sources actually start. |
+| **Rationale** | The card asked for `postgres:16` too. It is never started: all its occurrences are inert string literals in schema-validation fixtures and assertions. Every one of the ~118 `new PostgreSqlContainer(...)` call sites in the repo uses `postgres:16-alpine`, and there are no other container classes. Pulling the second tag would spend ~150MB per run on an image no suite touches. The equality direction that catches the *missing* tag is the flake; the direction that catches the *extra* tag is the card's own error, so both are asserted. |
+| **Alternatives** | Pull both tags as the card said (rejected — measured false). Subset-only assertion (rejected — lets unused images accumulate silently). A shared `POSTGRES_IMAGE` constant across 118 sites (deferred — genuinely the better shape, but it is a 22-project refactor and the guard explicitly fails if a computed tag ever appears, so it cannot land unnoticed). |
+
+## 2026-08-24 — TASK-317: a bounded retry here does NOT contradict TASK-316's lesson
+
+| | |
+|---|---|
+| **Decision** | Wrap the `docker pull` in a 3-attempt backoff retry, despite TASK-316 having deliberately *removed* a 3x retry from the chart suite's helm fetch. |
+| **Rationale** | TASK-316's retry was harmful for a specific reason, not a general one: the empty index it retried around was **self-inflicted by concurrent writers**, so every attempt fired another `--force-update` into the same contended files and amplified the race. A single serialized `docker pull` in one CI step has no competing writer and therefore no race to amplify — only a genuinely flaky remote, which is what a bounded retry is for. Stated explicitly in the step comment and the PR because a reviewer citing "316 removed its retry" would be misapplying it. |
+| **Alternatives** | Naked single pull (rejected — moves the flake to a named step instead of removing it). Unbounded retry (rejected — turns a dead registry into a job timeout). |
+
+## 2026-08-24 — TASK-317: acceptance is mechanical, not statistical
+
+| | |
+|---|---|
+| **Decision** | Do **not** claim N-consecutive-green-runs as the acceptance evidence, even though the card specified it. |
+| **Rationale** | The failure has exactly **one** observation, and the 8 `main` runs preceding this work were already green **without** the fix — so consecutive green runs cannot distinguish the fix from the baseline. The real proof is mechanical and checkable by reading the installed library: `pullImage` returns early on a purely local `dockerode.getImage(name).inspect()` and nothing in this repo sets `force`, so a resident image means the test phase makes zero registry calls. Green runs bound the added cost and show no regression; they are not the proof. |
+| **Alternatives** | Report green-run counts as acceptance (rejected — dressing up an n=1 with statistics it does not have). Add a unit test asserting the flake is gone (rejected — there is nothing in-process to assert; the behaviour is CI-environment shaped, hence the source-shape guard instead). |
