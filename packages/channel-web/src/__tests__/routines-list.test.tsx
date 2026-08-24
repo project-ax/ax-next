@@ -86,9 +86,10 @@ describe('RoutinesList', () => {
     await waitFor(() => expect(screen.getByText('heartbeat')).toBeTruthy());
 
     mockJsonOnce(200, {
+      // No `id` on the wire: the hook narrows the store's `BIGSERIAL` away
+      // (TASK-312) and FireRowsTable keys off `firedAt` + list position.
       fires: [
         {
-          id: 1,
           agentId: 'agt_a',
           path: 'heartbeat.md',
           firedAt: '2026-05-17T01:00:00.000Z',

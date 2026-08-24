@@ -62,26 +62,28 @@ export interface RecentFiresInput {
   limit?: number;
 }
 export interface RecentFiresOutput {
-  fires: FireRow[];
+  fires: WireFireRow[];
 }
 /**
- * A fire as it crosses the hook bus on `routines:recent-fires-for-agent`:
- * `FireRow` minus `id`.
+ * A fire as it crosses the hook bus — on `routines:recent-fires` and on
+ * `routines:recent-fires-for-agent` alike: `FireRow` minus `id`.
  *
  * `FireRow.id` is the postgres `BIGSERIAL` primary key. It is storage
  * vocabulary, and no alternate backend (a JSONL fire log, a sqlite store) could
  * reproduce a monotonic one — the same reasoning already written down for
  * `decisions:recent-receipts-for-agent`, which is why that hook's cursor is an
  * instant and not a row id. So it does not belong on a hook payload
- * (invariant 1), and the pagination cursor here is `firedAt`.
+ * (invariant 1), and the pagination cursor for the for-agent hook is `firedAt`.
  *
  * The domain `FireRow` keeps `id` on purpose: it is the store's own row type,
- * and `routines:recent-fires` — a different hook, feeding the admin fires table
- * — genuinely reads it for a React key. Narrowing the shared row would have
- * broken that silently, because `HookBus.call` returns the `returns`
- * schema's parse output and a zod object strips undeclared keys.
+ * living below the bus, and `rowToFire` still hands it back. Only the `returns`
+ * schemas narrow — which is why this type is DERIVED from `FireRow` rather than
+ * `FireRow` being edited. Nothing above the bus reads `id` any more (TASK-312
+ * moved the admin fires table's React key off it); if something starts to, it
+ * will read `undefined` in silence, because `HookBus.call` returns the
+ * `returns` schema's parse output and a zod object strips undeclared keys.
  */
-export type AgentFireRow = Omit<FireRow, 'id'>;
+export type WireFireRow = Omit<FireRow, 'id'>;
 
 export interface RecentFiresForAgentInput {
   agentId: string;
@@ -90,7 +92,7 @@ export interface RecentFiresForAgentInput {
   before?: Date;
 }
 export interface RecentFiresForAgentOutput {
-  fires: AgentFireRow[];
+  fires: WireFireRow[];
 }
 
 export interface RoutinesConfig {
@@ -246,12 +248,16 @@ const FireRowSchema = z.object({
 });
 
 /**
- * The narrowed row for `routines:recent-fires-for-agent` (see `AgentFireRow`).
- * Derived from `FireRowSchema` so the two shapes cannot drift — and derived
- * rather than edited in place, because `FireRowSchema` is shared with
- * `routines:recent-fires`, whose consumer does read `id`.
+ * The narrowed row both fires hooks return (see `WireFireRow`). Derived from
+ * `FireRowSchema` so the two shapes cannot drift — and derived rather than
+ * edited in place, because `FireRowSchema` is the store's own row type and
+ * `rowToFire` (store.ts) still returns `id` below the bus.
+ *
+ * The two output schemas below stay separate exports even though they are now
+ * the same shape: they belong to two hooks with different inputs and different
+ * docs, and collapsing them would tie their futures together for no gain.
  */
-const AgentFireRowSchema = FireRowSchema.omit({ id: true });
+const WireFireRowSchema = FireRowSchema.omit({ id: true });
 
 const DefaultRoutineSummarySchema = z.object({
   defaultRoutineId: z.string(),
@@ -276,11 +282,11 @@ export const ListOutputSchema = z.object({
 }) as unknown as ZodType<ListOutput>;
 
 export const RecentFiresOutputSchema = z.object({
-  fires: z.array(FireRowSchema),
+  fires: z.array(WireFireRowSchema),
 }) as unknown as ZodType<RecentFiresOutput>;
 
 export const RecentFiresForAgentOutputSchema = z.object({
-  fires: z.array(AgentFireRowSchema),
+  fires: z.array(WireFireRowSchema),
 }) as unknown as ZodType<RecentFiresForAgentOutput>;
 
 export const FireNowOutputSchema = z.object({

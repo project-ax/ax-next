@@ -240,6 +240,9 @@ export function createRoutinesPlugin(
       bus.registerService<RecentFiresInput, RecentFiresOutput>(
         'routines:recent-fires', PLUGIN_NAME,
         async (_ctx, input) => {
+          // Same narrowing as the for-agent hook below: the store's row still
+          // carries the `BIGSERIAL` `id`, and `RecentFiresOutputSchema` strips
+          // it at the bus edge — see `WireFireRow` in types.ts.
           const fires = await localStore.recentFires(input);
           return { fires };
         },
@@ -250,9 +253,9 @@ export function createRoutinesPlugin(
         'routines:recent-fires-for-agent', PLUGIN_NAME,
         async (_ctx, input) => {
           // The store hands back its own wider row (with the `BIGSERIAL` `id`);
-          // `RecentFiresForAgentOutputSchema` is `AgentFireRowSchema`, so the
+          // `RecentFiresForAgentOutputSchema` is `WireFireRowSchema`, so the
           // bus strips `id` before any subscriber sees it. Declared narrow on
-          // purpose — see `AgentFireRow` in types.ts.
+          // purpose — see `WireFireRow` in types.ts.
           const fires = await localStore.recentFiresForAgent(input);
           return { fires };
         },

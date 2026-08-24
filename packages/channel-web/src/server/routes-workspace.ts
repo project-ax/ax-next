@@ -369,10 +369,11 @@ interface SessionIsAliveOutput {
  * transport pretend to be the in-process one.
  *
  * There is no `id` here, and there is none on the hook payload either any more
- * (TASK-251): it was a `BIGSERIAL`, storage vocabulary that had leaked into the
- * payload, and `routines:recent-fires-for-agent` now declares the row without
- * it. Nothing on this surface is keyed off a row id — the pagination cursor is
- * the `firedAt` instant, and the React key is the composite.
+ * (TASK-251, then TASK-312 for the sibling `routines:recent-fires`): it was a
+ * `BIGSERIAL`, storage vocabulary that had leaked into the payload, and neither
+ * fires hook declares the row with it now. Nothing on this surface is keyed off
+ * a row id — the pagination cursor is the `firedAt` instant, and the React key
+ * is the composite.
  */
 interface FireRow {
   agentId: string;
