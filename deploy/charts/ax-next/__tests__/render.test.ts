@@ -38,7 +38,6 @@ const REQUIRED = [
 ];
 
 /** A rendered k8s resource. Loose typing — tests narrow as needed. */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
 type K8sDoc = {
   apiVersion?: string;
   kind?: string;
