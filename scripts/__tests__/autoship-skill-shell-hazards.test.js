@@ -237,7 +237,9 @@ describe('auto-ship skill docs: no unquoted-`$VAR` `for` list in any runnable sn
         'loop runs exactly ONCE over the whole concatenated value while the same ' +
         'line does the right thing under bash. This is how the forward-learning loop ' +
         '`for id in $IDS` fed one bogus node id to append_learnings and printed ' +
-        '`learnings: skip (read)` -- indistinguishable from a rate-limit blip. ' +
+        '`learnings: skip (read)`, which at the time was indistinguishable from a ' +
+        'rate-limit blip (a malformed id is loud since TASK-315, but do not lean on ' +
+        'that -- just write the portable loop). ' +
         'Fix: `printf \'%s\\n\' "$VAR" | while IFS= read -r x; do …; done`, which is ' +
         'byte-identical under both shells. (`${=VAR}` also splits, but only in zsh.) ' +
         'Note: `for x in $(cmd)` is NOT this bug -- command substitution does split ' +
