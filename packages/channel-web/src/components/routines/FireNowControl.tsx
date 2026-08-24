@@ -56,9 +56,12 @@ export function FireNowControl({ routine, onFired }: Props) {
       } else {
         // A 200 whose body says `error` is still a failure, and it must look
         // like one — this used to render muted grey as "Fired (#7, error)".
-        // `FireNowOutput` carries no reason, so we don't invent one; the fire
-        // row below carries the actual error text. The line does not
-        // auto-dismiss, and the webhook form stays open for a retry.
+        // `FireNowOutput` carries no reason, so we don't invent one. The
+        // recorded fire row does carry the error text, but only once the
+        // reader expands the routine (`RoutinesList` mounts `FireRowsTable`
+        // behind `isOpen`), so this line can't promise it's already on
+        // screen. It does not auto-dismiss, and the webhook form stays open
+        // for a retry.
         setStatus({
           kind: 'err',
           text: "We couldn't start this run. Please try again.",
