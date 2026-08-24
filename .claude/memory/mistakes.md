@@ -308,3 +308,40 @@ schema that composes it. Narrow with a *derived* schema (`Base.omit({ field: tru
 for the one hook, and leave the shared base alone. Then write the test as a **pair** —
 one assertion that the field is gone from the narrowed hook, one that it is still
 present on the sibling. The second assertion is the one that catches the mistake.
+
+## A comment sweep must re-measure the card, including the card's own measurement
+
+**Seen:** TASK-243 (2026-08-23). The card named one stale comment at
+`workspace-commit-notify.ts:289-290`. Three things were wrong with that: `:289-290` is
+not a comment (it is the `bus.fire` generic body), the stale text it described had
+already been deleted by this card's own stated parent (TASK-240, `d309a5d8`), and the
+comment that *does* discuss rejecters says "three plugins" and is true today. The real
+work was a sweep the pre-flight measurement found: **nine false claims in one file**,
+eight needing a rewrite.
+
+**The pattern, now twice confirmed** (TASK-295 claimed 2 and found 9; TASK-243 claimed 1
+that did not exist and found 9): a card filed from a symptom carries a *guessed*
+`file:line`, and the guess is wrong often enough that "verify the named defect exists"
+has to be step one, not an afterthought. Same shape as TASK-298's `board_batch` card.
+
+**And the pre-flight measurement is itself a claim to check.** TASK-243's brief asserted
+"there is **no** `__tests__` file for this handler under
+`packages/ipc-core/src/__tests__/`" and built an explanation on it ("that absence is
+*why* nine comments rotted here"). The path is right and the conclusion is wrong: the
+tests live one directory down, at
+`packages/ipc-core/src/handlers/__tests__/workspace-commit-notify.test.ts` (599 lines,
+13 cases, plus `workspace-commit-notify-core-resync.test.ts`, which adds 1). **`packages/*/src/__tests__/`
+is not the only test root in this repo** — the same trap as channel-web's two component-test
+directories. Glob `src/**/__tests__` before concluding a file is unpinned; a follow-up
+card was filed on that false absence.
+
+**Why comments rot here specifically:** tests pin *behaviour*, and none of them read the
+prose. Six of the nine claims described control flow the tests exercise correctly — the
+tests were green the whole time the comments were lying. There is no mechanical guard for
+this, so the mitigations are (a) sweep a file's whole prose when you touch one line of
+it, and (b) make the header point at its test pins so the next reader can check it
+cheaply.
+
+**A comment fix that introduces a new false claim is a net loss.** Verify each rewritten
+assertion against the code you cite, and hand the reviewer the list of new claims to
+fact-check rather than asking it to look for typos.

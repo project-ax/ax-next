@@ -47,49 +47,73 @@ function resyncEnvelopeFromCause(cause: unknown): { actualParent?: string } {
 }
 
 // ---------------------------------------------------------------------------
-// POST /workspace.commit-notify (Phase 3 — real implementation, Slice 6d)
+// POST /workspace.commit-notify — the host side of the thin-bundle commit wire.
 //
-// HALF-WIRED WINDOW PARTIALLY CLOSES HERE. Closes fully when Slice 7
-// ships the runner sender (the runner currently still calls with the
-// legacy commit-notify shape, which now schema-rejects as 400 — by
-// design; the half-wired window is closed within this PR by S7).
+// The runner finishes a turn, bundles `baseline..HEAD` as a thin git bundle, and
+// POSTs it here (see @ax/agent-runner-core's `commit-notify-resync.ts` for the
+// sender). The host reconstructs the turn in a throwaway scratch repo, verifies
+// who authored it, shows the policy-visible slice of the diff to the pre-apply
+// validators, and only then asks the workspace backend to land it.
 //
 // Pipeline:
-//   1. Parse + validate request schema (parentVersion, reason,
-//      bundleBytes).
-//   2. Empty-bundle short-circuit: turn wrote nothing → accepted: true
-//      against the existing parentVersion. No apply, no subscribers.
-//   3. Snapshot the workspace at `parentVersion` via workspace:list +
-//      workspace:read. This is the baseline state the deterministic
-//      reconstructor needs.
-//   4. prepareScratchRepo: rebuild deterministic baseline + load thin
-//      bundle into a one-shot scratch repo. Returns
-//      {repoPath, baselineCommit, dispose}.
-//   5. verifyBundleAuthor: walk every commit in baseline..HEAD and
-//      check author + committer == ax-runner. Reject loud on drift.
-//   6. walkBundleChanges: build canonical FileChange[] for the per-turn
-//      diff. This is what subscribers see.
-//   7. filter to .ax/** for the pre-apply hook (subscribers only see
-//      agent-managed memory; user code paths are not policy-checked).
-//   8. fire workspace:pre-apply with the .ax-filtered changes.
-//      Subscribers may reject; surface as accepted:false.
-//   9. APPLY: prefer workspace:apply-bundle if registered (direct path,
-//      no rehash). Fall back to workspace:apply(FileChange[]) for
-//      backends that don't implement bundle apply.
-//  10. fire workspace:applied with the resulting WorkspaceDelta.
-//  11. Dispose the scratch repo.
+//   1. Parse + validate the request schema (parentVersion, reason, bundleBytes).
+//      The pre-bundle wire shape schema-rejects as 400.
+//   2. Empty-bundle short-circuit: the turn wrote nothing → accepted:true
+//      against the parentVersion the runner sent. No apply, no subscribers.
+//   3. Export the workspace's baseline bundle at `parentVersion` via
+//      `workspace:export-baseline-bundle`. No `workspace:list` / `workspace:read`
+//      snapshot is involved — the baseline travels as a bundle so the runner's
+//      thin bundle's prereq is satisfied by construction. The hook is REQUIRED;
+//      the gate right below turns away any backend that doesn't register it.
+//   4. prepareScratchRepo: load the baseline bundle + the runner's thin bundle
+//      into a one-shot scratch repo. Returns {repoPath, baselineCommit, dispose}.
+//   5. verifyBundleAuthor: walk every commit in baseline..HEAD and check author
+//      + committer == ax-runner. Reject loud on drift.
+//   6. walkBundleChanges: build the canonical FileChange[] for the per-turn diff.
+//   7. filterToPolicy: narrow that diff to the policy-visible paths — the
+//      `.ax/**` and `.claude/**` prefixes PLUS the root exact paths `CLAUDE.md`
+//      and `CLAUDE.local.md`. Validators are policy, and policy covers the
+//      agent's own memory plus anything the SDK reads as configuration; ordinary
+//      user code is not policy-checked. Source of truth: `workspace-policy.ts`
+//      in @ax/core.
+//   8. fire `workspace:pre-apply` with that filtered set. Subscribers may veto;
+//      a veto surfaces as accepted:false (see the veto branch below).
+//   9. APPLY via `workspace:apply-bundle`. There is NO `workspace:apply`
+//      fallback — apply-bundle and export-baseline-bundle ship together as the
+//      Phase 3 backend contract, so step 3's gate stands in for both.
+//  10. fire `workspace:applied` with the resulting WorkspaceDelta. Observers
+//      only: a veto there is post-fact misuse, and is logged, not honored.
+//  11. Dispose the scratch repo (in a `finally`).
 //
-// Response shape: same as today — {accepted: true, version, delta:null}
-// or {accepted: false, reason}. Wire NEVER carries the delta payload
-// (Invariant I5 — `WorkspaceDelta` carries lazy fetchers that don't
-// survive JSON, and exposing the content set across the trust boundary
-// widens the blast radius of a compromised sandbox).
+// Wire response shapes (all HTTP 200 unless noted) — the authoritative
+// definition is the discriminated union in @ax/ipc-protocol's `actions.ts`,
+// which documents each optional field in more detail than this summary:
+//   - accepted → {accepted: true, version, delta: null}
+//   - rejected → {accepted: false, reason}, plus — depending on which branch
+//     rejected — `actualParent` (the parent-mismatch re-sync signal),
+//     `recoverable: false` (the runner must discard the work), and
+//     `discardPaths` (scope that discard to named paths — TASK-287).
+// The wire NEVER carries the delta payload (Invariant I5 — `WorkspaceDelta`
+// carries lazy fetchers that don't survive JSON, and exposing the content set
+// across the trust boundary widens the blast radius of a compromised sandbox).
 //
-// Error sanitization: bundler failures (verifier rejection, walk
-// errors, prepareScratchRepo errors) get sanitized to 500. The
-// underlying git stderr can echo a temp path or filename, neither of
-// which the sandbox should see in an error envelope. Real diagnostic
-// goes to the host log via `logInternalError`.
+// Which failures are 500s and which are 200 accepted:false is NOT uniform, and
+// the split is deliberate — the rule is "can the runner do something about it?":
+//   - prepareScratchRepo failure → 200 accepted:false ("baseline drift"). The
+//     runner can re-sync and retry, so it needs a body, not a 500.
+//   - verifyBundleAuthor failure → 200 accepted:false + recoverable:false. The
+//     runner must throw the turn away, which is also an instruction, not a 500.
+//   - walkBundleChanges failure  → 500. We could not even read the diff, so
+//     there is nothing coherent to tell the runner to do.
+// All three sanitize before they answer: raw git stderr can echo a temp path or
+// a filename that the sandbox has no business seeing. The real diagnostic goes
+// to the host log via `logInternalError`.
+//
+// Test pins live in `__tests__/workspace-commit-notify.test.ts` (schema, backend
+// gate, veto + discard scoping) and
+// `__tests__/workspace-commit-notify-core-resync.test.ts` (the single-replica
+// re-sync path). Neither pins the prose above, and this block has drifted from
+// the code more than once — if you change a branch here, re-read it.
 // ---------------------------------------------------------------------------
 
 export const workspaceCommitNotifyHandler: ActionHandler = async (
@@ -166,10 +190,11 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
   } catch (err) {
     // parent-mismatch: a concurrent writer (e.g. the attachments plugin)
     // advanced the mirror past the runner's parent version between the
-    // runner's materialize and now. Return accepted:false with the
-    // storage tier's current head + a baseline bundle at that head so
-    // the runner can rebase and retry (mirrors the apply-bundle
-    // parent-mismatch handling below).
+    // runner's materialize and now. Return accepted:false carrying only the head
+    // signal (`actualParent`) alongside the reason — no inline bundle — so the
+    // runner can fetch a baseline bundle AT that head out-of-band, rebase, and
+    // retry (mirrors the apply-bundle parent-mismatch handling below). Why the
+    // bundle is not inlined: see the forwarding note below.
     if (err instanceof PluginError && err.code === 'parent-mismatch') {
       const env = resyncEnvelopeFromCause(err.cause);
       const body: Record<string, unknown> = {
@@ -277,10 +302,11 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
     // Filter to policy-visible paths for the pre-apply hook — the `.ax/**` and
     // `.claude/**` prefixes PLUS the root exact paths (`CLAUDE.md`,
     // `CLAUDE.local.md`), which is the pair that catches the ordinary
-    // agent-writes-CLAUDE.md case. See POLICY_EXACT_PATHS in @ax/core. Subscribers (skill validator, SDK-config veto,
-    // future identity validator) only see agent-managed memory and
-    // SDK setting-source paths; user-code changes are not policy-
-    // checked.
+    // agent-writes-CLAUDE.md case. See POLICY_EXACT_PATHS in @ax/core.
+    // Subscribers — @ax/validator-skill's SDK-config veto,
+    // @ax/validator-identity, and @ax/validator-routine — see ONLY
+    // agent-managed memory and SDK setting-source paths; user-code changes are
+    // not policy-checked.
     const policyChanges = filterToPolicy(allChanges);
 
     // ---- pre-apply: subscribers can transform or veto ----
@@ -295,9 +321,13 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
     );
     if (pre.rejected) {
       // Three plugins reject on `workspace:pre-apply`: @ax/validator-skill's
-      // SDK-config veto (its SKILL.md *content* veto became accept-but-annotate
-      // in Phase 2; the SDK-config one did not), @ax/validator-identity, and
-      // @ax/validator-routine.
+      // SDK-config veto, @ax/validator-identity, and @ax/validator-routine.
+      //
+      // validator-skill's SKILL.md *content* scan is NOT a fourth: TASK-74 took
+      // it off `workspace:pre-apply` altogether and moved it to the
+      // `skills:scan` service, called from the authoring chokepoint, where it is
+      // accept-but-annotate (a quarantined skill is inert until promoted). The
+      // SDK-config veto is the only thing that plugin still rejects here.
       //
       // `recoverable: false` is unconditional on this branch, so the vetoed
       // write must not survive into the next turn: the runner re-stages its
