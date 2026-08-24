@@ -14,6 +14,28 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+    env:
+      # testcontainers starts a second container alongside EVERY `.start()`: the
+      # Ryuk reaper, `testcontainers/ryuk:0.14.0`, created via
+      # `new GenericContainer(REAPER_IMAGE)` and pulled through the same
+      # `pullImage` path as postgres (testcontainers@11 `build/reaper/reaper.js`).
+      # It is skipped only when this variable is exactly the string `"true"`.
+      #
+      # It has to be handled here rather than in the pre-pull list below, because
+      # Ryuk is LIBRARY-INTERNAL: it appears in no test source, so the
+      # source-shape guard that polices the pull list is structurally blind to it.
+      # Without this line the pre-pull would close the postgres vector while
+      # leaving an identical registry-blip vector open — and the comments below
+      # would be claiming otherwise.
+      #
+      # Disabling is the right call rather than pre-pulling it: the reaper exists
+      # to clean up leaked containers after a session dies, and a GitHub-hosted
+      # runner is destroyed at the end of the job, so it buys nothing here. It
+      # also keeps the pull list at exactly one image — a pinned tag we pre-pulled
+      # would drift on every testcontainers bump with nothing able to police it.
+      # If you ever need the reaper back in CI, you must ALSO add its image to the
+      # pre-pull list; the guard test asserts that pair so it cannot be forgotten.
+      TESTCONTAINERS_RYUK_DISABLED: 'true'
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -33,6 +55,94 @@ jobs:
       # not code, and a vitest diff of the whole rule table is not a legible
       # message. Cheap enough to run unconditionally.
       - run: pnpm --filter @ax/tool-policy lint:capabilities
+      # Pull the container images the suites need BEFORE the test phase, so a
+      # Docker Hub blip mid-run cannot fail a package.
+      #
+      # The failure this fixes (TASK-317): on PR #471, `@ax/decisions`
+      # store.test.ts came back a Failed Suite with ZERO assertions —
+      # `(HTTP code 500) … registry-1.docker.io/v2/library/postgres/manifests/16-alpine`
+      # / `auth.docker.io/token … context deadline exceeded`. Zero assertions
+      # means the product never ran; the rerun at the same head went green.
+      #
+      # Why a pre-pull actually closes it, rather than just hoping harder.
+      # testcontainers' `pullImage` short-circuits on a purely LOCAL check:
+      #
+      #     if (!options.force && (await imageExists(...))) return;
+      #
+      # (testcontainers@11 build/container-runtime/utils/pull-image.js), and
+      # `imageExists` is a local `dockerode.getImage(name).inspect()` — no
+      # network. Nothing in this repo sets `force`. So an image already resident
+      # on the runner is never even manifest-checked: testcontainers makes no
+      # registry call for it at all. Residency of the EXACT tag is the mechanism.
+      #
+      # "No registry calls in the test phase" therefore holds only if every image
+      # the phase would start is covered. Two things start containers here: these
+      # suites (one image, below) and testcontainers itself (the Ryuk reaper,
+      # disabled in this job's `env` above). Both are accounted for — and that
+      # pairing, not this step alone, is what closes the vector.
+      #
+      # It also collapses the fan-out. `imageExists` memoises in a module-level
+      # Set, but vitest forks are separate processes, so there is no cross-file
+      # dedupe: each of the 21 workspace projects that starts postgres can cold-
+      # pull on its own. (In the #471 job, decisions.canary.test.ts started the
+      # same image and passed at the same moment — this was N racing pulls with
+      # one auth-token request timing out, not Docker Hub being down.) One
+      # serialized pull here means one registry contact per run.
+      #
+      # The retry is deliberate and is NOT the anti-pattern TASK-316 removed.
+      # That retry (deploy/charts/ax-next/__tests__/helm-deps.ts) was harmful
+      # because the empty index it retried around was SELF-INFLICTED by
+      # concurrent writers, so every attempt fed the race. A single serialized
+      # `docker pull` has no competing writer and no race to amplify — only a
+      # genuinely flaky remote, which is what a bounded retry is for.
+      #
+      # KEEPING THE LIST HONEST: the tag below is duplicated across every
+      # `new PostgreSqlContainer('postgres:16-alpine')` call site in the repo —
+      # 115 of them at the time of writing, sharing no constant — which makes
+      # this one more independent copy of the tag. Left unguarded it
+      # rots silently on a tag bump — the pre-pull succeeds on the old tag while
+      # the suites cold-pull the new one, restoring this exact bug behind a green
+      # step. scripts/__tests__/ci-prepull-covers-test-images.test.js parses the
+      # delimited list below and fails if it drifts from what the tests start.
+      - name: Pre-pull test container images
+        run: |
+          # AX-PREPULL-IMAGES-START
+          images=(postgres:16-alpine)
+          # AX-PREPULL-IMAGES-END
+          for image in "${images[@]}"; do
+            pulled=
+            for attempt in 1 2 3; do
+              if docker pull "$image"; then
+                pulled=yes
+                break
+              fi
+              echo "::warning::docker pull $image failed (attempt $attempt/3)"
+              # No backoff after the LAST attempt — the loop is about to give up,
+              # so sleeping here only adds dead time to an already-failing job.
+              #
+              # An `if` rather than `[ "$attempt" -lt 3 ] && sleep …` purely for
+              # legibility. An earlier revision of this comment justified the `if`
+              # by claiming a false AND-list would abort the step under `bash -e`;
+              # that is wrong, and the correction is worth recording because the
+              # rule is easy to get backwards. `set -e` explicitly EXEMPTS a
+              # command that fails as part of a `&&` list unless it is the last
+              # one, so the terser form would not abort — measured on bash 3.2
+              # under both `-e` and `-eo pipefail`: the loop ran to completion and
+              # the script exited 0.
+              if [ "$attempt" -lt 3 ]; then sleep $((attempt * 5)); fi
+            done
+            if [ -z "$pulled" ]; then
+              echo "::error::could not pull $image after 3 attempts"
+              exit 1
+            fi
+            # Residency is the whole mechanism (see above), so assert it
+            # rather than inferring it from a zero exit — and assert it
+            # explicitly, not by leaning on the runner's implicit `bash -e`.
+            if ! docker image inspect "$image" >/dev/null 2>&1; then
+              echo "::error::$image is not resident after a pull that reported success"
+              exit 1
+            fi
+          done
       # Tests: affected packages + dependents on PRs (fast feedback); full suite on
       # push to main (cross-package backstop — a shared-table break only shows on the
       # full run; auto-merge relies on this main gate, see auto-ship merge queue).

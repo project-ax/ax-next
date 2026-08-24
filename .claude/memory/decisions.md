@@ -2191,3 +2191,44 @@ Deps: S3←S2, S4←S2, S5←S2,S3,S4, S6←S2,S5, S7←S3,S4,S5.
 | 2026-08-24 | **`skip (not a draft-issue card)` is left exactly as it is, and the card's claim that a malformed id can reach it is recorded as FALSE.** | Measured: that branch needs `gh` to exit **0** with an empty content id, i.e. a *resolvable* node of the wrong type (a linked real issue/PR card). An unresolvable or garbage id always errors rc=1 + `NOT_FOUND`, so a malformed id can only ever reach `skip (read)`. It is a documented deliberate harmless skip. | Fold it into the malformed class (rejected: it is a different condition, and folding it would break linked-issue cards). |
 | 2026-08-24 | The shape check, not the API error, is the signal. | `NOT_FOUND` also fires for a deleted card or one the token cannot see, so it means "not my card", not "malformed". The prefix/whitespace test is a positive signal and costs zero API calls. | Classify on the GraphQL error body (rejected: weaker signal, and costs a call to learn it). |
 | 2026-08-24 | Implemented inline rather than via per-task subagents. | The edits are byte-precise string surgery in a doc where a subagent misquoting the anchor text is the dominant risk, and the orchestrator's measurement pass had already done the exploration a subagent would exist to do. Deviation from yolo-ship Phase 3 logged deliberately. | One subagent per file (rejected: more context spent than saved, higher misquote risk). |
+
+
+## 2026-08-24 — TASK-317: pre-pull ONE tag, and let a source-shape guard keep the list honest
+
+| | |
+|---|---|
+| **Decision** | The CI pre-pull list is `postgres:16-alpine` and nothing else, and `scripts/__tests__/ci-prepull-covers-test-images.test.js` asserts set **equality** between that list and the image tags the test sources actually start. |
+| **Rationale** | (Amended after review: “one tag” is true of the images the *suites* declare. testcontainers also starts its Ryuk reaper, handled by disabling it on the job — see the entry below.) The card asked for `postgres:16` too. It is never started: all its occurrences are inert string literals in schema-validation fixtures and assertions. Every one of the 115 `new PostgreSqlContainer(...)` call sites in the repo uses `postgres:16-alpine`, and there are no other container classes. Pulling the second tag would spend ~150MB per run on an image no suite touches. The equality direction that catches the *missing* tag is the flake; the direction that catches the *extra* tag is the card's own error, so both are asserted. |
+| **Alternatives** | Pull both tags as the card said (rejected — measured false). Subset-only assertion (rejected — lets unused images accumulate silently). A shared `POSTGRES_IMAGE` constant across 115 sites (deferred — genuinely the better shape, but it is a 21-project refactor and the guard explicitly fails if a computed tag ever appears, so it cannot land unnoticed). |
+
+## 2026-08-24 — TASK-317: a bounded retry here does NOT contradict TASK-316's lesson
+
+| | |
+|---|---|
+| **Decision** | Wrap the `docker pull` in a 3-attempt backoff retry, despite TASK-316 having deliberately *removed* a 3x retry from the chart suite's helm fetch. |
+| **Rationale** | TASK-316's retry was harmful for a specific reason, not a general one: the empty index it retried around was **self-inflicted by concurrent writers**, so every attempt fired another `--force-update` into the same contended files and amplified the race. A single serialized `docker pull` in one CI step has no competing writer and therefore no race to amplify — only a genuinely flaky remote, which is what a bounded retry is for. Stated explicitly in the step comment and the PR because a reviewer citing "316 removed its retry" would be misapplying it. |
+| **Alternatives** | Naked single pull (rejected — moves the flake to a named step instead of removing it). Unbounded retry (rejected — turns a dead registry into a job timeout). |
+
+## 2026-08-24 — TASK-317: acceptance is mechanical, not statistical
+
+| | |
+|---|---|
+| **Decision** | Do **not** claim N-consecutive-green-runs as the acceptance evidence, even though the card specified it. |
+| **Rationale** | The failure has exactly **one** observation, and the 8 `main` runs preceding this work were already green **without** the fix — so consecutive green runs cannot distinguish the fix from the baseline. The real proof is mechanical and checkable by reading the installed library: `pullImage` returns early on a purely local `dockerode.getImage(name).inspect()` and nothing in this repo sets `force`, so a resident image is never manifest-checked. The mechanical argument is only as complete as the image inventory it covers, which is what the Ryuk finding below corrected — a mechanical claim can be sound in its reasoning and still false in its scope. Green runs bound the added cost and show no regression; they are not the proof. |
+| **Alternatives** | Report green-run counts as acceptance (rejected — dressing up an n=1 with statistics it does not have). Add a unit test asserting the flake is gone (rejected — there is nothing in-process to assert; the behaviour is CI-environment shaped, hence the source-shape guard instead). |
+
+## 2026-08-24 — TASK-317: DISABLE the Ryuk reaper in CI rather than pre-pulling it
+
+| | |
+|---|---|
+| **Decision** | Set `TESTCONTAINERS_RYUK_DISABLED: 'true'` on the CI `test` job, instead of adding `testcontainers/ryuk:0.14.0` to the pre-pull list. The guard asserts the pairing (reaper off **or** image pre-pulled), so both configurations are legal and only "neither" fails. |
+| **Rationale** | Reviewer finding, and it was correct: testcontainers starts the reaper on every `.start()`, so the first draft closed the postgres vector while leaving an identical registry-blip vector open — and said in comments that it was closed. Disabling beats pre-pulling on two counts. The reaper exists to clean up containers leaked after a session dies, and a GitHub-hosted runner is destroyed at the end of the job, so it buys nothing there. And its tag is pinned by the *installed* testcontainers, so a pre-pulled copy would drift on every dependency bump with nothing able to police it — the guard's source scan can never see a library-internal image. Disabling keeps the policed list at exactly one image, which is also the model the rest of the guard assumes. |
+| **Alternatives** | Pre-pull the reaper image (rejected as the primary fix for the drift reason above, but deliberately left *legal* by the guard, because a future need for real reaping in CI should not require rewriting the guard). Leave it and soften the comments to admit the gap (rejected — the card's whole goal is that a registry blip cannot fail a suite; documenting a known-open vector as acceptable fails the card). Both belt-and-braces (rejected — contradictory: disabling means nothing pulls the image, so pre-pulling it too is dead weight the guard would then have to permit forever). |
+
+## 2026-08-24 — TASK-317: exact counts in prose are the same rot the guard exists to stop
+
+| | |
+|---|---|
+| **Decision** | Comment counts come from the guard's own scan (115 call sites / 21 projects), not from `git grep`, and the tightest claims were dropped rather than restated. |
+| **Rationale** | Second reviewer finding. My prose said 118/22 and the guard computes 115/21; the gap is `packages/memory-strata/test/bench/internal-corpus.json`, a benchmark corpus whose *document text* contains testcontainers code as data. The guard correctly excludes `.json`, so the prose was describing a number the test deliberately does not use — and one comment stated "118 sites across 22 workspace projects" while annotating the very scan that returns 115/21. The floors in the test are loose (`>50`, `>10`) precisely because exact counts rot; hard-coding them in prose reintroduces the rot next door to the guard against it. |
+| **Alternatives** | Restate as 115/21 everywhere (partly done where a number genuinely helps the argument); drop every number (rejected — "duplicated across ~115 call sites with no shared constant" is the whole reason the guard exists, and a magnitude carries that where "several" would not). |
