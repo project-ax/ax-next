@@ -2093,3 +2093,58 @@ Deps: S3←S2, S4←S2, S5←S2,S3,S4, S6←S2,S5, S7←S3,S4,S5.
 | **Decision** | Also dropped `id` from the two fires fixtures that carried it (`routines-admin-routes` route stub, `channel-web` routines-list mock), neither of which asserted on it. |
 | **Rationale** | Both are typed `unknown[]`, so they compiled either way — but a fixture that ships a field the bus can no longer produce teaches the next reader that the wire still carries it. Same documentation-rot family this epic keeps finding in comments. |
 | **Alternatives** | Leave them (rejected — cheap now, misleading forever). |
+## 2026-08-24 — TASK-262: the freshness reach-fold gate goes on the FOLD, never on the predicate
+
+| | |
+|---|---|
+| **Decision** | `capability-freshness.ts`'s `catalogToken` folds each referenced connector's resolved reach into the digest **only when `bus.hasService('connectors:resolve')`**, and when the hook is absent it hashes the pre-TASK-262 shape byte for byte (no `reach` key at all). The `hasService` check sits *inside* `catalogToken`, not at the top of the capture handler. |
+| **Rationale** | The sibling producer `packages/tool-connector-propose/src/freshness.ts:202` returns `{predicate:null}` when the hook is missing — correct **there**, because the connector registry is the only world that producer reads. Copying that pattern here (the default move for anyone reading the two files side by side) would blank this predicate and **delete the working catalog guard in every connector-less preset**. The catalog entry is still a world worth guarding without `@ax/connectors`. Byte-identical fallback additionally means no in-flight `request_capability` row in such a preset is staled by this PR. |
+| **Alternatives** | Whole-predicate gate (rejected — deletes a guard). Always emit a `reach: []` key (rejected — stales every connector-less preset's in-flight rows for no information). Make `connectors:resolve` a hard `calls` dep (rejected — invariant 5 / breaks stripped presets). |
+
+## 2026-08-24 — TASK-262: the fold resolves in PARALLEL and throws where the executor swallows
+
+| | |
+|---|---|
+| **Decision** | `resolvedReach` uses `Promise.all` over the connector ids, leaves `timeoutMs` at 3 s/10 s, maps a clean `PluginError{code:'not-found'}` to an `absent` sentinel, and **re-throws every other resolve failure** — the opposite of the executor's per-connector `catch {}` in `request-capability.ts`. |
+| **Rationale** | The two halves of the guard fail in OPPOSITE directions on budget overrun: `@ax/decisions`' `CAPTURE_BUDGET_MS` (3 s) makes capture fail **OPEN** (row written with no predicate, claiming no guard), and `CHECK_BUDGET_MS` (10 s) makes check fail **CLOSED** (spurious stale). So a serial fan-out over N connectors is how a two-connector skill quietly loses its guard; parallel makes the fold cost one round trip regardless of N and needs no larger budget. On the throw: the executor must still draw a card, so dropping an unreadable connector is right for it; a freshness producer doing the same would report "unchanged" for a world it failed to read, letting a transient blip authorise a replay. |
+| **Alternatives** | Serial loop + raise `timeoutMs` (rejected — a producer cannot raise the pre-call IPC ceiling, so it would just move the failure). `Promise.allSettled` + swallow (rejected — that is the executor's posture, and it is wrong for a guard). |
+
+## 2026-08-24 — TASK-262: digest membership is "resolve returns it and it grants reach"
+
+| | |
+|---|---|
+| **Decision** | The reach shape digests keyMode, hosts, credential slot NAMES, npm, pypi, **`mcpServers`** and **`services`** — including `env` as sorted key/value pairs. `usageNote` and `credentialPlan` stay out. Set-like arrays are deduped+sorted; `args` keeps its order. |
+| **Rationale** | The sibling omits `mcpServers` (and `services`) even though `connectors:resolve` returns both; that is a blind spot, not a precedent — an MCP server or a dev-service image is reach. `env` values are in because an env value is how either gets re-pointed somewhere else with every host string unchanged; only the sha256 is persisted, so nothing sensitive is stored or logged. `args` order is meaning (`['--allow','x']` ≠ `['x','--allow']`), so sorting it would collapse two different worlds. |
+| **Alternatives** | Canonical-JSON the whole `capabilities` object (rejected — a generic recursive sort would either reorder `args` or leave set-like lists order-sensitive). env keys only (rejected — misses a real reach change). Mirror the sibling exactly (rejected — inherits its blind spot). |
+
+## 2026-08-24 — TASK-262: the predicate's `label` DOES follow the fold (initial call reversed on review)
+
+| | |
+|---|---|
+| **Decision** | The label now branches: `the "<skillId>" capability and the connectors it reaches` when the reach fold ran, `the "<skillId>" entry in the capability catalog` when it did not. **This reverses my first call**, which was to leave it alone; `ax-code-reviewer` pushed back and was right. |
+| **Rationale** | The label completes "checked against: …" on the row a human reads. When a CONNECTOR moves and the catalog entry does not, "the entry in the capability catalog" sends them to inspect the entry, where they find nothing changed — worse than saying nothing. Branching is not per-preset inconsistency: a connector-less preset genuinely checked less, and should say so. **My length objection was factually wrong** — `@ax/decisions`' `fenceLine` truncates at `LABEL_MAX_CHARS` with an ellipsis rather than dropping the label, so a pathological 128-char skillId degrades gracefully. |
+| **Alternatives** | Leave it (rejected on review — understating what was checked on a consent surface is the defect this epic is cleaning up). Re-read `hasService` at the label site (rejected — `catalogToken` now returns `{value, foldedReach}` so the label CANNOT desync from the gate; a second read would work today and rot the first time the condition changes). |
+
+## 2026-08-24 — TASK-262: OAuth scopes and the shared-key consent bit are in the digest
+
+| | |
+|---|---|
+| **Decision** | Credential slots digest `{slot, kind, server, sorted scopes}`, not just the slot name, and `requiresSharedKeyConsent` is folded too. Added on review (reviewer F5). |
+| **Rationale** | The membership rule is "resolve returns it and it grants reach". Digesting slot NAMES alone reproduced this very card's bug one level down: for an OAuth grant the **scopes are the reach**, so `read` widening to `read,write` under a stable slot name would not have tripped the guard. `requiresSharedKeyConsent` is a first-class consent bit — approving means spending a key that is not this person's, so a change to it is a changed question. |
+| **Alternatives** | Slot names only, mirroring the sibling (rejected — same blind-spot family as the omitted `mcpServers`). Defer to a follow-up card (rejected — it is four lines and the card is literally about reach moving under a stable id). |
+
+## 2026-08-24 — TASK-262: the digest is knowingly a SUPERSET of what the approval card draws
+
+| | |
+|---|---|
+| **Decision** | Keep the wider digest and **document the asymmetry** rather than narrowing it to match the card. Follow-up filed to widen the card instead. |
+| **Rationale** | `PermissionRequestEvent` renders top-level hosts, slot names and packages — never `mcpServers`, `services`, `env` or `keyMode`. So a change confined to those re-opens the decision under "asks for something different" while the re-fired card looks **identical** to the one already approved. That is confusing, but it fails in the safe direction (a re-ask, never a silent grant) and it partly compensates for the card omitting an MCP server's own hosts. Narrowing the digest to match the card would trade a confusing re-ask for a missed change. |
+| **Alternatives** | Narrow the digest to the card's fields (rejected — reintroduces the blind spot). Widen the card in this PR (rejected — a UI change on a security surface belongs in its own card with its own review). |
+
+## 2026-08-24 — TASK-262: implemented inline rather than via per-task subagents
+
+| | |
+|---|---|
+| **Decision** | Deviated from yolo-ship Phase 3's subagent-per-task rule and implemented the four plan tasks directly. |
+| **Rationale** | The whole diff is one function plus comments plus three tests across two source files I had already read in full during measurement. Dispatching would have made each subagent re-read the same two files — more total context, not less — and the traps (gate placement, throw-vs-swallow, digest membership) are exactly the judgment calls that do not survive being handed off as a spec. The reviewer gate was NOT skipped. |
+| **Alternatives** | One subagent per task as written (rejected on cost/benefit for a ~120-line diff). |
