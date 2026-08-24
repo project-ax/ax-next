@@ -95,7 +95,13 @@ jobs:
               echo "::error::could not pull $image after 3 attempts"
               exit 1
             fi
-            docker image inspect "$image" >/dev/null
+            # Residency is the whole mechanism (see above), so assert it
+            # rather than inferring it from a zero exit — and assert it
+            # explicitly, not by leaning on the runner's implicit `bash -e`.
+            if ! docker image inspect "$image" >/dev/null 2>&1; then
+              echo "::error::$image is not resident after a pull that reported success"
+              exit 1
+            fi
           done
       # Tests: affected packages + dependents on PRs (fast feedback); full suite on
       # push to main (cross-package backstop — a shared-table break only shows on the
