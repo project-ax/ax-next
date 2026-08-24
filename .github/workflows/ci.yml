@@ -119,10 +119,16 @@ jobs:
               echo "::warning::docker pull $image failed (attempt $attempt/3)"
               # No backoff after the LAST attempt — the loop is about to give up,
               # so sleeping here only adds dead time to an already-failing job.
-              # This is an `if` and not `[ ... ] && sleep` on purpose: GitHub runs
-              # `run:` under `bash -e`, where a false AND-list is itself a failed
-              # command and would abort the step before the `::error::` below ever
-              # printed. An `if` with a false condition exits 0.
+              #
+              # An `if` rather than `[ "$attempt" -lt 3 ] && sleep …` purely for
+              # legibility. An earlier revision of this comment justified the `if`
+              # by claiming a false AND-list would abort the step under `bash -e`;
+              # that is wrong, and the correction is worth recording because the
+              # rule is easy to get backwards. `set -e` explicitly EXEMPTS a
+              # command that fails as part of a `&&` list unless it is the last
+              # one, so the terser form would not abort — measured on bash 3.2
+              # under both `-e` and `-eo pipefail`: the loop ran to completion and
+              # the script exited 0.
               if [ "$attempt" -lt 3 ]; then sleep $((attempt * 5)); fi
             done
             if [ -z "$pulled" ]; then

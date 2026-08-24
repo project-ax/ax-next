@@ -184,7 +184,7 @@ describe('CI pre-pull list covers the images the tests start', () => {
     // A computed tag (`new PostgreSqlContainer(IMAGE)`) is invisible to a text
     // scan, which would make the equality above vacuously true for that suite
     // while it cold-pulls something nobody pre-pulled. If a shared constant is
-    // ever introduced — genuinely the better shape for 118 duplicates — this
+    // ever introduced — genuinely the better shape for 115 duplicates — this
     // guard has to learn to resolve it before that lands.
     const opaque = files
       .filter((f) => {
