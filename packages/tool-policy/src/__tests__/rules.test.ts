@@ -85,11 +85,14 @@ describe('BUILTIN_RULES', () => {
   });
 
   it('the disabled-builtin denies name exactly the four SDK builtins we disable', () => {
-    // These four cannot be derived from `DISABLED_BUILTINS` (it lives in the
-    // runner package, whose entrypoint is the runner binary — a cross-plugin
-    // runtime import, invariant 2). This assertion is the drift guard the
-    // derivation would have been: if the runner's disallow list changes, this
-    // list has to change with it.
+    // This pins the four names in place so a change to the rail's deny rows is
+    // never a silent one-line diff. It is NOT a drift guard against the runners:
+    // it compares the table against a literal in this same file, so it cannot
+    // notice a runner's list moving underneath it. That guard is a separate test
+    // that reads both runners' sources —
+    // `scripts/__tests__/disabled-builtin-rail-drift.test.js` (TASK-245), which
+    // CI runs unconditionally via `pnpm test:scripts`. If it fails, the rail has
+    // fallen behind a runner and BOTH lists move together.
     const denied = BUILTIN_RULES.filter((r) => r.id.startsWith('builtins.')).map(
       (r) => r.match.tool,
     );

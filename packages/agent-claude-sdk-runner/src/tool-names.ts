@@ -91,8 +91,15 @@ export type DisabledBuiltin = (typeof DISABLED_BUILTINS)[number];
  * `rules.ts` already refuses to import THIS module. That makes this the third
  * place the four names are written down — though only two of the three can
  * drift: this record's keys are `Record<DisabledBuiltin, string>`, so the
- * compiler ties them to the array three lines up. The drift-prone copy is the
- * hand-maintained one in `rules.ts`, which TASK-245 owns reconciling.
+ * compiler ties them to the array three lines up.
+ *
+ * The hand-maintained copy in `rules.ts` is the drift-prone one, and TASK-245
+ * ruled it should STAY hand-maintained: that rail is runner-agnostic and holds
+ * the names both runners keep from the agent, not this runner's list. It is
+ * held honest from outside instead —
+ * `scripts/__tests__/disabled-builtin-rail-drift.test.js` reads this array as
+ * text and fails if the rail stops matching. Which matters most when a new SDK
+ * arrives and `SECURITY.md` sends the upgrader here to add a name.
  */
 export const DISABLED_BUILTIN_REASONS: Record<DisabledBuiltin, string> = {
   WebFetch:
