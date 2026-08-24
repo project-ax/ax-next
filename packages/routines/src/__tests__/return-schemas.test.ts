@@ -88,14 +88,30 @@ describe('routines return schemas', () => {
     expect(ListOutputSchema.parse(full)).toEqual(full);
   });
 
-  it('routines:recent-fires round-trips a fully-populated FireRow', () => {
+  // This pair is load-bearing and must stay a pair (TASK-251). `FireRowSchema`
+  // is SHARED by both fires hooks, and `HookBus.call` returns
+  // `returns.safeParse(...).data` — a zod object STRIPS undeclared keys. So
+  // narrowing the shared schema would silently delete `id` from
+  // `routines:recent-fires` as well, and nothing in tsc would notice (the HTTP
+  // hop that carries it is an untyped `get<T>`). The first test pins the
+  // narrowing; the second pins that it did not spread.
+  it('routines:recent-fires KEEPS the row id (its admin consumer reads it)', () => {
     const full: RecentFiresOutput = { fires: [fireRow] };
-    expect(RecentFiresOutputSchema.parse(full)).toEqual(full);
+    const parsed = RecentFiresOutputSchema.parse(full);
+    expect(parsed).toEqual(full);
+    expect(parsed.fires[0]!.id).toBe(42);
   });
 
-  it('routines:recent-fires-for-agent round-trips a fully-populated FireRow', () => {
-    const full: RecentFiresForAgentOutput = { fires: [fireRow] };
-    expect(RecentFiresForAgentOutputSchema.parse(full)).toEqual(full);
+  it('routines:recent-fires-for-agent DROPS the row id (storage vocabulary)', () => {
+    // Deliberately typed as the wider domain row: the store hands the handler a
+    // `FireRow`, and the `returns` schema is what strips `id` at the bus edge.
+    const out: RecentFiresForAgentOutput = RecentFiresForAgentOutputSchema.parse({
+      fires: [fireRow],
+    });
+    expect('id' in out.fires[0]!).toBe(false);
+    // Everything else still round-trips.
+    const { id: _id, ...withoutId } = fireRow;
+    expect(out).toEqual({ fires: [withoutId] });
   });
 
   it('routines:fire-now round-trips', () => {

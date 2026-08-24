@@ -64,6 +64,25 @@ export interface RecentFiresInput {
 export interface RecentFiresOutput {
   fires: FireRow[];
 }
+/**
+ * A fire as it crosses the hook bus on `routines:recent-fires-for-agent`:
+ * `FireRow` minus `id`.
+ *
+ * `FireRow.id` is the postgres `BIGSERIAL` primary key. It is storage
+ * vocabulary, and no alternate backend (a JSONL fire log, a sqlite store) could
+ * reproduce a monotonic one — the same reasoning already written down for
+ * `decisions:recent-receipts-for-agent`, which is why that hook's cursor is an
+ * instant and not a row id. So it does not belong on a hook payload
+ * (invariant 1), and the pagination cursor here is `firedAt`.
+ *
+ * The domain `FireRow` keeps `id` on purpose: it is the store's own row type,
+ * and `routines:recent-fires` — a different hook, feeding the admin fires table
+ * — genuinely reads it for a React key. Narrowing the shared row would have
+ * broken that silently, because `HookBus.call` returns the `returns`
+ * schema's parse output and a zod object strips undeclared keys.
+ */
+export type AgentFireRow = Omit<FireRow, 'id'>;
+
 export interface RecentFiresForAgentInput {
   agentId: string;
   limit?: number;
@@ -71,7 +90,7 @@ export interface RecentFiresForAgentInput {
   before?: Date;
 }
 export interface RecentFiresForAgentOutput {
-  fires: FireRow[];
+  fires: AgentFireRow[];
 }
 
 export interface RoutinesConfig {
@@ -226,6 +245,14 @@ const FireRowSchema = z.object({
   renderedPrompt: z.string().nullable(),
 });
 
+/**
+ * The narrowed row for `routines:recent-fires-for-agent` (see `AgentFireRow`).
+ * Derived from `FireRowSchema` so the two shapes cannot drift — and derived
+ * rather than edited in place, because `FireRowSchema` is shared with
+ * `routines:recent-fires`, whose consumer does read `id`.
+ */
+const AgentFireRowSchema = FireRowSchema.omit({ id: true });
+
 const DefaultRoutineSummarySchema = z.object({
   defaultRoutineId: z.string(),
   name: z.string(),
@@ -253,7 +280,7 @@ export const RecentFiresOutputSchema = z.object({
 }) as unknown as ZodType<RecentFiresOutput>;
 
 export const RecentFiresForAgentOutputSchema = z.object({
-  fires: z.array(FireRowSchema),
+  fires: z.array(AgentFireRowSchema),
 }) as unknown as ZodType<RecentFiresForAgentOutput>;
 
 export const FireNowOutputSchema = z.object({
