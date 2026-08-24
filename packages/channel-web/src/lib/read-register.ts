@@ -151,14 +151,24 @@ import { HttpError } from './http';
  * comment described the 403/404 arm in the PRESENT TENSE while nothing
  * produced it, which is the exact defect this epic keeps closing.
  *
- * ONE CLASSIFIER STILL HAND-ROLLS ITS OWN, deliberately rather than by
- * oversight. `toDecisionReadError` in `workspace-decisions.ts` narrows to a
- * two-kind `DecisionReadError` (`expired` | `failed`), because no decisions
- * route answers 403 or 404 for a queue read — a `gone` arm there would be a
- * branch nothing can reach, and every decisions consumer (`TodayView`,
- * `InThreadApprovals`, `AgentConversation`) would have to grow copy for a
- * state none of them can be shown. It stays two-kind until a route produces a
- * third.
+ * TWO CLASSIFIERS STILL HAND-ROLL THEIR OWN, and they are not the same case.
+ *
+ * `toFilesError` in `workspace-files.ts` splits on 503 to say "no workspace
+ * backend in this deployment" — a status this file has no reading of at all,
+ * mapped to a kind (`unavailable`) that is not a `ReadOutcome`. It is a
+ * genuinely different axis, not drift, and folding it in here would mean
+ * inventing a kind for one surface's deployment story. Its real gap is that it
+ * has no `expired` kind, so the Files tab still offers a retry on a 401 — named
+ * in TASK-296's card as flagged-not-carded, and left to the sibling card.
+ *
+ * `toDecisionReadError` in `workspace-decisions.ts` is the closer call: it
+ * narrows to a two-kind `DecisionReadError` (`expired` | `failed`) on the same
+ * axis this file rules. It stays two-kind deliberately rather than by
+ * oversight, because no decisions route answers 403 or 404 for a queue read —
+ * a `gone` arm there would be a branch nothing can reach, and every decisions
+ * consumer (`TodayView`, `InThreadApprovals`, `AgentConversation`) would have
+ * to grow copy for a state none of them can be shown. It stays two-kind until
+ * a route produces a third.
  */
 export type ReadOutcome = 'expired' | 'gone' | 'failed';
 
