@@ -65,7 +65,7 @@ import {
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, it, expect } from 'vitest';
+import { afterAll, describe, it, expect } from 'vitest';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SKILLS_DIR = join(REPO_ROOT, '.claude', 'skills');
@@ -325,12 +325,13 @@ describe('board_batch generates the same GraphQL under bash and zsh', () => {
     expect(blocks.join('\n')).toContain('board_batch_query_preview()');
   });
 
+  const parityDir = mkdtempSync(join(tmpdir(), 'autoship-parity-'));
   const helperPath = (() => {
-    const dir = mkdtempSync(join(tmpdir(), 'autoship-parity-'));
-    const f = join(dir, 'board.sh');
+    const f = join(parityDir, 'board.sh');
     writeFileSync(f, blocks.join('\n') + '\n');
     return f;
   })();
+  afterAll(() => rmSync(parityDir, { recursive: true, force: true }));
 
   const preview = (shell) =>
     execFileSync(shell, ['-c', `. ${helperPath} && board_batch_query_preview 3`], {
@@ -473,7 +474,12 @@ describe('progress helpers: a malformed id is loud, a transient failure stays qu
 
   // A run start writes the helper and the wrapper side by side; lay them out the same
   // way so the wrapper's own-location helper resolution is exercised for real.
+  const tempDirs = [];
+  afterAll(() => {
+    for (const d of tempDirs) rmSync(d, { recursive: true, force: true });
+  });
   const dir = mkdtempSync(join(tmpdir(), 'autoship-malformed-'));
+  tempDirs.push(dir);
   const helper = join(dir, 'auto-ship-progress.sh');
   const hb = join(dir, 'auto-ship-hb.sh');
   const binDir = join(dir, 'bin');
@@ -570,6 +576,50 @@ describe('progress helpers: a malformed id is loud, a transient failure stays qu
     const r = run('bash', [hb, 'PVTI_lADOAAtestonly', 'a line']);
     expect(r.out).toContain('HEARTBEAT-FAILED(transient)');
     expect(r.out).not.toContain('HEARTBEAT-FAILED(caller)');
+    expect(r.code).toBe(1);
+  });
+
+  // Review finding, and it is this card's own bug class one layer up: if the wrapper
+  // decided the caller class by grepping $out for `MALFORMED-ID`, then a SUCCESSFUL
+  // write whose progress line merely CONTAINS that string would be reported as a
+  // non-retryable caller bug. auto-ship ships changes to this very file, so a
+  // progress line mentioning MALFORMED-ID is not hypothetical. The wrapper therefore
+  // classifies on the RETURN CODE. Driven through a FAKE helper so the wrapper's
+  // classification is isolated from `gh`, `jq` and the network entirely.
+  const withFakeHelper = (body) => {
+    const d = mkdtempSync(join(tmpdir(), 'autoship-hbclass-'));
+    tempDirs.push(d);
+    writeFileSync(join(d, 'auto-ship-progress.sh'), `append_progress() {\n${body}\n}\n`);
+    const w = join(d, 'auto-ship-hb.sh');
+    writeFileSync(w, hbBlocks.join('\n') + '\n', { mode: 0o755 });
+    return run('bash', [w, 'PVTI_lADOAAtestonly', 'a line']);
+  };
+
+  it('does not call a successful write a caller bug because its text says MALFORMED-ID', () => {
+    const r = withFakeHelper(
+      '  echo "progress: - 12:34 fixed the MALFORMED-ID gate"; return 0',
+    );
+    expect(r.out).not.toContain('HEARTBEAT-FAILED');
+    expect(r.code).toBe(0);
+  });
+
+  it('does not call a successful write transient because its text says skip (', () => {
+    // Same collision, pre-existing shape: the transient match is anchored to the
+    // leading `<label>: ` so a caller-supplied line cannot trip it.
+    const r = withFakeHelper('  echo "progress: - 12:34 made it skip (nothing)"; return 0');
+    expect(r.out).not.toContain('HEARTBEAT-FAILED');
+    expect(r.code).toBe(0);
+  });
+
+  it('keys the caller class to the gate return code 2', () => {
+    const r = withFakeHelper('  echo "progress: MALFORMED-ID junk"; return 2');
+    expect(r.out).toContain('HEARTBEAT-FAILED(caller)');
+    expect(r.code).toBe(6);
+  });
+
+  it('still calls a genuine quiet skip transient', () => {
+    const r = withFakeHelper('  echo "progress: skip (read)"; return 0');
+    expect(r.out).toContain('HEARTBEAT-FAILED(transient)');
     expect(r.code).toBe(1);
   });
 

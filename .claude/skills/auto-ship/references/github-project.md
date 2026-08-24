@@ -630,6 +630,12 @@ this way:
 - **A nonzero return is safe at every call site.** The helper is last in every
   `source … && helper …` chain, and a nonzero loop body does not stop a
   `while IFS= read -r` loop (measured 3/3 iterations under both shells).
+- **`return 2` is the contract, and it is what the wrapper keys on.** Every
+  best-effort path returns 0; only the gate returns 2. `auto-ship-hb.sh` therefore
+  classifies the caller class on `rc`, not by grepping for `MALFORMED-ID` — a text
+  match would also fire on a *successful* write whose progress line happens to
+  contain that string, labelling a landed heartbeat a non-retryable caller bug.
+  That is this very bug one layer up, so do not "simplify" it back to a grep.
 - **Genuine failures stay best-effort.** A rate limit or blip on a well-shaped id is
   still the quiet `skip (read)` / `skip (write)` with `return 0`, and still never
   blocks a ship. Only a caller bug is loud.
@@ -724,14 +730,22 @@ if [ "$#" -lt 2 ]; then
 fi
 out="$(append_progress "$1" "$2" 2>&1)"; rc=$?
 echo "$out"
-# append_progress returns 0 on every BEST-EFFORT path, so its quiet failures have to
-# be detected from the "skip (...)" text. The malformed-id class is checked FIRST:
-# it returns nonzero too, so the transient branch below would otherwise swallow it --
-# which is the exact confusion this whole distinction exists to remove.
-if printf '%s' "$out" | grep -q 'MALFORMED-ID'; then
+# Classify the CALLER class on the RETURN CODE, and check it FIRST. Two reasons.
+# (1) First, because it returns nonzero too, so the transient branch below would
+# otherwise swallow it -- which is the exact confusion this distinction exists to
+# remove. (2) On rc, not on the text: grepping $out for "MALFORMED-ID" would also
+# match a SUCCESSFUL write whose progress line merely CONTAINS that string, and
+# report a landed heartbeat as a non-retryable caller bug. auto-ship ships changes
+# to this very file, so such a line is not hypothetical. rc is collision-free:
+# append_progress returns 0 on every best-effort path and 2 only from its
+# malformed-id gate.
+if [ $rc -eq 2 ]; then
   echo "HEARTBEAT-FAILED(caller): $out" >&2; exit 6
 fi
-if [ $rc -ne 0 ] || printf '%s' "$out" | grep -q 'skip ('; then
+# The quiet best-effort failures DO return 0, so they can only be found in the text.
+# Anchor it to the leading `<label>: ` so a success line whose caller-supplied text
+# happens to contain "skip (" is not mislabelled transient either.
+if [ $rc -ne 0 ] || printf '%s' "$out" | grep -q '^[a-z-]*: skip ('; then
   echo "HEARTBEAT-FAILED(transient): $out" >&2; exit 1
 fi
 SH
