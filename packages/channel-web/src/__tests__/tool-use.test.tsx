@@ -26,8 +26,11 @@
  *      array and the legacy string result shapes.
  *
  * Nothing here mocks `@assistant-ui/react`. It used to — solely to feed
- * `useMessage` for the deleted `ToolGroup` (TASK-269). Both components below
- * are pure props-in renderers, so a whole-module mock would only be able to
+ * `useMessage` for the deleted `ToolGroup` (TASK-269). Neither component
+ * below reads `@assistant-ui/react` at runtime (`ToolUse.tsx` imports only a
+ * type from it; `ArtifactPublishTool`'s one store read is ax's own
+ * `useConversationId`, which these tests drive via
+ * `setActiveConversationId`), so a whole-module mock would only be able to
  * hide a future regression.
  */
 import { describe, it, expect } from 'vitest';
