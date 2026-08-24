@@ -89,7 +89,7 @@ describe('routines return schemas', () => {
   });
 
   // This pair is load-bearing and must stay a pair (TASK-251). `FireRowSchema`
-  // is SHARED by both fires hooks, and `HookBus.callService` returns
+  // is SHARED by both fires hooks, and `HookBus.call` returns
   // `returns.safeParse(...).data` — a zod object STRIPS undeclared keys. So
   // narrowing the shared schema would silently delete `id` from
   // `routines:recent-fires` as well, and nothing in tsc would notice (the HTTP

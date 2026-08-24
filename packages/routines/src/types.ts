@@ -78,7 +78,7 @@ export interface RecentFiresOutput {
  * The domain `FireRow` keeps `id` on purpose: it is the store's own row type,
  * and `routines:recent-fires` — a different hook, feeding the admin fires table
  * — genuinely reads it for a React key. Narrowing the shared row would have
- * broken that silently, because `HookBus.callService` returns the `returns`
+ * broken that silently, because `HookBus.call` returns the `returns`
  * schema's parse output and a zod object strips undeclared keys.
  */
 export type AgentFireRow = Omit<FireRow, 'id'>;

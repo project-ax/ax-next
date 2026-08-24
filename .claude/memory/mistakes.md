@@ -296,7 +296,7 @@ different users or it proves nothing — vacuity-check it by reverting the fix.
 to delete `id` from the row schema. That schema was shared with a *sibling* hook whose
 consumer reads `id` for a React key.
 
-**Why it is silent:** `HookBus.callService` returns `returns.safeParse(result).data`,
+**Why it is silent:** `HookBus.call` returns `returns.safeParse(result).data`,
 and a zod object strips undeclared keys. So the sibling hook stops delivering the field
 at runtime, while every type still says it is there — the HTTP hop that carries it is an
 untyped `get<T>`, so `pnpm build` stays green and the only symptom is
