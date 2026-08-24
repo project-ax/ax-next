@@ -249,6 +249,10 @@ export function createRoutinesPlugin(
       bus.registerService<RecentFiresForAgentInput, RecentFiresForAgentOutput>(
         'routines:recent-fires-for-agent', PLUGIN_NAME,
         async (_ctx, input) => {
+          // The store hands back its own wider row (with the `BIGSERIAL` `id`);
+          // `RecentFiresForAgentOutputSchema` is `AgentFireRowSchema`, so the
+          // bus strips `id` before any subscriber sees it. Declared narrow on
+          // purpose — see `AgentFireRow` in types.ts.
           const fires = await localStore.recentFiresForAgent(input);
           return { fires };
         },
