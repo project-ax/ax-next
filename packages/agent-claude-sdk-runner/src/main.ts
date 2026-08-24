@@ -683,7 +683,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               // Per-block streaming for tool calls. Mirrors the text/thinking
               // path above so the host's chat:stream-chunk subscriber can
               // fan tool activity to live SSE clients (channel-web's Thread
-              // renders these via ToolGroup + ToolFallback).
+              // folds these into the ChainOfThought disclosure and renders
+              // each one with ToolFallback — artifact_publish being the one
+              // that renders standalone, as its own download chip).
               await ctx.emitChunk({
                 kind: 'tool-use',
                 toolCallId: block.id,
