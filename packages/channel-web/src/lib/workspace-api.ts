@@ -38,6 +38,18 @@
  * starting a turn (invariant 4).
  */
 import { HttpError, httpErrorMessage, httpFetch } from './http';
+/*
+  The Fault A reason-code → authored-label table, read rather than re-declared.
+  `transport.ts` has owned it since Fault A and `turn-error.ts` already derives
+  from it; a second copy here would be invariant 4 violated in the one place the
+  drift is invisible, because a missing code silently becomes a raw identifier
+  on screen instead of a type error.
+*/
+import {
+  DEFAULT_TURN_ERROR,
+  ERROR_LABELS,
+  MAX_DETAIL_CHARS,
+} from './transport';
 import type { PostMessageResponse } from '@/wire/chat';
 import type {
   ActivityEvent,
@@ -644,9 +656,30 @@ async function streamReply(
           return;
         }
         if (typeof frame.error === 'string') {
+          /*
+            MAP THE REASON CODE, DO NOT PRINT IT. `frame.error` is a STABLE
+            REASON CODE — `dev-service-failed`, `chat-run-timeout` — and this
+            used to hand it to the caller verbatim, which put an internal
+            identifier on screen in the same breath as the rest of this epic
+            was taking them off. `lib/transport.ts` has mapped these to authored
+            labels since Fault A; reading its table rather than growing a second
+            one is the difference between one source of truth and two that drift
+            (invariant 4). An unknown code falls back to `DEFAULT_TURN_ERROR`,
+            so a reason code can never reach a reader again.
+
+            TASK-160 — `detail` is the OPTIONAL author-facing line beneath the
+            label (a dev-service sidecar naming the service and path). Per
+            `server/types.ts` it is bounded and sanitized server-side and is
+            meant to be rendered; we clamp it once more and keep it as plain
+            text. It is NOT plumbing and NOT the reason code — dropping it
+            costs the reader the only actionable specifics they get.
+          */
+          const label = ERROR_LABELS[frame.error] ?? DEFAULT_TURN_ERROR;
           const detail =
-            typeof frame.detail === 'string' ? ` ${frame.detail}` : '';
-          onError(`${frame.error}${detail}`.trim());
+            typeof frame.detail === 'string'
+              ? frame.detail.slice(0, MAX_DETAIL_CHARS).trim()
+              : '';
+          onError(detail.length > 0 ? `${label}\n${detail}` : label);
           return;
         }
         if (frame.kind === 'text' && typeof frame.text === 'string') {

@@ -415,19 +415,23 @@ describe('a reply that did not finish', () => {
     expect(line.textContent).not.toMatch(/500/);
     expect(line.textContent).not.toMatch(/send it again/i);
     /*
-      TASK-296 — the transport's own string used to be asserted PRESENT here, on
-      its own line under the prose. Splitting it out of the paragraph was right;
-      leaving it on screen was not. Two of its three producers only restate the
-      prose ("the reply stream ended without finishing" under "that reply didn't
-      finish") and the third is whatever the host wrote into an SSE error frame —
-      arbitrary text on the one surface that has promised not to print plumbing.
-      The assertion is inverted, and `(500)` in the fixture is the point: that is
-      what a status reaching the screen through this conduit looks like.
+      THE TRANSPORT'S SENTENCE STAYS, and a reviewer talked me out of removing
+      it. Every producer of this string is authored copy, and one of them —
+      an `ERROR_LABELS` label plus the optional TASK-160 `detail` line — is the
+      only actionable specifics the reader gets ("a dev service failed to
+      start", and which one). `server/types.ts` says outright that `detail` is
+      bounded, sanitized, and meant to be rendered. Collapsing it into our
+      generic sentence was a UX regression dressed as a cleanup.
+
+      What this card DID take off the screen is the raw reason code that used to
+      arrive glued to it (see the `dev-service-failed` test below) and the
+      request path and status on the other two alerts. This fixture's `(500)` is
+      the test's own invention, not something a producer emits, so it is
+      asserted present only to prove the channel still carries authored text.
     */
     expect(
-      screen.queryByText('the reply stream would not open (500)'),
-    ).toBeNull();
-    expect(document.body.textContent).not.toMatch(/500/);
+      screen.getByText('the reply stream would not open (500)'),
+    ).toBeTruthy();
 
     sendMock.mockClear();
     fireEvent.click(screen.getByRole('button', { name: 'Resend' }));

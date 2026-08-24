@@ -142,7 +142,7 @@ const LOAD_COPY: Record<ReadOutcome, string> = {
 
 const TURN_COPY: Record<ReadOutcome, string> = {
   expired: HTTP_SESSION_ENDED,
-  gone: 'That reply didn’t finish, and this conversation is no longer available. It may have been removed.',
+  gone: 'That reply didn’t finish, and this conversation is no longer available. It may have been removed, or is no longer yours.',
   // No "we may have lost the connection": `failed` covers a 500 as well as a
   // dropped socket, and naming the connection states a cause we do not know.
   failed: 'That reply didn’t finish. Nothing you sent was lost.',
@@ -150,7 +150,13 @@ const TURN_COPY: Record<ReadOutcome, string> = {
 
 const PAST_COPY: Record<ReadOutcome, string> = {
   expired: HTTP_SESSION_ENDED,
-  gone: 'We could not open that conversation. It may have been deleted since this list was drawn.',
+  /*
+    "or is no longer yours" carries the 403 half of `gone`. A reviewer caught
+    the first draft asserting a DELETION alone, which is the 404 story — and
+    `toReadOutcome` maps 403 here too, so on an ownership change the alert would
+    have stated a cause that had not happened. Rare, and still wrong.
+  */
+  gone: 'We could not open that conversation. It may have been deleted since this list was drawn, or is no longer yours.',
   failed: 'We could not open that conversation just now.',
 };
 
@@ -216,7 +222,28 @@ export function AgentView({
   const [sent, setSent] = useState<string | null>(null);
   const [streamed, setStreamed] = useState('');
   const [streaming, setStreaming] = useState(false);
-  const [turnError, setTurnError] = useState<ReadOutcome | null>(null);
+  /**
+   * The turn's failure: the outcome (which controls to offer) plus the
+   * producer's own sentence when it has one worth reading.
+   *
+   * `sentence` is NOT the thing this card set out to remove. What it removes is
+   * a request path, a status, and a raw reason code. What survives is authored
+   * copy: `streamReply` hands back `WORKSPACE_STREAM_LOST`,
+   * `httpErrorMessage(status)`, or a Fault A label from `ERROR_LABELS` with the
+   * optional TASK-160 `detail` line under it — and `server/types.ts` is
+   * explicit that `detail` is bounded, sanitized and MEANT to be rendered. It
+   * is the only actionable specifics a reader gets ("this dev service failed,
+   * at this path"), so collapsing it into our generic sentence would cost them
+   * the one line that says what to do.
+   *
+   * `null` on the send path: `toReadOutcome` already picked the sentence there,
+   * and printing `HTTP_NOT_FOUND` under our own `gone` copy would say the same
+   * thing twice.
+   */
+  const [turnError, setTurnError] = useState<{
+    kind: ReadOutcome;
+    sentence: string | null;
+  } | null>(null);
   /** Set by a send before the re-read lands, so a follow-up hits the same row. */
   const conversationRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -326,7 +353,7 @@ export function AgentView({
           // render; an absence is not (design H7).
           setStreaming(false);
           /*
-            ALWAYS `failed`, and the stream's own sentence goes to the console.
+            ALWAYS `failed`, and the stream's own sentence is KEPT.
 
             `onError` hands back a string, not a status, so there is nothing
             here to classify — and `failed` is the honest reading anyway: a
@@ -334,16 +361,18 @@ export function AgentView({
             conversation still exists, so Resend is a control that genuinely
             might work.
 
-            The message used to be RENDERED, on its own line under the prose.
-            Two of its three producers are authored sentences that just restate
-            the prose ("the reply stream ended without finishing" under "that
-            reply didn't finish"), and the third is whatever the host put in an
-            SSE error frame — arbitrary text on a path where we have promised
-            not to print plumbing. It is worth keeping for whoever is debugging
-            the turn, which is what a console is for.
+            EVERY producer of this string is authored copy, which is why it is
+            rendered rather than logged. `WORKSPACE_STREAM_LOST` and
+            `httpErrorMessage(status)` are constants from `http.ts`, and the
+            Fault A frame arrives as an `ERROR_LABELS` label plus the optional
+            TASK-160 `detail` line — `workspace-api.ts` maps the reason code
+            now, so the raw `dev-service-failed` that used to come through here
+            cannot. A 503 on stream-open is the case that proves the point: it
+            says "that part of the app is not running in this deployment",
+            which our own `failed` sentence would have replaced with an
+            invitation to Resend forever.
           */
-          console.warn(`[workspace-agent-turn] ${message}`);
-          setTurnError('failed');
+          setTurnError({ kind: 'failed', sentence: message });
         },
         /*
           The agent stopped to ask for something. NON-TERMINAL: the stream
@@ -411,7 +440,7 @@ export function AgentView({
           to the control nobody thinks of as one.
         */
         if (kind === 'gone') conversationRef.current = null;
-        setTurnError(kind);
+        setTurnError({ kind, sentence: null });
       }
     },
     [agentId, streamFrom],
@@ -618,17 +647,31 @@ export function AgentView({
                   the text in `sent`, so the honest control is a button that
                   re-fires it.
 
-                  Splitting the prose from the transport string fixed the
-                  paragraph but left the string ON SCREEN, one line lower. Two
-                  of its producers only restate the prose and the third is
-                  arbitrary text out of an SSE error frame, so it is a console
-                  line now (see `streamFrom`) and the branch sentence is the
-                  whole message.
+                  The transport's sentence stays, on its own line, because
+                  every producer of it is authored copy and one of them
+                  (`ERROR_LABELS` + the TASK-160 `detail`) carries the only
+                  actionable specifics the reader gets. What this card took off
+                  the screen is the raw REASON CODE that used to arrive with it
+                  — `workspace-api.ts` maps that to a label now — and the
+                  request path and status on the other two alerts.
                 */
                 <div className="px-6 pt-4">
-                  <Alert variant={readAlertVariant(turnError)}>
+                  <Alert variant={readAlertVariant(turnError.kind)}>
                     <AlertDescription className="flex flex-col items-start gap-2">
-                      <span>{TURN_COPY[turnError]}</span>
+                      <span>{TURN_COPY[turnError.kind]}</span>
+                      {/*
+                        UNTRUSTED PLAIN TEXT, deliberately rendered as a text
+                        node and never as markup — the contract in
+                        `server/types.ts` says the host bounds and sanitizes
+                        this, and React escapes it here regardless. It may
+                        carry a newline (`label\ndetail`), hence
+                        `whitespace-pre-line`.
+                      */}
+                      {turnError.sentence !== null && (
+                        <span className="whitespace-pre-line text-muted-foreground">
+                          {turnError.sentence}
+                        </span>
+                      )}
                       <div className="flex items-center gap-2">
                         {/*
                           RESEND ONLY WHEN RESENDING CAN WORK. On `gone` the
@@ -639,7 +682,7 @@ export function AgentView({
                           branch: the strip sits over a live conversation the
                           reader may want to carry on reading.
                         */}
-                        {sent !== null && turnError === 'failed' && (
+                        {sent !== null && turnError.kind === 'failed' && (
                           <Button
                             size="sm"
                             onClick={() => void send(sent)}
