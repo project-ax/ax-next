@@ -36,11 +36,18 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   // deny from a live call; `DISABLED_BUILTINS` stays the enforcement.
   //
   // AW-1 suggested DERIVING these four from `DISABLED_BUILTINS` for one source
-  // of truth. That is not available: the constant lives in
-  // `@ax/agent-claude-sdk-runner`, whose package entrypoint IS the runner
-  // binary, and importing it here would be a cross-plugin runtime import
-  // (invariant 2) of a module with top-level side effects. The names are
-  // therefore hand-copied and the drift risk is real — see the PR's follow-ups.
+  // of truth. TASK-245 settled that it should not be: this rail is
+  // runner-agnostic, and `DISABLED_BUILTINS` is ONE runner's list. What belongs
+  // here is the intersection — the names BOTH runners keep from the agent, for
+  // the same reason the sandbox floor below is the six both runners have. (The
+  // import is also not available: the constant lives in
+  // `@ax/agent-claude-sdk-runner`, whose package entrypoint IS the runner binary
+  // and which does not re-export it — a cross-plugin runtime import, invariant 2.)
+  //
+  // So the names stay hand-written, and the drift is guarded instead of hoped
+  // away: `scripts/__tests__/disabled-builtin-rail-drift.test.js` reads both
+  // runners' sources as text and fails if this list stops equalling that
+  // intersection. Add or remove a row here only in step with that test.
   {
     id: 'builtins.web-fetch',
     match: { tool: 'WebFetch' },
