@@ -67,12 +67,19 @@ export function createSkillBrokerPlugin(_config: SkillBrokerConfig = {}): Plugin
         },
         // TASK-111 — when a requested catalog skill references connectors[], the
         // broker resolves each via connectors:resolve and folds its reach into the
-        // approval card. hasService-guarded + best-effort, so a preset without
-        // @ax/connectors degrades to the skill's own capability block on the card.
+        // approval card. TASK-262 — the same resolve also folds that reach into
+        // request_capability's freshness digest, so a connector re-pointed under a
+        // stable id re-opens the decision. Both sites are hasService-guarded, so a
+        // preset without @ax/connectors still boots.
+        //
+        // TASK-262 corrected this note: it used to promise the card fell back to
+        // "the skill's own capability block". TASK-100 DELETED that block — a
+        // skill's reach is now entirely its connectors' — so with no resolve hook
+        // there is nothing left to gate and the card is skipped outright.
         {
           hook: 'connectors:resolve',
           degradation:
-            "the approval card shows only the skill's own capability block; a referenced connector's hosts/keys are not folded in",
+            'a requested skill surfaces no approval card at all (since TASK-100 a skill has no capability block of its own, so all of its reach is its connectors\'), and request_capability\'s freshness predicate covers the catalog entry alone — it still trips on an edited entry, but not on a connector re-pointed under a stable id',
         },
       ],
       subscribes: [],
@@ -82,7 +89,8 @@ export function createSkillBrokerPlugin(_config: SkillBrokerConfig = {}): Plugin
       await registerRequestCapability(bus);
       // AW-7 — `request_capability` is held by the AW-3 rule table, replayed
       // host-side on approval, and therefore approvable hours after the human
-      // was asked. This is the half that re-reads the catalog entry first.
+      // was asked. This is the half that re-reads the catalog entry — and
+      // (TASK-262) what its connectors reach — before the replay happens.
       registerCapabilityFreshness(bus);
     },
   };

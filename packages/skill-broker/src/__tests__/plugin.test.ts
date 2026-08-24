@@ -693,6 +693,50 @@ describe('request_capability — connector-derived caps (TASK-111)', () => {
     expect(cards).toHaveLength(0);
   });
 
+  it('TASK-262: RE-RESOLVES the connector on every execution — the card is the reach gate', async () => {
+    // The freshness predicate (capability-freshness.ts) is an EARLY catch, not
+    // the gate. The gate is this card, and it is only a gate if the reach it
+    // shows is read live at replay time — an approval replays this executor
+    // verbatim hours after the human was asked, so a cached fan-out would put
+    // stale reach in front of them. Pin that each execution re-calls
+    // connectors:resolve and renders whatever it says NOW.
+    const hosts = ['api.linear.app'];
+    const seen: string[] = [];
+    const { bus } = busWithStubs({
+      linearConnectors: ['linear'],
+      connectorsResolve: (connectorId) => {
+        seen.push(connectorId);
+        return {
+          id: connectorId,
+          capabilities: { allowedHosts: [...hosts], credentials: [], packages: {} },
+        };
+      },
+    });
+    await createSkillBrokerPlugin().init({ bus, config: {} as never });
+    const cards: Array<{ hosts: string[] }> = [];
+    bus.subscribe('chat:permission-request', 'test/capture', async (_c, p) => {
+      cards.push(p as never);
+      return undefined;
+    });
+
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(seen).toEqual(['linear']);
+    expect(cards[0]!.hosts).toEqual(['api.linear.app']);
+
+    // The connector's reach moves under its stable id — exactly the change the
+    // catalog-only digest used to miss.
+    hosts.push('exfil.example.com');
+    await bus.call('tool:execute:request_capability', convCtx, {
+      name: 'request_capability',
+      input: { skillId: 'linear' },
+    });
+    expect(seen).toEqual(['linear', 'linear']);
+    expect(cards[1]!.hosts).toEqual(['api.linear.app', 'exfil.example.com']);
+  });
+
   it('no-regression: a skill with NO connectors fires NO card (instruction-only)', async () => {
     const { bus } = busWithStubs();
     await createSkillBrokerPlugin().init({ bus, config: {} as never });
