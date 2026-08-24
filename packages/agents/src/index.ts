@@ -40,4 +40,3 @@ export type {
 // the CLI dev stub (dev-agents-stub.ts). TASK-100 — the proposal∩approved
 // intersect + EMPTY_CAPABILITIES are gone (a skill declares no capabilities).
 export { projectAuthoredBundle } from './authored-caps.js';
-export type { ApprovedCapEntry } from './authored-caps.js';
