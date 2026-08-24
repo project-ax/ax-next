@@ -2274,13 +2274,14 @@ then hand-edit the CI pull list at `.github/workflows/ci.yml:110` (`images=(post
 The `git grep -l` half was run on this branch and matches exactly 115 files, all `.ts`.
 (`sed -i ''` is the BSD/macOS spelling; GNU sed wants a bare `-i`.) The `grep -v '\.json$'`
 is load-bearing and mirrors what the guard does: `packages/memory-strata/test/bench/internal-corpus.json`
-is a benchmark corpus whose *document text* quotes testcontainers code, so it holds three
-occurrences that are data, not call sites.
+is a benchmark corpus whose *document text* quotes testcontainers code, so the three
+`new PostgreSqlContainer(...)` spellings it contains (out of four `postgres:16-alpine`
+occurrences in that one file) are data, not call sites.
 
 | | |
 |---|---|
 | **Decision** | **Close as analysed-not-built.** No `POSTGRES_IMAGE` constant, no guard change, no new package. The literals stay. |
-| **Rationale** | The counts were re-measured on this branch and the card was right, exactly: `postgres:16-alpine` appears 162 times across 134 files, of which 116 are live — 115 `new PostgreSqlContainer('postgres:16-alpine')` call sites in 115 distinct `.ts` files across 21 workspace projects, plus the one CI pull-list entry. The remaining 46 are inert (fixtures, the guard's own self-tests, docs), and postgres is the only image the repo actually starts: the only other container constructors anywhere are the guard's own self-test strings. **This is the first card in this epic whose own numbers survived measurement** — 7 of the previous 8 were materially wrong about themselves — which is a real data point about which cards to trust, since this epic has so far recorded only the failures. The duplication is nonetheless not worth abstracting, because **the expensive part is the guard, not the constant** (see the next two rows). |
+| **Rationale** | The counts were re-measured on this branch and the card was right, exactly: **115** `new PostgreSqlContainer('postgres:16-alpine')` call sites, in 115 distinct `.ts` files, across 21 workspace projects — plus the one CI pull-list entry, for 116 live copies. Repo-wide the tag string appears 155 times across 132 files (`git grep -o 'postgres:16-alpine' -- ':!.claude/memory'`), so the other 39 are inert (fixtures, the guard's own self-tests, docs). **The `':!.claude/memory'` exclusion is not cosmetic and is its own small lesson:** writing this row *raised* the unscoped repo-wide total, because the row quotes the tag — a whole-repo count is not a stable fact once memory prose starts citing it, which is the same trap as citing a line number. Prefer the scoped command above. And postgres is the only image the repo actually starts: the only other container constructors anywhere are the guard's own self-test strings. **This is the first card in this epic whose own numbers survived measurement** — 7 of the previous 8 were materially wrong about themselves — which is a real data point about which cards to trust, since this epic has so far recorded only the failures. The duplication is nonetheless not worth abstracting, because **the expensive part is the guard, not the constant** (see the next two rows). |
 | **Alternatives** | Both rejected — see below. |
 
 | | |
