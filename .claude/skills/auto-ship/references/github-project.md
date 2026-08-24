@@ -731,9 +731,9 @@ fi
 out="$(append_progress "$1" "$2" 2>&1)"; rc=$?
 echo "$out"
 # Classify the CALLER class on the RETURN CODE, and check it FIRST. Two reasons.
-# (1) First, because it returns nonzero too, so the transient branch below would
-# otherwise swallow it -- which is the exact confusion this distinction exists to
-# remove. (2) On rc, not on the text: grepping $out for "MALFORMED-ID" would also
+# (1) It returns nonzero too, so the transient branch below would otherwise swallow
+# it -- which is the exact confusion this distinction exists to remove.
+# (2) On rc, not on the text: grepping $out for "MALFORMED-ID" would also
 # match a SUCCESSFUL write whose progress line merely CONTAINS that string, and
 # report a landed heartbeat as a non-retryable caller bug. auto-ship ships changes
 # to this very file, so such a line is not hypothetical. rc is collision-free:
