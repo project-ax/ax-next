@@ -37,11 +37,17 @@ is therefore silently *partial*, and a local "the suite is fine" verdict recorde
 `auth-better` may rest on a run that stopped early. Use:
 
 ```bash
-pnpm -r --no-bail run test
+pnpm -r --no-bail run test && pnpm test:eslint-rules && pnpm test:scripts
 ```
 
+**Do not stop at `pnpm -r --no-bail run test`.** The root `test` script is
+`pnpm -r run test && pnpm test:eslint-rules && pnpm test:scripts`, so the recursive
+part is only **one of three** suites — substituting it alone silently skips
+`test:eslint-rules` and `test:scripts` entirely. That is the opposite of the problem
+you were trying to fix.
+
 Note these two traps point in **opposite** directions and are both quiet: the
-`--filter`-order one runs *more* than you asked, this one runs *less*.
+`--filter`-order one runs *more* than you asked, the bail one runs *less*.
 
 (Tooling lands in Week 1–2 per architecture doc Section 10.)
 

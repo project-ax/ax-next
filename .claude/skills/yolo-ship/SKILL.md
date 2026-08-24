@@ -273,12 +273,19 @@ digraph ship {
   ```bash
   HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
   runs=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --json databaseId --jq 'length')
-  [ "${runs:-0}" -ge 1 ] || echo "⚠ NO ci.yml RUN for $HEAD_SHA — NOT green; rebase-push to create one"
+  # FATAL, not advisory. A warn-and-continue here lets you emit `CI green ✅` on a head
+  # where nothing ran: the downstream merge gates would still block it, but you would
+  # have handed off a false green and the card churns. Do NOT declare CI green — and in
+  # orchestrated mode do NOT report `ci: green` — unless this passes.
+  [ "${runs:-0}" -ge 1 ] || { echo "⚠ NO ci.yml RUN for $HEAD_SHA — NOT green; rebase-push to create one"; exit 1; }
   ```
   Measured 2026-08-24, one branch, two shas: the original push produced **6 checks — all
   CodeQL/Analyze, no `test` job**; the rebase push produced **11** including `test`. ci.yml ran
-  normally for sibling branches the same day, so run creation is **nondeterministic**. Zero-checks
-  is not the failure mode — a **partial** check set is, and `gh pr checks` exits 0 on it because
+  normally for sibling branches the same day. **[INFERRED, not measured]** the cause was never
+  diagnosed — nondeterministic run creation fits, but so does timing (`ci.yml`'s `push` trigger is
+  `branches: [main]` only, so feature-branch runs come solely from the `pull_request` event). The
+  gate is fail-closed either way; do not restate the cause as settled. Zero-checks
+  is not the failure mode — a partial check set is, and `gh pr checks` exits 0 on it because
   the CodeQL checks are real and really passed. Also: an **empty conclusion is PENDING, not
   success**, and status reads have flapped both ways for 15+ min (settle with several consecutive
   reads of specific run ids). Reporting `ci: green` off a partial set is how an untested head
@@ -320,7 +327,9 @@ git push origin --delete <branch> || echo "⚠ cleanup failed (non-fatal)"
 
 If the PR is **not mergeable** because `main` moved while you worked: check out
 the branch, `git rebase origin/main`, resolve conflicts, push, wait for CI to
-re-green (`gh pr checks <n>`), then merge. A non-trivial rebase changes the diff —
+re-green — and a rebase push is also the remedy when **no `ci.yml` run exists**, so
+re-assert existence for the NEW head (`gh run list --workflow ci.yml --commit <sha>`)
+before reading `gh pr checks <n>` — then merge. A non-trivial rebase changes the diff —
 re-run the Phase 5 review on the new diff before merging.
 
 After merging: move the task's card → **Done** on the "TO DO" board and
@@ -334,7 +343,7 @@ reporting), then report the merge. Then you are done.
 | "I'll ask the user to be safe" | Document a recommendation in `decisions.md` and proceed. Asking is the exception, not the default. |
 | "I'll skip lint, build+test passed" | The gate is build+test+**lint**. tsc/lint catch what vitest tolerates. |
 | "I'll defer this but it's obvious" | Obvious-to-you ≠ tracked. File a board card (or hand it off) or it's lost. |
-| "CI will probably pass, I'll wrap up" | Not done until `gh pr checks` is actually green. Verify, don't assume. |
+| "CI will probably pass, I'll wrap up" | Not done until the **`ci.yml` run EXISTS for the head** *and* is green (Phase 6). `gh pr checks` alone answers green on a head where the build and tests never ran. Verify, don't assume. |
 | "I'll skip the review, lint+test passed" | The pre-PR gate *includes* a deep review (the `ax-code-reviewer` subagent). Tests prove behavior; the review catches design/security/convention issues tests don't. |
 | "The review is taking a while, I'll skip it" | A whole-branch max-effort review takes **tens of minutes — budget ~40** (measured 2026-08-23: 4 and 7.5 min of work delivered ~40 min apart). That is expected, not a hang. The subagent runs async; let it finish. Don't skip the gate on impatience. |
 | "The reviewer is hung, I'll re-dispatch" | Ask it for its findings first. A silent subagent is a **delivery** question before it is a **liveness** one — the review is usually already written. Re-dispatching first duplicates it and doubles the stall. |

@@ -287,8 +287,14 @@ HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
 # entirely SUCCESS while the build/test workflow NEVER RAN. Measured 2026-08-24 on one
 # branch, same workflow config, two shas: the original push produced 6 checks — all
 # CodeQL/Analyze, NO `test` job — and the rebase push produced 11 including `test`.
-# ci.yml ran normally for sibling auto-ship branches that same day, so this is
-# NONDETERMINISTIC RUN CREATION, not misconfiguration. "Are all reported checks
+# ci.yml ran normally for sibling auto-ship branches that same day.
+# [INFERRED, not measured] The CAUSE was never diagnosed. Nondeterministic run
+# creation fits, but so does a timing story: ci.yml's `push` trigger is
+# `branches: [main]` ONLY, so a feature-branch run comes solely from the
+# `pull_request` event, and a sha pushed across PR-open / `synchronize` timing can
+# legitimately produce zero runs. "A rebase push creates one" is consistent with
+# BOTH. The gate is fail-closed either way, so the fix does not depend on which is
+# true -- but do not restate the cause as settled. "Are all reported checks
 # SUCCESS?" answers TRUE on a head whose build and tests never executed, and
 # `gh pr checks` exits 0 on it too — the CodeQL checks are real and really passed.
 # Zero-checks is NOT the failure mode; a PARTIAL check set is. Known remedy: a rebase
