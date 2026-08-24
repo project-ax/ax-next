@@ -67,3 +67,53 @@ Behaviors (not project facts). Name a behavior, name the better alternative. Tag
   `reviewer:` field, the merge gate) until the dispatch prompt explicitly said "return at PR-open,
   report `ci: pending`, do not wait on CI." Then 5 of 5 complied. The knowledge was in project
   memory; it was not in the template agents actually read.
+- **A green CI reading is scoped to the head it was taken at, and a builder that has not handed off
+  yet is still pushing.** Session 5 hit this **four times in one run**: a PR read 9/9 green, then its
+  `headSha` in the handoff was a *different* commit (review fixes pushed after the pass) and CI was
+  6-pending again; another moved head three times while I waited. `mergeable` stayed `MERGEABLE`
+  throughout, so "re-verify mergeability immediately before merge" does **not** catch it. The gate
+  needs a second clause: **compare the handoff's `headSha` to `gh pr view --json headRefOid` and
+  re-read the checks.** Make the CI watcher head-aware — capture `headRefOid` alongside the checks and
+  treat a head change as voiding every earlier pass. (Also: this repo runs **9** checks, not the 11 the
+  session-4 handoff claimed — verified across #460/#461/#462/#463. Applying the 11-rule literally
+  blocks every merge forever, waiting on two checks that do not exist.)
+- **`reviewer: clean` from a builder can summarise two reviewers who DISAGREED.** TASK-296's did:
+  reviewer #1 returned CHANGES REQUESTED over a real defect, the builder fixed it and never obtained a
+  re-review, and reviewer #2's APPROVE was against the *pre-fix* head — so **no reviewer had seen the
+  merge head.** The builder disclosed this unprompted, which is the only reason it surfaced. The gate's
+  question is not "did a reviewer say clean" but **"did a reviewer see THIS head?"** When the answer is
+  no, dispatch the orchestrator's own independent pass (it approved, with all ten checks re-verified).
+  Related: TASK-290's builder also reported `reviewer: clean` prematurely and then corrected itself —
+  its reviewer had returned 6 findings, 2 Important.
+- **The reviewer deadline is still miscalibrated after TASK-298 fixed its wording.** Five measurements
+  in one session: ~7.7 min, ~46 min, and two reviewers at **60–90 min** — plus one that returned
+  CHANGES REQUESTED after the builder had already called it clean. Two builders burned a re-dispatch on
+  a reviewer that was simply still working. **A reviewer's transcript going flat for 20–40 minutes is
+  not a liveness signal.** The stale "successful passes land in 13–17 min" baseline (four sites) is what
+  makes 25 minutes look generous; replace it with *work 4–15 min, delivery 8–90 min*.
+- **The measurement pass's "verified true — do NOT fix" list needs the same scepticism as its
+  "false" list.** Mine shielded a half-true comment (`tool-policy.ts` calling stderr "the pod log",
+  true only under k8s) for a whole card. The builder correctly *obeyed* the fence, which is exactly why
+  a wrong instruction is expensive — it converts one bad judgement into a durable one. Filed as
+  TASK-307. Corollary already learned the hard way in session 4: the measure-the-premise rule applies to
+  instructions written *this session*, not only to inherited cards.
+- **"This looks like plumbing, delete it" is the same error as "this comment looks right, trust it."**
+  TASK-296's first pass removed `SseFrame.detail` from a rendered alert, asserting in a comment that it
+  was arbitrary — while `server/types.ts` documents it as a bounded, sanitized line **meant** to be
+  rendered. The real leak was one line away (a raw reason code with an existing `ERROR_LABELS` table).
+  Before removing a rendered field, find the type that defines it and read what it promises.
+- **Same-session siblings invalidate each other's cards within hours.** TASK-296's headline had gone
+  stale before it was dispatched — TASK-288 had already removed the raw strings from 2 of its 3 sites,
+  so its real content was two obligations a *different* card (TASK-290) left unmet. Re-measure any card
+  whose siblings merged after it was written, and expect a dep edge to need reversing: TASK-296 was
+  filed dep-free and actually depended on TASK-290's rule existing.
+- **Cards predicted "subsumed" should be rescoped, not closed.** Both TASK-289 and TASK-291 were held
+  behind TASK-288's 401 latch and predicted moot. Re-measurement found each had a half that does **not**
+  depend on a 401 — a `failed` read (500/network) signs nobody out — so one card's surviving half was
+  already-correct behaviour worth pinning, and the other's defect had merely *relocated* from 401 to
+  5xx. Closing either would have silently dropped a real defect.
+- **The dispatch template routes every builder through the single most expensive board call.** Reading a
+  card body via `gh project item-list` is ~102 GraphQL points; under *mandatory* 3-way parallelism that
+  is ~306 per dispatch round against a 5000/hr budget shared with the poller, the heartbeats and the
+  merge queue. Session 5 exhausted it within a minute of dispatching three builders and had to redirect
+  all three mid-flight. **Hand builders their card body as a local file path.** Never a board query.
