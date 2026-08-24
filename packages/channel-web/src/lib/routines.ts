@@ -50,8 +50,16 @@ export interface Routine {
   silenceMaxChars: number;
 }
 
+/**
+ * One row of the admin fires table, as it arrives over
+ * `GET /settings/routines/:agentId/fires`.
+ *
+ * There is no `id`: the store's `BIGSERIAL` primary key is storage vocabulary
+ * and `routines:recent-fires` no longer declares it, so the bus strips it
+ * (TASK-312). Nothing here is keyed off a row id — `FireRowsTable` keys off
+ * `firedAt` plus the list position.
+ */
 export interface Fire {
-  id: number;
   agentId: string;
   path: string;
   firedAt: Date;

@@ -88,28 +88,32 @@ describe('routines return schemas', () => {
     expect(ListOutputSchema.parse(full)).toEqual(full);
   });
 
-  // This pair is load-bearing and must stay a pair (TASK-251). `FireRowSchema`
-  // is SHARED by both fires hooks, and `HookBus.call` returns
-  // `returns.safeParse(...).data` — a zod object STRIPS undeclared keys. So
-  // narrowing the shared schema would silently delete `id` from
-  // `routines:recent-fires` as well, and nothing in tsc would notice (the HTTP
-  // hop that carries it is an untyped `get<T>`). The first test pins the
-  // narrowing; the second pins that it did not spread.
-  it('routines:recent-fires KEEPS the row id (its admin consumer reads it)', () => {
-    const full: RecentFiresOutput = { fires: [fireRow] };
-    const parsed = RecentFiresOutputSchema.parse(full);
-    expect(parsed).toEqual(full);
-    expect(parsed.fires[0]!.id).toBe(42);
+  // This pair is load-bearing and must stay a pair (TASK-251, then TASK-312).
+  // `FireRowSchema` is the store's own row type and still carries the
+  // `BIGSERIAL` `id`; both fires hooks narrow it away via a DERIVED
+  // `omit` (`WireFireRowSchema`), because `HookBus.call` returns
+  // `returns.safeParse(...).data` and a zod object STRIPS undeclared keys.
+  // Both halves matter: neither hook may leak `id` (invariant 1), and nothing
+  // in tsc would catch a regression either way, since the HTTP hop that
+  // carries these rows is an untyped `get<T>` plus a cast. TASK-251 narrowed
+  // the for-agent hook while the admin table still keyed off `id`; TASK-312
+  // moved that key and narrowed this one, so the pair now asserts the same
+  // thing about two different hooks — keep it a pair.
+  it('routines:recent-fires DROPS the row id (storage vocabulary)', () => {
+    // Deliberately fed the wider domain row: the store hands the handler a
+    // `FireRow`, and the `returns` schema is what strips `id` at the bus edge.
+    const out: RecentFiresOutput = RecentFiresOutputSchema.parse({ fires: [fireRow] });
+    expect('id' in out.fires[0]!).toBe(false);
+    // Everything else still round-trips.
+    const { id: _id, ...withoutId } = fireRow;
+    expect(out).toEqual({ fires: [withoutId] });
   });
 
   it('routines:recent-fires-for-agent DROPS the row id (storage vocabulary)', () => {
-    // Deliberately typed as the wider domain row: the store hands the handler a
-    // `FireRow`, and the `returns` schema is what strips `id` at the bus edge.
     const out: RecentFiresForAgentOutput = RecentFiresForAgentOutputSchema.parse({
       fires: [fireRow],
     });
     expect('id' in out.fires[0]!).toBe(false);
-    // Everything else still round-trips.
     const { id: _id, ...withoutId } = fireRow;
     expect(out).toEqual({ fires: [withoutId] });
   });

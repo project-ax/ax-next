@@ -415,9 +415,11 @@ describe('routines-admin-routes', () => {
       recentFires: async (input) => {
         observedInput = input;
         return {
+          // No `id` — `routines:recent-fires` narrows the store's `BIGSERIAL`
+          // away at the bus edge (TASK-312), so a fixture carrying one would
+          // simulate a payload the bus can no longer produce.
           fires: [
             {
-              id: 1,
               agentId: input.agentId,
               path: input.path,
               firedAt: new Date('2026-05-17T00:00:00Z'),
