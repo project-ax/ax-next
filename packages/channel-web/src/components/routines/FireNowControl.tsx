@@ -43,10 +43,12 @@ export function FireNowControl({ routine, onFired }: Props) {
         path: routine.path,
         ...(parsedPayload !== undefined ? { payload: parsedPayload } : {}),
       });
-      // The fire row is recorded on every branch, including the failures, so
-      // the parent refetches either way — otherwise the routine's last_status
-      // and the recent-fires list stay stale on exactly the runs worth looking
-      // at.
+      // Every branch that RETURNS a response has already recorded its fire
+      // row, the failures included, so the parent refetches either way —
+      // otherwise the routine's last_status and the recent-fires list stay
+      // stale on exactly the runs worth looking at. A thrown failure (an
+      // unknown routine, a network error) writes no row and never reaches
+      // here, which is correct.
       onFired();
       if (out.status === 'ok') {
         setStatus({ kind: 'ok', text: 'Started — the agent is running it now.' });

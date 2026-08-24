@@ -7,7 +7,7 @@
  *     the JSON and POSTs it as `payload`. Invalid JSON surfaces inline.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { FireNowControl } from '../components/routines/FireNowControl';
 import type { Routine } from '../lib/routines';
 
@@ -170,6 +170,41 @@ describe('FireNowControl — confirmation line', () => {
     // reach this response.
     expect(line.textContent).not.toMatch(/Started/i);
     expect(line.textContent).not.toMatch(/silenced/i);
+  });
+
+  it('the failure line stays put — unlike the success line, it does not auto-dismiss', async () => {
+    // The success line clears itself after 2.5s so the row doesn't stay noisy.
+    // A failure must not: it is the only thing telling the reader the run did
+    // not happen, and it would vanish while they were still reading it.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockJson(200, { status: 'error', conversationId: null });
+      render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
+      fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
+      await screen.findByText("We couldn't start this run. Please try again.");
+      await act(async () => {
+        vi.advanceTimersByTime(10_000);
+      });
+      expect(
+        screen.queryByText("We couldn't start this run. Please try again."),
+      ).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a failed webhook fire leaves the JSON form open, payload intact, to retry with', async () => {
+    // Success closes the form. Failure must not — closing it would throw away
+    // the payload the reader just typed, on the one outcome where they need
+    // to send it again.
+    mockJson(200, { status: 'error', conversationId: null });
+    render(<FireNowControl routine={webhookRoutine} onFired={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '{"x":1}' } });
+    fireEvent.click(screen.getByRole('button', { name: /Submit/i }));
+    await screen.findByText("We couldn't start this run. Please try again.");
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    expect(textarea.value).toBe('{"x":1}');
   });
 
   it('an errored fire still refreshes the parent so the new fire row shows up', async () => {
