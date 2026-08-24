@@ -146,7 +146,7 @@ export const ERROR_LABELS: Record<string, string> = {
 
 /** Max chars of the untrusted `detail` line we render (defense-in-depth — it's
  *  already bounded + sanitized server-side; this is a final client-side clamp). */
-const MAX_DETAIL_CHARS = 400;
+export const MAX_DETAIL_CHARS = 400;
 
 /** Shape of one SSE `data:` JSON payload. Matches `SseFrame` in src/server/types.ts.
  *  `seq` (TASK-23) is the host-minted monotonic per-reqId cursor on content

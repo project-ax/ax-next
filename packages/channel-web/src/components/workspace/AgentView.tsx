@@ -21,7 +21,12 @@ import { Archive, ArrowRight, ChevronLeft } from 'lucide-react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { userFacingMessage } from '@/lib/http';
+import { HTTP_SESSION_ENDED, logRequestFailure } from '@/lib/http';
+import {
+  readAlertVariant,
+  toReadOutcome,
+  type ReadOutcome,
+} from '@/lib/read-register';
 import { workspaceApi, type AgentDetail, type Decision } from '@/lib/workspace-api';
 import type { DecisionReadError } from '@/lib/workspace-decisions';
 import { ActivityFeed } from './ActivityFeed';
@@ -92,6 +97,69 @@ interface Props {
   onPendingReplyConsumed?: () => void;
 }
 
+/*
+  THE WORDS FOR THIS PANEL'S THREE FAILED READS.
+
+  Three surfaces × three outcomes, kept as `Record<ReadOutcome, string>` so the
+  compiler is the thing that notices a missing branch. A `switch` with a
+  `default` arm was the alternative and it is worse in exactly the way this card
+  is about: `default` is how a 404 ends up wearing the sentence written for a
+  500.
+
+  NOT IN `decision-copy.ts`. That file is a decisions vocabulary by its own
+  stated design (see its header), and none of these nine sentences is about a
+  decision.
+
+  WHY THE SENTENCES DIFFER PER SURFACE while `lib/read-register.ts` insists the
+  REGISTER must not: an unopenable agent, an unfinished reply and an unopenable
+  old conversation cost the reader three different things, and the whole reason
+  the register is shared is to buy the words that freedom.
+
+  WHY ALL THREE `expired` ARMS SHARE ONE STRING, against that grain: on a 401
+  the three surfaces know the SAME thing. The session ended, the fix is to sign
+  in, and which pane you were looking at when it happened is moot. So they use
+  the app-wide `HTTP_SESSION_ENDED` rather than three near-duplicates —
+  consistency here is what `read-register.ts` is protecting, not an exception to
+  it.
+
+  WHAT THE OLD COPY GOT WRONG, and what to not put back. Two of these alerts
+  asserted a possible DELETION on every failure mode — "It may have been
+  removed", "It may have been deleted since this list was drawn" — so a 500 sent
+  the reader hunting for a deletion that never happened, and a 401 told them
+  their agent might be gone when they were simply signed out. That sentence was
+  right; it was right for ONE mode. It now appears only under `gone`.
+
+  And the reassurance moved with the same logic: "nothing was lost, its work and
+  its memory are safe" is TRUE of a blip and a LIE of a removal, so it lives on
+  `failed` only.
+*/
+const LOAD_COPY: Record<ReadOutcome, string> = {
+  expired: HTTP_SESSION_ENDED,
+  gone: 'We could not open this agent. It may have been removed, or it may belong to someone else.',
+  failed:
+    'We could not load this agent just now. Nothing was lost — its work and its memory are safe.',
+};
+
+const TURN_COPY: Record<ReadOutcome, string> = {
+  expired: HTTP_SESSION_ENDED,
+  gone: 'That reply didn’t finish, and this conversation is no longer available. It may have been removed, or is no longer yours.',
+  // No "we may have lost the connection": `failed` covers a 500 as well as a
+  // dropped socket, and naming the connection states a cause we do not know.
+  failed: 'That reply didn’t finish. Nothing you sent was lost.',
+};
+
+const PAST_COPY: Record<ReadOutcome, string> = {
+  expired: HTTP_SESSION_ENDED,
+  /*
+    "or is no longer yours" carries the 403 half of `gone`. A reviewer caught
+    the first draft asserting a DELETION alone, which is the 404 story — and
+    `toReadOutcome` maps 403 here too, so on an ownership change the alert would
+    have stated a cause that had not happened. Rare, and still wrong.
+  */
+  gone: 'We could not open that conversation. It may have been deleted since this list was drawn, or is no longer yours.',
+  failed: 'We could not open that conversation just now.',
+};
+
 export function AgentView({
   agentId,
   tab,
@@ -117,7 +185,19 @@ export function AgentView({
   onPendingReplyConsumed,
 }: Props) {
   const [detail, setDetail] = useState<AgentDetail | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  /*
+    THE OUTCOME, NOT THE SENTENCE. These three used to hold the string a
+    surface would print. Holding the kind instead is what lets one state pick
+    both its words and its CONTROLS — the bug was never only the copy, it was
+    that a single string could not tell "Try again" whether it would work.
+
+    Every gate on these is an explicit `!== null` / `=== null` check (see
+    `pastThread` and `excerptOpening` below), never a truthiness test, so
+    swapping `string` for `ReadOutcome` is behaviour-preserving at all of them.
+    That is checked by a test rather than by reading, because it is one careless
+    `if (pastError)` away from being false.
+  */
+  const [loadError, setLoadError] = useState<ReadOutcome | null>(null);
   const [pastId, setPastId] = useState<string | null>(null);
   /**
    * The excerpt for the past conversation the rail has open, fetched on demand
@@ -125,7 +205,7 @@ export function AgentView({
    * a send lands in — is never overwritten by a read-only view.
    */
   const [pastDetail, setPastDetail] = useState<AgentDetail | null>(null);
-  const [pastError, setPastError] = useState<string | null>(null);
+  const [pastError, setPastError] = useState<ReadOutcome | null>(null);
   /**
    * Bumped to re-fetch the excerpt on demand.
    *
@@ -142,7 +222,28 @@ export function AgentView({
   const [sent, setSent] = useState<string | null>(null);
   const [streamed, setStreamed] = useState('');
   const [streaming, setStreaming] = useState(false);
-  const [turnError, setTurnError] = useState<string | null>(null);
+  /**
+   * The turn's failure: the outcome (which controls to offer) plus the
+   * producer's own sentence when it has one worth reading.
+   *
+   * `sentence` is NOT the thing this card set out to remove. What it removes is
+   * a request path, a status, and a raw reason code. What survives is authored
+   * copy: `streamReply` hands back `WORKSPACE_STREAM_LOST`,
+   * `httpErrorMessage(status)`, or a Fault A label from `ERROR_LABELS` with the
+   * optional TASK-160 `detail` line under it — and `server/types.ts` is
+   * explicit that `detail` is bounded, sanitized and MEANT to be rendered. It
+   * is the only actionable specifics a reader gets ("this dev service failed,
+   * at this path"), so collapsing it into our generic sentence would cost them
+   * the one line that says what to do.
+   *
+   * `null` on the send path: `toReadOutcome` already picked the sentence there,
+   * and printing `HTTP_NOT_FOUND` under our own `gone` copy would say the same
+   * thing twice.
+   */
+  const [turnError, setTurnError] = useState<{
+    kind: ReadOutcome;
+    sentence: string | null;
+  } | null>(null);
   /** Set by a send before the re-read lands, so a follow-up hits the same row. */
   const conversationRef = useRef<string | null>(null);
   const abortRef = useRef<AbortController | null>(null);
@@ -155,7 +256,10 @@ export function AgentView({
       setLoadError(null);
     } catch (e) {
       setDetail(null);
-      setLoadError(userFacingMessage(e, 'workspace-agent'));
+      // The operator's half goes to the console; the reader's half is chosen
+      // from the kind, not carried out of the error as a string.
+      logRequestFailure(e, 'workspace-agent');
+      setLoadError(toReadOutcome(e));
     }
   }, [agentId]);
 
@@ -185,7 +289,8 @@ export function AgentView({
         if (!cancelled) setPastDetail(excerpt);
       } catch (e) {
         if (!cancelled) {
-          setPastError(userFacingMessage(e, 'workspace-agent-past'));
+          logRequestFailure(e, 'workspace-agent-past');
+          setPastError(toReadOutcome(e));
         }
       }
     })();
@@ -247,7 +352,27 @@ export function AgentView({
           // Never leave the spinner up. A stale answer is a state we can
           // render; an absence is not (design H7).
           setStreaming(false);
-          setTurnError(message);
+          /*
+            ALWAYS `failed`, and the stream's own sentence is KEPT.
+
+            `onError` hands back a string, not a status, so there is nothing
+            here to classify — and `failed` is the honest reading anyway: a
+            stream that dropped mid-reply tells us nothing about whether the
+            conversation still exists, so Resend is a control that genuinely
+            might work.
+
+            EVERY producer of this string is authored copy, which is why it is
+            rendered rather than logged. `WORKSPACE_STREAM_LOST` and
+            `httpErrorMessage(status)` are constants from `http.ts`, and the
+            Fault A frame arrives as an `ERROR_LABELS` label plus the optional
+            TASK-160 `detail` line — `workspace-api.ts` maps the reason code
+            now, so the raw `dev-service-failed` that used to come through here
+            cannot. A 503 on stream-open is the case that proves the point: it
+            says "that part of the app is not running in this deployment",
+            which our own `failed` sentence would have replaced with an
+            invitation to Resend forever.
+          */
+          setTurnError({ kind: 'failed', sentence: message });
         },
         /*
           The agent stopped to ask for something. NON-TERMINAL: the stream
@@ -300,11 +425,22 @@ export function AgentView({
         await streamFrom(reqId);
       } catch (e) {
         setStreaming(false);
-        setTurnError(
-          e instanceof Error
-            ? e.message
-            : 'We could not get that message to the agent.',
-        );
+        logRequestFailure(e, 'workspace-agent-send');
+        const kind = toReadOutcome(e);
+        /*
+          A 404 HERE MEANS THE CONVERSATION WE AIMED AT IS NOT THERE, and
+          `conversationRef` is still pointing at it. Leaving it set makes the
+          composer a control that cannot work: every following message re-targets
+          the same vanished row and 404s again, so the reader is stuck for the
+          rest of the session with no way to tell why. Clearing it means the next
+          message starts a fresh conversation — `sendMessage` takes
+          `conversationId: null` for exactly that, and the server mints the row.
+
+          This is the same rule as the missing "Try again" one line down, applied
+          to the control nobody thinks of as one.
+        */
+        if (kind === 'gone') conversationRef.current = null;
+        setTurnError({ kind, sentence: null });
       }
     },
     [agentId, streamFrom],
@@ -312,31 +448,41 @@ export function AgentView({
 
   if (loadError !== null) {
     /*
-      The prose, the way out, and the code — in that order, on separate lines.
-      This used to end with a bare "(workspace /agents/ag_x → 404)" inside the
-      sentence and told the reader to try again with no button to do it. The
-      shell's board-level error (WorkspaceShell) has the same three parts in
-      the same order; a reader who has seen one recognises the other.
+      The prose, then exactly one way out — and WHICH way out is the point.
+
+      This alert replaces the WHOLE pane, header and Back button included, so
+      whatever control it offers is the only one on screen. It used to offer
+      "Try again" unconditionally over a sentence that said the agent "may have
+      been removed": it knew a 404 was possible and still handed the reader a
+      button that a 404 makes useless. So `gone` loses the retry (TASK-290's
+      ruling) and gains a way off the dead pane instead, because a branch with
+      no control at all would be the same trap wearing a different hat.
+
+      `expired` takes the same exit for the same reason, and deliberately does
+      NOT get a local "Sign in": the 401 latch in `lib/http.ts` fires on the
+      response and `App.tsx` swaps the whole app for `<LoginPage />`, which
+      already holds the real sign-in control. A second one here would be a
+      duplicate of a button on the screen that is about to replace this one.
+
+      The raw detail is not printed on any branch. It used to be — `workspace
+      /agents/ag_x → 404`, in a mono span — and a status code in a mono span is
+      how someone learns their session expired by reading a number.
+      `logRequestFailure` puts it in the console for operators (TASK-288).
     */
     return (
       <div className="flex flex-1 items-start justify-center p-6">
-        <Alert variant="destructive" className="max-w-[520px]">
+        <Alert variant={readAlertVariant(loadError)} className="max-w-[520px]">
           <AlertDescription className="flex flex-col items-start gap-3">
-            <span>
-              We could not load this agent. It may have been removed, or the
-              server may be having a moment. Nothing was lost — its work and
-              its memory are untouched.
-            </span>
-            <Button variant="secondary" size="sm" onClick={() => void load()}>
-              Try again
-            </Button>
-            {/*
-              The raw detail used to be printed here: `workspace /board → 401`,
-              `send message → 401`. It said nothing a reader could act on, and
-              a status code in a mono span is how someone learns their session
-              expired by reading a number. `lib/http.ts` logs it to the console
-              for operators instead (TASK-288).
-            */}
+            <span>{LOAD_COPY[loadError]}</span>
+            {loadError === 'failed' ? (
+              <Button variant="secondary" size="sm" onClick={() => void load()}>
+                Try again
+              </Button>
+            ) : (
+              <Button variant="ghost" size="sm" onClick={onBack}>
+                Back to agents
+              </Button>
+            )}
           </AlertDescription>
         </Alert>
       </div>
@@ -488,8 +634,8 @@ export function AgentView({
               )}
               {turnError !== null && !past && (
                 /*
-                  One sentence about one event, then the raw detail, then the
-                  way out.
+                  One sentence about one event, then the way out — and no
+                  second line under it.
 
                   This used to concatenate our prose with whatever string the
                   transport handed back — "That reply did not finish. We lost
@@ -500,17 +646,43 @@ export function AgentView({
                   RETYPE: the composer clears its draft on send. We still hold
                   the text in `sent`, so the honest control is a button that
                   re-fires it.
+
+                  The transport's sentence stays, on its own line, because
+                  every producer of it is authored copy and one of them
+                  (`ERROR_LABELS` + the TASK-160 `detail`) carries the only
+                  actionable specifics the reader gets. What this card took off
+                  the screen is the raw REASON CODE that used to arrive with it
+                  — `workspace-api.ts` maps that to a label now — and the
+                  request path and status on the other two alerts.
                 */
                 <div className="px-6 pt-4">
-                  <Alert variant="destructive">
+                  <Alert variant={readAlertVariant(turnError.kind)}>
                     <AlertDescription className="flex flex-col items-start gap-2">
-                      <span>
-                        That reply didn&rsquo;t finish — we may have lost the
-                        connection. Nothing you sent was lost.
-                      </span>
-                      <span>{turnError}</span>
+                      <span>{TURN_COPY[turnError.kind]}</span>
+                      {/*
+                        UNTRUSTED PLAIN TEXT, deliberately rendered as a text
+                        node and never as markup — the contract in
+                        `server/types.ts` says the host bounds and sanitizes
+                        this, and React escapes it here regardless. It may
+                        carry a newline (`label\ndetail`), hence
+                        `whitespace-pre-line`.
+                      */}
+                      {turnError.sentence !== null && (
+                        <span className="whitespace-pre-line text-muted-foreground">
+                          {turnError.sentence}
+                        </span>
+                      )}
                       <div className="flex items-center gap-2">
-                        {sent !== null && (
+                        {/*
+                          RESEND ONLY WHEN RESENDING CAN WORK. On `gone` the
+                          conversation we aimed at is not there and on `expired`
+                          the session is not, so both would re-fire straight
+                          into the same status — the dead-button offer TASK-276
+                          spent a card removing. Dismiss survives on every
+                          branch: the strip sits over a live conversation the
+                          reader may want to carry on reading.
+                        */}
+                        {sent !== null && turnError.kind === 'failed' && (
                           <Button
                             size="sm"
                             onClick={() => void send(sent)}
@@ -532,13 +704,39 @@ export function AgentView({
                 </div>
               )}
               {past && pastError !== null && (
+                /*
+                  THE ONE ALERT ON THIS SURFACE THAT HAD NO WAY OUT AT ALL — no
+                  retry, no sign-in, not even a dismiss. `retryApprovals` was
+                  already bumping `pastReload`, which is exactly the re-read this
+                  needs, but it was wired only to `AgentConversation`'s approval
+                  notice: a reader whose excerpt failed on a blip was stranded
+                  until they happened to click a different rail row.
+
+                  And its single sentence claimed a DELETION on every mode. That
+                  claim is true of a 404 and false of a 500, so it now appears
+                  only under `gone` — where it also correctly has no retry,
+                  because nothing brings a deleted conversation back.
+
+                  No dismiss on the other branches, deliberately: unlike
+                  `turnError` this alert stands over a pane that is BLANK
+                  (`pastThread` renders `[]` while `pastError` is set), so
+                  dismissing it would leave an empty transcript with nothing on
+                  screen saying why. "Back to current" in the header above is
+                  the exit.
+                */
                 <div className="px-6 pt-4">
-                  <Alert variant="destructive">
+                  <Alert variant={readAlertVariant(pastError)}>
                     <AlertDescription className="flex flex-col items-start gap-2">
-                      <span>
-                        We could not open that conversation. It may have been
-                        deleted since this list was drawn.
-                      </span>
+                      <span>{PAST_COPY[pastError]}</span>
+                      {pastError === 'failed' && (
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          onClick={() => setPastReload((n) => n + 1)}
+                        >
+                          Try again
+                        </Button>
+                      )}
                     </AlertDescription>
                   </Alert>
                 </div>
