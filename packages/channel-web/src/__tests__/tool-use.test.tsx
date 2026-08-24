@@ -1,5 +1,5 @@
 /**
- * ToolUse — summary header + expansion toggle for tool-call message parts.
+ * ToolUse — the per-tool-call detail panels the transcript renders.
  *
  * Behaviors under test:
  *
@@ -19,29 +19,22 @@
  *       failure. Paired with the reload-path assertion in
  *       `history-adapter.test.ts`.
  *
- *   4. ToolGroup renders a comma-joined past-tense summary of the tools
- *      in its slice (first verb sentence-cased), with body collapsed by
- *      default; clicking the header toggles `.open`.
+ *   4. ToolFallback renders a string result in the prose face and an object
+ *      result in mono.
  *
- *   5. ToolGroup picks up `.running` / `.failed` / done class based on
- *      the parts in its slice.
+ *   5. ArtifactPublishTool renders the inline download chip for both the
+ *      array and the legacy string result shapes.
+ *
+ * Nothing here mocks `@assistant-ui/react`. It used to — solely to feed
+ * `useMessage` for the deleted `ToolGroup` (TASK-269). Both components below
+ * are pure props-in renderers, so a whole-module mock would only be able to
+ * hide a future regression.
  */
-import { describe, it, expect, vi } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { describe, it, expect } from 'vitest';
+import { render, screen } from '@testing-library/react';
 import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 
-declare global {
-  // Test-only handoff between `setParts()` and the mocked `useMessage`.
-  // eslint-disable-next-line no-var
-  var __TEST_PARTS__: unknown[] | undefined;
-}
-
-vi.mock('@assistant-ui/react', () => ({
-  useMessage: (selector: (m: { content: unknown[] }) => unknown) =>
-    selector({ content: globalThis.__TEST_PARTS__ ?? [] }),
-}));
-
-import { ToolFallback, ToolGroup, ArtifactPublishTool } from '../components/ToolUse';
+import { ToolFallback, ArtifactPublishTool } from '../components/ToolUse';
 import { setActiveConversationId } from '../lib/use-conversation-id';
 
 const makePart = (
@@ -60,10 +53,6 @@ const makePart = (
     resume: () => {},
     ...overrides,
   }) as unknown as ToolCallMessagePartProps;
-
-const setParts = (parts: unknown[]) => {
-  globalThis.__TEST_PARTS__ = parts;
-};
 
 describe('ToolFallback', () => {
   it('renders tool name, args, and result for a completed call — and no status word', () => {
@@ -155,71 +144,6 @@ describe('ToolFallback', () => {
       <ToolFallback {...makePart({ result: { rows: 3 } })} />,
     );
     expect(data.querySelector('.tstep-result')?.className).not.toMatch(/font-sans/);
-  });
-});
-
-describe('ToolGroup', () => {
-  it('renders a comma-joined verb summary and toggles open on click', () => {
-    setParts([
-      { type: 'tool-call', toolName: 'web.search', isError: false, status: { type: 'complete' } },
-      { type: 'tool-call', toolName: 'drive.read', isError: false, status: { type: 'complete' } },
-    ]);
-    const { container } = render(
-      <ToolGroup startIndex={0} endIndex={1}>
-        <div data-testid="child" />
-      </ToolGroup>,
-    );
-
-    const header = screen.getByRole('button');
-    expect(header.textContent).toContain('Searched the web, read the file');
-
-    const group = container.querySelector('.tgroup')!;
-    expect(group.classList.contains('open')).toBe(false);
-    expect(header.getAttribute('aria-expanded')).toBe('false');
-
-    fireEvent.click(header);
-    expect(group.classList.contains('open')).toBe(true);
-    expect(header.getAttribute('aria-expanded')).toBe('true');
-
-    fireEvent.click(header);
-    expect(group.classList.contains('open')).toBe(false);
-  });
-
-  it('marks the group as running while any tool call is running', () => {
-    setParts([
-      { type: 'tool-call', toolName: 'web.search', isError: false, status: { type: 'complete' } },
-      { type: 'tool-call', toolName: 'drive.read', isError: false, status: { type: 'running' } },
-    ]);
-    const { container } = render(
-      <ToolGroup startIndex={0} endIndex={1}>
-        <div />
-      </ToolGroup>,
-    );
-    expect(container.querySelector('.tgroup.running')).toBeTruthy();
-  });
-
-  it('marks the group as failed when no calls are running but one errored', () => {
-    setParts([
-      { type: 'tool-call', toolName: 'web.search', isError: true, status: { type: 'incomplete' } },
-    ]);
-    const { container } = render(
-      <ToolGroup startIndex={0} endIndex={0}>
-        <div />
-      </ToolGroup>,
-    );
-    expect(container.querySelector('.tgroup.failed')).toBeTruthy();
-  });
-
-  it('falls back to "ran <name>" for tools without a verb mapping', () => {
-    setParts([
-      { type: 'tool-call', toolName: 'github.search_issues', isError: false, status: { type: 'complete' } },
-    ]);
-    render(
-      <ToolGroup startIndex={0} endIndex={0}>
-        <div />
-      </ToolGroup>,
-    );
-    expect(screen.getByRole('button').textContent).toContain('Ran search issues');
   });
 });
 
