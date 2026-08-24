@@ -149,17 +149,20 @@ describe('@ax/auth-better — init() awaits adapter-init (TASK-8)', () => {
     });
 
     // Wait until better-auth has been constructed (the handler build issued
-    // its $context). Poll the microtask/macrotask queue a bounded number of
-    // times — the migration + loadProviders run against the real DB first,
-    // so it isn't instantaneous.
-    for (let i = 0; i < 200 && contexts.length === 0; i++) {
-      await new Promise((r) => setTimeout(r, 10));
-    }
-    expect(contexts).toHaveLength(1);
+    // its $context). Wall-clock budgeted — the migration + loadProviders run
+    // against the real DB first, so it isn't instantaneous.
+    await vi.waitFor(
+      () => {
+        expect(contexts).toHaveLength(1);
+      },
+      { timeout: 30_000, interval: 10 },
+    );
 
     // The adapter-init ($context) is still pending → boot MUST still be
-    // pending too. Give the loop a few turns to prove init() is genuinely
-    // blocked on ready(), not merely slow.
+    // pending too. A fixed wait is correct here and is NOT the iteration-poll
+    // defect fixed above: you cannot poll for a condition that must STAY false,
+    // so this buys a window in which a merely-slow init would have finished,
+    // proving init() is genuinely blocked on ready().
     await new Promise((r) => setTimeout(r, 50));
     expect(booted).toBe(false);
 

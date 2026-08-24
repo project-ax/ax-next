@@ -26,7 +26,7 @@
  * binds is what the bridge connects to.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -350,12 +350,14 @@ describe('credential-proxy + bridge end-to-end (Phase 1a Task 17)', () => {
     // 9. THE event assertion: exactly one event.http-egress fires, with
     //    classification 'llm' (api-key kind), credentialInjected: true,
     //    status: 200. The audit emit happens on socket close from the
-    //    listener — poll a bounded number of microtasks rather than
+    //    listener — wait for it on a real wall-clock budget rather than
     //    racing on a fixed sleep.
-    for (let i = 0; i < 100 && captured.length === 0; i++) {
-      await new Promise<void>((r) => setImmediate(r));
-    }
-    expect(captured.length).toBe(1);
+    await vi.waitFor(
+      () => {
+        expect(captured.length).toBe(1);
+      },
+      { timeout: 2_000, interval: 10 },
+    );
     const ev = captured[0]!;
     expect(ev.sessionId).toBe('int-s1');
     expect(ev.userId).toBe('int-u1');

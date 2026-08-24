@@ -10,7 +10,13 @@ export default defineConfig({
     // sibling Postgres-testcontainer packages (database-postgres,
     // eventbus-postgres, session-postgres, storage-postgres) and give the
     // container-startup hooks generous headroom. See TASK-103 / TASK-73.
+    //
+    // hookTimeout governs only the *bare* hooks — a file with an explicit
+    // `}, N)` on its own beforeAll/afterAll overrides this. Several files
+    // here already declare 120_000, so 60_000 left their bare afterAll
+    // teardowns under-budgeted relative to their own file's beforeAll.
+    // Raised to match. See TASK-323.
     testTimeout: 60_000,
-    hookTimeout: 60_000,
+    hookTimeout: 120_000,
   },
 });
