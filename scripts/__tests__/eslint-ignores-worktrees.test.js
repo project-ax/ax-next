@@ -65,4 +65,18 @@ describe('eslint ignores worktree copies of the repo', () => {
       eslint.isPathIgnored(join(REPO_ROOT, 'packages/core/src/index.ts')),
     ).resolves.toBe(false);
   });
+
+  // The same guard at the boundary the two-glob design actually rests on:
+  // `worktrees` must match as a path SEGMENT, never as a substring. This
+  // file's own NAME contains the substring, so it is the canary for a glob
+  // that drops the trailing `/**` -- `'**/*worktree*'` (measured) ignores
+  // this very test, while every other assertion here stays green. Keeping
+  // the `/**` is what confines the match to directory segments.
+  it('matches worktrees as a path segment, not as a substring', async () => {
+    await expect(
+      eslint.isPathIgnored(
+        join(REPO_ROOT, 'scripts/__tests__/eslint-ignores-worktrees.test.js'),
+      ),
+    ).resolves.toBe(false);
+  });
 });
