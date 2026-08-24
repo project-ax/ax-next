@@ -450,6 +450,49 @@ describe('@ax/http-server', () => {
     expect(captured).toBe('');
   });
 
+  it('a POST-only exact route does not shadow the GET /* splat at the same path', async () => {
+    /*
+      The invariant that keeps a single-page app's client-side routes reachable.
+
+      A path can have an exact route registered under ONE method and still need
+      the splat under another: `@ax/cli serve` registers `POST /chat` as an API
+      endpoint, while `@ax/static-files` owns `GET /*` and SPA-serves any
+      unclaimed path. `GET /chat` must therefore reach the splat and return the
+      app — if it 405'd or 404'd instead, the chat surface would simply be gone
+      for anyone who navigated to it.
+
+      That became load-bearing when `/` was handed to the agent workspace
+      (TASK-324): chat has no route of its own, so `/chat` — an unclaimed GET
+      path served by the splat — is now its address. The two existing splat
+      tests don't cover this: one checks 405 with NO splat registered, the other
+      checks precedence WITHIN a single method. Neither pins cross-method
+      behaviour, which is the case that matters here.
+    */
+    await registerRoute('POST', '/chat', async (_req, res) => {
+      res.status(200).text('api');
+    });
+    await registerRoute('GET', '/*', async (req, res) => {
+      res.status(200).text(`spa:${req.params['*']}`);
+    });
+
+    // The GET falls to the splat — NOT 405, even though /chat has an exact
+    // route under another method.
+    const get = await fetch(`http://127.0.0.1:${port}/chat`);
+    expect(get.status).toBe(200);
+    expect(await get.text()).toBe('spa:chat');
+
+    // And the POST still reaches its own handler, not the splat. (The
+    // x-requested-with header is this server's CSRF gate, not part of the
+    // routing behaviour under test — without it the POST is rejected 403
+    // before routing is ever consulted.)
+    const post = await fetch(`http://127.0.0.1:${port}/chat`, {
+      method: 'POST',
+      headers: { 'x-requested-with': 'ax-admin' },
+    });
+    expect(post.status).toBe(200);
+    expect(await post.text()).toBe('api');
+  });
+
   it('exact + param routes take precedence over /* splat', async () => {
     await registerRoute('GET', '/admin/agents', async (_req, res) => {
       res.status(200).text('exact');

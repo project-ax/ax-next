@@ -80,8 +80,15 @@ function isSetupPath(): boolean {
  * `/` IS IN HERE ON PURPOSE. For a deployment that turns the preview on, the
  * workspace is the landing surface. Note this is not a redirect: App renders by
  * path priority (setup → workspace → chat), so `/` simply resolves to the
- * workspace branch instead of falling through to chat. No URL rewrite, no
- * flash, and the back button behaves.
+ * workspace branch instead of falling through to chat. No URL rewrite and no
+ * flash, so this adds no phantom history entry.
+ *
+ * That is the whole of the history claim, and it is worth being narrow about:
+ * `WorkspaceShell` keeps its own route in component state, so the back button
+ * does NOT unwind navigation INSIDE the workspace (drill into an agent, and
+ * Back won't return you to Today). `/` and `/workspace` are also two URLs for
+ * the same stateless surface with nothing to distinguish them. Both are
+ * acceptable for a preview and neither is what this predicate decides.
  *
  * Chat keeps an address either way, which is the fact that makes this safe
  * rather than a one-way door: chat is App's FALL-THROUGH branch, and

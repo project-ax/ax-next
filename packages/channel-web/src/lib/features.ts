@@ -23,8 +23,14 @@ export const SEMANTIC_SEARCH = false;
  * Server-provided feature flags, from `GET /api/features` (registered by
  * @ax/channel-web).
  *
- *   - `agentWorkspacePreview` — the agent-centric workspace at `/workspace`.
- *     On only where an operator turned it on.
+ *   - `agentWorkspacePreview` — the agent-centric workspace. On only where an
+ *     operator turned it on. It answers at `/workspace`, AND it takes over `/`
+ *     as the landing surface: enabling the preview means the workspace is home,
+ *     not that it is merely available (see `pathRendersWorkspace` in App.tsx).
+ *     There is deliberately no way to have one without the other today — if a
+ *     deployment ever needs `/workspace` available while `/` stays chat, that
+ *     is a second flag, not a tweak to this one. Chat keeps its own address at
+ *     `/chat` either way.
  */
 export interface Features {
   agentWorkspacePreview: boolean;
