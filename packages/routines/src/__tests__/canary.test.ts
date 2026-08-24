@@ -239,8 +239,14 @@ describe('Phase B canary — routine creates → fires → silence path closes w
     const second = await h.bus.call('routines:fire-now', h.ctx({ userId: 'u1' }), {
       agentId: 'agt_a', path: '.ax/routines/s.md',
     });
-    expect((first as { fireId: number }).fireId).toBeGreaterThan(0);
-    expect((second as { fireId: number }).fireId).toBeGreaterThan(0);
+    // Both fires succeeded, and neither answer carries a storage row id: the
+    // fire row's BIGSERIAL used to ride out on this hook and render to users
+    // as "Fired (#7, ok)" (TASK-313). This is the end-to-end half of the
+    // guarantee — return-schemas.test.ts pins the schema in isolation.
+    for (const out of [first, second] as Array<Record<string, unknown>>) {
+      expect(out).toEqual({ status: 'ok', conversationId: expect.any(String) });
+      expect('fireId' in out).toBe(false);
+    }
 
     // Real reuse check: both fires hit conversations:find-or-create with the
     // routine path as the externalKey, and the (stable) handler returned

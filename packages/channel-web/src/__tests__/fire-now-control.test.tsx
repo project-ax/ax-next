@@ -69,7 +69,7 @@ const webhookRoutine: Routine = {
 
 describe('FireNowControl — interval/cron', () => {
   it('clicking "Fire now" POSTs to /settings/routines/:agentId/fire (no payload)', async () => {
-    mockJson(200, { fireId: 1, status: 'ok', conversationId: 'cnv' });
+    mockJson(200, { status: 'ok', conversationId: 'cnv' });
     const onFired = vi.fn();
     render(<FireNowControl routine={intervalRoutine} onFired={onFired} />);
     fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
@@ -103,7 +103,8 @@ describe('FireNowControl — webhook', () => {
   });
 
   it('Submit posts the parsed JSON as `payload`', async () => {
-    mockJson(200, { fireId: 7, status: 'ok', conversationId: null });
+    // `'ok'` always carries a conversation; only the error paths return null.
+    mockJson(200, { status: 'ok', conversationId: 'cnv_ping' });
     const onFired = vi.fn();
     render(<FireNowControl routine={webhookRoutine} onFired={onFired} />);
     fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));

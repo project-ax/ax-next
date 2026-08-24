@@ -65,7 +65,7 @@ interface MockServices {
   ) => Promise<{ fires: unknown[] }>;
   fireNow?: (
     input: { agentId: string; path: string; payload?: unknown; source: string },
-  ) => Promise<{ fireId: number; status: string; conversationId: string | null }>;
+  ) => Promise<{ status: string; conversationId: string | null }>;
   /** In-memory store of default routines for the admin-routes tests. Keyed
    *  by defaultRoutineId. Initialized with a heartbeat seed so the list/get
    *  tests have something to find without going through upsert first. */
@@ -161,7 +161,7 @@ async function makeHarnessWith(opts: MockServices) {
             },
           );
         }
-        return { fireId: 1, status: 'ok', conversationId: 'cnv_x' };
+        return { status: 'ok', conversationId: 'cnv_x' };
       },
       'agents:resolve': async (_ctx, input: unknown) => {
         if (opts.resolveFailure !== undefined) throw opts.resolveFailure;
@@ -484,7 +484,7 @@ describe('routines-admin-routes', () => {
     const { harness, handlers } = await makeHarnessWith({
       fireNow: async (input) => {
         fired = input;
-        return { fireId: 7, status: 'ok', conversationId: 'cnv_x' };
+        return { status: 'ok', conversationId: 'cnv_x' };
       },
     });
     const handler = handlers.get('/settings/routines/:agentId/fire')!;
@@ -505,8 +505,10 @@ describe('routines-admin-routes', () => {
       payload: { x: 1 },
       source: 'manual',
     });
+    // The route relays the hook's answer verbatim, so this pins the wire
+    // shape the browser client parses — and pins that no fire-row id is in
+    // it (TASK-313).
     expect(captured.body).toEqual({
-      fireId: 7,
       status: 'ok',
       conversationId: 'cnv_x',
     });
@@ -544,7 +546,7 @@ describe('routines-admin-routes', () => {
       }),
       fireNow: async () => {
         fired = true;
-        return { fireId: 1, status: 'ok', conversationId: null };
+        return { status: 'ok', conversationId: null };
       },
     });
     const handler = handlers.get('/settings/routines/:agentId/fire')!;
@@ -600,7 +602,7 @@ describe('routines-admin-routes', () => {
       }),
       fireNow: async () => {
         fired = true;
-        return { fireId: 1, status: 'ok', conversationId: null };
+        return { status: 'ok', conversationId: null };
       },
     });
     const handler = handlers.get('/settings/routines/:agentId/fire')!;

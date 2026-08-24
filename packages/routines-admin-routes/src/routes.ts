@@ -220,7 +220,6 @@ interface RoutinesRecentFiresOutput {
   fires: unknown[];
 }
 interface RoutinesFireNowOutput {
-  fireId: number;
   status: string;
   conversationId: string | null;
 }

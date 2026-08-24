@@ -45,8 +45,19 @@ export interface FireNowInput {
   source?: FireSource;
   payload?: unknown;
 }
+/**
+ * What `routines:fire-now` hands back. Deliberately carries no fire-row id:
+ * that was the store's `BIGSERIAL`, which is storage vocabulary no alternate
+ * backend (a JSONL fire log, a sqlite store) could reproduce, and it was
+ * reaching users as "Fired (#7, ok)" (TASK-313).
+ *
+ * `conversationId` is null on the two `status: 'error'` early returns in
+ * `fire.ts` — a failed `agents:resolve`, and a failed conversation
+ * find-or-create/create — and non-null on every `'ok'` path. `'silenced'` is
+ * in `FireStatus` but cannot be returned here: it is written to the fire row
+ * later, by the `chat:turn-end` subscriber.
+ */
 export interface FireNowOutput {
-  fireId: number;
   status: FireStatus;
   conversationId: string | null;
 }
@@ -290,7 +301,6 @@ export const RecentFiresForAgentOutputSchema = z.object({
 }) as unknown as ZodType<RecentFiresForAgentOutput>;
 
 export const FireNowOutputSchema = z.object({
-  fireId: z.number(),
   status: FireStatusSchema,
   conversationId: z.string().nullable(),
 }) as unknown as ZodType<FireNowOutput>;

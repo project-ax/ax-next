@@ -118,9 +118,29 @@ describe('routines return schemas', () => {
     expect(out).toEqual({ fires: [withoutId] });
   });
 
-  it('routines:fire-now round-trips', () => {
-    const full: FireNowOutput = { fireId: 7, status: 'silenced', conversationId: null };
-    expect(FireNowOutputSchema.parse(full)).toEqual(full);
+  it('routines:fire-now round-trips both of the shapes it can actually return', () => {
+    // `'ok'` always carries a conversation; the two `status: 'error'` early
+    // returns in fire.ts carry none. Those are the only two shapes fire-now
+    // produces — `'silenced'` is written to the fire row later, by the
+    // chat:turn-end subscriber, and never travels on this hook.
+    const ok: FireNowOutput = { status: 'ok', conversationId: 'cnv_1' };
+    expect(FireNowOutputSchema.parse(ok)).toEqual(ok);
+    const failed: FireNowOutput = { status: 'error', conversationId: null };
+    expect(FireNowOutputSchema.parse(failed)).toEqual(failed);
+  });
+
+  it('routines:fire-now DROPS the fire-row id (storage vocabulary)', () => {
+    // The handler no longer returns it, but the schema is the boundary that
+    // makes that a guarantee rather than a convention: a future handler that
+    // relayed `recordFire`'s BIGSERIAL back would be stripped here, not
+    // shipped to the UI as "Fired (#7, ok)" (TASK-313).
+    const parsed = FireNowOutputSchema.parse({
+      fireId: 7,
+      status: 'ok',
+      conversationId: 'cnv_1',
+    }) as Record<string, unknown>;
+    expect('fireId' in parsed).toBe(false);
+    expect(parsed).toEqual({ status: 'ok', conversationId: 'cnv_1' });
   });
 
   it('routines:list-defaults round-trips a fully-populated summary', () => {
