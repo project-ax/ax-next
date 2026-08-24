@@ -279,6 +279,18 @@ observed failures.** The rescoped card says so explicitly so nobody ships it cla
   still on disk but correctly ignored. **The three-session sweep-and-lose loop is closed.**
 - Wave 6/7 remain in Backlog: 246, 248, 249, 250, 257, 258, 273, 242, 244, 263, 286.
 
+- **⚠ The poller leaks processes across relaunches.** The loop re-launches
+  `.claude/auto-ship-board-poll.sh` after every pass, and **nothing kills the predecessor**. Two were
+  still polling GitHub on a 60s cadence hours after the drain finished — found only because the user
+  asked about a stale agent entry. Each poll is ~1 GraphQL pt, so a long session silently multiplies
+  its own idle cost. **Fix: `pkill -f auto-ship-board-poll.sh` before each relaunch, and once at run
+  end.** Neither the skill nor this session's loop did either.
+- **Repo clutter, not from this session: 168 stale remote `auto-ship/*` branches and 15 local.** All
+  11 of this session's branches were push-deleted on merge (verified: 0 remain). These are the
+  accumulated residue of earlier auto-ship runs whose merges did not delete the branch. Worth a
+  deliberate sweep by a human — it is ~168 remote deletions and not something an orchestrator should
+  do unilaterally.
+
 ---
 
 ## 10. How to resume
