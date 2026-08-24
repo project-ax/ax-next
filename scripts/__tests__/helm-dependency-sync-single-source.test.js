@@ -23,18 +23,25 @@
 //
 // The copies are the bug, which makes this a source-shape guard rather than a
 // timing one: a fourth chart test file that copy-pastes the fetch back into its
-// own hook reintroduces the exact failure, and nothing about a green (or even
-// a slow-but-passing) CI run would say so. Same posture as the other drift
-// guards here — autoship-skill-shell-hazards.test.js,
-// eslint-ignores-worktrees.test.js — and it runs under `pnpm test:scripts`
-// with no network, no helm, and no build.
+// own hook reintroduces the exact failure, and nothing about a green — or even
+// a slow-but-passing — CI run would say so. Same posture as the other drift
+// guards here (autoship-skill-shell-hazards.test.js,
+// eslint-ignores-worktrees.test.js) and it runs under `pnpm test:scripts` with
+// no network, no helm, and no build.
+//
+// Only files that actually SPAWN are inspected. helm-deps.test.ts asserts on
+// the same argv arrays and names `--force-update` in the assertion that the
+// flag is gone; a matcher that keyed on the literals alone would flag the test
+// that proves the fix. Requiring a spawn call in the same file is what
+// separates "runs the fetch" from "talks about it" — and a copy-pasted
+// helmRepoSync always brings its `spawnSync` along.
 //
 // The last two assertions are the over-guard half, and they matter as much as
-// the first: one fails if the scan silently stops finding files (a vacuously
-// green guard is worse than no guard), and one pins the trap that the parent
-// card was rescoped over — "just raise hookTimeout". A longer timeout only lets
-// concurrent writers retry longer; a lossy write does not get less lossy with
-// more time.
+// the first: one fails if the scan silently stops finding the files it is
+// supposed to police (a vacuously green guard is worse than no guard), and one
+// pins the trap the parent card was rescoped over — "just raise hookTimeout".
+// A longer timeout only lets concurrent writers retry longer; a lossy write
+// does not get less lossy with more time.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { dirname, join, relative } from 'node:path';
@@ -55,11 +62,8 @@ function chartTsFiles() {
   const walk = (dir) => {
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name);
-      if (entry.isDirectory()) {
-        walk(full);
-      } else if (entry.name.endsWith('.ts')) {
-        out.push(full);
-      }
+      if (entry.isDirectory()) walk(full);
+      else if (entry.name.endsWith('.ts')) out.push(full);
     }
   };
   walk(TESTS_DIR);
@@ -67,40 +71,51 @@ function chartTsFiles() {
 }
 
 /**
- * Does this source spawn the helm fetch? Matches the argv arrays, not prose —
- * the explanatory comments in helm-deps.ts and this file both *mention*
- * `helm repo add`, and a guard that tripped on a comment would be useless.
+ * Executable text only — the explanatory comments name these commands too.
+ *
+ * Whole-line `//` comments go FIRST. The other order is a trap, and it bit
+ * this guard while it was being written: env-shape.test.ts has a line comment
+ * reading `walks /setup/* after install`, whose `/*` opened a bogus block
+ * comment that swallowed 57 lines of real code — including the file's only
+ * `spawnSync` — and quietly dropped the file out of the scan.
  */
+function stripComments(src) {
+  return src.replace(/^[ \t]*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+}
+
+/** Does this source shell out at all? */
+function spawnsAnything(src) {
+  return /\b(?:spawnSync|execFileSync|execSync|spawn|execFile)\s*\(/.test(src);
+}
+
+/** Does it spawn the repo/dependency fetch (as opposed to `helm template`)? */
 function spawnsHelmFetch(src) {
-  const stripped = src
-    // Block and line comments, so only executable text is scanned.
-    .replace(/\/\*[\s\S]*?\*\//g, '')
-    .replace(/^[ \t]*\/\/.*$/gm, '');
-  const repoAdd = /['"]repo['"]\s*,\s*['"](?:add|update)['"]/.test(stripped);
-  const depBuild = /['"]dependency['"]\s*,\s*['"]build['"]/.test(stripped);
-  return repoAdd || depBuild;
+  return (
+    /['"]repo['"]\s*,\s*['"](?:add|update)['"]/.test(src) ||
+    /['"]dependency['"]\s*,\s*['"]build['"]/.test(src)
+  );
 }
 
 describe('chart helm dependency fetch has a single source', () => {
   const files = chartTsFiles();
+  const spawning = files
+    .map((f) => ({ path: f, src: stripComments(readFileSync(f, 'utf8')) }))
+    .filter((f) => spawnsAnything(f.src));
+  const rel = (p) => relative(REPO_ROOT, p);
 
   it(`only ${SYNC_MODULE} spawns the helm repo/dependency fetch`, () => {
-    const offenders = files
-      .filter((f) => spawnsHelmFetch(readFileSync(f, 'utf8')))
-      .map((f) => relative(REPO_ROOT, f));
-    expect(offenders).toEqual([
-      relative(REPO_ROOT, join(TESTS_DIR, SYNC_MODULE)),
-    ]);
+    const offenders = spawning.filter((f) => spawnsHelmFetch(f.src)).map((f) => rel(f.path));
+    expect(offenders).toEqual([rel(join(TESTS_DIR, SYNC_MODULE))]);
   });
 
   // `--force-update` only ever existed to make a REPEATED `helm repo add`
   // idempotent. Repeating it concurrently is the bug; with one fetch per run
-  // there is nothing to force, and the flag reappearing is the tell that the
-  // per-file copies came back.
-  it('no chart test source passes --force-update to helm', () => {
-    const offenders = files
-      .filter((f) => readFileSync(f, 'utf8').includes("'--force-update'"))
-      .map((f) => relative(REPO_ROOT, f));
+  // there is nothing to force, and the flag reappearing in a spawning file is
+  // the tell that the per-file copies came back.
+  it('no chart source passes --force-update to helm', () => {
+    const offenders = spawning
+      .filter((f) => f.src.includes('--force-update'))
+      .map((f) => rel(f.path));
     expect(offenders).toEqual([]);
   });
 
@@ -113,29 +128,29 @@ describe('chart helm dependency fetch has a single source', () => {
   });
 
   // Over-guard 1: a broken walk (renamed directory, changed extension filter)
-  // would make every assertion above pass while checking nothing.
-  it('actually scanned the chart test sources', () => {
-    const names = files.map((f) => relative(TESTS_DIR, f));
-    expect(names.length).toBeGreaterThanOrEqual(5);
-    expect(names).toContain(SYNC_MODULE);
-    expect(names).toContain('render.test.ts');
-    expect(names).toContain('blob-backend.test.ts');
-    expect(names).toContain('env-shape.test.ts');
-    // And the matcher must still recognise a fetch when it sees one.
-    expect(
-      spawnsHelmFetch("spawnSync(helm, ['dependency', 'build', chartDir])"),
-    ).toBe(true);
-    expect(spawnsHelmFetch('// helm dependency build runs once')).toBe(false);
+  // or a too-narrow `spawnsAnything` would make every assertion above pass
+  // while checking nothing. These four are the files the guard is FOR.
+  it('actually scanned the files it is meant to police', () => {
+    const spawningNames = spawning.map((f) => relative(TESTS_DIR, f.path));
+    for (const name of [
+      SYNC_MODULE,
+      'render.test.ts',
+      'blob-backend.test.ts',
+      'env-shape.test.ts',
+    ]) {
+      expect(spawningNames, `${name} must be scanned as a spawning file`).toContain(name);
+    }
+    // And the fetch matcher must still recognise a fetch when it sees one.
+    expect(spawnsHelmFetch("spawn(helm, ['dependency', 'build', chartDir])")).toBe(true);
+    expect(spawnsHelmFetch("spawn(helm, ['template', 'ax-test', chartDir])")).toBe(false);
   });
 
   // Over-guard 2: the rescoped trap. `hookTimeout` above 30s reads like a fix
-  // and is not one — see the header. Absent is fine (no helm work happens in a
-  // hook any more); present-and-larger is the regression.
+  // and is not one — see the header. Absent is correct today (no helm work
+  // happens in a hook any more); present-and-larger is the regression.
   it('does not paper over the race by raising hookTimeout past 30s', () => {
     const cfg = readFileSync(join(CHART_DIR, 'vitest.config.ts'), 'utf8');
     const m = /hookTimeout:\s*([\d_]+)/.exec(cfg);
-    if (m) {
-      expect(Number(m[1].replaceAll('_', ''))).toBeLessThanOrEqual(30_000);
-    }
+    if (m) expect(Number(m[1].replaceAll('_', ''))).toBeLessThanOrEqual(30_000);
   });
 });
