@@ -119,6 +119,9 @@ acting on them:
   `ChainOfThought.tsx` ("Ran a command"), which has no destructive tint at all. So
   **there is no red chevron to drop and no `VERB_MAP` entry worth adding** — editing a
   lookup table nothing renders would look like a fix and be none. Cut from the plan.
+  *(Update 2026-08-24 — TASK-269 deleted `ToolGroup` and `VERB_MAP` outright, so the
+  code this bullet describes no longer exists. `ChainOfThought.tsx` is the only
+  collapsed tool disclosure now.)*
 - **The live surface is `ToolFallback` alone**, and its status word is the lie. With
   `is_error` gone, a held step would badge `DONE` one line above "Nothing has happened
   yet" — a contradiction in adjacent pixels.
