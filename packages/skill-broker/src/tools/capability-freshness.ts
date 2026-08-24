@@ -213,8 +213,12 @@ interface ConnectorMcpServer {
 /**
  * A dev service's readiness probe. The wire shape is a union discriminated on
  * `kind` (`{kind:'tcp', port}` | `{kind:'exec', command}`); mirrored here as one
- * loose optional shape so a probe kind this file has never heard of degrades to
- * "nothing declared" instead of throwing inside a guard.
+ * loose optional shape so a probe kind this file has never heard of is still
+ * READ instead of throwing inside a guard. Note what "degrades" means here: the
+ * mirror keeps the unknown `kind` and defaults `port`/`command`, so a probe that
+ * arrives under a kind this file predates still moves the digest. Only an
+ * absent probe is "nothing declared" — treating an unreadable one as absent
+ * would be the hole, not the safe default.
  *
  * In the digest (TASK-319) because an `exec` probe is a COMMAND a backend runs
  * inside the container — `sandbox-k8s` turns it into the pod's `startupProbe` —
@@ -335,11 +339,20 @@ function slotShapes(credentials: ConnectorSlot[] | undefined): unknown[] {
  * different worlds into one digest. That would be a hole in the fix for a hole.
  *
  * Every read is shape-checked, including `command`'s arrayness. A real resolve
- * is zod-validated on the way out of `@ax/connectors`, so none of this should be
- * reachable — but the alternative to a type check here is a `TypeError` thrown
- * from inside a guard, and this guard's whole posture is that an unreadable
- * world degrades to "nothing declared" rather than taking the approval surface
- * with it.
+ * is zod-validated on the way out of `@ax/connectors` — the strict
+ * `HealthcheckSchema` behind `connectors:resolve` rejects a non-array `command`
+ * upstream — so none of this should be reachable. But the alternative to a type
+ * check here is a `TypeError` thrown from inside a guard, and a malformed FIELD
+ * inside a probe we did read is normalised rather than raised.
+ *
+ * That is a rule about NORMALISATION, and it is deliberately the opposite of
+ * how this file treats an unreadable WORLD. `resolvedReach` THROWS where the
+ * executor swallows and `catalogToken` refuses to match silently, because a
+ * resolve that failed is a world we cannot vouch for. A field of the wrong type
+ * inside a resolve that SUCCEEDED is different: the surrounding shape is still
+ * readable, so it is squared off to a stable value and the digest still moves
+ * when anything real about it changes. `null` here means "no probe declared",
+ * and nothing else ever produces it.
  */
 function healthcheckShape(healthcheck: ConnectorHealthcheck | undefined): unknown {
   if (healthcheck === undefined || healthcheck === null) return null;
@@ -504,7 +517,21 @@ async function catalogToken(
   // row staled once on the deploy that shipped this, under the generic "asks for
   // something different" sentence. Fail-safe (a re-ask, never an execute) and
   // TTL-bounded, and it is in the PR description rather than left to be
-  // discovered. The sibling producer in
+  // discovered.
+  //
+  // TASK-319 charges that one-time hit a SECOND time, and for a world that did
+  // not move: widening the digest changes the bytes an UNCHANGED reach hashes
+  // to. `slotShapes` now emits four more keys (`clientId`, `clientSecretRef`,
+  // `authServerUrl`, `tokenUrl`, each defaulting to `''`) and a service now
+  // carries `healthcheck`, so on a connectors-enabled preset every in-flight
+  // HELD row whose skill resolves at least one credential slot or one dev
+  // service re-opens once on this deploy. Same shape of hit and the same
+  // direction: a re-ask, never an execute. No STORED grant is invalidated and
+  // no migration is needed — freshness only gates a HELD decision that is being
+  // replayed, so an already-granted approval is untouched and a fresh ask
+  // simply captures the new digest.
+  //
+  // The sibling producer in
   // `@ax/tool-connector-propose` returns `{ predicate: null }` in this
   // situation because the registry is the ONLY world it reads; copying that
   // here would delete a working guard instead of narrowing it.
