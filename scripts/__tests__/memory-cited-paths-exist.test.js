@@ -56,9 +56,15 @@
 // happen to satisfy is still rot.
 //
 // WHAT GREEN HERE DOES *NOT* MEAN. Gate 1 is a precision/recall trade and it
-// costs real recall: of 396 literal path-shaped citations in the corpus, only
-// **157 are examined** -- the other 239 (~60%) are skipped as unrooted, `dist/`,
-// `node_modules/`, or agent-memory-tree paths. So this guard is the inventory of
+// costs real recall: only about **two in five** of the literal path-shaped
+// citations in the corpus are examined at all. The rest are skipped as unrooted,
+// `dist/`, `node_modules/`, or agent-memory-tree paths. (Deliberately a ratio and
+// not a pair of counts: the exact integers move with every memory edit -- the
+// first draft of this paragraph said "157 examined / 239 skipped" and was stale
+// by one before it was even committed, because the same commit rooted a citation
+// and moved it from skipped to examined. Same rule as citing the file rather
+// than the line. To get the live numbers, count `checkable` below.) So this
+// guard is the inventory of
 // the ROOTED subset, not of the memory files. The sharpest accepted miss is the
 // one that stings: an unrooted citation of a moved file (`agent-runner-core/...`
 // written without the leading `packages/`) is invisible here, and so is a
