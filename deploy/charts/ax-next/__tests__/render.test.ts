@@ -17,7 +17,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadAll } from 'js-yaml';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { HELM_REQUIRED_MESSAGE, resolveHelmGate } from './helm-required.js';
 
@@ -118,55 +118,10 @@ if (GATE.mode === 'require-missing') {
 
 const STS_NAME = 'ax-test-ax-next-git-server-experimental';
 
-// Pull subchart tarballs (postgresql) into charts/ before any render. They
-// ship via Chart.yaml dependency declaration and are gitignored, so a fresh
-// checkout (CI, new clones) needs `helm dependency build` once. Idempotent;
-// a no-op when the tarballs are already present.
-//
-// The bitnami repo also has to be registered locally for `dependency build`
-// to resolve postgresql. `helm repo add ... --force-update` is idempotent.
-//
-// Module-level so both describe blocks share one setup; without this the
-// subprocess overhead doubles (each `helm dependency build` walks the
-// chart tree even when it's a no-op).
-//
-// Bitnami's chart repo intermittently returns an empty index.yaml on CI
-// (Bitnami's migration in late 2025 left their public endpoint flaky), so
-// `helm dependency build` fails with "error loading bitnami-index.yaml:
-// empty index.yaml file". Wrap the add+build sequence in a small retry —
-// a fresh `--force-update` re-pull usually returns a populated index on
-// the second attempt.
-function helmRepoSync(): { ok: true } | { ok: false; reason: string } {
-  if (HELM === null) return { ok: true };
-  const repoAdd = spawnSync(
-    HELM,
-    ['repo', 'add', '--force-update', 'bitnami', 'https://charts.bitnami.com/bitnami'],
-    { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] },
-  );
-  if (repoAdd.status !== 0) {
-    return { ok: false, reason: `helm repo add bitnami exit ${repoAdd.status}: ${repoAdd.stderr ?? ''}` };
-  }
-  const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'ignore', 'pipe'],
-  });
-  if (r.status !== 0) {
-    return { ok: false, reason: `helm dependency build exit ${r.status}: ${r.stderr ?? ''}` };
-  }
-  return { ok: true };
-}
-
-beforeAll(() => {
-  if (!HELM) return;
-  const attempts = 3;
-  let lastReason = '';
-  for (let i = 0; i < attempts; i += 1) {
-    const out = helmRepoSync();
-    if (out.ok) return;
-    lastReason = out.reason;
-  }
-  throw new Error(`helm dependency build failed after ${attempts} attempts: ${lastReason}`);
-});
+// The subchart tarballs (postgresql) that `helm template` needs in charts/ are
+// fetched once per run by vitest's globalSetup — see __tests__/helm-deps.ts.
+// This file used to do it from its own `beforeAll`, as did blob-backend and
+// env-shape; three parallel copies raced on the shared helm cache (TASK-316).
 
 describeIfHelm('ax-next chart: git-server StatefulSet', () => {
   it('gitServer.enabled=true: StatefulSet + headless Service + ClusterIP Service + NetworkPolicy render', () => {
