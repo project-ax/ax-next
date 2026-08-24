@@ -81,13 +81,38 @@ function claudeSdkDisabledBuiltins() {
 }
 
 /**
- * The tool names the aisdk runner actually REGISTERS, read from the object
- * `buildBuiltinTools` returns (`    Name: tool({`). Anything absent from this set
- * is a tool that runner does not hand the agent at all.
+ * The six sandbox built-ins the aisdk runner registers IN THIS FILE, read from the
+ * object `buildBuiltinTools` returns (`    Name: tool({`).
+ *
+ * NOT the runner's whole tool set, and this guard's one modelling assumption. That
+ * runner merges three more sources in `main.ts` — the host catalog, the sandbox
+ * catalog, and the `Skill` tool — none of which this scan sees. The assertion below
+ * is still sound because it only ever asks about names in the claude-sdk runner's
+ * `DISABLED_BUILTINS`, and the catalog tools are ax-native snake_case names that
+ * cannot collide with an SDK built-in's PascalCase.
+ *
+ * `Skill` is the live counterexample, so it is worth naming: it IS PascalCase, it
+ * IS registered by that runner (outside this file), and it USED to sit in
+ * `DISABLED_BUILTINS`. If it were ever put back, this guard would compute the
+ * intersection wrongly and ask for a `builtins.skill` deny row that should not
+ * exist. It stays out by a stronger pin than this one — `tool-names.test.ts` and
+ * `main.test.ts` assert `Skill` is NOT disabled (I-P0-1) — but a future name
+ * registered outside `buildBuiltinTools` would need this scan widened, not trusted.
  */
 function aisdkRegisteredBuiltins() {
   const src = readFileSync(AISDK_BUILTINS, 'utf8');
-  return [...src.matchAll(/^ {4}([A-Z][A-Za-z0-9_]*):\s*tool\(\{/gm)].map((m) => m[1]);
+  const names = [...src.matchAll(/^ {4}([A-Z][A-Za-z0-9_]*):\s*tool\(\{/gm)].map((m) => m[1]);
+  if (names.length === 0) {
+    // Fail here rather than let an empty set through: an empty set collapses the
+    // intersection onto the full claude-sdk list, which is what the rail already
+    // says. The comparison below would then go GREEN while guarding nothing.
+    throw new Error(
+      `Found no \`    Name: tool({\` entries in ${AISDK_BUILTINS}. The registered-tool ` +
+        `object was reformatted or reshaped — update this guard's parser. Do not delete ` +
+        `it: an empty parse here is exactly what would make this guard pass vacuously.`,
+    );
+  }
+  return names;
 }
 
 /**
@@ -147,7 +172,9 @@ describe('tool-policy rail vs the runners — disabled-builtin drift', () => {
     const intersection = claudeSdkDisabled.filter((name) => !registered.has(name));
 
     expect(
-      sorted(railDenied),
+      // NOT deduped: two `builtins.*` rows matching the same tool is itself a
+      // defect, and `sorted()` would hide it behind a set.
+      [...railDenied].sort(),
       'The rail\'s `builtins.*` deny rows have drifted from the runners.\n' +
         'The rail may only deny a tool BOTH runners keep from the agent: a name the ' +
         'claude-sdk runner lists in `DISABLED_BUILTINS` AND the aisdk runner does not ' +
@@ -155,7 +182,7 @@ describe('tool-policy rail vs the runners — disabled-builtin drift', () => {
         `  claude-sdk DISABLED_BUILTINS: ${sorted(claudeSdkDisabled).join(', ')}\n` +
         `  aisdk registers:              ${sorted(aisdkRegistered).join(', ')}\n` +
         `  => expected rail deny rows:   ${sorted(intersection).join(', ') || '(none)'}\n` +
-        `  actual rail deny rows:        ${sorted(railDenied).join(', ') || '(none)'}\n` +
+        `  actual rail deny rows:        ${[...railDenied].sort().join(', ') || '(none)'}\n` +
         'Fix the RAIL, not this test: add or remove a `builtins.*` row in ' +
         'packages/tool-policy/src/rules.ts, writing its `id` and its human-facing ' +
         '`capability` clause BY HAND (`capability-lint.ts` will reject generated prose, ' +
