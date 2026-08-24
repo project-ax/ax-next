@@ -458,19 +458,36 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
     }
 
     // A probe kind this file has never heard of, and a malformed `command`,
-    // DEGRADE — they do not throw. A real resolve is zod-validated so neither
-    // should be reachable, but the alternative to a shape check inside a guard
-    // is a TypeError that takes the whole approval surface down with it.
-    const odd: Catalog = {
-      linear: PRESENT,
-      registry: { linear: svc({ kind: 'divination', command: 'not-an-array' }) },
-    };
-    const bus = await bootWith(odd);
-    const { predicate } = await capture(bus, 'linear');
-    expect((predicate as { value: string }).value).toMatch(/^linear@[0-9a-f]{16}$/);
-    // Resolving at all is the assertion: a throw here would have re-opened the
-    // decision on a world that never moved.
-    expect((await check(bus, predicate)).changed).toBeUndefined();
+    // DEGRADE — they do not throw. A real resolve is zod-validated (the strict
+    // `HealthcheckSchema` behind `connectors:resolve` rejects a non-array
+    // `command` before this file ever sees it) so neither should be reachable,
+    // but the alternative to a shape check inside a guard is a TypeError that
+    // takes the whole approval surface down with it.
+    //
+    // BOTH malformed shapes are exercised, and only the second one is load
+    // bearing for the shape check. `'not-an-array'` is a STRING, and strings
+    // are iterable — `[...'ab']` is `['a','b']`, no throw — so a string alone
+    // passes with or without the `Array.isArray` guard and demonstrates
+    // nothing. `42` is not iterable: spreading it is the TypeError, thrown from
+    // inside the guard, that the shape check exists to prevent.
+    const malformed: Array<[string, unknown]> = [
+      ['an iterable non-array command (a string)', 'not-an-array'],
+      ['a NON-iterable command (a number)', 42],
+    ];
+    for (const [what, command] of malformed) {
+      const odd: Catalog = {
+        linear: PRESENT,
+        registry: {
+          linear: svc({ kind: 'divination', command: command as string[] }),
+        },
+      };
+      const bus = await bootWith(odd);
+      const { predicate } = await capture(bus, 'linear');
+      expect((predicate as { value: string }).value, what).toMatch(/^linear@[0-9a-f]{16}$/);
+      // Resolving at all is the assertion: a throw here would have re-opened
+      // the decision on a world that never moved.
+      expect((await check(bus, predicate)).changed, what).toBeUndefined();
+    }
   });
 
   it('does NOT trip on a reworded usageNote — the digest is reach, not prose', async () => {
