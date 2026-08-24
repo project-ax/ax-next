@@ -2093,3 +2093,42 @@ Deps: S3←S2, S4←S2, S5←S2,S3,S4, S6←S2,S5, S7←S3,S4,S5.
 | **Decision** | Also dropped `id` from the two fires fixtures that carried it (`routines-admin-routes` route stub, `channel-web` routines-list mock), neither of which asserted on it. |
 | **Rationale** | Both are typed `unknown[]`, so they compiled either way — but a fixture that ships a field the bus can no longer produce teaches the next reader that the wire still carries it. Same documentation-rot family this epic keeps finding in comments. |
 | **Alternatives** | Leave them (rejected — cheap now, misleading forever). |
+## 2026-08-24 — TASK-262: the freshness reach-fold gate goes on the FOLD, never on the predicate
+
+| | |
+|---|---|
+| **Decision** | `capability-freshness.ts`'s `catalogToken` folds each referenced connector's resolved reach into the digest **only when `bus.hasService('connectors:resolve')`**, and when the hook is absent it hashes the pre-TASK-262 shape byte for byte (no `reach` key at all). The `hasService` check sits *inside* `catalogToken`, not at the top of the capture handler. |
+| **Rationale** | The sibling producer `packages/tool-connector-propose/src/freshness.ts:202` returns `{predicate:null}` when the hook is missing — correct **there**, because the connector registry is the only world that producer reads. Copying that pattern here (the default move for anyone reading the two files side by side) would blank this predicate and **delete the working catalog guard in every connector-less preset**. The catalog entry is still a world worth guarding without `@ax/connectors`. Byte-identical fallback additionally means no in-flight `request_capability` row in such a preset is staled by this PR. |
+| **Alternatives** | Whole-predicate gate (rejected — deletes a guard). Always emit a `reach: []` key (rejected — stales every connector-less preset's in-flight rows for no information). Make `connectors:resolve` a hard `calls` dep (rejected — invariant 5 / breaks stripped presets). |
+
+## 2026-08-24 — TASK-262: the fold resolves in PARALLEL and throws where the executor swallows
+
+| | |
+|---|---|
+| **Decision** | `resolvedReach` uses `Promise.all` over the connector ids, leaves `timeoutMs` at 3 s/10 s, maps a clean `PluginError{code:'not-found'}` to an `absent` sentinel, and **re-throws every other resolve failure** — the opposite of the executor's per-connector `catch {}` in `request-capability.ts`. |
+| **Rationale** | The two halves of the guard fail in OPPOSITE directions on budget overrun: `@ax/decisions`' `CAPTURE_BUDGET_MS` (3 s) makes capture fail **OPEN** (row written with no predicate, claiming no guard), and `CHECK_BUDGET_MS` (10 s) makes check fail **CLOSED** (spurious stale). So a serial fan-out over N connectors is how a two-connector skill quietly loses its guard; parallel makes the fold cost one round trip regardless of N and needs no larger budget. On the throw: the executor must still draw a card, so dropping an unreadable connector is right for it; a freshness producer doing the same would report "unchanged" for a world it failed to read, letting a transient blip authorise a replay. |
+| **Alternatives** | Serial loop + raise `timeoutMs` (rejected — a producer cannot raise the pre-call IPC ceiling, so it would just move the failure). `Promise.allSettled` + swallow (rejected — that is the executor's posture, and it is wrong for a guard). |
+
+## 2026-08-24 — TASK-262: digest membership is "resolve returns it and it grants reach"
+
+| | |
+|---|---|
+| **Decision** | The reach shape digests keyMode, hosts, credential slot NAMES, npm, pypi, **`mcpServers`** and **`services`** — including `env` as sorted key/value pairs. `usageNote` and `credentialPlan` stay out. Set-like arrays are deduped+sorted; `args` keeps its order. |
+| **Rationale** | The sibling omits `mcpServers` (and `services`) even though `connectors:resolve` returns both; that is a blind spot, not a precedent — an MCP server or a dev-service image is reach. `env` values are in because an env value is how either gets re-pointed somewhere else with every host string unchanged; only the sha256 is persisted, so nothing sensitive is stored or logged. `args` order is meaning (`['--allow','x']` ≠ `['x','--allow']`), so sorting it would collapse two different worlds. |
+| **Alternatives** | Canonical-JSON the whole `capabilities` object (rejected — a generic recursive sort would either reorder `args` or leave set-like lists order-sensitive). env keys only (rejected — misses a real reach change). Mirror the sibling exactly (rejected — inherits its blind spot). |
+
+## 2026-08-24 — TASK-262: the predicate's `label` is left unchanged
+
+| | |
+|---|---|
+| **Decision** | Keep `label: 'the "<skillId>" entry in the capability catalog'` even though the predicate now also covers the connectors' resolved reach. |
+| **Rationale** | The label completes a human-facing sentence ("checked against: …"). Extending it would make the rendered text **branch on which preset you are in** (the fold is `hasService`-gated), and `@ax/decisions` caps a label at 120 chars while `skillId` may be 128 — so the longer form can truncate. "The entry" is an understatement, not a falsehood: the entry is what names the connectors. |
+| **Alternatives** | Branch the label on `hasService` (rejected — per-preset UI text). Always say "and what its connections reach" (rejected — false in a connector-less preset, and risks the 120-char cap). |
+
+## 2026-08-24 — TASK-262: implemented inline rather than via per-task subagents
+
+| | |
+|---|---|
+| **Decision** | Deviated from yolo-ship Phase 3's subagent-per-task rule and implemented the four plan tasks directly. |
+| **Rationale** | The whole diff is one function plus comments plus three tests across two source files I had already read in full during measurement. Dispatching would have made each subagent re-read the same two files — more total context, not less — and the traps (gate placement, throw-vs-swallow, digest membership) are exactly the judgment calls that do not survive being handed off as a spec. The reviewer gate was NOT skipped. |
+| **Alternatives** | One subagent per task as written (rejected on cost/benefit for a ~120-line diff). |
