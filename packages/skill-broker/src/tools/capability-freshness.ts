@@ -217,6 +217,23 @@ function byString(a: string, b: string): number {
 }
 
 /**
+ * Order a list of already-normalised entries by their serialised form.
+ *
+ * Sorting by a NAME would be enough almost always and leaves one hole: two
+ * entries sharing a name (two MCP servers both called `linear`, two slots both
+ * called `API_KEY`) would then be ordered by whatever order the registry
+ * returned them in, and a reorder there would read as a changed world. Sorting
+ * by the whole entry is a TOTAL order, so that hole closes: identical worlds
+ * always hash identically, whatever order they arrive in.
+ */
+function sortByShape<T>(entries: T[]): T[] {
+  return entries
+    .map((entry) => ({ entry, key: JSON.stringify(entry) }))
+    .sort((a, b) => byString(a.key, b.key))
+    .map(({ entry }) => entry);
+}
+
+/**
  * `env` reduced to sorted key/value pairs. Values are IN, because an env value
  * is how an MCP server or a dev service gets re-pointed somewhere else — that
  * is a reach change even when every host string stays put. Only the sha256 of
@@ -233,14 +250,14 @@ function envPairs(env: Record<string, string> | undefined): [string, string][] {
  * reach, and they move under a stable slot name.
  */
 function slotShapes(credentials: ConnectorSlot[] | undefined): unknown[] {
-  return (credentials ?? [])
-    .map((c) => ({
+  return sortByShape(
+    (credentials ?? []).map((c) => ({
       slot: c.slot ?? '',
       kind: c.kind ?? '',
       server: c.server ?? '',
       scopes: asSet(c.scopes),
-    }))
-    .sort((a, b) => byString(a.slot, b.slot));
+    })),
+  );
 }
 
 /**
@@ -261,8 +278,8 @@ function reachShape(resolved: ConnectorsResolveOutput): unknown {
     slots: slotShapes(caps.credentials),
     npm: asSet(caps.packages?.npm),
     pypi: asSet(caps.packages?.pypi),
-    mcp: (caps.mcpServers ?? [])
-      .map((s) => ({
+    mcp: sortByShape(
+      (caps.mcpServers ?? []).map((s) => ({
         name: s.name ?? '',
         transport: s.transport ?? '',
         command: s.command ?? '',
@@ -271,10 +288,10 @@ function reachShape(resolved: ConnectorsResolveOutput): unknown {
         env: envPairs(s.env),
         hosts: asSet(s.allowedHosts),
         slots: slotShapes(s.credentials),
-      }))
-      .sort((a, b) => byString(a.name, b.name)),
-    services: (caps.services ?? [])
-      .map((s) => ({
+      })),
+    ),
+    services: sortByShape(
+      (caps.services ?? []).map((s) => ({
         name: s.name ?? '',
         // The image is digest-pinned upstream, so it stands in for the whole
         // container's contents.
@@ -282,8 +299,8 @@ function reachShape(resolved: ConnectorsResolveOutput): unknown {
         ports: [...(s.ports ?? [])].sort((a, b) => a - b),
         env: envPairs(s.env),
         writablePaths: asSet(s.writablePaths),
-      }))
-      .sort((a, b) => byString(a.name, b.name)),
+      })),
+    ),
   };
 }
 

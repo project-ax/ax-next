@@ -300,6 +300,33 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
     expect((await check(bus2, p2)).changed).toBeUndefined();
   });
 
+  it('does NOT trip when two entries SHARE a name and the registry reorders them', async () => {
+    // Ordering by name alone leaves one hole: two MCP servers (or two slots)
+    // called the same thing would then be ordered by whatever order the
+    // registry handed them over in, and a reorder there would read as a changed
+    // world. The lists are ordered by the WHOLE entry, which is a total order.
+    const twin = (first: string, second: string): StubResolve => ({
+      capabilities: {
+        allowedHosts: [],
+        credentials: [
+          { slot: 'KEY', kind: 'oauth', server: first, scopes: ['read'] },
+          { slot: 'KEY', kind: 'oauth', server: second, scopes: ['read'] },
+        ],
+        mcpServers: [
+          { name: 'dup', transport: 'http', url: `https://${first}`, allowedHosts: [], credentials: [] },
+          { name: 'dup', transport: 'http', url: `https://${second}`, allowedHosts: [], credentials: [] },
+        ],
+        packages: { npm: [], pypi: [] },
+      },
+    });
+    const catalog: Catalog = { linear: PRESENT, registry: { linear: twin('a', 'b') } };
+    const bus = await bootWith(catalog);
+    const { predicate } = await capture(bus, 'linear');
+
+    catalog.registry = { linear: twin('b', 'a') };
+    expect((await check(bus, predicate)).changed).toBeUndefined();
+  });
+
   it('names what it actually checked: the label follows the fold', async () => {
     // The label completes "checked against: …". A human told only "the entry in
     // the capability catalog" after a CONNECTOR moved would inspect the entry,
