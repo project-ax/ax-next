@@ -253,15 +253,67 @@ Each agent runs `yolo-ship` on exactly one card in **orchestrated mode** —
 green+mergeable PR, **no self-merge, no board write** (you own board writes) — and
 returns the ≤150-word handoff.
 
+**⚠ EXPECT TO ASK FOR THAT HANDOFF. Delivery is the DEFAULT failure mode, not an
+exception — budget one retrieval round per card as normal cost.** Measured across the
+2026-08-23/24 runs: **10 of 11 agents completed real work and returned no conforming
+handoff on the first try.** The shapes:
+
+- a bare status line ("Waiting on CI.", "PR #487 is open and CI is running")
+- died mid-delivery (session limit) with the work complete and the PR already open
+- **a reviewer's text routed UP to the orchestrator** instead of across to its builder —
+  `ax-code-reviewer` has no `SendMessage`, and one said so outright: *"this is my channel
+  back"*. **You must relay it**, and a builder waiting on a "hung" reviewer may be waiting
+  on a report you are already holding.
+
+**Every one delivered in full on ONE `SendMessage` naming the fields. NEVER re-dispatch** —
+the work is done and only delivery failed; re-dispatching discards it (one such agent had
+a 2-hour build behind it). Ask with the explicit **field list**, not "please report", and
+say that an honestly-labelled partial beats a confident summary of unchecked work.
+
+**A handoff that admits a gap is worth more than a tidy one.** A builder that disclosed its
+reviewer never reached the CI figures earned a focused second pass that found a real error;
+a relayed "APPROVE" fragment from a dead builder nearly carried a vacuous test onto a
+security rail. Reward the first shape and distrust the second.
+
 ## Merge queue (serialized — you own it)
 
 Process completed code PRs **one at a time**:
 
 ```bash
 git fetch origin
+HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
+
+# ⚠ ASSERT THE ci.yml RUN EXISTS BEFORE READING ANY CONCLUSION. A rollup can be
+# entirely SUCCESS while the build/test workflow NEVER RAN. Measured 2026-08-24 on one
+# branch, same workflow config, two shas: the original push produced 6 checks — all
+# CodeQL/Analyze, NO `test` job — and the rebase push produced 11 including `test`.
+# ci.yml ran normally for sibling auto-ship branches that same day.
+# [INFERRED, not measured] The CAUSE was never diagnosed. Nondeterministic run
+# creation fits, but so does a timing story: ci.yml's `push` trigger is
+# `branches: [main]` ONLY, so a feature-branch run comes solely from the
+# `pull_request` event, and a sha pushed across PR-open / `synchronize` timing can
+# legitimately produce zero runs. "A rebase push creates one" is consistent with
+# BOTH. The gate is fail-closed either way, so the fix does not depend on which is
+# true -- but do not restate the cause as settled. "Are all reported checks
+# SUCCESS?" answers TRUE on a head whose build and tests never executed, and
+# `gh pr checks` exits 0 on it too — the CodeQL checks are real and really passed.
+# Zero-checks is NOT the failure mode; a PARTIAL check set is. Known remedy: a rebase
+# push creates the run. (A memory-only commit DID trigger one, so "small diffs skip
+# CI" is ruled out.)
+runs=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --json databaseId --jq 'length')
+[ "${runs:-0}" -ge 1 ] || { echo "HALT #<n>: no ci.yml run for $HEAD_SHA — rebase-push to create one"; exit 1; }
+
 gh pr view <n> --json mergeable,statusCheckRollup     # confirm green + mergeable
+# Read conclusions only AFTER the existence check above. An EMPTY conclusion is
+# PENDING, not success. And status reads have been observed flapping in both
+# directions for 15+ min, with stale watchers reporting green for a SUPERSEDED head —
+# settle with several consecutive reads of specific run ids, and re-verify that
+# `headRefOid` still equals the head the handoff named.
 # if NOT mergeable (main moved): check out the branch, rebase onto main,
 #   resolve conflicts, push, wait for CI to re-green, then continue.
+# `gh`'s `mergeable` field has been observed STALE and even UNKNOWN when a real
+# conflict existed — `git merge-tree --write-tree origin/main <branch>` (rc=0) is the
+# authority. It was right and `gh` wrong 3x in the 2026-08-24 run.
 
 # NEVER `--delete-branch` here. Every builder is dispatched with isolation:"worktree",
 # so the PR branch is ALWAYS checked out in a worktree by the time you merge; `gh` then

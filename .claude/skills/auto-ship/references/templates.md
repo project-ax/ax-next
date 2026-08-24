@@ -8,6 +8,31 @@ Dispatch via `Agent` with `run_in_background: true`,
 `<HEARTBEAT-PATH>` (**absolute** path to the `.claude/auto-ship-hb.sh` written at run
 start — agents CALL it, they never `source` it).
 
+**⚠ MARK EVERY CLAIM YOU HAND DOWN: `MEASURED-BY-PROBE` or `INFERRED`.** If you ran a
+measurement pass and wrote a corrected brief, its output is **itself an unmeasured
+claim**, and pasting it into a dispatch launders it with the orchestrator's authority.
+Measured 2026-08-24: the orchestrator authored **two false claims** in one session —
+that a shared constant would force a text-scanning guard to become a "cross-package
+constant resolver" (it would not; the target was already inside the scanned corpus), and
+that a narrowly-scoped error swallow "hides the only symptom" (the file has no `catch`
+at all, and a hang is a hook timeout no exception listener can see). **Both were
+INFERRED cost/impact judgements, never probe results.** Both were caught by builders,
+three layers downstream of where they were cheapest to catch.
+
+**Cost and impact estimates are the weakest measurement output.** A probe settles
+behaviour; nothing settles "how much work is that" except attempting it. In the same
+session an original "+15 min" estimate was "corrected" to "+4–8 min" and the measured
+answer was **~+9 min** — a wrong number replaced by a differently-wrong number, stated
+more confidently. Related: **when prose states a ratio AND its inputs, the ratio is the
+claim most likely to be wrong**, because nothing recomputes it (a merged row quoted its
+own numerator and denominator two sentences from a headline that disagreed with them).
+
+**So every code-lane dispatch MUST carry this sentence verbatim:** *"Treat the claims in
+this brief as hypotheses, not findings. If your own reading contradicts one, say so with
+evidence rather than complying."* In the 2026-08-24 run **five agents refuted a
+handed-down claim and every one of them was right**, including two the orchestrator
+authored and one builder who found three of the numbers it was given were wrong.
+
 **`<TASK-BODY>` is handed over, never looked up.** Paste the body inline, or write it
 to a local file and pass that path. **Never** tell a builder to read its card from the
 board. `gh project item-list` is **~102 GraphQL points**; under the mandatory 3-way
@@ -24,6 +49,12 @@ afford — heed it rather than dispatching and hoping.
 >
 > **Task <TASK-ID>:** <TASK-TITLE>
 > <TASK-BODY>
+>
+> **Treat the claims in this brief as hypotheses, not findings. If your own reading
+> contradicts one, say so with evidence rather than complying.** Claims are marked
+> `MEASURED-BY-PROBE` (someone ran it) or `INFERRED` (someone reasoned it) — the
+> inferred ones, especially cost and impact estimates, are the ones that have been
+> wrong. Refuting a brief is a success, not a conflict.
 >
 > Run the `yolo-ship` skill on this task with these ORCHESTRATED-MODE overrides:
 > - **Work ONLY in your own isolated worktree.** You were dispatched with

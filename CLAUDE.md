@@ -30,6 +30,25 @@ Note the argument order: `--filter` must come **before** the script name. The ro
 filter to the script rather than to pnpm — it is silently ignored and the entire repo
 suite runs, including the Docker-dependent `@ax/auth-better` tests.
 
+**`pnpm -r run test` BAILS at the first failing package**, so every package after it
+**never runs** — and the local failure you are most likely to hit is `@ax/auth-better`'s
+Docker *teardown* hook timing out with **64/64 assertions passing**. The repo-wide gate
+is therefore silently *partial*, and a local "the suite is fine" verdict recorded before
+`auth-better` may rest on a run that stopped early. Use:
+
+```bash
+pnpm -r --no-bail run test && pnpm test:eslint-rules && pnpm test:scripts
+```
+
+**Do not stop at `pnpm -r --no-bail run test`.** The root `test` script is
+`pnpm -r run test && pnpm test:eslint-rules && pnpm test:scripts`, so the recursive
+part is only **one of three** suites — substituting it alone silently skips
+`test:eslint-rules` and `test:scripts` entirely. That is the opposite of the problem
+you were trying to fix.
+
+Note these two traps point in **opposite** directions and are both quiet: the
+`--filter`-order one runs *more* than you asked, the bail one runs *less*.
+
 (Tooling lands in Week 1–2 per architecture doc Section 10.)
 
 ## Codex Memory Bootstrap

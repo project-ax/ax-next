@@ -789,3 +789,136 @@ describe('the poller is reaped, not just relaunched', () => {
     ).toContain('pgrep');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Guard: the merge gates must assert the ci.yml RUN EXISTS, not merely that the
+// checks they can see are green.
+//
+// Why this exists (session 8, 2026-08-24). CI created NO ci.yml run at all for one
+// branch at its original sha. The PR still reported SIX checks -- all CodeQL/Analyze
+// -- every one of them genuinely SUCCESS. `gh pr checks` exits 0 on that. The
+// statusCheckRollup is all-green on that. Both merge gates would have merged a head
+// whose build and tests NEVER EXECUTED.
+//
+// The failure mode is NOT "zero checks", which is easy to spot and which `gh pr
+// checks` already refuses. It is a PARTIAL check set: the security scanners ran, the
+// build/test workflow did not, and nothing in the reported data distinguishes that
+// from a healthy PR. A/B on that same branch, same workflow config: 6 checks and no
+// `test` job before a rebase push, 11 including `test` after. ci.yml ran normally for
+// sibling auto-ship branches the same day, so run creation is nondeterministic -- and
+// a memory-only commit DID trigger one, which rules out "small diffs skip CI".
+//
+// So the only sound gate is an EXISTENCE check against the workflow, keyed to the
+// exact head. This test does not (and cannot) reproduce GitHub's scheduling; it pins
+// the documented remedy so it cannot quietly evaporate from the skills the way the
+// TASK-315 fixes evaporated from the on-disk helpers.
+//
+// KNOW WHAT THESE TESTS ARE. They assert the rule's PRESENCE in prose, never its
+// CORRECTNESS: nothing here executes the guard, so weakening `-ge 1` to `-ge 0`
+// (which neuters it -- every count then passes) would leave them green. That limit is
+// inherent to a doc-scan and is written down so nobody mistakes these for behavioural
+// coverage of the shell. The shell itself was verified by hand under zsh -- the shell
+// the Bash tool actually runs -- where an empty `runs` (gh errored), "0", a
+// non-numeric value and a multiline value all HALT, while "1" and "3" proceed.
+describe('merge gates assert the ci.yml run EXISTS for the head', () => {
+  const GATE_DOCS = [
+    join(SKILLS_DIR, 'auto-ship', 'SKILL.md'),
+    join(SKILLS_DIR, 'yolo-ship', 'SKILL.md'),
+  ];
+
+  it('finds both gate docs to scan (the scan must not be vacuous)', () => {
+    for (const p of GATE_DOCS) {
+      expect(existsSync(p), `${p} is missing -- the scan below proves nothing`).toBe(
+        true,
+      );
+    }
+  });
+
+  for (const p of GATE_DOCS) {
+    const name = p.split('/').slice(-2).join('/');
+
+    it(`${name} queries workflow runs for a specific commit`, () => {
+      const md = readFileSync(p, 'utf8');
+      // The load-bearing shape: ask the WORKFLOW whether it ran for THIS sha.
+      // Reading `statusCheckRollup` / `gh pr checks` alone is what the trap defeats.
+      // Order-independent, and accepts the short flags. The earlier version demanded
+      // `--workflow ... ci.yml ... --commit` in that order on one line, which a
+      // perfectly correct reword (short `-w`/`-c`, reordered flags) would have broken
+      // -- a doc test that forbids valid rewrites is a maintenance tax.
+      const line = md
+        .split('\n')
+        .find(
+          (l) =>
+            /gh run list/.test(l) &&
+            /(--workflow|\s-w\s)/.test(l) &&
+            /ci\.yml/.test(l) &&
+            /(--commit|\s-c\s)/.test(l),
+        );
+      expect(
+        line,
+        'The gate must query workflow runs FOR A SPECIFIC COMMIT (e.g. `gh run list ' +
+          '--workflow ci.yml --commit <sha>`). Reading check conclusions alone ' +
+          'returns "green" on a head where ci.yml never ran.',
+      ).toBeDefined();
+    });
+
+    it(`${name} treats an absent run as NOT green`, () => {
+      const md = readFileSync(p, 'utf8');
+      // Locate the query with the SAME order-independent matcher the presence test
+      // uses. An order-dependent locator here would fail on a legitimate reword to
+      // short/reordered flags while the presence test passed -- and it would say "no
+      // per-commit ci.yml query found at all", which would be false and would send the
+      // reader hunting for a missing rule that is actually present. Half-applying the
+      // order-independence fix is its own defect class.
+      const queryLine = md
+        .split('\n')
+        .find(
+          (l) =>
+            /gh run list/.test(l) &&
+            /(--workflow|\s-w\s)/.test(l) &&
+            /ci\.yml/.test(l) &&
+            /(--commit|\s-c\s)/.test(l),
+        );
+      expect(
+        queryLine,
+        'no per-commit ci.yml query found (in any flag order or short form)',
+      ).toBeDefined();
+      const idx = md.indexOf(queryLine);
+      const near = md.slice(idx, idx + 700);
+      // Require a HALTING token, not merely a mention of the empty case. The earlier
+      // version also accepted the words "no ci.yml run", which a WRONG fix would
+      // contain -- e.g. "no ci.yml run just means CI is still starting, wait" matches
+      // that phrasing while halting nothing. Only a comparison that rejects 0, or an
+      // explicit abort, proves the empty result is actually acted on.
+      expect(
+        near,
+        'Right after the run query, the doc must ACT on an empty result: a `-ge 1` ' +
+          'test, an `exit 1`, or a HALT. Mentioning the empty case in prose is not ' +
+          'acting on it -- a query nobody branches on is decoration.',
+      ).toMatch(/-ge 1|exit 1|HALT/);
+    });
+  }
+
+  // This test replaces a VACUOUS predecessor, and the story is worth keeping because
+  // it is the exact defect this whole guard exists to prevent. The first version
+  // matched /CodeQL/ against the two gate docs JOINED into one blob -- but
+  // yolo-ship/SKILL.md already contained "CodeQL" at two unrelated lines BEFORE the
+  // rule was added ("CodeRabbit + CodeQL + semgrep + gitleaks"). So it passed even
+  // with the entire rationale deleted from both files: a check that cannot fail,
+  // wearing the costume of a guard, shipped in the PR that added the vacuity rule.
+  // Two things fixed it: match a phrase THIS rule introduced, and check EACH FILE
+  // separately so one file's incidental text cannot satisfy the other's requirement.
+  for (const p of GATE_DOCS) {
+    const name = p.split('/').slice(-2).join('/');
+    it(`${name} keeps WHY the check exists (a partial check set, not zero checks)`, () => {
+      const md = readFileSync(p, 'utf8');
+      expect(
+        md,
+        'Keep the reason next to the rule in THIS file: the failure mode is a ' +
+          'PARTIAL check set (scanners ran, build/test did not), which is why ' +
+          '`gh pr checks` exiting 0 proves nothing. Without the reason the check ' +
+          'reads as paranoia and gets simplified away.',
+      ).toMatch(/partial\s+check\s+set/i);
+    });
+  }
+});
