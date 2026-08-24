@@ -285,7 +285,7 @@ Journal: `.claude/auto-ship-log.md` (gitignored).
 | TASK-319 | reach digest omits pinned OAuth endpoints — **Important**, on the human ruling |
 | TASK-320 | two `patterns.md` "deleting X reddens Y" claims never executed — rot-track work |
 | TASK-321 | postgres tag hardcoded 115× + the CI pull list is a 116th copy. **"Do nothing" is a legitimate outcome** if the boundary cost exceeds the bump cost |
-| TASK-322 | `mkdtempSync` without cleanup across `scripts/__tests__` |
+| TASK-322 | `mkdtempSync` without cleanup across `scripts/__tests__` — **premise measured FALSE**: every `mkdtempSync` under `scripts/` already cleans up, and an isolated-`TMPDIR` run leaks nothing. The real leak was one its grep could not see: the linked worktree in `memory-write-target.test.js` was created **outside** the dir the suite removes, cleaned only by a swallowed `git worktree remove`. Fixed there instead |
 
 **Waves 6/7 remain in Backlog:** 246, 248, 249, 250, 257, 258, 273, 242, 244, 263, 286.
 
