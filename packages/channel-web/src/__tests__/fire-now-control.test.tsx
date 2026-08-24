@@ -129,3 +129,55 @@ describe('FireNowControl — webhook', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * The rendered confirmation line (TASK-313).
+ *
+ * This used to interpolate `out.fireId` — a postgres BIGSERIAL row id — into
+ * user-facing text ("Fired (#7, ok)"). The id no longer crosses the hook bus,
+ * so the line is status-driven. Both branches are pinned here because the
+ * confirmation string was previously uncovered, which is how a storage row id
+ * sat on screen unnoticed.
+ */
+describe('FireNowControl — confirmation line', () => {
+  it('a successful fire confirms in plain language, with no row id', async () => {
+    mockJson(200, { status: 'ok', conversationId: 'cnv' });
+    render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
+    const line = await screen.findByText('Started — the agent is running it now.');
+    // Muted, not destructive: this is the success register.
+    expect(line.className).toContain('text-muted-foreground');
+    expect(line.className).not.toContain('text-destructive');
+    // No BIGSERIAL, and no raw status token, anywhere in the line.
+    expect(line.textContent).not.toMatch(/#\d/);
+    expect(line.textContent).not.toMatch(/\bok\b/);
+  });
+
+  it('a 200 that reports status "error" reads as a failure, in the destructive register', async () => {
+    // The two `status: 'error'` early returns in fire.ts (agents:resolve and
+    // the conversation create/find) answer 200 with `conversationId: null`.
+    // Before TASK-313 this rendered muted grey as "Fired (#7, error)" — a
+    // failure dressed as a success.
+    mockJson(200, { status: 'error', conversationId: null });
+    render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
+    const line = await screen.findByText("We couldn't start this run. Please try again.");
+    expect(line.className).toContain('text-destructive');
+    expect(line.textContent).not.toMatch(/#\d/);
+    // Never claims the routine started, and never says "silenced" — that
+    // status is written later by the chat:turn-end subscriber and cannot
+    // reach this response.
+    expect(line.textContent).not.toMatch(/Started/i);
+    expect(line.textContent).not.toMatch(/silenced/i);
+  });
+
+  it('an errored fire still refreshes the parent so the new fire row shows up', async () => {
+    mockJson(200, { status: 'error', conversationId: null });
+    const onFired = vi.fn();
+    render(<FireNowControl routine={intervalRoutine} onFired={onFired} />);
+    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
+    // The fire row IS recorded on the error paths, so the row list and the
+    // routine's last_status are both stale until the parent refetches.
+    await waitFor(() => expect(onFired).toHaveBeenCalledTimes(1));
+  });
+});
