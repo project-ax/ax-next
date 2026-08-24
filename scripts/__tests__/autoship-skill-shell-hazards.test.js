@@ -527,7 +527,7 @@ describe('the poller is reaped, not just relaunched', () => {
   // ~1 pt/60s GraphQL drain that outlives the run and can starve the NEXT run's budget
   // before it starts, and nothing in the loop or the doc noticed for an entire session.
   //
-  // This is the mistakes.md:294 lesson applied to itself: a doc code-block that is the
+  // This is the mistakes.md TASK-298 lesson applied to itself: a doc code-block that is the
   // source of a runtime artifact is code, so the reap discipline gets a tracked test on
   // the DOC rather than a sentence nobody executes.
 

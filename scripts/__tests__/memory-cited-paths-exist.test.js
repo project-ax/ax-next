@@ -55,6 +55,19 @@
 // is on disk right now and gone from git), and a citation those directories
 // happen to satisfy is still rot.
 //
+// WHAT GREEN HERE DOES *NOT* MEAN. Gate 1 is a precision/recall trade and it
+// costs real recall: of 396 literal path-shaped citations in the corpus, only
+// **157 are examined** -- the other 239 (~60%) are skipped as unrooted, `dist/`,
+// `node_modules/`, or agent-memory-tree paths. So this guard is the inventory of
+// the ROOTED subset, not of the memory files. The sharpest accepted miss is the
+// one that stings: an unrooted citation of a moved file (`agent-runner-core/...`
+// written without the leading `packages/`) is invisible here, and so is a
+// citation into a fully DELETED directory -- which is exactly the shape of the
+// "a package went away" refactor. This PR's own review caught one such unrooted
+// stale ref that this guard could not see. When a refactor moves files, grep the
+// memory corpus for the unrooted spelling too; do not read a green run as "the
+// memory files are clean."
+//
 // WHEN THIS GOES RED: fix the memory file, not this test. The path moved, was
 // renamed, or was never committed -- find where it went and update the prose.
 // If the citation is to something that legitimately does not exist (a rejected
