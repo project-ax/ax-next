@@ -64,7 +64,8 @@ afford — heed it rather than dispatching and hoping.
 >   read-modify-write in shell — never read the card body into your context.
 >   **Best-effort but never silent:** a failed heartbeat must NEVER block the ship, and
 >   must NEVER go unreported — the wrapper prints `HEARTBEAT-FAILED(setup)` (broken all
->   run) or `HEARTBEAT-FAILED(transient)` (rate limit / blip). Report which in the
+>   run), `HEARTBEAT-FAILED(caller)` (your item id is malformed — no retry helps), or
+>   `HEARTBEAT-FAILED(transient)` (rate limit / blip). Report which in the
 >   required `progress:` handoff field. Nothing machine-reads the progress block, so
 >   your handoff is the only way a dead heartbeat is ever noticed.
 > - **Dispatch `ax-code-reviewer` with NO `name`** (yolo-ship Phase 5 › dispatch
@@ -96,7 +97,7 @@ afford — heed it rather than dispatching and hoping.
 > reviewer: clean | hung | skipped-<reason>        # REQUIRED. "clean" ONLY if an
 >                                                  # ax-code-reviewer actually RETURNED
 >                                                  # and its findings are addressed.
-> progress: live | FAILED-<setup|transient>        # REQUIRED. Did your card heartbeat
+> progress: live | FAILED-<setup|caller|transient>  # REQUIRED. Did your card heartbeat
 >                                                  # actually land? Never blocks the
 >                                                  # merge; journalled so a dead
 >                                                  # heartbeat surfaces within ONE card

@@ -368,9 +368,11 @@ IDS=$(printf '%s' "$ITEMS" | jq -r --arg e "epic: $EPIC" \
 source .claude/auto-ship-progress.sh
 # `for id in $IDS` here is BROKEN and looks fine. The Bash tool runs zsh, and zsh does
 # NOT word-split an unquoted parameter expansion, so that form iterates ONCE with every
-# id concatenated -- append_learnings reads a bogus node id and prints
-# `learnings: skip (read)`, its *transient* path, which reads as a rate-limit blip
-# rather than a broken loop. `read -r` behaves identically under both shells.
+# id concatenated -- append_learnings then gets a garbage node id. It used to answer
+# that with `learnings: skip (read)`, its *transient* path, so a broken loop read as a
+# rate-limit blip; it now answers `learnings: MALFORMED-ID …` and returns nonzero
+# (§6, **Malformed vs transient**). Do not rely on that as the loop's only guard --
+# `read -r` behaves identically under both shells, so just write the correct form.
 # (`for b in $(cmd)` is fine: command substitution DOES split under zsh.)
 printf '%s\n' "$IDS" | while IFS= read -r id; do
   [ -n "$id" ] || continue   # an empty $IDS still yields one empty line
@@ -381,8 +383,10 @@ done
 **Count the output.** `append_learnings` prints one line per call — so one line per
 `(bullet, id)` pair, and the loop above runs **once per bullet**. As written, with one
 `<bullet>` placeholder, expect exactly as many lines as there are ids. If you see
-fewer, the loop is broken, not rate-limited: `learnings: skip (…)` is the best-effort
-path and hides exactly that.
+fewer, the loop is broken, not rate-limited. A concatenated or otherwise malformed id
+now says so out loud (`learnings: MALFORMED-ID …`, §6) instead of borrowing the quiet
+`skip (read)` line — but keep counting anyway: a *genuine* rate limit still prints
+`learnings: skip (…)`, and that still means a bullet did not land.
 
 Best-effort; a failed learnings write never blocks the merge. (The just-merged card is now
 **Done**, so it is naturally excluded from the To Do filter — no self-write.)
@@ -568,7 +572,18 @@ cat > .claude/auto-ship-progress.sh <<'SH'
 # The body NEVER enters the model's context — only "progress:"/"skip" is echoed.
 # A failed write is non-fatal: progress is observability, never a ship blocker.
 append_progress() {
-  local item="$1" line="$2" now; now=$(date +%H:%M)
+  local item="$1" line="$2" now
+  # A malformed id is a CALLER BUG, not a blip. Project item node ids are
+  # `PVTI_`-prefixed and hold no whitespace, so the shape is checkable for zero
+  # API calls -- and checking it here is what keeps the quiet `skip (...)` paths
+  # below meaning ONLY "transient". See the **Malformed vs transient** note in §6.
+  local ok=
+  case "$item" in
+    '' | *[[:space:]]*) ;;
+    PVTI_*) ok=1 ;;
+  esac
+  [ -n "$ok" ] || { echo "progress: MALFORMED-ID ${item:-<empty>}"; return 2; }
+  now=$(date +%H:%M)
   local START='<!-- AUTOSHIP-PROGRESS:START -->'
   local END='<!-- AUTOSHIP-PROGRESS:END -->'
   local entry="- $now $line"
@@ -592,6 +607,47 @@ SH
 chmod +x .claude/auto-ship-progress.sh
 ```
 
+**Malformed vs transient — why all three helpers gate the id shape first.** A
+message that can only mean *transient* must not also be reachable from a **caller
+bug**, or the operator reads a broken caller as background noise. That is not
+hypothetical: during the 2026-08-23/24 run the forward-learning loop passed four
+concatenated node ids as one argument (the zsh word-split bug TASK-310 fixes), the
+read failed, and the helper printed `learnings: skip (read)` — its *rate-limit,
+best-effort, ignore me* line. It was caught only because the output was 3 lines
+where 12 were expected.
+
+So each helper now checks the argument's **shape** before spending an API call:
+empty, containing whitespace, or not `PVTI_`-prefixed → a loud
+`<label>: MALFORMED-ID <value>` and a **nonzero** return. Notes on why it is built
+this way:
+
+- **The shape check, not the API error, is the signal.** `NOT_FOUND` also fires for
+  a deleted card or one the token cannot see, so it means "not my card", not
+  "malformed". The prefix/whitespace test is a positive signal and costs nothing.
+- **`case`/glob, not `[[ =~ ]]`** — measured identical under bash 3.2 and zsh 5.9,
+  and the whitespace arm has to come **first**: `"PVTI_a PVTI_b"` does start with
+  `PVTI_`, so a prefix test alone would wave the real bug through.
+- **A nonzero return is safe at every call site.** The helper is last in every
+  `source … && helper …` chain, and a nonzero loop body does not stop a
+  `while IFS= read -r` loop (measured 3/3 iterations under both shells).
+- **`return 2` is the contract, and it is what the wrapper keys on.** Every
+  best-effort path returns 0; only the gate returns 2. `auto-ship-hb.sh` therefore
+  classifies the caller class on `rc`, not by grepping for `MALFORMED-ID` — a text
+  match would also fire on a *successful* write whose progress line happens to
+  contain that string, labelling a landed heartbeat a non-retryable caller bug.
+  That is this very bug one layer up, so do not "simplify" it back to a grep.
+- **Genuine failures stay best-effort.** A rate limit or blip on a well-shaped id is
+  still the quiet `skip (read)` / `skip (write)` with `return 0`, and still never
+  blocks a ship. Only a caller bug is loud.
+- **`skip (not a draft-issue card)` is a different thing and stays put.** It needs
+  `gh` to exit **0** with an empty content id — a *resolvable* node of the wrong
+  type, i.e. a card that is a linked real issue/PR. A malformed id cannot reach it
+  (measured: an unresolvable id always errors rc=1). Do not fold the two together.
+
+Guard: `scripts/__tests__/autoship-skill-shell-hazards.test.js` runs all three
+helpers under bash **and** zsh against a `gh` stub, asserting the malformed path
+never reaches the API and the transient path still returns 0.
+
 **Forward-learning sibling — `append_learnings`** (SKILL.md › Forward learning). Same
 shell-side RMW discipline, a distinct `AUTOSHIP-LEARNINGS` block. Append it to the helper
 file at run start. **Call it ONLY for To Do cards** — an In-Progress card's body belongs
@@ -604,6 +660,16 @@ cat >> .claude/auto-ship-progress.sh <<'SH'
 # To Do card. Shell-side RMW (body never enters the model's context); best-effort.
 append_learnings() {
   local item="$1" line="$2"
+  # A malformed id is a CALLER BUG, not a blip. Project item node ids are
+  # `PVTI_`-prefixed and hold no whitespace, so the shape is checkable for zero
+  # API calls -- and checking it here is what keeps the quiet `skip (...)` paths
+  # below meaning ONLY "transient". See the **Malformed vs transient** note in §6.
+  local ok=
+  case "$item" in
+    '' | *[[:space:]]*) ;;
+    PVTI_*) ok=1 ;;
+  esac
+  [ -n "$ok" ] || { echo "learnings: MALFORMED-ID ${item:-<empty>}"; return 2; }
   local START='<!-- AUTOSHIP-LEARNINGS:START -->'
   local END='<!-- AUTOSHIP-LEARNINGS:END -->'
   local entry="- $line"
@@ -638,12 +704,18 @@ cat > .claude/auto-ship-hb.sh <<'SH'
 # Worktree-safe progress heartbeat. CALL it (do not `source` it):
 #   /abs/path/.claude/auto-ship-hb.sh <PVTI-item-id> "<line>"
 #
-# LOUD BY DESIGN, and the two failure classes are NOT the same thing:
-#   * helper missing / unsourceable  -> a SETUP bug. Exit 3/4. The heartbeat can
-#     never work this run; the operator must fix it. Report progress: FAILED-setup.
+# LOUD BY DESIGN, and the THREE failure classes are NOT the same thing:
+#   * helper missing / unsourceable  -> a SETUP bug. Exit 3/4/5 (2 = bad usage). The
+#     heartbeat can never work this run; the operator must fix it.
+#     Report progress: FAILED-setup.
+#   * malformed item id              -> a CALLER bug. Exit 6. What you passed is not
+#     a project item node id (`PVTI_`-prefixed, no whitespace), so no retry helps.
+#     Report progress: FAILED-caller.
 #   * GraphQL read/write failed      -> TRANSIENT (rate limit, blip). Exit 1. Still
 #     best-effort: it must never block the ship.
-# Neither aborts the ship. Both are visible. Silence is the only unacceptable outcome.
+#     Report progress: FAILED-transient.
+# None of them aborts the ship. All are visible. Silence is the only unacceptable
+# outcome -- and a caller bug wearing the transient label is a kind of silence too.
 set -uo pipefail
 HELPER="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/auto-ship-progress.sh"
 if [ ! -r "$HELPER" ]; then
@@ -658,8 +730,22 @@ if [ "$#" -lt 2 ]; then
 fi
 out="$(append_progress "$1" "$2" 2>&1)"; rc=$?
 echo "$out"
-# append_progress returns 0 on every path by design, so detect its "skip (...)" text.
-if [ $rc -ne 0 ] || printf '%s' "$out" | grep -q 'skip ('; then
+# Classify the CALLER class on the RETURN CODE, and check it FIRST. Two reasons.
+# (1) First, because it returns nonzero too, so the transient branch below would
+# otherwise swallow it -- which is the exact confusion this distinction exists to
+# remove. (2) On rc, not on the text: grepping $out for "MALFORMED-ID" would also
+# match a SUCCESSFUL write whose progress line merely CONTAINS that string, and
+# report a landed heartbeat as a non-retryable caller bug. auto-ship ships changes
+# to this very file, so such a line is not hypothetical. rc is collision-free:
+# append_progress returns 0 on every best-effort path and 2 only from its
+# malformed-id gate.
+if [ $rc -eq 2 ]; then
+  echo "HEARTBEAT-FAILED(caller): $out" >&2; exit 6
+fi
+# The quiet best-effort failures DO return 0, so they can only be found in the text.
+# Anchor it to the leading `<label>: ` so a success line whose caller-supplied text
+# happens to contain "skip (" is not mislabelled transient either.
+if [ $rc -ne 0 ] || printf '%s' "$out" | grep -q '^[a-z-]*: skip ('; then
   echo "HEARTBEAT-FAILED(transient): $out" >&2; exit 1
 fi
 SH
@@ -671,7 +757,8 @@ for, and a green check in the orchestrator's own checkout proves nothing about i
 
 **Handoff field.** Because nothing machine-reads the progress block (below), a dead
 heartbeat is invisible unless the agent says so. Every dispatched agent therefore
-returns a **required** `progress: live | FAILED-<reason>` field alongside `reviewer:`.
+returns a **required** `progress: live | FAILED-<setup|caller|transient>` field
+alongside `reviewer:`.
 `FAILED-*` never blocks the merge, but the orchestrator journals it — so a dead
 heartbeat surfaces within one card instead of at the end of a whole run.
 
@@ -861,6 +948,16 @@ cat >> .claude/auto-ship-progress.sh <<'SH'
 # answer-ready block. A "q1\nq2" double-quoted string used to collapse into one item.
 set_needs_input() {
   local item="$1" questions="$2"
+  # A malformed id is a CALLER BUG, not a blip. Project item node ids are
+  # `PVTI_`-prefixed and hold no whitespace, so the shape is checkable for zero
+  # API calls -- and checking it here is what keeps the quiet `skip (...)` paths
+  # below meaning ONLY "transient". See the **Malformed vs transient** note in §6.
+  local ok=
+  case "$item" in
+    '' | *[[:space:]]*) ;;
+    PVTI_*) ok=1 ;;
+  esac
+  [ -n "$ok" ] || { echo "needs-input: MALFORMED-ID ${item:-<empty>}"; return 2; }
   local START='<!-- AUTOSHIP-NEEDS-INPUT:START -->'
   local END='<!-- AUTOSHIP-NEEDS-INPUT:END -->'
   local q='query($i:ID!){node(id:$i){... on ProjectV2Item{content{... on DraftIssue{id body}}}}}'

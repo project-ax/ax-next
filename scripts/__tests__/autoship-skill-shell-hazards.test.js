@@ -24,12 +24,15 @@
 //      loop, `for id in $IDS; do append_learnings "$id" ...; done`, iterated exactly
 //      ONCE with all ids concatenated into one string. `append_learnings` then read a
 //      bogus node id and printed `learnings: skip (read)` -- the line the operator
-//      actually saw. (The helper has a second best-effort exit,
-//      `skip (not a draft-issue card)`, reachable from the same bad id depending on
-//      whether GitHub answers with a GraphQL error or a null node; which one fires is
-//      NOT pinned, and it does not matter -- both look transient.) An orchestrator
-//      correctly reads either as "rate-limit blip, best-effort, ignore" rather than
-//      "your loop is broken". Observed live 2026-08-23/24: 3
+//      actually saw, and (measured) the ONLY line a malformed id could produce. An
+//      earlier version of this comment hedged that `skip (not a draft-issue card)`
+//      was reachable from the same bad id. It is not: that branch needs `gh` to exit
+//      0 with an EMPTY content id, i.e. a *resolvable* node of the wrong type (a
+//      repository id gives exactly that). An unresolvable or garbage id always
+//      errors rc=1 + NOT_FOUND, 4/4 against live GitHub. An orchestrator correctly
+//      reads that as "rate-limit blip, best-effort, ignore" rather than "your loop
+//      is broken" -- which is why TASK-315 gave the malformed case its own loud
+//      MALFORMED-ID line, pinned further down this file. Observed live 2026-08-23/24: 3
 //      output lines where 12 were expected, caught only because the count was
 //      visibly wrong. Note the asymmetry that makes this easy to get wrong: an
 //      unquoted *command substitution* in a `for` list DOES split under zsh, so
@@ -51,11 +54,18 @@
 // (same pattern as no-raw-nul-bytes.test.js) -- no network, no build.
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, it, expect } from 'vitest';
+import { afterAll, describe, it, expect } from 'vitest';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const SKILLS_DIR = join(REPO_ROOT, '.claude', 'skills');
@@ -227,7 +237,9 @@ describe('auto-ship skill docs: no unquoted-`$VAR` `for` list in any runnable sn
         'loop runs exactly ONCE over the whole concatenated value while the same ' +
         'line does the right thing under bash. This is how the forward-learning loop ' +
         '`for id in $IDS` fed one bogus node id to append_learnings and printed ' +
-        '`learnings: skip (read)` -- indistinguishable from a rate-limit blip. ' +
+        '`learnings: skip (read)`, which at the time was indistinguishable from a ' +
+        'rate-limit blip (a malformed id is loud since TASK-315, but do not lean on ' +
+        'that -- just write the portable loop). ' +
         'Fix: `printf \'%s\\n\' "$VAR" | while IFS= read -r x; do …; done`, which is ' +
         'byte-identical under both shells. (`${=VAR}` also splits, but only in zsh.) ' +
         'Note: `for x in $(cmd)` is NOT this bug -- command substitution does split ' +
@@ -313,12 +325,13 @@ describe('board_batch generates the same GraphQL under bash and zsh', () => {
     expect(blocks.join('\n')).toContain('board_batch_query_preview()');
   });
 
+  const parityDir = mkdtempSync(join(tmpdir(), 'autoship-parity-'));
   const helperPath = (() => {
-    const dir = mkdtempSync(join(tmpdir(), 'autoship-parity-'));
-    const f = join(dir, 'board.sh');
+    const f = join(parityDir, 'board.sh');
     writeFileSync(f, blocks.join('\n') + '\n');
     return f;
   })();
+  afterAll(() => rmSync(parityDir, { recursive: true, force: true }));
 
   const preview = (shell) =>
     execFileSync(shell, ['-c', `. ${helperPath} && board_batch_query_preview 3`], {
@@ -416,6 +429,207 @@ describe('the progress-helper completeness guard names all three functions', () 
       );
     });
   }
+});
+
+// TASK-315: a malformed item id must be LOUD, and must never borrow the transient
+// message. `learnings: skip (read)` means "rate limit / blip / best-effort, ignore me".
+// It used to also be what a caller saw after handing the helper a garbage node id --
+// so the operator read a caller bug as background noise. The shape gate below is a
+// zero-API-call positive signal (project item ids are `PVTI_`-prefixed and hold no
+// whitespace) that keeps the two channels disjoint.
+//
+// Everything here runs offline: the malformed path returns before the helper ever
+// calls `gh`, and the transient path uses a `gh` stub that just fails. No network,
+// no jq, no board.
+describe('progress helpers: a malformed id is loud, a transient failure stays quiet', () => {
+  const md = readFileSync(GITHUB_PROJECT_MD, 'utf8');
+  const helperBlocks = extractHeredocs(md, '.claude/auto-ship-progress.sh');
+  const hbBlocks = extractHeredocs(md, '.claude/auto-ship-hb.sh');
+
+  const FNS = [
+    { fn: 'append_progress', label: 'progress' },
+    { fn: 'append_learnings', label: 'learnings' },
+    { fn: 'set_needs_input', label: 'needs-input' },
+  ];
+
+  it('the doc still ships all three helper heredocs plus the wrapper', () => {
+    // Guards against this whole describe going vacuous if the doc changes shape.
+    expect(helperBlocks.length).toBe(3);
+    expect(hbBlocks.length).toBe(1);
+  });
+
+  it('each helper gates the id shape BEFORE its GraphQL read', () => {
+    // Order is the invariant, not mere presence: a gate placed after the read still
+    // burns an API call and still lets the read's own failure fire first.
+    const all = helperBlocks.join('\n');
+    for (const { fn } of FNS) {
+      const body = all.slice(all.indexOf(`${fn}() {`));
+      const gate = body.indexOf('MALFORMED-ID');
+      const read = body.indexOf('gh api graphql');
+      expect(gate, `${fn} has no MALFORMED-ID path`).toBeGreaterThan(-1);
+      expect(read, `${fn} no longer reads via gh api graphql`).toBeGreaterThan(-1);
+      expect(gate, `${fn}'s shape gate must precede its GraphQL read`).toBeLessThan(read);
+    }
+  });
+
+  // A run start writes the helper and the wrapper side by side; lay them out the same
+  // way so the wrapper's own-location helper resolution is exercised for real.
+  const tempDirs = [];
+  afterAll(() => {
+    for (const d of tempDirs) rmSync(d, { recursive: true, force: true });
+  });
+  const dir = mkdtempSync(join(tmpdir(), 'autoship-malformed-'));
+  tempDirs.push(dir);
+  const helper = join(dir, 'auto-ship-progress.sh');
+  const hb = join(dir, 'auto-ship-hb.sh');
+  const binDir = join(dir, 'bin');
+  const ghLog = join(dir, 'gh-invoked.log');
+  writeFileSync(helper, helperBlocks.join('\n') + '\n');
+  writeFileSync(hb, hbBlocks.join('\n') + '\n', { mode: 0o755 });
+  mkdirSync(binDir);
+  // A `gh` that records that it ran and then fails -- i.e. the TRANSIENT case. Its log
+  // is also how we prove the malformed path never reaches the API at all.
+  writeFileSync(join(binDir, 'gh'), `#!/bin/sh\necho ran >> ${JSON.stringify(ghLog)}\nexit 1\n`, {
+    mode: 0o755,
+  });
+
+  const run = (file, args) => {
+    const opts = {
+      encoding: 'utf8',
+      env: { ...process.env, PATH: `${binDir}:${process.env.PATH}` },
+    };
+    try {
+      return { code: 0, out: execFileSync(file, args, opts) };
+    } catch (e) {
+      return { code: e.status, out: `${e.stdout ?? ''}${e.stderr ?? ''}` };
+    }
+  };
+  const sourceAndCall = (shell, script) => run(shell, ['-c', script]);
+
+  // zsh is the shell the Bash tool actually runs, so it is the one that matters most;
+  // CI runners may not have it, hence the conditional. bash is unconditional.
+  const SHELLS = ['bash', ...(shellExists('zsh') ? ['zsh'] : [])];
+
+  // Every one of these was rejected by live GitHub with rc=1 + NOT_FOUND, i.e. every
+  // one of them used to print the transient line.
+  const MALFORMED = [
+    ['PVTI_a PVTI_b', 'the TASK-310 concatenation of two ids into one argument'],
+    ['PVTX_lADOsomething', 'a wrong prefix'],
+    ['not-an-id', 'plain garbage'],
+    ['', 'an empty argument'],
+    ['<ITEM-ID>', 'an unsubstituted dispatch-template placeholder'],
+  ];
+
+  for (const shell of SHELLS) {
+    for (const { fn, label } of FNS) {
+      for (const [value, why] of MALFORMED) {
+        it(`${shell}: ${fn} is loud and nonzero for ${why}`, () => {
+          rmSync(ghLog, { force: true });
+          const r = sourceAndCall(shell, `. ${JSON.stringify(helper)} && ${fn} '${value}' 'a line'`);
+          expect(r.out).toContain(`${label}: MALFORMED-ID`);
+          expect(
+            r.code,
+            'a caller bug must return nonzero -- returning 0 makes it silent success',
+          ).not.toBe(0);
+          expect(
+            r.out,
+            'the loud message must not also carry the transient wording',
+          ).not.toContain('skip (');
+          expect(
+            existsSync(ghLog),
+            'the shape gate must return before the helper spends an API call',
+          ).toBe(false);
+        });
+      }
+
+      it(`${shell}: ${fn} stays quiet and returns 0 when the read genuinely fails`, () => {
+        // Best-effort must stay best-effort: a rate limit or blip on a well-shaped id
+        // is still a quiet `skip (read)` with return 0, and must never block a ship.
+        rmSync(ghLog, { force: true });
+        const r = sourceAndCall(
+          shell,
+          `. ${JSON.stringify(helper)} && ${fn} 'PVTI_lADOAAtestonly' 'a line'`,
+        );
+        expect(r.code).toBe(0);
+        expect(r.out).toContain(`${label}: skip (read)`);
+        expect(r.out).not.toContain('MALFORMED-ID');
+        expect(existsSync(ghLog), 'a well-shaped id must actually reach the API').toBe(true);
+      });
+    }
+  }
+
+  // The wrapper is the layer an agent actually calls, and it relabels ANY nonzero
+  // return as `HEARTBEAT-FAILED(transient)` -- which would recreate the exact same
+  // confusion one hop up. It needs its own third class.
+  it('the wrapper reports a caller bug as its own class, not as transient', () => {
+    rmSync(ghLog, { force: true });
+    const r = run('bash', [hb, 'PVTI_a PVTI_b', 'a line']);
+    expect(r.out).toContain('MALFORMED-ID');
+    expect(r.out).toContain('HEARTBEAT-FAILED(caller)');
+    expect(r.out).not.toContain('HEARTBEAT-FAILED(transient)');
+    expect(r.code).toBe(6);
+    expect(existsSync(ghLog)).toBe(false);
+  });
+
+  it('the wrapper still reports a genuine read failure as transient', () => {
+    rmSync(ghLog, { force: true });
+    const r = run('bash', [hb, 'PVTI_lADOAAtestonly', 'a line']);
+    expect(r.out).toContain('HEARTBEAT-FAILED(transient)');
+    expect(r.out).not.toContain('HEARTBEAT-FAILED(caller)');
+    expect(r.code).toBe(1);
+  });
+
+  // Review finding, and it is this card's own bug class one layer up: if the wrapper
+  // decided the caller class by grepping $out for `MALFORMED-ID`, then a SUCCESSFUL
+  // write whose progress line merely CONTAINS that string would be reported as a
+  // non-retryable caller bug. auto-ship ships changes to this very file, so a
+  // progress line mentioning MALFORMED-ID is not hypothetical. The wrapper therefore
+  // classifies on the RETURN CODE. Driven through a FAKE helper so the wrapper's
+  // classification is isolated from `gh`, `jq` and the network entirely.
+  const withFakeHelper = (body) => {
+    const d = mkdtempSync(join(tmpdir(), 'autoship-hbclass-'));
+    tempDirs.push(d);
+    writeFileSync(join(d, 'auto-ship-progress.sh'), `append_progress() {\n${body}\n}\n`);
+    const w = join(d, 'auto-ship-hb.sh');
+    writeFileSync(w, hbBlocks.join('\n') + '\n', { mode: 0o755 });
+    return run('bash', [w, 'PVTI_lADOAAtestonly', 'a line']);
+  };
+
+  it('does not call a successful write a caller bug because its text says MALFORMED-ID', () => {
+    const r = withFakeHelper(
+      '  echo "progress: - 12:34 fixed the MALFORMED-ID gate"; return 0',
+    );
+    expect(r.out).not.toContain('HEARTBEAT-FAILED');
+    expect(r.code).toBe(0);
+  });
+
+  it('does not call a successful write transient because its text says skip (', () => {
+    // Same collision, pre-existing shape: the transient match is anchored to the
+    // leading `<label>: ` so a caller-supplied line cannot trip it.
+    const r = withFakeHelper('  echo "progress: - 12:34 made it skip (nothing)"; return 0');
+    expect(r.out).not.toContain('HEARTBEAT-FAILED');
+    expect(r.code).toBe(0);
+  });
+
+  it('keys the caller class to the gate return code 2', () => {
+    const r = withFakeHelper('  echo "progress: MALFORMED-ID junk"; return 2');
+    expect(r.out).toContain('HEARTBEAT-FAILED(caller)');
+    expect(r.code).toBe(6);
+  });
+
+  it('still calls a genuine quiet skip transient', () => {
+    const r = withFakeHelper('  echo "progress: skip (read)"; return 0');
+    expect(r.out).toContain('HEARTBEAT-FAILED(transient)');
+    expect(r.code).toBe(1);
+  });
+
+  it('the wrapper header comment enumerates all three failure classes', () => {
+    // The header is what an operator reads to interpret an exit code. It enumerated
+    // two classes while the script had three, which is how the doc goes stale.
+    const wrapper = hbBlocks[0];
+    expect(wrapper).toMatch(/malformed|caller/i);
+    expect(wrapper).toContain('exit 6');
+  });
 });
 
 /** Sanity: the hazard detector itself does the right thing. */

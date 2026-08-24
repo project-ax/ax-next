@@ -54,10 +54,11 @@ documented in `.claude/skills/auto-ship/references/github-project.md` §6.
 
 **Rules:** *best-effort but never silent* — a failed progress write must **never**
 abort the ship, and must **never** pass unreported either. The wrapper prints
-`HEARTBEAT-FAILED(setup)` for a broken installation (it will fail all run — say so)
-and `HEARTBEAT-FAILED(transient)` for a rate-limited or blipped write. Report the
-outcome in the **required** `progress:` handoff field — `live`, or
-`FAILED-<setup|transient>`. Nothing machine-reads the progress block, so if you do not
+`HEARTBEAT-FAILED(setup)` for a broken installation (it will fail all run — say so),
+`HEARTBEAT-FAILED(caller)` for a malformed item id (your argument is wrong — no
+retry helps), and `HEARTBEAT-FAILED(transient)` for a rate-limited or blipped
+write. Report the outcome in the **required** `progress:` handoff field — `live`, or
+`FAILED-<setup|caller|transient>`. Nothing machine-reads the progress block, so if you do not
 report it, nobody learns the heartbeat was dead until the run is over. It is not a
 merge blocker.
 *Shell-side* — the helper does the read-modify-write in shell; never read the card
