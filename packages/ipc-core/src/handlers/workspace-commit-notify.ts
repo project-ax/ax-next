@@ -85,7 +85,9 @@ function resyncEnvelopeFromCause(cause: unknown): { actualParent?: string } {
 //      only: a veto there is post-fact misuse, and is logged, not honored.
 //  11. Dispose the scratch repo (in a `finally`).
 //
-// Wire response shapes (all HTTP 200 unless noted):
+// Wire response shapes (all HTTP 200 unless noted) — the authoritative
+// definition is the discriminated union in @ax/ipc-protocol's `actions.ts`,
+// which documents each optional field in more detail than this summary:
 //   - accepted → {accepted: true, version, delta: null}
 //   - rejected → {accepted: false, reason}, plus — depending on which branch
 //     rejected — `actualParent` (the parent-mismatch re-sync signal),
@@ -188,11 +190,11 @@ export const workspaceCommitNotifyHandler: ActionHandler = async (
   } catch (err) {
     // parent-mismatch: a concurrent writer (e.g. the attachments plugin)
     // advanced the mirror past the runner's parent version between the
-    // runner's materialize and now. Return accepted:false carrying the storage
-    // tier's current head (`actualParent`) and nothing else, so the runner can
-    // fetch a baseline bundle AT that head out-of-band, rebase, and retry
-    // (mirrors the apply-bundle parent-mismatch handling below). The bundle is
-    // deliberately not inlined in this response — see the forwarding note below.
+    // runner's materialize and now. Return accepted:false carrying only the head
+    // signal (`actualParent`) alongside the reason — no inline bundle — so the
+    // runner can fetch a baseline bundle AT that head out-of-band, rebase, and
+    // retry (mirrors the apply-bundle parent-mismatch handling below). Why the
+    // bundle is not inlined: see the forwarding note below.
     if (err instanceof PluginError && err.code === 'parent-mismatch') {
       const env = resyncEnvelopeFromCause(err.cause);
       const body: Record<string, unknown> = {

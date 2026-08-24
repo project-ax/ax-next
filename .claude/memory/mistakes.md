@@ -330,7 +330,7 @@ has to be step one, not an afterthought. Same shape as TASK-298's `board_batch` 
 *why* nine comments rotted here"). The path is right and the conclusion is wrong: the
 tests live one directory down, at
 `packages/ipc-core/src/handlers/__tests__/workspace-commit-notify.test.ts` (599 lines,
-19 cases, plus `workspace-commit-notify-core-resync.test.ts`). **`packages/*/src/__tests__/`
+13 cases, plus `workspace-commit-notify-core-resync.test.ts`, which adds 1). **`packages/*/src/__tests__/`
 is not the only test root in this repo** — the same trap as channel-web's two component-test
 directories. Glob `src/**/__tests__` before concluding a file is unpinned; a follow-up
 card was filed on that false absence.
