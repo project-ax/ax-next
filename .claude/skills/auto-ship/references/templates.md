@@ -96,7 +96,7 @@ afford — heed it rather than dispatching and hoping.
 > reviewer: clean | hung | skipped-<reason>        # REQUIRED. "clean" ONLY if an
 >                                                  # ax-code-reviewer actually RETURNED
 >                                                  # and its findings are addressed.
-> progress: live | FAILED-<setup|transient>        # REQUIRED. Did your card heartbeat
+> progress: live | FAILED-<setup|caller|transient>  # REQUIRED. Did your card heartbeat
 >                                                  # actually land? Never blocks the
 >                                                  # merge; journalled so a dead
 >                                                  # heartbeat surfaces within ONE card

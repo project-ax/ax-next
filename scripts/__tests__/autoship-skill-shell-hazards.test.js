@@ -24,12 +24,15 @@
 //      loop, `for id in $IDS; do append_learnings "$id" ...; done`, iterated exactly
 //      ONCE with all ids concatenated into one string. `append_learnings` then read a
 //      bogus node id and printed `learnings: skip (read)` -- the line the operator
-//      actually saw. (The helper has a second best-effort exit,
-//      `skip (not a draft-issue card)`, reachable from the same bad id depending on
-//      whether GitHub answers with a GraphQL error or a null node; which one fires is
-//      NOT pinned, and it does not matter -- both look transient.) An orchestrator
-//      correctly reads either as "rate-limit blip, best-effort, ignore" rather than
-//      "your loop is broken". Observed live 2026-08-23/24: 3
+//      actually saw, and (measured) the ONLY line a malformed id could produce. An
+//      earlier version of this comment hedged that `skip (not a draft-issue card)`
+//      was reachable from the same bad id. It is not: that branch needs `gh` to exit
+//      0 with an EMPTY content id, i.e. a *resolvable* node of the wrong type (a
+//      repository id gives exactly that). An unresolvable or garbage id always
+//      errors rc=1 + NOT_FOUND, 4/4 against live GitHub. An orchestrator correctly
+//      reads that as "rate-limit blip, best-effort, ignore" rather than "your loop
+//      is broken" -- which is why TASK-315 gave the malformed case its own loud
+//      MALFORMED-ID line, pinned further down this file. Observed live 2026-08-23/24: 3
 //      output lines where 12 were expected, caught only because the count was
 //      visibly wrong. Note the asymmetry that makes this easy to get wrong: an
 //      unquoted *command substitution* in a `for` list DOES split under zsh, so
