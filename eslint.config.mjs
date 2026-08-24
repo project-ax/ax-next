@@ -122,6 +122,18 @@ export default tseslint.config(
       '**/coverage/**',
       // Local kind-dev mount; built JS bundles only, not source.
       '.dev-mount/**',
+      // Agent worktree copies. Dispatch here is mandatorily worktree-isolated,
+      // so a FULL second copy of this repo is usually sitting under one of
+      // these directories -- linting it double-reports every finding and
+      // resurrects code that was deleted on main. `.gitignore` already ignores
+      // them; eslint has to be told separately. BOTH globs are needed:
+      // `**/worktrees/**` covers `worktrees/`, `.claude/worktrees/` and
+      // `.claire/worktrees/`, but `.worktrees` is a DIFFERENT directory name
+      // and only the second glob matches it. Guarded by
+      // scripts/__tests__/eslint-ignores-worktrees.test.js -- including an
+      // over-ignore assertion, so don't collapse these into something broader.
+      '**/worktrees/**',
+      '**/.worktrees/**',
     ],
   },
 
