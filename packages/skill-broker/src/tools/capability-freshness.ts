@@ -333,13 +333,20 @@ function slotShapes(credentials: ConnectorSlot[] | undefined): unknown[] {
  * like an MCP server's `args` — `['sh', '-c', 'x']` and `['x', '-c', 'sh']` are
  * different commands, so normalising it as a set would collapse two genuinely
  * different worlds into one digest. That would be a hole in the fix for a hole.
+ *
+ * Every read is shape-checked, including `command`'s arrayness. A real resolve
+ * is zod-validated on the way out of `@ax/connectors`, so none of this should be
+ * reachable — but the alternative to a type check here is a `TypeError` thrown
+ * from inside a guard, and this guard's whole posture is that an unreadable
+ * world degrades to "nothing declared" rather than taking the approval surface
+ * with it.
  */
 function healthcheckShape(healthcheck: ConnectorHealthcheck | undefined): unknown {
   if (healthcheck === undefined || healthcheck === null) return null;
   return {
     kind: typeof healthcheck.kind === 'string' ? healthcheck.kind : '',
     port: typeof healthcheck.port === 'number' ? healthcheck.port : null,
-    command: [...(healthcheck.command ?? [])],
+    command: Array.isArray(healthcheck.command) ? [...healthcheck.command] : [],
   };
 }
 

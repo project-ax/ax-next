@@ -456,6 +456,21 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
       catalog.registry = { linear: svc(after) };
       expect((await check(bus, predicate)).changed, what).toBeDefined();
     }
+
+    // A probe kind this file has never heard of, and a malformed `command`,
+    // DEGRADE — they do not throw. A real resolve is zod-validated so neither
+    // should be reachable, but the alternative to a shape check inside a guard
+    // is a TypeError that takes the whole approval surface down with it.
+    const odd: Catalog = {
+      linear: PRESENT,
+      registry: { linear: svc({ kind: 'divination', command: 'not-an-array' }) },
+    };
+    const bus = await bootWith(odd);
+    const { predicate } = await capture(bus, 'linear');
+    expect((predicate as { value: string }).value).toMatch(/^linear@[0-9a-f]{16}$/);
+    // Resolving at all is the assertion: a throw here would have re-opened the
+    // decision on a world that never moved.
+    expect((await check(bus, predicate)).changed).toBeUndefined();
   });
 
   it('does NOT trip on a reworded usageNote — the digest is reach, not prose', async () => {
