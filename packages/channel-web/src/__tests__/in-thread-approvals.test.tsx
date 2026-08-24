@@ -84,7 +84,9 @@ describe('InThreadApprovals', () => {
     nothing for a decision belonging to a different conversation". Reduce the
     `raised > 0` gate in `InThreadApprovals.tsx` to `error?.kind === 'failed'`
     and it goes 3 failed / 19 passed — three of the five cases that assert
-    `DECISION_READ_FAILED_TITLE` is absent. The other two survive it on the
+    `DECISION_READ_FAILED_TITLE` is absent, though one of the three stops a
+    line earlier, on its `container.firstChild` check: with the gate gone the
+    region renders instead of returning null. The other two survive it on the
     `kind` half of the same expression rather than on `raised`: one asserts the
     banner is gone after a retry SUCCEEDS (no `failed` error left to show),
     the other is the 401 case (kind `expired`). They hold, though not for the
