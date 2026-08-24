@@ -366,8 +366,21 @@ EPIC=<slug>
 IDS=$(printf '%s' "$ITEMS" | jq -r --arg e "epic: $EPIC" \
   '.items[] | select(.status=="To Do") | select((.content.body // "") | contains($e)) | .id')
 source .claude/auto-ship-progress.sh
-for id in $IDS; do append_learnings "$id" "from $TASK_ID: <bullet>"; done   # one call per learnings bullet
+# `for id in $IDS` here is BROKEN and looks fine. The Bash tool runs zsh, and zsh does
+# NOT word-split an unquoted parameter expansion, so that form iterates ONCE with every
+# id concatenated -- append_learnings reads a bogus node id and prints
+# `learnings: skip (read)`, its *transient* path, which reads as a rate-limit blip
+# rather than a broken loop. `read -r` behaves identically under both shells.
+# (`for b in $(cmd)` is fine: command substitution DOES split under zsh.)
+printf '%s\n' "$IDS" | while IFS= read -r id; do
+  [ -n "$id" ] || continue   # an empty $IDS still yields one empty line
+  append_learnings "$id" "from $TASK_ID: <bullet>"   # one call per learnings bullet
+done
 ```
+
+**Count the output.** `append_learnings` prints one line per call, so
+`<bullets> × <ids>` lines are expected — if you see fewer, the loop is broken, not
+rate-limited. `learnings: skip (read)` is the transient path and hides exactly that.
 
 Best-effort; a failed learnings write never blocks the merge. (The just-merged card is now
 **Done**, so it is naturally excluded from the To Do filter — no self-write.)
