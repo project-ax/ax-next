@@ -11,9 +11,19 @@
 // a real upstream outage should say "helm repo update bitnami exit 1: ...",
 // not "Hook timed out in 30000ms" three files deep.
 
-import { ensureChartDependencies } from './helm-deps.js';
+import { ensureChartDependencies, inTestWorker } from './helm-deps.js';
 
 export function setup(): void {
+  // This must be the parent process, or the interlock in helm-deps.ts would
+  // refuse to fetch and every render suite would fail on a missing subchart
+  // with a confusing helm error. Assert it here rather than discover it there.
+  if (inTestWorker()) {
+    throw new Error(
+      'chart globalSetup is running inside a vitest worker (VITEST_WORKER_ID ' +
+        'is set); the run-level subchart fetch would be skipped. This means ' +
+        'vitest changed where globalSetup runs — see __tests__/helm-deps.ts.',
+    );
+  }
   const out = ensureChartDependencies();
   if (!out.ok) {
     throw new Error(

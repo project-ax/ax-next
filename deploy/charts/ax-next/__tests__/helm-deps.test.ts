@@ -11,11 +11,11 @@
 // "Once per run" has two halves and both are asserted here:
 //
 //   1. Once per process — the module flag. Repeated calls short-circuit.
-//   2. Once ACROSS processes — the `AX_CHART_DEPS_SYNCED` marker. globalSetup
-//      runs in vitest's parent and workers inherit its env, so a stray call
-//      from inside a test file finds the marker and does nothing. The companion
-//      assertion that the marker really does reach a worker is in
-//      global-setup-once.test.ts, which observes the live run.
+//   2. Only from the run's PARENT process — the `VITEST_WORKER_ID` interlock.
+//      vitest sets that variable in workers and not in the parent, so a stray
+//      call from inside a test file declines to fetch. The companion assertion
+//      that a real worker is recognised as one is in global-setup-once.test.ts,
+//      which observes the live run.
 //
 // The source-shape half of the guard — that no test file grows its own copy of
 // the fetch again — lives in
@@ -26,8 +26,8 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import {
   BITNAMI_REPO,
   BITNAMI_URL,
-  CHART_DEPS_SYNCED_ENV,
   ensureChartDependencies,
+  inTestWorker,
   resetChartDependencyStateForTests,
   type HelmSpawner,
 } from './helm-deps.js';
@@ -47,8 +47,12 @@ function recordingSpawner(
   return { spawn, calls };
 }
 
-/** A fresh env per test — never the real `process.env`. */
-function freshEnv(): Record<string, string | undefined> {
+/**
+ * A parent-process environment: no `VITEST_WORKER_ID`, so the interlock allows
+ * the fetch. Never the real `process.env` — these tests run IN a worker, where
+ * the real environment (correctly) refuses.
+ */
+function parentEnv(): Record<string, string | undefined> {
   return {};
 }
 
@@ -59,7 +63,7 @@ beforeEach(() => {
 describe('ensureChartDependencies: at most one fetch per run', () => {
   it('repeated calls in one process spawn the fetch exactly once', () => {
     const { spawn, calls } = recordingSpawner();
-    const env = freshEnv();
+    const env = parentEnv();
 
     for (let i = 0; i < 5; i += 1) {
       expect(ensureChartDependencies({ helm: 'helm', spawn, env }).ok).toBe(true);
@@ -73,9 +77,9 @@ describe('ensureChartDependencies: at most one fetch per run', () => {
     ]);
   });
 
-  it('reports attempted:true on the first call and false afterwards', () => {
+  it('reports the first call as attempted and names the skip afterwards', () => {
     const { spawn } = recordingSpawner();
-    const env = freshEnv();
+    const env = parentEnv();
     expect(ensureChartDependencies({ helm: 'helm', spawn, env })).toEqual({
       ok: true,
       attempted: true,
@@ -83,37 +87,46 @@ describe('ensureChartDependencies: at most one fetch per run', () => {
     expect(ensureChartDependencies({ helm: 'helm', spawn, env })).toEqual({
       ok: true,
       attempted: false,
+      skipped: 'already-attempted',
     });
   });
 
-  // The cross-process half. A worker inherits the parent's env, so a call from
-  // inside a test file must not touch the shared helm cache at all.
-  it('short-circuits when the run-level marker is already in the env', () => {
+  // The cross-process half. Only the run's parent may fetch; a call from inside
+  // a test worker must not touch the shared helm cache at all. `VITEST_WORKER_ID`
+  // is set by vitest itself, so this needs no assumption about when the worker
+  // pool snapshots its environment — see the note in helm-deps.ts.
+  it('refuses to fetch from inside a vitest worker', () => {
     const { spawn, calls } = recordingSpawner();
-    const env = { [CHART_DEPS_SYNCED_ENV]: '1' };
+    const env = { VITEST_WORKER_ID: '3' };
 
+    expect(inTestWorker(env)).toBe(true);
     expect(ensureChartDependencies({ helm: 'helm', spawn, env })).toEqual({
       ok: true,
       attempted: false,
+      skipped: 'in-test-worker',
     });
     expect(calls).toEqual([]);
   });
 
-  it('stamps the marker so a child process short-circuits', () => {
-    const { spawn } = recordingSpawner();
-    const env = freshEnv();
-    ensureChartDependencies({ helm: 'helm', spawn, env });
-    expect(env[CHART_DEPS_SYNCED_ENV]).toBe('1');
+  // Any value counts, including an empty string — worker 0's id stringifies to
+  // "0", and a falsy-check would have let that one worker through.
+  it('treats any VITEST_WORKER_ID value as "inside a worker"', () => {
+    for (const id of ['0', '', '1']) {
+      expect(inTestWorker({ VITEST_WORKER_ID: id }), `id ${JSON.stringify(id)}`).toBe(
+        true,
+      );
+    }
+    expect(inTestWorker({})).toBe(false);
   });
 
-  // "One attempt, win or lose." Marking only on success would let a failure
+  // "One attempt, win or lose." Flagging only on success would let a failure
   // re-enter the fetch — which is how the old 3x retry rebuilt the very
   // contention it was retrying around.
-  it('does not retry after a failure, and still marks the run as attempted', () => {
+  it('does not retry after a failure, and still counts as attempted', () => {
     const { spawn, calls } = recordingSpawner({
       failOn: (args) => args[0] === 'dependency',
     });
-    const env = freshEnv();
+    const env = parentEnv();
 
     const first = ensureChartDependencies({ helm: 'helm', spawn, env });
     expect(first.ok).toBe(false);
@@ -123,13 +136,14 @@ describe('ensureChartDependencies: at most one fetch per run', () => {
     expect(ensureChartDependencies({ helm: 'helm', spawn, env })).toEqual({
       ok: true,
       attempted: false,
+      skipped: 'already-attempted',
     });
     expect(calls.length).toBe(spawnsAfterFailure);
   });
 
   it('never passes --force-update', () => {
     const { spawn, calls } = recordingSpawner();
-    ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+    ensureChartDependencies({ helm: 'helm', spawn, env: parentEnv() });
     expect(calls.flatMap((c) => c.args)).not.toContain('--force-update');
   });
 });
@@ -142,7 +156,7 @@ describe('ensureChartDependencies: which single helm call it makes', () => {
   it('registers the repo when bitnami is absent (fresh CI runner)', () => {
     // Measured: with no repositories.yaml at all, helm prints `[]` and exits 0.
     const { spawn, calls } = recordingSpawner({ stdout: '[]' });
-    ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+    ensureChartDependencies({ helm: 'helm', spawn, env: parentEnv() });
     expect(calls[1]!.args).toEqual(['repo', 'add', BITNAMI_REPO, BITNAMI_URL]);
   });
 
@@ -153,7 +167,7 @@ describe('ensureChartDependencies: which single helm call it makes', () => {
     const { spawn, calls } = recordingSpawner({
       stdout: repoList([{ name: BITNAMI_REPO, url: BITNAMI_URL }]),
     });
-    ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+    ensureChartDependencies({ helm: 'helm', spawn, env: parentEnv() });
     expect(calls[1]!.args).toEqual(['repo', 'update', BITNAMI_REPO]);
   });
 
@@ -168,7 +182,7 @@ describe('ensureChartDependencies: which single helm call it makes', () => {
         { name: 'bitnami-mirror', url: `${BITNAMI_URL}/` },
       ]),
     });
-    ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+    ensureChartDependencies({ helm: 'helm', spawn, env: parentEnv() });
     expect(calls[1]!.args).toEqual(['repo', 'update', 'bitnami-mirror']);
   });
 
@@ -181,7 +195,7 @@ describe('ensureChartDependencies: which single helm call it makes', () => {
         { name: 'decoy', url: 'https://evil.example/charts.bitnami.com/bitnami' },
       ]),
     });
-    ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+    ensureChartDependencies({ helm: 'helm', spawn, env: parentEnv() });
     expect(calls[1]!.args).toEqual(['repo', 'add', BITNAMI_REPO, BITNAMI_URL]);
   });
 
@@ -189,7 +203,7 @@ describe('ensureChartDependencies: which single helm call it makes', () => {
     for (const stdout of ['', 'not json', 'null', '{"name":"bitnami"}']) {
       resetChartDependencyStateForTests();
       const { spawn, calls } = recordingSpawner({ stdout });
-      ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+      ensureChartDependencies({ helm: 'helm', spawn, env: parentEnv() });
       expect(calls[1]!.args, `stdout ${JSON.stringify(stdout)}`).toEqual([
         'repo',
         'add',
@@ -204,7 +218,7 @@ describe('ensureChartDependencies: which single helm call it makes', () => {
       stdout: '[]',
       failOn: (args) => args[0] === 'repo' && args[1] === 'add',
     });
-    const out = ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+    const out = ensureChartDependencies({ helm: 'helm', spawn, env: parentEnv() });
     expect(out.ok).toBe(false);
     expect(out.ok === false && out.reason).toBe(
       `helm repo add ${BITNAMI_REPO} exit 1: boom`,
@@ -216,7 +230,7 @@ describe('ensureChartDependencies: which single helm call it makes', () => {
       stdout: repoList([{ name: 'bitnami-mirror', url: BITNAMI_URL }]),
       failOn: (args) => args[0] === 'repo' && args[1] === 'update',
     });
-    const out = ensureChartDependencies({ helm: 'helm', spawn, env: freshEnv() });
+    const out = ensureChartDependencies({ helm: 'helm', spawn, env: parentEnv() });
     expect(out.ok === false && out.reason).toBe(
       'helm repo update bitnami-mirror exit 1: boom',
     );
@@ -226,12 +240,11 @@ describe('ensureChartDependencies: which single helm call it makes', () => {
   // so there is nothing to fetch and nothing to race on.
   it('no-ops when helm is not on PATH', () => {
     const { spawn, calls } = recordingSpawner();
-    const env = freshEnv();
-    expect(ensureChartDependencies({ helm: null, spawn, env })).toEqual({
+    expect(ensureChartDependencies({ helm: null, spawn, env: parentEnv() })).toEqual({
       ok: true,
       attempted: false,
+      skipped: 'no-helm',
     });
     expect(calls).toEqual([]);
-    expect(env[CHART_DEPS_SYNCED_ENV]).toBe('1');
   });
 });

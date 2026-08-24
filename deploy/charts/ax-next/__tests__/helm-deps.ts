@@ -40,6 +40,12 @@
 // Hoisting also takes the fetch off the hook clock entirely: it happens in
 // `globalSetup` (see global-setup.ts), in vitest's parent process, before any
 // worker starts. There is no longer a `hookTimeout` for it to run out of.
+//
+// Two interlocks keep "once per run" true rather than merely intended: a
+// module-level flag (once per process) and a refusal to fetch from inside a
+// vitest worker (see VITEST_WORKER_ENV below). The source-shape guard at
+// scripts/__tests__/helm-dependency-sync-single-source.test.js is the third —
+// it fails if any other file grows its own copy of the fetch.
 
 import { spawnSync } from 'node:child_process';
 import { dirname, resolve } from 'node:path';
@@ -52,15 +58,35 @@ export const BITNAMI_REPO = 'bitnami';
 export const BITNAMI_URL = 'https://charts.bitnami.com/bitnami';
 
 /**
- * Marker the run-level sync stamps on `process.env` once it has attempted the
- * fetch. `globalSetup` runs in vitest's parent process and workers inherit its
- * environment, so this carries the "already done" fact ACROSS processes — a
- * module-level flag alone would only dedupe within a single worker, and the
- * whole bug was one-fetch-per-worker. Anything that calls
- * `ensureChartDependencies()` from inside a test file therefore short-circuits
- * instead of touching the shared helm cache a second time.
+ * Set by vitest in each test worker, and NOT set in the parent process where
+ * `globalSetup` runs. We use it as the cross-process interlock: the real fetch
+ * is allowed only outside a worker, so nothing running inside a test file can
+ * touch the shared helm cache a second time. A module-level flag cannot do this
+ * job — workers are separate processes, so each one starts with a fresh flag,
+ * and "one fetch per worker" IS the bug this file exists to delete.
+ *
+ * This started life as our own marker stamped on `process.env` inside
+ * globalSetup, which only works if the worker pool snapshots its environment
+ * AFTER globalSetup has run. That ordering is not part of vitest's contract, so
+ * the marker was a bet on an implementation detail. Reading a variable vitest
+ * itself sets in the worker takes the bet off the table.
+ *
+ * (Honest footnote, because the first draft of this comment got it wrong: we do
+ * NOT have evidence that the inherited marker actually fails anywhere. The CI
+ * run that looked like proof was red for an unrelated reason — a bad commit had
+ * reverted `globalSetup` out of vitest.config.ts, so nothing stamped the marker
+ * at all. The reason to prefer `VITEST_WORKER_ID` is that it needs no
+ * assumption, not that the assumption was measured false.)
  */
-export const CHART_DEPS_SYNCED_ENV = 'AX_CHART_DEPS_SYNCED';
+const VITEST_WORKER_ENV = 'VITEST_WORKER_ID';
+
+/** Are we inside a vitest test worker (as opposed to the run's parent)? */
+export function inTestWorker(env: Env = process.env): boolean {
+  return env[VITEST_WORKER_ENV] !== undefined;
+}
+
+/** Process environment, injectable so the tests never mutate the real one. */
+export type Env = Record<string, string | undefined>;
 
 /** Minimal shape of what we need back from a spawn. */
 export type HelmSpawnResult = {
@@ -80,13 +106,23 @@ export type SyncOptions = {
   helm?: string | null;
   chartDir?: string;
   spawn?: HelmSpawner;
-  /** Environment carrying (and receiving) the run-level marker. */
-  env?: Record<string, string | undefined>;
+  /** Environment the worker interlock is read from. */
+  env?: Env;
 };
 
+/** Why a call declined to fetch. Named rather than a bare boolean so a skip in
+ *  the logs is never ambiguous between "nothing to do" and "already done". */
+export type SkipReason =
+  /** This process already attempted it — win or lose, once is once. */
+  | 'already-attempted'
+  /** We are inside a vitest worker; only the run's parent may fetch. */
+  | 'in-test-worker'
+  /** helm is not on PATH, so the render suites skip and there is nothing to get. */
+  | 'no-helm';
+
 export type SyncResult =
-  /** `attempted: false` = short-circuited (already synced, or no helm). */
-  | { ok: true; attempted: boolean }
+  | { ok: true; attempted: true }
+  | { ok: true; attempted: false; skipped: SkipReason }
   | { ok: false; reason: string };
 
 /** Probe for helm on PATH. Returns null when it isn't there. */
@@ -136,10 +172,11 @@ let attemptedInThisProcess = false;
 /**
  * Materialize the chart's subchart tarballs into `<chartDir>/charts/`.
  *
- * At most ONE attempt per process and, via the inherited env marker, per vitest
- * run. The marker is stamped BEFORE the spawns, not after a success: "one
- * attempt, win or lose" is what keeps a failure from re-entering the fetch and
- * rebuilding the amplification this file exists to delete.
+ * At most ONE attempt per process, and only from the run's parent process — the
+ * two together are what make it once per vitest RUN. The in-process flag is set
+ * BEFORE the spawns, not after a success: "one attempt, win or lose" is what
+ * keeps a failure from re-entering the fetch and rebuilding the amplification
+ * this file exists to delete.
  *
  * No-ops when helm is absent — the suites that need it are `describe.skip`-ped
  * by the gate in helm-required.ts, so there is nothing to fetch.
@@ -149,15 +186,17 @@ export function ensureChartDependencies(opts: SyncOptions = {}): SyncResult {
   const env = opts.env ?? process.env;
   const chartDir = opts.chartDir ?? CHART_DIR;
 
-  if (attemptedInThisProcess || env[CHART_DEPS_SYNCED_ENV] === '1') {
-    return { ok: true, attempted: false };
+  if (attemptedInThisProcess) {
+    return { ok: true, attempted: false, skipped: 'already-attempted' };
+  }
+  if (inTestWorker(env)) {
+    return { ok: true, attempted: false, skipped: 'in-test-worker' };
   }
 
   const helm = opts.helm !== undefined ? opts.helm : findHelm(spawn);
   attemptedInThisProcess = true;
-  env[CHART_DEPS_SYNCED_ENV] = '1';
 
-  if (helm === null) return { ok: true, attempted: false };
+  if (helm === null) return { ok: true, attempted: false, skipped: 'no-helm' };
 
   // Registered already? `helm repo list` is read-only, so probing costs nothing
   // and tells us which of add/update is the right single call.
@@ -192,7 +231,7 @@ export function ensureChartDependencies(opts: SyncOptions = {}): SyncResult {
   return { ok: true, attempted: true };
 }
 
-/** Test-only: forget this process's attempt. Does not touch the env marker. */
+/** Test-only: forget this process's attempt so the next call runs again. */
 export function resetChartDependencyStateForTests(): void {
   attemptedInThisProcess = false;
 }

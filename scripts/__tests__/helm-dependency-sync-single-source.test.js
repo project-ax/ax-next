@@ -127,6 +127,22 @@ describe('chart helm dependency fetch has a single source', () => {
     expect(cfg).toMatch(/global-setup/);
   });
 
+  // One production caller. Test files may call it freely (they inject a fake
+  // spawner, and the worker interlock in helm-deps.ts stops a real fetch either
+  // way) — a NON-test chart file calling it is a second entry point into the
+  // run-level fetch, which is the shape of the original bug.
+  it('only global-setup.ts invokes the fetch outside a test file', () => {
+    const callers = files
+      // Not a test file, and not the module that DECLARES the function — the
+      // declaration matches any call-shaped pattern.
+      .filter((f) => !f.endsWith('.test.ts') && !f.endsWith(SYNC_MODULE))
+      .filter((f) =>
+        /\bensureChartDependencies\s*\(/.test(stripComments(readFileSync(f, 'utf8'))),
+      )
+      .map((f) => relative(TESTS_DIR, f));
+    expect(callers).toEqual(['global-setup.ts']);
+  });
+
   // Over-guard 1: a broken walk (renamed directory, changed extension filter)
   // or a too-narrow `spawnsAnything` would make every assertion above pass
   // while checking nothing. These four are the files the guard is FOR.

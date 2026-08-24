@@ -18,7 +18,7 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadAll } from 'js-yaml';
-import { beforeAll, describe, expect, it } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 import { HELM_REQUIRED_MESSAGE, resolveHelmGate } from './helm-required.js';
 
@@ -93,25 +93,8 @@ if (GATE.mode === 'require-missing') {
   });
 }
 
-function helmRepoSync(): { ok: true } | { ok: false; reason: string } {
-  if (HELM === null) return { ok: true };
-  const repoAdd = spawnSync(
-    HELM,
-    ['repo', 'add', '--force-update', 'bitnami', 'https://charts.bitnami.com/bitnami'],
-    { encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] },
-  );
-  if (repoAdd.status !== 0) {
-    return { ok: false, reason: `helm repo add bitnami exit ${repoAdd.status}: ${repoAdd.stderr ?? ''}` };
-  }
-  const r = spawnSync(HELM, ['dependency', 'build', chartDir], {
-    encoding: 'utf8',
-    stdio: ['ignore', 'ignore', 'pipe'],
-  });
-  if (r.status !== 0) {
-    return { ok: false, reason: `helm dependency build exit ${r.status}: ${r.stderr ?? ''}` };
-  }
-  return { ok: true };
-}
+// The subchart fetch this file used to run in its own `beforeAll` now happens
+// once per run in vitest's globalSetup — see __tests__/helm-deps.ts (TASK-316).
 
 function hostDeployment(docs: K8sDoc[]): K8sDoc {
   const dep = docs.find(
@@ -133,17 +116,6 @@ function envVal(env: EnvVar[], name: string): EnvVar | undefined {
 }
 
 describeIfHelm('ax-next chart: blob backend wiring (out-of-git Part A)', () => {
-  beforeAll(() => {
-    if (!HELM) return;
-    let lastReason = '';
-    for (let i = 0; i < 3; i += 1) {
-      const out = helmRepoSync();
-      if (out.ok) return;
-      lastReason = out.reason;
-    }
-    throw new Error(`helm dependency build failed after 3 attempts: ${lastReason}`);
-  });
-
   it('default render stamps AX_BLOB_BACKEND=fs and renders no MinIO', () => {
     const docs = helmTemplate([]);
     const env = hostEnv(docs);
