@@ -6,8 +6,9 @@
 // blob-backend.test.ts and env-shape.test.ts — every copy running
 // `helm repo add --force-update bitnami` + `helm dependency build <chartDir>`
 // from its own `beforeAll`, and every copy wrapped in a 3x retry. vitest runs
-// test files in parallel, so that was up to NINE concurrent `--force-update`
-// writes to the same shared paths:
+// test files in parallel, so THREE writers ran at once and could make up to NINE
+// `--force-update` write attempts in total (3 files x 3 sequential retries)
+// against the same shared paths:
 //
 //   ~/.cache/helm/repository/bitnami-index.yaml   (the downloaded index)
 //   ~/.config/helm/repositories.yaml              (the repo registration)
@@ -73,14 +74,22 @@ function chartTsFiles() {
 /**
  * Executable text only — the explanatory comments name these commands too.
  *
- * Whole-line `//` comments go FIRST. The other order is a trap, and it bit
- * this guard while it was being written: env-shape.test.ts has a line comment
- * reading `walks /setup/* after install`, whose `/*` opened a bogus block
- * comment that swallowed 57 lines of real code — including the file's only
- * `spawnSync` — and quietly dropped the file out of the scan.
+ * `//` comments go FIRST, and BOTH whole-line and trailing ones. The other
+ * order is a trap, and it bit this guard while it was being written:
+ * env-shape.test.ts has a line comment reading `walks /setup/* after install`,
+ * whose `/*` opened a bogus block comment that swallowed 57 lines of real code —
+ * including the file's only `spawnSync` — and quietly dropped the file out of
+ * the scan. A trailing `// … /*` is the same hazard, so the first draft's
+ * line-anchored regex only closed half of it.
+ *
+ * The `[^:]` guard keeps `https://…` intact; that is a heuristic, not a lexer,
+ * and it is the right size of tool for deciding whether a test file shells out.
  */
 function stripComments(src) {
-  return src.replace(/^[ \t]*\/\/.*$/gm, '').replace(/\/\*[\s\S]*?\*\//g, '');
+  return src
+    .replace(/^[ \t]*\/\/.*$/gm, '')
+    .replace(/([^:])\/\/.*$/gm, '$1')
+    .replace(/\/\*[\s\S]*?\*\//g, '');
 }
 
 /** Does this source shell out at all? */
@@ -88,11 +97,20 @@ function spawnsAnything(src) {
   return /\b(?:spawnSync|execFileSync|execSync|spawn|execFile)\s*\(/.test(src);
 }
 
-/** Does it spawn the repo/dependency fetch (as opposed to `helm template`)? */
+/**
+ * Does it run the repo/dependency fetch (as opposed to `helm template`)?
+ *
+ * Three spellings, because a reintroduction will not necessarily be a verbatim
+ * copy-paste: an argv array with literal verbs (what the old helmRepoSync
+ * used), an argv array whose verb is a variable (`['repo', op]`), and a shell
+ * string handed to `execSync`.
+ */
 function spawnsHelmFetch(src) {
   return (
-    /['"]repo['"]\s*,\s*['"](?:add|update)['"]/.test(src) ||
-    /['"]dependency['"]\s*,\s*['"]build['"]/.test(src)
+    /['"]repo['"]\s*,\s*(?:['"](?:add|update)['"]|[A-Za-z_$])/.test(src) ||
+    /['"]dependency['"]\s*,/.test(src) ||
+    /helm\s+repo\s+(?:add|update)\b/.test(src) ||
+    /helm\s+dependency\s+build\b/.test(src)
   );
 }
 
@@ -156,9 +174,31 @@ describe('chart helm dependency fetch has a single source', () => {
     ]) {
       expect(spawningNames, `${name} must be scanned as a spawning file`).toContain(name);
     }
-    // And the fetch matcher must still recognise a fetch when it sees one.
-    expect(spawnsHelmFetch("spawn(helm, ['dependency', 'build', chartDir])")).toBe(true);
+    // And the matchers must still recognise a fetch when they see one — in each
+    // spelling a reintroduction could plausibly take, not just a verbatim
+    // copy-paste of the deleted helper.
+    for (const snippet of [
+      "spawn(helm, ['dependency', 'build', chartDir])",
+      "spawn(helm, ['repo', 'add', '--force-update', 'bitnami', URL])",
+      "spawn(helm, ['repo', op, name])",
+      "execSync('helm repo update bitnami')",
+      "execSync(`helm dependency build ${dir}`)",
+    ]) {
+      expect(spawnsHelmFetch(snippet), snippet).toBe(true);
+    }
+    // …and must not fire on a render, which every chart test file does.
     expect(spawnsHelmFetch("spawn(helm, ['template', 'ax-test', chartDir])")).toBe(false);
+
+    // Comment stripping must survive a TRAILING `//` that contains `/*`. That
+    // is the half of the hazard the first draft left open: the block-comment
+    // pass would otherwise open a bogus comment here and eat the spawn below.
+    const trailing = "foo(); // see /* note\nspawn(helm, ['dependency', 'build', d])";
+    expect(spawnsAnything(stripComments(trailing))).toBe(true);
+    expect(spawnsHelmFetch(stripComments(trailing))).toBe(true);
+    // A URL in code must not be mistaken for the start of a comment.
+    expect(stripComments("const u = 'https://charts.bitnami.com/bitnami';")).toContain(
+      'charts.bitnami.com',
+    );
   });
 
   // Over-guard 2: the rescoped trap. `hookTimeout` above 30s reads like a fix

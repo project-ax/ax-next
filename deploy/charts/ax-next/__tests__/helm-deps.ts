@@ -5,8 +5,9 @@
 // env-shape.test.ts each carried a copy-pasted `helmRepoSync()` running
 // `helm repo add --force-update bitnami` + `helm dependency build <chartDir>`
 // from its own `beforeAll`, and each copy was wrapped in a 3x retry. vitest
-// runs test files in parallel, so that was up to NINE concurrent
-// `--force-update` writes to the same shared paths:
+// runs test files in parallel, so THREE writers ran at once and could make up
+// to NINE write attempts in total (3 files x 3 sequential retries) against the
+// same shared paths:
 //
 //   ~/.cache/helm/repository/bitnami-index.yaml   (the downloaded index)
 //   ~/.config/helm/repositories.yaml              (the repo registration)
@@ -206,6 +207,13 @@ export function ensureChartDependencies(opts: SyncOptions = {}): SyncResult {
   // downloads its index. A developer box that already has it takes `update`,
   // which re-downloads just the index — and so also repairs a stale or empty
   // cached one, the case `--force-update` used to cover.
+  //
+  // Known edge, accepted: if the NAME `bitnami` is already taken by a different
+  // URL, we take the `add` path and helm refuses with "repository name
+  // (bitnami) already exists". `--force-update` used to paper over that by
+  // silently re-pointing the name at our URL, which is a worse answer — it
+  // mutates a developer's unrelated repo registration. The failure surfaces
+  // once, at run level, carrying helm's own stderr, which is enough to act on.
   const refresh =
     existing !== null
       ? spawn(helm, ['repo', 'update', existing])

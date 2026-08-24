@@ -5,8 +5,9 @@
 // The contract under test is the one TASK-316 exists to establish: the fetch
 // happens AT MOST ONCE per vitest run. Before the fix it happened once per test
 // FILE, three files in parallel, each with a 3x retry, all writing the same
-// `~/.cache/helm/repository/bitnami-index.yaml` with `--force-update`. Up to
-// nine lossy writes; two `Hook timed out in 30000ms` failures on main.
+// `~/.cache/helm/repository/bitnami-index.yaml` with `--force-update`: three
+// concurrent writers, up to nine write attempts in total, and two
+// `Hook timed out in 30000ms` failures on main.
 //
 // "Once per run" has two halves and both are asserted here:
 //
@@ -194,6 +195,19 @@ describe('ensureChartDependencies: which single helm call it makes', () => {
       stdout: repoList([
         { name: 'decoy', url: 'https://evil.example/charts.bitnami.com/bitnami' },
       ]),
+    });
+    ensureChartDependencies({ helm: 'helm', spawn, env: parentEnv() });
+    expect(calls[1]!.args).toEqual(['repo', 'add', BITNAMI_REPO, BITNAMI_URL]);
+  });
+
+  // Accepted edge, pinned so the behaviour is deliberate rather than incidental:
+  // the NAME is taken but by another URL. We take the `add` path, which real
+  // helm refuses with "repository name (bitnami) already exists". Preferable to
+  // `--force-update`, which silently re-pointed a developer's existing
+  // registration at our URL.
+  it('does not adopt the bitnami NAME when it points at a different URL', () => {
+    const { spawn, calls } = recordingSpawner({
+      stdout: repoList([{ name: BITNAMI_REPO, url: 'https://charts.example.com/mirror' }]),
     });
     ensureChartDependencies({ helm: 'helm', spawn, env: parentEnv() });
     expect(calls[1]!.args).toEqual(['repo', 'add', BITNAMI_REPO, BITNAMI_URL]);
