@@ -378,9 +378,11 @@ printf '%s\n' "$IDS" | while IFS= read -r id; do
 done
 ```
 
-**Count the output.** `append_learnings` prints one line per call, so
-`<bullets> × <ids>` lines are expected — if you see fewer, the loop is broken, not
-rate-limited. `learnings: skip (read)` is the transient path and hides exactly that.
+**Count the output.** `append_learnings` prints one line per call — so one line per
+`(bullet, id)` pair, and the loop above runs **once per bullet**. As written, with one
+`<bullet>` placeholder, expect exactly as many lines as there are ids. If you see
+fewer, the loop is broken, not rate-limited: `learnings: skip (…)` is the best-effort
+path and hides exactly that.
 
 Best-effort; a failed learnings write never blocks the merge. (The just-merged card is now
 **Done**, so it is naturally excluded from the To Do filter — no self-write.)

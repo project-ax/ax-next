@@ -23,9 +23,13 @@
 //      does NOT (that is what `${=VAR}` is for). So the documented forward-learning
 //      loop, `for id in $IDS; do append_learnings "$id" ...; done`, iterated exactly
 //      ONCE with all ids concatenated into one string. `append_learnings` then read a
-//      bogus node id, its GraphQL read failed, and it printed `learnings: skip
-//      (read)` -- the helper's *transient* path, which an orchestrator correctly reads
-//      as "rate-limit blip, best-effort, ignore". Observed live 2026-08-23/24: 3
+//      bogus node id and printed `learnings: skip (read)` -- the line the operator
+//      actually saw. (The helper has a second best-effort exit,
+//      `skip (not a draft-issue card)`, reachable from the same bad id depending on
+//      whether GitHub answers with a GraphQL error or a null node; which one fires is
+//      NOT pinned, and it does not matter -- both look transient.) An orchestrator
+//      correctly reads either as "rate-limit blip, best-effort, ignore" rather than
+//      "your loop is broken". Observed live 2026-08-23/24: 3
 //      output lines where 12 were expected, caught only because the count was
 //      visibly wrong. Note the asymmetry that makes this easy to get wrong: an
 //      unquoted *command substitution* in a `for` list DOES split under zsh, so
@@ -112,16 +116,33 @@ function findZshModifierHazards(text) {
  * expansion. bash word-splits it; zsh does not, so the loop runs once over the whole
  * concatenated value.
  *
- * Deliberately NOT flagged, because each is actually safe:
+ * Positional parameters are included (`$1` … `$9`) because they behave the same way:
+ * measured `f(){ for x in $1; …; }; f "a b c"` at 3 iterations under bash and 1 under
+ * zsh. Every entry below was measured, not reasoned about:
+ *
  *   - `for x in "$@"` / `for x in "${arr[@]}"` -- quoted; both shells expand element-wise.
  *   - `for f in a b c`                         -- a literal word list.
  *   - `for b in $(cmd)`                        -- command substitution; zsh DOES split
- *                                                 this (verified: 3 iterations in both
- *                                                 shells). The `$` here is followed by
- *                                                 `(`, which the pattern excludes.
+ *                                                 this (3 iterations in both shells).
+ *                                                 The `$` here is followed by `(`, which
+ *                                                 the pattern excludes.
+ *   - `for x in $@` / `for x in $*`            -- SAFE: zsh expands both as arrays, so
+ *                                                 both shells give 3. Excluded on
+ *                                                 purpose -- flagging them would be a
+ *                                                 false positive.
+ *
+ * TWO KNOWN LIMITS, so a green scan is not mistaken for "no split hazard possible":
+ *   1. It is LINE-ORIENTED. A `for` list continued onto the next line with a trailing
+ *      `\` would evade it. Nothing in the docs does that today.
+ *   2. It only sees a *parameter expansion* as the first list token. An arithmetic or
+ *      array-subscript form would need its own pattern.
+ * The one block that actually matters is independently shape-pinned below, which is
+ * what covers those gaps for the load-bearing snippet.
  */
 function findUnquotedForSplitHazards(text) {
-  const re = /\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+\$\{?[A-Za-z_]/g;
+  // `\$\{?[A-Za-z_0-9]` matches `$VAR`, `${VAR}`, `$1`, `${1}` -- and deliberately not
+  // `$(`, `$@`, `$*`, or a quoted `"$…`.
+  const re = /\bfor\s+[A-Za-z_][A-Za-z0-9_]*\s+in\s+\$\{?[A-Za-z_0-9]/g;
   const hits = [];
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
@@ -220,9 +241,16 @@ describe('auto-ship skill docs: no unquoted-`$VAR` `for` list in any runnable sn
     // is called in a loop. A rewrite that reintroduces any splitting-dependent form
     // should fail here even if it dodges the scan above.
     const md = readFileSync(GITHUB_PROJECT_MD, 'utf8');
+    // NOT anchored to start-of-line on purpose. An earlier draft used
+    // `/^\s*append_learnings "\$id"/m`, which would have matched 0 blocks if someone
+    // collapsed the fix back to the equally-correct one-liner
+    // `printf … | while IFS= read -r id; do append_learnings "$id" …; done` -- failing
+    // red with the misleading "gone vacuous" message for a change that is actually
+    // fine. Matching anywhere in the block still yields exactly one hit (no other
+    // `bash` block contains this substring; the definition reads `append_learnings() {`).
     const blocks = [...md.matchAll(/```bash\n([\s\S]*?)\n```/g)]
       .map((m) => m[1])
-      .filter((b) => /^\s*append_learnings "\$id"/m.test(b));
+      .filter((b) => /append_learnings "\$id"/.test(b));
     expect(
       blocks.length,
       'expected github-project.md to still ship a fenced bash block that calls ' +
@@ -254,6 +282,22 @@ describe('zsh vs bash word-splitting (the TASK-310 mechanism)', () => {
   it('the `read -r` form the doc now uses agrees in both shells', () => {
     expect(count('bash', FIXED)).toBe('3');
     if (shellExists('zsh')) expect(count('zsh', FIXED)).toBe('3');
+  });
+
+  // These two pin the detector's INCLUSION and EXCLUSION boundaries to measured
+  // behaviour rather than to my reading of the manuals. If a future zsh changes either,
+  // this fails and the pattern above should be revisited -- not the other way round.
+  const POSITIONAL = 'f(){ n=0; for x in $1; do n=$((n+1)); done; echo "$n"; }; f "a b c"';
+  const AT = 'set -- a b c; n=0; for x in $@; do n=$((n+1)); done; echo "$n"';
+
+  it('a positional parameter splits under bash but not zsh (so it IS flagged)', () => {
+    expect(count('bash', POSITIONAL)).toBe('3');
+    if (shellExists('zsh')) expect(count('zsh', POSITIONAL)).toBe('1');
+  });
+
+  it('unquoted $@ splits under BOTH (so it is NOT flagged)', () => {
+    expect(count('bash', AT)).toBe('3');
+    if (shellExists('zsh')) expect(count('zsh', AT)).toBe('3');
   });
 });
 
@@ -429,6 +473,18 @@ describe('findUnquotedForSplitHazards', () => {
   it('does not flag a quoted expansion', () => {
     expect(findUnquotedForSplitHazards('for op in "$@"; do :; done')).toEqual([]);
     expect(findUnquotedForSplitHazards('for x in "${arr[@]}"; do :; done')).toEqual([]);
+  });
+
+  it('flags a positional parameter -- it splits under bash but not zsh', () => {
+    // Measured: `f(){ for x in $1; …; }; f "a b c"` gives 3 under bash, 1 under zsh.
+    expect(findUnquotedForSplitHazards('for x in $1; do :; done')).toHaveLength(1);
+    expect(findUnquotedForSplitHazards('for x in ${1}; do :; done')).toHaveLength(1);
+  });
+
+  it('does not flag unquoted $@ / $* -- zsh expands those as arrays', () => {
+    // Measured 3 iterations in BOTH shells, so flagging these would be a false positive.
+    expect(findUnquotedForSplitHazards('for x in $@; do :; done')).toEqual([]);
+    expect(findUnquotedForSplitHazards('for x in $*; do :; done')).toEqual([]);
   });
 
   it('does not flag a literal word list', () => {
