@@ -118,9 +118,34 @@ describe('routines return schemas', () => {
     expect(out).toEqual({ fires: [withoutId] });
   });
 
-  it('routines:fire-now round-trips', () => {
-    const full: FireNowOutput = { fireId: 7, status: 'silenced', conversationId: null };
-    expect(FireNowOutputSchema.parse(full)).toEqual(full);
+  it('routines:fire-now round-trips both of the shapes it can actually return', () => {
+    // Only two: `'silenced'` is written to the fire row later, by the
+    // chat:turn-end subscriber, and never travels on this hook.
+    const ok: FireNowOutput = { status: 'ok' };
+    expect(FireNowOutputSchema.parse(ok)).toEqual(ok);
+    const failed: FireNowOutput = { status: 'error' };
+    expect(FireNowOutputSchema.parse(failed)).toEqual(failed);
+  });
+
+  it('routines:fire-now DROPS both the fire-row id and the conversation id', () => {
+    // The handler returns neither, but the schema is the boundary that makes
+    // that a guarantee rather than a convention. `fireId` was the store's
+    // BIGSERIAL, which reached users as "Fired (#7, ok)". `conversationId`
+    // was dropped separately: nothing above the bus could show it, because
+    // routine-fired conversations are hidden and have no per-fire transcript
+    // to link to (TASK-313).
+    //
+    // This is the load-bearing case in this file. A field re-added to the
+    // handler but not to the schema is stripped silently by `z.object`, and
+    // one re-added to BOTH would sail past every other assertion here.
+    const parsed = FireNowOutputSchema.parse({
+      fireId: 7,
+      status: 'ok',
+      conversationId: 'cnv_1',
+    }) as Record<string, unknown>;
+    expect('fireId' in parsed).toBe(false);
+    expect('conversationId' in parsed).toBe(false);
+    expect(parsed).toEqual({ status: 'ok' });
   });
 
   it('routines:list-defaults round-trips a fully-populated summary', () => {

@@ -7,7 +7,7 @@
  *     the JSON and POSTs it as `payload`. Invalid JSON surfaces inline.
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { render, screen, fireEvent, waitFor } from '@testing-library/react';
+import { render, screen, fireEvent, waitFor, act } from '@testing-library/react';
 import { FireNowControl } from '../components/routines/FireNowControl';
 import type { Routine } from '../lib/routines';
 
@@ -69,7 +69,7 @@ const webhookRoutine: Routine = {
 
 describe('FireNowControl — interval/cron', () => {
   it('clicking "Fire now" POSTs to /settings/routines/:agentId/fire (no payload)', async () => {
-    mockJson(200, { fireId: 1, status: 'ok', conversationId: 'cnv' });
+    mockJson(200, { status: 'ok' });
     const onFired = vi.fn();
     render(<FireNowControl routine={intervalRoutine} onFired={onFired} />);
     fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
@@ -103,7 +103,7 @@ describe('FireNowControl — webhook', () => {
   });
 
   it('Submit posts the parsed JSON as `payload`', async () => {
-    mockJson(200, { fireId: 7, status: 'ok', conversationId: null });
+    mockJson(200, { status: 'ok' });
     const onFired = vi.fn();
     render(<FireNowControl routine={webhookRoutine} onFired={onFired} />);
     fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
@@ -127,5 +127,92 @@ describe('FireNowControl — webhook', () => {
     fireEvent.click(screen.getByRole('button', { name: /Submit/i }));
     expect(screen.getByText(/Invalid JSON/i)).toBeTruthy();
     expect(fetchMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * The rendered confirmation line (TASK-313).
+ *
+ * This used to interpolate `out.fireId` — a postgres BIGSERIAL row id — into
+ * user-facing text ("Fired (#7, ok)"). The id no longer crosses the hook bus,
+ * so the line is status-driven. Both branches are pinned here because the
+ * confirmation string was previously uncovered, which is how a storage row id
+ * sat on screen unnoticed.
+ */
+describe('FireNowControl — confirmation line', () => {
+  it('a successful fire confirms in plain language, with no row id', async () => {
+    mockJson(200, { status: 'ok' });
+    render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
+    const line = await screen.findByText('Started — the agent is running it now.');
+    // Muted, not destructive: this is the success register.
+    expect(line.className).toContain('text-muted-foreground');
+    expect(line.className).not.toContain('text-destructive');
+    // No BIGSERIAL, and no raw status token, anywhere in the line.
+    expect(line.textContent).not.toMatch(/#\d/);
+    expect(line.textContent).not.toMatch(/\bok\b/);
+  });
+
+  it('a 200 that reports status "error" reads as a failure, in the destructive register', async () => {
+    // The two `status: 'error'` early returns in fire.ts (agents:resolve and
+    // the conversation create/find) both answer 200. Before TASK-313 this
+    // rendered muted grey as "Fired (#7, error)" — a failure dressed as a
+    // success.
+    mockJson(200, { status: 'error' });
+    render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
+    const line = await screen.findByText("We couldn't start this run. Please try again.");
+    expect(line.className).toContain('text-destructive');
+    expect(line.textContent).not.toMatch(/#\d/);
+    // Never claims the routine started, and never says "silenced" — that
+    // status is written later by the chat:turn-end subscriber and cannot
+    // reach this response.
+    expect(line.textContent).not.toMatch(/Started/i);
+    expect(line.textContent).not.toMatch(/silenced/i);
+  });
+
+  it('the failure line stays put — unlike the success line, it does not auto-dismiss', async () => {
+    // The success line clears itself after 2.5s so the row doesn't stay noisy.
+    // A failure must not: it is the only thing telling the reader the run did
+    // not happen, and it would vanish while they were still reading it.
+    vi.useFakeTimers({ shouldAdvanceTime: true });
+    try {
+      mockJson(200, { status: 'error' });
+      render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
+      fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
+      await screen.findByText("We couldn't start this run. Please try again.");
+      await act(async () => {
+        vi.advanceTimersByTime(10_000);
+      });
+      expect(
+        screen.queryByText("We couldn't start this run. Please try again."),
+      ).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a failed webhook fire leaves the JSON form open, payload intact, to retry with', async () => {
+    // Success closes the form. Failure must not — closing it would throw away
+    // the payload the reader just typed, on the one outcome where they need
+    // to send it again.
+    mockJson(200, { status: 'error' });
+    render(<FireNowControl routine={webhookRoutine} onFired={() => {}} />);
+    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: '{"x":1}' } });
+    fireEvent.click(screen.getByRole('button', { name: /Submit/i }));
+    await screen.findByText("We couldn't start this run. Please try again.");
+    const textarea = screen.getByRole('textbox') as HTMLTextAreaElement;
+    expect(textarea.value).toBe('{"x":1}');
+  });
+
+  it('an errored fire still refreshes the parent so the new fire row shows up', async () => {
+    mockJson(200, { status: 'error' });
+    const onFired = vi.fn();
+    render(<FireNowControl routine={intervalRoutine} onFired={onFired} />);
+    fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
+    // The fire row IS recorded on the error paths, so the row list and the
+    // routine's last_status are both stale until the parent refetches.
+    await waitFor(() => expect(onFired).toHaveBeenCalledTimes(1));
   });
 });

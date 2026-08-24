@@ -283,7 +283,11 @@ export function createRoutinesPlugin(
           const effectiveSource: 'tick' | 'manual' =
             source === 'tick' ? 'tick' : 'manual';
           const result = await fireRoutine(row, effectiveSource, input.payload);
-          const fireId = await localStore.recordFire({
+          // `recordFire` hands back the new row's `BIGSERIAL` id. Nothing
+          // above the bus wants it — it is storage vocabulary, and it used to
+          // reach users as "Fired (#7, ok)" (TASK-313) — so it is dropped
+          // here rather than returned and stripped by the schema.
+          await localStore.recordFire({
             agentId: row.agentId, path: row.path,
             triggerSource: effectiveSource,
             conversationId: result.conversationId ?? null,
@@ -291,11 +295,10 @@ export function createRoutinesPlugin(
             error: result.error,
             renderedPrompt: result.renderedPrompt,
           });
-          return {
-            fireId,
-            status: result.status,
-            conversationId: result.conversationId ?? null,
-          };
+          // The conversation id stays ON THE FIRE ROW above, where the
+          // Routines UI reads it from `routines:recent-fires`. It is not
+          // returned here: the caller has no surface to show it on.
+          return { status: result.status };
         },
         { returns: FireNowOutputSchema },
       );

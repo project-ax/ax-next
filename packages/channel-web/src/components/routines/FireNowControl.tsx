@@ -7,8 +7,15 @@
  *     Submit. This avoids a nested-Dialog which would create
  *     focus-trap / aria headaches when a modal is open over the Routines tab.
  *
- * Successful fire bumps the parent's refresh key so the routine's
- * last_status / last_run_at reflect the new row immediately.
+ * Any fire that reaches the store — success or failure — bumps the parent's
+ * refresh key so the routine's last_status / last_run_at reflect the new row
+ * immediately.
+ *
+ * The inline confirmation is driven by the returned `status` alone. It used to
+ * interpolate a `fireId`, which was the store's `BIGSERIAL` row id; that is
+ * storage vocabulary and no longer crosses the hook bus (TASK-313). There is
+ * deliberately no conversation link here, for the reason spelled out in
+ * `FireRowsTable`'s header.
  */
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
@@ -36,11 +43,32 @@ export function FireNowControl({ routine, onFired }: Props) {
         path: routine.path,
         ...(parsedPayload !== undefined ? { payload: parsedPayload } : {}),
       });
-      setStatus({ kind: 'ok', text: `Fired (#${out.fireId}, ${out.status})` });
+      // Every branch that RETURNS a response has already recorded its fire
+      // row, the failures included, so the parent refetches either way —
+      // otherwise the routine's last_status and the recent-fires list stay
+      // stale on exactly the runs worth looking at. A thrown failure (an
+      // unknown routine, a network error) writes no row and never reaches
+      // here, which is correct.
       onFired();
-      // Auto-dismiss the success line so the row doesn't stay noisy.
-      setTimeout(() => setStatus(null), 2_500);
-      if (isWebhook) setOpen(false);
+      if (out.status === 'ok') {
+        setStatus({ kind: 'ok', text: 'Started — the agent is running it now.' });
+        // Auto-dismiss the success line so the row doesn't stay noisy.
+        setTimeout(() => setStatus(null), 2_500);
+        if (isWebhook) setOpen(false);
+      } else {
+        // A 200 whose body says `error` is still a failure, and it must look
+        // like one — this used to render muted grey as "Fired (#7, error)".
+        // `FireNowOutput` carries no reason, so we don't invent one. The
+        // recorded fire row does carry the error text, but only once the
+        // reader expands the routine (`RoutinesList` mounts `FireRowsTable`
+        // behind `isOpen`), so this line can't promise it's already on
+        // screen. It does not auto-dismiss, and the webhook form stays open
+        // for a retry.
+        setStatus({
+          kind: 'err',
+          text: "We couldn't start this run. Please try again.",
+        });
+      }
     } catch (err) {
       setStatus({
         kind: 'err',

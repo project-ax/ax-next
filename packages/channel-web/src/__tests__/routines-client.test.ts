@@ -4,7 +4,7 @@
  * Mirrors the shape the server contracts in `@ax/routines-admin-routes`:
  *   - GET    /settings/routines                      → { routines: [...] }
  *   - GET    /settings/routines/:agentId/fires?path= → { fires: [...] }
- *   - POST   /settings/routines/:agentId/fire        → { fireId, status, conversationId }
+ *   - POST   /settings/routines/:agentId/fire        → { status }
  *
  * Pinned behaviors (the assertions are a contract):
  *   - `list()` hydrates server-supplied `lastRunAt: string | null` to Date.
@@ -103,7 +103,7 @@ describe('lib/routines', () => {
   });
 
   it('fireNow posts payload when provided', async () => {
-    mockJson(200, { fireId: 1, status: 'ok', conversationId: 'cnv' });
+    mockJson(200, { status: 'ok' });
     await routines.fireNow({ agentId: 'a', path: 'p', payload: { x: 1 } });
     const body = JSON.parse(
       fetchMock.mock.calls[0]![1]!.body as string,
@@ -112,7 +112,7 @@ describe('lib/routines', () => {
   });
 
   it('fireNow omits payload when undefined', async () => {
-    mockJson(200, { fireId: 2, status: 'ok', conversationId: null });
+    mockJson(200, { status: 'ok' });
     await routines.fireNow({ agentId: 'a', path: 'p' });
     const body = JSON.parse(
       fetchMock.mock.calls[0]![1]!.body as string,
