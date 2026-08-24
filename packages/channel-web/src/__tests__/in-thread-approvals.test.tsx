@@ -80,12 +80,15 @@ describe('InThreadApprovals', () => {
     TASK-320 — the earlier version of this comment claimed a mutation run that
     had never happened). Baseline for this file is 22/22. Reduce the
     `conversationId` filter in `conversation-decisions.ts` to
-    `const mine = decisions;` and it goes 1 failed / 21 passed, the failure
-    being `renders nothing for a decision belonging to a different
-    conversation`. Reduce the `raised > 0` gate in `InThreadApprovals.tsx` to
-    `error?.kind === 'failed'` and it goes 3 failed / 19 passed — every case
-    that asserts `DECISION_READ_FAILED_TITLE` is absent. They hold, though not
-    for the tempting reason. `waitFor`'s FIRST check runs synchronously, before the
+    `const mine = decisions;` and it goes 1 failed / 21 passed: "renders
+    nothing for a decision belonging to a different conversation". Reduce the
+    `raised > 0` gate in `InThreadApprovals.tsx` to `error?.kind === 'failed'`
+    and it goes 3 failed / 19 passed — three of the five cases that assert
+    `DECISION_READ_FAILED_TITLE` is absent. The other two survive it on the
+    `kind` half of the same expression rather than on `raised`: one asserts the
+    banner is gone after a retry SUCCEEDS (no `failed` error left to show),
+    the other is the 401 case (kind `expired`). They hold, though not for the
+    tempting reason. `waitFor`'s FIRST check runs synchronously, before the
     read's `setState` has committed; what puts committed state behind the
     assertions that follow it is that RTL will not resolve `waitFor` until it
     has awaited a `setTimeout(…, 0)`. Either way they were asserting over real
