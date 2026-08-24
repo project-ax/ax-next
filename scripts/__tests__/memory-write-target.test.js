@@ -44,7 +44,7 @@ function git(cwd, ...args) {
 }
 
 describe('memory-write-target.sh', () => {
-  let base; // the ONE throwaway dir afterAll removes; every path below lives under it
+  let base; // the throwaway dir afterAll removes: the primary tree + its linked worktree
   let root; // primary working tree
   let primary; // realpath'd primary toplevel (macOS /var -> /private/var etc.)
   let worktree; // linked worktree path — a sibling of `root`, also under `base`
@@ -65,10 +65,13 @@ describe('memory-write-target.sh', () => {
   });
 
   afterAll(() => {
-    // One cleanup path for the whole suite. `base` contains the primary tree AND the
-    // linked worktree, so this single call reaches both — no second, git-dependent
-    // teardown that can quietly fail and strand a directory in the OS temp dir.
-    rmSync(base, { recursive: true, force: true });
+    // One cleanup path for the two shared fixtures: `base` holds the primary tree AND
+    // the linked worktree, so this single call reaches both — no second, git-dependent
+    // teardown that can quietly fail and strand a directory in the OS temp dir. (The
+    // two single-test fixtures below own their own `finally` cleanup.) Guarded because
+    // a failed `mkdtempSync` would otherwise raise a TypeError that buries the real
+    // error.
+    if (base) rmSync(base, { recursive: true, force: true });
   });
 
   it('prints <toplevel>/.claude/memory for the primary tree (no worktrees yet)', () => {
@@ -133,9 +136,18 @@ describe('memory-write-target.sh', () => {
   // suite's `rmSync(root)` could not reach it, and its only cleanup was a
   // best-effort `git worktree remove` inside a swallowed try/catch. Every run where
   // that command failed left the directory in the OS temp dir forever.
+  //
+  // What these CANNOT see, by construction:
+  //   - the two single-test temp dirs (`notRepo` above, `b` below) live outside
+  //     `base` deliberately and are removed by their own `finally`, so the first
+  //     guard does not — and should not — cover them;
+  //   - no `afterAll`-based cleanup survives a worker crash or a hard timeout.
   describe('temp-dir hygiene', () => {
-    it('creates every temp path under the one dir afterAll removes', () => {
-      // Declared after the suite above, so `worktree` is already assigned.
+    it('keeps the primary tree and its linked worktree under the dir afterAll removes', () => {
+      // The structural fix is nesting both trees under `base`; this is the tripwire
+      // for a future edit that puts one of them back OUTSIDE the removed dir.
+      // Declared after the suite above, so `worktree` is already assigned — and if it
+      // ever were not, `undefined.startsWith` throws rather than passing vacuously.
       for (const p of [root, worktree]) {
         expect(p.startsWith(base + sep)).toBe(true);
       }
@@ -146,20 +158,28 @@ describe('memory-write-target.sh', () => {
       // read-only object files do not block the recursive remove, so no
       // `git worktree remove` step is needed to avoid stranding the worktree.
       const b = mkdtempSync(join(tmpdir(), 'mwt-rmsync-'));
-      const r = join(b, 'primary');
-      mkdirSync(r);
-      git(r, 'init', '-q', '-b', 'main');
-      git(r, 'config', 'user.email', 'test@example.com');
-      git(r, 'config', 'user.name', 'Test');
-      writeFileSync(join(r, 'seed.txt'), 'seed\n');
-      git(r, 'add', '-A');
-      git(r, 'commit', '-q', '-m', 'seed');
-      const wt = join(b, 'linked');
-      git(r, 'worktree', 'add', '-q', '-b', 'feature', wt);
-      expect(existsSync(wt)).toBe(true);
+      try {
+        const r = join(b, 'primary');
+        mkdirSync(r);
+        git(r, 'init', '-q', '-b', 'main');
+        git(r, 'config', 'user.email', 'test@example.com');
+        git(r, 'config', 'user.name', 'Test');
+        writeFileSync(join(r, 'seed.txt'), 'seed\n');
+        git(r, 'add', '-A');
+        git(r, 'commit', '-q', '-m', 'seed');
+        const wt = join(b, 'linked');
+        git(r, 'worktree', 'add', '-q', '-b', 'feature', wt);
+        expect(existsSync(wt)).toBe(true);
 
-      rmSync(b, { recursive: true, force: true });
-      expect(existsSync(b)).toBe(false);
+        rmSync(b, { recursive: true, force: true });
+        expect(existsSync(b)).toBe(false);
+      } finally {
+        // Net for a git command throwing above, which would skip the `rmSync` under
+        // test and strand a whole repo — the very failure class this file closes.
+        // `force: true` makes the already-removed happy path a no-op, so this can
+        // never mask the assertion.
+        rmSync(b, { recursive: true, force: true });
+      }
     });
   });
 });
