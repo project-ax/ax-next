@@ -19,15 +19,30 @@
  * line that stops the question being silently swapped between the asking and
  * the answering.
  *
- * WHAT THE DIGEST COVERS (TASK-262). The catalog entry — its description and
- * the connector ids it references — AND, where `connectors:resolve` is on the
- * bus, what each of those ids actually resolves to for this owner: `keyMode`,
- * the shared-key consent bit, hosts, credential slots (name, grant kind, OAuth
- * server and OAuth SCOPES), npm/pypi packages, MCP servers (their own hosts,
- * argv, url and env KEYS AND VALUES) and dev services (pinned image, ports, env,
- * writable paths). The ids are stable; what they REACH is not, so digesting the
- * entry alone let a connector move under a stable id without the guard
- * noticing. That was TASK-262, and this is its fix.
+ * WHAT THE DIGEST COVERS (TASK-262, widened by TASK-319). The catalog entry —
+ * its description and the connector ids it references — AND, where
+ * `connectors:resolve` is on the bus, what each of those ids actually resolves
+ * to for this owner: `keyMode`, the shared-key consent bit, hosts, credential
+ * slots (name, grant kind, OAuth server, OAuth SCOPES, and the PINNED OAuth
+ * client + endpoints — `clientId`, `clientSecretRef`, `authServerUrl`,
+ * `tokenUrl`), npm/pypi packages, MCP servers (their own hosts, argv, url, env
+ * KEYS AND VALUES and their own credential slots) and dev services (pinned
+ * image, ports, env, readiness probe, writable paths). The ids are stable; what
+ * they REACH is not, so digesting the entry alone let a connector move under a
+ * stable id without the guard noticing. That was TASK-262.
+ *
+ * TASK-319 closed the same shape one level in: the per-slot fold described the
+ * GRANT (`{slot, kind, server, scopes}`) but never WHERE it is exchanged, so a
+ * re-pointed `authServerUrl` — or a swapped pinned client — left the digest
+ * byte-identical and an approved capability kept its approval while sending the
+ * agent's credential to a different authorization server. Scopes say what a
+ * grant permits; these say who grants it. Same class of fact, same guard.
+ *
+ * WHAT IS DELIBERATELY OUT. `usageNote` and the derived `credentialPlan`. The
+ * membership rule is "resolve returns it AND it grants reach", not "resolve
+ * returns it": a reworded blurb is not a changed world, and staling an
+ * in-flight approval over a cosmetic edit is how a guard that cries wolf gets
+ * clicked through. There is a test for that direction too.
  *
  * THE DIGEST IS A STRICT SUPERSET OF WHAT THE CARD DRAWS, and that is the safe
  * direction but it is worth knowing. The executor's `PermissionRequestEvent`
@@ -156,20 +171,34 @@ interface CatalogSkillDetail {
  * always present on a real resolve (`services` via `.default([])`).
  */
 /**
- * A credential slot. Slot NAMES and the OAuth grant's own shape — never a
- * value: a credential's VALUE does not cross this boundary and is not something
- * this file could read if it wanted to.
+ * A credential slot. Slot NAMES, the OAuth grant's own shape, and WHERE that
+ * grant is exchanged — never a value: a credential's VALUE does not cross this
+ * boundary and is not something this file could read if it wanted to. A
+ * `clientSecretRef` is a vault REFERENCE, not a secret.
  *
  * `kind`, `server` and `scopes` are here because an OAuth grant's reach is the
  * SCOPES, not the slot name. `linear`'s `read` becoming `read,write` under a
- * stable slot name is exactly the class of change this card exists to catch, so
- * leaving it out would have re-created the bug one level down.
+ * stable slot name is exactly the class of change this producer exists to
+ * catch, so leaving it out would have re-created the bug one level down.
+ *
+ * `clientId`, `clientSecretRef`, `authServerUrl` and `tokenUrl` are here for
+ * the same reason one level further out (TASK-319). They are the connector's
+ * PINNED OAuth client and endpoints — optional on the wire, because dynamic
+ * client registration is the default path, but a supported configuration when
+ * present. Scopes describe what a grant permits; these describe who grants it
+ * and who receives the credential in exchange. An admin re-pointing
+ * `authServerUrl` while `{slot, kind, server, scopes}` stands still was a reach
+ * change that walked straight past this guard.
  */
 interface ConnectorSlot {
   slot?: string;
   kind?: string;
   server?: string;
   scopes?: string[];
+  clientId?: string;
+  clientSecretRef?: string;
+  authServerUrl?: string;
+  tokenUrl?: string;
 }
 interface ConnectorMcpServer {
   name?: string;
@@ -181,11 +210,32 @@ interface ConnectorMcpServer {
   allowedHosts?: string[];
   credentials?: ConnectorSlot[];
 }
+/**
+ * A dev service's readiness probe. The wire shape is a union discriminated on
+ * `kind` (`{kind:'tcp', port}` | `{kind:'exec', command}`); mirrored here as one
+ * loose optional shape so a probe kind this file has never heard of is still
+ * READ instead of throwing inside a guard. Note what "degrades" means here: the
+ * mirror keeps the unknown `kind` and defaults `port`/`command`, so a probe that
+ * arrives under a kind this file predates still moves the digest. Only an
+ * absent probe is "nothing declared" — treating an unreadable one as absent
+ * would be the hole, not the safe default.
+ *
+ * In the digest (TASK-319) because an `exec` probe is a COMMAND a backend runs
+ * inside the container — `sandbox-k8s` turns it into the pod's `startupProbe` —
+ * and a `tcp` probe names a port it opens. Both are reach, and a probe arriving
+ * where there was none is the clearest case of it.
+ */
+interface ConnectorHealthcheck {
+  kind?: string;
+  port?: number;
+  command?: string[];
+}
 interface ConnectorService {
   name?: string;
   image?: string;
   ports?: number[];
   env?: Record<string, string>;
+  healthcheck?: ConnectorHealthcheck;
   writablePaths?: string[];
 }
 interface ConnectorsResolveOutput {
@@ -245,9 +295,17 @@ function envPairs(env: Record<string, string> | undefined): [string, string][] {
 }
 
 /**
- * Credential slots, sorted by name. Names, the grant kind, the OAuth server the
- * slot names, and its SCOPES — because for an OAuth slot the scopes ARE the
- * reach, and they move under a stable slot name.
+ * Credential slots, reduced to a stable shape. Names, the grant kind, the OAuth
+ * server the slot names, its SCOPES — because for an OAuth slot the scopes ARE
+ * the reach, and they move under a stable slot name — and the pinned OAuth
+ * client and endpoints, which say where that grant is exchanged (TASK-319).
+ *
+ * ONE FOLD, TWO CALLERS. This is used for the top-level `credentials` list AND
+ * for each `mcpServers[].credentials` list, so anything added here moves both
+ * digests at once. That is intended: a slot nested under an MCP server points a
+ * credential exactly as hard as a top-level one does, and a guard that saw only
+ * one of the two would be a hole shaped like the one this producer keeps
+ * closing.
  */
 function slotShapes(credentials: ConnectorSlot[] | undefined): unknown[] {
   return sortByShape(
@@ -256,8 +314,53 @@ function slotShapes(credentials: ConnectorSlot[] | undefined): unknown[] {
       kind: c.kind ?? '',
       server: c.server ?? '',
       scopes: asSet(c.scopes),
+      clientId: c.clientId ?? '',
+      // A vault REFERENCE, never a secret. Swapping the ref points the flow at
+      // a different client secret, which is a changed world; the value behind
+      // it never crosses this boundary.
+      clientSecretRef: c.clientSecretRef ?? '',
+      authServerUrl: c.authServerUrl ?? '',
+      // Digested for completeness even though nothing reads it at runtime today
+      // (`@ax/mcp-oauth` uses the DISCOVERED `token_endpoint`). It is a declared,
+      // schema-validated field describing where a credential is exchanged, and
+      // the day something does read it, this guard already covers it.
+      tokenUrl: c.tokenUrl ?? '',
     })),
   );
+}
+
+/**
+ * A readiness probe, reduced to a stable shape. `null` for "none declared", so
+ * a probe ARRIVING is a change rather than a no-op.
+ *
+ * Note the array whose ORDER is preserved: `command`. It is an argv, exactly
+ * like an MCP server's `args` — `['sh', '-c', 'x']` and `['x', '-c', 'sh']` are
+ * different commands, so normalising it as a set would collapse two genuinely
+ * different worlds into one digest. That would be a hole in the fix for a hole.
+ *
+ * Every read is shape-checked, including `command`'s arrayness. A real resolve
+ * is zod-validated on the way out of `@ax/connectors` — the strict
+ * `HealthcheckSchema` behind `connectors:resolve` rejects a non-array `command`
+ * upstream — so none of this should be reachable. But the alternative to a type
+ * check here is a `TypeError` thrown from inside a guard, and a malformed FIELD
+ * inside a probe we did read is normalised rather than raised.
+ *
+ * That is a rule about NORMALISATION, and it is deliberately the opposite of
+ * how this file treats an unreadable WORLD. `resolvedReach` THROWS where the
+ * executor swallows and `catalogToken` refuses to match silently, because a
+ * resolve that failed is a world we cannot vouch for. A field of the wrong type
+ * inside a resolve that SUCCEEDED is different: the surrounding shape is still
+ * readable, so it is squared off to a stable value and the digest still moves
+ * when anything real about it changes. `null` here means "no probe declared",
+ * and nothing else ever produces it.
+ */
+function healthcheckShape(healthcheck: ConnectorHealthcheck | undefined): unknown {
+  if (healthcheck === undefined || healthcheck === null) return null;
+  return {
+    kind: typeof healthcheck.kind === 'string' ? healthcheck.kind : '',
+    port: typeof healthcheck.port === 'number' ? healthcheck.port : null,
+    command: Array.isArray(healthcheck.command) ? [...healthcheck.command] : [],
+  };
 }
 
 /**
@@ -298,6 +401,7 @@ function reachShape(resolved: ConnectorsResolveOutput): unknown {
         image: s.image ?? '',
         ports: [...(s.ports ?? [])].sort((a, b) => a - b),
         env: envPairs(s.env),
+        healthcheck: healthcheckShape(s.healthcheck),
         writablePaths: asSet(s.writablePaths),
       })),
     ),
@@ -413,7 +517,21 @@ async function catalogToken(
   // row staled once on the deploy that shipped this, under the generic "asks for
   // something different" sentence. Fail-safe (a re-ask, never an execute) and
   // TTL-bounded, and it is in the PR description rather than left to be
-  // discovered. The sibling producer in
+  // discovered.
+  //
+  // TASK-319 charges that one-time hit a SECOND time, and for a world that did
+  // not move: widening the digest changes the bytes an UNCHANGED reach hashes
+  // to. `slotShapes` now emits four more keys (`clientId`, `clientSecretRef`,
+  // `authServerUrl`, `tokenUrl`, each defaulting to `''`) and a service now
+  // carries `healthcheck`, so on a connectors-enabled preset every in-flight
+  // HELD row whose skill resolves at least one credential slot or one dev
+  // service re-opens once on this deploy. Same shape of hit and the same
+  // direction: a re-ask, never an execute. No STORED grant is invalidated and
+  // no migration is needed — freshness only gates a HELD decision that is being
+  // replayed, so an already-granted approval is untouched and a fresh ask
+  // simply captures the new digest.
+  //
+  // The sibling producer in
   // `@ax/tool-connector-propose` returns `{ predicate: null }` in this
   // situation because the registry is the ONLY world it reads; copying that
   // here would delete a working guard instead of narrowing it.

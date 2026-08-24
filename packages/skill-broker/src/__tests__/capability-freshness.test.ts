@@ -18,18 +18,35 @@ import {
 
 const ctx = makeAgentContext({ sessionId: 's', agentId: 'a', userId: 'u' });
 
+/**
+ * One credential slot as `connectors:resolve` hands it over. The four pinned
+ * OAuth fields are optional on the wire (DCR is the default path) and each one
+ * says WHERE the credential actually points, so each one is reach.
+ */
+interface StubSlot {
+  slot: string;
+  kind?: 'api-key' | 'oauth';
+  server?: string;
+  scopes?: string[];
+  clientId?: string;
+  clientSecretRef?: string;
+  authServerUrl?: string;
+  tokenUrl?: string;
+}
+
 /** The subset of `connectors:resolve` output a test stub returns. */
 interface StubResolve {
   keyMode?: 'personal' | 'workspace';
   requiresSharedKeyConsent?: boolean;
+  /**
+   * The connector's model-facing blurb. Present here ONLY so a test can prove
+   * the digest ignores it — it is prose, not reach, and rewording it must not
+   * stale an in-flight approval.
+   */
+  usageNote?: string;
   capabilities?: {
     allowedHosts?: string[];
-    credentials?: Array<{
-      slot: string;
-      kind?: 'api-key' | 'oauth';
-      server?: string;
-      scopes?: string[];
-    }>;
+    credentials?: Array<StubSlot>;
     mcpServers?: Array<Record<string, unknown>>;
     packages?: { npm?: string[]; pypi?: string[] };
     services?: Array<Record<string, unknown>>;
@@ -298,6 +315,193 @@ describe('@ax/skill-broker — the freshness predicate follows connector ids int
     const { predicate: p2 } = await capture(bus2, 'linear');
     stable.registry = { linear: oauth(['write', 'read']) };
     expect((await check(bus2, p2)).changed).toBeUndefined();
+  });
+
+  /**
+   * TASK-319 — the pinned OAuth client + endpoints.
+   *
+   * `{slot, kind, server, scopes}` alone described the GRANT but never WHERE it
+   * is exchanged. An admin could re-point a pinned `authServerUrl` — or swap the
+   * pinned `clientId` / `clientSecretRef` — with the digest byte-identical, so
+   * an already-approved capability kept its approval while now sending the
+   * agent's credential to a different authorization server. `scopes` was
+   * already digested for exactly this reason; the server that grants them is
+   * the same class of fact.
+   *
+   * Each field is varied ON ITS OWN with the other four pinned, so each case
+   * proves that one field is in the digest and nothing else is doing the work.
+   */
+  const PINNED_SLOT: StubSlot = {
+    slot: 'OAUTH',
+    kind: 'oauth',
+    server: 'linear',
+    scopes: ['read'],
+    clientId: 'client-a',
+    clientSecretRef: 'account:linear:oauth',
+    authServerUrl: 'https://auth.linear.app',
+    tokenUrl: 'https://auth.linear.app/token',
+  };
+
+  const REPOINTED: Array<Partial<StubSlot>> = [
+    { clientId: 'client-b' },
+    { clientSecretRef: 'account:someone-else:oauth' },
+    { authServerUrl: 'https://auth.evil.example' },
+    { tokenUrl: 'https://auth.evil.example/token' },
+  ];
+
+  it('DISAGREES when a pinned OAuth client or endpoint is RE-POINTED under a stable slot', async () => {
+    const topLevel = (slot: StubSlot): StubResolve => ({
+      capabilities: {
+        allowedHosts: ['api.linear.app'],
+        credentials: [slot],
+        packages: { npm: [], pypi: [] },
+      },
+    });
+    for (const patch of REPOINTED) {
+      const field = Object.keys(patch)[0];
+      const catalog: Catalog = { linear: PRESENT, registry: { linear: topLevel(PINNED_SLOT) } };
+      const bus = await bootWith(catalog);
+      const { predicate } = await capture(bus, 'linear');
+
+      catalog.registry = { linear: topLevel({ ...PINNED_SLOT, ...patch }) };
+      const out = await check(bus, predicate);
+      expect(out.changed, `re-pointing ${field} must trip the guard`).toMatch(
+        /asks for something different/i,
+      );
+    }
+  });
+
+  it('sees a re-pointed endpoint on an MCP SERVER’s own slots too', async () => {
+    // The per-slot fold is shared by the top-level `credentials` list and each
+    // `mcpServers[].credentials` list, so widening it moves BOTH at once. That
+    // is intended — a slot nested under an MCP server points a credential
+    // exactly as hard as a top-level one does — and it is asserted rather than
+    // assumed, because a future refactor could easily split the two folds.
+    const nested = (slot: StubSlot): StubResolve => ({
+      capabilities: {
+        allowedHosts: ['mcp.linear.app'],
+        credentials: [],
+        packages: { npm: [], pypi: [] },
+        mcpServers: [
+          {
+            name: 'linear',
+            transport: 'http',
+            url: 'https://mcp.linear.app',
+            allowedHosts: ['mcp.linear.app'],
+            credentials: [slot],
+          },
+        ],
+      },
+    });
+    for (const patch of REPOINTED) {
+      const field = Object.keys(patch)[0];
+      const catalog: Catalog = { linear: PRESENT, registry: { linear: nested(PINNED_SLOT) } };
+      const bus = await bootWith(catalog);
+      const { predicate } = await capture(bus, 'linear');
+
+      catalog.registry = { linear: nested({ ...PINNED_SLOT, ...patch }) };
+      expect((await check(bus, predicate)).changed, `nested ${field}`).toBeDefined();
+    }
+  });
+
+  it('DISAGREES when a dev service gains a healthcheck, or its probe is re-pointed', async () => {
+    // A healthcheck is the most reach-shaped field on a dev service: an `exec`
+    // probe is a command the backend runs inside the container
+    // (`sandbox-k8s`'s `startupProbe`), and a `tcp` probe names the port it
+    // opens. Arriving is a change; being re-pointed is a change.
+    const svc = (healthcheck?: Record<string, unknown>): StubResolve => ({
+      capabilities: {
+        allowedHosts: [],
+        credentials: [],
+        packages: { npm: [], pypi: [] },
+        services: [
+          {
+            name: 'cache',
+            image: `redis@sha256:${'a'.repeat(64)}`,
+            ports: [6379],
+            env: {},
+            writablePaths: [],
+            ...(healthcheck !== undefined ? { healthcheck } : {}),
+          },
+        ],
+      },
+    });
+
+    const moves: Array<[string, Record<string, unknown> | undefined, Record<string, unknown>]> = [
+      // An exec probe arriving where there was none: process spawn the 7am
+      // human never saw.
+      ['an exec probe arriving', undefined, { kind: 'exec', command: ['redis-cli', 'ping'] }],
+      // The command's ORDER is meaning, exactly like an MCP server's argv —
+      // `['sh','-c','x']` and `['x','-c','sh']` are different commands, so an
+      // order-insensitive normalisation would itself be a hole.
+      [
+        'a reordered exec command',
+        { kind: 'exec', command: ['sh', '-c', 'x'] },
+        { kind: 'exec', command: ['x', '-c', 'sh'] },
+      ],
+      ['a re-pointed tcp port', { kind: 'tcp', port: 6379 }, { kind: 'tcp', port: 6380 }],
+      // Same port, different mechanism: the union's discriminant is reach too.
+      [
+        'tcp becoming exec',
+        { kind: 'tcp', port: 6379 },
+        { kind: 'exec', command: ['redis-cli', 'ping'] },
+      ],
+    ];
+
+    for (const [what, before, after] of moves) {
+      const catalog: Catalog = { linear: PRESENT, registry: { linear: svc(before) } };
+      const bus = await bootWith(catalog);
+      const { predicate } = await capture(bus, 'linear');
+
+      catalog.registry = { linear: svc(after) };
+      expect((await check(bus, predicate)).changed, what).toBeDefined();
+    }
+
+    // A probe kind this file has never heard of, and a malformed `command`,
+    // DEGRADE — they do not throw. A real resolve is zod-validated (the strict
+    // `HealthcheckSchema` behind `connectors:resolve` rejects a non-array
+    // `command` before this file ever sees it) so neither should be reachable,
+    // but the alternative to a shape check inside a guard is a TypeError that
+    // takes the whole approval surface down with it.
+    //
+    // BOTH malformed shapes are exercised, and only the second one is load
+    // bearing for the shape check. `'not-an-array'` is a STRING, and strings
+    // are iterable — `[...'ab']` is `['a','b']`, no throw — so a string alone
+    // passes with or without the `Array.isArray` guard and demonstrates
+    // nothing. `42` is not iterable: spreading it is the TypeError, thrown from
+    // inside the guard, that the shape check exists to prevent.
+    const malformed: Array<[string, unknown]> = [
+      ['an iterable non-array command (a string)', 'not-an-array'],
+      ['a NON-iterable command (a number)', 42],
+    ];
+    for (const [what, command] of malformed) {
+      const odd: Catalog = {
+        linear: PRESENT,
+        registry: {
+          linear: svc({ kind: 'divination', command: command as string[] }),
+        },
+      };
+      const bus = await bootWith(odd);
+      const { predicate } = await capture(bus, 'linear');
+      expect((predicate as { value: string }).value, what).toMatch(/^linear@[0-9a-f]{16}$/);
+      // Resolving at all is the assertion: a throw here would have re-opened
+      // the decision on a world that never moved.
+      expect((await check(bus, predicate)).changed, what).toBeUndefined();
+    }
+  });
+
+  it('does NOT trip on a reworded usageNote — the digest is reach, not prose', async () => {
+    // The over-widening guard. The fix for TASK-319 must not degenerate into
+    // "digest everything resolve returns": a rewritten blurb is not a changed
+    // world, and staling an in-flight approval over a cosmetic edit is how a
+    // guard that cries wolf gets clicked through.
+    const note = (usageNote: string): StubResolve => ({ usageNote, capabilities: REACH_CAPS });
+    const catalog: Catalog = { linear: PRESENT, registry: { linear: note('Use it for issues') } };
+    const bus = await bootWith(catalog);
+    const { predicate } = await capture(bus, 'linear');
+
+    catalog.registry = { linear: note('Use this connector to file Linear issues.') };
+    expect((await check(bus, predicate)).changed).toBeUndefined();
   });
 
   it('does NOT trip when two entries SHARE a name and the registry reorders them', async () => {
