@@ -133,6 +133,15 @@ interface CatalogSkillDetail {
  * Every field is optional because this is a WIRE shape from another plugin: a
  * resolve that predates a field, or a test stub that omits one, must degrade to
  * "nothing declared" rather than throw inside a guard.
+ *
+ * ONE UPSTREAM DEPENDENCY WORTH NAMING (the TASK-251 trap). `connectors:resolve`
+ * is registered with a `returns:` schema, and `HookBus.call` returns
+ * `safeParse(...).data` — zod STRIPS undeclared keys. So a field this file
+ * digests only reaches it while `@ax/connectors`' `CapabilitiesSchema` still
+ * declares it. Narrowing that schema would silently shrink this digest with no
+ * tsc error here, because the read lands on an optional field of a local mirror.
+ * Today every field below is declared there, and `mcpServers` / `services` are
+ * always present on a real resolve (`services` via `.default([])`).
  */
 interface ConnectorSlot {
   slot?: string;
