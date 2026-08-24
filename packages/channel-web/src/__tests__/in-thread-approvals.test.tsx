@@ -76,8 +76,16 @@ describe('InThreadApprovals', () => {
 
     They also let the read tests drop their real-timer `waitFor`s. That is a
     LATENCY-BUDGET change, not a correctness one, and the distinction matters:
-    those waits were checked by mutation and they do hold — though not for the
-    tempting reason. `waitFor`'s FIRST check runs synchronously, before the
+    those waits do hold, and that is MEASURED, not reasoned (2026-08-24,
+    TASK-320 — the earlier version of this comment claimed a mutation run that
+    had never happened). Baseline for this file is 22/22. Reduce the
+    `conversationId` filter in `conversation-decisions.ts` to
+    `const mine = decisions;` and it goes 1 failed / 21 passed, the failure
+    being `renders nothing for a decision belonging to a different
+    conversation`. Reduce the `raised > 0` gate in `InThreadApprovals.tsx` to
+    `error?.kind === 'failed'` and it goes 3 failed / 19 passed — every case
+    that asserts `DECISION_READ_FAILED_TITLE` is absent. They hold, though not
+    for the tempting reason. `waitFor`'s FIRST check runs synchronously, before the
     read's `setState` has committed; what puts committed state behind the
     assertions that follow it is that RTL will not resolve `waitFor` until it
     has awaited a `setTimeout(…, 0)`. Either way they were asserting over real
