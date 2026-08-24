@@ -136,6 +136,60 @@ describe('/workspace gate', () => {
   });
 });
 
+/**
+ * `/` is the landing surface, and which surface that IS depends on the flag.
+ *
+ * With the preview on, the workspace is home — that is the whole point of the
+ * flag for the deployment that turns it on. With it off, `/` must still be the
+ * chat shell, because that is what every other deployment gets and this change
+ * must be invisible to them.
+ *
+ * Chat does not lose its address either way: it is App's fall-through branch
+ * and the static-files plugin serves the SPA on any unclaimed path, so `/chat`
+ * renders it. That is what makes handing `/` to the workspace safe rather than
+ * a one-way door — and it is why the third test here pins `/chat` explicitly.
+ */
+describe('the default surface at /', () => {
+  it('renders the workspace at / when the flag is on', async () => {
+    setPathname('/');
+    mockGetSession.mockResolvedValue(ALICE);
+    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: true });
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      expect(screen.getByTestId('workspace-shell-stub')).toBeTruthy();
+    });
+    expect(container.querySelector('aside[data-testid="sidebar"]')).toBeNull();
+  });
+
+  it('still renders the chat shell at / when the flag is off', async () => {
+    setPathname('/');
+    mockGetSession.mockResolvedValue(ALICE);
+    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: false });
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('workspace-shell-stub')).toBeNull();
+  });
+
+  it('keeps /chat on the chat shell even with the flag on', async () => {
+    setPathname('/chat');
+    mockGetSession.mockResolvedValue(ALICE);
+    mockFetchFeatures.mockResolvedValue({ agentWorkspacePreview: true });
+
+    const { container } = render(<App />);
+
+    await waitFor(() => {
+      expect(container.querySelector('aside[data-testid="sidebar"]')).toBeTruthy();
+    });
+    expect(screen.queryByTestId('workspace-shell-stub')).toBeNull();
+  });
+});
+
 describe('fetchFeatures — fail closed', () => {
   // The real client, not the module mock the gate tests install.
   async function realFetchFeatures() {
