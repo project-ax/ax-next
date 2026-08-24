@@ -2260,3 +2260,37 @@ Deps: S3←S2, S4←S2, S5←S2,S3,S4, S6←S2,S5, S7←S3,S4,S5.
 | **Decision** | The PR says plainly that `tokenUrl` — the card's own headline field — is read **nowhere at runtime** (`@ax/mcp-oauth` uses the discovered `metadata.token_endpoint`), so closing it is defence-in-depth; the live fields are `authServerUrl` / `clientId` / `clientSecretRef` (read in `mcp-oauth/src/routes.ts`) and `healthcheck` (becomes a k8s `startupProbe`). |
 | **Rationale** | Four of the five are live and one becomes an exec probe, so the ruling stands unweakened — but a PR whose whole subject is a false-negative on an approval rail cannot itself carry an overstated claim. Writing "re-pointing `tokenUrl` reaches a different endpoint today" would have been a fresh false claim in exactly the place this epic exists to stop producing them. |
 | **Alternatives** | Repeat the card's framing verbatim (rejected — the card is right about severity and wrong about which field is live). Drop `tokenUrl` from the fix since nothing reads it (rejected — it is a declared, schema-validated field describing where a credential is exchanged; the day something reads it the guard already covers it, and the cost is one hashed key). |
+
+## 2026-08-24 — TASK-321: the postgres tag stays duplicated at 115 call sites (ANALYSED-NOT-BUILT)
+
+The bump procedure, so the next bumper does not re-derive it. Two edits, not 116:
+
+```sh
+git grep -lE 'postgres:16-alpine' -- packages presets | grep -v '\.json$' \
+  | xargs sed -i '' 's/postgres:16-alpine/postgres:17-alpine/g'
+```
+
+then hand-edit the CI pull list at `.github/workflows/ci.yml:110` (`images=(postgres:16-alpine)`).
+The `git grep -l` half was run on this branch and matches exactly 115 files, all `.ts`.
+(`sed -i ''` is the BSD/macOS spelling; GNU sed wants a bare `-i`.) The `grep -v '\.json$'`
+is load-bearing and mirrors what the guard does: `packages/memory-strata/test/bench/internal-corpus.json`
+is a benchmark corpus whose *document text* quotes testcontainers code, so it holds three
+occurrences that are data, not call sites.
+
+| | |
+|---|---|
+| **Decision** | **Close as analysed-not-built.** No `POSTGRES_IMAGE` constant, no guard change, no new package. The literals stay. |
+| **Rationale** | The counts were re-measured on this branch and the card was right, exactly: `postgres:16-alpine` appears 162 times across 134 files, of which 116 are live — 115 `new PostgreSqlContainer('postgres:16-alpine')` call sites in 115 distinct `.ts` files across 21 workspace projects, plus the one CI pull-list entry. The remaining 46 are inert (fixtures, the guard's own self-tests, docs), and postgres is the only image the repo actually starts: the only other container constructors anywhere are the guard's own self-test strings. **This is the first card in this epic whose own numbers survived measurement** — 7 of the previous 8 were materially wrong about themselves — which is a real data point about which cards to trust, since this epic has so far recorded only the failures. The duplication is nonetheless not worth abstracting, because **the expensive part is the guard, not the constant** (see the next two rows). |
+| **Alternatives** | Both rejected — see below. |
+
+| | |
+|---|---|
+| **Decision** | **Rejected alternative A — `POSTGRES_IMAGE` exported from `@ax/test-harness`. Rejected on cost, NOT on Invariant 2 — and the card's Invariant-2 claim is FALSE.** |
+| **Rationale** | The card asserted that "115 call sites spread over 21 packages cannot all import from one plugin" because of Invariant 2 (no cross-plugin imports). That premise is unfounded and is corrected here so nobody re-files this card on it: `eslint.config.mjs` explicitly whitelists `'!@ax/test-harness'`, 114 of the 115 call-site files **already import from it** (the lone holdout is `presets/k8s/src/__tests__/prod-bootstrap.test.ts`), and 116 files already call its `stopPostgresContainer` from `packages/test-harness/src/stop-postgres-container.ts`. A constant in `packages/test-harness/src/index.ts` is architecturally **legal** and needs no new package. What kills it is the guard: `scripts/__tests__/ci-prepull-covers-test-images.test.js` is a **self-contained text scan** with a `NON_LITERAL_CONSTRUCTOR` detector that hard-fails on any constructor argument it cannot read as a literal — deliberately, so a refactor cannot silently blind it. Introducing the constant forces that scan to become a **cross-package constant resolver** (monorepo path mapping, re-export chains) and inverts `NON_LITERAL_CONSTRUCTOR` from a hard failure into resolution logic — after which all 115 files still get edited anyway (import member plus literal). That trades a one-command bump for a permanent new mechanism **that can itself go blind**, which is precisely the failure the guard exists to make impossible and precisely the pattern this epic keeps finding: a guard that overstates its coverage is worse than a narrower honest one. Do not weaken the repo's strongest property here to save one `sed`. |
+| **Alternatives** | Teach the guard to resolve the constant first, then migrate (the card's own ordering) — rejected for the same reason: the ordering is correct, but it is the resolver itself that is the cost. |
+
+| | |
+|---|---|
+| **Decision** | **Rejected alternative B — a new shared pure-data package holding the tag.** And: **the guard's set-equality is what makes the duplication survivable, and must not be weakened.** |
+| **Rationale** | B is unnecessary (A shows `@ax/test-harness` is already reachable) and precedent-rejected: the TASK-245 human ruling turned down "a new shared pure-data package" as *a package for four strings*. One string is not a better case. As for why living with the duplication is safe — it is guarded, not latent. The guard asserts **set equality** between the tags it scans out of the sources and the CI pull list, so a partial bump reddens in **either** direction: miss a call site and the scanned set has two tags, which a one-entry pull list satisfies neither way; miss the pull list and it reddens too. Anti-vacuity floors (`sites.length > 50`, `projects.size > 10`) stop the scan passing on an empty parse. So the duplication is mechanical and about one command per bump, and the thing that must never be traded away is that set-equality assertion. |
+| **Alternatives** | Do the refactor anyway to "close the card properly" — rejected; forcing an abstraction to justify a card is the failure mode the card body itself warned about. |
