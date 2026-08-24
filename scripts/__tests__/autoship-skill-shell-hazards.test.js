@@ -789,3 +789,82 @@ describe('the poller is reaped, not just relaunched', () => {
     ).toContain('pgrep');
   });
 });
+
+// ---------------------------------------------------------------------------
+// Guard: the merge gates must assert the ci.yml RUN EXISTS, not merely that the
+// checks they can see are green.
+//
+// Why this exists (session 8, 2026-08-24). CI created NO ci.yml run at all for one
+// branch at its original sha. The PR still reported SIX checks -- all CodeQL/Analyze
+// -- every one of them genuinely SUCCESS. `gh pr checks` exits 0 on that. The
+// statusCheckRollup is all-green on that. Both merge gates would have merged a head
+// whose build and tests NEVER EXECUTED.
+//
+// The failure mode is NOT "zero checks", which is easy to spot and which `gh pr
+// checks` already refuses. It is a PARTIAL check set: the security scanners ran, the
+// build/test workflow did not, and nothing in the reported data distinguishes that
+// from a healthy PR. A/B on that same branch, same workflow config: 6 checks and no
+// `test` job before a rebase push, 11 including `test` after. ci.yml ran normally for
+// sibling auto-ship branches the same day, so run creation is nondeterministic -- and
+// a memory-only commit DID trigger one, which rules out "small diffs skip CI".
+//
+// So the only sound gate is an EXISTENCE check against the workflow, keyed to the
+// exact head. This test does not (and cannot) reproduce GitHub's scheduling; it pins
+// the documented remedy so it cannot quietly evaporate from the skills the way the
+// TASK-315 fixes evaporated from the on-disk helpers.
+describe('merge gates assert the ci.yml run EXISTS for the head', () => {
+  const GATE_DOCS = [
+    join(SKILLS_DIR, 'auto-ship', 'SKILL.md'),
+    join(SKILLS_DIR, 'yolo-ship', 'SKILL.md'),
+  ];
+
+  it('finds both gate docs to scan (the scan must not be vacuous)', () => {
+    for (const p of GATE_DOCS) {
+      expect(existsSync(p), `${p} is missing -- the scan below proves nothing`).toBe(
+        true,
+      );
+    }
+  });
+
+  for (const p of GATE_DOCS) {
+    const name = p.split('/').slice(-2).join('/');
+
+    it(`${name} queries workflow runs for a specific commit`, () => {
+      const md = readFileSync(p, 'utf8');
+      // The load-bearing shape: ask the WORKFLOW whether it ran for THIS sha.
+      // Reading `statusCheckRollup` / `gh pr checks` alone is what the trap defeats.
+      expect(
+        md,
+        'The gate must run `gh run list --workflow ci.yml --commit <sha>` (or an ' +
+          'equivalent per-commit workflow-run query). Reading check conclusions ' +
+          'alone returns "green" on a head where ci.yml never ran.',
+      ).toMatch(/gh run list[^\n]*--workflow[^\n]*ci\.yml[^\n]*--commit/);
+    });
+
+    it(`${name} treats an absent run as NOT green`, () => {
+      const md = readFileSync(p, 'utf8');
+      const idx = md.search(/gh run list[^\n]*--workflow[^\n]*ci\.yml[^\n]*--commit/);
+      expect(idx, 'no per-commit ci.yml query found at all').toBeGreaterThan(-1);
+      const near = md.slice(idx, idx + 700);
+      // A query whose empty result is not acted on is decoration. Require the
+      // zero-runs branch to be visibly handled next to the query itself.
+      expect(
+        near,
+        'Right after the run query, the doc must act on an EMPTY result (halt / ' +
+          '"NOT green" / "no ci.yml run"). A query nobody branches on is decoration.',
+      ).toMatch(/HALT|NOT green|no ci\.yml run|-ge 1|length.*0/i);
+    });
+  }
+
+  it('records that a PARTIAL check set, not zero checks, is the failure mode', () => {
+    // The trap is subtle enough that a future reader who only sees "assert the run
+    // exists" will reasonably assume `gh pr checks` already covers it. It does not,
+    // and the reason has to survive next to the rule.
+    const combined = GATE_DOCS.map((p) => readFileSync(p, 'utf8')).join('\n');
+    expect(
+      combined,
+      'Keep the CodeQL-only evidence next to the rule: without it the check reads ' +
+        'as paranoia and gets simplified away.',
+    ).toMatch(/CodeQL/);
+  });
+});

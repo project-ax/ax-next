@@ -149,7 +149,23 @@ digraph review {
 - **REQUIRED:** Dispatch the **`ax-code-reviewer`** subagent (the Agent/`Task` tool with `subagent_type: ax-code-reviewer`) to review the **whole-branch diff against `main`** (merge-base `main...HEAD`) — the surface CI and a human reviewer see, not just the last task. In the dispatch prompt, name the diff range explicitly (`git diff main...HEAD`) and the worktree it runs in; for a diff that needs AX-invariant / boundary-specific framing or a challenge to the chosen *approach*, add that focus to the prompt and note the choice in `decisions.md`. The agent pins its own model + effort (Opus 4.8, `effort: max` in its definition) and runs read-only, so there's no model/effort to tier and nothing to pre-authorize. **Dispatch it in the plain shape — see the dispatch contract below. An apparently hung reviewer is usually a DELIVERY problem, not a liveness one.**
 - **When to skip:** docs/comment/config-only or other non-code diffs — the PR's CodeRabbit + CodeQL + semgrep + gitleaks already cover those. Log the skip in `decisions.md`. Any code change gets reviewed.
 - **Address findings with receiving-code-review discipline** — verify each one; fix the real issues with targeted commits (test-first for bugs, per Bug Fix Policy [[feedback_targeted_followup_commits]]), and log in `decisions.md` any finding you deliberately reject and why (silent dismissal isn't allowed). Then **re-dispatch the reviewer** on the updated branch — each run re-reads the current `main...HEAD` diff — until it returns `APPROVE` / no actionable findings.
+- **ASK THE VACUITY QUESTION IN EVERY REVIEW DISPATCH.** Add, verbatim: *"For each new or changed
+  test, work out what it would do against the UNFIXED code. A test that passes either way is a
+  finding."* This is one sentence and it has already paid for itself. A PR hardened
+  `[...healthcheck.command]` into an `Array.isArray` guard and "proved" it with
+  `command: 'not-an-array'` — **a string, and strings are iterable**, so `[...'not-an-array']` never
+  throws and both assertions passed with *and* without the fix. It had already cleared a reviewer's
+  APPROVE; only a second pass that was explicitly asked this question caught it. Same class as a
+  dedupe test that provably could not fail: **a check that cannot fail, wearing the costume of a
+  guard.** Corollary worth stating in the prompt when a schema is involved: **a round-trip test
+  cannot detect an ADDED field** — `z.object` strips silently, so only a negative-space assertion
+  (`'field' in parsed === false`) proves absence.
 - The reviewer is a **peer, not an authority** — treat its claims critically: push back on wrong ones (model names, recent APIs, anything you can verify) rather than blindly deferring.
+- **A review that names what it did NOT verify is worth more than one that implies total coverage.**
+  Reviewers running read-only from a tree on `main` cannot execute the branch's suite; one that says
+  so, and substitutes explicit structural reasoning, is being accurate. Treat an honest coverage gap
+  as a prompt to order a focused second pass over exactly that gap — a builder who disclosed its
+  reviewer never reached the CI figures got a second pass that found a real numeric error.
 - Only when the review is clean do you proceed to Phase 6 and open the PR.
 - **Progress:** `⚠ review flagged <M> — addressing` when you start fixing, then `review clean` once the loop closes.
 
@@ -252,7 +268,22 @@ digraph ship {
 ```
 
 - **Open the PR against `main`:** use commit-commands:commit-push-pr (or superpowers:finishing-a-development-branch → PR option). Pass `--base main` explicitly; don't stack onto a feature branch. Boundary review answers belong in the PR body if hooks changed.
-- **CI:** `gh pr checks <n>`. On red, use superpowers:systematic-debugging — fix the root cause, add a regression test (Bug Fix Policy), commit granularly ([[feedback_targeted_followup_commits]]) and push. While waiting on CI, do **not** busy-spin in context — poll with short sleeps (~270s, keeps the prompt cache warm) or use `ScheduleWakeup` (~600s+) and let the run resume.
+- **CI — assert the run EXISTS before reading any conclusion.** `gh pr checks <n>` and the
+  `statusCheckRollup` both answer "green" on a head where the build and tests **never ran**:
+  ```bash
+  HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
+  runs=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --json databaseId --jq 'length')
+  [ "${runs:-0}" -ge 1 ] || echo "⚠ NO ci.yml RUN for $HEAD_SHA — NOT green; rebase-push to create one"
+  ```
+  Measured 2026-08-24, one branch, two shas: the original push produced **6 checks — all
+  CodeQL/Analyze, no `test` job**; the rebase push produced **11** including `test`. ci.yml ran
+  normally for sibling branches the same day, so run creation is **nondeterministic**. Zero-checks
+  is not the failure mode — a **partial** check set is, and `gh pr checks` exits 0 on it because
+  the CodeQL checks are real and really passed. Also: an **empty conclusion is PENDING, not
+  success**, and status reads have flapped both ways for 15+ min (settle with several consecutive
+  reads of specific run ids). Reporting `ci: green` off a partial set is how an untested head
+  reaches the merge queue.
+- **On red**, use superpowers:systematic-debugging — fix the root cause, add a regression test (Bug Fix Policy), commit granularly ([[feedback_targeted_followup_commits]]) and push. While waiting on CI, do **not** busy-spin in context — poll with short sleeps (~270s, keeps the prompt cache warm) or use `ScheduleWakeup` (~600s+) and let the run resume.
 - A push that changes the diff materially invalidates the earlier review — if you fix more than a trivial test flake, re-run the Phase 5 review on the new diff before declaring done.
 - **When CI is green, proceed to Phase 7** (auto-merge standalone, or hand off under orchestration). Do not declare done at a green PR — merging (or handing off) is the terminal step now.
 - **Progress:** `PR #<n> opened` on open; `⚠ CI red — <suite>` on red; `CI green ✅` when green.
@@ -271,6 +302,11 @@ How this phase behaves depends on **mode**:
 **Standalone auto-merge:**
 
 ```bash
+# Assert the ci.yml run EXISTS for this head FIRST (see Phase 6) — a rollup can be
+# all-SUCCESS while the build/test workflow never ran.
+HEAD_SHA=$(gh pr view <n> --json headRefOid --jq .headRefOid)
+runs=$(gh run list --workflow ci.yml --commit "$HEAD_SHA" --json databaseId --jq 'length')
+[ "${runs:-0}" -ge 1 ] || { echo "HALT #<n>: no ci.yml run for $HEAD_SHA"; exit 1; }
 gh pr view <n> --json mergeable,statusCheckRollup    # must be green + mergeable
 # No --delete-branch: your own branch is checked out in your worktree, so gh's
 # local-delete step fails and it exits 1 AFTER the merge landed — a successful merge
