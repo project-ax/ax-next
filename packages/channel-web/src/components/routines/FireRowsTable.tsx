@@ -17,9 +17,17 @@
  * carries milliseconds, so two fires under a millisecond apart are
  * indistinguishable here. The index is the disambiguator; it's safe because
  * this list is a read-only, newest-first page that is replaced wholesale on
- * refetch, never reordered or spliced in place. `FireRowsTable.test.tsx`
- * pins it: both key failure modes (a stripped field, a colliding timestamp)
- * show up only as a React dev warning, never as a test or tsc error.
+ * refetch, never reordered or spliced in place (`RoutinesList.loadFires`
+ * assigns `{...m, [key]: rows}` — a whole new array, never a splice).
+ * `FireRowsTable.test.tsx` pins it: both key failure modes (a stripped field,
+ * a colliding timestamp) show up only as a React dev warning, never as a test
+ * or tsc error.
+ *
+ * The one thing the index costs: after a "Fire now" refetch prepends a row,
+ * every index shifts, so every row remounts and an expanded `PromptCell`
+ * collapses. That is the whole blast radius — this subtree holds no other
+ * local state — and it is why the storage id looked load-bearing when it
+ * wasn't.
  */
 import { useState } from 'react';
 import type { Fire } from '../../lib/routines';
