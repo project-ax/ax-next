@@ -56,8 +56,8 @@ export const ChainOfThought: FC<
 > = ({ status, indices, children }) => {
   const running = status?.type === 'running';
   // Count this group's tool-call parts to build the summary header. The group
-  // node carries only part INDICES, so we read the message's parts and look up
-  // their types (same pattern the old tool-group used).
+  // node carries only part INDICES, so we read the message's parts off the
+  // message store and look up their types by index.
   const parts = useMessage(
     (m) => (m as { content?: readonly unknown[] }).content ?? EMPTY_PARTS,
   );

@@ -1566,8 +1566,9 @@ describe('main()', () => {
     // Live streaming surfaces both halves of the tool-call too: a
     // tool-use chunk when the model issues the call, and a tool-result
     // chunk when the SDK echoes the result back. The host's SSE handler
-    // forwards these to the browser so Thread.tsx renders ToolGroup +
-    // ToolFallback live, not just on history reload.
+    // forwards these to the browser so Thread.tsx renders them live inside
+    // the ChainOfThought disclosure via ToolFallback, not just on history
+    // reload.
     const streamChunks = fakeClient.event.mock.calls.filter(
       (c) => c[0] === 'event.stream-chunk',
     );

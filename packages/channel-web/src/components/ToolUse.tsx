@@ -1,166 +1,37 @@
 /**
- * ToolUse — tool-call rendering per design.
+ * ToolUse — the per-tool-call detail panels the transcript renders.
  *
- * Two pieces:
- *
- *   - `ToolGroup` wraps consecutive tool-call parts. It renders a single
- *     summary header — a comma-joined past-tense verb phrase (e.g.
- *     "Searched the web, read the file") plus a chevron — and toggles a
- *     body that contains the per-tool detail panels (`ToolFallback`
- *     children rendered by assistant-ui's MessageParts).
+ * Two exported pieces, both leaf renderers. `Thread.tsx` chooses between
+ * them per tool-call part with `ARTIFACT_PUBLISH_BY_NAME[toolName] ??
+ * ToolFallback`:
  *
  *   - `ToolFallback` renders one tool's detail panel — name, raw args
- *     JSON, and either a result or error block. Used as the
- *     `tools.Fallback` for unknown tool names.
+ *     JSON, and either a result or error block. It is the default, so it
+ *     covers every tool without a bespoke renderer, and it renders INSIDE
+ *     the collapsed chain-of-thought disclosure.
  *
- * NOTE (TASK-260): `ToolGroup` is NOT on the live render path. `Thread.tsx`
- * imports only `ArtifactPublishTool` and `ToolFallback`; tool-call parts are
- * folded into the chain-of-thought disclosure, whose collapsed header comes
- * from `chainOfThoughtLabel` in `ChainOfThought.tsx`. `ToolGroup` and its
- * `VERB_MAP` are exercised only by this component's own test today. Left in
- * place rather than deleted in a bug-fix card, but do not reach for `VERB_MAP`
- * expecting a user to see the result — a follow-up card owns reviving or
- * removing it.
+ *   - `ArtifactPublishTool` is the bespoke renderer for `artifact_publish`:
+ *     it parses the tool result and shows a downloadable `ArtifactChip`,
+ *     degrading to `ToolFallback` on any missing or malformed field. It
+ *     renders at the top level, deliberately OUTSIDE the disclosure, so a
+ *     download isn't buried (`STANDALONE_TOOL_NAMES` in `Thread.tsx`).
  *
- * Class names like `tgroup`, `tgroup-body`, `tgroup-title`, `tstep` are
- * kept as test hooks — no CSS targets them anymore; Tailwind drives
- * the styling.
+ * There is deliberately NO grouping/disclosure component here. The collapsed
+ * "what the assistant did" header a user sees is `ChainOfThought.tsx` (a
+ * shadcn `Collapsible`, label from `chainOfThoughtLabel`), which `Thread.tsx`
+ * fills by coalescing reasoning + tool-call parts. A rival `ToolGroup` used
+ * to live in this file — it was superseded by `ChainOfThought` in PR #307 and
+ * then sat unrendered until TASK-269 deleted it. To change what the collapsed
+ * header says, edit `ChainOfThought.tsx`; nothing in this file is on that path.
+ *
+ * Class names like `tstep` are kept as test hooks — no CSS targets them
+ * anymore; Tailwind drives the styling.
  */
-import type { FC, PropsWithChildren } from 'react';
-import { useMemo, useState } from 'react';
-import { useMessage } from '@assistant-ui/react';
+import type { FC } from 'react';
 import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 import { cn } from '@/lib/utils';
 import { ArtifactChip } from './ArtifactChip';
 import { useConversationId } from '../lib/use-conversation-id';
-
-const VERB_MAP: Record<string, string> = {
-  'email.search': 'searched email',
-  'email.read': 'read the thread',
-  'email.send': 'sent a reply',
-  'calendar.read': 'checked your calendar',
-  'calendar.create': 'held time on your calendar',
-  'slack.search': 'searched slack',
-  'drive.find': 'found a file',
-  'drive.read': 'read the file',
-  'drive.write': 'updated the file',
-  'web.search': 'searched the web',
-  'web.read': 'read the page',
-  'flights.search': 'priced flights',
-  'finance.read': 'pulled numbers',
-  'linear.search': 'searched linear',
-  'linear.create': 'opened a ticket',
-};
-
-const toolVerb = (name: string): string => {
-  if (VERB_MAP[name]) return VERB_MAP[name];
-  const tail = name.includes('.') ? name.split('.').slice(1).join(' ') : name;
-  return `ran ${tail.replace(/_/g, ' ')}`;
-};
-
-const headerPhrase = (toolNames: readonly string[]): string => {
-  const verbs = toolNames.map(toolVerb);
-  const dedup: string[] = [];
-  for (const v of verbs) if (dedup[dedup.length - 1] !== v) dedup.push(v);
-  const first = dedup[0];
-  if (!first) return 'thinking';
-  dedup[0] = first.charAt(0).toUpperCase() + first.slice(1);
-  return dedup.join(', ');
-};
-
-type GroupStatus = 'running' | 'failed' | 'done';
-
-type ToolPart = {
-  type: 'tool-call';
-  toolName: string;
-  isError?: boolean;
-  status?: { type?: string };
-};
-
-const isToolPart = (p: unknown): p is ToolPart =>
-  !!p && typeof p === 'object' && (p as { type?: unknown }).type === 'tool-call';
-
-const computeGroupStatus = (parts: readonly ToolPart[]): GroupStatus => {
-  if (parts.some((p) => p.status?.type === 'running')) return 'running';
-  if (parts.some((p) => p.isError || p.status?.type === 'incomplete')) return 'failed';
-  return 'done';
-};
-
-type GroupProps = PropsWithChildren<{ startIndex: number; endIndex: number }>;
-
-const EMPTY_PARTS: readonly unknown[] = Object.freeze([]);
-
-export const ToolGroup: FC<GroupProps> = ({ startIndex, endIndex, children }) => {
-  const [open, setOpen] = useState(false);
-  const bodyId = `tgroup-body-${startIndex}-${endIndex}`;
-  const parts = useMessage(
-    (m) => (m as { content?: readonly unknown[] }).content ?? EMPTY_PARTS,
-  );
-  const slice = useMemo(
-    () => parts.slice(startIndex, endIndex + 1).filter(isToolPart),
-    [parts, startIndex, endIndex],
-  );
-
-  const status = computeGroupStatus(slice);
-  const phrase = headerPhrase(slice.map((p) => p.toolName));
-
-  return (
-    <div
-      className={cn(
-        'tgroup flex flex-col my-3.5 max-w-[60ch] font-sans text-muted-foreground',
-        '[&+.tgroup]:-mt-2',
-        status,
-        open && 'open',
-      )}
-      data-testid="tool-group"
-    >
-      <button
-        type="button"
-        className="
-          tgroup-head inline-flex items-center gap-1.5 cursor-pointer
-          text-[14px] leading-[1.4] text-muted-foreground transition-colors
-          hover:text-foreground
-          focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary/50 focus-visible:outline-offset-2 focus-visible:rounded-sm
-        "
-        aria-expanded={open}
-        aria-controls={bodyId}
-        onClick={() => setOpen((v) => !v)}
-      >
-        <span className="tgroup-title break-words">{phrase}</span>
-        <svg
-          viewBox="0 0 11 11"
-          aria-hidden="true"
-          width="11"
-          height="11"
-          className={cn(
-            'shrink-0 mt-px transition-[transform,color] duration-150',
-            'text-ink-ghost',
-            open && status !== 'running' && 'rotate-90 text-muted-foreground',
-            status === 'running' && 'animate-spin text-primary',
-            status === 'failed' && 'text-destructive',
-          )}
-        >
-          <path
-            d="M3.5 2 L7.5 5.5 L3.5 9"
-            stroke="currentColor"
-            strokeWidth="1.5"
-            fill="none"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
-      <div
-        id={bodyId}
-        className="tgroup-body mt-2 ml-0.5 pl-3.5 border-l border-border"
-        role="region"
-        hidden={!open}
-      >
-        {children}
-      </div>
-    </div>
-  );
-};
 
 const formatJSON = (v: unknown): string => {
   if (v == null) return '';

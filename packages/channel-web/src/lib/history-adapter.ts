@@ -129,7 +129,9 @@ function blocksToParts(
     if (block.type === 'tool_use') {
       // Emit an AI SDK v5 dynamic-tool UIMessage part. assistant-ui's
       // react-ai-sdk bridge converts these into tool-call ThreadMessage
-      // parts, which Thread.tsx renders via ToolGroup + ToolFallback.
+      // parts, which Thread.tsx folds into the ChainOfThought disclosure and
+      // renders with ToolFallback (or ArtifactPublishTool, standalone, for
+      // artifact_publish).
       const matched = toolResults.get(block.id);
       const part: Record<string, unknown> = {
         type: 'dynamic-tool',
