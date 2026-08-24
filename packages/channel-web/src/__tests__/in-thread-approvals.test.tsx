@@ -76,9 +76,12 @@ describe('InThreadApprovals', () => {
 
     They also let the read tests drop their real-timer `waitFor`s. That is a
     LATENCY-BUDGET change, not a correctness one, and the distinction matters:
-    those waits were checked by mutation and they do hold — `waitFor` gets its
-    first look in after the pending read has already settled, so they were
-    asserting over real state. What they carried was RTL's 1000ms default on a
+    those waits were checked by mutation and they do hold — though not for the
+    tempting reason. `waitFor`'s FIRST check runs synchronously, before the
+    pending read has settled; what puts committed state behind the assertions
+    that follow it is that RTL will not resolve `waitFor` until it has awaited a
+    `setTimeout(…, 0)`. Either way they were asserting over real state, so this
+    is not a correctness fix. What they carried was RTL's 1000ms default on a
     package whose suite has been measured several times slower than idle under
     CI load. `settle()` takes the clock out of the question and pins an exact
     call count while it is there.
@@ -196,8 +199,12 @@ describe('InThreadApprovals', () => {
     // Quiet is not silent — an operator can still find this, and the line is
     // also the proof the failure reached state before the two null checks ran.
     // Exactly one line, exactly one read: the counts are pinned rather than
-    // merely non-zero, so a component that logged per render would be caught
-    // here as well as by the dedupe test below.
+    // merely non-zero. Be precise about what that catches. With `raised` at 0
+    // there is a single error-bearing commit, so a component that logged once
+    // per ERROR-BEARING render would still show one warn and sail through here
+    // — that narrower bug belongs to the dedupe test below. What this count
+    // catches is a component that logs on EVERY render, the `error === null`
+    // mount render included.
     expect(read).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalledTimes(1);
     expect(warn.mock.calls[0]?.[0]).toContain('[decisions]');
@@ -242,9 +249,19 @@ describe('InThreadApprovals', () => {
     // TWO reads before a single timer has moved: the ambient one every mount
     // makes, and the one the raised frame kicks off. This pair is NOT what
     // exercises the guard, and saying otherwise is how a test starts
-    // over-claiming again — both failures land in one commit, so the effect
-    // runs once and this count is 1 with the guard or without it. It is here as
-    // the baseline the retry is measured against.
+    // over-claiming again — both reads fail, but only the LATER one reaches
+    // `setError`, so the effect runs once and this count is 1 with the guard or
+    // without it. It is here as the baseline the retry is measured against.
+    //
+    // The reason is NOT React batching two commits, and the difference matters.
+    // `useDecisionQueue.refresh` does `const id = ++readId.current` on entry, so
+    // these two reads hold ids 1 and 2 before either promise settles; the
+    // earlier rejection then hits `if (readId.current !== id) return` in the
+    // catch and returns before `setError`. Its failure is DISCARDED by the
+    // stale-read guard. That guard is load-bearing — see its header in
+    // `lib/workspace-decisions.ts`, which is there so a slow first read cannot
+    // clobber a fast refresh — so do not read this count as "React merged
+    // them" and go simplify it away.
     expect(read).toHaveBeenCalledTimes(2);
     const after = warn.mock.calls.length;
     expect(after).toBe(1);
@@ -259,7 +276,10 @@ describe('InThreadApprovals', () => {
 
     // And through the rest of the ladder, which is what an outage looks like
     // from here: five reads, ONE console line. Measured with the guard deleted,
-    // the assertion above goes red at 2 and this one at 4.
+    // the assertion above goes red at 2 — which is where vitest stops, so this
+    // line never executes. The 4 is a property of the component, not a test
+    // outcome: without the guard it would reach 4 warns here if execution
+    // continued.
     for (const delay of READ_RETRY_DELAYS_MS.slice(1)) await tick(delay);
     expect(read).toHaveBeenCalledTimes(2 + READ_RETRY_DELAYS_MS.length);
     expect(warn.mock.calls.length).toBe(after);
