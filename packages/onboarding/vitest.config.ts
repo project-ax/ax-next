@@ -22,7 +22,12 @@ export default defineConfig({
     // Postgres-testcontainer packages (@ax/agents, @ax/storage-postgres,
     // @ax/memory-strata-index-postgres), which all landed on the same 60s pair
     // for the same reason.
+    //
+    // hookTimeout governs only the *bare* hooks — an explicit `}, N)` on a
+    // hook overrides it. This package already declares 120_000 on some
+    // beforeAll hooks, so 60_000 left bare afterAll teardowns under-budgeted
+    // relative to their own file's beforeAll. Raised to match. See TASK-323.
     testTimeout: 60_000,
-    hookTimeout: 60_000,
+    hookTimeout: 120_000,
   },
 });

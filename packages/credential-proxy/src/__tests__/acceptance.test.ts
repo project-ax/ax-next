@@ -24,7 +24,7 @@
  * by listener tests that use it directly.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -302,12 +302,14 @@ describe('credential-proxy acceptance (Phase 1a Task 12)', () => {
       // 8. Exactly one `event.http-egress` should have fired, with
       //    `classification: 'llm'` (api-key kind), `credentialInjected:
       //    true` (substitution actually happened), and the right host.
-      //    The MITM cleanup runs on socket close — poll a bounded number
-      //    of microtasks rather than racing on a fixed sleep.
-      for (let i = 0; i < 100 && captured.length === 0; i++) {
-        await new Promise<void>((r) => setImmediate(r));
-      }
-      expect(captured.length).toBe(1);
+      //    The MITM cleanup runs on socket close — wait for it on a real
+      //    wall-clock budget rather than racing on a fixed sleep.
+      await vi.waitFor(
+        () => {
+          expect(captured.length).toBe(1);
+        },
+        { timeout: 2_000, interval: 10 },
+      );
       const ev = captured[0]!;
       expect(ev.sessionId).toBe('acceptance-s1');
       expect(ev.userId).toBe('acceptance-u1');
@@ -359,13 +361,15 @@ describe('credential-proxy acceptance (Phase 1a Task 12)', () => {
       expect(upstream.captured.body).toBe('{"prompt":"hello"}');
 
       // The post-close blocked attempt also fires an `event.http-egress`
-      // with `blockedReason: 'allowlist'`. Wait for it the same bounded
-      // way as before — it fires from the listener's CONNECT-allowlist
-      // path on the next event-loop tick.
-      for (let i = 0; i < 100 && captured.length === upstreamHitsBefore; i++) {
-        await new Promise<void>((r) => setImmediate(r));
-      }
-      expect(captured.length).toBeGreaterThan(upstreamHitsBefore);
+      // with `blockedReason: 'allowlist'`. Wait for it the same
+      // wall-clock-budgeted way as before — it fires from the listener's
+      // CONNECT-allowlist path on the next event-loop tick.
+      await vi.waitFor(
+        () => {
+          expect(captured.length).toBeGreaterThan(upstreamHitsBefore);
+        },
+        { timeout: 2_000, interval: 10 },
+      );
       const blockEv = captured[captured.length - 1]!;
       expect(blockEv.blockedReason).toBe('allowlist');
       expect(blockEv.status).toBe(403);

@@ -21,7 +21,7 @@
  *    subscriber throws (the most direct way to verify integration).
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -336,12 +336,14 @@ describe('event.http-egress emission', () => {
       expect(upInfo.captured.authorization).toBe('Bearer sk-real-secret');
 
       // Wait for the cleanup-driven 200 audit. The MITM cleanup runs on
-      // socket close, which can fire after the fetch resolves; poll a
-      // bounded number of ticks rather than a fixed sleep.
-      for (let i = 0; i < 100 && captured.length === 0; i++) {
-        await new Promise<void>((r) => setImmediate(r));
-      }
-      expect(captured.length).toBe(1);
+      // socket close, which can fire after the fetch resolves; wait on a
+      // real wall-clock budget rather than a fixed sleep.
+      await vi.waitFor(
+        () => {
+          expect(captured.length).toBe(1);
+        },
+        { timeout: 2_000, interval: 10 },
+      );
       const ev = captured[0]!;
       expect(ev.sessionId).toBe('s1');
       expect(ev.userId).toBe('u1');
