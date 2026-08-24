@@ -9,6 +9,17 @@
  * from the sidebar and per-fire transcripts aren't persisted, so a
  * click-through would land on an empty conversation. Deferred to a
  * follow-up.
+ *
+ * React key: `firedAt` plus the map index (TASK-312). It used to be the
+ * store's `BIGSERIAL` row id, which is storage vocabulary and no longer
+ * crosses the hook bus. `firedAt` alone is not enough — the list is already
+ * scoped to one (agentId, path), postgres stores microseconds, and the wire
+ * carries milliseconds, so two fires under a millisecond apart are
+ * indistinguishable here. The index is the disambiguator; it's safe because
+ * this list is a read-only, newest-first page that is replaced wholesale on
+ * refetch, never reordered or spliced in place. `FireRowsTable.test.tsx`
+ * pins it: both key failure modes (a stripped field, a colliding timestamp)
+ * show up only as a React dev warning, never as a test or tsc error.
  */
 import { useState } from 'react';
 import type { Fire } from '../../lib/routines';
@@ -48,9 +59,9 @@ function PromptCell({ prompt }: { prompt: string }) {
 export function FireRowsTable({ fires }: { fires: Fire[] }) {
   return (
     <div className="flex flex-col border border-rule-soft rounded-md overflow-hidden">
-      {fires.map((f) => (
+      {fires.map((f, i) => (
         <div
-          key={f.id}
+          key={`${f.firedAt.toISOString()}#${i}`}
           className="px-3 py-2 border-b border-rule-soft last:border-b-0 flex flex-col gap-1"
         >
           <div className="flex items-center gap-3">
