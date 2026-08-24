@@ -67,15 +67,28 @@ const STARTS_CONTAINER = /new\s+[A-Za-z]*Container\s*\(|\bstartPostgresContainer
 /**
  * A hook that declares its own timeout: `beforeAll(async () => { ... }, 60_000);`
  *
+ * Two things about this pattern, and the second one bit.
+ *
  * The body match is non-greedy, so in a file where a bare hook is followed by a
  * timed one this can attribute the timed hook's argument to the bare hook above
- * it. That is harmless here and deliberately not worked around: the assertion
+ * it. That IS harmless and is deliberately not worked around: the assertion
  * consumes the MAXIMUM over the package, and mis-attributing a value between two
- * hooks in the same package cannot change a maximum. It only needs to find the
- * set of budgets, not whose they are.
+ * hooks in the same package cannot change a maximum.
+ *
+ * The closing brace is `\n\s*\}` — indentation-tolerant — and the leading `\s*`
+ * is load-bearing. It was `\n\}` in this guard's first draft, which only matched
+ * hooks whose closing brace sits at column 0, i.e. top-level ones. Every hook
+ * nested inside a `describe(...)` block is indented and was therefore invisible,
+ * and that is a categorically worse bug than mis-attribution: a MISSED hook
+ * LOWERS `maxDeclaredHookTimeout`, so the guard cheerfully passes a config that
+ * is too low. It did exactly that on `packages/cli`, whose describe-nested
+ * `beforeAll(..., 120000)` in `e2e.test.ts` went unseen while the config sat at
+ * 60_000 — the guard was green on the very violation it exists to catch, in the
+ * PR that introduced it. If you touch this regex, re-check it against a
+ * describe-nested hook first.
  */
 const HOOK_WITH_TIMEOUT =
-  /\b(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n\}\s*,\s*(\d[\d_]*)\s*\)\s*;/g;
+  /\b(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n\s*\}\s*,\s*(\d[\d_]*)\s*\)\s*;/g;
 
 /**
  * A poll loop with an ITERATION budget instead of a wall-clock one:
@@ -88,11 +101,21 @@ const HOOK_WITH_TIMEOUT =
  * rather than about the wait. `vi.waitFor(..., { timeout, interval })` is the
  * fix — it budgets real time, and it reports as a timeout when it runs out.
  *
- * Scoped to the `i = 0; i < N &&` shape because the `&&` is what makes it a
- * POLL rather than an ordinary bounded loop over N items. A `while` spelling of
- * the same defect would slip past this; nothing in the tree uses one today.
+ * The `&&` is the load-bearing part of this pattern — it is what makes the loop
+ * a POLL (it exits early on a condition) rather than an ordinary bounded loop
+ * over N items. The bound itself is matched loosely (`< N`, `<= N`, or a named
+ * `< MAX` / `< XS.length`) because a poll spelled with a constant is the same
+ * defect as one spelled with a literal.
+ *
+ * Known gaps, stated rather than implied: a `while` spelling, and a flipped
+ * condition order (`cond && i < N`), both slip past this. Nothing in the tree
+ * uses either today. Note also that a fake-timer loop is NOT this defect —
+ * `channel-web` drives several `for` loops with `vi.advanceTimersByTimeAsync`,
+ * which are deterministic and race nothing; they are excluded here only because
+ * they carry no `&&`, so if you widen this pattern, check them again.
  */
-const ITERATION_POLL = /for\s*\(\s*(?:let|var)\s+\w+\s*=\s*0\s*;\s*\w+\s*<\s*\d+\s*&&/;
+const ITERATION_POLL =
+  /for\s*\(\s*(?:let|var)\s+\w+\s*=\s*\w+\s*;\s*\w+\s*<=?\s*[\w.]+\s*&&/;
 
 /** Every `.ts`/`.tsx` file under `dir`, recursively, skipping build output. */
 function sourceFiles(dir) {

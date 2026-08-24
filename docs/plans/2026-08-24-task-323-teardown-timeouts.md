@@ -57,10 +57,12 @@ Per package: `testTimeout: 60_000` (the in-tree precedent, 8 packages already), 
   decisions(120), host-grants(120), routines(120), skills(120), teams(60),
   auth-better(60)
 - add to existing config: channel-web(test 60 / hook 120), mcp-oauth(60/120),
-  mcp-client(60/60), cli(hook 60 only — leave `testTimeout: 20000`)
-- **fix existing violations of the invariant:** `agents` and `onboarding` set
+  mcp-client(60/60), cli(hook 120 — its `e2e.test.ts` declares `}, 120000)`; `testTimeout: 20000` stays)
+- **fix existing violations of the invariant:** `agents`, `onboarding` and `cli` set
   `hookTimeout: 60_000` while files in the same package declare `120_000` on
-  `beforeAll` → raise both to `120_000`.
+  `beforeAll` → raise all three to `120_000`. (`cli` was missed on the first pass and
+  caught in review — the guard's close-brace regex could not see its describe-nested
+  hook. Both the config and the regex are fixed.)
 - unchanged (already satisfy it): database-postgres, eventbus-postgres,
   session-postgres, storage-postgres, memory-strata-index-postgres.
 
