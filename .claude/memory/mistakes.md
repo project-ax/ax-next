@@ -350,3 +350,7 @@ cheaply.
 **A comment fix that introduces a new false claim is a net loss.** Verify each rewritten
 assertion against the code you cite, and hand the reviewer the list of new claims to
 fact-check rather than asking it to look for typos.
+
+- `2026-08-24` (TASK-262) — **I argued a human-facing label should stay understated because extending it "risks the 120-char cap", without reading what the cap does.** `@ax/decisions`' `fenceLine` (`packages/decisions/src/freshness.ts:200-207`) truncates with an ellipsis; it does not drop the label. The reviewer pushed back on the same decision for the right reason (a "checked against: the catalog entry" clause misleads when a CONNECTOR is what moved) and I reversed it. **Lesson: before citing a limit as a reason not to do the honest thing, read the code that enforces the limit.** A cap that degrades gracefully is not an argument.
+
+- `2026-08-24` (TASK-262) — **My first pass digested credential slot NAMES only, which reproduced the bug the card was about one level down.** The card's whole point is "reach moves under a stable id"; for an OAuth slot the reach IS the scopes, so `read` → `read,write` under slot `OAUTH` still would not have tripped the guard. I had even written the membership rule down ("resolve returns it and it grants reach") and then applied it to the top level only. **When you state a membership rule in a comment, walk every nested level of the wire shape against it before you ship** — the reviewer found this, not me.

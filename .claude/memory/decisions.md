@@ -2117,13 +2117,29 @@ Deps: S3←S2, S4←S2, S5←S2,S3,S4, S6←S2,S5, S7←S3,S4,S5.
 | **Rationale** | The sibling omits `mcpServers` (and `services`) even though `connectors:resolve` returns both; that is a blind spot, not a precedent — an MCP server or a dev-service image is reach. `env` values are in because an env value is how either gets re-pointed somewhere else with every host string unchanged; only the sha256 is persisted, so nothing sensitive is stored or logged. `args` order is meaning (`['--allow','x']` ≠ `['x','--allow']`), so sorting it would collapse two different worlds. |
 | **Alternatives** | Canonical-JSON the whole `capabilities` object (rejected — a generic recursive sort would either reorder `args` or leave set-like lists order-sensitive). env keys only (rejected — misses a real reach change). Mirror the sibling exactly (rejected — inherits its blind spot). |
 
-## 2026-08-24 — TASK-262: the predicate's `label` is left unchanged
+## 2026-08-24 — TASK-262: the predicate's `label` DOES follow the fold (initial call reversed on review)
 
 | | |
 |---|---|
-| **Decision** | Keep `label: 'the "<skillId>" entry in the capability catalog'` even though the predicate now also covers the connectors' resolved reach. |
-| **Rationale** | The label completes a human-facing sentence ("checked against: …"). Extending it would make the rendered text **branch on which preset you are in** (the fold is `hasService`-gated), and `@ax/decisions` caps a label at 120 chars while `skillId` may be 128 — so the longer form can truncate. "The entry" is an understatement, not a falsehood: the entry is what names the connectors. |
-| **Alternatives** | Branch the label on `hasService` (rejected — per-preset UI text). Always say "and what its connections reach" (rejected — false in a connector-less preset, and risks the 120-char cap). |
+| **Decision** | The label now branches: `the "<skillId>" capability and the connectors it reaches` when the reach fold ran, `the "<skillId>" entry in the capability catalog` when it did not. **This reverses my first call**, which was to leave it alone; `ax-code-reviewer` pushed back and was right. |
+| **Rationale** | The label completes "checked against: …" on the row a human reads. When a CONNECTOR moves and the catalog entry does not, "the entry in the capability catalog" sends them to inspect the entry, where they find nothing changed — worse than saying nothing. Branching is not per-preset inconsistency: a connector-less preset genuinely checked less, and should say so. **My length objection was factually wrong** — `@ax/decisions`' `fenceLine` truncates at `LABEL_MAX_CHARS` with an ellipsis rather than dropping the label, so a pathological 128-char skillId degrades gracefully. |
+| **Alternatives** | Leave it (rejected on review — understating what was checked on a consent surface is the defect this epic is cleaning up). Re-read `hasService` at the label site (rejected — `catalogToken` now returns `{value, foldedReach}` so the label CANNOT desync from the gate; a second read would work today and rot the first time the condition changes). |
+
+## 2026-08-24 — TASK-262: OAuth scopes and the shared-key consent bit are in the digest
+
+| | |
+|---|---|
+| **Decision** | Credential slots digest `{slot, kind, server, sorted scopes}`, not just the slot name, and `requiresSharedKeyConsent` is folded too. Added on review (reviewer F5). |
+| **Rationale** | The membership rule is "resolve returns it and it grants reach". Digesting slot NAMES alone reproduced this very card's bug one level down: for an OAuth grant the **scopes are the reach**, so `read` widening to `read,write` under a stable slot name would not have tripped the guard. `requiresSharedKeyConsent` is a first-class consent bit — approving means spending a key that is not this person's, so a change to it is a changed question. |
+| **Alternatives** | Slot names only, mirroring the sibling (rejected — same blind-spot family as the omitted `mcpServers`). Defer to a follow-up card (rejected — it is four lines and the card is literally about reach moving under a stable id). |
+
+## 2026-08-24 — TASK-262: the digest is knowingly a SUPERSET of what the approval card draws
+
+| | |
+|---|---|
+| **Decision** | Keep the wider digest and **document the asymmetry** rather than narrowing it to match the card. Follow-up filed to widen the card instead. |
+| **Rationale** | `PermissionRequestEvent` renders top-level hosts, slot names and packages — never `mcpServers`, `services`, `env` or `keyMode`. So a change confined to those re-opens the decision under "asks for something different" while the re-fired card looks **identical** to the one already approved. That is confusing, but it fails in the safe direction (a re-ask, never a silent grant) and it partly compensates for the card omitting an MCP server's own hosts. Narrowing the digest to match the card would trade a confusing re-ask for a missed change. |
+| **Alternatives** | Narrow the digest to the card's fields (rejected — reintroduces the blind spot). Widen the card in this PR (rejected — a UI change on a security surface belongs in its own card with its own review). |
 
 ## 2026-08-24 — TASK-262: implemented inline rather than via per-task subagents
 
