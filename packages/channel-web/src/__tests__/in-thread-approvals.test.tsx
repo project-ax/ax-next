@@ -68,6 +68,32 @@ describe('InThreadApprovals', () => {
     decisionRaisedActions.resetForTest();
   });
 
+  /*
+    Fake-timer act helpers, hoisted here from the retry `describe` because the
+    dedupe test needs them too. Same shape as
+    `workspace-decision-queue.test.tsx`: advance past what would change the
+    answer, then assert it did not change.
+
+    They also let the read tests drop their real-timer `waitFor`s. That is a
+    LATENCY-BUDGET change, not a correctness one, and the distinction matters:
+    those waits were checked by mutation and they do hold — `waitFor` gets its
+    first look in after the pending read has already settled, so they were
+    asserting over real state. What they carried was RTL's 1000ms default on a
+    package whose suite has been measured several times slower than idle under
+    CI load. `settle()` takes the clock out of the question and pins an exact
+    call count while it is there.
+  */
+  /** Let a read settle without moving any retry timer. */
+  const settle = () =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+  const tick = (ms: number) =>
+    act(async () => {
+      await vi.advanceTimersByTimeAsync(ms);
+    });
+
   it('renders the open decision for the active conversation, with its own labels', async () => {
     serveDecisions([decisionFixture()]);
     render(<InThreadApprovals />);
@@ -82,22 +108,30 @@ describe('InThreadApprovals', () => {
   });
 
   it('renders nothing for a decision belonging to a different conversation', async () => {
+    vi.useFakeTimers();
     const read = serveDecisions([
       decisionFixture({ id: 'd-other', conversationId: 'c2' }),
     ]);
     const { container } = render(<InThreadApprovals />);
 
-    await waitFor(() => expect(read).toHaveBeenCalled());
+    // The row is in and still nothing is drawn — off a settled read rather
+    // than a wall-clock wait. See `settle` above for why that swap is about the
+    // budget, not the assertion.
+    await settle();
+    expect(read).toHaveBeenCalledTimes(1);
     expect(screen.queryByTestId('approval-d-other')).toBeNull();
     expect(container.firstChild).toBeNull();
   });
 
   it('renders nothing on the welcome state, where there is no conversation yet', async () => {
     mockConversationId = null;
+    vi.useFakeTimers();
     const read = serveDecisions([decisionFixture({ conversationId: 'c1' })]);
     const { container } = render(<InThreadApprovals />);
 
-    await waitFor(() => expect(read).toHaveBeenCalled());
+    // Off a settled read, not a wall-clock wait — see `settle` above.
+    await settle();
+    expect(read).toHaveBeenCalledTimes(1);
     expect(container.firstChild).toBeNull();
   });
 
@@ -152,35 +186,82 @@ describe('InThreadApprovals', () => {
   */
   it('stays quiet on screen when the read fails and nothing says a decision exists', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.useFakeTimers();
     const read = vi
       .spyOn(workspaceApi, 'decisions')
       .mockRejectedValue(new Error('boom'));
     const { container } = render(<InThreadApprovals />);
 
-    await waitFor(() => expect(read).toHaveBeenCalled());
+    await settle();
+    // Quiet is not silent — an operator can still find this, and the line is
+    // also the proof the failure reached state before the two null checks ran.
+    // Exactly one line, exactly one read: the counts are pinned rather than
+    // merely non-zero, so a component that logged per render would be caught
+    // here as well as by the dedupe test below.
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0]?.[0]).toContain('[decisions]');
+
     expect(screen.queryByText(DECISION_READ_FAILED_TITLE)).toBeNull();
     expect(container.firstChild).toBeNull();
-
-    // Quiet is not silent — an operator can still find this.
-    await waitFor(() => expect(warn).toHaveBeenCalled());
-    expect(warn.mock.calls[0]?.[0]).toContain('[decisions]');
   });
 
+  /*
+    TASK-311. THE DEDUPE IS THE ASSERTION, and this test could not make it.
+
+    It used to `rerender` the component and check the count had not moved. That
+    can never fail. The logging effect's deps are `[error]`
+    (`InThreadApprovals.tsx`), so a re-render carrying the SAME error object does
+    not run the effect at all — the count was pinned by React, not by the guard.
+    Deleting `if (loggedError.current === key) return;` left the old version of
+    this file 22/22 (re-confirmed while writing this), and TASK-311 measured the
+    whole package still green at 1644/1644. A working guard had zero coverage,
+    under the one test whose name claimed to be it.
+
+    What actually exercises the guard is the component's own retry ladder. The
+    hook holds a FRESH error object per failed read — that identity change is how
+    it re-arms — so every rung re-runs this effect with a new object and an
+    identical `kind:detail` key. Suppressing those is the guard's entire job, and
+    an outage is exactly that shape: five reads, ONE line. With the guard gone
+    this test sees 2 warns by the first rung and 4 by the end of the ladder, and
+    goes red on the first of them.
+  */
   it('logs a failed read even when it DOES surface it, and only once per failure', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-    vi.spyOn(workspaceApi, 'decisions').mockRejectedValue(new Error('boom'));
+    vi.useFakeTimers();
+    const read = vi
+      .spyOn(workspaceApi, 'decisions')
+      .mockRejectedValue(new Error('boom'));
+    // Before `render`, or the banner never appears and there is no "DOES
+    // surface it" for the log to sit beside.
     decisionRaisedActions.raise();
-    const { rerender } = render(<InThreadApprovals />);
+    render(<InThreadApprovals />);
 
-    await waitFor(() =>
-      expect(screen.getByText(DECISION_READ_FAILED_TITLE)).toBeInTheDocument(),
-    );
+    await settle();
+    expect(screen.getByText(DECISION_READ_FAILED_TITLE)).toBeInTheDocument();
+    // TWO reads before a single timer has moved: the ambient one every mount
+    // makes, and the one the raised frame kicks off. This pair is NOT what
+    // exercises the guard, and saying otherwise is how a test starts
+    // over-claiming again — both failures land in one commit, so the effect
+    // runs once and this count is 1 with the guard or without it. It is here as
+    // the baseline the retry is measured against.
+    expect(read).toHaveBeenCalledTimes(2);
     const after = warn.mock.calls.length;
-    expect(after).toBeGreaterThan(0);
+    expect(after).toBe(1);
 
-    // A re-render is not a new failure. The cards on this surface re-render on
-    // their own clock, so an un-deduped log would spam a console once a second.
-    rerender(<InThreadApprovals />);
+    // Rung one: a genuinely new read, a genuinely new failure, a new error
+    // object behind it. Both assertions are needed — without the read count,
+    // "the warn count did not move" is satisfied by nothing having happened,
+    // which is precisely the vacuity this replaces.
+    await tick(READ_RETRY_DELAYS_MS[0]!);
+    expect(read).toHaveBeenCalledTimes(3);
+    expect(warn.mock.calls.length).toBe(after);
+
+    // And through the rest of the ladder, which is what an outage looks like
+    // from here: five reads, ONE console line. Measured with the guard deleted,
+    // the assertion above goes red at 2 and this one at 4.
+    for (const delay of READ_RETRY_DELAYS_MS.slice(1)) await tick(delay);
+    expect(read).toHaveBeenCalledTimes(2 + READ_RETRY_DELAYS_MS.length);
     expect(warn.mock.calls.length).toBe(after);
   });
 
@@ -189,8 +270,17 @@ describe('InThreadApprovals', () => {
     decisionRaisedActions.raise();
     render(<InThreadApprovals />);
 
+    /*
+      Real timers here, because the point is a CLICK. Both budgets are widened
+      off the 1000ms default: this component reads twice on mount and this
+      package's suite has been measured several times slower than idle under CI
+      load, which is enough to blow a one-second wait on a test with nothing
+      wrong with it.
+    */
     expect(
-      await screen.findByText(DECISION_READ_FAILED_TITLE),
+      await screen.findByText(DECISION_READ_FAILED_TITLE, undefined, {
+        timeout: 5000,
+      }),
     ).toBeInTheDocument();
     const retry = screen.getByRole('button', { name: 'Try again' });
 
@@ -198,7 +288,11 @@ describe('InThreadApprovals', () => {
       .spyOn(workspaceApi, 'decisions')
       .mockResolvedValue({ decisions: [decisionFixture()] });
     fireEvent.click(retry);
-    expect(await screen.findByTestId('approval-d-marcus')).toBeInTheDocument();
+    expect(
+      await screen.findByTestId('approval-d-marcus', undefined, {
+        timeout: 5000,
+      }),
+    ).toBeInTheDocument();
     expect(readAgain).toHaveBeenCalled();
     expect(screen.queryByText(DECISION_READ_FAILED_TITLE)).toBeNull();
   });
@@ -216,17 +310,6 @@ describe('InThreadApprovals', () => {
     promise an attempt while one is actually coming.
   */
   describe('a failed read is no longer the end of it', () => {
-    /** Let a read settle without moving any retry timer. */
-    const settle = () =>
-      act(async () => {
-        await vi.advanceTimersByTimeAsync(0);
-      });
-
-    const tick = (ms: number) =>
-      act(async () => {
-        await vi.advanceTimersByTimeAsync(ms);
-      });
-
     it('reads again on its own, and the screen stays quiet while it does', async () => {
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       vi.useFakeTimers();
