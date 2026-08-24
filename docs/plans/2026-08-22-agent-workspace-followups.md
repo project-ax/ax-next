@@ -154,7 +154,7 @@ reachability only. Rebuild the agent image first (`--no-cache`, or grep the comp
 |---|---|
 | **TASK-245** | `DISABLED_BUILTINS` is **hand-copied** into `@ax/tool-policy` (with a drift-guard test) because it lives in `@ax/agent-claude-sdk-runner` whose package `main` IS the runner binary — importing it would violate invariant #2 and run top-level side effects. Two sources of truth for one concept (invariant #4). |
 | **TASK-251** | `routines:recent-fires-for-agent` carries `FireRow.id` (BIGSERIAL) on the bus payload — storage vocabulary on a hook surface (invariant #1). Firewalled at HTTP, but the new hook propagates the pre-existing leak. |
-| **TASK-241** | `skills:approved-caps-list` has no production caller — wire it or delete it (Half-Wired Code Policy). |
+| **TASK-241** | ~~`skills:approved-caps-list` has no production caller — wire it or delete it (Half-Wired Code Policy).~~ **STALE — corrected 2026-08-23.** The hook was wired on 2026-08-22 by TASK-235/#439 (reader: `routes-workspace.ts:2523`; writer: `orchestrator.ts:3146`). Its real residue was a dead `optionalCalls` declaration in `@ax/agents` (behaviour TASK-100 removed) plus five stale "no production caller" sentences, all fixed under TASK-241. **Do not delete the hook** — the rail would understate agent reach (H4, forbidden). |
 | **TASK-243** | Stale comment at `workspace-commit-notify.ts:289-290` claims a single pre-apply rejecter; there are three. |
 | **TASK-262** | `request_capability` freshness digests the catalog entry, not resolved connector reach. **Judged non-blocking**: the executor builds a fresh permission card from live `connectors:resolve` at replay, so a changed reach is re-gated there. Document or fold in. |
 

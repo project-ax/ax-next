@@ -11,19 +11,13 @@
  * connector approval card (the existing wall, connectorId subject — invariant #5,
  * no self-grant), so removing the skill-cap proposal does NOT widen reach.
  *
- * `ApprovedCapEntry` is duplicated structurally here rather than imported from
- * @ax/skills — invariant #2 (no cross-plugin imports; the hook bus IS the API).
- * It mirrors @ax/skills' SkillsApprovedCapsListOutput entry shape and is still
- * the wall's read shape for CONNECTOR grants.
+ * Consequently @ax/agents does not read the approval wall at all. The wall's own
+ * read shape lives in @ax/skills (`SkillsApprovedCapsListOutput`) and its reader
+ * is the workspace rail (`channel-web/src/server/routes-workspace.ts`, the
+ * "Granted by you" group); this module used to carry a structural mirror of that
+ * entry shape and no longer needs one.
  */
 import { parseSkillManifest } from '@ax/skills-parser';
-
-export type ApprovedCapKind = 'host' | 'slot' | 'npm' | 'pypi' | 'mcp';
-
-export interface ApprovedCapEntry {
-  kind: ApprovedCapKind;
-  value: string;
-}
 
 /**
  * Project ONE self-authored bundle: parse its (cap-free) frontmatter and surface

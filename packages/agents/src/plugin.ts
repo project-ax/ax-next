@@ -139,11 +139,6 @@ export function createAgentsPlugin(config: AgentsConfig = {}): Plugin {
           degradation: 'authored-skill discovery is skipped (no skills store)',
         },
         {
-          hook: 'skills:approved-caps-list',
-          degradation:
-            'a self-authored draft projects with EMPTY approved capabilities (no approval store) — the safe default; frontmatter alone grants nothing',
-        },
-        {
           hook: 'connectors:resolve',
           degradation:
             "the non-admin attachment guard can't verify a connector's keyMode, so attaching connectors/skills falls back to admin-only (fail-closed) — admins are unaffected",

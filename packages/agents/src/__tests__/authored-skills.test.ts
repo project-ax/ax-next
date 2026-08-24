@@ -3,8 +3,7 @@
  *
  * The source of truth is now the @ax/skills DB store (the `skills:list-authored`
  * hook) — the `.ax/draft-skills` git WORKSPACE projection is RETIRED. These
- * tests register a mock `skills:list-authored` (+ optional `skills:approved-caps-
- * list`) and exercise:
+ * tests register a mock `skills:list-authored` and exercise:
  *   - agents:list-authored-skills (the admin promote-UI reader)
  *   - agents:resolve-authored-skills (the orchestrator projection)
  * The quarantine signal is now the row's `status === 'quarantined'`.
@@ -52,13 +51,11 @@ interface AuthoredRow {
 }
 
 /**
- * Boot @ax/agents with a mock skills:list-authored returning `rows`, and an
- * optional approved-caps map keyed by skillId. Omit `rows` entirely to simulate
- * a preset with NO skills store (the hook is absent).
+ * Boot @ax/agents with a mock skills:list-authored returning `rows`. Omit `rows`
+ * entirely to simulate a preset with NO skills store (the hook is absent).
  */
 async function makeHarness(opts: {
   rows?: AuthoredRow[];
-  approved?: Record<string, Array<{ kind: string; value: string }>>;
   listAuthoredThrows?: boolean;
 } = {}): Promise<TestHarness> {
   const services: Record<string, (ctx: unknown, input: unknown) => Promise<unknown>> = {
@@ -71,12 +68,6 @@ async function makeHarness(opts: {
     services['skills:list-authored'] = async () => {
       if (opts.listAuthoredThrows) throw new Error('skills store outage');
       return { skills: opts.rows ?? [] };
-    };
-  }
-  if (opts.approved !== undefined) {
-    services['skills:approved-caps-list'] = async (_c, input) => {
-      const { skillId } = input as { skillId: string };
-      return { capabilities: opts.approved![skillId] ?? [] };
     };
   }
   const h = await createTestHarness({
