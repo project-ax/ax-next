@@ -2,8 +2,10 @@
 
 ## Re-derived facts (from the tree, 2026-08-24 — NOT from the card)
 
-**20 packages start a real container** in their tests (`new PostgreSqlContainer` /
-`new GenericContainer` / `startPostgresContainer`):
+**21 packages start a real container** in their tests (`new PostgreSqlContainer` /
+`new GenericContainer` / `startPostgresContainer`) — 20 under `packages/`, plus
+`presets/k8s`, which already satisfies the invariant below (60s/120s) and needs no
+change:
 
 agents, attachments, auth-better, channel-web, cli, connectors, conversations,
 database-postgres, decisions, eventbus-postgres, host-grants, mcp-client, mcp-oauth,
@@ -23,9 +25,11 @@ vitest's 5s `testTimeout` and 10s `hookTimeout` defaults:
 (The card guessed 12 and omitted `cli`; the predecessor learning's correction to 13 is
 the one that matches the tree.)
 
-**94 test files declare an explicit hook timeout on `beforeAll` but leave the sibling
-`afterAll` bare** — that bare teardown silently gets 10s (or, once a config exists,
-whatever the config says). Dominant declared budget is `120_000` (79 sites), then
+**108 of the repo's 751 test files contain at least one hook with an explicit timeout
+AND at least one bare `afterAll`** — that bare teardown silently gets 10s (or, once a
+config exists, whatever the config says). (The definition matters: an earlier draft of
+this doc said "94", which came from an unstated first-hook-only heuristic. The figure
+above is reproducible from the stated definition.) Dominant declared budget is `120_000` (79 sites), then
 `60_000` (45 sites).
 
 ## The invariant this PR establishes
@@ -37,7 +41,7 @@ whatever the config says). Dominant declared budget is `120_000` (79 sites), the
 Rationale: an explicit `}, 120_000)` on a hook always overrides the config, so the
 config value governs exactly the *bare* hooks — the teardowns this card is about.
 Setting it to the package maximum gives every bare `afterAll` at minimum the budget
-its own file's `beforeAll` already declares, **without editing 94 call sites**.
+its own file's `beforeAll` already declares, **without editing those 108 files**.
 
 Not chosen: a flat 30s (the card's original figure) — it would *tighten* the 79 sites
 that declare 120s and *loosen* the ones that declare less. Not chosen: raising every

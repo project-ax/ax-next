@@ -17,13 +17,13 @@
 //     beforeAll(async () => { ... }, 120_000);
 //
 // overrides the config. So the config's `hookTimeout` governs exactly the hooks
-// that DON'T carry an argument — in practice, the teardowns. 94 test files in
-// this repo declare a budget on `beforeAll` and leave the sibling `afterAll`
-// bare, which is a file quietly disagreeing with itself: startup may take two
-// minutes, but tearing the same container down gets ten seconds. Pinning the
-// config to the largest budget the package already declares makes every bare
-// hook inherit at least what its own file asks for, without editing 94 call
-// sites. That is the invariant below, and it is why this asserts `>=` against a
+// that DON'T carry an argument — in practice, the teardowns. 108 test files in
+// this repo (of 751) contain at least one hook with an explicit timeout AND at
+// least one bare `afterAll` — a file quietly disagreeing with itself: startup
+// may take two minutes, but tearing the same container down gets ten seconds.
+// Pinning the config to the largest budget the package already declares makes
+// every bare hook inherit at least what its own file asks for, without editing
+// those 108 files. That is the invariant below, and it is why this asserts `>=` against a
 // value scanned out of the sources rather than against a number typed here —
 // a file that raises its own `beforeAll` to 180s should redden this guard until
 // the config keeps up.
@@ -75,6 +75,16 @@ const STARTS_CONTAINER = /new\s+[A-Za-z]*Container\s*\(|\bstartPostgresContainer
  * consumes the MAXIMUM over the package, and mis-attributing a value between two
  * hooks in the same package cannot change a maximum.
  *
+ * It captures a NUMERIC literal only. Three other spellings of a hook timeout
+ * exist and cannot be read by this pattern: a named constant (`}, TIMEOUT_MS)`,
+ * a live idiom elsewhere in this repo — `agent-runner-core` uses
+ * `REAL_GIT_TIMEOUT_MS`, `agent-claude-sdk-runner` uses `E2E_TIMEOUT_MS`), a
+ * single-line hook with no newline before its `}`, and a brace-less arrow body.
+ * None is used by a container package today. Rather than trust that to hold,
+ * `UNREADABLE_HOOK_TIMEOUT` below reddens if one ever appears in one — because
+ * every one of these misses fails in the SAME direction as the bug described
+ * next, and this guard has already shipped one undocumented blind spot.
+ *
  * The closing brace is `\n\s*\}` — indentation-tolerant — and the leading `\s*`
  * is load-bearing. It was `\n\}` in this guard's first draft, which only matched
  * hooks whose closing brace sits at column 0, i.e. top-level ones. Every hook
@@ -91,6 +101,22 @@ const HOOK_WITH_TIMEOUT =
   /\b(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n\s*\}\s*,\s*(\d[\d_]*)\s*\)\s*;/g;
 
 /**
+ * A hook that declares a timeout this file CANNOT evaluate — a named constant
+ * rather than a numeric literal (`}, TIMEOUT_MS)`).
+ *
+ * This exists because of how this guard's first version failed. It could not see
+ * describe-nested hooks, and a hook it cannot see contributes 0 to the package
+ * maximum, so the guard PASSES a config that is too low — it went green on
+ * `packages/cli`, the exact violation it was written to catch. Every remaining
+ * blind spot fails the same way. So where the pattern above is unsure, this one
+ * fails loudly and asks to be extended, rather than quietly reading the budget
+ * as absent. Fail closed: a guard that under-reports is worse than no guard,
+ * because it also reports success.
+ */
+const UNREADABLE_HOOK_TIMEOUT =
+  /\b(?:beforeAll|afterAll|beforeEach|afterEach)\s*\([\s\S]*?\n\s*\}\s*,\s*([A-Za-z_$][\w$]*)\s*\)\s*;/g;
+
+/**
  * A poll loop with an ITERATION budget instead of a wall-clock one:
  *
  *     for (let i = 0; i < 200 && contexts.length === 0; i++) { await sleep(10); }
@@ -101,9 +127,12 @@ const HOOK_WITH_TIMEOUT =
  * rather than about the wait. `vi.waitFor(..., { timeout, interval })` is the
  * fix — it budgets real time, and it reports as a timeout when it runs out.
  *
- * The `&&` is the load-bearing part of this pattern — it is what makes the loop
- * a POLL (it exits early on a condition) rather than an ordinary bounded loop
- * over N items. The bound itself is matched loosely (`< N`, `<= N`, or a named
+ * The `&&` is the load-bearing part of this pattern: a loop that exits early on a
+ * condition is the shape a poll takes. It is a heuristic and not a definition —
+ * `agent-aisdk-runner/src/compaction/compactor.ts` has a bounded synchronous
+ * traversal whose `&&` is a null-guard, and it would match. That costs nothing
+ * only because this scan is restricted to `*.test.ts*` files; widen the scan and
+ * the heuristic starts producing false positives. The bound itself is matched loosely (`< N`, `<= N`, or a named
  * `< MAX` / `< XS.length`) because a poll spelled with a constant is the same
  * defect as one spelled with a literal.
  *
@@ -206,6 +235,22 @@ describe('container-starting packages declare their own timeouts (TASK-323)', ()
       if (h === undefined) missing.push(`${pkg.name}: no hookTimeout (inherits vitest's 10s)`);
     }
     expect(missing).toEqual([]);
+  });
+
+  it('no container package declares a hook timeout this guard cannot read', () => {
+    // Fail closed. See UNREADABLE_HOOK_TIMEOUT: a budget this file cannot parse
+    // is counted as absent, which lowers the package maximum and makes the
+    // assertion below pass a config that is too low. If this reddens, the fix is
+    // to teach HOOK_WITH_TIMEOUT the new spelling — NOT to relax this.
+    const unreadable = [];
+    for (const pkg of containerPackages) {
+      for (const f of pkg.files) {
+        for (const m of readFileSync(f, 'utf8').matchAll(UNREADABLE_HOOK_TIMEOUT)) {
+          unreadable.push(`${relative(REPO_ROOT, f)}: hook timeout \`${m[1]}\` is not a numeric literal`);
+        }
+      }
+    }
+    expect(unreadable).toEqual([]);
   });
 
   it("each package's hookTimeout is at least the largest timeout its own hooks declare", () => {

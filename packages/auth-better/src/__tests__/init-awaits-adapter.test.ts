@@ -159,8 +159,10 @@ describe('@ax/auth-better — init() awaits adapter-init (TASK-8)', () => {
     );
 
     // The adapter-init ($context) is still pending → boot MUST still be
-    // pending too. Give the loop a few turns to prove init() is genuinely
-    // blocked on ready(), not merely slow.
+    // pending too. A fixed wait is correct here and is NOT the iteration-poll
+    // defect fixed above: you cannot poll for a condition that must STAY false,
+    // so this buys a window in which a merely-slow init would have finished,
+    // proving init() is genuinely blocked on ready().
     await new Promise((r) => setTimeout(r, 50));
     expect(booted).toBe(false);
 
