@@ -545,7 +545,11 @@ describe('the poller is reaped, not just relaunched', () => {
       'The poller is relaunched after every loop pass. Without an explicit ' +
         `\`pkill -f ${POLLER}\` before each relaunch, every pass leaks a poller that ` +
         'keeps spending GraphQL points after the run ends.',
-    ).toMatch(new RegExp(`pkill\\s+-f\\s+${POLLER.replace(/\./g, '\\.')}`));
+      // A literal pattern, not one built from POLLER: escaping a filename into a
+      // regex by replacing only `.` is incomplete escaping (CodeQL
+      // js/incomplete-sanitization, and it is right -- `-` and `$` would survive).
+      // The name is a constant, so there is nothing to gain from constructing it.
+    ).toMatch(/pkill\s+-f\s+auto-ship-board-poll\.sh/);
   });
 
   it('requires the reap at run end too, not only between passes', () => {
