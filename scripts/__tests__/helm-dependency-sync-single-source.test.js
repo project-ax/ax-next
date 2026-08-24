@@ -84,6 +84,11 @@ function chartTsFiles() {
  *
  * The `[^:]` guard keeps `https://…` intact; that is a heuristic, not a lexer,
  * and it is the right size of tool for deciding whether a test file shells out.
+ * It does over-trim today, benignly: `blob-backend.test.ts`'s
+ * `toMatch(/^\/tmp\//)` contains a `//` that is not preceded by `:`, so the rest
+ * of that line is dropped. Harmless — the file keeps its `helm template` spawn
+ * and stays correctly "scanned, not an offender" — but expect the odd truncated
+ * line if you ever print the stripped source while debugging this guard.
  */
 function stripComments(src) {
   return src
@@ -104,6 +109,15 @@ function spawnsAnything(src) {
  * copy-paste: an argv array with literal verbs (what the old helmRepoSync
  * used), an argv array whose verb is a variable (`['repo', op]`), and a shell
  * string handed to `execSync`.
+ *
+ * The shell-string patterns are PROSE-SENSITIVE — `helm repo add` in any string
+ * matches, including an assertion like
+ * `expect(stderr).toContain('helm dependency build')`. They lean entirely on the
+ * `spawnsAnything` gate to stay honest: helm-deps.test.ts names these commands
+ * all over its assertions and is excluded only because it has no real
+ * `spawn(`/`execSync(` call of its own. So if a chart file that DOES spawn ever
+ * grows a string like that, this guard reddens on innocent code — reach for a
+ * tighter matcher then, don't just delete the assertion.
  */
 function spawnsHelmFetch(src) {
   return (
