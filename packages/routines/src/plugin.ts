@@ -295,10 +295,10 @@ export function createRoutinesPlugin(
             error: result.error,
             renderedPrompt: result.renderedPrompt,
           });
-          return {
-            status: result.status,
-            conversationId: result.conversationId ?? null,
-          };
+          // The conversation id stays ON THE FIRE ROW above, where the
+          // Routines UI reads it from `routines:recent-fires`. It is not
+          // returned here: the caller has no surface to show it on.
+          return { status: result.status };
         },
         { returns: FireNowOutputSchema },
       );

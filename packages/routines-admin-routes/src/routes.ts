@@ -221,7 +221,6 @@ interface RoutinesRecentFiresOutput {
 }
 interface RoutinesFireNowOutput {
   status: string;
-  conversationId: string | null;
 }
 
 export interface RoutinesAdminHandlers {

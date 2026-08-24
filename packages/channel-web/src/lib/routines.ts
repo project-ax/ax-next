@@ -77,7 +77,6 @@ export interface FireNowInput {
 }
 export interface FireNowOutput {
   status: FireStatus;
-  conversationId: string | null;
 }
 
 /**

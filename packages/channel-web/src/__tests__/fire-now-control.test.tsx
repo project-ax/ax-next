@@ -69,7 +69,7 @@ const webhookRoutine: Routine = {
 
 describe('FireNowControl — interval/cron', () => {
   it('clicking "Fire now" POSTs to /settings/routines/:agentId/fire (no payload)', async () => {
-    mockJson(200, { status: 'ok', conversationId: 'cnv' });
+    mockJson(200, { status: 'ok' });
     const onFired = vi.fn();
     render(<FireNowControl routine={intervalRoutine} onFired={onFired} />);
     fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
@@ -103,8 +103,7 @@ describe('FireNowControl — webhook', () => {
   });
 
   it('Submit posts the parsed JSON as `payload`', async () => {
-    // `'ok'` always carries a conversation; only the error paths return null.
-    mockJson(200, { status: 'ok', conversationId: 'cnv_ping' });
+    mockJson(200, { status: 'ok' });
     const onFired = vi.fn();
     render(<FireNowControl routine={webhookRoutine} onFired={onFired} />);
     fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
@@ -142,7 +141,7 @@ describe('FireNowControl — webhook', () => {
  */
 describe('FireNowControl — confirmation line', () => {
   it('a successful fire confirms in plain language, with no row id', async () => {
-    mockJson(200, { status: 'ok', conversationId: 'cnv' });
+    mockJson(200, { status: 'ok' });
     render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
     const line = await screen.findByText('Started — the agent is running it now.');
@@ -156,10 +155,10 @@ describe('FireNowControl — confirmation line', () => {
 
   it('a 200 that reports status "error" reads as a failure, in the destructive register', async () => {
     // The two `status: 'error'` early returns in fire.ts (agents:resolve and
-    // the conversation create/find) answer 200 with `conversationId: null`.
-    // Before TASK-313 this rendered muted grey as "Fired (#7, error)" — a
-    // failure dressed as a success.
-    mockJson(200, { status: 'error', conversationId: null });
+    // the conversation create/find) both answer 200. Before TASK-313 this
+    // rendered muted grey as "Fired (#7, error)" — a failure dressed as a
+    // success.
+    mockJson(200, { status: 'error' });
     render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
     const line = await screen.findByText("We couldn't start this run. Please try again.");
@@ -178,7 +177,7 @@ describe('FireNowControl — confirmation line', () => {
     // not happen, and it would vanish while they were still reading it.
     vi.useFakeTimers({ shouldAdvanceTime: true });
     try {
-      mockJson(200, { status: 'error', conversationId: null });
+      mockJson(200, { status: 'error' });
       render(<FireNowControl routine={intervalRoutine} onFired={() => {}} />);
       fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
       await screen.findByText("We couldn't start this run. Please try again.");
@@ -197,7 +196,7 @@ describe('FireNowControl — confirmation line', () => {
     // Success closes the form. Failure must not — closing it would throw away
     // the payload the reader just typed, on the one outcome where they need
     // to send it again.
-    mockJson(200, { status: 'error', conversationId: null });
+    mockJson(200, { status: 'error' });
     render(<FireNowControl routine={webhookRoutine} onFired={() => {}} />);
     fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));
     fireEvent.change(screen.getByRole('textbox'), { target: { value: '{"x":1}' } });
@@ -208,7 +207,7 @@ describe('FireNowControl — confirmation line', () => {
   });
 
   it('an errored fire still refreshes the parent so the new fire row shows up', async () => {
-    mockJson(200, { status: 'error', conversationId: null });
+    mockJson(200, { status: 'error' });
     const onFired = vi.fn();
     render(<FireNowControl routine={intervalRoutine} onFired={onFired} />);
     fireEvent.click(screen.getByRole('button', { name: /Fire now/i }));

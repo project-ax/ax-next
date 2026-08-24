@@ -46,20 +46,26 @@ export interface FireNowInput {
   payload?: unknown;
 }
 /**
- * What `routines:fire-now` hands back. Deliberately carries no fire-row id:
- * that was the store's `BIGSERIAL`, which is storage vocabulary no alternate
- * backend (a JSONL fire log, a sqlite store) could reproduce, and it was
- * reaching users as "Fired (#7, ok)" (TASK-313).
+ * What `routines:fire-now` hands back: the verdict, and nothing else.
  *
- * `conversationId` is null on the two `status: 'error'` early returns in
- * `fire.ts` — a failed `agents:resolve`, and a failed conversation
- * find-or-create/create — and non-null on every `'ok'` path. `'silenced'` is
- * in `FireStatus` but cannot be returned here: it is written to the fire row
- * later, by the `chat:turn-end` subscriber.
+ * It used to carry the store's `BIGSERIAL` fire-row id, which is storage
+ * vocabulary no alternate backend (a JSONL fire log, a sqlite store) could
+ * reproduce, and which was reaching users as "Fired (#7, ok)" (TASK-313).
+ *
+ * It also used to carry `conversationId`. That was dropped rather than left
+ * unread: the only surface that could have shown it was a link to the
+ * conversation, and routine-fired conversations are created hidden with no
+ * per-fire transcript, so there is nothing to link to (see the header of
+ * `packages/channel-web/src/components/routines/FireRowsTable.tsx`). The id
+ * is still recorded on the fire row and still reaches the UI on
+ * `routines:recent-fires`, which is the surface that would host such a link.
+ *
+ * `'silenced'` is in `FireStatus` but cannot be returned here: it is written
+ * to the fire row later, by the `chat:turn-end` subscriber. So callers see
+ * only `'ok'` or `'error'`.
  */
 export interface FireNowOutput {
   status: FireStatus;
-  conversationId: string | null;
 }
 export interface ListInput {
   agentId?: string;
@@ -302,7 +308,6 @@ export const RecentFiresForAgentOutputSchema = z.object({
 
 export const FireNowOutputSchema = z.object({
   status: FireStatusSchema,
-  conversationId: z.string().nullable(),
 }) as unknown as ZodType<FireNowOutput>;
 
 export const RoutinesListDefaultsOutputSchema = z.object({
