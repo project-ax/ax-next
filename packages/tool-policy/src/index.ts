@@ -1,7 +1,7 @@
 export { capabilityRows, createToolPolicyPlugin } from './plugin.js';
 export type { ToolPolicyPluginOptions } from './plugin.js';
 export { evaluate } from './evaluate.js';
-export { CAPABILITY_MAX_CHARS, lintCapability } from './capability-lint.js';
+export { CAPABILITY_MAX_CHARS, lintCapability, lintRuleEffect } from './capability-lint.js';
 export { BUILTIN_RULES } from './rules.js';
 export {
   CapabilityProvenanceSchema,
@@ -21,4 +21,5 @@ export type {
   PolicyVerdict,
   PredicateSpec,
   RuleProvenance,
+  ToolEffect,
 } from './types.js';

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { lintCapability } from '../capability-lint.js';
+import { lintCapability, lintRuleEffect } from '../capability-lint.js';
 
 /**
  * `lintCapability` returns human-readable sentences, so the assertions match on
@@ -86,5 +86,41 @@ describe('lintCapability', () => {
     // An empty clause must not also be reported as "starts with to" etc. —
     // every downstream check would be reasoning about nothing.
     expect(lintCapability('')).toEqual(['is empty']);
+  });
+});
+
+describe('lintRuleEffect (TASK-263)', () => {
+  /*
+    The point of these fixtures is NON-VACUITY.
+
+    The natural way to write this guard is a loop over `BUILTIN_RULES`
+    asserting no `outward` rule is `allow` — and that passes today for the
+    wrong reason, because no rule in the table is `outward` at all. It would be
+    a check that cannot fail wearing the costume of a guard. So the linter is a
+    pure function and these fixtures prove it actually fires; the table-wide
+    assertion in rules.test.ts is the secondary check.
+  */
+  it('rejects an outward rule that is allowed', () => {
+    expect(lintRuleEffect({ effect: 'outward', verdict: 'allow' })).toEqual([
+      expect.stringContaining('outward'),
+    ]);
+  });
+
+  it('accepts an outward rule that is held or denied', () => {
+    expect(lintRuleEffect({ effect: 'outward', verdict: 'hold' })).toEqual([]);
+    expect(lintRuleEffect({ effect: 'outward', verdict: 'deny' })).toEqual([]);
+  });
+
+  it('accepts a spending rule that is allowed — metered spend is not an outward effect', () => {
+    // The asymmetry this whole design rests on. If this ever starts failing,
+    // web_search holds on every call and the gate gets turned off.
+    expect(lintRuleEffect({ effect: 'spends', verdict: 'allow' })).toEqual([]);
+  });
+
+  it('accepts an unclassified rule — omitted effect is not an error', () => {
+    // Most rules are neither outward nor spending, and requiring the field
+    // would be 20 rows of `effect: undefined` noise. The cost is that omitted
+    // and unclassified are indistinguishable; see the ToolEffect doc.
+    expect(lintRuleEffect({ verdict: 'allow' })).toEqual([]);
   });
 });

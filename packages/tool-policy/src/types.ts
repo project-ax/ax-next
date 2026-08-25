@@ -35,6 +35,35 @@ export interface PredicateSpec {
   equals: string | number | boolean;
 }
 
+/**
+ * What the call does in the world, when that is more than reading or writing
+ * inside the agent's own sandbox. Declared per rule, because `evaluate()` is
+ * given only `{ name, input }` — it cannot see `ToolDescriptor.executesIn`,
+ * connector metadata or MCP annotations, so there is nothing to derive this
+ * from and the name is the only handle we have.
+ *
+ *   - `outward` — a third party sees it, or it cannot be taken back: a message
+ *     sent, something posted publicly, a payment made. A rule declaring this
+ *     MAY NOT be `allow` (enforced by `lintRuleEffect`, wired into the CI
+ *     capability gate). This is the case "unguarded by default" would be wrong
+ *     for, and the enforcement is what stops it being added as a quiet
+ *     one-line `allow`.
+ *   - `spends` — costs money, but produces no third-party-visible effect: a
+ *     metered read. `web_search` / `web_extract` bill an Anthropic Messages
+ *     call per invocation. This MAY be `allow`; the requirement is that it is
+ *     DECLARED, so the spend is in the table rather than implied by a tool
+ *     name.
+ *
+ * The asymmetry is deliberate. Collapsing the two would force a choice between
+ * holding every web search (unusable, so the gate gets turned off) and allowing
+ * sends and payments by default (indefensible). They are different risks.
+ *
+ * OMITTED DOES NOT MEAN SAFE — it means nobody has classified this tool. Most
+ * rules omit it truthfully (a sandbox read is neither), but an unmatched tool
+ * has no rule at all and so no effect either; see `evaluate()`.
+ */
+export type ToolEffect = 'outward' | 'spends';
+
 export interface PolicyRule {
   /** Stable, dotted, printed beside the sentence in the rail as its source. */
   id: string;
@@ -55,8 +84,16 @@ export interface PolicyRule {
    * NOT offer the 10-second undo window on it. Omitted means reversible —
    * which is the honest default only because every rule seeded today IS
    * reversible; a new irreversible rule must set this explicitly.
+   *
+   * Related to but NOT the same as `effect`: `irreversible` is about whether an
+   * APPROVAL can be withdrawn during the undo window, `effect` is about what
+   * the call does in the world. An `outward` call is usually also
+   * irreversible, but a `spends` one is not — you cannot unspend the money,
+   * yet there is no outward action to withdraw.
    */
   irreversible?: boolean;
+  /** See `ToolEffect`. Omitted means unclassified, not harmless. */
+  effect?: ToolEffect;
 }
 
 export interface EvaluateResult {

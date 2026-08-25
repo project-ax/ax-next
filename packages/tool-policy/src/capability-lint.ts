@@ -105,3 +105,33 @@ export function lintCapability(clause: string): string[] {
   }
   return errs;
 }
+
+/**
+ * The rule-shape half of the lint: an `outward` rule may not be `allow`.
+ *
+ * Why this is a lint and not a type. Making it unrepresentable would need
+ * `PolicyRule` to become a discriminated union over the verdict, which every
+ * consumer that reads `rule.verdict` generically would then have to narrow —
+ * a large change to make one combination unwriteable. A lint in the CI gate
+ * catches it just as early, names the rule in the log, and leaves the type flat.
+ *
+ * WHAT THIS DOES NOT COVER, stated because the gap is the more dangerous half:
+ * a tool with NO rule is unclassified, so it has no `effect` for this to check
+ * and falls through to `allow`. See the fall-through comment in `evaluate.ts`.
+ * This guards the table against a bad row; it cannot guard against an absent
+ * one.
+ */
+export function lintRuleEffect(rule: {
+  effect?: 'outward' | 'spends';
+  verdict: string;
+}): string[] {
+  if (rule.effect === 'outward' && rule.verdict === 'allow') {
+    return [
+      'declares effect: "outward" but verdict: "allow" — a call a third party ' +
+        'sees, or that cannot be taken back, must be held or denied. Change the ' +
+        'verdict, or if it is only metered spend with no outward effect, declare ' +
+        'effect: "spends" instead.',
+    ];
+  }
+  return [];
+}

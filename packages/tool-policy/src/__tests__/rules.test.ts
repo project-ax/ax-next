@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { lintCapability } from '../capability-lint.js';
+import { lintCapability, lintRuleEffect } from '../capability-lint.js';
 import { BUILTIN_RULES } from '../rules.js';
 
 describe('BUILTIN_RULES', () => {
@@ -71,6 +71,39 @@ describe('BUILTIN_RULES', () => {
       // 'rule' when omitted, and a silent default on a claim about how much
       // review a permission got is not a default worth having.
       expect(rule.provenance, rule.id).toBeDefined();
+    }
+  });
+
+  it('no rule in the table declares an outward effect it also allows', () => {
+    // The table-wide half of the TASK-263 guard. Deliberately paired with the
+    // fixture tests in capability-lint.test.ts, because this loop is VACUOUS on
+    // its own: no rule is `outward` today, so it would pass unchanged if
+    // `lintRuleEffect` returned [] for everything. The fixtures prove the
+    // linter fires; this proves the shipped table is clean.
+    for (const rule of BUILTIN_RULES) {
+      expect(lintRuleEffect(rule), rule.id).toEqual([]);
+    }
+  });
+
+  it('declares the spend on exactly the two tools that bill an API call', () => {
+    // @ax/web-tools implements both by making a billed Anthropic Messages call
+    // per invocation. Nothing else in the table costs money: the memory tools,
+    // the sandbox six and the catalog reads are all local, and the three holds
+    // are consent flows. If a third tool starts spending, it belongs here — and
+    // if one of these two stops, this fails rather than leaving a stale claim
+    // that the agent's web search costs money when it no longer does.
+    const spending = BUILTIN_RULES.filter((r) => r.effect === 'spends').map((r) => r.id);
+    expect(spending.sort()).toEqual(['web.extract', 'web.search']);
+  });
+
+  it('marks nothing outward yet — the enforcement exists before the case does', () => {
+    // Not an aspiration: TASK-263 shipped `effect: 'outward'` and its lint
+    // BEFORE any outward tool exists, precisely so the first one cannot be
+    // added as a quiet `allow`. When one arrives this test is the prompt to
+    // check the rail and the undo window (`irreversible`) handle it, the same
+    // way the irreversible test below is a tripwire rather than a preference.
+    for (const rule of BUILTIN_RULES) {
+      expect(rule.effect, rule.id).not.toBe('outward');
     }
   });
 

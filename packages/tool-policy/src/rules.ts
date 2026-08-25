@@ -150,6 +150,19 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   //
   // `web_search` / `web_extract` need a provider API key; the memory tools need
   // @ax/memory-strata. Inert where absent.
+  //
+  // The two web tools carry `effect: 'spends'` (TASK-263). They are not merely
+  // reads: @ax/web-tools implements them by making a BILLED Anthropic Messages
+  // call per invocation on the operator's key, so every use costs money. They
+  // stay `allow` — a metered read with no third-party-visible effect is the
+  // case where holding would be pure friction — but the spend is now declared
+  // in the table instead of being a fact you had to know about
+  // `@ax/web-tools`' implementation to discover.
+  //
+  // They stay `provenance: 'catalog'` deliberately. `catalog` claims "reachable
+  // and no rule GATES it", which is still exactly true; declaring an effect is
+  // a disclosure, not a gate, so promoting these to `'rule'` would overstate
+  // how much the permission itself was deliberated.
   {
     id: 'web.search',
     match: { tool: 'web_search' },
@@ -157,6 +170,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     capability: 'search the web',
     subject: 'agent',
     provenance: 'catalog',
+    effect: 'spends',
   },
   {
     id: 'web.extract',
@@ -165,6 +179,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     capability: 'read a web page you name',
     subject: 'agent',
     provenance: 'catalog',
+    effect: 'spends',
   },
   {
     id: 'memory.search',
