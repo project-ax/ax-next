@@ -74,6 +74,40 @@ describe('BUILTIN_RULES', () => {
     }
   });
 
+  it('declares the spend on exactly the two tools that bill an API call', () => {
+    // @ax/web-tools implements both by making a billed Anthropic Messages call
+    // per invocation. Nothing else in the table costs money: the memory tools,
+    // the sandbox six and the catalog reads are all local, and the three holds
+    // are consent flows. If a third tool starts spending, it belongs here — and
+    // if one of these two stops, this fails rather than leaving a stale claim
+    // that the agent's web search costs money when it no longer does.
+    const spending = BUILTIN_RULES.filter((r) => r.effect === 'spends').map((r) => r.id);
+    expect(spending.sort()).toEqual(['web.extract', 'web.search']);
+  });
+
+  it('marks nothing outward yet — the enforcement exists before the case does', () => {
+    // Not an aspiration: TASK-263 shipped `effect: 'outward'` and its lint
+    // BEFORE any outward tool exists, precisely so the first one cannot be
+    // added as a quiet `allow`. When one arrives this test is the prompt to
+    // check the rail and the undo window (`irreversible`) handle it, the same
+    // way the irreversible test below is a tripwire rather than a preference.
+    //
+    // DELIBERATELY STRICTER THAN THE LINT, which permits `outward` + hold/deny.
+    // A correctly-held outward rule will red this test even though the shipped
+    // enforcement is happy — that is the intent: the first one should stop and
+    // make someone look, not slide in green.
+    //
+    // This also subsumes the table-wide `lintRuleEffect` loop an earlier draft
+    // had beside it: if nothing is `outward`, "no outward rule is allowed" is
+    // trivially implied, and two tests asserting one fact is how a reader comes
+    // to believe there are two guards. `lintRuleEffect` itself is proven by
+    // fixtures in capability-lint.test.ts, and enforced in CI by
+    // scripts/lint-capabilities.ts.
+    for (const rule of BUILTIN_RULES) {
+      expect(rule.effect, rule.id).not.toBe('outward');
+    }
+  });
+
   it('marks nothing irreversible — every seeded approval can be taken back', () => {
     // A guard, not a preference: AW-5 offers a 10-second undo window unless a
     // rule opts out, and offering undo on something irreversible is a claim
