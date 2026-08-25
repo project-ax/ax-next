@@ -69,15 +69,41 @@ function isSetupPath(): boolean {
 }
 
 /**
- * `/workspace` is a normal, gated surface: it goes through bootstrap, sign-in,
- * and the first-run agent flow like every other route, and it renders only when
- * the server says this deployment has the preview turned on
- * (`features.agentWorkspacePreview`). A signed-out visitor gets the sign-in
- * page, same as anywhere else.
+ * Which paths resolve to the agent workspace — given the deployment has the
+ * preview on, which is checked separately at the call site
+ * (`features.agentWorkspacePreview`).
+ *
+ * It is a normal, gated surface: it goes through bootstrap, sign-in, and the
+ * first-run agent flow like every other route. A signed-out visitor gets the
+ * sign-in page, same as anywhere else.
+ *
+ * `/` IS IN HERE ON PURPOSE. For a deployment that turns the preview on, the
+ * workspace is the landing surface. Note this is not a redirect: App renders by
+ * path priority (setup → workspace → chat), so `/` simply resolves to the
+ * workspace branch instead of falling through to chat. No URL rewrite and no
+ * flash, so this adds no phantom history entry.
+ *
+ * That is the whole of the history claim, and it is worth being narrow about:
+ * `WorkspaceShell` keeps its own route in component state, so the back button
+ * does NOT unwind navigation INSIDE the workspace (drill into an agent, and
+ * Back won't return you to Today). `/` and `/workspace` are also two URLs for
+ * the same stateless surface with nothing to distinguish them. Both are
+ * acceptable for a preview and neither is what this predicate decides.
+ *
+ * Chat keeps an address either way, which is the fact that makes this safe
+ * rather than a one-way door: chat is App's FALL-THROUGH branch, and
+ * @ax/static-files serves the SPA on any unclaimed path, so `/chat` renders it.
+ * Worth stating because chat is easy to misread as "the thing at `/`" — it has
+ * no route of its own and its conversation selection is component state, not
+ * URL state, so if the fall-through were ever narrowed to an explicit list the
+ * chat shell would become unreachable.
+ *
+ * A deployment with the preview OFF is untouched: `/` falls through to chat
+ * exactly as before, because the call site ANDs this with the flag.
  */
-function isWorkspacePath(): boolean {
+function pathRendersWorkspace(): boolean {
   const p = window.location.pathname;
-  return p === '/workspace' || p.startsWith('/workspace/');
+  return p === '/' || p === '/workspace' || p.startsWith('/workspace/');
 }
 
 export const App = () => {
@@ -335,7 +361,7 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   //
   // No AssistantRuntimeProvider here — the workspace doesn't mount the
   // assistant-ui runtime.
-  if (isWorkspacePath() && features.agentWorkspacePreview) {
+  if (pathRendersWorkspace() && features.agentWorkspacePreview) {
     return (
       <UserProvider value={user}>
         <WorkspaceShell />

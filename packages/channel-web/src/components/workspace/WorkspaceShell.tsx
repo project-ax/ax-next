@@ -1,7 +1,8 @@
 /**
  * The agent workspace — the shell.
  *
- * Mounted at `/workspace` behind the `agentWorkspacePreview` feature flag, on
+ * Mounted at `/workspace` — and at `/`, which the flag also claims — behind
+ * the `agentWorkspacePreview` feature flag, on
  * the real host: `App.tsx` supplies the signed-in user, `/api/workspace/*`
  * supplies the board, and sending a message goes to the shipped chat wire.
  *
