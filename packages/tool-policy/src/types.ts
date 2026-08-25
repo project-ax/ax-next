@@ -48,11 +48,18 @@ export interface PredicateSpec {
  *     capability gate). This is the case "unguarded by default" would be wrong
  *     for, and the enforcement is what stops it being added as a quiet
  *     one-line `allow`.
- *   - `spends` — costs money, but produces no third-party-visible effect: a
- *     metered read. `web_search` / `web_extract` bill an Anthropic Messages
- *     call per invocation. This MAY be `allow`; the requirement is that it is
- *     DECLARED, so the spend is in the table rather than implied by a tool
- *     name.
+ *   - `spends` — costs money per call. `web_search` / `web_extract` bill an
+ *     Anthropic Messages call per invocation. This MAY be `allow`; the
+ *     requirement is that it is DECLARED, so the spend is in the table rather
+ *     than implied by a tool name.
+ *
+ *     `spends` is a claim about MONEY ONLY. An earlier draft of this comment
+ *     also said "no third-party-visible effect", which is false for
+ *     `web_extract`: it fetches any public URL the agent names (`url-guard.ts`
+ *     refuses only localhost/.local/.internal), so the URL's owner sees the
+ *     request and anything encoded in it. Do not read `spends` as "safe" or as
+ *     "not outward" — it says nothing about either. See the note on
+ *     `web.extract` in rules.ts.
  *
  * The asymmetry is deliberate. Collapsing the two would force a choice between
  * holding every web search (unusable, so the gate gets turned off) and allowing
@@ -61,6 +68,13 @@ export interface PredicateSpec {
  * OMITTED DOES NOT MEAN SAFE — it means nobody has classified this tool. Most
  * rules omit it truthfully (a sandbox read is neither), but an unmatched tool
  * has no rule at all and so no effect either; see `evaluate()`.
+ *
+ * A KNOWN LIMIT OF THIS SHAPE: it holds one value, and a tool can be both.
+ * `web_extract` spends money AND is an exfiltration channel. It is filed as
+ * `spends` because marking it `outward` would force a hold on every page read
+ * through the lint below, which is a live-deployment UX decision rather than a
+ * classification one (TASK-330). If a second tool needs both, this becomes an
+ * array — do that rather than picking the convenient half.
  */
 export type ToolEffect = 'outward' | 'spends';
 

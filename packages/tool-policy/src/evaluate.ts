@@ -29,24 +29,42 @@ function matches(when: PredicateSpec | undefined, input: unknown): boolean {
  * exception list over a system whose baseline reach is already bounded by the
  * tool catalog, the egress allowlist and the connector scoping (see AW-1).
  *
- * THE KNOWN HOLE IN THAT DEFAULT (TASK-263). Only our two in-process MCP
- * servers get their prefix stripped upstream, so a third-party or
- * connector-backed tool arrives here as the full `mcp__<server>__<tool>`
- * string, matches nothing, and is allowed. Wire up a Gmail-style connector at
- * runtime and `send_message` is unguarded — an outward call, allowed, with no
- * human having reviewed that specific claim. The rail does show it (as
+ * THE KNOWN HOLE IN THAT DEFAULT (TASK-263). A connector-backed tool matches no
+ * rule and is therefore allowed. Wire up a Gmail-style connector at runtime and
+ * `send_message` is unguarded — an outward call, allowed, with no human having
+ * reviewed that specific claim. The rail does show it (as
  * `provenance: 'mcp'|'unmapped'`, `described: false`), so it is visible rather
  * than hidden; it is simply not gated.
  *
- * This is NOT fixed by flipping the default to `hold`, which is why it is still
- * `allow` here. There is no durable per-tool "always allow": `@ax/host-grants`
- * grants egress HOSTS, and `DecisionStatus` is per-decision, so nothing carries
- * a yes forward to the next call of the same tool. Holding unmatched tools
- * would therefore hold EVERY connector call forever, which ends with the
- * operator turning the gate off — strictly worse than the status quo. Closing
- * this needs that grant mechanism first; `effect: 'outward'` and
- * `lintRuleEffect` meanwhile stop a *known* outward tool being added to the
- * table as a quiet `allow`.
+ * WHAT SUCH A TOOL IS ACTUALLY CALLED HERE, because a guard written against the
+ * wrong spelling would catch none of them: `@ax/mcp-client` re-keys every
+ * MCP-sourced tool as `mcp.${serverId}.${tool}` — DOT-separated — and registers
+ * it as a host tool. Host tools are multiplexed through our own
+ * `ax-host-tools` server, so the SDK sees `mcp__ax-host-tools__mcp.<id>.<tool>`
+ * and `classifySdkToolName` strips that wrapper, leaving `mcp.<id>.<tool>`. On
+ * the aisdk runner there is no `mcp__` prefix at all. So the double-underscore
+ * form belongs to OUR two in-process servers and is already stripped; a real
+ * connector tool never wears it. Gate on `mcp.`, not `mcp__`.
+ *
+ * WHY IT IS STILL `allow`. Two separate obstacles, worth not conflating:
+ *
+ *   1. `evaluate()` is given only `{ name, input }` — no `ToolDescriptor`, no
+ *      connector metadata, no MCP annotations. It cannot tell an outward tool
+ *      from a read by name, so "hold the outward ones" is not expressible here
+ *      at all. This is the blocker for a targeted fix.
+ *   2. Holding ALL unmatched tools instead is expressible, and its cost is
+ *      friction rather than impossibility: approval is per call (`takeApproval`
+ *      consumes one authorisation, keyed on a fingerprint of `{name,input}`),
+ *      so a human CAN say yes — just never once-and-for-all. On a
+ *      high-frequency READ connector that is a prompt per call, which ends with
+ *      the operator turning the gate off. A durable per-tool grant (TASK-328)
+ *      is what would make it bearable.
+ *
+ * Note (2) is a friction argument about read connectors and does NOT justify
+ * leaving outward connectors ungated — for those, a prompt per call is the
+ * correct UX and needs no new mechanism. It is (1) that blocks doing it
+ * properly. Meanwhile `effect: 'outward'` + `lintRuleEffect` stop a *known*
+ * outward tool being added to the table as a quiet `allow`.
  *
  * Pure and total: no clock, no I/O, no throw. `@ax/decisions` (AW-4) calls this
  * from inside a `tool:pre-call` subscriber, where a throw is swallowed by

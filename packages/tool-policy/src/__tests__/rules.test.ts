@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { lintCapability, lintRuleEffect } from '../capability-lint.js';
+import { lintCapability } from '../capability-lint.js';
 import { BUILTIN_RULES } from '../rules.js';
 
 describe('BUILTIN_RULES', () => {
@@ -74,17 +74,6 @@ describe('BUILTIN_RULES', () => {
     }
   });
 
-  it('no rule in the table declares an outward effect it also allows', () => {
-    // The table-wide half of the TASK-263 guard. Deliberately paired with the
-    // fixture tests in capability-lint.test.ts, because this loop is VACUOUS on
-    // its own: no rule is `outward` today, so it would pass unchanged if
-    // `lintRuleEffect` returned [] for everything. The fixtures prove the
-    // linter fires; this proves the shipped table is clean.
-    for (const rule of BUILTIN_RULES) {
-      expect(lintRuleEffect(rule), rule.id).toEqual([]);
-    }
-  });
-
   it('declares the spend on exactly the two tools that bill an API call', () => {
     // @ax/web-tools implements both by making a billed Anthropic Messages call
     // per invocation. Nothing else in the table costs money: the memory tools,
@@ -102,6 +91,18 @@ describe('BUILTIN_RULES', () => {
     // added as a quiet `allow`. When one arrives this test is the prompt to
     // check the rail and the undo window (`irreversible`) handle it, the same
     // way the irreversible test below is a tripwire rather than a preference.
+    //
+    // DELIBERATELY STRICTER THAN THE LINT, which permits `outward` + hold/deny.
+    // A correctly-held outward rule will red this test even though the shipped
+    // enforcement is happy — that is the intent: the first one should stop and
+    // make someone look, not slide in green.
+    //
+    // This also subsumes the table-wide `lintRuleEffect` loop an earlier draft
+    // had beside it: if nothing is `outward`, "no outward rule is allowed" is
+    // trivially implied, and two tests asserting one fact is how a reader comes
+    // to believe there are two guards. `lintRuleEffect` itself is proven by
+    // fixtures in capability-lint.test.ts, and enforced in CI by
+    // scripts/lint-capabilities.ts.
     for (const rule of BUILTIN_RULES) {
       expect(rule.effect, rule.id).not.toBe('outward');
     }

@@ -17,12 +17,20 @@ Re-derived from the tree (2026-08-24), two corrections:
    makes it nearly vacuous. The substantive claim — that the wrong-case is hypothetical — is
    false.
 
-2. **The larger hole is the unmatched tool, not the marked one.** Only our two in-process MCP
-   servers get their prefix stripped (`agent-claude-sdk-runner/src/tool-names.ts`). A
-   third-party / connector-backed tool arrives at `evaluate()` as the full
-   `mcp__<server>__<tool>` string, matches no rule, and falls through to **`allow`**. So
-   wiring up a Gmail-style connector at runtime yields an unguarded `send_message` today —
-   reachable by configuration, not future work.
+2. **The larger hole is the unmatched tool, not the marked one.** A connector-backed tool
+   matches no rule and falls through to **`allow`**, so wiring up a Gmail-style connector at
+   runtime yields an unguarded `send_message` today — reachable by configuration, not future
+   work.
+
+   **Corrected after review:** an earlier draft of this plan said such a tool arrives as
+   `mcp__<server>__<tool>`. That is wrong, and wrong in the direction that matters — a guard
+   written against that spelling would catch none of them. `@ax/mcp-client` re-keys
+   MCP-sourced tools as **`mcp.${serverId}.${tool}`** (dot-separated,
+   `mcp-client/src/tool-names.ts`) and registers them as host tools; host tools are
+   multiplexed through our own `ax-host-tools` server, whose `mcp__ax-host-tools__` wrapper
+   `classifySdkToolName` strips. So `evaluate()` sees `mcp.<id>.<tool>`, and the aisdk runner
+   has no `mcp__` prefix at all. The double-underscore form belongs to our two in-process
+   servers and is already stripped.
 
 Also worth stating: `evaluate()` receives only `{ name, input }`. It cannot see
 `ToolDescriptor.executesIn`, connector metadata, or MCP annotations, so **any** classification
@@ -36,15 +44,25 @@ of "outward" has to be by name in `rules.ts` — there is no field on the descri
 Not because it is ideal, but because flipping it is **not implementable today**, and the
 half-built version is worse than the status quo:
 
-- There is **no durable per-tool "always allow"**. `@ax/host-grants` grants **egress hosts**
-  (`host_grants_v1_grants`: `(owner_user_id, agent_id, host)`), not tools. `DecisionStatus` is
-  per-decision (`pending|executed|approved-pending-agent|dismissed|stale|expired|failed`) —
-  nothing carries a standing authorisation for *the next* call of the same tool.
-- So `hold`-by-default for unmatched tools means **every call to every connector tool holds,
-  forever, with no way to say yes once**. That does not make anyone safer: it makes connectors
-  unusable and pushes an operator to turn the gate off, which loses the guard entirely.
+Two obstacles, and **review caught me conflating them** — they are not the same and only one
+is a hard blocker:
 
-The blocker is therefore a missing mechanism, not a missing decision. Named as a follow-up.
+1. **The hard one:** `evaluate()` receives only `{ name, input }`. It cannot tell an outward
+   tool from a read by name, so the targeted fix — "hold the outward unmatched ones" — is not
+   expressible here at all.
+2. **The soft one:** holding *all* unmatched tools IS expressible, and its cost is friction,
+   not impossibility. Approval is per call (`takeApproval` consumes one authorisation keyed on
+   a fingerprint of `{name,input}`), so a human **can** say yes — just never
+   once-and-for-all. There is no durable per-tool "always allow": `@ax/host-grants` grants
+   **egress hosts** (`host_grants_v1_grants`: `(owner_user_id, agent_id, host)`), and
+   `DecisionStatus` is per-decision. On a high-frequency **read** connector that means a
+   prompt per call, which ends with the operator turning the gate off.
+
+The honest statement of (2) is "prompts on every call", not "no way to say yes once" — and it
+is a friction argument about **read** connectors that does **not** justify leaving outward
+connectors ungated, since for those a prompt per call is the correct UX and needs no new
+mechanism. It is (1) that blocks doing this properly. TASK-328 (a durable per-tool grant) is
+what makes (2) bearable.
 
 ### What ships instead: an outward tool cannot be added as a silent `allow`.
 

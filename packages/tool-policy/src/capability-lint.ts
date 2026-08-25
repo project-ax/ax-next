@@ -1,3 +1,4 @@
+import type { ToolEffect } from './types.js';
 // Shape lint for the `capability` clause on a PolicyRule.
 //
 // The clause is HALF a sentence: the verdict supplies the frame ("Can X — on
@@ -122,7 +123,7 @@ export function lintCapability(clause: string): string[] {
  * one.
  */
 export function lintRuleEffect(rule: {
-  effect?: 'outward' | 'spends';
+  effect?: ToolEffect;
   verdict: string;
 }): string[] {
   if (rule.effect === 'outward' && rule.verdict === 'allow') {
