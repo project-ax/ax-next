@@ -29,12 +29,13 @@ import { useEffect, useRef, useState } from 'react';
 import { ComposerPrimitive, ThreadPrimitive } from '@assistant-ui/react';
 import { Paperclip } from 'lucide-react';
 import { handleTestTrigger } from '../lib/agent-status-test-triggers';
+import { useConversationDecisions } from '../lib/conversation-decisions';
 import { AgentStatus } from './AgentStatus';
 import { AttachmentComposerChip } from './AttachmentComposerChip';
 import { InThreadApprovals } from './InThreadApprovals';
 import { PermissionCard } from './PermissionCard';
 
-function AttachMenu() {
+function AttachMenu({ disabled = false }: { disabled?: boolean }) {
   const [open, setOpen] = useState(false);
   const wrapRef = useRef<HTMLDivElement>(null);
 
@@ -65,6 +66,7 @@ function AttachMenu() {
         aria-haspopup="menu"
         aria-expanded={open}
         title="Attach"
+        disabled={disabled}
         onClick={() => setOpen((v) => !v)}
       >
         <svg viewBox="0 0 16 16" fill="none" aria-hidden="true" className="h-3.5 w-3.5">
@@ -86,7 +88,7 @@ function AttachMenu() {
             animate-in fade-in-0 slide-in-from-bottom-1 zoom-in-95 duration-150
           "
         >
-          <ComposerPrimitive.AddAttachment asChild>
+          <ComposerPrimitive.AddAttachment asChild disabled={disabled}>
             <button
               type="button"
               role="menuitem"
@@ -107,10 +109,28 @@ function AttachMenu() {
   );
 }
 
+import { COMPOSER_HOLD_COPY } from './workspace/decision-copy';
+
+/** Re-exported so tests pin the sentence against the component that renders it. */
+export { COMPOSER_HOLD_COPY };
+
 export function Composer() {
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // TASK-275: while an approval is open the turn is parked server-side, so a
+  // send here would race it or vanish. `held` keys off the same `open` split
+  // `InThreadApprovals` renders from — one predicate, two surfaces.
+  const { open } = useConversationDecisions();
+  const held = open.length > 0;
 
   const onSubmit = (e: React.FormEvent<HTMLFormElement>) => {
+    if (held) {
+      // Block EVERY send path, including programmatic submits that a disabled
+      // button cannot stop. `preventDefault` also stops assistant-ui's own
+      // submit handler (composed behind this one), and nothing below runs, so
+      // the draft stays exactly as typed. No focus move here either.
+      e.preventDefault();
+      return;
+    }
     if (!import.meta.env.DEV) return;
     const text = inputRef.current?.value.trim() ?? '';
     if (!text.startsWith('/status') && !text.startsWith('/error')) return;
@@ -141,6 +161,14 @@ export function Composer() {
         <InThreadApprovals />
         <PermissionCard />
         <AgentStatus />
+        {held && (
+          <p
+            data-composer-hold=""
+            className="mb-2 px-1.5 text-[13px] leading-snug text-muted-foreground"
+          >
+            {COMPOSER_HOLD_COPY}
+          </p>
+        )}
         <ComposerPrimitive.AttachmentDropzone
           data-attachment-dropzone=""
           className="
@@ -163,8 +191,9 @@ export function Composer() {
               border border-border transition-[border-color,box-shadow] duration-150
             "
           >
-            <AttachMenu />
+            <AttachMenu disabled={held} />
             <ComposerPrimitive.Input
+              disabled={held}
               placeholder="Message ax…"
               // `composer-input` class is the hook for the field's :has()
               // ready-state rule in index.css.
@@ -179,7 +208,7 @@ export function Composer() {
               ref={inputRef}
             />
             <ThreadPrimitive.If running={false}>
-              <ComposerPrimitive.Send asChild>
+              <ComposerPrimitive.Send asChild disabled={held}>
                 <button
                   type="button"
                   data-send=""

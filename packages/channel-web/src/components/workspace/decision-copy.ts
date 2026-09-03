@@ -41,6 +41,14 @@ import { UNDO_WINDOW_MS, type Decision } from '@/lib/workspace-types';
 export const DECISION_NOTHING_YET = 'Nothing happens until you choose';
 
 /**
+ * Above a HELD composer (TASK-275). One sentence, two surfaces: the `/`
+ * composer and the `/workspace` composer render this same string, so it lives
+ * here next to the other decision vocabulary instead of once per component.
+ */
+export const COMPOSER_HOLD_COPY =
+  "We're waiting on your approval above — send is paused until you choose.";
+
+/**
  * What a stale row leads with.
  *
  * Deliberately NOT "Nothing was sent" — the sentence this replaced. Most held

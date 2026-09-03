@@ -15,6 +15,7 @@ import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
 import { signInWithGoogle } from '@/lib/auth';
 import { readAlertVariant } from '@/lib/read-register';
+import { isOpenDecision } from '@/lib/workspace-types';
 import type {
   Decision,
   ThreadMessage,
@@ -24,6 +25,7 @@ import type {
 import { AgentTile } from './bits';
 import { ApprovalCard } from './ApprovalCard';
 import {
+  COMPOSER_HOLD_COPY,
   DECISION_SESSION_EXPIRED,
   DECISION_THREAD_READ_FAILED,
 } from './decision-copy';
@@ -94,9 +96,25 @@ export function AgentConversation({
 }: Props) {
   const [draft, setDraft] = useState('');
 
+  /*
+    TASK-275 — the composer holds while an approval is open IN THIS THREAD.
+    `decisions` is the GLOBAL queue (every agent), so `decisions.some(...)`
+    alone would quiet this composer over somebody else's waiting approval —
+    the false hold the review caught. The thread's own approval pointers are
+    the scope: this is the same linkage the `Message` renderer below uses to
+    draw each card, so the hold and the card can never disagree about which
+    thread a decision belongs to. No focus moves anywhere; the polite
+    announcer below says the one stable sentence.
+  */
+  const held = thread.some(
+    (m) =>
+      m.kind === 'approval' &&
+      decisions.some((d) => d.id === m.decisionId && isOpenDecision(d)),
+  );
+
   const send = () => {
     const v = draft.trim();
-    if (!v || busy) return;
+    if (!v || busy || held) return;
     setDraft('');
     onSend(v);
   };
@@ -183,6 +201,25 @@ export function AgentConversation({
 
       {!readOnly && (
         <div className="border-t border-border px-6 py-4">
+          {/*
+            TASK-275 — the hold reason, as real DOM text above the field: the
+            same sentence as `/`. Shown only for `held`, not for `busy`.
+          */}
+          {held && (
+            <div className="mb-2 max-w-[720px] text-[12.5px] text-muted-foreground">
+              {COMPOSER_HOLD_COPY}
+            </div>
+          )}
+          {/*
+            The announcer is a SEPARATE node from the cards above, mirroring
+            `InThreadApprovals`: one stable sentence that changes only when the
+            answer to "is something waiting" changes, and deliberately outside
+            any ticking counter (a settled receipt's `Undo | Ns` re-renders once
+            a second, which would bury the sentence that mattered).
+          */}
+          <span className="sr-only" role="status" aria-live="polite">
+            {held ? 'Your agent is waiting for your approval.' : ''}
+          </span>
           <div className="flex max-w-[720px] items-center gap-2">
             <Input
               value={draft}
@@ -190,9 +227,14 @@ export function AgentConversation({
               onKeyDown={(e) => e.key === 'Enter' && send()}
               placeholder={`Message ${agent.name}`}
               className="h-10"
-              disabled={busy}
+              disabled={busy || held}
             />
-            <Button size="icon" onClick={send} aria-label="Send" disabled={busy}>
+            <Button
+              size="icon"
+              onClick={send}
+              aria-label="Send"
+              disabled={busy || held}
+            >
               <ArrowUp size={15} />
             </Button>
           </div>
