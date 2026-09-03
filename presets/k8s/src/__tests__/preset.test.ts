@@ -315,6 +315,11 @@ describe('@ax/preset-k8s wiring', () => {
     const registered = new Set(plugins.flatMap((p) => p.manifest.registers));
     expect(registered.has('conversations:get-metadata')).toBe(true);
     expect(registered.has('session:queue-work')).toBe(true);
+    // TASK-278: the approve route binds the delivered continuation turn via
+    // `conversations:bind-session` so the open thread can stream it. Same
+    // silent-without-it class: without the producer every approval answers
+    // `streamReqId: null` and the continuation runs dark.
+    expect(registered.has('conversations:bind-session')).toBe(true);
   });
 
   it('loads the freshness producers the guard has nothing to guard without (TASK-228)', () => {

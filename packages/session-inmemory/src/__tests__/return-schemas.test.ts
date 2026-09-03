@@ -103,6 +103,20 @@ describe('session return schemas', () => {
     };
     expect(SessionClaimWorkOutputSchema.parse(resolved)).toEqual(resolved);
 
+    // TASK-278: the continuation correlation rides the same arm, optional.
+    const resolvedCont: SessionClaimWorkOutput = {
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+      reqId: 'req-continuation-1',
+      cursor: 9,
+    };
+    expect(SessionClaimWorkOutputSchema.parse(resolvedCont)).toEqual(resolvedCont);
+    expect(
+      SessionClaimWorkOutputSchema.safeParse({ ...resolvedCont, reqId: '' }).success,
+    ).toBe(false);
+
     expect(SessionClaimWorkOutputSchema.safeParse({ type: 'bogus', cursor: 1 }).success).toBe(
       false,
     );

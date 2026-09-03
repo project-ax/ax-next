@@ -976,6 +976,12 @@ export const SessionNextMessageResponseSchema = z.discriminatedUnion('type', [
     decisionId: z.string().min(1),
     outcome: z.enum(['approved', 'dismissed']),
     note: z.string().min(1).max(2000),
+    // TASK-278 — the continuation turn's chat correlation, minted by the
+    // approve route and echoed from `decisions:approve`. Optional: entries
+    // queued before this field existed (or for a turn with no live watcher)
+    // carry nothing, and the runner then runs dark exactly as before.
+    // Bounded like every other short id on this wire.
+    reqId: z.string().min(1).max(128).optional(),
     cursor: z.number().int().nonnegative(),
   }),
 ]);

@@ -682,6 +682,16 @@ describe('@ax/channel-web server plugin (integration)', () => {
           degradation:
             'the rail renders no "This week" counters (nothing records decisions here)',
         },
+        {
+          hook: 'conversations:get-metadata',
+          degradation:
+            'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
+        },
+        {
+          hook: 'conversations:bind-session',
+          degradation:
+            'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
+        },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     });

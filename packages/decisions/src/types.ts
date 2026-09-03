@@ -378,6 +378,19 @@ export interface DecisionsGetOutput {
 export interface DecisionsApproveInput {
   decisionId: string;
   userId: string;
+  /**
+   * TASK-278 — the chat turn that should carry the continuation, minted by the
+   * caller (channel-web's approve route). An opaque correlation id, the same
+   * kind already carried on `user-message` session-inbox entries — never
+   * parsed, only passed through to the woken runner and echoed back as
+   * `streamReqId` so the open thread can attach a stream consumer to it.
+   *
+   * Honoured ONLY on the delivered agent-executes path. Every other outcome
+   * (parked, host replay, deferred, already resolved) ignores it: there is no
+   * warm turn to correlate. Malformed values are dropped, never fatal — the
+   * approval itself must not fail over a streaming hint.
+   */
+  continuationReqId?: string;
 }
 
 export interface DecisionsApproveOutput {
@@ -418,6 +431,16 @@ export interface DecisionsApproveOutput {
    * grace period is the reason the deferral exists.
    */
   pendingUntil: string | null;
+  /**
+   * TASK-278 — the continuation turn's reqId, echoed from the input's
+   * `continuationReqId`. Non-null ONLY when the resolution was delivered to a
+   * warm agent that will emit the continuation under this id; the open thread
+   * attaches its stream consumer to it. Null on every other path — parked,
+   * host replay, deferred, already resolved, or no id was offered — where
+   * there is no live turn to watch. A renderer must never promise a live
+   * continuation off anything but a non-null value here.
+   */
+  streamReqId: string | null;
 }
 
 /**
@@ -650,6 +673,7 @@ export const DecisionsApproveOutputSchema = z.object({
   path: z.enum(['agent-executes', 'host-replays']).nullable(),
   error: z.string().nullable(),
   pendingUntil: z.string().nullable(),
+  streamReqId: z.string().nullable(),
 }) as unknown as z.ZodType<DecisionsApproveOutput>;
 
 export const DecisionsSweepOutputSchema = z.object({

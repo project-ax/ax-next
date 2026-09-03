@@ -16,6 +16,7 @@ import { AxAttachmentAdapter } from './ax-attachment-adapter';
 import { setActiveConversationId } from './use-conversation-id';
 import { applyTurnError } from './turn-error';
 import { resumeActions } from './resume-actions';
+import { continuationActions } from './continuation-actions';
 import { bootstrapKickoff } from './bootstrap-kickoff';
 
 const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
@@ -82,6 +83,13 @@ const useChatThreadRuntime = (transport: AxChatTransport): AssistantRuntime => {
   // module-ref posture as the retry banner's chatRef.current?.regenerate().
   resumeActions.registerRegenerate(() => {
     void chatRef.current?.regenerate();
+  });
+  // TASK-278: expose this thread's resumeStream so an approval that woke a
+  // warm agent can attach a consumer for the continuation turn. This is a
+  // resume, never a re-POST: the turn is already running server-side under
+  // the staged id, and a regenerate here would run it a second time.
+  continuationActions.registerResume(() => {
+    void chatRef.current?.resumeStream();
   });
   // Bootstrap kickoff: when a new agent was just created, App.tsx calls
   // bootstrapKickoff.trigger() before the chat runtime is mounted. Register here

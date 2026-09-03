@@ -329,6 +329,18 @@ function requireInboxEntry(
         message: `'entry.note' must be a non-empty string of at most ${DECISION_NOTE_MAX} characters`,
       });
     }
+    // TASK-278: the continuation correlation is optional, but when present it
+    // must be a real id — an unbounded string here would fail the runner's
+    // poll at the wire schema and wedge it at this cursor.
+    const reqId = (value as { reqId?: unknown }).reqId;
+    if (reqId !== undefined && (typeof reqId !== 'string' || reqId.length === 0 || reqId.length > 128)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.reqId' must be a non-empty string of at most 128 characters for decision-resolved entries`,
+      });
+    }
     return;
   }
   throw new PluginError({

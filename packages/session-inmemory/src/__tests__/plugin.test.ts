@@ -505,6 +505,78 @@ describe('@ax/session-inmemory plugin', () => {
     });
   });
 
+  it('round-trips a decision-resolved entry carrying a continuation reqId (TASK-278)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>('session:create', ctx, {
+      sessionId: 's-dec-cont',
+      workspaceRoot: '/tmp/ws',
+    });
+
+    await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+      'session:queue-work',
+      ctx,
+      {
+        sessionId: 's-dec-cont',
+        entry: {
+          type: 'decision-resolved',
+          decisionId: 'dec_1',
+          outcome: 'approved',
+          note: 'They said yes.',
+          reqId: 'req-continuation-1',
+        },
+      },
+    );
+
+    const claimed = await h.bus.call<SessionClaimWorkInput, SessionClaimWorkOutput>(
+      'session:claim-work',
+      ctx,
+      { sessionId: 's-dec-cont', cursor: 0, timeoutMs: 500 },
+    );
+    expect(claimed).toEqual({
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+      reqId: 'req-continuation-1',
+      cursor: 1,
+    });
+  });
+
+  it('queue-work rejects a decision-resolved entry with a junk reqId (TASK-278)', async () => {
+    const h = await createTestHarness({ plugins: [createSessionInmemoryPlugin()] });
+    const ctx = h.ctx();
+    await h.bus.call<SessionCreateInput, SessionCreateOutput>('session:create', ctx, {
+      sessionId: 's-dec-cont-bad',
+      workspaceRoot: '/tmp/ws',
+    });
+
+    const bad: unknown[] = [
+      { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: 'n', reqId: '' },
+      {
+        type: 'decision-resolved',
+        decisionId: 'dec_1',
+        outcome: 'approved',
+        note: 'n',
+        reqId: 'x'.repeat(129),
+      },
+    ];
+    for (const entry of bad) {
+      let caught: unknown;
+      try {
+        await h.bus.call<SessionQueueWorkInput, SessionQueueWorkOutput>(
+          'session:queue-work',
+          ctx,
+          { sessionId: 's-dec-cont-bad', entry: entry as never },
+        );
+      } catch (err) {
+        caught = err;
+      }
+      expect(caught).toBeInstanceOf(PluginError);
+      expect((caught as PluginError).code).toBe('invalid-payload');
+    }
+  });
+
   it('queue-work rejects a malformed decision-resolved entry (AW-6)', async () => {
     // The note is prose the runner hands straight to the model, and the
     // outcome is the human vocabulary the wire schema enforces. A producer

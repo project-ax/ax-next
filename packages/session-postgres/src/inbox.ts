@@ -59,6 +59,9 @@ const PLUGIN_NAME = '@ax/session-postgres';
 // JSONB column, for the same reason and with the same corruption posture: a row
 // whose JSONB does not match its `type` throws rather than returning null,
 // because a null at this cursor is a runner that re-polls forever.
+//
+// TASK-278 adds the optional `reqId` (the continuation turn's chat
+// correlation) to the stored shape — mirrors @ax/session-inmemory.
 export type InboxEntry =
   | { type: 'user-message'; payload: AgentMessage; reqId: string }
   | { type: 'cancel' }
@@ -67,6 +70,7 @@ export type InboxEntry =
       decisionId: string;
       outcome: 'approved' | 'dismissed';
       note: string;
+      reqId?: string;
     };
 
 export type ClaimResult =
@@ -77,6 +81,7 @@ export type ClaimResult =
       decisionId: string;
       outcome: 'approved' | 'dismissed';
       note: string;
+      reqId?: string;
       cursor: number;
     }
   | { type: 'timeout'; cursor: number };
@@ -512,9 +517,19 @@ async function fetchEntry(
     // unreachable at this cursor — the claim loop would re-poll forever and
     // the runner would hang with no diagnostic.
     const wrapped = row.payload as
-      | { decisionId?: unknown; outcome?: unknown; note?: unknown }
+      | { decisionId?: unknown; outcome?: unknown; note?: unknown; reqId?: unknown }
       | null
       | undefined;
+    // TASK-278: `reqId` is optional, but when present it must be a real id —
+    // the queue-side validator enforces this on write, so a bad value here is
+    // corruption (a newer writer, a hand-edited row), not a shape to coerce.
+    const reqId =
+      wrapped !== null &&
+      wrapped !== undefined &&
+      typeof wrapped === 'object' &&
+      wrapped.reqId !== undefined
+        ? wrapped.reqId
+        : undefined;
     if (
       wrapped === null ||
       wrapped === undefined ||
@@ -523,7 +538,9 @@ async function fetchEntry(
       wrapped.decisionId.length === 0 ||
       (wrapped.outcome !== 'approved' && wrapped.outcome !== 'dismissed') ||
       typeof wrapped.note !== 'string' ||
-      wrapped.note.length === 0
+      wrapped.note.length === 0 ||
+      (reqId !== undefined &&
+        (typeof reqId !== 'string' || reqId.length === 0 || reqId.length > 128))
     ) {
       throw new PluginError({
         code: 'corrupt-inbox-row',
@@ -542,6 +559,8 @@ async function fetchEntry(
       decisionId: wrapped.decisionId,
       outcome: wrapped.outcome,
       note: wrapped.note,
+      // Narrowed by the guard above: present means a valid non-empty string.
+      ...(reqId !== undefined ? { reqId: reqId as string } : {}),
     };
   }
   // An entry type this build does not know. Unlike the malformed-payload cases
@@ -572,7 +591,12 @@ function inboxPayload(entry: InboxEntry): unknown {
     return { message: entry.payload, reqId: entry.reqId };
   }
   if (entry.type === 'decision-resolved') {
-    return { decisionId: entry.decisionId, outcome: entry.outcome, note: entry.note };
+    return {
+      decisionId: entry.decisionId,
+      outcome: entry.outcome,
+      note: entry.note,
+      ...(entry.reqId !== undefined ? { reqId: entry.reqId } : {}),
+    };
   }
   return null;
 }
@@ -592,6 +616,7 @@ function deliver(entry: InboxEntry, cursor: number): ClaimResult {
       decisionId: entry.decisionId,
       outcome: entry.outcome,
       note: entry.note,
+      ...(entry.reqId !== undefined ? { reqId: entry.reqId } : {}),
       cursor: cursor + 1,
     };
   }

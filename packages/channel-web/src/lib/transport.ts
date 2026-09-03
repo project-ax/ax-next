@@ -49,6 +49,7 @@ import { agentStatusActions } from './agent-status-store';
 import { permissionCardActions } from './permission-card-store';
 import { stripMcpToolPrefix } from './tool-name';
 import { decisionRaisedActions } from './decision-raised-store';
+import { continuationActions } from './continuation-actions';
 import { HttpError, httpFetch } from './http';
 
 const DEFAULT_USER = 'guest';
@@ -455,6 +456,51 @@ export class AxChatTransport extends HttpChatTransport<UIMessage> {
     // than auto-RE-POSTING (which could duplicate a started turn).
     const sseBody = await this.openSseStream(postOut.reqId, abortSignal);
     return this.buildTurnStream(sseBody, abortSignal);
+  }
+
+  /**
+   * Attach to a post-approval continuation turn (TASK-278).
+   *
+   * The SDK calls this only from `chat.resumeStream()`, which the runtime
+   * kicks after an approve answers a `streamReqId` on the open thread. The
+   * staged id is consumed ONCE — a later, unrelated resume must never pick
+   * up a stale one — and `null` (nothing staged) means "no active stream",
+   * which the SDK treats as a quiet no-op.
+   *
+   * Single GET attempt, deliberately NOT the cold-boot retry loop: the bind
+   * landed before the approve response, so a 404 here is terminal (turn
+   * already ended, bind lost), not a race. A throw would surface the retry
+   * banner — whose regenerate re-POSTs and could DUPLICATE the already
+   * running turn — so every failure mode here returns null instead. The
+   * turn still completes server-side and renders on the next read.
+   */
+  override async reconnectToStream(
+    _options: Parameters<HttpChatTransport<UIMessage>['reconnectToStream']>[0],
+  ): Promise<ReadableStream<UIMessageChunk> | null> {
+    const reqId = continuationActions.takePendingContinuation();
+    if (reqId === null) return null;
+    const url = `${this.streamApi}/${encodeURIComponent(reqId)}`;
+    let resp: Response;
+    try {
+      resp = await httpFetch(
+        url,
+        {
+          method: 'GET',
+          headers: { accept: 'text/event-stream' },
+          credentials: 'include',
+        },
+        this.fetchImpl,
+      );
+    } catch {
+      return null;
+    }
+    if (!resp.ok || !resp.body) {
+      if (resp.status !== 404) {
+        console.warn(`[chat] the continuation stream would not open: ${url} → ${resp.status}`);
+      }
+      return null;
+    }
+    return this.buildTurnStream(resp.body, undefined);
   }
 
   /**

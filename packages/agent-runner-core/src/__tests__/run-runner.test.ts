@@ -248,6 +248,55 @@ describe('runRunner', () => {
       });
     });
 
+    it('emits the continuation under the delivered reqId (TASK-278)', async () => {
+      scriptInbox([
+        {
+          type: 'decision-resolved',
+          decisionId: 'dec_1',
+          outcome: 'approved',
+          note: 'They said yes.',
+          reqId: 'req-continuation-1',
+        },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await ctx.emitChunk({ kind: 'text', text: 'carrying on' });
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      expect(fakeClient.event).toHaveBeenCalledWith('event.stream-chunk', {
+        reqId: 'req-continuation-1',
+        kind: 'text',
+        text: 'carrying on',
+      });
+    });
+
+    it('runs dark when the delivery carries no reqId, as before (TASK-278)', async () => {
+      scriptInbox([
+        {
+          type: 'decision-resolved',
+          decisionId: 'dec_1',
+          outcome: 'approved',
+          note: 'They said yes.',
+        },
+      ]);
+      const loop: Loop = {
+        run: vi.fn(async (ctx: LoopContext) => {
+          await ctx.nextMessage();
+          await ctx.emitChunk({ kind: 'text', text: 'carrying on' });
+          return 0;
+        }),
+      };
+      expect(await runRunner(() => loop, seams(fakeEnv))).toBe(0);
+      // Vacuity: the chunk emission was skipped, not misrouted — nothing
+      // stamped with a stale id, and the turn still ended normally.
+      expect(
+        fakeClient.event.mock.calls.filter((c) => c[0] === 'event.stream-chunk'),
+      ).toHaveLength(0);
+    });
+
     it('re-polls past a delivery whose note is empty rather than waking the model', async () => {
       scriptInbox([
         { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved', note: '   ' },

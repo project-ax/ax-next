@@ -48,7 +48,7 @@ export {
   CONVERSATION_METADATA_HOOK,
 } from './attendance.js';
 export type { ConversationLookup } from './attendance.js';
-export { deliverResolution, SESSION_QUEUE_HOOK } from './delivery.js';
+export { deliverResolution, SESSION_QUEUE_HOOK, CONTINUATION_REQ_ID_MAX } from './delivery.js';
 export type { DeliveryResult, ResolutionOutcome } from './delivery.js';
 export type { PolicyAnswer, PreCallDeps, PreCallSubscriber } from './pre-call.js';
 export { createDecisionsStore } from './store.js';

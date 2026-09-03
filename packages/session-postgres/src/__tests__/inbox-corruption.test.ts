@@ -238,4 +238,49 @@ describe('inbox corruption: malformed JSONB throws corrupt-inbox-row', () => {
     });
     await inbox.shutdown();
   }, 15000);
+
+  it('round-trips a decision-resolved entry carrying a continuation reqId (TASK-278)', async () => {
+    const { inbox } = await makeInbox();
+    const { cursor } = await inbox.queue('s-dec-pg-cont', {
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+      reqId: 'req-continuation-1',
+    });
+    expect(cursor).toBe(0);
+    expect(await inbox.claim('s-dec-pg-cont', 0, 1000)).toEqual({
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+      reqId: 'req-continuation-1',
+      cursor: 1,
+    });
+    await inbox.shutdown();
+  }, 15000);
+
+  it('a decision-resolved row with a junk reqId throws corrupt-inbox-row (TASK-278)', async () => {
+    const { db, inbox } = await makeInbox();
+    await sql`
+      INSERT INTO session_postgres_v1_inbox (session_id, cursor, type, payload)
+      VALUES ('s-corrupt-5', 0, 'decision-resolved', ${JSON.stringify({
+        decisionId: 'dec_1',
+        outcome: 'approved',
+        note: 'They said yes.',
+        reqId: '',
+      })}::jsonb)
+    `.execute(db);
+
+    let caught: unknown;
+    try {
+      await inbox.claim('s-corrupt-5', 0, 1000);
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(PluginError);
+    expect((caught as PluginError).code).toBe('corrupt-inbox-row');
+
+    await inbox.shutdown();
+  }, 15000);
 });

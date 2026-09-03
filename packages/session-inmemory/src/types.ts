@@ -62,11 +62,14 @@ export interface AgentConfig {
 // chunk back to the waiting client (Task 5/7). REQUIRED — never optional.
 //
 // AW-6 adds `decision-resolved`: a decision the agent held earlier, answered by
-// a human while the session was still warm. It carries NO reqId — nothing is
-// waiting on a response, because no host request produced it; the turn it
-// starts is host-initiated. `note` is HOST-AUTHORED prose (see
+// a human while the session was still warm. `note` is HOST-AUTHORED prose (see
 // @ax/ipc-protocol's `SessionNextMessageResponseSchema`), never the person's
 // free text and never the model-authored `call.input`.
+//
+// TASK-278 adds the OPTIONAL `reqId`: the continuation turn's chat correlation,
+// minted by the approve route. Present, the woken turn emits under it and an
+// open thread streams it live; absent, the turn runs dark (the AW-6 behavior —
+// nothing was waiting on a response, because no host request produced it).
 export type InboxEntry =
   | { type: 'user-message'; payload: AgentMessage; reqId: string }
   | { type: 'cancel' }
@@ -75,6 +78,7 @@ export type InboxEntry =
       decisionId: string;
       outcome: 'approved' | 'dismissed';
       note: string;
+      reqId?: string;
     };
 
 export type ClaimResult =
@@ -85,6 +89,7 @@ export type ClaimResult =
       decisionId: string;
       outcome: 'approved' | 'dismissed';
       note: string;
+      reqId?: string;
       cursor: number;
     }
   | { type: 'timeout'; cursor: number };
@@ -332,6 +337,9 @@ export const SessionClaimWorkOutputSchema = z.discriminatedUnion('type', [
     decisionId: z.string(),
     outcome: z.enum(['approved', 'dismissed']),
     note: z.string(),
+    // TASK-278: the continuation correlation. Optional — a discriminated
+    // union refuses undeclared keys outright, so this arm must declare it.
+    reqId: z.string().min(1).max(128).optional(),
     cursor: z.number(),
   }),
   z.object({ type: z.literal('timeout'), cursor: z.number() }),

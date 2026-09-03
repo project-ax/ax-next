@@ -88,6 +88,20 @@ describe('session-postgres return schemas', () => {
       cursor: 8,
     };
     expect(SessionClaimWorkOutputSchema.parse(resolved)).toEqual(resolved);
+
+    // TASK-278: mirrors @ax/session-inmemory.
+    const resolvedCont: SessionClaimWorkOutput = {
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+      reqId: 'req-continuation-1',
+      cursor: 9,
+    };
+    expect(SessionClaimWorkOutputSchema.parse(resolvedCont)).toEqual(resolvedCont);
+    expect(
+      SessionClaimWorkOutputSchema.safeParse({ ...resolvedCont, reqId: '' }).success,
+    ).toBe(false);
   });
 
   it('SessionTerminateOutputSchema accepts {} and rejects extra keys', () => {

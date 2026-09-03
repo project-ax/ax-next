@@ -64,6 +64,9 @@ export function createInbox(): Inbox {
         decisionId: entry.decisionId,
         outcome: entry.outcome,
         note: entry.note,
+        // TASK-278: passed through only when present — an explicit `undefined`
+        // key would fail the wire schema's exact-shape readers downstream.
+        ...(entry.reqId !== undefined ? { reqId: entry.reqId } : {}),
         cursor: cursor + 1,
       };
     }

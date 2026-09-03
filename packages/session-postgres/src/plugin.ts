@@ -247,6 +247,8 @@ export const SessionClaimWorkOutputSchema = z.discriminatedUnion('type', [
     decisionId: z.string(),
     outcome: z.enum(['approved', 'dismissed']),
     note: z.string(),
+    // TASK-278: mirrors @ax/session-inmemory — the continuation correlation.
+    reqId: z.string().min(1).max(128).optional(),
     cursor: z.number(),
   }),
   z.object({ type: z.literal('timeout'), cursor: z.number() }),
@@ -536,6 +538,17 @@ function requireInboxEntry(
         plugin: PLUGIN_NAME,
         hookName,
         message: `'entry.note' must be a non-empty string of at most ${DECISION_NOTE_MAX} characters`,
+      });
+    }
+    // TASK-278: mirrors @ax/session-inmemory — the continuation correlation
+    // is optional, but when present it must be a real id.
+    const reqId = (value as { reqId?: unknown }).reqId;
+    if (reqId !== undefined && (typeof reqId !== 'string' || reqId.length === 0 || reqId.length > 128)) {
+      throw new PluginError({
+        code: 'invalid-payload',
+        plugin: PLUGIN_NAME,
+        hookName,
+        message: `'entry.reqId' must be a non-empty string of at most 128 characters for decision-resolved entries`,
       });
     }
     return;

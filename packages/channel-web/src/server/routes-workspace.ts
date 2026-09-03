@@ -83,6 +83,7 @@ import {
   PluginError,
   isRejection,
   makeAgentContext,
+  makeReqId,
   type AgentContext,
   type HookBus,
 } from '@ax/core';
@@ -564,12 +565,21 @@ interface DecisionsResolveInput {
   decisionId: string;
   userId: string;
 }
+interface DecisionsApproveInput extends DecisionsResolveInput {
+  /**
+   * TASK-278 — the continuation turn's chat correlation, minted HERE (this
+   * route owns chat-flow reqIds). Duck-typed like everything else in this
+   * file (I2): `@ax/decisions` declares the contract, we just speak it.
+   */
+  continuationReqId: string;
+}
 interface DecisionsApproveOutput {
   decision: StoredDecision | null;
   executed: boolean;
   path: ExecutionPath | null;
   error: string | null;
   pendingUntil: string | null;
+  streamReqId: string | null;
 }
 interface DecisionsDismissOutput {
   decision: StoredDecision | null;
@@ -634,7 +644,10 @@ export interface DecisionResponse {
  * Everything past `decision` is the plugin's answer about what actually
  * happened, passed straight through: `executed` is only ever true when a host
  * executor returned, and `pendingUntil` is non-null only for an irreversible
- * call whose execution was deferred until the undo window closes.
+ * call whose execution was deferred until the undo window closes. The one
+ * exception is `streamReqId` (TASK-278): the plugin reports whether it
+ * delivered to a warm agent, but the BIND that makes the id streamable is
+ * this route's — so the route answers null whenever the bind did not land.
  */
 export interface ApproveResponse {
   decision: Decision;
@@ -657,6 +670,18 @@ export interface ApproveResponse {
    */
   error: string | null;
   pendingUntil: string | null;
+  /**
+   * TASK-278 — the continuation turn's reqId, bound as the conversation's
+   * `active_req_id` when the approval was delivered to a warm agent. The
+   * open thread attaches its stream consumer to
+   * `GET /api/chat/stream/<streamReqId>` for the live continuation. Null on
+   * every path where no turn runs to watch (parked, host replay, deferred,
+   * already resolved) and whenever the bind could not be established — in
+   * which case the client opens nothing and the receipts stand as they did
+   * before. A renderer must never promise a live continuation off anything
+   * but a non-null value here.
+   */
+  streamReqId: string | null;
 }
 
 export interface DismissResponse {
@@ -2003,6 +2028,68 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
   }
 
   /**
+   * TASK-278 — bind the delivered continuation turn as the conversation's
+   * live reqId, so the open thread's `GET /api/chat/stream/<id>` resolves.
+   *
+   * Read-then-bind, both best-effort. A missing producer, a dead session
+   * (`activeSessionId` null — the agent went away between delivery and this
+   * read), or a failed bind answers null: the approval stands either way and
+   * the turn runs dark exactly as before. Single attempt, no retry budget —
+   * this runs inside the approve POST and the receipt must not wait on it.
+   *
+   * The ctx is owner-scoped like `agentWorkspaceCtx` below: `bind-session`
+   * scopes on `(conversationId, ctx.userId)`, and `initCtx` is the `system`
+   * user, which would bind nobody's row. `get-metadata` takes its userId in
+   * the input for the same reason `decisions:approve` does.
+   */
+  async function bindContinuationTurn(
+    stored: StoredDecision,
+    userId: string,
+    streamReqId: string,
+  ): Promise<string | null> {
+    if (
+      !bus.hasService('conversations:get-metadata') ||
+      !bus.hasService('conversations:bind-session')
+    ) {
+      return null;
+    }
+    try {
+      const ownerCtx = makeAgentContext({
+        sessionId: 'workspace-approve',
+        agentId: stored.agentId,
+        userId,
+        conversationId: stored.conversationId,
+        workspace: initCtx.workspace,
+      });
+      const md = await bus.call<
+        { conversationId: string; userId: string },
+        { activeSessionId: string | null }
+      >('conversations:get-metadata', ownerCtx, {
+        conversationId: stored.conversationId,
+        userId,
+      });
+      if (md.activeSessionId === null) return null;
+      await bus.call(
+        'conversations:bind-session',
+        ownerCtx,
+        {
+          conversationId: stored.conversationId,
+          sessionId: md.activeSessionId,
+          reqId: streamReqId,
+        },
+      );
+      return streamReqId;
+    } catch (err) {
+      initCtx.logger.warn('workspace_continuation_bind_failed', {
+        decisionId: stored.id,
+        conversationId: stored.conversationId,
+        err: err instanceof Error ? err : new Error(String(err)),
+      });
+      return null;
+    }
+  }
+
+  /**
    * A resolution hook that came back with no row: the decision was there a
    * moment ago and is not now. 404, never a 200 carrying `decision: null` — a
    * 200 that says nothing still looks like an answer, and the client would
@@ -2813,13 +2900,33 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
       const stored = await loadOwnedDecision(req, res, userId);
       if (stored === null) return;
 
-      const out = await bus.call<DecisionsResolveInput, DecisionsApproveOutput>(
+      // TASK-278 — mint the continuation turn's correlation BEFORE the
+      // approve runs, so the woken runner emits under an id this response
+      // can hand the open thread. `makeReqId` mints chat-flow ids; this
+      // route owns that flow the same way POST /api/chat/messages does.
+      const continuationReqId = makeReqId();
+      const out = await bus.call<DecisionsApproveInput, DecisionsApproveOutput>(
         'decisions:approve',
         initCtx,
-        { decisionId: stored.id, userId },
+        { decisionId: stored.id, userId, continuationReqId },
       );
       const decision = resolvedOrGone(out.decision, res);
       if (decision === null) return;
+      // The plugin echoes the id only when it actually delivered the
+      // resolution to a warm agent. Bind it as this conversation's live
+      // turn — without the bind, `GET /api/chat/stream/<id>` 404s (the
+      // handler ACLs on `active_req_id`) and the client would attach to
+      // nothing. Best-effort: any failure answers null, and the approval
+      // itself still stands — the turn runs dark exactly as before.
+      //
+      // `?? null`: a producer predating TASK-278 answers no `streamReqId`
+      // at all. That is absence, not a stream — and it must read as null,
+      // never as an id to attach to.
+      const deliveredId = out.streamReqId ?? null;
+      const streamReqId =
+        out.path === 'agent-executes' && deliveredId !== null
+          ? await bindContinuationTurn(stored, userId, deliveredId)
+          : null;
       res.status(200).json({
         decision,
         executed: out.executed,
@@ -2830,6 +2937,7 @@ export function makeWorkspaceHandlers(deps: WorkspaceHandlerDeps) {
         // approval needs the detail, and null is a fine answer.
         error: fenceLine(out.error, DECISION_RECEIPT_MAX_CHARS),
         pendingUntil: out.pendingUntil,
+        streamReqId,
       } satisfies ApproveResponse);
     },
 
