@@ -31,6 +31,7 @@ import {
   decisionRaisedActions,
   getDecisionRaisedSnapshot,
 } from '../lib/decision-raised-store';
+import { continuationActions } from '../lib/continuation-actions';
 
 /**
  * Build a ReadableStream<Uint8Array> from a string body. Mirrors how fetch
@@ -1568,5 +1569,72 @@ describe('AxChatTransport sendMessages two-phase exchange', () => {
     const chunks = (await drain(stream)) as Array<{ type: string }>;
     expect(chunks.map((c) => c.type)).not.toContain('error'); // NO banner on abort
     expect(getCount).toBe(1); // no reconnect
+  });
+});
+
+describe('AxChatTransport reconnectToStream — the post-approval continuation (TASK-278)', () => {
+  beforeEach(() => {
+    continuationActions.reset();
+  });
+  afterEach(() => {
+    continuationActions.reset();
+  });
+
+  function servedTransport(
+    sseBody: string,
+    status = 200,
+  ): { transport: AxChatTransport; calls: string[] } {
+    const calls: string[] = [];
+    const fetchFn = vi.fn(async (url: RequestInfo | URL) => {
+      calls.push(String(url));
+      if (status === 200) {
+        return new Response(sseStream(sseBody), {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }
+      return new Response('not-found', { status });
+    }) as unknown as typeof fetch;
+    return {
+      transport: new AxChatTransport({ fetch: fetchFn, getAgentId: () => 'a' }),
+      calls,
+    };
+  }
+
+  it('opens GET /api/chat/stream/<id> for the staged continuation and streams it', async () => {
+    const { transport, calls } = servedTransport(
+      `data: {"reqId":"req-cont-1","text":"carrying on","kind":"text","seq":1}\n\n` +
+        `data: {"reqId":"req-cont-1","done":true}\n\n`,
+    );
+    // Stage the id the way the approval path does (a runtime is mounted).
+    continuationActions.registerResume(vi.fn());
+    continuationActions.resumeContinuation('req-cont-1');
+
+    const stream = await transport.reconnectToStream({ chatId: 'c1' });
+    expect(stream).not.toBeNull();
+    const chunks = (await drain(stream!)) as Array<{ type: string; delta?: string }>;
+    expect(calls).toEqual(['/api/chat/stream/req-cont-1']);
+    const deltas = chunks.filter((c) => c.type === 'text-delta');
+    expect(deltas.map((d) => d.delta).join('')).toBe('carrying on');
+    // Consume-once: a second resume finds nothing staged.
+    expect(await transport.reconnectToStream({ chatId: 'c1' })).toBeNull();
+    expect(calls).toHaveLength(1);
+  });
+
+  it('returns null without fetching when nothing is staged', async () => {
+    const { transport, calls } = servedTransport('');
+    expect(await transport.reconnectToStream({ chatId: 'c1' })).toBeNull();
+    expect(calls).toHaveLength(0);
+  });
+
+  it('returns null — never throws — when the continuation turn is already gone', async () => {
+    // A throw here would surface the retry banner, whose regenerate re-POSTs
+    // and could DUPLICATE the already-running turn. Null is the SDK's quiet
+    // "nothing to resume".
+    const { transport, calls } = servedTransport('', 404);
+    continuationActions.registerResume(vi.fn());
+    continuationActions.resumeContinuation('req-cont-1');
+    expect(await transport.reconnectToStream({ chatId: 'c1' })).toBeNull();
+    expect(calls).toEqual(['/api/chat/stream/req-cont-1']);
   });
 });

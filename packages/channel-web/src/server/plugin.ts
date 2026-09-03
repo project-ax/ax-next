@@ -309,6 +309,23 @@ export function createChannelWebServerPlugin(
           degradation:
             'the rail renders no "This week" counters (nothing records decisions here)',
         },
+        {
+          // TASK-278 — the approve route binds the delivered continuation
+          // turn as the conversation's live reqId so the open thread can
+          // attach a stream consumer to it. Without the metadata read there
+          // is no live session to bind to; without the bind the id is
+          // unstreamable. Either way the approve answers `streamReqId: null`
+          // and the turn runs dark exactly as before.
+          hook: 'conversations:get-metadata',
+          degradation:
+            'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
+        },
+        {
+          // Same approve path: the bind itself.
+          hook: 'conversations:bind-session',
+          degradation:
+            'approvals never stream the continuation live (the turn still runs; it renders on the next read)',
+        },
       ],
       subscribes: ['chat:stream-chunk', 'chat:phase', 'chat:turn-end', 'chat:turn-error', 'chat:permission-request', 'conversations:title-updated'],
     },

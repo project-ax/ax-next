@@ -38,14 +38,25 @@ export const SESSION_QUEUE_HOOK = 'session:queue-work';
 export type ResolutionOutcome = 'approved' | 'dismissed';
 
 export type DeliveryResult =
-  /** The entry is on the session's inbox. */
-  | { delivered: true }
+  /**
+   * The entry is on the session's inbox. `streamReqId` is the continuation
+   * id the entry carries, or null when the turn runs dark (TASK-278).
+   */
+  | { delivered: true; streamReqId: string | null }
   /**
    * Nobody was listening. `reason` is for the log and the test, never for a
    * receipt: a person who clicked Approve does not need to hear about session
    * lifecycles, and the thing they approved still happens.
    */
   | { delivered: false; reason: 'no-session' | 'no-session-plugin' | 'queue-failed' };
+
+/**
+ * Bound on the continuation reqId riding a `decision-resolved` entry. reqIds
+ * are `req-<12 hex>` (16 chars); 128 is headroom, not a second format — the
+ * same cap the chat wire uses for short subject ids. Anything longer is not a
+ * reqId and is dropped, never fatal.
+ */
+export const CONTINUATION_REQ_ID_MAX = 128;
 
 export interface DeliverResolutionInput {
   bus: HookBus;
@@ -56,6 +67,13 @@ export interface DeliverResolutionInput {
   ctx: AgentContext;
   decision: Decision;
   outcome: ResolutionOutcome;
+  /**
+   * TASK-278 — opaque chat correlation for the continuation turn. Passed
+   * through onto the inbox entry untouched so the woken runner emits under
+   * it; omitted when absent or malformed. Validated HERE, once, so every
+   * caller below speaks for a real value.
+   */
+  continuationReqId?: string;
 }
 
 export async function deliverResolution({
@@ -63,6 +81,7 @@ export async function deliverResolution({
   ctx,
   decision,
   outcome,
+  continuationReqId,
 }: DeliverResolutionInput): Promise<DeliveryResult> {
   if (!bus.hasService(SESSION_QUEUE_HOOK)) return { delivered: false, reason: 'no-session-plugin' };
 
@@ -91,18 +110,39 @@ export async function deliverResolution({
   }
 
   const note = outcome === 'approved' ? decisionApprovedNote() : decisionDismissedNote();
+  // Fail-closed: a malformed id rides as ABSENT, and the approval still
+  // delivers — the runner then runs dark exactly as it did before TASK-278.
+  const streamReqId =
+    typeof continuationReqId === 'string' &&
+    continuationReqId.length > 0 &&
+    continuationReqId.length <= CONTINUATION_REQ_ID_MAX
+      ? continuationReqId
+      : null;
+  if (continuationReqId !== undefined && streamReqId === null) {
+    ctx.logger.warn('decision_delivery_dropped_bad_continuation', {
+      plugin: PLUGIN_NAME,
+      decisionId: decision.id,
+      outcome,
+    });
+  }
 
   try {
     await bus.call(SESSION_QUEUE_HOOK, deliveryCtx, {
       sessionId: channel.activeSessionId,
-      entry: { type: 'decision-resolved', decisionId: decision.id, outcome, note },
+      entry: {
+        type: 'decision-resolved',
+        decisionId: decision.id,
+        outcome,
+        note,
+        ...(streamReqId !== null ? { reqId: streamReqId } : {}),
+      },
     });
     ctx.logger.info('decision_delivered', {
       plugin: PLUGIN_NAME,
       decisionId: decision.id,
       outcome,
     });
-    return { delivered: true };
+    return { delivered: true, streamReqId };
   } catch (err) {
     // `unknown-session` is the ordinary case: the row still names a session the
     // reaper has since torn down. It is logged at warn rather than error

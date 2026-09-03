@@ -20,9 +20,10 @@
  * function; using it as a status test would make this the fourth consumer of
  * "is this open" and the only one asking a different way. Reserve it for prose.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useDecisionQueue, type DecisionReadError } from './workspace-decisions';
 import { useConversationId } from './use-conversation-id';
+import { continuationActions } from './continuation-actions';
 import { decisionRaisedActions, useDecisionRaised } from './decision-raised-store';
 import { isOpenDecision } from './workspace-types';
 import { undoSecondsLeft } from '@/components/workspace/decision-copy';
@@ -129,8 +130,29 @@ function resolvedTime(d: Decision): number {
 }
 
 export function useConversationDecisions(): ConversationDecisions {
-  const queue = useDecisionQueue();
   const conversationId = useConversationId();
+  /*
+    TASK-278 — attach a stream consumer for the continuation turn, but ONLY
+    for the thread on screen. The approve POST resolves asynchronously, and
+    the reader may have switched threads (or landed on the welcome state)
+    while it was in flight — resuming into the wrong thread would render one
+    conversation's answer inside another's. So the check reads the CURRENT
+    id through a ref at settle time, not the render-time value the click
+    closed over. A null id or a null `streamReqId` (no turn runs to watch)
+    resumes nothing: the receipts stand as they did before.
+  */
+  const conversationIdRef = useRef(conversationId);
+  conversationIdRef.current = conversationId;
+  const onDecisionApproved = useCallback(
+    (decision: Decision, streamReqId: string | null) => {
+      if (streamReqId === null) return;
+      const open = conversationIdRef.current;
+      if (open === null || decision.conversationId !== open) return;
+      continuationActions.resumeContinuation(streamReqId);
+    },
+    [],
+  );
+  const queue = useDecisionQueue({ onDecisionApproved });
   const { raised } = useDecisionRaised();
 
   const { decisions, refresh } = queue;

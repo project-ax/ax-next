@@ -202,12 +202,50 @@ describe('deliverResolution', () => {
 
     expect(
       await deliverResolution({ bus, ctx: ctx(), decision: decision(), outcome: 'approved' }),
-    ).toEqual({ delivered: true });
+    ).toEqual({ delivered: true, streamReqId: null });
     expect(queued).toHaveLength(1);
     expect(queued[0]).toMatchObject({
       sessionId: 'sess-1',
       entry: { type: 'decision-resolved', decisionId: 'dec_1', outcome: 'approved' },
     });
+  });
+
+  it('passes a continuation id through to the entry and reports it (TASK-278)', async () => {
+    const bus = new HookBus();
+    withConversations(bus, { 'conv-web': { origin: 'web', activeSessionId: 'sess-1' } });
+    const queued = withSessionQueue(bus);
+
+    expect(
+      await deliverResolution({
+        bus,
+        ctx: ctx(),
+        decision: decision(),
+        outcome: 'approved',
+        continuationReqId: 'req-continuation-1',
+      }),
+    ).toEqual({ delivered: true, streamReqId: 'req-continuation-1' });
+    expect(queued).toHaveLength(1);
+    expect(queued[0]).toMatchObject({
+      entry: { type: 'decision-resolved', reqId: 'req-continuation-1' },
+    });
+  });
+
+  it('drops a malformed continuation id but still delivers (TASK-278)', async () => {
+    const bus = new HookBus();
+    withConversations(bus, { 'conv-web': { origin: 'web', activeSessionId: 'sess-1' } });
+    const queued = withSessionQueue(bus);
+
+    expect(
+      await deliverResolution({
+        bus,
+        ctx: ctx(),
+        decision: decision(),
+        outcome: 'approved',
+        continuationReqId: '',
+      }),
+    ).toEqual({ delivered: true, streamReqId: null });
+    expect(queued).toHaveLength(1);
+    expect('reqId' in (queued[0] as { entry: Record<string, unknown> }).entry).toBe(false);
   });
 
   it('never carries call.input or the person’s words into the note', async () => {
@@ -270,7 +308,7 @@ describe('deliverResolution', () => {
         decision: decision({ ownerUserId: 'owner-1' }),
         outcome: 'approved',
       }),
-    ).toEqual({ delivered: true });
+    ).toEqual({ delivered: true, streamReqId: null });
     expect(queued).toHaveLength(1);
   });
 

@@ -790,16 +790,18 @@ async function runRunnerInner(
           process.stderr.write('runner: decision-resolved delivery had an empty note; ignoring\n');
           continue;
         }
-        // Clear the correlation handle. This turn is HOST-initiated: no
-        // agent:invoke is in flight, so there is no client waiting on a reqId.
-        // Leaving the previous turn's id set would stamp every chunk of this
-        // turn with a request that already completed — a stale correlation is
-        // worse than none, because `undefined` makes the shell skip the
-        // emission outright (see `currentReqId` above) while a stale id asks
-        // the host to route chunks at a closed door. The turn's content still
-        // reaches the user: `event.turn-end` persists it through
-        // @ax/conversations' display event log.
-        currentReqId = undefined;
+        // Correlate this HOST-initiated turn. TASK-278: when the approval
+        // carried a continuation id, a client IS waiting on a reqId now — the
+        // open thread attached (or is attaching) a stream consumer to it — so
+        // adopt it and every chunk and turn-end of this turn routes there.
+        // Without one, clear the handle: no agent:invoke is in flight, and a
+        // stale id (the previous turn's, already completed) would stamp chunks
+        // at a closed door — worse than none, because `undefined` makes the
+        // shell skip the emission outright (see `currentReqId` above) while
+        // the turn's content still reaches the user via `event.turn-end`
+        // through @ax/conversations' display event log.
+        currentReqId =
+          typeof entry.reqId === 'string' && entry.reqId.length > 0 ? entry.reqId : undefined;
         chatEndHistory.push({ role: 'user', content });
         return { content };
       }

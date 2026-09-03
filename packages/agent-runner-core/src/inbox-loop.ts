@@ -81,11 +81,13 @@ export interface InboxLoopEntry {
   outcome?: 'approved' | 'dismissed';
   note?: string;
   /**
-   * Host-minted request id (J9). Present iff `type === 'user-message'`.
-   * The runner caches it locally and stamps it onto every
-   * `event.stream-chunk` it emits while processing this user message —
-   * the host's chat:stream-chunk subscriber routes chunks back to the
-   * waiting client by this id.
+   * Host-minted request id (J9). Present iff `type === 'user-message'`, or
+   * iff `type === 'decision-resolved'` with a continuation to stream
+   * (TASK-278 — minted by the approve route, echoed from
+   * `decisions:approve`). The runner caches it locally and stamps it onto
+   * every `event.stream-chunk` it emits while processing this entry — the
+   * host's chat:stream-chunk subscriber routes chunks back to the waiting
+   * client by this id. Absent, the turn runs dark (pre-TASK-278 behavior).
    */
   reqId?: string;
 }
@@ -119,6 +121,7 @@ type WireResponse =
       decisionId: string;
       outcome: 'approved' | 'dismissed';
       note: string;
+      reqId?: string;
       cursor: number;
     };
 
@@ -185,6 +188,11 @@ export function createInboxLoop(opts: InboxLoopOptions): InboxLoop {
           decisionId: resp.decisionId,
           outcome: resp.outcome,
           note: resp.note,
+          // TASK-278: passed through untouched (validated by the wire schema
+          // above) — `undefined` when the entry carries none, which is the
+          // run-dark case. Never defaulted: an invented id would stamp chunks
+          // at a door nobody opened.
+          ...(resp.reqId !== undefined ? { reqId: resp.reqId } : {}),
         };
       }
       // DEFENCE IN DEPTH (AW-6). This used to `throw`, which killed the turn.

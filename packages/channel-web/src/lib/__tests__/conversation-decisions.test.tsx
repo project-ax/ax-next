@@ -15,6 +15,7 @@ import {
   SETTLED_CAP,
 } from '../conversation-decisions';
 import { decisionRaisedActions } from '../decision-raised-store';
+import { continuationActions } from '../continuation-actions';
 import { workspaceApi, WorkspaceApiError, type Decision } from '../workspace-api';
 import { decisionFixture } from '@/components/workspace/__tests__/decision-fixture';
 
@@ -45,6 +46,7 @@ describe('useConversationDecisions', () => {
     vi.useRealTimers();
     vi.restoreAllMocks();
     decisionRaisedActions.resetForTest();
+    continuationActions.reset();
   });
 
   it('keeps only this conversation, oldest question first', async () => {
@@ -432,6 +434,117 @@ describe('useConversationDecisions', () => {
       // the budget there would leave none for the window that matters.
       expect(read).toHaveBeenCalledTimes(1);
       expect(result.current.retrying).toBe(false);
+    });
+  });
+
+  // TASK-278 — the post-approval continuation turn streams live in the open
+  // thread. Approving stages a consumer for the continuation reqId; anything
+  // else (another thread, no id, a thread switch mid-POST) stages nothing.
+  describe('continuation streaming', () => {
+    const approvedRow = (over: Partial<Decision> = {}): Decision =>
+      decisionFixture({ id: 'd1', status: 'executed', ...over });
+
+    function serveApprove(row: Decision, streamReqId: string | null) {
+      return vi.spyOn(workspaceApi, 'approveDecision').mockResolvedValue({
+        decision: row,
+        executed: false,
+        path: 'agent-executes',
+        error: null,
+        pendingUntil: null,
+        streamReqId,
+      });
+    }
+
+    beforeEach(() => {
+      continuationActions.reset();
+      continuationActions.registerResume(vi.fn());
+    });
+
+    it('an approval on the open thread stages a stream consumer for the continuation reqId', async () => {
+      serve([decisionFixture({ id: 'd1' })]);
+      serveApprove(approvedRow(), 'req-continuation-1');
+      const { result } = renderHook(() => useConversationDecisions());
+      await waitFor(() => expect(result.current.open).toHaveLength(1));
+
+      act(() => {
+        result.current.approve('d1');
+      });
+      // The staged id is what the transport's reconnectToStream picks up to
+      // open GET /api/chat/stream/<id>. Reading it here consumes it — that
+      // IS the consumer handoff, so asserting the value proves the attach.
+      await waitFor(() =>
+        expect(continuationActions.takePendingContinuation()).toBe('req-continuation-1'),
+      );
+    });
+
+    it('an approval for another thread stages nothing', async () => {
+      serve([decisionFixture({ id: 'd1', conversationId: 'c2' })]);
+      serveApprove(approvedRow({ conversationId: 'c2' }), 'req-continuation-1');
+      const { result } = renderHook(() => useConversationDecisions());
+      await waitFor(() => expect(workspaceApi.decisions).toHaveBeenCalled());
+
+      // Nothing of c2's renders while c1 is open — but the row is still
+      // approvable, and approving it must not stage c1's consumer.
+      await act(async () => {
+        result.current.approve('d1');
+      });
+      expect(workspaceApi.approveDecision).toHaveBeenCalledTimes(1);
+      expect(continuationActions.takePendingContinuation()).toBeNull();
+    });
+
+    it('an approval with no streamReqId stages nothing', async () => {
+      serve([decisionFixture({ id: 'd1' })]);
+      serveApprove(approvedRow(), null);
+      const { result } = renderHook(() => useConversationDecisions());
+      await waitFor(() => expect(result.current.open).toHaveLength(1));
+
+      act(() => {
+        result.current.approve('d1');
+      });
+      await waitFor(() =>
+        expect(result.current.settled.map((d) => d.id)).toContain('d1'),
+      );
+      expect(continuationActions.takePendingContinuation()).toBeNull();
+    });
+
+    it('a thread switch before the POST resolves stages nothing', async () => {
+      serve([decisionFixture({ id: 'd1' })]);
+      let resolvePost!: (v: {
+        decision: Decision;
+        executed: boolean;
+        path: 'agent-executes';
+        error: null;
+        pendingUntil: null;
+        streamReqId: string;
+      }) => void;
+      vi.spyOn(workspaceApi, 'approveDecision').mockImplementation(
+        () =>
+          new Promise((r) => {
+            resolvePost = r;
+          }),
+      );
+      const { result, rerender } = renderHook(() => useConversationDecisions());
+      await waitFor(() => expect(result.current.open).toHaveLength(1));
+
+      act(() => {
+        result.current.approve('d1');
+      });
+      // Away before the answer lands: the continuation belongs to c1, and c1
+      // is no longer on screen. Resuming it now would render one thread's
+      // answer inside another's.
+      mockConversationId = 'c2';
+      rerender();
+      await act(async () => {
+        resolvePost({
+          decision: approvedRow(),
+          executed: false,
+          path: 'agent-executes',
+          error: null,
+          pendingUntil: null,
+          streamReqId: 'req-continuation-1',
+        });
+      });
+      expect(continuationActions.takePendingContinuation()).toBeNull();
     });
   });
 });

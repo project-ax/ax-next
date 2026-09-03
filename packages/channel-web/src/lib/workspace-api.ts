@@ -131,6 +131,14 @@ export interface ApproveResult {
   error: string | null;
   /** When a deferred action will actually happen. Non-null only on that path. */
   pendingUntil: string | null;
+  /**
+   * TASK-278 — the continuation turn's reqId, bound as the conversation's
+   * live turn when the approval woke a warm agent. The open thread attaches
+   * its stream consumer to it; null means no turn runs to watch (or the bind
+   * did not land) and the client must open nothing. Absent on responses from
+   * a host predating TASK-278 — read as null, never as an id.
+   */
+  streamReqId?: string | null;
 }
 
 export interface DismissResult {

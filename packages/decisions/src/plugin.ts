@@ -181,6 +181,8 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
     path: null,
     error: null,
     pendingUntil: null,
+    // No turn runs on any inert path, so there is never a stream to watch.
+    streamReqId: null,
   });
 
   return {
@@ -700,11 +702,19 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
             // re-issues its own held call and the fingerprint gate authorises
             // that exactly once. Nothing has happened yet, so nothing claims it
             // has: no receipt is fired here.
+            //
+            // TASK-278: the caller's continuation id rides the entry so the
+            // woken turn emits under an id the open thread can attach a stream
+            // consumer to. Validated inside deliverResolution; what it reports
+            // back is what the entry carries, which is what the output echoes.
             const delivery = await deliverResolution({
               bus,
               ctx,
               decision: claimed,
               outcome: 'approved',
+              ...(input.continuationReqId !== undefined
+                ? { continuationReqId: input.continuationReqId }
+                : {}),
             });
             if (!delivery.delivered) {
               // The liveness read closed the hours-wide hole; this is the
@@ -793,6 +803,10 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
                 path: replayed.path,
                 error: replayed.error,
                 pendingUntil: null,
+                // The warm agent was NOT told: no entry, no continuation id
+                // in flight. The host replay is a tool call, not a turn, so
+                // there is no stream to attach to.
+                streamReqId: null,
               };
             }
             return {
@@ -801,6 +815,7 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
               path: 'agent-executes',
               error: null,
               pendingUntil: null,
+              streamReqId: delivery.streamReqId,
             };
           }
 
@@ -815,13 +830,15 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
           if (deferred) {
             // Approved, and it WILL run — just not yet. `executed: false` is
             // the literal truth for the next ten seconds, and the undo window
-            // is the only reason this branch exists.
+            // is the only reason this branch exists. The replay is a host
+            // tool call behind the undo window, not a turn: no stream.
             return {
               decision: claimed,
               executed: false,
               path: 'host-replays',
               error: null,
               pendingUntil: replayDueAt,
+              streamReqId: null,
             };
           }
 
@@ -841,6 +858,8 @@ export function createDecisionsPlugin(opts?: DecisionsPluginOptions): Plugin {
             path: replayed.path,
             error: replayed.error,
             pendingUntil: null,
+            // Host replay, immediate or failed: a tool call, not a turn.
+            streamReqId: null,
           };
         },
         { returns: DecisionsApproveOutputSchema },

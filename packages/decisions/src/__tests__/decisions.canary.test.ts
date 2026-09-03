@@ -137,7 +137,7 @@ interface Channel {
 
 interface DeliveredEntry {
   sessionId: string;
-  entry: { type: string; decisionId: string; outcome: string; note: string };
+  entry: { type: string; decisionId: string; outcome: string; note: string; reqId?: string };
 }
 
 /**
@@ -688,6 +688,57 @@ describe('decisions canary', () => {
 
     // And a dismissal that was absorbed authorises nothing.
     expect(isHold(await h.bus.fire('tool:pre-call', ctx, CALL))).toBe(true);
+  });
+
+  it('an attended approve with a continuationReqId streams the answer live (TASK-278)', async () => {
+    const h = await boot();
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+
+    const approved = await h.bus.call<unknown, DecisionsApproveOutput>(
+      'decisions:approve',
+      ctx,
+      { decisionId: id, userId: 'u1', continuationReqId: 'req-continuation-1' },
+    );
+    expect(approved.path).toBe('agent-executes');
+    // The client opens its stream consumer off this id.
+    expect(approved.streamReqId).toBe('req-continuation-1');
+    // …and the woken runner emits the continuation under it.
+    expect(h.delivered).toHaveLength(1);
+    expect(h.delivered[0]!.entry).toMatchObject({
+      type: 'decision-resolved',
+      decisionId: id,
+      outcome: 'approved',
+    });
+    expect(h.delivered[0]!.entry.reqId).toBe('req-continuation-1');
+  });
+
+  it('an attended approve without one leaves the continuation dark, as before (TASK-278)', async () => {
+    const h = await boot();
+    const ctx = userCtx(h);
+    const id = await holdAndId(h, ctx, CALL);
+
+    const approved = await approve(h, ctx, id);
+    expect(approved.path).toBe('agent-executes');
+    expect(approved.streamReqId).toBeNull();
+    // Vacuity guard the other way: no reqId key at all, not an undefined one.
+    expect(h.delivered).toHaveLength(1);
+    expect('reqId' in h.delivered[0]!.entry).toBe(false);
+  });
+
+  it('a parked approve swallows the continuationReqId — nothing runs to stream (TASK-278)', async () => {
+    const h = await boot();
+    const ctx = routineCtx(h);
+    const id = await holdAndId(h, ctx, SANDBOX_CALL);
+
+    const approved = await h.bus.call<unknown, DecisionsApproveOutput>(
+      'decisions:approve',
+      ctx,
+      { decisionId: id, userId: 'u1', continuationReqId: 'req-continuation-9' },
+    );
+    expect(approved.decision!.status).toBe('approved-pending-agent');
+    expect(approved.streamReqId).toBeNull();
+    expect(h.delivered).toHaveLength(0);
   });
 
   it('holds do not pre-empt a deny when both would fire', async () => {

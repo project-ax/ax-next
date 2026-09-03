@@ -377,6 +377,47 @@ describe('session.next-message response', () => {
     }
   });
 
+  it('carries an optional continuation reqId on decision-resolved (TASK-278)', () => {
+    // Absent: the pre-TASK-278 shape still parses (old entries keep working).
+    const bare = SessionNextMessageResponseSchema.parse({
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+      cursor: 7,
+    });
+    expect(bare.type).toBe('decision-resolved');
+    if (bare.type === 'decision-resolved') {
+      expect(bare.reqId).toBeUndefined();
+    }
+    const withId = SessionNextMessageResponseSchema.parse({
+      type: 'decision-resolved',
+      decisionId: 'dec_1',
+      outcome: 'approved',
+      note: 'They said yes.',
+      reqId: 'req-continuation-1',
+      cursor: 7,
+    });
+    expect(withId.type).toBe('decision-resolved');
+    if (withId.type === 'decision-resolved') {
+      expect(withId.reqId).toBe('req-continuation-1');
+    }
+    // Present-but-junk is refused, not stripped: a correlation id nobody
+    // minted must not ride to the runner.
+    for (const reqId of ['', 'x'.repeat(129)]) {
+      expect(
+        SessionNextMessageResponseSchema.safeParse({
+          type: 'decision-resolved',
+          decisionId: 'dec_1',
+          outcome: 'approved',
+          note: 'They said yes.',
+          reqId,
+          cursor: 7,
+        }).success,
+      ).toBe(false);
+    }
+  });
+
   it('rejects an unknown type', () => {
     const r = SessionNextMessageResponseSchema.safeParse({
       type: 'surprise',

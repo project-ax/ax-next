@@ -125,7 +125,19 @@ function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null;
 }
 
-export function useDecisionQueue(): DecisionQueue {
+export interface DecisionQueueHooks {
+  /**
+   * TASK-278 — fires after an approve POST resolves with a row applied.
+   * Carries the row and the approve response's `streamReqId` (null when no
+   * turn runs to watch). A surface with an open thread uses it to attach a
+   * stream consumer for the continuation; a surface with no thread (Today)
+   * ignores it.
+   */
+  onDecisionApproved?: (decision: Decision, streamReqId: string | null) => void;
+}
+
+export function useDecisionQueue(hooks?: DecisionQueueHooks): DecisionQueue {
+  const { onDecisionApproved } = hooks ?? {};
   const [decisions, setDecisions] = useState<Decision[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<DecisionReadError | null>(null);
@@ -236,13 +248,21 @@ export function useDecisionQueue(): DecisionQueue {
       id: string,
       post: () => Promise<T>,
       read: (out: T) => { decision: Decision | null; notice: string | null },
+      /**
+       * TASK-278 — sees the RAW post output on success (with the applied
+       * row), so the approve path can hand the continuation id to whoever
+       * renders the thread. Never called on failure or on a response with
+       * nothing to apply: there is no continuation to attach to then.
+       */
+      report?: (raw: T, decision: Decision) => void,
     ) => {
       if (busyIds.has(id)) return; // Second click on an in-flight row: absorbed.
       setBusyIds((prev) => new Set(prev).add(id));
       setNotice(id, null);
       void (async () => {
         try {
-          const { decision, notice } = read(await post());
+          const raw = await post();
+          const { decision, notice } = read(raw);
           /*
             The routes 404 rather than answering 200 with a null row, so a
             missing `decision` here means the response was not the shape we
@@ -265,6 +285,7 @@ export function useDecisionQueue(): DecisionQueue {
           }
           applyServerRow(decision);
           setNotice(id, notice);
+          report?.(raw, decision);
         } catch (err) {
           // Quiet in the UI is not silent anywhere else. Both READ paths log
           // their failure (`checkedRead`, and `InThreadApprovals`), and this is
@@ -294,8 +315,13 @@ export function useDecisionQueue(): DecisionQueue {
         id,
         () => workspaceApi.approveDecision(id),
         (out) => ({ decision: out.decision, notice: null }),
+        // TASK-278 — hand the continuation id to the thread surface. `??`
+        // null: a host predating TASK-278 answers no `streamReqId` at all,
+        // which is absence, never a stream.
+        (out, decision) =>
+          onDecisionApproved?.(decision, out.streamReqId ?? null),
       ),
-    [act],
+    [act, onDecisionApproved],
   );
 
   const dismiss = useCallback(
