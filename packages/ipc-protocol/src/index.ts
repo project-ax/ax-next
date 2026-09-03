@@ -1,4 +1,5 @@
 export * from './actions.js';
+export * from './activity-phrase.js';
 export * from './content-blocks.js';
 export * from './events.js';
 export * from './errors.js';

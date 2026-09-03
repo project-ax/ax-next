@@ -14,6 +14,7 @@ import type {
 import { createCanUseTool } from './can-use-tool.js';
 import { createHostMcpServer } from './host-mcp-server.js';
 import {
+  buildActivityPhraseMap,
   buildToolCacheEnv,
   buildHomeBinEnv,
   buildTtyHintEnv,
@@ -35,7 +36,7 @@ import { buildTelemetryEnv } from './telemetry-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
 import { createSandboxMcpServer } from './sandbox-mcp-server.js';
-import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME } from './tool-names.js';
+import { DISABLED_BUILTINS, MCP_HOST_SERVER_NAME, MCP_SANDBOX_SERVER_NAME, activityPhraseForSdkName } from './tool-names.js';
 import {
   hasResumableTranscript,
   readLastTurnUuid,
@@ -150,6 +151,13 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
         dispatcher: localDispatcher,
         tools,
       });
+
+      // TASK-271: bare-ax-name → host-authored activityPhrase, attached to
+      // the tool-use chunks/blocks below so the transcript can render a
+      // human-readable label. The SDK wire name is normalized via
+      // classifySdkToolName (strips our mcp__<server>__ prefixes); unknown
+      // and disabled names simply miss and emit without a phrase.
+      const phraseByAxName = buildActivityPhraseMap(tools);
 
       // Per-turn content-block accumulators. Drained at the SDK `result`
       // boundary into the shell's endTurn so @ax/conversations can persist the
@@ -674,11 +682,19 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
               // Tool-use blocks are observed via event.tool-post-call
               // (when the tool actually runs) and persisted at turn-end.
               const toolInput = (block.input ?? {}) as Record<string, unknown>;
+              // TASK-271: attach the host-authored phrase where the catalog
+              // has one. Best-effort: the host re-fences at the IPC ingress,
+              // so an unknown name just emits without a phrase.
+              const phrase = activityPhraseForSdkName(
+                phraseByAxName,
+                block.name,
+              );
               turnContentBlocks.push({
                 type: 'tool_use',
                 id: block.id,
                 name: block.name,
                 input: toolInput,
+                ...(phrase !== undefined ? { activityPhrase: phrase } : {}),
               });
               // Per-block streaming for tool calls. Mirrors the text/thinking
               // path above so the host's chat:stream-chunk subscriber can
@@ -691,6 +707,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                 toolCallId: block.id,
                 toolName: block.name,
                 input: toolInput,
+                ...(phrase !== undefined ? { activityPhrase: phrase } : {}),
               });
             }
           }

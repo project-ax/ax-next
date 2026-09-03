@@ -32,6 +32,10 @@ import {
   getDecisionRaisedSnapshot,
 } from '../lib/decision-raised-store';
 import { continuationActions } from '../lib/continuation-actions';
+import {
+  clearToolPhrases,
+  toolDisplayName,
+} from '../lib/tool-phrase';
 
 /**
  * Build a ReadableStream<Uint8Array> from a string body. Mirrors how fetch
@@ -814,6 +818,39 @@ describe('AxChatTransport SSE chunk parsing', () => {
     }>;
     const toolChunk = chunks.find((c) => c.type === 'tool-input-available');
     expect(toolChunk?.toolName).toBe('request_capability');
+  });
+
+  // TASK-271: a frame carrying the host-authored phrase stashes it for the
+  // ToolFallback label while the part's toolName stays the stable stripped
+  // identifier (renderer dispatch keys on it). A frame with no phrase leaves
+  // no entry, so the label falls back to the stripped name.
+  test('a live tool-use frame stashes its phrase, keeping toolName stable', async () => {
+    clearToolPhrases();
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      `data: {"reqId":"r1","kind":"tool-use","toolCallId":"t-phrase","toolName":"mcp__ax-sandbox-tools__artifact_publish","input":{},"activityPhrase":"Publishing a file","seq":1}\n\n` +
+      `data: {"reqId":"r1","kind":"tool-use","toolCallId":"t-bare","toolName":"mcp__ax-host-tools__request_capability","input":{},"seq":2}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      toolCallId?: string;
+      toolName?: string;
+    }>;
+    const byId = new Map(
+      chunks
+        .filter((c) => c.type === 'tool-input-available')
+        .map((c) => [c.toolCallId, c.toolName]),
+    );
+    // Stable dispatch keys, untouched by the phrase.
+    expect(byId.get('t-phrase')).toBe('artifact_publish');
+    expect(byId.get('t-bare')).toBe('request_capability');
+    // Display labels: phrase where present, stripped name otherwise.
+    expect(toolDisplayName('t-phrase', 'artifact_publish')).toBe(
+      'Publishing a file',
+    );
+    expect(toolDisplayName('t-bare', 'request_capability')).toBe(
+      'request_capability',
+    );
   });
 });
 

@@ -61,6 +61,15 @@ export const ToolUseBlockSchema = z.object({
   name: z.string(),
   /** Arbitrary JSON; structure depends on the tool. */
   input: z.record(z.unknown()),
+  /**
+   * Host-authored activity label for the tool (TASK-271), attached by the
+   * runner from its `tool.list` catalog so the transcript can render a
+   * human-readable phrase instead of the wire identifier. Optional:
+   * pre-phrase runners omit it and renderers fall back to the stripped name.
+   * Any string parses — fencing is `sanitizeActivityPhrase` at the IPC
+   * ingress, never the parser (a hostile phrase must not drop the block).
+   */
+  activityPhrase: z.string().optional(),
 });
 export type ToolUseBlock = z.infer<typeof ToolUseBlockSchema>;
 

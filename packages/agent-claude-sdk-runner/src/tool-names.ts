@@ -151,3 +151,18 @@ export function classifySdkToolName(sdkName: string): SdkToolClass {
   // Host-side subscribers see the verbatim name and decide.
   return { kind: 'builtin', axName: sdkName };
 }
+
+/**
+ * Resolve an SDK wire name to the catalog's host-authored activityPhrase
+ * (TASK-271), or `undefined` when there is none to show. Normalizes via
+ * `classifySdkToolName` so `mcp__<server>__<tool>` hits the bare-name-keyed
+ * map; disabled and unknown names miss and emit without a phrase.
+ */
+export function activityPhraseForSdkName(
+  phraseByAxName: ReadonlyMap<string, string>,
+  sdkName: string,
+): string | undefined {
+  const cls = classifySdkToolName(sdkName);
+  if (cls.kind === 'disabled') return undefined;
+  return phraseByAxName.get(cls.axName);
+}

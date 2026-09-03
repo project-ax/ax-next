@@ -4,6 +4,7 @@ import {
   DISABLED_BUILTIN_REASONS,
   MCP_HOST_SERVER_NAME,
   MCP_SANDBOX_SERVER_NAME,
+  activityPhraseForSdkName,
   classifySdkToolName,
 } from '../tool-names.js';
 
@@ -120,5 +121,42 @@ describe('classifySdkToolName', () => {
     // the host shouldn't encode. Host-side subscribers will reject nameless
     // tool calls on their own terms.
     expect(classifySdkToolName('')).toEqual({ kind: 'builtin', axName: '' });
+  });
+});
+
+describe('activityPhraseForSdkName (TASK-271)', () => {
+  const phrases = new Map([
+    ['artifact_publish', 'Publishing a file'],
+    ['memory_search', 'Searching memory'],
+  ]);
+
+  it('resolves an MCP-namespaced sandbox tool to its catalog phrase', () => {
+    expect(
+      activityPhraseForSdkName(
+        phrases,
+        `mcp__${MCP_SANDBOX_SERVER_NAME}__artifact_publish`,
+      ),
+    ).toBe('Publishing a file');
+  });
+
+  it('resolves an MCP-namespaced host tool to its catalog phrase', () => {
+    expect(
+      activityPhraseForSdkName(
+        phrases,
+        `mcp__${MCP_HOST_SERVER_NAME}__memory_search`,
+      ),
+    ).toBe('Searching memory');
+  });
+
+  it('returns undefined for names missing from the catalog', () => {
+    expect(activityPhraseForSdkName(phrases, 'Bash')).toBeUndefined();
+    expect(
+      activityPhraseForSdkName(phrases, 'mcp__other-server__foo'),
+    ).toBeUndefined();
+  });
+
+  it('returns undefined for disabled built-ins even when catalogued', () => {
+    const withDisabled = new Map([...phrases, ['WebFetch', 'Fetching the web']]);
+    expect(activityPhraseForSdkName(withDisabled, 'WebFetch')).toBeUndefined();
   });
 });

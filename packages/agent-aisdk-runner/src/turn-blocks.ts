@@ -73,7 +73,10 @@ function isErrorOutput(output: unknown): boolean {
  * would silently drop every tool call and tool result from a multi-step turn.
  * (Verified against ai@7.0.70.)
  */
-export function toTurnBlocks(messages: readonly ModelMessage[]): TurnBlocks {
+export function toTurnBlocks(
+  messages: readonly ModelMessage[],
+  phraseByName: ReadonlyMap<string, string> = new Map(),
+): TurnBlocks {
   const contentBlocks: ContentBlock[] = [];
   const toolResultBlocks: ContentBlock[] = [];
   const assistantTexts: string[] = [];
@@ -98,11 +101,16 @@ export function toTurnBlocks(messages: readonly ModelMessage[]): TurnBlocks {
           // rather than inventing one.
           contentBlocks.push({ type: 'thinking', thinking: part.text });
         } else if (part.type === 'tool-call') {
+          // TASK-271: attach the host-authored phrase where the catalog has
+          // one. The aisdk tool names are already bare ax names, so the map
+          // lookup is direct — no wire-prefix normalization needed.
+          const phrase = phraseByName.get(part.toolName);
           contentBlocks.push({
             type: 'tool_use',
             id: part.toolCallId,
             name: part.toolName,
             input: (part.input ?? {}) as Record<string, unknown>,
+            ...(phrase !== undefined ? { activityPhrase: phrase } : {}),
           });
         }
         // file / tool-approval-* parts have no ContentBlock counterpart —

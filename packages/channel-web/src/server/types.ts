@@ -39,6 +39,12 @@ export type StreamChunk =
       toolName: string;
       input: Record<string, unknown>;
       seq?: number;
+      /**
+       * Host-authored activity label (TASK-271), fenced at the IPC ingress
+       * before it reaches this chunk. Optional: pre-phrase runners omit it
+       * and the client falls back to the stripped toolName.
+       */
+      activityPhrase?: string;
     }
   | {
       reqId: string;

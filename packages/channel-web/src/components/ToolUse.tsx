@@ -32,6 +32,7 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 import { cn } from '@/lib/utils';
 import { ArtifactChip } from './ArtifactChip';
 import { useConversationId } from '../lib/use-conversation-id';
+import { toolDisplayName } from '../lib/tool-phrase';
 
 const formatJSON = (v: unknown): string => {
   if (v == null) return '';
@@ -92,7 +93,13 @@ export const ToolFallback: FC<ToolCallMessagePartProps> = (p) => {
       data-testid="tool-step"
     >
       <div className="tstep-name text-primary font-medium mb-1">
-        {p.toolName}
+        {/*
+         * TASK-271: the host-authored activityPhrase where the call carried
+         * one (remembered by toolCallId at part-construction time), else the
+         * stable tool name. Rendered as plain text — React escapes it, so a
+         * fenced phrase cannot execute markup here.
+         */}
+        {toolDisplayName(p.toolCallId, p.toolName)}
         {status !== 'done' ? (
           <span
             className={cn(
