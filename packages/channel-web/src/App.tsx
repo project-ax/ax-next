@@ -56,6 +56,7 @@ import { SetupWizard } from './components/setup/SetupWizard';
 import { UserProvider } from './lib/user-context';
 import { consumeOAuthFullPageReturn } from './lib/oauth-full-page-return';
 import { toastActions } from './lib/toast-store';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 type AppMode =
   | { kind: 'loading' }
@@ -364,40 +365,51 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   if (pathRendersWorkspace() && features.agentWorkspacePreview) {
     return (
       <UserProvider value={user}>
-        <WorkspaceShell />
+        <ErrorBoundary surface="workspace">
+          <WorkspaceShell />
+        </ErrorBoundary>
         <ToastStack />
       </UserProvider>
     );
   }
 
+  // Per-surface boundaries (TASK-273): a broken sidebar must not take the
+  // thread with it, and vice versa. The outer `chat` boundary is the
+  // backstop for throws above both (providers, admin shell).
   return (
     <UserProvider value={user}>
-      <AssistantRuntimeProvider runtime={runtime}>
-        <div className="flex h-screen bg-background text-foreground font-sans">
-          {adminSettingsOpen ? (
-            <AdminShell
-              isAdmin={user.role === 'admin'}
-              onClose={() => setAdminSettingsOpen(false)}
-            />
-          ) : (
-            <>
-              <Sidebar onOpenAdminSettings={() => setAdminSettingsOpen(true)} />
-              {sidebarOpen && (
-                <div
-                  className="hidden max-[720px]:block fixed inset-0 bg-black/40 z-40"
-                  onClick={() => setSidebarOpen(false)}
-                  aria-hidden="true"
-                />
-              )}
-              <main className="flex flex-1 flex-col min-w-0 min-h-0 h-full">
-                <SessionHeader onCreateAgent={() => { setBootstrapAgentName(null); setCreateAgentOpen(true); }} />
-                <Thread />
-              </main>
-            </>
-          )}
-          <ToastStack />
-        </div>
-      </AssistantRuntimeProvider>
+      <ErrorBoundary surface="chat">
+        <AssistantRuntimeProvider runtime={runtime}>
+          <div className="flex h-screen bg-background text-foreground font-sans">
+            {adminSettingsOpen ? (
+              <AdminShell
+                isAdmin={user.role === 'admin'}
+                onClose={() => setAdminSettingsOpen(false)}
+              />
+            ) : (
+              <>
+                <ErrorBoundary surface="chat-sidebar">
+                  <Sidebar onOpenAdminSettings={() => setAdminSettingsOpen(true)} />
+                </ErrorBoundary>
+                {sidebarOpen && (
+                  <div
+                    className="hidden max-[720px]:block fixed inset-0 bg-black/40 z-40"
+                    onClick={() => setSidebarOpen(false)}
+                    aria-hidden="true"
+                  />
+                )}
+                <ErrorBoundary surface="chat-thread">
+                  <main className="flex flex-1 flex-col min-w-0 min-h-0 h-full">
+                    <SessionHeader onCreateAgent={() => { setBootstrapAgentName(null); setCreateAgentOpen(true); }} />
+                    <Thread />
+                  </main>
+                </ErrorBoundary>
+              </>
+            )}
+            <ToastStack />
+          </div>
+        </AssistantRuntimeProvider>
+      </ErrorBoundary>
     </UserProvider>
   );
 };
