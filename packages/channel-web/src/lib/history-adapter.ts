@@ -21,6 +21,7 @@
 import type { ThreadHistoryAdapter } from '@assistant-ui/react';
 import type { ContentBlock } from '@ax/ipc-protocol';
 import { httpFetch } from './http';
+import { rememberToolHeld } from './tool-held';
 import { stripMcpToolPrefix } from './tool-name';
 import { rememberToolPhrase } from './tool-phrase';
 
@@ -53,7 +54,7 @@ interface GetConversationResponse {
  */
 type ToolResultMap = Map<
   string,
-  { content: string; isError: boolean }
+  { content: string; isError: boolean; held: boolean }
 >;
 
 const flattenToolResultContent = (
@@ -139,6 +140,11 @@ function blocksToParts(
       // live path in transport.ts) — the mcp__ strip remains the fallback
       // for blocks with no phrase.
       rememberToolPhrase(block.id, block.activityPhrase);
+      // TASK-270: stash the persisted held mark in the display map — the
+      // emitted part cannot carry it (the assistant-ui bridge rebuilds
+      // tool-call parts lossily). Keyed off the persisted flag, never off
+      // the result copy: rows that predate the flag stay unmarked.
+      if (matched?.held === true) rememberToolHeld(block.id, true);
       const part: Record<string, unknown> = {
         type: 'dynamic-tool',
         // TASK-260: the SDK renames an MCP-hosted tool to
@@ -260,6 +266,7 @@ function collectToolResults(turns: Turn[]): ToolResultMap {
         map.set(block.tool_use_id, {
           content: flattenToolResultContent(block.content),
           isError: block.is_error === true,
+          held: block.held === true,
         });
       }
     }

@@ -36,7 +36,7 @@ beforeEach(async () => {
     policy,
     homeDir: home,
     env: { PATH: process.env['PATH'] ?? '', HOME: home },
-    holdLatch: createHoldLatch(),
+    holdLatch: createHoldLatch(), onHold: () => {},
   });
 });
 
@@ -204,7 +204,7 @@ describe('Bash', () => {
       policy,
       homeDir: home,
       env: { PATH: process.env['PATH'] ?? '', AX_TEST_MARKER: 'composed' },
-      holdLatch: createHoldLatch(),
+      holdLatch: createHoldLatch(), onHold: () => {},
     });
     const out = await run('Bash', { command: 'echo "[$AX_TEST_MARKER]"' });
     expect(out).toContain('[composed]');

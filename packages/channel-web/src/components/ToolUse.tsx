@@ -32,6 +32,7 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 import { cn } from '@/lib/utils';
 import { ArtifactChip } from './ArtifactChip';
 import { useConversationId } from '../lib/use-conversation-id';
+import { isToolHeld } from '../lib/tool-held';
 import { toolDisplayName } from '../lib/tool-phrase';
 
 const formatJSON = (v: unknown): string => {
@@ -44,8 +45,15 @@ const formatJSON = (v: unknown): string => {
   }
 };
 
-const stepStatus = (p: ToolCallMessagePartProps): 'running' | 'failed' | 'done' => {
+const stepStatus = (
+  p: ToolCallMessagePartProps,
+): 'running' | 'waiting' | 'failed' | 'done' => {
   if (p.status?.type === 'running') return 'running';
+  // A hold is neither a completion nor a failure (TASK-260's floor), so it
+  // wins over the error check: the runners publish held results with
+  // `is_error` omitted, but a stale or foreign row carrying both must still
+  // read as waiting, never as failed.
+  if (isToolHeld(p.toolCallId)) return 'waiting';
   if (p.isError || p.status?.type === 'incomplete') return 'failed';
   return 'done';
 };
@@ -65,18 +73,31 @@ const STEP_LABEL_CLASS =
  * signal — and it removes a console-vocabulary shout from every tool call in
  * the product, not just the held ones.
  *
- * The two states that remain are sentence-cased for the same reason: a
+ * The states that remain are sentence-cased for the same reason: a
  * non-technical user did not cause them and should not be shouted at about
  * them.
  *
- * There is deliberately no third `Waiting` state here. Detecting a hold
- * client-side would mean string-matching the runner's host-authored constant,
- * which puts two packages in charge of one sentence — the exact failure
- * `workspace/decision-copy.ts` was written to prevent. A real hold state needs
- * a persisted flag first, and that is its own card.
+ * The third state, `Waiting`, arrived in TASK-270 with the persisted `held`
+ * flag it needed — the mark is keyed off the flag the runner published, never
+ * off string-matching the waiting copy (which would put two packages in
+ * charge of one sentence, the exact failure `workspace/decision-copy.ts` was
+ * written to prevent). It renders in `text-warning`: the same token the
+ * workspace surfaces use for "held for you", distinct from both the success
+ * rendering (no badge at all) and the error one (`text-destructive`).
+ *
+ * Historical rows are deliberately LEFT, not migrated: a row persisted before
+ * the flag existed carries no mark, and backfilling it would mean matching
+ * the waiting copy — the forbidden string-match. So a hold from before the
+ * flag renders as it always did (completed-looking, or red for pre-TASK-260
+ * rows with `is_error`). Holds are transient and a decision persisted before
+ * the flag shipped is already resolved or abandoned, so the stale rendering
+ * is a record, not a lie. The flag is write-once for the same reason: a
+ * resolved hold keeps its Waiting treatment as the statement of what was
+ * true at that point (the replay writes no new block for the same call).
  */
-const STATUS_WORD: Record<'running' | 'failed', string> = {
+const STATUS_WORD: Record<'running' | 'waiting' | 'failed', string> = {
   running: 'Running',
+  waiting: 'Waiting',
   failed: 'Failed',
 };
 
@@ -104,7 +125,9 @@ export const ToolFallback: FC<ToolCallMessagePartProps> = (p) => {
           <span
             className={cn(
               'tstep-status ml-2 font-sans font-normal text-[11px]',
-              status === 'running' ? 'text-primary' : 'text-destructive',
+              status === 'running' && 'text-primary',
+              status === 'waiting' && 'text-warning',
+              status === 'failed' && 'text-destructive',
             )}
           >
             {STATUS_WORD[status]}
@@ -117,6 +140,23 @@ export const ToolFallback: FC<ToolCallMessagePartProps> = (p) => {
         <>
           <div className={STEP_LABEL_CLASS}>error</div>
           <div className="tstep-error">{formatJSON(p.result) || 'failed'}</div>
+        </>
+      ) : status === 'waiting' && p.result !== undefined ? (
+        <>
+          {/*
+           * No section label: the body of a held call is the waiting sentence
+           * itself, and a `result` heading above "Nothing has happened yet"
+           * would contradict it in adjacent pixels (the same reason there is
+           * no `DONE` word). The Waiting badge above is the whole signal.
+           */}
+          <div
+            className={cn(
+              'tstep-result',
+              typeof p.result === 'string' && 'font-sans text-[13px] leading-[1.5]',
+            )}
+          >
+            {formatJSON(p.result)}
+          </div>
         </>
       ) : status === 'done' && p.result !== undefined ? (
         <>

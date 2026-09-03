@@ -59,6 +59,13 @@ export const EventStreamChunkSchema = z.discriminatedUnion('kind', [
      *  text on the wire; full structure persists at turn-end. */
     output: z.string(),
     isError: z.boolean().optional(),
+    /**
+     * Live-chunk twin of `ToolResultBlock.held` (TASK-270): the call never
+     * ran and is waiting on a human. Same optionality; readers stash it in
+     * the toolCallId-keyed display map, never in the part (the assistant-ui
+     * bridge rebuilds tool-call parts lossily).
+     */
+    held: z.boolean().optional(),
   }),
 ]);
 export type EventStreamChunk = z.infer<typeof EventStreamChunkSchema>;

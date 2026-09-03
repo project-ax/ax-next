@@ -32,6 +32,7 @@ import {
   getDecisionRaisedSnapshot,
 } from '../lib/decision-raised-store';
 import { continuationActions } from '../lib/continuation-actions';
+import { clearToolHeld, isToolHeld } from '../lib/tool-held';
 import {
   clearToolPhrases,
   toolDisplayName,
@@ -851,6 +852,30 @@ describe('AxChatTransport SSE chunk parsing', () => {
     expect(toolDisplayName('t-bare', 'request_capability')).toBe(
       'request_capability',
     );
+  });
+
+  // TASK-270: a live tool-result frame carrying the held flag stashes the
+  // mark for the renderer while the enqueued chunk stays the ordinary
+  // tool-output-available shape (the bridge cannot carry the mark). A frame
+  // without the flag leaves no mark.
+  test('a live tool-result frame stashes its held mark, keeping the chunk ordinary', async () => {
+    clearToolHeld();
+    const transport = new AxChatTransport({ getAgentId: () => 'a' });
+    const body =
+      `data: {"reqId":"r1","kind":"tool-use","toolCallId":"t-held","toolName":"request_capability","input":{},"seq":1}\n\n` +
+      `data: {"reqId":"r1","kind":"tool-result","toolCallId":"t-held","output":"Waiting for you to choose.","held":true,"seq":2}\n\n` +
+      `data: {"reqId":"r1","kind":"tool-use","toolCallId":"t-done","toolName":"Bash","input":{},"seq":3}\n\n` +
+      `data: {"reqId":"r1","kind":"tool-result","toolCallId":"t-done","output":"ok","seq":4}\n\n` +
+      `data: {"reqId":"r1","done":true}\n\n`;
+    const chunks = await drain(asProcess(transport)(sseStream(body))) as Array<{
+      type: string;
+      toolCallId?: string;
+    }>;
+    const outputs = chunks.filter((c) => c.type === 'tool-output-available');
+    expect(outputs.map((c) => c.toolCallId).sort()).toEqual(['t-done', 't-held']);
+    expect(isToolHeld('t-held')).toBe(true);
+    expect(isToolHeld('t-done')).toBe(false);
+    clearToolHeld();
   });
 });
 

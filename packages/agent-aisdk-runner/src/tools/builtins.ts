@@ -140,6 +140,8 @@ export interface BuiltinToolsOptions {
   env: Record<string, string>;
   /** The one latch shared by every tool this turn — see WrapWithPolicyOptions. */
   holdLatch: HoldLatch;
+  /** Fired with the call id on a hold — see WrapWithPolicyOptions. */
+  onHold: (toolCallId: string) => void;
 }
 
 /**
@@ -154,7 +156,7 @@ export function buildBuiltinTools(
     name: string,
     run: (input: Record<string, unknown>, ctx: { abortSignal?: AbortSignal | undefined }) => Promise<string>,
   ): ReturnType<typeof wrapWithPolicy> =>
-    wrapWithPolicy({ policy: opts.policy, name, isBuiltin: true, holdLatch: opts.holdLatch }, (input, ctx) =>
+    wrapWithPolicy({ policy: opts.policy, name, isBuiltin: true, holdLatch: opts.holdLatch, onHold: opts.onHold }, (input, ctx) =>
       run(input, { abortSignal: ctx.abortSignal }),
     );
 

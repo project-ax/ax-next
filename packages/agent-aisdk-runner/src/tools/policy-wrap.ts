@@ -84,6 +84,15 @@ export interface WrapWithPolicyOptions {
    * wire at every call site instead of that shipping silently.
    */
   holdLatch: HoldLatch;
+  /**
+   * Called with the tool-call id when a call is held, so the loop can mark
+   * that call's published result as waiting (TASK-270). The claude-sdk
+   * runner's PreToolUse `onHold` is the twin — same question ("WHICH CALL is
+   * the person being asked about?"), same per-turn lifetime. Required, like
+   * `holdLatch`, so tsc catches a missing wire at every call site instead of
+   * a hold silently publishing as an ordinary completed step.
+   */
+  onHold: (toolCallId: string) => void;
 }
 
 /** The `execute` shape `ai@7`'s `tool()` accepts, narrowed to what we produce. */
@@ -114,6 +123,7 @@ export function wrapWithPolicy(
 
     if (verdict.decision === 'hold') {
       opts.holdLatch.trip(verdict.decisionId);
+      opts.onHold(options.toolCallId);
       // Same shape as a denial — text, not a throw — for the same reason
       // (choice 1 above). The difference is the latch: `stopWhen` reads it and
       // ends the turn after THIS step, so the model never gets another step to

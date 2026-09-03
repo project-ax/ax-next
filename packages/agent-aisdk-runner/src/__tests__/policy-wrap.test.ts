@@ -41,7 +41,7 @@ describe('wrapWithPolicy — the one choke point', () => {
   it('runs the executor and returns its output when the policy allows', async () => {
     const policy = fakePolicy();
     const run = vi.fn(async () => 'the output');
-    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} }, run);
 
     await expect(execute({ command: 'ls' }, OPTS)).resolves.toBe('the output');
 
@@ -71,7 +71,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       })),
     } as never);
     const run = vi.fn(async () => 'must not run');
-    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} }, run);
 
     const settled = await execute({ command: 'npm i' }, OPTS).then(
       (value) => ({ status: 'fulfilled' as const, value }),
@@ -96,7 +96,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       })),
     } as never);
     const run = vi.fn(async () => 'read ok');
-    const execute = wrapWithPolicy({ policy, name: 'Read', isBuiltin: true, holdLatch: createHoldLatch() }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Read', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} }, run);
 
     await execute({ file_path: '~/.ax/uploads/c1/t1/report.pdf' }, OPTS);
 
@@ -119,7 +119,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       postToolUse: vi.fn(async () => ({ note: 'Blocked host: registry.npmjs.org' })),
     } as never);
     const execute = wrapWithPolicy(
-      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
+      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
       async () => 'npm ERR! network',
     );
 
@@ -130,7 +130,7 @@ describe('wrapWithPolicy — the one choke point', () => {
   it('re-throws an executor failure (the SDK error channel) but still audits it', async () => {
     const policy = fakePolicy();
     const execute = wrapWithPolicy(
-      { policy, name: 'Read', isBuiltin: true, holdLatch: createHoldLatch() },
+      { policy, name: 'Read', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
       async () => {
         throw new Error('ENOENT: no such file');
       },
@@ -164,7 +164,7 @@ describe('wrapWithPolicy — the one choke point', () => {
       })),
     } as never);
     const run = vi.fn(async () => 'ran anyway');
-    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() }, run);
+    const execute = wrapWithPolicy({ policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} }, run);
 
     await expect(execute({ command: 'ls' }, OPTS)).resolves.toContain(
       'approval check could not be completed',
@@ -191,7 +191,7 @@ describe('wrapWithPolicy — the one choke point', () => {
     });
     const run = vi.fn(async () => 'ran anyway');
     const execute = wrapWithPolicy(
-      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
+      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
       run,
     );
 
@@ -227,7 +227,7 @@ describe('wrapWithPolicy — the one choke point', () => {
     const policy = createToolPolicy({ client, workspaceRoot: '/agent' });
     const run = vi.fn(async () => 'ran anyway');
     const execute = wrapWithPolicy(
-      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
+      { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
       run,
     );
 
@@ -243,14 +243,15 @@ describe('wrapWithPolicy — the one choke point', () => {
 
   it('marks the returned execute so a bypass is detectable', () => {
     const execute = wrapWithPolicy(
-      { policy: fakePolicy(), name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
+      { policy: fakePolicy(), name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
       async () => 'x',
     );
     expect(execute[POLICY_WRAPPED]).toBe(true);
   });
 
-  it('returns the hold note as tool text, trips the latch, and never runs the tool', async () => {
+  it('returns the hold note as tool text, trips the latch, fires onHold with the call id, and never runs the tool', async () => {
     const latch = createHoldLatch();
+    const heldIds: string[] = [];
     let ran = false;
     const execute = wrapWithPolicy(
       {
@@ -264,6 +265,12 @@ describe('wrapWithPolicy — the one choke point', () => {
         name: 'gmail_send',
         isBuiltin: false,
         holdLatch: latch,
+        // TASK-270: the loop marks this call's published result as waiting
+        // off exactly this id — assert it is the SDK's call id, not the
+        // decision id (a decision-id key would never match a tool_result).
+        onHold: (toolCallId) => {
+          heldIds.push(toolCallId);
+        },
       },
       async () => {
         ran = true;
@@ -272,6 +279,7 @@ describe('wrapWithPolicy — the one choke point', () => {
     );
     const out = await execute({ to: 'a@b.c' }, { toolCallId: 'tc_1' });
     expect(ran).toBe(false);
+    expect(heldIds).toEqual(['tc_1']);
     expect(out).toContain('Held: sending email');
     // The instruction is the whole point of `hold` over `deny`: "not yet"
     // must not read to the model as "not this way".
@@ -287,7 +295,7 @@ describe('assertAllToolsWrapped', () => {
     const tools = {
       Bash: {
         execute: wrapWithPolicy(
-          { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
+          { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
           async () => 'x',
         ),
       },
@@ -300,7 +308,7 @@ describe('assertAllToolsWrapped', () => {
     const tools = {
       Bash: {
         execute: wrapWithPolicy(
-          { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch() },
+          { policy, name: 'Bash', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
           async () => 'x',
         ),
       },
@@ -323,13 +331,13 @@ describe('assertAllToolsWrapped', () => {
     const tools = {
       Bash: {
         execute: wrapWithPolicy(
-          { policy: fakePolicy(), name: 'Bash', isBuiltin: true, holdLatch: loopLatch },
+          { policy: fakePolicy(), name: 'Bash', isBuiltin: true, holdLatch: loopLatch, onHold: () => {}},
           async () => 'x',
         ),
       },
       Stray: {
         execute: wrapWithPolicy(
-          { policy: fakePolicy(), name: 'Stray', isBuiltin: true, holdLatch: createHoldLatch() },
+          { policy: fakePolicy(), name: 'Stray', isBuiltin: true, holdLatch: createHoldLatch(), onHold: () => {} },
           async () => 'x',
         ),
       },
@@ -443,7 +451,7 @@ describe('hold latch identity across the built tool set', () => {
           policy: fakePolicy(),
           homeDir: '/tmp/ax-hold-latch-test-home',
           env: {},
-          holdLatch: latch,
+          holdLatch: latch, onHold: () => {},
         }),
       },
       {
@@ -452,7 +460,7 @@ describe('hold latch identity across the built tool set', () => {
           policy: fakePolicy(),
           client: mkHostClient(),
           tools: catalog,
-          holdLatch: latch,
+          holdLatch: latch, onHold: () => {},
         }),
       },
       {
@@ -461,12 +469,12 @@ describe('hold latch identity across the built tool set', () => {
           policy: fakePolicy(),
           dispatcher,
           tools: catalog,
-          holdLatch: latch,
+          holdLatch: latch, onHold: () => {},
         }),
       },
       {
         label: 'the Skill tool',
-        tools: buildSkillTool({ policy: fakePolicy(), skills: [SKILL], holdLatch: latch }),
+        tools: buildSkillTool({ policy: fakePolicy(), skills: [SKILL], holdLatch: latch, onHold: () => {}}),
       },
     ]) as unknown as Record<string, { execute: WrappedExecute }>;
 

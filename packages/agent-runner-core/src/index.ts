@@ -63,6 +63,8 @@ export type {
 export { decisionResolvedTurn, sanitizeDecisionNote } from './decision-turn.js';
 export { createHoldLatch, drainHoldLatch } from './hold-latch.js';
 export type { HoldLatch } from './hold-latch.js';
+export { createHeldCallRegistry } from './held-calls.js';
+export type { HeldCallRegistry } from './held-calls.js';
 export { resolveGovernedPaths, resolveAttachmentPaths } from './governed-paths.js';
 export { buildEgressBlockNote } from './egress-note.js';
 export {

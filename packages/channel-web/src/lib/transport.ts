@@ -48,6 +48,7 @@ import { HttpChatTransport, type UIMessage, type UIMessageChunk } from 'ai';
 import { agentStatusActions } from './agent-status-store';
 import { permissionCardActions } from './permission-card-store';
 import { stripMcpToolPrefix } from './tool-name';
+import { rememberToolHeld } from './tool-held';
 import { rememberToolPhrase } from './tool-phrase';
 import { decisionRaisedActions } from './decision-raised-store';
 import { continuationActions } from './continuation-actions';
@@ -176,6 +177,10 @@ type SseFrame =
       output: string;
       isError?: boolean;
       seq?: number;
+      // TASK-270: live twin of the persisted held flag, fenced server-side.
+      // Stashed into the tool-held map (the part itself cannot carry it —
+      // the assistant-ui bridge rebuilds tool-call parts lossily).
+      held?: boolean;
     }
   | { reqId: string; phase: string }
   | { reqId: string; done: true }
@@ -1041,6 +1046,10 @@ async function consumeSseAttempt(
             ctx.contentSeen = true;
             agentStatusActions.set('Thinking…');
           }
+          // TASK-270: stash the held mark before enqueueing — the enqueued
+          // part cannot carry it (lossy bridge), and the reader side
+          // (history-adapter) stashes the same way, so live and reload agree.
+          rememberToolHeld(frame.toolCallId, frame.held);
           if (frame.isError === true) {
             enqueueContent({
               type: 'tool-output-error',

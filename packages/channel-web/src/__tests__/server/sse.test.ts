@@ -1533,3 +1533,78 @@ describe('buffer-fill tool-use activityPhrase (TASK-271)', () => {
     }
   });
 });
+
+describe('buffer-fill tool-result held (TASK-270)', () => {
+  it('passes a held flag into the buffered chunk', async () => {
+    const buffer = createChunkBuffer();
+    try {
+      const fill = createBufferFillSubscriber(buffer);
+      const ctx = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'u',
+      });
+      await fill(ctx, {
+        reqId: 'r1',
+        kind: 'tool-result',
+        toolCallId: 'c1',
+        output: 'Waiting for you to choose.',
+        held: true,
+      });
+      const tail = buffer.tail('r1');
+      expect(tail).toHaveLength(1);
+      expect(tail[0]).toMatchObject({
+        kind: 'tool-result',
+        toolCallId: 'c1',
+        held: true,
+      });
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('a chunk without the flag buffers as before', async () => {
+    const buffer = createChunkBuffer();
+    try {
+      const fill = createBufferFillSubscriber(buffer);
+      const ctx = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'u',
+      });
+      await fill(ctx, {
+        reqId: 'r1',
+        kind: 'tool-result',
+        toolCallId: 'c1',
+        output: 'ok',
+      });
+      const tail = buffer.tail('r1');
+      expect(tail).toHaveLength(1);
+      expect('held' in (tail[0] as object)).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('drops the chunk on a mistyped held, same as a mistyped isError', async () => {
+    const buffer = createChunkBuffer();
+    try {
+      const fill = createBufferFillSubscriber(buffer);
+      const ctx = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'u',
+      });
+      await fill(ctx, {
+        reqId: 'r1',
+        kind: 'tool-result',
+        toolCallId: 'c1',
+        output: 'ok',
+        held: 'yes',
+      } as unknown as StreamChunk);
+      expect(buffer.tail('r1')).toHaveLength(0);
+    } finally {
+      buffer.dispose();
+    }
+  });
+});
