@@ -2611,6 +2611,10 @@ describe('channel-web agent-workspace BFF', () => {
           { consumedAt: '2026-08-21T11:00:01.000Z' },
         ],
         ['the host performed the call', { replayedAt: '2026-08-21T11:00:11.000Z' }],
+        [
+          'the host claimed the replay flight',
+          { replayClaimedAt: '2026-08-21T11:00:05.000Z' },
+        ],
       ])('is NOT undoable once %s', (_what, over) => {
         const out = toWireDecision(
           stored(
@@ -2629,6 +2633,24 @@ describe('channel-web agent-workspace BFF', () => {
 
       it('is NOT undoable while the row is still pending', () => {
         expect(toWireDecision(stored(decision({ id: 'd1' }))).undoable).toBe(false);
+      });
+
+      it('stays undoable while the replay is deferred and no flight is claimed', () => {
+        // The grace period: `replayDueAt` set, `replayClaimedAt` null. The call
+        // has NOT been made, so Undo still works and must stay offered.
+        const out = toWireDecision(
+          stored(
+            decision({
+              id: 'd1',
+              status: 'executed',
+              resolvedAt: RESOLVED_AT,
+              replayDueAt: '2026-08-21T11:00:10.000Z',
+              replayClaimedAt: null,
+            }),
+          ),
+        );
+        expect(out.pendingUntil).toBe('2026-08-21T11:00:10.000Z');
+        expect(out.undoable).toBe(true);
       });
 
       it('renames replayDueAt to pendingUntil', () => {
