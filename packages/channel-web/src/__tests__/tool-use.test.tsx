@@ -39,6 +39,10 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 
 import { ToolFallback, ArtifactPublishTool } from '../components/ToolUse';
 import { setActiveConversationId } from '../lib/use-conversation-id';
+import {
+  clearToolPhrases,
+  rememberToolPhrase,
+} from '../lib/tool-phrase';
 
 const makePart = (
   overrides: Partial<ToolCallMessagePartProps> = {},
@@ -134,6 +138,37 @@ describe('ToolFallback', () => {
     // decision id (never in the prose — see @ax/decisions templates.ts).
     expect(container.textContent).not.toMatch(/mcp__/);
     expect(container.textContent).not.toMatch(/dec_/);
+  });
+
+  // TASK-271: the host-authored phrase (remembered by toolCallId at
+  // part-construction time) replaces the wire identifier in the name line.
+  // Distinct call ids keep these cases independent of the file's other
+  // tests, which never stash.
+  it('renders the remembered activityPhrase instead of the wire name', () => {
+    clearToolPhrases();
+    rememberToolPhrase('t-phrase-271', 'Searching memory');
+    const { container } = render(
+      <ToolFallback {...makePart({ toolCallId: 't-phrase-271' })} />,
+    );
+    expect(screen.getByText('Searching memory')).toBeTruthy();
+    expect(screen.queryByText('web.search')).toBeNull();
+    expect(container.querySelector('.tstep-name')?.textContent).toBe(
+      'Searching memory',
+    );
+  });
+
+  it('renders a hostile phrase as inert text, never markup', () => {
+    clearToolPhrases();
+    rememberToolPhrase('t-xss-271', '<img src=x onerror=alert(1)>');
+    const { container } = render(
+      <ToolFallback {...makePart({ toolCallId: 't-xss-271' })} />,
+    );
+    // No element was created from the phrase — React escaped it. (The phrase
+    // was already fenced server-side; this pins the render layer too.)
+    expect(container.querySelector('img')).toBeNull();
+    expect(
+      screen.getByText('<img src=x onerror=alert(1)>'),
+    ).toBeTruthy();
   });
 
   // TASK-260 companion: a string result is prose, an object result is data.

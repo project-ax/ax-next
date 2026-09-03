@@ -1,5 +1,9 @@
 import type { AgentContext, HookBus } from '@ax/core';
-import { EventTurnEndSchema, type EventTurnEnd } from '@ax/ipc-protocol';
+import {
+  EventTurnEndSchema,
+  sanitizeActivityPhrase,
+  type EventTurnEnd,
+} from '@ax/ipc-protocol';
 import { validationError } from '../errors.js';
 import type { HandlerErr } from './types.js';
 
@@ -33,6 +37,21 @@ export function validateEventTurnEnd(rawPayload: unknown):
   const parsed = EventTurnEndSchema.safeParse(rawPayload);
   if (!parsed.success) {
     return validationError(`event.turn-end: ${parsed.error.message}`);
+  }
+  // TASK-271: same fence as the stream-chunk path — these blocks persist
+  // into the display log (persist-before-ack below), so a hostile phrase
+  // must be mangled before durability, not after.
+  if (parsed.data.contentBlocks !== undefined) {
+    for (const block of parsed.data.contentBlocks) {
+      if (block.type === 'tool_use') {
+        const clean = sanitizeActivityPhrase(block.activityPhrase);
+        if (clean === undefined) {
+          delete block.activityPhrase;
+        } else {
+          block.activityPhrase = clean;
+        }
+      }
+    }
   }
   return { ok: true, payload: parsed.data };
 }

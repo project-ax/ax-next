@@ -45,6 +45,11 @@ export const EventStreamChunkSchema = z.discriminatedUnion('kind', [
     toolName: z.string(),
     /** Raw input the model produced for this tool call. */
     input: z.record(z.string(), z.unknown()),
+    /**
+     * Host-authored activity label (TASK-271) — the live-chunk twin of
+     * `ToolUseBlock.activityPhrase`. Same optionality and fencing contract.
+     */
+    activityPhrase: z.string().optional(),
   }),
   z.object({
     reqId: z.string(),

@@ -2,6 +2,7 @@
 import { randomUUID } from 'node:crypto';
 import { pathToFileURL } from 'node:url';
 import {
+  buildActivityPhraseMap,
   buildHomeBinEnv,
   buildPythonVenvEnv,
   buildToolCacheEnv,
@@ -125,6 +126,10 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
     resumeSessionId,
     transcript,
   } = deps;
+
+  // TASK-271: bare-ax-name → host-authored activityPhrase for the tool-use
+  // chunks/blocks below. The aisdk tool names need no normalization.
+  const phraseByName = buildActivityPhraseMap(catalog);
 
   // ---- `AgentConfig.runner` gets its first real reader -------------------
   //
@@ -382,11 +387,14 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
               await ctx.emitChunk({ kind: 'thinking', text: part.text });
             }
           } else if (part.type === 'tool-call') {
+            // TASK-271: same phrase attach as the persisted blocks below.
+            const phrase = phraseByName.get(part.toolName);
             await ctx.emitChunk({
               kind: 'tool-use',
               toolCallId: part.toolCallId,
               toolName: part.toolName,
               input: (part.input ?? {}) as Record<string, unknown>,
+              ...(phrase !== undefined ? { activityPhrase: phrase } : {}),
             });
           } else if (part.type === 'tool-result') {
             await ctx.emitChunk({
@@ -439,7 +447,7 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         transcript.append(newMessages);
 
         const { contentBlocks, toolResultBlocks, assistantText } =
-          toTurnBlocks(newMessages);
+          toTurnBlocks(newMessages, phraseByName);
         if (assistantText.length > 0) ctx.recordAssistantText(assistantText);
 
         await ctx.endTurn({

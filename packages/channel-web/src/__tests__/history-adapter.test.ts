@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { MessageFormatAdapter, MessageFormatItem, MessageStorageEntry } from '@assistant-ui/react';
 import { contentBlocksToAuiParts, createAxHistoryAdapter, decodeAttachmentPath } from '../lib/history-adapter';
+import { clearToolPhrases, toolDisplayName } from '../lib/tool-phrase';
 
 type StorageFormat = Record<string, unknown>;
 type TestMessage = MessageStorageEntry<StorageFormat>;
@@ -467,5 +468,41 @@ describe('contentBlocksToAuiParts — tool_use MCP wire-name stripping (TASK-260
       toolName: 'Bash',
       toolCallId: 'tu_bare',
     });
+  });
+});
+
+describe('contentBlocksToAuiParts — activityPhrase stash (TASK-271)', () => {
+  it('stashes a block phrase for the label while the part toolName stays stable', () => {
+    clearToolPhrases();
+    const parts = contentBlocksToAuiParts([
+      {
+        type: 'tool_use' as const,
+        id: 'tu_phrase',
+        name: 'mcp__ax-sandbox-tools__artifact_publish',
+        input: {},
+        activityPhrase: 'Publishing a file',
+      },
+    ]);
+    // Stable dispatch key — the artifact chip still matches on this.
+    expect(parts[0]).toMatchObject({
+      type: 'dynamic-tool',
+      toolName: 'artifact_publish',
+      toolCallId: 'tu_phrase',
+    });
+    expect(toolDisplayName('tu_phrase', 'artifact_publish')).toBe(
+      'Publishing a file',
+    );
+  });
+
+  it('a block without a phrase leaves no entry (strip fallback)', () => {
+    clearToolPhrases();
+    const parts = contentBlocksToAuiParts([
+      { type: 'tool_use' as const, id: 'tu_nop', name: 'Bash', input: {} },
+    ]);
+    expect(parts[0]).toMatchObject({
+      type: 'dynamic-tool',
+      toolName: 'Bash',
+    });
+    expect(toolDisplayName('tu_nop', 'Bash')).toBe('Bash');
   });
 });

@@ -1441,3 +1441,60 @@ describe('decisionRaised frame', () => {
     }
   });
 });
+
+describe('buffer-fill tool-use activityPhrase (TASK-271)', () => {
+  it('passes a string phrase into the buffered chunk', async () => {
+    const buffer = createChunkBuffer();
+    try {
+      const fill = createBufferFillSubscriber(buffer);
+      const ctx = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'u',
+      });
+      await fill(ctx, {
+        reqId: 'r1',
+        kind: 'tool-use',
+        toolCallId: 'c1',
+        toolName: 'Bash',
+        input: {},
+        activityPhrase: 'Running a command',
+      });
+      const tail = buffer.tail('r1');
+      expect(tail).toHaveLength(1);
+      expect(tail[0]).toMatchObject({
+        kind: 'tool-use',
+        toolName: 'Bash',
+        activityPhrase: 'Running a command',
+      });
+    } finally {
+      buffer.dispose();
+    }
+  });
+
+  it('drops a non-string phrase but keeps the chunk', async () => {
+    const buffer = createChunkBuffer();
+    try {
+      const fill = createBufferFillSubscriber(buffer);
+      const ctx = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'u',
+      });
+      await fill(ctx, {
+        reqId: 'r1',
+        kind: 'tool-use',
+        toolCallId: 'c1',
+        toolName: 'Bash',
+        input: {},
+        activityPhrase: 42,
+      } as unknown as StreamChunk);
+      const tail = buffer.tail('r1');
+      expect(tail).toHaveLength(1);
+      expect(tail[0]).toMatchObject({ kind: 'tool-use', toolName: 'Bash' });
+      expect('activityPhrase' in (tail[0] as object)).toBe(false);
+    } finally {
+      buffer.dispose();
+    }
+  });
+});

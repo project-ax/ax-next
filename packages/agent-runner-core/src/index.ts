@@ -6,6 +6,7 @@
 // policy. Shared by @ax/agent-claude-sdk-runner and @ax/agent-aisdk-runner.
 //
 // This package must never import @anthropic-ai/claude-agent-sdk.
+export { buildActivityPhraseMap } from './activity-phrase-map.js';
 export { buildHomeBinEnv } from './home-bin-env.js';
 export { buildTtyHintEnv } from './tty-hint-env.js';
 export { buildToolCacheEnv } from './tool-cache-env.js';

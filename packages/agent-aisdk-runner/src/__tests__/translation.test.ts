@@ -122,6 +122,42 @@ describe('toTurnBlocks (outbound)', () => {
     ]);
   });
 
+  it('attaches the catalog activityPhrase where present, omits otherwise (TASK-271)', () => {
+    const phraseByName = new Map([['memory_search', 'Searching memory']]);
+    const { contentBlocks } = toTurnBlocks(
+      [
+        {
+          role: 'assistant',
+          content: [
+            {
+              type: 'tool-call',
+              toolCallId: 'c1',
+              toolName: 'memory_search',
+              input: { query: 'x' },
+            },
+            {
+              type: 'tool-call',
+              toolCallId: 'c2',
+              toolName: 'Bash',
+              input: { command: 'ls' },
+            },
+          ],
+        },
+      ],
+      phraseByName,
+    );
+    expect(contentBlocks).toEqual([
+      {
+        type: 'tool_use',
+        id: 'c1',
+        name: 'memory_search',
+        input: { query: 'x' },
+        activityPhrase: 'Searching memory',
+      },
+      { type: 'tool_use', id: 'c2', name: 'Bash', input: { command: 'ls' } },
+    ]);
+  });
+
   it('maps tool results onto tool_result blocks', () => {
     const { toolResultBlocks } = toTurnBlocks(messages);
     expect(toolResultBlocks).toEqual([

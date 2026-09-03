@@ -22,6 +22,7 @@ import type { ThreadHistoryAdapter } from '@assistant-ui/react';
 import type { ContentBlock } from '@ax/ipc-protocol';
 import { httpFetch } from './http';
 import { stripMcpToolPrefix } from './tool-name';
+import { rememberToolPhrase } from './tool-phrase';
 
 /**
  * Prefix assistant-ui's RemoteThreadList uses for the local placeholder id of
@@ -133,6 +134,11 @@ function blocksToParts(
       // renders with ToolFallback (or ArtifactPublishTool, standalone, for
       // artifact_publish).
       const matched = toolResults.get(block.id);
+      // TASK-271: stash the host-authored phrase for the ToolFallback label.
+      // toolName stays the STABLE stripped identifier (same contract as the
+      // live path in transport.ts) — the mcp__ strip remains the fallback
+      // for blocks with no phrase.
+      rememberToolPhrase(block.id, block.activityPhrase);
       const part: Record<string, unknown> = {
         type: 'dynamic-tool',
         // TASK-260: the SDK renames an MCP-hosted tool to

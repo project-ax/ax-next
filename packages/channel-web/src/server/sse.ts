@@ -590,6 +590,7 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
         toolCallId?: unknown;
         toolName?: unknown;
         input?: unknown;
+        activityPhrase?: unknown;
       };
       if (
         typeof p.toolCallId !== 'string' ||
@@ -599,6 +600,20 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
         Array.isArray(p.input)
       ) {
         return undefined;
+      }
+      // TASK-271: the phrase is already fenced at the IPC ingress; here we
+      // only type-guard the optional field so a malformed plugin payload
+      // cannot smuggle a non-string into the SSE frame. Drop the field, not
+      // the chunk.
+      if (
+        p.activityPhrase !== undefined &&
+        typeof p.activityPhrase !== 'string'
+      ) {
+        const { activityPhrase: _dropped, ...rest } = p as Record<
+          string,
+          unknown
+        >;
+        return buffer.append({ ...(rest as object) } as StreamChunk);
       }
       return buffer.append(payload as StreamChunk);
     }

@@ -1,5 +1,9 @@
 import type { AgentContext, HookBus } from '@ax/core';
-import { EventStreamChunkSchema, type EventStreamChunk } from '@ax/ipc-protocol';
+import {
+  EventStreamChunkSchema,
+  sanitizeActivityPhrase,
+  type EventStreamChunk,
+} from '@ax/ipc-protocol';
 import { validationError } from '../errors.js';
 import type { HandlerErr } from './types.js';
 
@@ -23,6 +27,18 @@ export function validateEventStreamChunk(rawPayload: unknown):
   const parsed = EventStreamChunkSchema.safeParse(rawPayload);
   if (!parsed.success) {
     return validationError(`event.stream-chunk: ${parsed.error.message}`);
+  }
+  // TASK-271: the phrase round-tripped through the untrusted runner — fence
+  // it here, at the trust boundary, before the broadcast fans it to SSE
+  // clients and storage. Mangle, never reject: a hostile label must not cost
+  // the whole chunk.
+  if (parsed.data.kind === 'tool-use') {
+    const clean = sanitizeActivityPhrase(parsed.data.activityPhrase);
+    if (clean === undefined) {
+      delete parsed.data.activityPhrase;
+    } else {
+      parsed.data.activityPhrase = clean;
+    }
   }
   return { ok: true, payload: parsed.data };
 }

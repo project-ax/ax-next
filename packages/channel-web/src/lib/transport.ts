@@ -48,6 +48,7 @@ import { HttpChatTransport, type UIMessage, type UIMessageChunk } from 'ai';
 import { agentStatusActions } from './agent-status-store';
 import { permissionCardActions } from './permission-card-store';
 import { stripMcpToolPrefix } from './tool-name';
+import { rememberToolPhrase } from './tool-phrase';
 import { decisionRaisedActions } from './decision-raised-store';
 import { continuationActions } from './continuation-actions';
 import { HttpError, httpFetch } from './http';
@@ -164,6 +165,9 @@ type SseFrame =
       toolName: string;
       input: Record<string, unknown>;
       seq?: number;
+      // TASK-271: host-authored display label, fenced server-side. Stashed
+      // into the tool-phrase map (toolName stays the stable dispatch key).
+      activityPhrase?: string;
     }
   | {
       reqId: string;
@@ -1012,6 +1016,12 @@ async function consumeSseAttempt(
             agentStatusActions.set('Thinking…');
           }
           ctx.closeOpen(controller);
+          // TASK-271: stash the host-authored phrase for the ToolFallback
+          // label. toolName stays the STABLE stripped identifier — renderer
+          // dispatch (Thread.tsx) and artifact pairing (MarkdownText.tsx)
+          // key on it, and the mcp__ strip remains the fallback for calls
+          // with no phrase.
+          rememberToolPhrase(frame.toolCallId, frame.activityPhrase);
           enqueueContent({
             type: 'tool-input-available',
             toolCallId: frame.toolCallId,
