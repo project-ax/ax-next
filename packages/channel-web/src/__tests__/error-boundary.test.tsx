@@ -8,6 +8,7 @@
  * underneath it for everything nobody thought to guard.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { useEffect, useState } from 'react';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ErrorBoundary } from '../components/ErrorBoundary';
 
@@ -72,5 +73,110 @@ describe('ErrorBoundary', () => {
       </ErrorBoundary>,
     );
     expect(screen.getByText('custom panel-down note')).toBeTruthy();
+  });
+
+  describe('resetKey', () => {
+    it('trip → key change → the fallback clears and the fixed child renders', () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      let shouldThrow = true;
+      const Flaky = () => {
+        if (shouldThrow) throw new Error('transient');
+        return <div>recovered</div>;
+      };
+      const { rerender } = render(
+        <ErrorBoundary surface="test" resetKey="s1">
+          <Flaky />
+        </ErrorBoundary>,
+      );
+      expect(screen.getByText(/this part hit a snag/i)).toBeTruthy();
+      // The session switched AND the cause is gone: new content renders.
+      shouldThrow = false;
+      rerender(
+        <ErrorBoundary surface="test" resetKey="s2">
+          <Flaky />
+        </ErrorBoundary>,
+      );
+      expect(screen.getByText('recovered')).toBeTruthy();
+      expect(screen.queryByText(/this part hit a snag/i)).toBeNull();
+    });
+
+    it('trip → same-key re-render → the fallback persists', () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      let shouldThrow = true;
+      const Flaky = () => {
+        if (shouldThrow) throw new Error('transient');
+        return <div>recovered</div>;
+      };
+      const { rerender } = render(
+        <ErrorBoundary surface="test" resetKey="s1">
+          <Flaky />
+        </ErrorBoundary>,
+      );
+      expect(screen.getByText(/this part hit a snag/i)).toBeTruthy();
+      shouldThrow = false;
+      rerender(
+        <ErrorBoundary surface="test" resetKey="s1">
+          <Flaky />
+        </ErrorBoundary>,
+      );
+      // Same identity: no incidental clear — the fallback sticks until the
+      // user retries (or the identity actually changes).
+      expect(screen.getByText(/this part hit a snag/i)).toBeTruthy();
+      expect(screen.queryByText('recovered')).toBeNull();
+    });
+
+    it('key change with a healthy stateful child → child state preserved (no remount)', () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      let mounts = 0;
+      const Stateful = () => {
+        const [count, setCount] = useState(0);
+        useEffect(() => {
+          mounts += 1;
+        }, []);
+        return <button onClick={() => setCount((c) => c + 1)}>count:{count}</button>;
+      };
+      const { rerender } = render(
+        <ErrorBoundary surface="test" resetKey="s1">
+          <Stateful />
+        </ErrorBoundary>,
+      );
+      fireEvent.click(screen.getByRole('button', { name: /count:0/ }));
+      expect(screen.getByRole('button', { name: /count:1/ })).toBeTruthy();
+      expect(mounts).toBe(1);
+      // Identity transition (e.g. null → minted id on the first message):
+      // the reset must not remount the child out from under it.
+      rerender(
+        <ErrorBoundary surface="test" resetKey="s2">
+          <Stateful />
+        </ErrorBoundary>,
+      );
+      expect(screen.getByRole('button', { name: /count:1/ })).toBeTruthy();
+      expect(mounts).toBe(1);
+    });
+
+    it('same-key re-render with a healthy stateful child → child state preserved', () => {
+      vi.spyOn(console, 'error').mockImplementation(() => {});
+      let mounts = 0;
+      const Stateful = () => {
+        const [count, setCount] = useState(0);
+        useEffect(() => {
+          mounts += 1;
+        }, []);
+        return <button onClick={() => setCount((c) => c + 1)}>count:{count}</button>;
+      };
+      const { rerender } = render(
+        <ErrorBoundary surface="test" resetKey="s1">
+          <Stateful />
+        </ErrorBoundary>,
+      );
+      fireEvent.click(screen.getByRole('button', { name: /count:0/ }));
+      rerender(
+        <ErrorBoundary surface="test" resetKey="s1">
+          <Stateful />
+        </ErrorBoundary>,
+      );
+      expect(screen.getByRole('button', { name: /count:1/ })).toBeTruthy();
+      expect(mounts).toBe(1);
+    });
   });
 });

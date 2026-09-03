@@ -31,6 +31,16 @@ interface ErrorBoundaryProps {
   children: ReactNode;
   /** Overrides the default fallback panel for this surface. */
   fallback?: ReactNode;
+  /**
+   * Opt-in content identity. When this value changes between renders, a
+   * tripped boundary clears its error so the new content gets a chance to
+   * render — without remounting the child (unlike a React `key=` reset,
+   * which would drop the child's state on every identity transition,
+   * including the `null → <minted-id>` transition on the first message).
+   * A re-render with an unchanged key neither clears nor remounts; if the
+   * cause persists the child re-throws and the fallback returns.
+   */
+  resetKey?: string | null;
 }
 
 interface ErrorBoundaryState {
@@ -42,6 +52,16 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 
   static getDerivedStateFromError(error: Error): ErrorBoundaryState {
     return { error };
+  }
+
+  override componentDidUpdate(prevProps: ErrorBoundaryProps): void {
+    // Identity changed since the last render: the content that threw is
+    // gone, so a tripped boundary clears instead of sticking the fallback
+    // onto the new content. Deliberately not a `key=` remount — the child
+    // keeps its state across the transition.
+    if (this.state.error !== null && prevProps.resetKey !== this.props.resetKey) {
+      this.setState({ error: null });
+    }
   }
 
   override componentDidCatch(error: Error, info: ErrorInfo): void {

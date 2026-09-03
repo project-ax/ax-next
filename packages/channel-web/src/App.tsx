@@ -37,7 +37,7 @@ import {
 import { hydrateTheme } from './lib/theme';
 import { useAgentStore } from './lib/agent-store';
 import { shouldShowAgentBootstrap } from './lib/agent-bootstrap-gate';
-import { sessionStoreActions } from './lib/session-store';
+import { sessionStoreActions, useSessionStore } from './lib/session-store';
 import { useSessionExpired } from './lib/session-expired-store';
 import { bootstrapKickoff } from './lib/bootstrap-kickoff';
 import { useTitleEvents } from './lib/use-title-events';
@@ -243,6 +243,12 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
   useHydrateAgents(); // lifted from SessionHeader so the first-run gate can read the result
   const { agents, agentsStatus, selectedAgentId, pendingAgentId } = useAgentStore();
   const runtime = useAxChatRuntime(user.id);
+  // Content identity for the chat-thread boundary's resetKey: when the user
+  // switches sessions, a tripped thread boundary clears instead of sticking
+  // the old session's fallback onto the new one. Scoped to chat-thread on
+  // purpose — the sidebar list identity doesn't change on switch, and the
+  // workspace shell owns its own route state.
+  const { activeSessionId } = useSessionStore();
   // `adminSettingsOpen` is set by the user menu's "Settings" entry
   // (admin-gated). AdminSettings renders in the main pane when true.
   const [adminSettingsOpen, setAdminSettingsOpen] = useState(false);
@@ -398,7 +404,7 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
                     aria-hidden="true"
                   />
                 )}
-                <ErrorBoundary surface="chat-thread">
+                <ErrorBoundary surface="chat-thread" resetKey={activeSessionId}>
                   <main className="flex flex-1 flex-col min-w-0 min-h-0 h-full">
                     <SessionHeader onCreateAgent={() => { setBootstrapAgentName(null); setCreateAgentOpen(true); }} />
                     <Thread />
