@@ -30,6 +30,16 @@ describe('continuationActions', () => {
     expect(continuationActions.takePendingContinuation()).toBeNull();
   });
 
+  it('a throwing kick unstages the id instead of failing the approval path', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    continuationActions.registerResume(() => {
+      throw new Error('runtime is gone');
+    });
+    expect(() => continuationActions.resumeContinuation('req-1')).not.toThrow();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(continuationActions.takePendingContinuation()).toBeNull();
+  });
+
   it('the staged id is consume-once', () => {
     continuationActions.registerResume(vi.fn());
     continuationActions.resumeContinuation('req-1');

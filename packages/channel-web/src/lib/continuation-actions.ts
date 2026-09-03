@@ -39,7 +39,16 @@ export const continuationActions = {
       return;
     }
     pendingReqId = reqId;
-    resume();
+    try {
+      resume();
+    } catch {
+      // The kick must never take the approval receipt down with it: this
+      // runs inside the approve POST's settle path, where a throw would
+      // surface as a failure notice over a successful approval. Unstage, so
+      // a later unrelated resume cannot pick up this id either.
+      pendingReqId = null;
+      console.warn('[continuation] the chat runtime refused the resume kick');
+    }
   },
   /** Transport reads (and clears) the staged id during `reconnectToStream`. */
   takePendingContinuation(): string | null {
