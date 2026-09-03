@@ -289,10 +289,12 @@ export class WorkspaceShapeError extends Error {
  * Both of them feed `useDecisionQueue`, and both feed it code that dereferences
  * the result during React's RENDER phase — `watchedKey` calls `.filter` on the
  * list, `applyPolledRow` reads `row.id` inside a `setDecisions` updater. So a
- * malformed body did not degrade, it threw out of a hook, and there is no
- * ErrorBoundary in this SPA: the whole chat surface unmounts. That was
- * survivable while only the flag-gated `/workspace` mounted this. TASK-261 puts
- * it on the default `/` chat surface, for every user, on every page load.
+ * malformed body did not degrade, it threw out of a hook — and before
+ * TASK-273 there was no ErrorBoundary in this SPA, so the whole chat surface
+ * unmounted. That was survivable while only the flag-gated `/workspace`
+ * mounted this. TASK-261 puts it on the default `/` chat surface, for every
+ * user, on every page load. (The per-surface boundaries are the backstop for
+ * what this guard misses; this guard stays the primary defence.)
  *
  * Checked HERE rather than in each caller so the list read and the single-row
  * re-read cannot drift — the first version of this guard covered only the list,
@@ -430,9 +432,9 @@ export const workspaceApi = {
 
       The only consumer is the undo-window poll, which hands the result straight
       to `applyPolledRow` — typed `(row: Decision)`, reading `row.id` inside a
-      `setDecisions` updater. A null there throws during render, and with no
-      ErrorBoundary in this SPA that unmounts the whole chat surface: exactly
-      the failure this guard exists to stop, just moved one route over.
+      `setDecisions` updater. A null there throws during render — before
+      TASK-273's per-surface boundaries that unmounted the whole chat surface:
+      exactly the failure this guard exists to stop, just moved one route over.
     */
     return checkedRead<DecisionRead>(
       path,

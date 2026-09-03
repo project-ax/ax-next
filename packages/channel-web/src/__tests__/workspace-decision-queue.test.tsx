@@ -242,8 +242,8 @@ describe('useDecisionQueue — the undo window is closed by the server, not the 
 
     `applyPolledRow` is typed `(row: Decision)` and reads `row.id` inside a
     `setDecisions` updater — during React's render phase, where the poll's own
-    `.catch` cannot see a throw. There is no ErrorBoundary in this SPA, so a
-    null row there unmounts the entire chat. That was survivable while only the
+    `.catch` cannot see a throw. Before TASK-273's per-surface boundaries a
+    null row there unmounted the entire chat. That was survivable while only the
     flag-gated /workspace mounted this queue; TASK-261 puts it on the default
     surface, where the poll runs once a second for anyone mid-undo-window.
 

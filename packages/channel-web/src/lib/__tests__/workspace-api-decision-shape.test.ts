@@ -6,8 +6,8 @@
  * state that `watchedKey` calls `.filter` on, and the single-row re-read goes
  * straight into `applyPolledRow`, which reads `row.id` inside a `setDecisions`
  * updater. So a malformed body did not degrade — it threw out of a hook, where
- * the poll's own `.catch` could never see it, and there is no ErrorBoundary in
- * this SPA. The whole chat surface unmounts.
+ * the poll's own `.catch` could never see it, and before TASK-273's
+ * per-surface boundaries the whole chat surface unmounted.
  *
  * That was survivable while only the flag-gated `/workspace` mounted the queue.
  * TASK-261 puts it on the default `/` chat surface for every user on every page

