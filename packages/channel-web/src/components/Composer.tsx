@@ -109,8 +109,10 @@ function AttachMenu({ disabled = false }: { disabled?: boolean }) {
   );
 }
 
-export const COMPOSER_HOLD_COPY =
-  "We're waiting on your approval above — send is paused until you choose.";
+import { COMPOSER_HOLD_COPY } from './workspace/decision-copy';
+
+/** Re-exported so tests pin the sentence against the component that renders it. */
+export { COMPOSER_HOLD_COPY };
 
 export function Composer() {
   const inputRef = useRef<HTMLTextAreaElement>(null);

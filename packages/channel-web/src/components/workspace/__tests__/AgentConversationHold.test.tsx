@@ -2,9 +2,12 @@
  * TASK-275 — the `/workspace` composer holds while an approval is open.
  *
  * `AgentConversation` owns its own composer (it is not the `/` `Composer`),
- * so the hold is pinned here separately: while any decision in `decisions` is
- * still open the field and Send go quiet, the reason copy names why, and a
- * send — click or Enter — goes nowhere with the draft left where it was.
+ * so the hold is pinned here separately: while an approval pointed at BY THIS
+ * THREAD is still open the field and Send go quiet, the reason copy names
+ * why, and a send — click or Enter — goes nowhere with the draft left where
+ * it was. Thread-scoped, deliberately: `decisions` is the global queue, so an
+ * open row for another agent must not quiet this composer (false-hold test
+ * below).
  *
  * The announcer pin matters for the same reason it mattered on `/`: a settled
  * receipt inside its undo window re-renders `Undo · Ns` twice a second off
@@ -64,14 +67,38 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
+/** This thread points at the fixture's open row (`d-marcus`). */
+const threadFor = (decisionId: string) => [
+  { kind: 'approval', id: `m-${decisionId}`, decisionId } as const,
+];
+
 describe('AgentConversation — composer hold while an approval is open', () => {
   it('disables the field and Send and names the reason when an open decision is present', () => {
-    renderConversation({ decisions: [decisionFixture()] });
+    renderConversation({
+      thread: [...threadFor('d-marcus')],
+      decisions: [decisionFixture()],
+    });
 
     expect(box()).toBeDisabled();
     expect(sendButton()).toBeDisabled();
     expect(screen.getByText(HOLD_COPY)).toBeTruthy();
     expect(screen.getByRole('status').textContent).toBe(LIVE_SENTENCE);
+  });
+
+  it("stays live over another thread's open decision — the queue is global, the hold is not", () => {
+    // The open row belongs to a thread this pane is not showing: no pointer
+    // in `thread`, so no hold, no copy, no announcement. This is the false
+    // hold the review caught — `decisions.some(isOpenDecision)` alone quiets
+    // every composer's field over one agent's waiting approval.
+    renderConversation({
+      thread: [],
+      decisions: [decisionFixture({ id: 'd-elsewhere' })],
+    });
+
+    expect(box()).not.toBeDisabled();
+    expect(sendButton()).not.toBeDisabled();
+    expect(screen.queryByText(HOLD_COPY)).toBeNull();
+    expect(screen.getByRole('status').textContent).toBe('');
   });
 
   it('stays live with no copy when only settled decisions remain', () => {
@@ -87,6 +114,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
 
   it('treats a stale row as still open — it is a question again, not a receipt', () => {
     renderConversation({
+      thread: [...threadFor('d-stale')],
       decisions: [decisionFixture({ id: 'd-stale', status: 'stale' })],
     });
 
@@ -105,7 +133,11 @@ describe('AgentConversation — composer hold while an approval is open', () => 
 
   it('sends nothing while held — click or Enter — and keeps the draft', () => {
     const onSend = vi.fn();
-    renderConversation({ decisions: [decisionFixture()], onSend });
+    renderConversation({
+      thread: [...threadFor('d-marcus')],
+      decisions: [decisionFixture()],
+      onSend,
+    });
 
     fireEvent.change(box(), { target: { value: 'summarise the roof quote' } });
     fireEvent.click(sendButton());
@@ -121,6 +153,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
   it('sends normally once the hold clears', () => {
     const onSend = vi.fn();
     const { rerender } = renderConversation({
+      thread: [...threadFor('d-marcus')],
       decisions: [decisionFixture()],
       onSend,
     });
@@ -129,7 +162,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
     rerender(
       <AgentConversation
         agent={quill}
-        thread={[]}
+        thread={[...threadFor('d-marcus')]}
         decisions={[resolvedFixture('dismissed', { id: 'd-marcus' })]}
         readOnly={false}
         onSend={onSend}
@@ -153,7 +186,7 @@ describe('AgentConversation — composer hold while an approval is open', () => 
     rerender(
       <AgentConversation
         agent={quill}
-        thread={[]}
+        thread={[...threadFor('d-marcus')]}
         decisions={[decisionFixture()]}
         readOnly={false}
         onSend={vi.fn()}
@@ -174,7 +207,13 @@ describe('AgentConversation — the hold announcer carries no counter', () => {
     vi.useFakeTimers();
     const settled = resolvedFixture('dismissed', { id: 'd-settled' });
     renderConversation({
-      thread: [{ kind: 'approval', id: 'm-settled', decisionId: 'd-settled' }],
+      // This thread points at BOTH rows: the open one holds the composer
+      // (so the announcer speaks) while the settled one ticks its undo
+      // countdown on screen (so the announcer must not echo it).
+      thread: [
+        { kind: 'approval', id: 'm-open', decisionId: 'd-open' },
+        { kind: 'approval', id: 'm-settled', decisionId: 'd-settled' },
+      ],
       decisions: [decisionFixture({ id: 'd-open' }), settled],
     });
 

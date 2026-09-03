@@ -25,6 +25,7 @@ import type {
 import { AgentTile } from './bits';
 import { ApprovalCard } from './ApprovalCard';
 import {
+  COMPOSER_HOLD_COPY,
   DECISION_SESSION_EXPIRED,
   DECISION_THREAD_READ_FAILED,
 } from './decision-copy';
@@ -96,12 +97,20 @@ export function AgentConversation({
   const [draft, setDraft] = useState('');
 
   /*
-    TASK-275 — the composer holds while an approval is open. `held` and `busy`
-    (streaming) compose independently: either one quiets the field, and the
-    hold copy shows only for `held`. No focus moves anywhere; the polite
+    TASK-275 — the composer holds while an approval is open IN THIS THREAD.
+    `decisions` is the GLOBAL queue (every agent), so `decisions.some(...)`
+    alone would quiet this composer over somebody else's waiting approval —
+    the false hold the review caught. The thread's own approval pointers are
+    the scope: this is the same linkage the `Message` renderer below uses to
+    draw each card, so the hold and the card can never disagree about which
+    thread a decision belongs to. No focus moves anywhere; the polite
     announcer below says the one stable sentence.
   */
-  const held = decisions.some(isOpenDecision);
+  const held = thread.some(
+    (m) =>
+      m.kind === 'approval' &&
+      decisions.some((d) => d.id === m.decisionId && isOpenDecision(d)),
+  );
 
   const send = () => {
     const v = draft.trim();
@@ -198,7 +207,7 @@ export function AgentConversation({
           */}
           {held && (
             <div className="mb-2 max-w-[720px] text-[12.5px] text-muted-foreground">
-              {"We're waiting on your approval above — send is paused until you choose."}
+              {COMPOSER_HOLD_COPY}
             </div>
           )}
           {/*
