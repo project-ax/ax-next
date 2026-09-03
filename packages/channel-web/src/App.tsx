@@ -406,10 +406,14 @@ const AppContent = ({ user, features }: { user: AuthUser; features: Features }) 
                 </ErrorBoundary>
               </>
             )}
-            <ToastStack />
           </div>
         </AssistantRuntimeProvider>
       </ErrorBoundary>
+      {/*
+        Outside the chat boundary on purpose: if the chat subtree trips,
+        toasts (retry confirmations, error notes) must still reach the user.
+      */}
+      <ToastStack />
     </UserProvider>
   );
 };
