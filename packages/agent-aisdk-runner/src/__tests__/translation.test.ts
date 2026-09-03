@@ -192,6 +192,37 @@ describe('toTurnBlocks (outbound)', () => {
     ]);
   });
 
+  // TASK-270: a held call persists with the flag and no is_error — the
+  // reader keys the Waiting treatment off the flag, never off the copy.
+  // An unheld neighbour in the same turn is untouched.
+  it('marks a held call as held (and not failed); unheld calls are untouched', () => {
+    const toolMessage = (toolCallId: string, value: string) => ({
+      role: 'tool' as const,
+      content: [
+        {
+          type: 'tool-result' as const,
+          toolCallId,
+          toolName: 'request_capability',
+          output: { type: 'text', value },
+        },
+      ],
+    });
+    const { toolResultBlocks } = toTurnBlocks(
+      [toolMessage('c_held', 'Held: sending email'), toolMessage('c_ok', 'sent')],
+      new Map(),
+      (toolCallId) => toolCallId === 'c_held',
+    );
+    expect(toolResultBlocks).toEqual([
+      {
+        type: 'tool_result',
+        tool_use_id: 'c_held',
+        content: 'Held: sending email',
+        held: true,
+      },
+      { type: 'tool_result', tool_use_id: 'c_ok', content: 'sent' },
+    ]);
+  });
+
   it('collects the turn assistant text for the chat-end history', () => {
     expect(toTurnBlocks(messages).assistantText).toBe('let me check\ndone');
   });

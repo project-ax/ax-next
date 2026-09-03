@@ -53,6 +53,12 @@ export type StreamChunk =
       output: string;
       isError?: boolean;
       seq?: number;
+      /**
+       * Live twin of the persisted `held` block flag (TASK-270), fenced at
+       * the IPC ingress before it reaches this chunk. Optional: unset means
+       * the call ran (or failed) normally.
+       */
+      held?: boolean;
     };
 
 /**

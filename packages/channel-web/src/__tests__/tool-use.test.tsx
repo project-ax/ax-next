@@ -17,7 +17,15 @@
  *       shape — the runner publishes the held call's result with `is_error`
  *       omitted — so this is the assertion that stops a hold rendering as a
  *       failure. Paired with the reload-path assertion in
- *       `history-adapter.test.ts`.
+ *       `history-adapter.test.ts`. (Since TASK-270 this case also pins the
+ *       pre-flag history contract: the same copy WITHOUT a held mark renders
+ *       completed, never Waiting — the reader never string-matches.)
+ *
+ *   3c. TASK-270: a call whose id carries the persisted held mark renders a
+ *       sentence-case `Waiting` badge in `text-warning` (distinct from both
+ *       success and error), with the waiting sentence as an unlabeled prose
+ *       body. A stale row carrying the mark AND `isError` still reads
+ *       Waiting, never Failed.
  *
  *   4. ToolFallback renders a string result in the prose face and an object
  *      result in mono.
@@ -39,6 +47,7 @@ import type { ToolCallMessagePartProps } from '@assistant-ui/react';
 
 import { ToolFallback, ArtifactPublishTool } from '../components/ToolUse';
 import { setActiveConversationId } from '../lib/use-conversation-id';
+import { clearToolHeld, rememberToolHeld } from '../lib/tool-held';
 import {
   clearToolPhrases,
   rememberToolPhrase,
@@ -138,6 +147,63 @@ describe('ToolFallback', () => {
     // decision id (never in the prose — see @ax/decisions templates.ts).
     expect(container.textContent).not.toMatch(/mcp__/);
     expect(container.textContent).not.toMatch(/dec_/);
+  });
+
+  // TASK-270. The held mark (persisted flag, stashed by toolCallId at
+  // part-construction time — the Bug Fix Policy pair to the
+  // history-adapter reload test) renders the Waiting treatment: a
+  // sentence-case badge in text-warning, distinct from both the unbadged
+  // success rendering and the destructive error one. The waiting sentence
+  // stands unlabeled — a `result` heading above "Nothing has happened yet"
+  // would contradict it.
+  it('a held call renders Waiting in text-warning with an unlabeled prose body', () => {
+    clearToolHeld();
+    rememberToolHeld('t-wait-270', true);
+    const { container } = render(
+      <ToolFallback
+        {...makePart({
+          toolCallId: 't-wait-270',
+          toolName: 'request_capability',
+          isError: undefined,
+          result:
+            'Waiting for you to choose. Nothing has happened yet, and nothing will until you do.',
+          status: { type: 'complete' } as unknown as ToolCallMessagePartProps['status'],
+        })}
+      />,
+    );
+    const badge = screen.getByText('Waiting');
+    expect(badge).toBeTruthy();
+    expect(badge.className).toMatch(/text-warning/);
+    expect(screen.queryByText('Failed')).toBeNull();
+    expect(screen.queryByText('Running')).toBeNull();
+    expect(container.querySelector('.tstep-error')).toBeNull();
+    expect(container.querySelector('[class*="text-destructive"]')).toBeNull();
+    // No `result` label (the sentence is not a result) and no `error` label.
+    expect(screen.queryByText('result')).toBeNull();
+    expect(screen.queryByText('error')).toBeNull();
+    expect(
+      screen.getByText(/Waiting for you to choose\. Nothing has happened yet/),
+    ).toBeTruthy();
+    clearToolHeld();
+  });
+
+  it('a held mark wins over isError — a stale row carrying both reads Waiting, never Failed', () => {
+    clearToolHeld();
+    rememberToolHeld('t-held-err-270', true);
+    const { container } = render(
+      <ToolFallback
+        {...makePart({
+          toolCallId: 't-held-err-270',
+          isError: true,
+          result: 'boom',
+          status: { type: 'incomplete', reason: 'error' } as unknown as ToolCallMessagePartProps['status'],
+        })}
+      />,
+    );
+    expect(screen.getByText('Waiting')).toBeTruthy();
+    expect(screen.queryByText('Failed')).toBeNull();
+    expect(container.querySelector('.tstep-error')).toBeNull();
+    clearToolHeld();
   });
 
   // TASK-271: the host-authored phrase (remembered by toolCallId at

@@ -76,6 +76,13 @@ function isErrorOutput(output: unknown): boolean {
 export function toTurnBlocks(
   messages: readonly ModelMessage[],
   phraseByName: ReadonlyMap<string, string> = new Map(),
+  /**
+   * TASK-270: which tool calls are waiting on a human (the loop's per-turn
+   * hold record). A held call's result persists with `held: true` — and a
+   * hold is not a failure, so it suppresses `is_error` the way the
+   * claude-sdk runner's publish path does. Defaults to none held.
+   */
+  isHeld: (toolCallId: string) => boolean = () => false,
 ): TurnBlocks {
   const contentBlocks: ContentBlock[] = [];
   const toolResultBlocks: ContentBlock[] = [];
@@ -122,12 +129,14 @@ export function toTurnBlocks(
     if (message.role === 'tool') {
       for (const part of message.content) {
         if (part.type !== 'tool-result') continue;
-        const isError = isErrorOutput(part.output);
+        const held = isHeld(part.toolCallId);
+        const isError = !held && isErrorOutput(part.output);
         toolResultBlocks.push({
           type: 'tool_result',
           tool_use_id: part.toolCallId,
           content: flattenToolOutput(part.output),
           ...(isError ? { is_error: true } : {}),
+          ...(held ? { held: true } : {}),
         });
       }
     }

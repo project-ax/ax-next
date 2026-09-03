@@ -150,6 +150,11 @@ export type StreamChunk =
       toolCallId: string;
       output: string;
       isError?: boolean;
+      /**
+       * Runner-side twin of the `held` block field (TASK-270): the call
+       * never ran and is waiting on a human. Optional; absent = not held.
+       */
+      held?: boolean;
     };
 
 /** What the loop hands the shell at a turn boundary. */

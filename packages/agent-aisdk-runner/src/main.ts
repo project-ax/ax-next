@@ -7,6 +7,7 @@ import {
   buildPythonVenvEnv,
   buildToolCacheEnv,
   buildTtyHintEnv,
+  createHeldCallRegistry,
   createHoldLatch,
   createToolPolicy,
   runRunner,
@@ -216,6 +217,13 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       // hook) — `stopWhen` below is what actually ends the turn, and it reads
       // this same instance.
       const holdLatch = createHoldLatch();
+      // TASK-270: which of this turn's calls are waiting on a human. Same
+      // per-turn lifetime as the latch (reset with it below); the latch
+      // records WHICH decision stopped the turn, this records WHICH CALLS.
+      const heldCalls = createHeldCallRegistry();
+      const onHold = (toolCallId: string): void => {
+        heldCalls.record(toolCallId);
+      };
 
       // Skills: the read-only projection is the SOLE discovery path. Names +
       // descriptions go into the prompt; bodies load on demand through the
@@ -228,7 +236,7 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
       const tools = mergeToolSets([
         {
           label: 'built-ins',
-          tools: buildBuiltinTools({ policy, homeDir, env: bashEnv, holdLatch }),
+          tools: buildBuiltinTools({ policy, homeDir, env: bashEnv, holdLatch, onHold }),
         },
         {
           label: 'host catalog tools',
@@ -238,6 +246,7 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             tools: catalog,
             flushWorkspace: flushWorkspaceForHostTool,
             holdLatch,
+            onHold,
           }),
         },
         {
@@ -247,9 +256,10 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
             dispatcher: localDispatcher,
             tools: catalog,
             holdLatch,
+            onHold,
           }),
         },
-        { label: 'the Skill tool', tools: buildSkillTool({ policy, skills, holdLatch }) },
+        { label: 'the Skill tool', tools: buildSkillTool({ policy, skills, holdLatch, onHold }) },
       ]) as unknown as Record<string, Tool>;
       // I₁, enforced rather than asserted in prose. `WebFetch`/`WebSearch`/
       // `Task`/`AskUserQuestion`/`TodoWrite` are absent by construction here —
@@ -331,6 +341,7 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
 
         // Per-turn latch: a hold in one turn must not bleed into the next.
         holdLatch.reset();
+        heldCalls.clear();
 
         transcript.append([toUserModelMessage(next.content)]);
 
@@ -397,10 +408,14 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
               ...(phrase !== undefined ? { activityPhrase: phrase } : {}),
             });
           } else if (part.type === 'tool-result') {
+            // TASK-270: the hold branch returns text (never throws), so a
+            // held call arrives here, not on the tool-error arm. Mark it
+            // from the per-turn record — never from the output copy.
             await ctx.emitChunk({
               kind: 'tool-result',
               toolCallId: part.toolCallId,
               output: renderStreamedOutput(part.output),
+              ...(heldCalls.has(part.toolCallId) ? { held: true } : {}),
             });
           } else if (part.type === 'tool-error') {
             // A thrown executor. `ai@7` still produces a tool result for the
@@ -447,7 +462,9 @@ export function createAiSdkLoop(deps: AiSdkLoopDeps): Loop {
         transcript.append(newMessages);
 
         const { contentBlocks, toolResultBlocks, assistantText } =
-          toTurnBlocks(newMessages, phraseByName);
+          toTurnBlocks(newMessages, phraseByName, (toolCallId) =>
+            heldCalls.has(toolCallId),
+          );
         if (assistantText.length > 0) ctx.recordAssistantText(assistantText);
 
         await ctx.endTurn({

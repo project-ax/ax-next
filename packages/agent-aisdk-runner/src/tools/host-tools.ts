@@ -54,6 +54,8 @@ export interface BuildHostToolsOptions {
   idGen?: () => string;
   /** The one latch shared by every tool this turn — see WrapWithPolicyOptions. */
   holdLatch: HoldLatch;
+  /** Fired with the call id on a hold — see WrapWithPolicyOptions. */
+  onHold: (toolCallId: string) => void;
 }
 
 /**
@@ -83,7 +85,7 @@ export function buildHostTools(opts: BuildHostToolsOptions): Record<string, Tool
       description: descriptor.description ?? '',
       inputSchema: jsonSchema(descriptor.inputSchema as JSONSchema7),
       execute: wrapWithPolicy(
-        { policy, name: descriptor.name, isBuiltin: false, holdLatch },
+        { policy, name: descriptor.name, isBuiltin: false, holdLatch, onHold: opts.onHold },
         async (input) => {
           // Flush the live workspace BEFORE forwarding when this host tool
           // declares it reads workspace files the agent may have written

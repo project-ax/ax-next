@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 import type { MessageFormatAdapter, MessageFormatItem, MessageStorageEntry } from '@assistant-ui/react';
 import { contentBlocksToAuiParts, createAxHistoryAdapter, decodeAttachmentPath } from '../lib/history-adapter';
+import { clearToolHeld, isToolHeld } from '../lib/tool-held';
 import { clearToolPhrases, toolDisplayName } from '../lib/tool-phrase';
 
 type StorageFormat = Record<string, unknown>;
@@ -336,6 +337,104 @@ describe('createAxHistoryAdapter', () => {
     });
     expect(parts[0]).not.toHaveProperty('errorText');
     expect(JSON.stringify(parts[0])).not.toMatch(/dec_/);
+  });
+
+  // TASK-270 (reload path). The persisted `held` flag is what distinguishes
+  // a waiting call from an ordinary completed one across a reload: the
+  // emitted part is unchanged (output-available — the bridge cannot carry
+  // the mark), and the renderer reads it from the display map instead.
+  // The Bug Fix Policy test for this card: held renders Waiting from
+  // persisted state; the completed sibling does not.
+  describe('held flag stash (TASK-270)', () => {
+    beforeEach(() => {
+      clearToolHeld();
+      clearToolPhrases();
+    });
+
+    it('stashes the held mark for a flagged result; the completed sibling stays unmarked', async () => {
+      const heldBody =
+        'Waiting for you to choose. Nothing has happened yet, and nothing will until you do.';
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          conversation: { conversationId: 'conv-1', title: null },
+          turns: [
+            {
+              turnId: 't0',
+              turnIndex: 0,
+              role: 'assistant',
+              contentBlocks: [
+                { type: 'tool_use', id: 'tu_held', name: 'request_capability', input: {} },
+                { type: 'tool_use', id: 'tu_done', name: 'Bash', input: {} },
+              ],
+              createdAt: '2026-04-01T00:00:00Z',
+            },
+            {
+              turnId: 't1',
+              turnIndex: 1,
+              role: 'tool',
+              contentBlocks: [
+                { type: 'tool_result', tool_use_id: 'tu_held', content: heldBody, held: true },
+                { type: 'tool_result', tool_use_id: 'tu_done', content: 'ok' },
+              ],
+              createdAt: '2026-04-01T00:00:01Z',
+            },
+          ],
+        }),
+      });
+      const adapter = createAxHistoryAdapter(() => 'conv-1');
+      const result = await adapter.withFormat!(makeFormatAdapter()).load();
+      const parts = (
+        result.messages[0]!.message.content as { parts: Array<Record<string, unknown>> }
+      ).parts;
+      // The part shape is the ordinary completed one — the mark rides
+      // outside it, in the display map.
+      expect(parts[0]).toMatchObject({
+        type: 'dynamic-tool',
+        toolCallId: 'tu_held',
+        state: 'output-available',
+        output: heldBody,
+      });
+      expect(isToolHeld('tu_held')).toBe(true);
+      expect(isToolHeld('tu_done')).toBe(false);
+    });
+
+    it('a pre-flag row (waiting copy, no flag) stays unmarked — history is left, not migrated', async () => {
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          conversation: { conversationId: 'conv-1', title: null },
+          turns: [
+            {
+              turnId: 't0',
+              turnIndex: 0,
+              role: 'assistant',
+              contentBlocks: [
+                { type: 'tool_use', id: 'tu_old', name: 'request_capability', input: {} },
+              ],
+              createdAt: '2026-04-01T00:00:00Z',
+            },
+            {
+              turnId: 't1',
+              turnIndex: 1,
+              role: 'tool',
+              contentBlocks: [
+                {
+                  type: 'tool_result',
+                  tool_use_id: 'tu_old',
+                  content: 'Waiting for you to choose. Nothing has happened yet, and nothing will until you do.',
+                },
+              ],
+              createdAt: '2026-04-01T00:00:01Z',
+            },
+          ],
+        }),
+      });
+      const adapter = createAxHistoryAdapter(() => 'conv-1');
+      await adapter.withFormat!(makeFormatAdapter()).load();
+      // Same copy, no flag: the reader must NOT string-match it into Waiting.
+      expect(isToolHeld('tu_old')).toBe(false);
+    });
   });
 
   it('an empty contentBlocks array still produces a single empty text part', async () => {

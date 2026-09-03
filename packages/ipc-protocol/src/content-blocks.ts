@@ -98,6 +98,16 @@ export const ToolResultBlockSchema = z.object({
     z.array(z.discriminatedUnion('type', [TextBlockSchema, ImageBlockSchema])),
   ]),
   is_error: z.boolean().optional(),
+  /**
+   * The call never ran: it is waiting on a human (TASK-270). Set by the
+   * runner at publish time from its own per-turn hold record (the honest
+   * source — never inferred from content downstream). Optional: rows
+   * persisted before the flag existed omit it, and readers must NOT
+   * string-match the result copy to reconstruct it. A boolean needs no
+   * trust-boundary fencing (unlike `activityPhrase`); the ingress only
+   * type-guards it.
+   */
+  held: z.boolean().optional(),
 });
 export type ToolResultBlock = z.infer<typeof ToolResultBlockSchema>;
 

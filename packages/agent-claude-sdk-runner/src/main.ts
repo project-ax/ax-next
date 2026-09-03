@@ -20,6 +20,7 @@ import {
   buildTtyHintEnv,
   commitTrace,
   buildPythonVenvEnv,
+  createHeldCallRegistry,
   createHoldLatch,
   drainHoldLatch,
   runRunner,
@@ -28,10 +29,7 @@ import {
   type LoopContext,
   type RunnerDeps,
 } from '@ax/agent-runner-core';
-import {
-  HELD_TOOL_RESULT_TEXT,
-  createHeldCallRegistry,
-} from './held-calls.js';
+import { HELD_TOOL_RESULT_TEXT } from './held-calls.js';
 import { buildTelemetryEnv } from './telemetry-env.js';
 import { createPostToolUseHook } from './post-tool-use.js';
 import { createPreToolUseHook } from './pre-tool-use.js';
@@ -791,6 +789,9 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                     !wasHeld && typeof tr.is_error === 'boolean'
                       ? tr.is_error
                       : undefined;
+                  // TASK-270: the persisted "held" flag. A hold is not a
+                  // completion and not a failure — the reader keys the
+                  // Waiting treatment off this, never off the copy.
                   const normalized: ContentBlock = {
                     type: 'tool_result',
                     tool_use_id: tr.tool_use_id,
@@ -798,6 +799,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                     ...(publishedIsError !== undefined
                       ? { is_error: publishedIsError }
                       : {}),
+                    ...(wasHeld ? { held: true } : {}),
                   };
                   turnToolResultBlocks.push(normalized);
                   // Per-block streaming for the result. Flatten array content
@@ -820,6 +822,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
                     ...(publishedIsError !== undefined
                       ? { isError: publishedIsError }
                       : {}),
+                    ...(wasHeld ? { held: true } : {}),
                   });
                 }
               }

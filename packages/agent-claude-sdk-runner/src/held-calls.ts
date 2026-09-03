@@ -45,38 +45,9 @@
 export const HELD_TOOL_RESULT_TEXT =
   'Waiting for you to choose. Nothing has happened yet, and nothing will until you do.';
 
-/**
- * Which of this turn's tool calls were held.
- *
- * PER TURN, and that is the whole design. The registry is written by the
- * PreToolUse hook and read a few messages later when the SDK echoes the
- * tool_result back, then cleared at the `result` boundary — exactly the
- * lifetime, and exactly the ordering hazard, that `drainHoldLatch` in
- * `@ax/agent-runner-core` exists to make un-mis-writable. A hold that survived
- * into the next turn would quietly replace some later call's real output with
- * the waiting-line, and nothing would throw.
- *
- * Ids only. Nothing model-authored ever enters this set: it is populated
- * solely from the host's own `hold` verdict arriving over IPC, so a call that
- * genuinely failed cannot be dressed up as a hold.
- */
-export interface HeldCallRegistry {
-  record(toolCallId: string): void;
-  has(toolCallId: string): boolean;
-  clear(): void;
-}
-
-export function createHeldCallRegistry(): HeldCallRegistry {
-  const ids = new Set<string>();
-  return {
-    record(toolCallId: string): void {
-      ids.add(toolCallId);
-    },
-    has(toolCallId: string): boolean {
-      return ids.has(toolCallId);
-    },
-    clear(): void {
-      ids.clear();
-    },
-  };
-}
+// The per-turn hold record (`HeldCallRegistry` / `createHeldCallRegistry`)
+// lives in `@ax/agent-runner-core` since TASK-270 so both runners share one
+// (invariant 2 forbids the aisdk runner importing it from here). This module
+// keeps only the human sentence, which is runner-specific: here the display
+// log is a different store from the model's jsonl, so the person can get
+// their own line without degrading the model.

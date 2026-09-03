@@ -1727,6 +1727,10 @@ describe('main()', () => {
     expect(heldBlock.tool_use_id).toBe('tu_hold');
     expect(heldBlock.content).toBe(HELD_TOOL_RESULT_TEXT);
     expect('is_error' in heldBlock).toBe(false);
+    // TASK-270: the persisted "held" flag — the reader keys Waiting off
+    // this, never off the copy. The unheld failure next to it carries none.
+    expect(heldBlock.held).toBe(true);
+    expect('held' in turn1Blocks[1]!).toBe(false);
     // None of the model's copy leaks onto the human's surface.
     expect(JSON.stringify(heldBlock)).not.toMatch(/dec_/);
     expect(JSON.stringify(heldBlock)).not.toContain('Do not retry');
@@ -1768,6 +1772,8 @@ describe('main()', () => {
     expect(resultChunks[0]?.toolCallId).toBe('tu_hold');
     expect(resultChunks[0]?.output).toBe(HELD_TOOL_RESULT_TEXT);
     expect('isError' in resultChunks[0]!).toBe(false);
+    // TASK-270: the live twin of the persisted flag.
+    expect(resultChunks[0]?.held).toBe(true);
     expect(JSON.stringify(resultChunks[0])).not.toMatch(/dec_/);
     expect(JSON.stringify(resultChunks[0])).not.toContain('Do not retry');
 

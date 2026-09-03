@@ -631,11 +631,17 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
         toolCallId?: unknown;
         output?: unknown;
         isError?: unknown;
+        held?: unknown;
       };
       if (
         typeof p.toolCallId !== 'string' ||
         typeof p.output !== 'string' ||
-        (p.isError !== undefined && typeof p.isError !== 'boolean')
+        (p.isError !== undefined && typeof p.isError !== 'boolean') ||
+        // TASK-270: the persisted-held flag's live twin — type-guarded
+        // exactly like its sibling boolean. A boolean needs no content
+        // fencing (unlike activityPhrase); a mistyped one drops the chunk,
+        // same as a mistyped isError.
+        (p.held !== undefined && typeof p.held !== 'boolean')
       ) {
         return undefined;
       }

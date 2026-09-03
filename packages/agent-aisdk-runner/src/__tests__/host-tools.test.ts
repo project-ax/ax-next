@@ -101,14 +101,14 @@ describe('buildHostTools', () => {
       policy: fakePolicy(),
       client,
       tools: [HOST_TOOL_A, SANDBOX_TOOL, HOST_TOOL_B],
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     expect(Object.keys(tools).sort()).toEqual(['memory.recall', 'memory.store']);
   });
 
   it('returns an empty object when no host tools are present', () => {
     const { client } = mkClient(async () => ({ output: 'x' }));
-    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [SANDBOX_TOOL], holdLatch });
+    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [SANDBOX_TOOL], holdLatch, onHold: () => {} });
     expect(tools).toEqual({});
   });
 
@@ -119,7 +119,7 @@ describe('buildHostTools', () => {
       client,
       tools: [CONNECTOR_TOOL],
       idGen: () => 'id-1',
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     expect(Object.keys(tools)).toEqual(['mcp__linear__search_issues']);
     const out = await unwrap(tools['mcp__linear__search_issues']?.execute)(
@@ -144,7 +144,7 @@ describe('buildHostTools', () => {
       client,
       tools: [HOST_TOOL_A],
       idGen: () => 'id-1',
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     await unwrap(tools['memory.recall']?.execute)({ query: 'hello' }, OPTS);
     expect(calls).toEqual([
@@ -159,7 +159,7 @@ describe('buildHostTools', () => {
 
   it('renders string output verbatim', async () => {
     const { client } = mkClient(async () => ({ output: 'hello world' }));
-    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [HOST_TOOL_A], holdLatch });
+    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [HOST_TOOL_A], holdLatch, onHold: () => {} });
     const out = await unwrap(tools['memory.recall']?.execute)({}, OPTS);
     expect(out).toBe('hello world');
   });
@@ -167,14 +167,14 @@ describe('buildHostTools', () => {
   it('renders object output as JSON-stringified text', async () => {
     const payload = { hits: [1, 2, 3], ok: true };
     const { client } = mkClient(async () => ({ output: payload }));
-    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [HOST_TOOL_A], holdLatch });
+    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [HOST_TOOL_A], holdLatch, onHold: () => {} });
     const out = await unwrap(tools['memory.recall']?.execute)({}, OPTS);
     expect(out).toBe(JSON.stringify(payload));
   });
 
   it('renders a null output as the string "null"', async () => {
     const { client } = mkClient(async () => ({ output: null }));
-    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [HOST_TOOL_A], holdLatch });
+    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [HOST_TOOL_A], holdLatch, onHold: () => {} });
     const out = await unwrap(tools['memory.recall']?.execute)({}, OPTS);
     expect(out).toBe('null');
   });
@@ -183,7 +183,7 @@ describe('buildHostTools', () => {
     const { client } = mkClient(async () => {
       throw new Error('host refused');
     });
-    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [HOST_TOOL_A], holdLatch });
+    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [HOST_TOOL_A], holdLatch, onHold: () => {} });
     await expect(unwrap(tools['memory.recall']?.execute)({}, OPTS)).rejects.toThrow(
       'host refused',
     );
@@ -191,7 +191,7 @@ describe('buildHostTools', () => {
 
   it('uses the default randomUUID idGen when none is supplied', async () => {
     const { client, calls } = mkClient(async () => ({ output: 'ok' }));
-    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [HOST_TOOL_A], holdLatch });
+    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [HOST_TOOL_A], holdLatch, onHold: () => {} });
     await unwrap(tools['memory.recall']?.execute)({}, OPTS);
     const payload = calls[0]?.payload as { call: { id: string } };
     expect(typeof payload.call.id).toBe('string');
@@ -205,7 +205,7 @@ describe('buildHostTools', () => {
       executesIn: 'host',
     };
     const { client } = mkClient(async () => ({ output: 'x' }));
-    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [toolNoDesc], holdLatch });
+    const tools = buildHostTools({ policy: fakePolicy(), client, tools: [toolNoDesc], holdLatch, onHold: () => {} });
     expect(tools['no.desc']?.description).toBe('');
   });
 
@@ -229,7 +229,7 @@ describe('buildHostTools', () => {
       client,
       tools: [toolWithProps],
       idGen: () => 'id-1',
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     await unwrap(tools['echo.host']?.execute)(
       { text: 'hi', undeclaredKey: 'still here' },
@@ -247,7 +247,7 @@ describe('buildHostTools', () => {
       policy: fakePolicy(),
       client,
       tools: [HOST_TOOL_A, HOST_TOOL_B, HOST_TOOL_FLUSH, CONNECTOR_TOOL],
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     const names = Object.keys(tools);
     expect(names.length).toBeGreaterThan(0);
@@ -267,7 +267,7 @@ describe('buildHostTools', () => {
       })),
     } as never);
     const { client, calls } = mkClient(async () => ({ output: 'should not run' }));
-    const tools = buildHostTools({ policy, client, tools: [HOST_TOOL_A], holdLatch });
+    const tools = buildHostTools({ policy, client, tools: [HOST_TOOL_A], holdLatch, onHold: () => {} });
     const out = await unwrap(tools['memory.recall']?.execute)({}, OPTS);
     expect(out).toContain('not on the allowlist');
     expect(calls).toEqual([]);
@@ -282,7 +282,7 @@ describe('buildHostTools', () => {
     const policy = fakePolicy();
     const hostNamedBash: ToolDescriptor = { ...HOST_TOOL_A, name: 'Bash' };
     const { client } = mkClient(async () => ({ output: 'ok' }));
-    const tools = buildHostTools({ policy, client, tools: [hostNamedBash], holdLatch });
+    const tools = buildHostTools({ policy, client, tools: [hostNamedBash], holdLatch, onHold: () => {} });
     await unwrap(tools['Bash']?.execute)({}, OPTS);
     expect(policy.preToolUse).toHaveBeenCalledWith('Bash', {}, 'call-1');
     expect(policy.postToolUse).toHaveBeenCalledWith(
@@ -310,7 +310,7 @@ describe('buildHostTools', () => {
         client,
         tools: [HOST_TOOL_FLUSH],
         flushWorkspace,
-        holdLatch,
+        holdLatch, onHold: () => {},
       });
       await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS);
       expect(order).toEqual(['flush', 'forward']);
@@ -324,7 +324,7 @@ describe('buildHostTools', () => {
         client,
         tools: [HOST_TOOL_FLUSH],
         flushWorkspace,
-        holdLatch,
+        holdLatch, onHold: () => {},
       });
       const out = await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS);
       expect(calls.map((c) => c.action)).toEqual(['tool.execute-host']);
@@ -343,7 +343,7 @@ describe('buildHostTools', () => {
         client,
         tools: [HOST_TOOL_A],
         flushWorkspace,
-        holdLatch,
+        holdLatch, onHold: () => {},
       });
       await unwrap(tools['memory.recall']?.execute)({}, OPTS);
       expect(flushed).toBe(false);
@@ -356,7 +356,7 @@ describe('buildHostTools', () => {
         policy: fakePolicy(),
         client,
         tools: [HOST_TOOL_FLUSH],
-        holdLatch,
+        holdLatch, onHold: () => {},
       });
       const out = await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS);
       expect(calls.map((c) => c.action)).toEqual(['tool.execute-host']);
@@ -380,7 +380,7 @@ describe('buildHostTools', () => {
           client,
           tools: [HOST_TOOL_FLUSH],
           flushWorkspace,
-          holdLatch,
+          holdLatch, onHold: () => {},
         });
         // Throws, so the host records `is_error` and the UI renders a FAILED
         // tool — matching the SDK runner's `{ isError: true }` shim. The turn
@@ -409,7 +409,7 @@ describe('buildHostTools', () => {
         client,
         tools: [HOST_TOOL_FLUSH],
         flushWorkspace,
-        holdLatch,
+        holdLatch, onHold: () => {},
       });
       const err = await unwrap(tools['host_reads_workspace']?.execute)({}, OPTS).then(
         () => null,
@@ -440,7 +440,7 @@ describe('buildHostTools', () => {
         client,
         tools: [HOST_TOOL_FLUSH],
         flushWorkspace,
-        holdLatch,
+        holdLatch, onHold: () => {},
       });
       await expect(
         unwrap(tools['host_reads_workspace']?.execute)({}, OPTS),

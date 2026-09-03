@@ -51,7 +51,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor, sampleHostDescriptor],
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     expect(Object.keys(tools)).toEqual(['echo_local']);
   });
@@ -68,7 +68,7 @@ describe('buildSandboxTools', () => {
       dispatcher,
       tools: [sampleSandboxDescriptor],
       idGen: () => 'id-1',
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
 
     const out = await unwrap(tools['echo_local']?.execute)({ text: 'hi' }, OPTS);
@@ -87,7 +87,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     await expect(unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS)).rejects.toThrow(
       /artifact-path-not-publishable/,
@@ -101,7 +101,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     await expect(unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS)).rejects.toThrow(
       /echo_local/,
@@ -115,7 +115,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     const out = await unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS);
     expect(typeof out).toBe('string');
@@ -129,7 +129,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     const out = await unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS);
     expect(out).toBe('plain string result');
@@ -146,7 +146,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     await unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS);
     expect(seenId.length).toBeGreaterThan(0);
@@ -159,7 +159,7 @@ describe('buildSandboxTools', () => {
       inputSchema: { type: 'object' },
       executesIn: 'sandbox',
     };
-    const tools = buildSandboxTools({ policy: fakePolicy(), dispatcher, tools: [toolNoDesc], holdLatch });
+    const tools = buildSandboxTools({ policy: fakePolicy(), dispatcher, tools: [toolNoDesc], holdLatch, onHold: () => {} });
     expect(tools['no.desc']?.description).toBe('');
   });
 
@@ -177,7 +177,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor],
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     await unwrap(tools['echo_local']?.execute)(
       { text: 'hi', undeclaredKey: 'still here' },
@@ -197,7 +197,7 @@ describe('buildSandboxTools', () => {
       policy: fakePolicy(),
       dispatcher,
       tools: [sampleSandboxDescriptor, second],
-      holdLatch,
+      holdLatch, onHold: () => {},
     });
     const names = Object.keys(tools);
     expect(names.length).toBeGreaterThan(0);
@@ -222,7 +222,7 @@ describe('buildSandboxTools', () => {
         cause: 'policy' as const,
       })),
     } as never);
-    const tools = buildSandboxTools({ policy, dispatcher, tools: [sampleSandboxDescriptor], holdLatch });
+    const tools = buildSandboxTools({ policy, dispatcher, tools: [sampleSandboxDescriptor], holdLatch, onHold: () => {} });
     const out = await unwrap(tools['echo_local']?.execute)({ text: 'x' }, OPTS);
     expect(out).toContain('not on the allowlist');
     expect(dispatched).toBe(false);
