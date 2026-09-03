@@ -264,7 +264,7 @@ describe('wrapWithPolicy — the one choke point', () => {
         } as never),
         name: 'gmail_send',
         isBuiltin: false,
-        holdLatch: latch, onHold: () => {}, onHold: () => {},
+        holdLatch: latch,
         // TASK-270: the loop marks this call's published result as waiting
         // off exactly this id — assert it is the SDK's call id, not the
         // decision id (a decision-id key would never match a tool_result).
@@ -451,7 +451,7 @@ describe('hold latch identity across the built tool set', () => {
           policy: fakePolicy(),
           homeDir: '/tmp/ax-hold-latch-test-home',
           env: {},
-          holdLatch: latch, onHold: () => {}, onHold: () => {},
+          holdLatch: latch, onHold: () => {},
         }),
       },
       {
@@ -460,7 +460,7 @@ describe('hold latch identity across the built tool set', () => {
           policy: fakePolicy(),
           client: mkHostClient(),
           tools: catalog,
-          holdLatch: latch, onHold: () => {}, onHold: () => {},
+          holdLatch: latch, onHold: () => {},
         }),
       },
       {
@@ -469,7 +469,7 @@ describe('hold latch identity across the built tool set', () => {
           policy: fakePolicy(),
           dispatcher,
           tools: catalog,
-          holdLatch: latch, onHold: () => {}, onHold: () => {},
+          holdLatch: latch, onHold: () => {},
         }),
       },
       {
