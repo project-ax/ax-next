@@ -30,6 +30,7 @@ import {
   DECISION_STALE_LEAD,
 } from '../decision-copy';
 import { decisionFixture, resolvedFixture } from './decision-fixture';
+import { toWireDecision } from '@/server/routes-workspace';
 import type { Decision, WorkspaceAgent } from '@/lib/workspace-api';
 
 const agent: WorkspaceAgent = {
@@ -252,6 +253,73 @@ describe('the undo affordance', () => {
     render(
       <ApprovalCard
         decision={resolvedFixture('executed', { undoable: false })}
+        onApprove={vi.fn()}
+        onDismiss={vi.fn()}
+        onUndo={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
+  });
+
+  it('is NOT offered on either surface while the host replay flight is claimed', () => {
+    // The flight: the host stamped `replayClaimedAt` and is performing the call
+    // right now — `replayedAt` is still null, but the call is already going out
+    // and the undo POST would refuse it. One stored fixture, projected through
+    // the real `toWireDecision`, drawn by BOTH renderers: neither may offer a
+    // control that cannot do what it names.
+    const now = new Date().toISOString();
+    const flight: Parameters<typeof toWireDecision>[0] = {
+      id: 'd-flight',
+      agentId: 'scheduler',
+      ownerUserId: 'u1',
+      conversationId: 'c1',
+      kind: 'action',
+      attendance: 'unattended',
+      status: 'executed',
+      call: { id: 'tu1', name: 'gmail_send', input: {} },
+      callFingerprint: 'sha256:abcdef',
+      ruleId: null,
+      irreversible: true,
+      freshness: null,
+      summary: 'Send the reply to Priya',
+      detail: 'It drafted a reply about the Thursday slot.',
+      preview: null,
+      primaryLabel: 'Send it',
+      secondaryLabel: 'Pick another time',
+      ghostLabel: "Don't send",
+      approvedText: 'You approved this — the reply went out.',
+      dismissedText: 'You turned this down. Nothing was sent.',
+      createdAt: now,
+      expiresAt: new Date(Date.now() + 3600_000).toISOString(),
+      resolvedAt: now,
+      staleReason: null,
+      consumedAt: null,
+      replayDueAt: null,
+      replayClaimedAt: now,
+      replayedAt: null,
+      replayError: null,
+    };
+    const projected = toWireDecision(flight);
+    expect(projected.undoable).toBe(false);
+
+    const { unmount: unmountCard } = render(
+      <ApprovalCard
+        decision={projected}
+        onApprove={vi.fn()}
+        onDismiss={vi.fn()}
+        onUndo={vi.fn()}
+      />,
+    );
+    expect(screen.queryByRole('button', { name: /Undo/ })).toBeNull();
+    unmountCard();
+
+    render(
+      <DecisionRow
+        decision={projected}
+        agent={agent}
+        expanded
+        onToggle={vi.fn()}
+        onOpenAgent={vi.fn()}
         onApprove={vi.fn()}
         onDismiss={vi.fn()}
         onUndo={vi.fn()}

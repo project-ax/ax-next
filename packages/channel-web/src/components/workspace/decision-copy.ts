@@ -84,7 +84,7 @@ export const DECISION_PENDING_AGENT_NOTE =
  */
 export const DECISION_GOING_OUT = 'You said yes — it is about to go ahead.';
 export const DECISION_GOING_OUT_NOTE =
-  'Nothing has happened yet. Undo now and it never will.';
+  'Nothing has happened yet. Undo stops it before it runs. Once it has run, we cannot take it back.';
 
 /** The host tried the call and the tool threw. */
 export const DECISION_FAILED = 'It tried to do this, and it did not work.';

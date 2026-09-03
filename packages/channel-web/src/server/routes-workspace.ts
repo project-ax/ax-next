@@ -1192,9 +1192,9 @@ const APPROVED_CAP_KINDS: readonly ApprovedCapKind[] = [
  *
  * The one derived field is `undoable`, and it is derived HERE so there is only
  * one copy of the rule. A client re-deriving it from `consumedAt` /
- * `replayedAt` would be a second copy of the decision machine built by
- * accident, and those two fields would have to cross the wire to make it
- * possible.
+ * `replayedAt` / `replayClaimedAt` would be a second copy of the decision
+ * machine built by accident, and those three fields would have to cross the
+ * wire to make it possible.
  */
 export function toWireDecision(stored: StoredDecision): Decision {
   const freshnessLabel = fenceLine(stored.freshness?.label, DECISION_LABEL_MAX_CHARS);
@@ -1272,9 +1272,11 @@ export function toWireDecision(stored: StoredDecision): Decision {
 
       Only while the call has NOT been made. `consumedAt` records the agent
       taking the standing authorisation up at the pre-call gate; `replayedAt`
-      records the host performing the call itself. Either one means something
-      went out, and undo does not un-send an email — so the affordance is not
-      offered at all rather than offered and refused.
+      records the host performing the call itself; `replayClaimedAt` records
+      the host STARTING to perform it — the flight between claim and replay
+      during which the call is already going out. Any of the three means
+      something went out, and undo does not un-send an email — so the
+      affordance is not offered at all rather than offered and refused.
 
       A button that cannot do what it names is the worst control this surface
       could ship: it teaches people that the safety net is there when it is
@@ -1290,7 +1292,8 @@ export function toWireDecision(stored: StoredDecision): Decision {
         stored.status === 'dismissed') &&
       stored.resolvedAt !== null &&
       stored.consumedAt === null &&
-      stored.replayedAt === null,
+      stored.replayedAt === null &&
+      stored.replayClaimedAt === null,
   };
 }
 
