@@ -604,16 +604,25 @@ export function createBufferFillSubscriber(buffer: ChunkBuffer) {
       // TASK-271: the phrase is already fenced at the IPC ingress; here we
       // only type-guard the optional field so a malformed plugin payload
       // cannot smuggle a non-string into the SSE frame. Drop the field, not
-      // the chunk.
+      // the chunk. Rebuilt field-by-field (no spread: spreading would invoke
+      // getters on every own prop of the malformed payload, and a throwing
+      // getter would lose the whole chunk).
       if (
         p.activityPhrase !== undefined &&
         typeof p.activityPhrase !== 'string'
       ) {
-        const { activityPhrase: _dropped, ...rest } = p as Record<
-          string,
-          unknown
-        >;
-        return buffer.append({ ...(rest as object) } as StreamChunk);
+        const raw = payload as {
+          reqId?: unknown;
+          seq?: unknown;
+        };
+        return buffer.append({
+          reqId: raw.reqId as string,
+          kind: 'tool-use',
+          toolCallId: p.toolCallId as string,
+          toolName: p.toolName as string,
+          input: p.input as Record<string, unknown>,
+          ...(typeof raw.seq === 'number' ? { seq: raw.seq } : {}),
+        });
       }
       return buffer.append(payload as StreamChunk);
     }

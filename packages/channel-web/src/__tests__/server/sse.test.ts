@@ -1497,4 +1497,39 @@ describe('buffer-fill tool-use activityPhrase (TASK-271)', () => {
       buffer.dispose();
     }
   });
+
+  it('a throwing getter on an unrelated prop cannot lose the chunk', async () => {
+    // The non-string-phrase drop path must not spread the payload: spreading
+    // invokes every own getter, and a throwing one would take down the whole
+    // buffering. The chunk is rebuilt field-by-field instead.
+    const buffer = createChunkBuffer();
+    try {
+      const fill = createBufferFillSubscriber(buffer);
+      const ctx = makeAgentContext({
+        sessionId: 's',
+        agentId: 'a',
+        userId: 'u',
+      });
+      const hostile = {
+        reqId: 'r1',
+        kind: 'tool-use',
+        toolCallId: 'c1',
+        toolName: 'Bash',
+        input: {},
+        activityPhrase: 42,
+      } as unknown as StreamChunk;
+      Object.defineProperty(hostile, 'boom', {
+        enumerable: true,
+        get() {
+          throw new Error('getter threw');
+        },
+      });
+      await fill(ctx, hostile);
+      const tail = buffer.tail('r1');
+      expect(tail).toHaveLength(1);
+      expect(tail[0]).toMatchObject({ kind: 'tool-use', toolName: 'Bash' });
+    } finally {
+      buffer.dispose();
+    }
+  });
 });
