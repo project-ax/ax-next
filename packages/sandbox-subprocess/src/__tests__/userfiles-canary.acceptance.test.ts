@@ -34,6 +34,9 @@ import type { OpenSessionResult } from '../open-session.js';
 const USERFILES_STUB = fileURLToPath(
   new URL('./fixtures/userfiles-stub.mjs', import.meta.url),
 );
+const TIERS_STUB = fileURLToPath(
+  new URL('./fixtures/tiers-stub.mjs', import.meta.url),
+);
 
 function owner(agentId: string) {
   return {
@@ -238,6 +241,88 @@ describe('filestore-user-files canary (subprocess + localDir)', () => {
 
     await expect(fs.stat(dirA)).rejects.toThrow(); // gone
     await expect(fs.stat(dirB)).resolves.toBeTruthy(); // untouched
+
+    await h.close();
+  });
+
+  // ---------------------------------------------------------------------
+  // The three-tier durability contract (filestore-user-files design §3).
+  //
+  // The sandbox hands the runner three roots and the system prompt promises
+  // the model a DIFFERENT durability contract for each:
+  //   AX_WORKSPACE_ROOT — governed, git-backed, re-materialized per session
+  //   AX_USERFILES_ROOT — durable, live across sessions
+  //   AX_EPHEMERAL_ROOT — scratch, discarded when the session ends
+  // Nothing tested that the three are actually distinct roots with those three
+  // behaviours, so a wiring regression that collapsed two of them (or made the
+  // scratch tier durable) would have been invisible until an agent lost work or
+  // leaked a build tree into git. This pins all three in one session pair.
+  // ---------------------------------------------------------------------
+  it('the three roots are distinct and only the user-files tier survives a session', async () => {
+    const tmp = process.env.TMPDIR ?? '/tmp';
+    const userFilesRootDir = await fs.mkdtemp(path.join(tmp, 'ax-userfiles-'));
+    const h = await makeHarness(userFilesRootDir);
+
+    // Two sessions of the SAME agent with DIFFERENT governed roots — which is
+    // what production does: `/agent` is an emptyDir re-materialized from a host
+    // git bundle each session, so its on-disk path does not carry over.
+    const ws1 = await fs.mkdtemp(path.join(tmp, 'ax-ws-'));
+    const ws2 = await fs.mkdtemp(path.join(tmp, 'ax-ws-'));
+
+    const run = async (sessionId: string, workspaceRoot: string) => {
+      const result = await h.bus.call<unknown, OpenSessionResult>(
+        'sandbox:open-session',
+        h.ctx(),
+        {
+          sessionId,
+          workspaceRoot,
+          runnerBinary: TIERS_STUB,
+          owner: owner('tiers-agent'),
+        },
+      );
+      const line = await readFirstStdoutLine(result);
+      await result.handle.kill();
+      return JSON.parse(line) as Record<
+        'governed' | 'userFiles' | 'ephemeral',
+        { root: string | null; before: string | null }
+      >;
+    };
+
+    const s1 = await run('tiers-1', ws1);
+
+    // All three tiers are wired, and they are three DIFFERENT directories. A
+    // collapse here is the failure mode that makes an agent's mental model of
+    // "where do I put this" incoherent.
+    const roots = [s1.governed.root, s1.userFiles.root, s1.ephemeral.root];
+    expect(roots.every((r) => typeof r === 'string' && r.length > 0)).toBe(true);
+    expect(new Set(roots).size).toBe(3);
+    expect(s1.governed.root).toBe(ws1);
+    expect(s1.userFiles.root).toBe(path.join(userFilesRootDir, 'tiers-agent'));
+    // The scratch tier is NOT nested inside either durable tier — otherwise
+    // throwaway build output would ride the git round-trip or fill the share.
+    expect(s1.ephemeral.root!.startsWith(ws1)).toBe(false);
+    expect(s1.ephemeral.root!.startsWith(userFilesRootDir)).toBe(false);
+
+    // Nothing pre-existed in session 1.
+    expect(s1.governed.before).toBeNull();
+    expect(s1.userFiles.before).toBeNull();
+    expect(s1.ephemeral.before).toBeNull();
+
+    const s2 = await run('tiers-2', ws2);
+
+    // ONLY the durable user-files tier carries session 1's write forward.
+    expect(s2.userFiles.root).toBe(s1.userFiles.root);
+    expect(s2.userFiles.before).toBe('tiers-1\n');
+
+    // The scratch tier is a fresh directory with nothing in it — the promise
+    // `ephemeralScratchNote` makes to the model ("discarded when the session
+    // ends") holds.
+    expect(s2.ephemeral.root).not.toBe(s1.ephemeral.root);
+    expect(s2.ephemeral.before).toBeNull();
+
+    // The governed tier does not carry raw on-disk state between sessions; its
+    // durability is the git round-trip, which this layer does not perform.
+    expect(s2.governed.before).toBeNull();
 
     await h.close();
   });
