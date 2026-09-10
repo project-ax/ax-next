@@ -6,21 +6,24 @@ import { createLocalDispatcher, createArtifactPublishExecutor } from '@ax/agent-
 import { buildSandboxToolEntries } from '../sandbox-mcp-server.js';
 import { ARTIFACT_PUBLISH_DESCRIPTOR } from '@ax/tool-artifact-publish';
 
-let workspaceRoot: string;
+// The executor validates against the session's REAL roots, so the fixture root
+// IS the durable user-files tier — the same thing the sandbox provider stamps as
+// AX_USERFILES_ROOT and the operating notes hand to the model.
+let userFilesRoot: string;
 
 beforeEach(async () => {
-  workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-e2e-'));
+  userFilesRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'ax-e2e-'));
 });
 
 afterEach(async () => {
-  await fs.rm(workspaceRoot, { recursive: true, force: true });
+  await fs.rm(userFilesRoot, { recursive: true, force: true });
 });
 
 describe('artifact_publish end-to-end (sandbox dispatch)', () => {
   it('produces a tool_result with the design-spec JSON shape', async () => {
-    // 1. Fixture: a publishable file lives under /agent/workspace/.
-    const rel = 'workspace/reports/Q4.pdf';
-    const abs = path.join(workspaceRoot, rel);
+    // 1. Fixture: a deliverable in the agent's own working directory.
+    const rel = 'reports/Q4.pdf';
+    const abs = path.join(userFilesRoot, rel);
     await fs.mkdir(path.dirname(abs), { recursive: true });
     await fs.writeFile(abs, Buffer.from('REPORT'));
 
@@ -28,13 +31,14 @@ describe('artifact_publish end-to-end (sandbox dispatch)', () => {
     const dispatcher = createLocalDispatcher();
     dispatcher.register(
       ARTIFACT_PUBLISH_DESCRIPTOR.name,
-      createArtifactPublishExecutor({ workspaceRoot }),
+      createArtifactPublishExecutor({ userFilesRoot }),
     );
     const [entry] = buildSandboxToolEntries(dispatcher, [ARTIFACT_PUBLISH_DESCRIPTOR]);
 
-    // 3. Simulate the SDK invoking the tool with the model's args.
+    // 3. Simulate the SDK invoking the tool with the model's args — the real
+    //    absolute path, which is what the model is told and what it writes to.
     const result = await entry.handler(
-      { path: `/agent/${rel}`, displayName: 'Quarter 4 Report' },
+      { path: abs, displayName: 'Quarter 4 Report' },
       { signal: undefined } as never,
     );
 
@@ -55,10 +59,12 @@ describe('artifact_publish end-to-end (sandbox dispatch)', () => {
     const dispatcher = createLocalDispatcher();
     dispatcher.register(
       ARTIFACT_PUBLISH_DESCRIPTOR.name,
-      createArtifactPublishExecutor({ workspaceRoot }),
+      createArtifactPublishExecutor({ userFilesRoot }),
     );
     const [entry] = buildSandboxToolEntries(dispatcher, [ARTIFACT_PUBLISH_DESCRIPTOR]);
 
+    // Governed agent state: not merely absent from an allowlist, but on a root
+    // the executor was never handed.
     const result = await entry.handler(
       { path: '/agent/.ax/sessions/leak.jsonl' },
       { signal: undefined } as never,

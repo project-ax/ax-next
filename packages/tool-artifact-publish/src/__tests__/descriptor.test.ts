@@ -20,9 +20,23 @@ describe('artifact_publish descriptor', () => {
     expect(schema.required).toEqual(['path']);
   });
 
-  it('description mentions the allowlist', () => {
-    expect(ARTIFACT_PUBLISH_DESCRIPTOR.description).toMatch(/workspace/);
-    expect(ARTIFACT_PUBLISH_DESCRIPTOR.description).toMatch(/artifacts/);
+  it('names the publishable locations by ROLE, never by a hardcoded path', () => {
+    const d = ARTIFACT_PUBLISH_DESCRIPTOR.description;
+    // The static catalog entry cannot know this session's roots, so it names the
+    // two locations by role and defers to the operating notes for the literals.
+    expect(d).toMatch(/files directory/);
+    expect(d).toMatch(/artifacts\/ subdirectory/);
+    expect(d).toMatch(/operating notes/);
+  });
+
+  it('does not hardcode the retired sandbox-absolute paths', () => {
+    // `/agent/workspace/**` named a directory nothing creates, and both literals
+    // were only ever true on k8s — a subprocess-sandbox agent that believed them
+    // wrote its deliverable somewhere it could not publish from.
+    const d = ARTIFACT_PUBLISH_DESCRIPTOR.description;
+    expect(d).not.toMatch(/\/agent\//);
+    expect(d).not.toMatch(/\/ephemeral\//);
+    expect(d).not.toMatch(/workspace/);
   });
 
   it('carries a non-empty activityPhrase (<=40 chars)', () => {

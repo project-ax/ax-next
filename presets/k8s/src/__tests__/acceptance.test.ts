@@ -2662,41 +2662,27 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         const chatJson = (await chatResp.json()) as { conversationId: string };
         const conversationId = chatJson.conversationId;
 
-        // 2. Pre-commit the artifact file at workspace/summary.md. The
-        // workspace was fresh before the chat-messages POST; but that POST
-        // can have written nothing to the workspace (no attachment_ref).
-        // We still use parent: null on the very first apply — if the route
-        // committed anything we'd see parent-mismatch and re-probe.
+        // 2. Stage the deliverable in the agent's DURABLE user-files tier —
+        // the tier artifacts are published from, and the same one the agent's
+        // cwd points at in production. It is deliberately outside git: the
+        // artifact's durability comes from the blob store at publish time
+        // (TASK-68), not from a commit, so there is nothing to seed into the
+        // workspace tier here. `ARTIFACT_PATH` is the row key the executor
+        // returns — relative to the tier root, which is what the download
+        // ACL and the ArtifactChip match on.
         const seedCtx = makeAgentContext({
           sessionId: 'phase-3-artifact-canary',
           agentId: AGENT,
           userId: USER,
           workspace: { rootPath: workspaceRoot },
         });
-        const ARTIFACT_PATH = 'workspace/summary.md';
-        await bus.call<WorkspaceApplyInput, WorkspaceApplyOutput>(
-          'workspace:apply',
-          seedCtx,
-          {
-            changes: [
-              { path: ARTIFACT_PATH, kind: 'put', content: ARTIFACT_BYTES },
-            ],
-            parent: null,
-            reason: 'phase-3 artifact canary: seed artifact file',
-          },
-        );
-
-        // In production, materializeWorkspace clones the storage tier into
-        // /agent so the executor sees the file; the canary skips
-        // materialize, so we stage the bytes by hand.
-        await fs.mkdir(path.dirname(path.join(runnerCheckoutRoot, ARTIFACT_PATH)), {
+        const ARTIFACT_PATH = 'reports/summary.md';
+        const artifactAbsPath = path.join(runnerCheckoutRoot, ARTIFACT_PATH);
+        await fs.mkdir(path.dirname(artifactAbsPath), {
           recursive: true,
           mode: 0o755,
         });
-        await fs.writeFile(
-          path.join(runnerCheckoutRoot, ARTIFACT_PATH),
-          ARTIFACT_BYTES,
-        );
+        await fs.writeFile(artifactAbsPath, ARTIFACT_BYTES);
 
         // 3 + 4. Publish the artifact and seed the transcript. The
         // download path-scope ACL scans conversations:get, which now reads the
@@ -2706,15 +2692,14 @@ describe('@ax/preset-k8s acceptance (stub runner)', () => {
         // tool_result whose JSON `content.path` matches ARTIFACT_PATH (the
         // artifact-block branch of checkPathScope) + the closing text.
         const executor = createArtifactPublishExecutor({
-          workspaceRoot: runnerCheckoutRoot,
+          userFilesRoot: runnerCheckoutRoot,
         });
         const artifactResult = await executor({
           id: 'toolu_1',
           name: 'artifact_publish',
-          input: {
-            path: `/agent/${ARTIFACT_PATH}`,
-            displayName: 'summary.md',
-          },
+          // The REAL absolute path — what the operating notes hand the model
+          // and what it actually wrote to, in every sandbox shape.
+          input: { path: artifactAbsPath, displayName: 'summary.md' },
         });
 
         // Lock-down: ArtifactChip + checkPathScope's artifact-block branch

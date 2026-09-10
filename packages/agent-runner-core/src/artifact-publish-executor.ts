@@ -5,11 +5,16 @@
 // runner's local-dispatcher.
 //
 // The validation order is unchanged (it's the security floor):
-//   1. Allowlist (pure-path) — now /ephemeral/artifacts/** + /agent/workspace/**.
-//   2. lstat → catches symlinks before any byte read.
-//   3. Size cap.
-//   4. read + sha256.
-//   5. mediaType sniff (extension only — no content sniffing v1).
+//   1. Allowlist (pure-path) — the session's REAL roots: <userFilesRoot>/** plus
+//      <ephemeralRoot>/artifacts/**. See @ax/tool-artifact-publish for why the
+//      governed tier is no longer on the list at all.
+//   2. lstat → catches a symlinked final component before any byte read.
+//   3. realpath containment → catches a symlinked INTERMEDIATE directory, which
+//      the textual check structurally cannot see (step 1 does no I/O) and which
+//      lstat does not catch either (it follows every component but the last).
+//   4. Size cap.
+//   5. read + sha256.
+//   6. mediaType sniff (extension only — no content sniffing v1).
 //
 // What CHANGED: durability. Before, the executor just returned metadata and the
 // turn-end git commit captured the bytes (fuzzy, late). Now the executor STREAMS
@@ -26,8 +31,10 @@ import type { ToolCall } from '@ax/ipc-protocol';
 import type { IpcClient } from '@ax/ipc-protocol';
 import {
   checkPublishablePath,
+  describeRoots,
   MAX_ARTIFACT_BYTES,
-  type PublishRoot,
+  MAX_DISPLAY_NAME_CHARS,
+  type PublishRoots,
 } from '@ax/tool-artifact-publish';
 
 const EXTENSION_TO_MEDIA_TYPE: Record<string, string> = {
@@ -52,13 +59,17 @@ function mediaTypeFromExtension(filename: string): string {
 }
 
 export interface CreateArtifactPublishExecutorOptions {
-  /** Absolute filesystem path the model's `/agent/...` maps onto. */
-  workspaceRoot: string;
   /**
-   * Absolute filesystem path the model's `/ephemeral/...` maps onto. When
-   * undefined, publishing from `/ephemeral/artifacts/**` is rejected (the
-   * deployment has no ephemeral tier wired) — `/agent/workspace/**` still
-   * works.
+   * Durable per-agent user-files root (`AX_USERFILES_ROOT`). Publishable in
+   * full — it is the agent's cwd and holds only user content. Undefined when no
+   * durable mount is wired, and then nothing under it can be published (there is
+   * no such directory to publish from).
+   */
+  userFilesRoot?: string;
+  /**
+   * Session scratch root (`AX_EPHEMERAL_ROOT`). Only `<root>/artifacts/**` is
+   * publishable — the rest of the tier is venv, caches and build trees.
+   * Undefined when no scratch tier is wired.
    */
   ephemeralRoot?: string;
   /**
@@ -87,11 +98,12 @@ export interface ArtifactPublishOutput {
   sha256: string;
 }
 
-function rootBaseFor(
-  root: PublishRoot,
-  opts: CreateArtifactPublishExecutorOptions,
-): string | undefined {
-  return root === 'ephemeral' ? opts.ephemeralRoot : opts.workspaceRoot;
+/** The session's publishable roots, in the shape the allowlist validates against. */
+function publishRoots(opts: CreateArtifactPublishExecutorOptions): PublishRoots {
+  return {
+    ...(opts.userFilesRoot !== undefined ? { userFilesRoot: opts.userFilesRoot } : {}),
+    ...(opts.ephemeralRoot !== undefined ? { ephemeralRoot: opts.ephemeralRoot } : {}),
+  };
 }
 
 export function createArtifactPublishExecutor(
@@ -112,20 +124,24 @@ export function createArtifactPublishExecutor(
         'artifact_publish: input.displayName must be a string when provided',
       );
     }
+    // `displayName` is model output that gets stored and rendered as the
+    // artifact's label. Bound it here rather than accept whatever the model
+    // emits; the row and the chat bubble both assume something filename-sized.
+    if (
+      typeof input.displayName === 'string' &&
+      input.displayName.length > MAX_DISPLAY_NAME_CHARS
+    ) {
+      throw new Error(
+        `artifact_publish: displayName too long (${input.displayName.length} chars, max ${MAX_DISPLAY_NAME_CHARS})`,
+      );
+    }
 
-    const check = checkPublishablePath(input.path);
+    const roots = publishRoots(opts);
+    const check = checkPublishablePath(input.path, roots);
     if (!check.ok) {
       throw new Error(check.reason);
     }
-    const relativePath = check.relativePath;
-
-    // Map the sandbox-absolute path onto the real filesystem root for its tier.
-    const base = rootBaseFor(check.root, opts);
-    if (base === undefined) {
-      throw new Error(
-        `artifact_publish: the ${check.root} tier is not available in this deployment`,
-      );
-    }
+    const { base, relativePath } = check;
     const absInRoot = path.join(base, relativePath);
 
     // lstat — NOT stat — so symlinks register as symlinks instead of their
@@ -149,6 +165,47 @@ export function createArtifactPublishExecutor(
     if (!lst.isFile()) {
       throw new Error('artifact_publish: target is not a regular file');
     }
+
+    // Containment re-check, AFTER the symlink reject and BEFORE any byte read.
+    //
+    // The allowlist is a pure function, so it can only reason about the path as
+    // TEXT — `path.resolve` kills `..`, but it cannot know that
+    // `<root>/reports` is a symlink to `/etc`. `lstat` does not close that
+    // either: it declines to follow only the FINAL component, and happily
+    // traverses symlinked directories on the way there. Since the agent now has
+    // a whole tier of its own to publish from, and it writes every byte of it,
+    // planting such a directory is trivial. Resolving both sides and re-testing
+    // containment is what actually enforces "inside the tier".
+    //
+    // Residual, stated rather than papered over: this is a check-then-read, so a
+    // component swapped between `realpath` and `readFile` would still be
+    // followed. Closing that needs per-component `openat`, which node does not
+    // expose. The bounded impact is the sandbox's own container filesystem — the
+    // pod carries no service-account token and mounts no host paths beyond the
+    // agent's own tiers.
+    let realBase: string;
+    let realTarget: string;
+    try {
+      realBase = await fs.realpath(base);
+      realTarget = await fs.realpath(absInRoot);
+    } catch (err) {
+      const e = err as NodeJS.ErrnoException;
+      if (e.code === 'ENOENT') {
+        throw new Error(
+          `artifact_publish: file not found: ${input.path} (ENOENT)`,
+        );
+      }
+      throw err;
+    }
+    if (
+      realTarget !== realBase &&
+      !realTarget.startsWith(realBase + path.sep)
+    ) {
+      throw new Error(
+        `artifact_publish: resolved outside the publishable tier — ${describeRoots(roots)}`,
+      );
+    }
+
     if (lst.size > MAX_ARTIFACT_BYTES) {
       throw new Error(
         `artifact_publish: file too large (${lst.size} bytes, max ${MAX_ARTIFACT_BYTES} = 100 MiB)`,
