@@ -8,7 +8,7 @@
  *
  * Skill authoring is confined to `<root>/.skill-draft/<id>/`, where `<root>` is the
  * agent's DURABLE per-agent user-files mount when one is wired (`AX_USERFILES_ROOT`,
- * e.g. `/workspace`) and the ephemeral scratch tier otherwise (graceful fallback).
+ * e.g. `/files`) and the ephemeral scratch tier otherwise (graceful fallback).
  * On the durable mount a half-finished draft now PERSISTS across sessions (design
  * §7 / D8) instead of evaporating with the per-pod emptyDir. The model passes the
  * draft DIRECTORY (not a file); the executor then reads `SKILL.md` + extra files
@@ -29,14 +29,14 @@
 const SKILL_ID_RE = /^[a-z][a-z0-9-]{0,63}$/;
 
 // Dotted scratch subdir under the active root. Dotted so it reads as agent-
-// internal scaffolding (and, on the durable `/workspace` mount, isn't mistaken
+// internal scaffolding (and, on the durable `/files` mount, isn't mistaken
 // for a user file). The subdir name is fixed; only the parent `<root>` varies.
 const DRAFT_SUBDIR = '.skill-draft';
 
 /**
  * The model-facing draft-dir prefix for a given active root: `<root>/.skill-draft/`.
- * A trailing slash on `root` is normalized away so `draftPrefix('/workspace/')`
- * and `draftPrefix('/workspace')` agree. Used by `checkDraftPath` and surfaced to
+ * A trailing slash on `root` is normalized away so `draftPrefix('/files/')`
+ * and `draftPrefix('/files')` agree. Used by `checkDraftPath` and surfaced to
  * the model in the descriptor + system-prompt note.
  */
 export function draftPrefix(root: string): string {

@@ -363,7 +363,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //     HOME, but defensive ordering matches the intent: we
           //     explicitly redirect HOME for the SDK subprocess.
           //   - filestore-user-files Phase 2 (TASK-164): HOME is `sdkHome` — the
-          //     durable `/workspace` NFS mount when AX_USERFILES_ROOT is wired,
+          //     durable `/files` NFS mount when AX_USERFILES_ROOT is wired,
           //     else `/agent` (today). So `~/bin`, dotfiles, and tool caches go to
           //     durable NFS rather than the git-bundled tier. Skill discovery is
           //     unaffected (CLAUDE_CONFIG_DIR, forwarded separately, drives it —
@@ -372,7 +372,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //     `<workspaceRoot>/.claude/projects` regardless of cwd (only the
           //     `<encoded-cwd>` subdir name changes; the conversations readdir-walk
           //     is slug-agnostic). The SDK aux files (`.claude.json`, backups) now
-          //     land on /workspace instead — acceptable (never validated/bundled).
+          //     land on /files instead — acceptable (never validated/bundled).
           //   - We DO NOT override CLAUDE_CONFIG_DIR here — the sandbox
           //     plugin's value (carried through proxyStartup.providerEnv)
           //     is the source of truth for the (b) split above. If a future
@@ -417,7 +417,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             // Put `$HOME/bin` (= <sdkHome>/bin) on PATH so binaries the agent
             // installs there PERSIST and are found in later sessions. filestore-
             // user-files Phase 2 (TASK-164): derives from `sdkHome` (= HOME), so
-            // when AX_USERFILES_ROOT is wired `~/bin` is `/workspace/bin` on
+            // when AX_USERFILES_ROOT is wired `~/bin` is `/files/bin` on
             // durable NFS — persisted LIVE, NOT via the per-turn git bundle (the
             // bundle only stages /agent). Spread LAST and fed the post-venv PATH so
             // it lands at the END of PATH. APPEND, not prepend (I5 / codex review):
@@ -436,7 +436,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
             ),
           },
           // filestore-user-files Phase 2 (TASK-164): cwd is the agent's working
-          // frame — `sdkHome` (= /workspace when a durable mount is wired, else
+          // frame — `sdkHome` (= /files when a durable mount is wired, else
           // /agent). Relative-path file work, builds, and `git clone .` default to
           // durable NFS. The governed tier stays /agent; the PreToolUse re-rooter
           // pulls `.ax/**`+`.claude/**` back there (see the hook below, §14).
@@ -448,7 +448,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //
           // The set, deduped (cwd is excluded; the SDK already grants it):
           //   - The governed tier `env.workspaceRoot` (=/agent). In Phase 2 cwd is
-          //     /workspace, so /agent is NO LONGER the cwd and MUST be listed — it
+          //     /files, so /agent is NO LONGER the cwd and MUST be listed — it
           //     holds `.ax/uploads` (materialized attachments), the transcript
           //     `.claude/projects` symlink target, and every `.ax/**`+`.claude/**`
           //     path the PreToolUse re-rooter rewrites BACK to /agent (§14). Without
@@ -459,7 +459,7 @@ export function createClaudeSdkLoop(deps: RunnerDeps): Loop {
           //     throwaway work (scratch clones, build caches) that must NOT
           //     round-trip to the host. Omitted when no scratch tier was wired.
           //   - The durable per-agent user-files mount `env.userFilesRoot`
-          //     (`/workspace`) — in Phase 2 this is the cwd, so it dedups out; we
+          //     (`/files`) — in Phase 2 this is the cwd, so it dedups out; we
           //     still list it defensively for the (transitional) case where it's
           //     wired but not the cwd. Omitted when no durable mount was wired.
           //

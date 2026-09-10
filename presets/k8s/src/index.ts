@@ -289,7 +289,7 @@ export interface K8sPresetConfig {
    * filestore-user-files (design §4) — the durable per-agent user-files mount
    * backed by a Google Cloud Filestore (managed NFS) export. When set, the
    * preset loads `@ax/workspace-filestore` (registers `sandbox:resolve-mounts`),
-   * which hands each agent an `nfs` mount at `mountPath` (default `/workspace`)
+   * which hands each agent an `nfs` mount at `mountPath` (default `/files`)
    * confined to its own `subPath=<agentId>` subtree. When OMITTED, no resolver
    * loads — sessions get only the default emptyDir tiers (graceful degradation;
    * AX_USERFILES_ROOT stays unset). The chart drives this via
@@ -1676,7 +1676,7 @@ export function loadK8sConfigFromEnv(
   // filestore-user-files (design §4) — the durable per-agent user-files mount.
   // Configured ONLY when a Filestore server is set; `server` + `exportPath` are
   // both required together (a server with no export, or vice versa, is a wiring
-  // bug we fail loud on). `mountPath` defaults in the plugin (`/workspace`).
+  // bug we fail loud on). `mountPath` defaults in the plugin (`/files`).
   // Omitted entirely when no server is set → the preset loads no mount resolver
   // and sessions degrade to emptyDir-only.
   let filestore: K8sPresetConfig['filestore'];

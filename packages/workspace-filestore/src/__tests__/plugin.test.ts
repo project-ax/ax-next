@@ -82,7 +82,7 @@ describe('@ax/workspace-filestore — sandbox:resolve-mounts', () => {
     expect(out.mounts).toHaveLength(1);
     const m = out.mounts[0] as NfsMountSpec;
     expect(m.kind).toBe('nfs');
-    expect(m.mountPath).toBe('/workspace');
+    expect(m.mountPath).toBe('/files');
     expect(m.server).toBe('10.0.0.2');
     expect(m.exportPath).toBe('/vol1/agents');
     expect(m.subPath).toBe('agent-abc');
@@ -128,7 +128,7 @@ describe('@ax/workspace-filestore — sandbox:resolve-mounts', () => {
   // TASK-175 regression: a REAL minted id (`agt_<base64url>`, with `_` and
   // usually uppercase) MUST resolve to a confined per-agent subPath. The
   // original `^[a-z0-9-]+$` gate rejected every real agent → no mount, no
-  // `AX_USERFILES_ROOT`, EROFS on `/workspace`. Every prior test missed this by
+  // `AX_USERFILES_ROOT`, EROFS on `/files`. Every prior test missed this by
   // using hand-crafted lowercase-dash ids. We run a batch to cover the random
   // alphabet (`_`, `-`, mixed case) across many mints.
   it('emits a confined per-agent mount for a REAL minted agt_<base64url> id', async () => {

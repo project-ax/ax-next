@@ -278,7 +278,7 @@ describe('createPreToolUseHook', () => {
   });
 
   it('with broaden, re-roots a cwd-relative .ax/** write back to the governed tier', async () => {
-    // TASK-164 §14 linchpin at the hook level: under Plan 2 cwd=/workspace
+    // TASK-164 §14 linchpin at the hook level: under Plan 2 cwd=/files
     // (ungoverned NFS). A model Write of `.ax/SOUL.md` would resolve onto NFS;
     // the hook must re-root it to /agent BEFORE adjudication so the host
     // policy-checks the governed path and the SDK writes it on the git tier.
@@ -287,13 +287,13 @@ describe('createPreToolUseHook', () => {
       client,
       workspaceRoot: '/agent',
       broaden: true,
-      recognizedRoots: ['/workspace', '/ephemeral'],
+      recognizedRoots: ['/files', '/ephemeral'],
       idGen: () => 'id-broaden',
     });
     const out = await hook(
       preToolUseInput({
         tool_name: 'Write',
-        tool_input: { file_path: '/workspace/.ax/SOUL.md', content: 'x' },
+        tool_input: { file_path: '/files/.ax/SOUL.md', content: 'x' },
       }),
       'tu_abc',
       HOOK_OPTS,
@@ -620,16 +620,16 @@ describe('resolveAttachmentPaths', () => {
 
 // ---------------------------------------------------------------------------
 // TASK-164 §14 governance LINCHPIN: the broadened re-rooter. Under Plan 2 the
-// agent's cwd/HOME is the ungoverned `/workspace` NFS mount, so a relative or
+// agent's cwd/HOME is the ungoverned `/files` NFS mount, so a relative or
 // cwd-prefixed `.ax/**`/`.claude/**` write would land on NFS and bypass the
 // validator + git tier. With `broaden:true` the re-rooter pulls the FULL
 // validator policy scope (`@ax/core` POLICY_PREFIXES + POLICY_EXACT_PATHS) back
 // onto the governed `/agent` tier. These tests pin that match exhaustively.
 // ---------------------------------------------------------------------------
 describe('resolveGovernedPaths (broaden: the §14 linchpin)', () => {
-  // Recognized roots mirror main.ts: cwd (=/workspace, the NFS mount) + scratch
+  // Recognized roots mirror main.ts: cwd (=/files, the NFS mount) + scratch
   // (/ephemeral). /agent (workspaceRoot) is auto-added; /home/+~/ are always on.
-  const B = { broaden: true, recognizedRoots: ['/workspace', '/ephemeral'] } as const;
+  const B = { broaden: true, recognizedRoots: ['/files', '/ephemeral'] } as const;
   const reroot = (input: unknown): { changed: boolean; input: Record<string, unknown> } =>
     resolveGovernedPaths(input, '/agent', B);
 
@@ -648,19 +648,19 @@ describe('resolveGovernedPaths (broaden: the §14 linchpin)', () => {
   });
 
   it('re-roots a cwd/NFS-prefixed .ax/** path (the core hazard)', () => {
-    // cwd=/workspace, so a relative `.ax/x` the SDK resolves becomes
-    // `/workspace/.ax/x` — the exact path that would drift onto ungoverned NFS.
-    expect(reroot({ file_path: '/workspace/.ax/notes/todo.md' })).toEqual({
+    // cwd=/files, so a relative `.ax/x` the SDK resolves becomes
+    // `/files/.ax/x` — the exact path that would drift onto ungoverned NFS.
+    expect(reroot({ file_path: '/files/.ax/notes/todo.md' })).toEqual({
       changed: true,
       input: { file_path: '/agent/.ax/notes/todo.md' },
     });
-    expect(reroot({ path: '/workspace/.claude/agents/x.md' })).toEqual({
+    expect(reroot({ path: '/files/.claude/agents/x.md' })).toEqual({
       changed: true,
       input: { path: '/agent/.claude/agents/x.md' },
     });
   });
 
-  it('re-roots a home-prefixed governed path (HOME=/workspace, dotfile illusion)', () => {
+  it('re-roots a home-prefixed governed path (HOME=/files, dotfile illusion)', () => {
     expect(reroot({ file_path: '/home/runner/.claude/skills/evil/SKILL.md' })).toEqual({
       changed: true,
       input: { file_path: '/agent/.claude/skills/evil/SKILL.md' },
@@ -672,7 +672,7 @@ describe('resolveGovernedPaths (broaden: the §14 linchpin)', () => {
       changed: true,
       input: { file_path: '/agent/CLAUDE.md' },
     });
-    expect(reroot({ file_path: '/workspace/CLAUDE.local.md' })).toEqual({
+    expect(reroot({ file_path: '/files/CLAUDE.local.md' })).toEqual({
       changed: true,
       input: { file_path: '/agent/CLAUDE.local.md' },
     });
@@ -681,20 +681,20 @@ describe('resolveGovernedPaths (broaden: the §14 linchpin)', () => {
   it('does NOT match CLAUDE.md when it is a directory component, only as the final file', () => {
     // `CLAUDE.md/foo` is a dir literally named CLAUDE.md — not the SDK memory
     // file, so it must be left alone (only the exact final segment matches).
-    expect(reroot({ file_path: '/workspace/CLAUDE.md/foo.txt' })).toEqual({
+    expect(reroot({ file_path: '/files/CLAUDE.md/foo.txt' })).toEqual({
       changed: false,
-      input: { file_path: '/workspace/CLAUDE.md/foo.txt' },
+      input: { file_path: '/files/CLAUDE.md/foo.txt' },
     });
   });
 
   it('does NOT re-root user-file paths (the whole point — they stay on NFS)', () => {
     for (const file_path of [
-      '/workspace/data/dataset.csv',
-      '/workspace/repo/src/index.ts',
+      '/files/data/dataset.csv',
+      '/files/repo/src/index.ts',
       'src/index.ts',
       'notes.md',
-      '/workspace/.git/config', // NOT a governed prefix — user repo dotdir
-      '/workspace/.skill-draft/x/SKILL.md', // drafts live on /workspace by design
+      '/files/.git/config', // NOT a governed prefix — user repo dotdir
+      '/files/.skill-draft/x/SKILL.md', // drafts live on /files by design
     ]) {
       expect(reroot({ file_path })).toEqual({
         changed: false,
@@ -723,8 +723,8 @@ describe('resolveGovernedPaths (broaden: the §14 linchpin)', () => {
 
   it('refuses to re-root a governed path with a .. traversal segment (security)', () => {
     expect(
-      reroot({ file_path: '/workspace/.ax/../../etc/passwd' }),
-    ).toEqual({ changed: false, input: { file_path: '/workspace/.ax/../../etc/passwd' } });
+      reroot({ file_path: '/files/.ax/../../etc/passwd' }),
+    ).toEqual({ changed: false, input: { file_path: '/files/.ax/../../etc/passwd' } });
     expect(
       reroot({ file_path: '.claude/../.ssh/id_rsa' }),
     ).toEqual({ changed: false, input: { file_path: '.claude/../.ssh/id_rsa' } });
@@ -736,20 +736,20 @@ describe('resolveGovernedPaths (broaden: the §14 linchpin)', () => {
       changed: false,
       input: { file_path: 'foo.ax/x' },
     });
-    expect(reroot({ file_path: '/workspace/my.claude/x' })).toEqual({
+    expect(reroot({ file_path: '/files/my.claude/x' })).toEqual({
       changed: false,
-      input: { file_path: '/workspace/my.claude/x' },
+      input: { file_path: '/files/my.claude/x' },
     });
   });
 
   it('does NOT re-root a governed dir NESTED under a user subtree (matches validator scope)', () => {
-    // A cloned repo's own `/workspace/myrepo/.claude/` is the user's file, NOT
+    // A cloned repo's own `/files/myrepo/.claude/` is the user's file, NOT
     // AX governed state — the validator only governs git-root-relative top-level
     // `.ax/`+`.claude/`, so neither should this re-rooter. Re-rooting it would
     // corrupt the user's repo by yanking the file to a different tier.
     for (const file_path of [
-      '/workspace/myrepo/.claude/settings.json',
-      '/workspace/projects/sub/.ax/notes.md',
+      '/files/myrepo/.claude/settings.json',
+      '/files/projects/sub/.ax/notes.md',
       'myrepo/.claude/x', // bare-relative but nested → not top-level
       '/home/runner/projects/.ax/x', // nested under home, not directly under it
     ]) {
@@ -778,10 +778,10 @@ describe('resolveGovernedPaths (broaden: the §14 linchpin)', () => {
   it('rewrites only structured path fields, never free text mentioning .ax/.claude', () => {
     expect(
       reroot({
-        file_path: '/workspace/.ax/IDENTITY.md',
+        file_path: '/files/.ax/IDENTITY.md',
         old_string: 'see .claude/settings.json',
         content: 'edit .ax/SOUL.md by hand',
-        command: 'cat /workspace/.ax/notes.md',
+        command: 'cat /files/.ax/notes.md',
       }),
     ).toEqual({
       changed: true,
@@ -789,13 +789,13 @@ describe('resolveGovernedPaths (broaden: the §14 linchpin)', () => {
         file_path: '/agent/.ax/IDENTITY.md',
         old_string: 'see .claude/settings.json',
         content: 'edit .ax/SOUL.md by hand',
-        command: 'cat /workspace/.ax/notes.md',
+        command: 'cat /files/.ax/notes.md',
       },
     });
   });
 
   it('re-roots the path / notebook_path fields too', () => {
-    expect(reroot({ path: '/workspace/.claude/agents' })).toEqual({
+    expect(reroot({ path: '/files/.claude/agents' })).toEqual({
       changed: true,
       input: { path: '/agent/.claude/agents' },
     });

@@ -260,7 +260,7 @@ sandbox:
   # filestore-user-files (design §4). Gives each agent a durable, shared,
   # real filesystem for the user's working files (datasets, build trees,
   # media, cloned repos) — backed by a Google Cloud Filestore (managed NFS)
-  # export, mounted into the sandbox at `mountPath` (default /workspace),
+  # export, mounted into the sandbox at `mountPath` (default /files),
   # OUTSIDE the git-tracked agent-state tier. These files are live: written
   # straight to NFS, durable across sessions, with no git round-trip.
   #
@@ -278,8 +278,16 @@ sandbox:
     server: ""
     # Export path on the Filestore instance, e.g. /vol1 (the share name).
     exportPath: "/vol1"
-    # Where the durable mount appears inside the sandbox.
-    mountPath: "/workspace"
+    # Where the durable mount appears inside the sandbox. This is also the
+    # agent's cwd and HOME.
+    #
+    # UPGRADING from a chart that defaulted this to `/workspace`: an agent's
+    # files are keyed by `subPath=<agentId>`, not by mountPath, so they follow
+    # the mount and nothing needs copying. What does NOT follow is an absolute
+    # `/workspace/...` path an agent wrote into its own `.ax/AGENTS.md`, a
+    # proposed skill, or its memory. Pin this to "/workspace" if you would
+    # rather not find out.
+    mountPath: "/files"
 
   # ─── Dev-services in the sandbox (REQUIRES Kubernetes 1.29+) ───
   # Agents can declare "dev-dependency services" (a database, a broker, …)

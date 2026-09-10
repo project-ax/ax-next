@@ -16,7 +16,7 @@ import { createWorkspaceLocaldirPlugin } from '../plugin.js';
 // keyed off `owner.agentId` (validated `^[A-Za-z0-9_-]+$` — the base64url
 // alphabet, matching real `agt_<base64url>` ids). Returns `[]` when the owner
 // has no agentId (anonymous CLI session → graceful no-mount). This is the
-// canary/dev path — it gives a durable per-agent `/workspace` without a real
+// canary/dev path — it gives a durable per-agent `/files` without a real
 // NFS server.
 // ---------------------------------------------------------------------------
 
@@ -83,7 +83,7 @@ describe('@ax/workspace-localdir — sandbox:resolve-mounts', () => {
     expect(out.mounts).toHaveLength(1);
     const m = out.mounts[0] as LocalDirMountSpec;
     expect(m.kind).toBe('localDir');
-    expect(m.mountPath).toBe('/workspace');
+    expect(m.mountPath).toBe('/files');
     expect(m.hostPath).toBe('/var/lib/ax/userfiles/agent-abc');
     expect(m.readOnly).toBe(false);
     expect(m.role).toBe('user-files');
@@ -127,7 +127,7 @@ describe('@ax/workspace-localdir — sandbox:resolve-mounts', () => {
   // TASK-175 regression: a REAL minted id (`agt_<base64url>`, with `_` and
   // usually uppercase) MUST resolve to a confined per-agent subtree under root.
   // The original `^[a-z0-9-]+$` gate rejected every real agent → no mount, no
-  // `AX_USERFILES_ROOT`, EROFS on `/workspace`. Every prior test missed this by
+  // `AX_USERFILES_ROOT`, EROFS on `/files`. Every prior test missed this by
   // using hand-crafted lowercase-dash ids. We run a batch to cover the random
   // alphabet (`_`, `-`, mixed case) across many mints.
   it('emits a confined per-agent mount for a REAL minted agt_<base64url> id', async () => {

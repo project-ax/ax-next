@@ -288,7 +288,7 @@ export async function buildSystemPrompt(
   userFilesRoot: string | undefined = undefined,
   // filestore-user-files Phase 2 (TASK-164): the agent's effective working
   // directory (cwd). Defaults to `workspaceRoot` (today). When a durable mount
-  // moved cwd to /workspace, the workspace operational note states both the
+  // moved cwd to /files, the workspace operational note states both the
   // working dir and the governed root. `.ax/` identity reads always use
   // `workspaceRoot` regardless — the governed tier never moves.
   cwd: string = workspaceRoot,

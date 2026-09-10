@@ -1009,7 +1009,7 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
   const FILESTORE = [
     '--set', 'sandbox.filestore.server=10.9.8.7',
     '--set', 'sandbox.filestore.exportPath=/vol1',
-    '--set', 'sandbox.filestore.mountPath=/workspace',
+    '--set', 'sandbox.filestore.mountPath=/files',
   ];
 
   function hostEnv(docs: K8sDoc[]): Record<string, unknown> {
@@ -1035,7 +1035,7 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     const env = hostEnv(helmTemplate(FILESTORE));
     expect(env.AX_FILESTORE_SERVER).toBe('10.9.8.7');
     expect(env.AX_FILESTORE_EXPORT_PATH).toBe('/vol1');
-    expect(env.AX_FILESTORE_MOUNT_PATH).toBe('/workspace');
+    expect(env.AX_FILESTORE_MOUNT_PATH).toBe('/files');
   });
 
   it('omits AX_FILESTORE_* when no Filestore server is configured (default)', () => {

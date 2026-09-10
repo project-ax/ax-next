@@ -3,25 +3,25 @@ import { checkDraftPath, draftPrefix } from '../draft-paths.js';
 
 // The draft root is now dynamic (filestore-user-files Phase 3, design §7): drafts
 // stage under `<root>/.skill-draft/<id>/` where `root` = AX_USERFILES_ROOT (durable
-// per-agent mount, e.g. `/workspace`) ?? the ephemeral scratch root (fallback). The
+// per-agent mount, e.g. `/files`) ?? the ephemeral scratch root (fallback). The
 // executor passes the active root; checkDraftPath validates the model path against it.
 
-const WORKSPACE = '/workspace';
+const WORKSPACE = '/files';
 const EPHEMERAL = '/ephemeral';
 
 describe('draftPrefix', () => {
   it('builds the dotted `.skill-draft/` prefix under the active root', () => {
-    expect(draftPrefix(WORKSPACE)).toBe('/workspace/.skill-draft/');
+    expect(draftPrefix(WORKSPACE)).toBe('/files/.skill-draft/');
     expect(draftPrefix(EPHEMERAL)).toBe('/ephemeral/.skill-draft/');
   });
 
   it('normalizes a trailing slash on the root', () => {
-    expect(draftPrefix('/workspace/')).toBe('/workspace/.skill-draft/');
+    expect(draftPrefix('/files/')).toBe('/files/.skill-draft/');
   });
 });
 
 describe('checkDraftPath', () => {
-  // Run the full battery under BOTH a durable (/workspace) and ephemeral
+  // Run the full battery under BOTH a durable (/files) and ephemeral
   // (/ephemeral) root so the parameterized prefix is exercised on each.
   for (const root of [WORKSPACE, EPHEMERAL]) {
     describe(`under root ${root}`, () => {
@@ -76,11 +76,11 @@ describe('checkDraftPath', () => {
     });
   }
 
-  it('rejects a /workspace draft path when the active root is /ephemeral (and vice versa)', () => {
+  it('rejects a /files draft path when the active root is /ephemeral (and vice versa)', () => {
     // A draft validated against the wrong root must be rejected — the executor
     // always validates against the root it will read from, so a path under a
     // DIFFERENT root never resolves.
-    expect(checkDraftPath('/workspace/.skill-draft/linear', EPHEMERAL).ok).toBe(false);
+    expect(checkDraftPath('/files/.skill-draft/linear', EPHEMERAL).ok).toBe(false);
     expect(checkDraftPath('/ephemeral/.skill-draft/linear', WORKSPACE).ok).toBe(false);
   });
 });

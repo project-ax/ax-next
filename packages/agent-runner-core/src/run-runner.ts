@@ -1010,7 +1010,7 @@ async function runRunnerInner(
   // filestore-user-files Phase 2 (TASK-164) — the agent's WORKING FRAME.
   //
   // When the sandbox wired a durable per-agent user-files mount
-  // (AX_USERFILES_ROOT, e.g. `/workspace`), the loop's subprocess cwd + HOME
+  // (AX_USERFILES_ROOT, e.g. `/files`), the loop's subprocess cwd + HOME
   // move there, so relative-path file work, builds, `git clone .`, `~/bin`, and
   // tool caches all default to durable NFS instead of the ephemeral `/agent`
   // emptyDir. When unset, this is `env.workspaceRoot` (=/agent) — today's

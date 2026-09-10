@@ -2,7 +2,7 @@
 // Sandbox-side executor for the `skill_propose` tool (TASK-74, out-of-git
 // Part D / §D1; filestore-user-files Phase 3 / TASK-165). The model writes a
 // skill bundle into the draft dir `<root>/.skill-draft/<id>/` — where `<root>` is
-// the DURABLE per-agent user-files mount (`AX_USERFILES_ROOT`, e.g. `/workspace`)
+// the DURABLE per-agent user-files mount (`AX_USERFILES_ROOT`, e.g. `/files`)
 // when one is wired, else the ephemeral scratch tier (graceful fallback) — then
 // calls this tool with that directory path. The sandbox-MCP bridge dispatches
 // here via the runner's local-dispatcher (mirror of artifact_publish).
@@ -87,7 +87,7 @@ function validateExtraFile(relPath: string, contents: string): string | null {
 }
 
 export interface CreateSkillProposeExecutorOptions {
-  /** Durable per-agent user-files root (`AX_USERFILES_ROOT`, e.g. `/workspace`).
+  /** Durable per-agent user-files root (`AX_USERFILES_ROOT`, e.g. `/files`).
    * When set it is the PREFERRED draft root (drafts persist across sessions); the
    * executor reads `<userFilesRoot>/.skill-draft/<id>/`. Absent ⇒ no durable
    * mount; fall back to `ephemeralRoot`. (filestore-user-files Phase 3 / §7.) */

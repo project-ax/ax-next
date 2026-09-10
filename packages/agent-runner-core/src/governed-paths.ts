@@ -52,9 +52,9 @@ const POSIX_HOME_BASE = '/home/';
  *   - `~/`, or a `/home/<user>/` home dir (the dotfile-illusion mis-root — the
  *     model treats `.ax/x` as a home dotfile and resolves it under HOME).
  * So:
- *   - `.ax/x`, `/workspace/.ax/x`, `/home/runner/.claude/x`  → MATCH
- *   - `/workspace/myrepo/.claude/config`, `data/.ax/x`,
- *     `/home/runner/projects/.ax/x`                          → NO MATCH (nested;
+ *   - `.ax/x`, `/files/.ax/x`, `/home/runner/.claude/x`  → MATCH
+ *   - `/files/myrepo/.claude/config`, `data/.ax/x`,
+ *     `/home/runner/projects/.ax/x`                      → NO MATCH (nested;
  *     the validator wouldn't govern these either)
  *
  * Returns the index where the matched segment begins, so the caller re-roots
@@ -143,8 +143,8 @@ function rerootUploadsPath(
  * `.claude/**`, or root-exact `CLAUDE.md`/`CLAUDE.local.md`) as a path segment,
  * re-root it under `workspaceRoot` (the governed `/agent` tier); else null.
  *
- * Why: under Plan 2 the agent's cwd/HOME is the ungoverned `/workspace` NFS
- * mount, so a relative `.ax/SOUL.md` (or an absolute `/workspace/.ax/SOUL.md`,
+ * Why: under Plan 2 the agent's cwd/HOME is the ungoverned `/files` NFS
+ * mount, so a relative `.ax/SOUL.md` (or an absolute `/files/.ax/SOUL.md`,
  * or a home-rooted `/home/runner/.ax/SOUL.md`) would land on NFS — bypassing
  * the workspace validator (`@ax/core`'s `filterToPolicy`) and the per-turn git
  * bundle. Re-rooting these to `<workspaceRoot>/<governed-tail>` keeps every
@@ -154,7 +154,7 @@ function rerootUploadsPath(
  *
  * Same safety rails as the uploads re-rooter: only matches a TOP-LEVEL governed
  * segment under a recognized root (so neither `foo.ax/x` NOR a genuinely nested
- * `/workspace/myrepo/.claude/x` — which the validator wouldn't govern — is
+ * `/files/myrepo/.claude/x` — which the validator wouldn't govern — is
  * touched), refuses any `..` segment (so a crafted `.ax/../../etc/x` can't
  * escape), keeps the matched policy tail, and is idempotent on an already-
  * `<workspaceRoot>`-rooted path. `recognizedRoots` are the runtime roots a
@@ -195,7 +195,7 @@ function rerootGovernedPath(
  *    resolve by the `.ax/uploads/` marker the model can't strip.)
  *
  *  - `broaden: true` (filestore-user-files Phase 2 / TASK-164 — cwd/HOME on the
- *    ungoverned `/workspace` NFS mount): the FULL validator policy scope
+ *    ungoverned `/files` NFS mount): the FULL validator policy scope
  *    (`.ax/**`, `.claude/**`, root-exact `CLAUDE.md`/`CLAUDE.local.md`) re-roots
  *    to `/agent`. This is the §14 governance linchpin: it forces every agent
  *    self-edit of governed state back onto the validated, git-backed tier even
@@ -203,7 +203,7 @@ function rerootGovernedPath(
  *
  * Rewrites ONLY the structured path fields (`PATH_INPUT_KEYS`) as a whole-value
  * re-root — handling a home-prefixed (`/home/user/.ax/x`), cwd/NFS-prefixed
- * (`/workspace/.ax/x`), bare (`.ax/x`), or already-correct (`/agent/.ax/x`,
+ * (`/files/.ax/x`), bare (`.ax/x`), or already-correct (`/agent/.ax/x`,
  * idempotent) reference. Free-text fields (a Bash command, an Edit's old_string,
  * etc.) are left untouched; the system-prompt workspace note (see
  * system-prompt.ts) steers the model to emit the right path for those.
