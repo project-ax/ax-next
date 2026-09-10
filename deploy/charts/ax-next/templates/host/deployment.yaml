@@ -333,6 +333,22 @@ spec:
               value: {{ .Values.sandbox.filestore.exportPath | quote }}
             - name: AX_FILESTORE_MOUNT_PATH
               value: {{ .Values.sandbox.filestore.mountPath | quote }}
+            {{- if .Values.sandbox.filestore.hostReadPath }}
+            # The same export, mounted READ-ONLY into THIS pod (see volumes
+            # below), so `sandbox:read-user-files` can read an agent's durable
+            # subtree directly instead of running a short-lived pod per
+            # directory click and per file open. The preset reads this into
+            # `sandbox.userFilesHostReadRoot`; when it is unset the provider
+            # keeps the pod-per-call realization.
+            #
+            # SECURITY: this is the widening documented in values.yaml — the
+            # host gains read access to EVERY agent subtree, so cross-tenant
+            # isolation moves from structural (no path at all) to code (the
+            # route's agents:resolve ACL + realpath confinement in
+            # @ax/user-files-read). Read-only end to end.
+            - name: AX_FILESTORE_HOST_READ_PATH
+              value: {{ .Values.sandbox.filestore.hostReadPath | quote }}
+            {{- end }}
             {{- end }}
 
             # Credentials key — encrypts secrets at rest. Required.
@@ -438,6 +454,17 @@ spec:
             - name: workspace
               mountPath: {{ .Values.workspace.mountPath }}
             {{- end }}
+            {{- if and .Values.sandbox.filestore.server .Values.sandbox.filestore.hostReadPath }}
+            # readOnly is load-bearing, not decoration: the host-read path
+            # exists to SERVE these files to the UI and must never be able to
+            # change them. The reader has no write entry point either — belt
+            # and braces, because the agent's own runner pod mounts the same
+            # export read-write and this is the only thing standing between
+            # "the UI can show it" and "the UI can edit it".
+            - name: user-files-read
+              mountPath: {{ .Values.sandbox.filestore.hostReadPath | quote }}
+              readOnly: true
+            {{- end }}
       volumes:
         - name: ax-config
           configMap:
@@ -468,4 +495,15 @@ spec:
         - name: workspace
           persistentVolumeClaim:
             claimName: {{ include "ax-next.fullname" . }}-workspace
+        {{- end }}
+        {{- if and .Values.sandbox.filestore.server .Values.sandbox.filestore.hostReadPath }}
+        # The WHOLE user-files export, exactly the volume a runner pod gets —
+        # same server, same path. The per-agent scoping is NOT done here (there
+        # is one host pod and many agents); it is done per request, by joining
+        # the validated agentId and confining every read under it.
+        - name: user-files-read
+          nfs:
+            server: {{ .Values.sandbox.filestore.server | quote }}
+            path: {{ .Values.sandbox.filestore.exportPath | quote }}
+            readOnly: true
         {{- end }}

@@ -288,6 +288,35 @@ sandbox:
     # proposed skill, or its memory. Pin this to "/workspace" if you would
     # rather not find out.
     mountPath: "/files"
+    # Where the SAME export is mounted, READ-ONLY, into the HOST pod, so the
+    # web UI can browse an agent's durable files. Empty (the default) = not
+    # mounted.
+    #
+    # Why you want it: without it, reading one directory or one file costs a
+    # whole short-lived Kubernetes pod — create, poll, read the log, delete.
+    # A file browser on that spends seconds per click, and on a cluster that
+    # cold-starts nodes it spends longer than that. With it, the host reads the
+    # files directly and a click costs nothing.
+    #
+    # Why you might not: this is a real widening, and we would rather say so
+    # than bury it. Today the host has NO access to any agent's files, and that
+    # isolation is structural — there is no path from the host process to the
+    # export at all. Turn this on and the host can read every agent's subtree,
+    # and the isolation becomes code: an `agents:resolve` check on the route
+    # plus realpath confinement in the reader (both tested, both required). The
+    # mount itself is read-only end to end, and nothing on the read path ever
+    # opens a writable handle.
+    #
+    # In blast-radius terms it is not a step up — the host already holds the
+    # database, the blob store and every credential, so a compromised host was
+    # already a bad day. But "not a step up" is not "free", and if you do not
+    # need the browser, leave it empty and the browser will say it cannot
+    # reach the files rather than pretending the agent wrote nothing.
+    #
+    # Requires `server` to be set as well (an empty server means no export to
+    # mount). Opening this also opens the HOST pod's egress to the Filestore IP
+    # on the NFS ports — see networkpolicies/agent-runtime-network.yaml.
+    hostReadPath: ""
 
   # ─── Dev-services in the sandbox (REQUIRES Kubernetes 1.29+) ───
   # Agents can declare "dev-dependency services" (a database, a broker, …)

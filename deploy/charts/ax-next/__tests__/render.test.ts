@@ -1074,4 +1074,111 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     const hasIpBlock = egress.some((r) => (r.to ?? []).some((t) => t.ipBlock !== undefined));
     expect(hasIpBlock).toBe(false);
   });
+
+  // ---- the host-mounted read (sandbox.filestore.hostReadPath) ------------
+  // Three things have to line up or the feature is broken in a way that does
+  // not look like this feature: the env the preset reads, the read-only
+  // volume + mount, and the host's NFS egress. Each gets its own assertion,
+  // and each is asserted ABSENT by default — an unused grant is still a grant.
+
+  const HOST_READ = [...FILESTORE, '--set', 'sandbox.filestore.hostReadPath=/user-files'];
+
+  function hostDeployment(docs: K8sDoc[]) {
+    return docs.find(
+      (d) => d.kind === 'Deployment' && /-host$/.test(String(d.metadata?.name ?? '')),
+    );
+  }
+
+  function hostPodSpec(docs: K8sDoc[]) {
+    return (
+      hostDeployment(docs)?.spec as {
+        template?: {
+          spec?: {
+            containers?: Array<{
+              volumeMounts?: Array<{ name: string; mountPath?: string; readOnly?: boolean }>;
+            }>;
+            volumes?: Array<{
+              name: string;
+              nfs?: { server?: string; path?: string; readOnly?: boolean };
+            }>;
+          };
+        };
+      }
+    )?.template?.spec;
+  }
+
+  function hostNetwork(docs: K8sDoc[]) {
+    return docs.find(
+      (d) =>
+        d.kind === 'NetworkPolicy' &&
+        String(d.metadata?.name ?? '').endsWith('-host-network'),
+    );
+  }
+
+  it('stamps AX_FILESTORE_HOST_READ_PATH when hostReadPath is set', () => {
+    expect(hostEnv(helmTemplate(HOST_READ)).AX_FILESTORE_HOST_READ_PATH).toBe(
+      '/user-files',
+    );
+  });
+
+  it('omits AX_FILESTORE_HOST_READ_PATH by default, even with a Filestore server', () => {
+    // The default posture: the export is mounted into RUNNER pods but not into
+    // the host, so the host has no path to any agent's files at all and the
+    // provider keeps its pod-per-call read.
+    expect(hostEnv(helmTemplate(FILESTORE)).AX_FILESTORE_HOST_READ_PATH).toBeUndefined();
+  });
+
+  it('mounts the export into the host pod READ-ONLY at hostReadPath', () => {
+    const spec = hostPodSpec(helmTemplate(HOST_READ));
+    const mount = (spec?.containers?.[0]?.volumeMounts ?? []).find(
+      (m) => m.name === 'user-files-read',
+    );
+    expect(mount, 'the host container mounts user-files-read').toBeDefined();
+    expect(mount?.mountPath).toBe('/user-files');
+    // The property the whole design rests on. If this ever renders false or
+    // undefined, the UI's read path can write to every agent's files.
+    expect(mount?.readOnly).toBe(true);
+
+    const vol = (spec?.volumes ?? []).find((v) => v.name === 'user-files-read');
+    expect(vol?.nfs?.server).toBe('10.9.8.7');
+    expect(vol?.nfs?.path).toBe('/vol1');
+    expect(vol?.nfs?.readOnly).toBe(true);
+  });
+
+  it('does NOT mount anything into the host pod by default', () => {
+    const spec = hostPodSpec(helmTemplate(FILESTORE));
+    expect(
+      (spec?.containers?.[0]?.volumeMounts ?? []).some((m) => m.name === 'user-files-read'),
+    ).toBe(false);
+    expect((spec?.volumes ?? []).some((v) => v.name === 'user-files-read')).toBe(false);
+  });
+
+  it('opens HOST egress to ONLY the Filestore IP on :2049 + :111 when host-read is on', () => {
+    const np = hostNetwork(helmTemplate(HOST_READ));
+    expect(np, 'host-network NetworkPolicy renders').toBeDefined();
+    const egress = (np?.spec?.egress as Array<{
+      to?: Array<{ ipBlock?: { cidr?: string } }>;
+      ports?: Array<{ port?: number; protocol?: string }>;
+    }>) ?? [];
+    const fsRule = egress.find((r) =>
+      (r.to ?? []).some((t) => t.ipBlock?.cidr === '10.9.8.7/32'),
+    );
+    expect(fsRule, 'a host egress rule scoped to the Filestore /32 exists').toBeDefined();
+    expect((fsRule?.ports ?? []).map((p) => `${p.protocol}:${p.port}`).sort()).toEqual([
+      'TCP:111',
+      'TCP:2049',
+      'UDP:111',
+      'UDP:2049',
+    ]);
+  });
+
+  it('does NOT open host NFS egress when host-read is off', () => {
+    const np = hostNetwork(helmTemplate(FILESTORE));
+    const egress = (np?.spec?.egress as Array<{
+      to?: Array<{ ipBlock?: { cidr?: string } }>;
+    }>) ?? [];
+    expect(
+      egress.some((r) => (r.to ?? []).some((t) => t.ipBlock?.cidr === '10.9.8.7/32')),
+    ).toBe(false);
+  });
 });
