@@ -3,6 +3,7 @@
 {{- include "ax-next.validateBlobBackend" . -}}
 {{- include "ax-next.validateProxyTransport" . -}}
 {{- include "ax-next.validateDevServicesKubeVersion" . -}}
+{{- include "ax-next.validateAllowedModels" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -423,6 +424,18 @@ spec:
             # (above) is set — see presets/k8s/src/index.ts loader.
             - name: AX_TITLE_MODEL
               value: {{ .Values.titles.model | quote }}
+            {{- end }}
+
+            # Agent model allow-list (TASK-326). Read by @ax/agents'
+            # resolveAllowedModels at plugin init, NOT by the preset loader —
+            # see the external-readers list in __tests__/env-shape.test.ts.
+            #
+            # This is an OVERRIDE. Left empty (the default), nothing is
+            # stamped and @ax/agents' built-in DEFAULT_ALLOWED_MODELS stands,
+            # which keeps the default set in one place instead of two.
+            {{- with ((.Values.config).models).default }}
+            - name: AX_AGENT_MODELS_ALLOWED
+              value: {{ join "," . | quote }}
             {{- end }}
 
             # Database URL — sourced from external secret OR built from

@@ -1242,3 +1242,84 @@ describeIfHelm('ax-next chart: sandbox.filestore wiring', () => {
     ).toBe(false);
   });
 });
+
+// ── TASK-326: config.models.default is a real override, not decoration ──
+//
+// The key rendered into the (unread) ax.config.yaml ConfigMap and nothing
+// else, so an operator could pin a model, see it in `helm get values`, and
+// believe it. It is now stamped onto the host Deployment as
+// AX_AGENT_MODELS_ALLOWED, which is what @ax/agents' resolveAllowedModels
+// actually reads (packages/agents/src/store.ts).
+//
+// It is an OVERRIDE, not a mirror: empty (the default) stamps nothing, so
+// the deployment keeps @ax/agents' built-in DEFAULT_ALLOWED_MODELS as the
+// single source of truth for the default set. Shipping a non-empty default
+// here would silently narrow the live allow-list to whatever this file
+// happened to list — which is the bug in the other direction.
+describeIfHelm('ax-next chart: config.models.default → AX_AGENT_MODELS_ALLOWED (TASK-326)', () => {
+  const envValue = (extraArgs: readonly string[]): string | undefined =>
+    findHostEnv(helmTemplate(extraArgs)).find(
+      (e) => e.name === 'AX_AGENT_MODELS_ALLOWED',
+    )?.value;
+
+  it('a single configured model is stamped onto the host Deployment', () => {
+    expect(envValue(['--set', 'config.models.default={anthropic/claude-opus-4-7}']))
+      .toBe('anthropic/claude-opus-4-7');
+  });
+
+  it('several configured models are comma-joined with no padding', () => {
+    expect(
+      envValue([
+        '--set',
+        'config.models.default={anthropic/claude-opus-4-7,anthropic/claude-haiku-4-5-20251001}',
+      ]),
+    ).toBe('anthropic/claude-opus-4-7,anthropic/claude-haiku-4-5-20251001');
+  });
+
+  it('a routing-style ref keeps every slash after the first', () => {
+    // parseModelRef splits on the FIRST slash, so provider=openrouter and
+    // modelId=x-ai/grok-4.6. A join that mangled the rest would produce an
+    // allow-list entry no agent can match.
+    expect(envValue(['--set', 'config.models.default={openrouter/x-ai/grok-4.6}']))
+      .toBe('openrouter/x-ai/grok-4.6');
+  });
+
+  it('default values stamp NOTHING, so @ax/agents keeps its built-in allow-list', () => {
+    expect(envValue([])).toBeUndefined();
+  });
+
+  it('an explicitly empty list stamps nothing either', () => {
+    // --set-json, not --set: `--set x=[]` hands helm the two-character STRING
+    // "[]", which is a different (and separately guarded) case.
+    expect(envValue(['--set-json', 'config.models.default=[]'])).toBeUndefined();
+  });
+
+  it('a non-list value is named at render time, not left to Go internals', () => {
+    // The `--set x=[]` an operator reaches for first. Without the type check
+    // the render dies with "range can't iterate over []", which says nothing
+    // about which key is wrong.
+    const r = helmTemplateExpectFailure(['--set', 'config.models.default=[]']);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('config.models.default must be a LIST');
+  });
+
+  it('renders cleanly when the whole config.models block is absent', () => {
+    // An operator who replaces `config:` wholesale leaves .Values.config.models
+    // nil; a naive `.Values.config.models.default` lookup dies on the nil
+    // intermediate and takes the entire render with it.
+    expect(envValue(['--set', 'config.models=null'])).toBeUndefined();
+  });
+
+  it('a bare model id fails the render instead of crash-looping the host', () => {
+    // resolveAllowedModels throws PluginError at plugin init on a ref with no
+    // provider, so a bare id here means the host pod crash-loops after a
+    // successful-looking `helm upgrade`. Catch it at render time and name the
+    // offending value.
+    const r = helmTemplateExpectFailure([
+      '--set', 'config.models.default={claude-sonnet-4-6}',
+    ]);
+    expect(r.status).not.toBe(0);
+    expect(r.stderr).toContain('claude-sonnet-4-6');
+    expect(r.stderr).toContain('provider/model-id');
+  });
+});

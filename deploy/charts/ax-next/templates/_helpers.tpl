@@ -420,3 +420,31 @@ validator). Invoked from host/deployment.yaml, which always renders.
 {{- end -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+ax-next.validateAllowedModels — fail the render on a config.models.default
+entry that isn't a `provider/model-id` ref.
+
+@ax/agents' resolveAllowedModels throws PluginError at plugin init on a bare
+id (design §6 removed the implicit "no slash means anthropic" fallback), so
+without this the operator gets a clean `helm upgrade` followed by a host pod
+that crash-loops — the failure surfaces far from its cause. Regex mirrors
+parseModelRef (packages/core/src/model-ref.ts): no whitespace, at least one
+character before the FIRST slash and at least one after it. Later slashes are
+part of the model id, so `openrouter/x-ai/grok-4.6` is valid.
+
+Invoked from host/deployment.yaml, which always renders.
+*/}}
+{{- define "ax-next.validateAllowedModels" -}}
+{{- $models := ((.Values.config).models).default -}}
+{{- if $models -}}
+{{- if not (kindIs "slice" $models) -}}
+{{- fail (printf "config.models.default must be a LIST of 'provider/model-id' refs, e.g. {anthropic/claude-sonnet-4-6} (got: %v)" $models) -}}
+{{- end -}}
+{{- range $model := $models -}}
+{{- if not (regexMatch `^[^\s/]+/[^\s]+$` $model) -}}
+{{- fail (printf "config.models.default entry %s is not a 'provider/model-id' ref (e.g. anthropic/claude-sonnet-4-6); @ax/agents refuses to boot on it" $model) -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- end -}}
